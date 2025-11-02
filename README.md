@@ -105,33 +105,84 @@ This system empowers you to move faster as a solo developer by automating the "h
    # Scopes needed: repo (full control)
    ```
 
-### Local Setup
+### Quick Start
 
-1. **Clone and initialize:**
+1. **Clone the repository:**
    ```bash
    git clone git@github.com:bcarpio/outcome-ops-ai-assist.git
    cd outcome-ops-ai-assist
-   python -m venv venv
-   source venv/bin/activate
-   pip install -r requirements.txt
    ```
 
-2. **Environment configuration:**
+2. **Set up Python environment:**
    ```bash
-   cp .env.example .env
-   # Edit .env with:
-   # - GITHUB_TOKEN=your-token
-   # - AWS_REGION=us-east-1
+   # Creates venv and installs dependencies
+   make setup
+
+   # Activate the virtual environment
+   source venv/bin/activate
    ```
 
-3. **Deploy infrastructure:**
+3. **Configure Terraform:**
+   ```bash
+   # Copy the example tfvars (NEVER commit real credentials)
+   cp terraform/.tfvars.example terraform/dev.tfvars
+
+   # Edit with your actual values:
+   # - aws_region
+   # - repos_to_ingest (which repos to ingest into knowledge base)
+   #
+   # Store GitHub token in AWS SSM Parameter Store:
+   aws ssm put-parameter \
+     --name /dev/outcome-ops-ai-assist/github/token \
+     --value "YOUR_GITHUB_TOKEN" \
+     --type SecureString \
+     --overwrite
+   ```
+
+4. **Deploy infrastructure:**
    ```bash
    cd terraform
    terraform init
    terraform workspace new dev
-   terraform plan -var-file=dev.tfvars
-   terraform apply -var-file=dev.tfvars
+   terraform plan -var-file=dev.tfvars -out=terraform.dev.out
+   # Review the plan output
+   terraform apply terraform.dev.out
    ```
+
+5. **Run tests to verify setup:**
+   ```bash
+   # From repo root
+   make test
+   ```
+
+### Development Workflow
+
+This project follows **ADR-002: Development Workflow Standards**. Always run these before committing:
+
+```bash
+# Format code
+make fmt
+
+# Validate Terraform
+make validate
+
+# Run all tests
+make test
+
+# Or run all checks together
+make all
+```
+
+**Important:** Always follow the workflow:
+1. Make code changes
+2. Run local checks (fmt, validate, test)
+3. Commit changes with conventional commits
+4. Push to main
+5. Create Terraform plan (terraform plan -out=terraform.dev.out)
+6. Review and approve
+7. Apply with plan file (terraform apply terraform.dev.out)
+
+See `docs/deployment.md` for detailed deployment instructions.
 
 ---
 
