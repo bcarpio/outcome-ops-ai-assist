@@ -4,7 +4,7 @@
 
 ## Context
 
-MyFantasy.ai is developed by a solo developer with AI-assisted development via Claude Code. A consistent development workflow ensures code quality, prevents broken builds, and maintains velocity. This document standardizes what gets done locally versus what the CI/CD pipeline handles automatically.
+OutcomeOps AI Assist is developed by a solo developer with AI-assisted development via Claude Code. A consistent development workflow ensures code quality, prevents broken builds, and maintains velocity. This document standardizes what gets done locally versus what the CI/CD pipeline handles automatically.
 
 ## Decision
 

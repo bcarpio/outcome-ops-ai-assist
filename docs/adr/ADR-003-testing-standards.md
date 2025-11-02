@@ -4,7 +4,7 @@
 
 ## Context
 
-MyFantasy.ai is a Python-based serverless application built on AWS Lambda. As the codebase grows, having consistent testing practices ensures code quality, prevents regressions, and maintains confidence in deployments. This document establishes testing standards for unit tests, integration tests, and testing best practices.
+OutcomeOps AI Assist is a Python-based serverless application built on AWS Lambda. As the codebase grows, having consistent testing practices ensures code quality, prevents regressions, and maintains confidence in deployments. This document establishes testing standards for unit tests, integration tests, and testing best practices.
 
 ## Decision
 
@@ -25,26 +25,41 @@ A story is DONE when tests covering new functionality are written, passing local
 
 **Framework:** pytest with pytest-cov for coverage reporting
 
-**Directory structure:**
+**Directory structure (Lambda functions):**
+
+All Lambda functions are tested in a centralized test directory:
+
 ```
-tests/
-├── unit/
-│   ├── __init__.py
-│   ├── test_handler_1.py
-│   ├── test_handler_2.py
-│   └── test_utils.py
-├── integration/
-│   ├── __init__.py
-│   └── test_api_flows.py
-└── fixtures/
-    ├── __init__.py
-    ├── sample_events.py
-    ├── sample_responses.py
-    └── mock_data.py
+lambda/
+├── ingest-docs/
+│   ├── handler.py
+│   └── requirements.txt
+├── search-docs/
+│   ├── handler.py
+│   └── requirements.txt
+└── tests/
+    ├── conftest.py                 # Pytest configuration
+    ├── pytest.ini                  # Pytest settings
+    ├── Makefile                    # Test runner commands
+    ├── unit/
+    │   ├── __init__.py
+    │   ├── test_ingest_docs.py
+    │   ├── test_search_docs.py
+    │   └── test_utils.py
+    ├── integration/
+    │   ├── __init__.py
+    │   ├── test_ingest_docs_flow.py
+    │   └── test_search_docs_flow.py
+    └── fixtures/
+        ├── __init__.py
+        └── sample_data.py
 ```
 
 **Running tests:**
 ```bash
+# Navigate to lambda tests directory
+cd lambda/tests
+
 # Run all tests
 make test
 
@@ -58,11 +73,18 @@ make test-integration
 make test-coverage
 
 # Run specific test file
-pytest tests/unit/test_handler_1.py -v
+pytest unit/test_ingest_docs.py -v
 
 # Run specific test
-pytest tests/unit/test_handler_1.py::test_valid_input -v
+pytest unit/test_ingest_docs.py::TestComputeContentHash::test_compute_content_hash_valid_content -v
 ```
+
+**Test Naming Convention for Multiple Lambdas:**
+- Test files: `test_<lambda_name>.py` and `test_<lambda_name>_flow.py`
+- Examples:
+  - `unit/test_ingest_docs.py` - unit tests for ingest-docs Lambda
+  - `unit/test_search_docs.py` - unit tests for search-docs Lambda
+  - `integration/test_ingest_docs_flow.py` - integration tests for ingest-docs Lambda
 
 ### 3. Test Types and Definitions
 
@@ -90,7 +112,7 @@ pytest tests/unit/test_handler_1.py::test_valid_input -v
 - Used for critical user journeys
 - Can be separate from main test suite
 
-**Test Pyramid for MyFantasy.ai:**
+**Test Pyramid for OutcomeOps AI Assist:**
 ```
          Functional Tests
             (few, slow)
@@ -519,4 +541,4 @@ tests/unit/
 - Shift-Left Testing: https://www.stickyminds.com/article/shift-left-approach-software-testing
 
 Version History:
-- v1.0 (2025-01-02): Initial testing standards for MyFantasy.ai Python codebase
+- v1.0 (2025-01-02): Initial testing standards for OutcomeOps AI Assist Python codebase

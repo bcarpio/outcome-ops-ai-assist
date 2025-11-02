@@ -4,7 +4,7 @@
 
 ## Context
 
-MyFantasy.ai frontend is a React-based single-page application (SPA) built with Vite, TypeScript, Tailwind CSS, and React Router. Establishing consistent patterns ensures maintainability, security, and user experience consistency across the application.
+OutcomeOps AI Assist frontend is a React-based single-page application (SPA) built with Vite, TypeScript, Tailwind CSS, and React Router. Establishing consistent patterns ensures maintainability, security, and user experience consistency across the application.
 
 ## Decision
 
@@ -532,4 +532,4 @@ npm run preview
 - lucide-react: https://lucide.dev
 
 Version History:
-- v1.0 (2025-01-02): Initial frontend standards for MyFantasy.ai React SPA
+- v1.0 (2025-01-02): Initial frontend standards for OutcomeOps AI Assist React SPA

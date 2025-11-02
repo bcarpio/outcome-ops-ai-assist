@@ -10,7 +10,7 @@ variable "environment" {
 variable "app_name" {
   type        = string
   description = "Application name"
-  default     = "fantacyai"
+  default     = "outcome-ops-ai-assist"
 }
 
 variable "aws_region" {

@@ -2,7 +2,7 @@ module "knowledge_base_bucket" {
   source  = "terraform-aws-modules/s3-bucket/aws"
   version = "4.1.1"
 
-  bucket = "${var.environment}-${var.app_name}-ai-assist-kb"
+  bucket = "${var.environment}-${var.app_name}-kb"
 
   # Versioning for recoverability
   versioning = {
@@ -12,8 +12,8 @@ module "knowledge_base_bucket" {
   # Lifecycle rules to manage storage costs
   lifecycle_rule = [
     {
-      id      = "expire-old-versions"
-      status  = "Enabled"
+      id     = "expire-old-versions"
+      status = "Enabled"
       noncurrent_version_expiration = {
         days = 30
       }
@@ -42,7 +42,7 @@ module "knowledge_base_bucket" {
 }
 
 resource "aws_ssm_parameter" "knowledge_base_bucket" {
-  name  = "/${var.environment}/${var.app_name}-ai-assist/s3/knowledge-base-bucket"
+  name  = "/${var.environment}/${var.app_name}/s3/knowledge-base-bucket"
   type  = "String"
   value = module.knowledge_base_bucket.s3_bucket_id
 

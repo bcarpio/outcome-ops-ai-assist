@@ -1,6 +1,6 @@
-# FantacyAI OutcomeOps Assistant
+# OutcomeOps AI Assist
 
-An AI-powered engineering assistant for myfantasy.ai that shifts from task-oriented to outcome-oriented development. This system ingests your codebase patterns, architectural decisions, and conventions into a knowledge base, then leverages Claude to generate code that matches your exact practices.
+An AI-powered engineering assistant that shifts from task-oriented to outcome-oriented development. This system ingests your codebase patterns, architectural decisions, and conventions into a knowledge base, then leverages Claude to generate code that matches your exact practices.
 
 ## Purpose
 
@@ -63,8 +63,8 @@ This system empowers you to move faster as a solo developer by automating the "h
 - Vector searches knowledge base for relevant patterns
 - Returns Claude-generated answers grounded in YOUR conventions
 
-**CLI Tool (`fantacyai-assist`):**
-- Query knowledge base from terminal: `fantacyai-assist "How should error handling work?"`
+**CLI Tool (`outcome-ops-assist`):**
+- Query knowledge base from terminal: `outcome-ops-assist "How should error handling work?"`
 - See sources and reasoning directly
 
 ---
@@ -109,8 +109,8 @@ This system empowers you to move faster as a solo developer by automating the "h
 
 1. **Clone and initialize:**
    ```bash
-   git clone git@github.com:bcarpio/fantacyai-ai-assist.git
-   cd fantacyai-ai-assist
+   git clone git@github.com:bcarpio/outcome-ops-ai-assist.git
+   cd outcome-ops-ai-assist
    python -m venv venv
    source venv/bin/activate
    pip install -r requirements.txt
@@ -138,7 +138,7 @@ This system empowers you to move faster as a solo developer by automating the "h
 ## Project Structure
 
 ```
-fantacyai-ai-assist/
+outcome-ops-ai-assist/
 ├── docs/
 │   ├── adr/                      # Architecture Decision Records
 │   │   ├── ADR-001-kb-design.md
@@ -146,21 +146,17 @@ fantacyai-ai-assist/
 │   │   └── ...
 │   ├── architecture.md           # System architecture details
 │   └── deployment.md             # Deployment runbook
-├── src/
-│   ├── handlers/                 # Lambda functions
-│   │   ├── ingest-kb/           # Ingest ADRs and codebase
-│   │   ├── vector-query/        # Semantic search
-│   │   ├── ask-claude/          # RAG answer generation
-│   │   ├── query-kb/            # Query orchestration
-│   │   ├── generate-code-maps/  # Code analysis and summaries
-│   │   └── process-batch/       # Async batch processing
-│   ├── shared/
-│   │   ├── utils/               # Helper functions
-│   │   ├── models/              # Data models and schemas
-│   │   └── tests/               # Unit tests
-│   └── config/
-│       ├── allowlist.yaml       # Repos to ingest
-│       └── schemas.yaml         # Data validation schemas
+├── lambda/
+│   ├── ingest-docs/             # Lambda function for ingesting ADRs and READMEs
+│   │   ├── handler.py           # Main handler
+│   │   ├── allowlist.yaml       # Repos to ingest
+│   │   └── requirements.txt     # Python dependencies
+│   └── tests/                   # Centralized test suite
+│       ├── unit/                # Unit tests for all Lambdas
+│       ├── integration/         # Integration tests
+│       ├── fixtures/            # Test fixtures and sample data
+│       ├── conftest.py          # Pytest configuration
+│       └── Makefile             # Test execution targets
 ├── terraform/
 │   ├── main.tf                  # Core infrastructure
 │   ├── variables.tf
@@ -171,18 +167,9 @@ fantacyai-ai-assist/
 │       ├── lambda/
 │       ├── dynamodb/
 │       └── s3/
-├── scripts/
-│   ├── fantacyai-assist         # CLI tool (main entry point)
-│   ├── ingest-repos.sh          # Manual ingestion script
-│   └── deploy.sh                # Deployment helper
-├── tests/
-│   ├── unit/
-│   ├── integration/
-│   └── fixtures/
-├── requirements.txt
-├── .env.example
-├── .gitignore
-└── README.md
+├── Makefile                     # Build orchestration (fmt, validate, test)
+├── .gitignore                   # Git ignore patterns
+└── README.md                    # This file
 ```
 
 ---
@@ -196,7 +183,7 @@ Automatically ingest patterns from your codebase:
 ```bash
 # Manual trigger
 aws lambda invoke \
-  --function-name dev-fantacyai-ingest-kb \
+  --function-name dev-outcome-ops-ai-assist-ingest-docs \
   response.json
 ```
 
@@ -210,13 +197,13 @@ aws lambda invoke \
 **Stored in DynamoDB as:**
 ```json
 {
-  "PK": "repo#fantacyai-api-aws",
-  "SK": "doc#adr-error-handling",
+  "PK": "repo#outcome-ops-ai-assist",
+  "SK": "adr#ADR-001",
   "type": "adr",
   "content": "...",
   "embedding": [0.123, 0.456, ...],
-  "source": "docs/adr/ADR-001-error-handling.md",
-  "repo": "fantacyai-api-aws"
+  "file_path": "docs/adr/ADR-001-error-handling.md",
+  "repo": "outcome-ops-ai-assist"
 }
 ```
 
@@ -229,8 +216,8 @@ Analyze your repositories to understand architectural patterns:
 ```bash
 # Generate code maps for all repos (or just changed ones)
 aws lambda invoke \
-  --function-name dev-fantacyai-generate-code-maps \
-  --payload '{"repos": ["fantacyai-api-aws"]}' \
+  --function-name dev-outcome-ops-ai-assist-generate-code-maps \
+  --payload '{"repos": ["outcome-ops-ai-assist"]}' \
   response.json
 ```
 
@@ -243,10 +230,10 @@ aws lambda invoke \
 **Example output stored in DynamoDB:**
 ```json
 {
-  "PK": "repo#fantacyai-api-aws",
+  "PK": "repo#outcome-ops-ai-assist",
   "SK": "summary#architecture",
   "type": "code-map",
-  "content": "This repository implements the myfantasy.ai backend...",
+  "content": "This repository implements the OutcomeOps AI Assist backend...",
   "embedding": [0.789, 0.012, ...],
   "fileCount": 145,
   "timestamp": "2025-01-15T10:00:00Z"
@@ -261,7 +248,7 @@ Ask questions about your patterns via CLI or API:
 
 ```bash
 # CLI query
-fantacyai-assist "How should Lambda error handling work?"
+outcome-ops-assist "How should Lambda error handling work?"
 
 # Output:
 # 🤖 Querying knowledge base...
@@ -330,7 +317,7 @@ All handlers will use a standard error wrapper that:
 [Link to working handler example]
 ```
 
-As you build myfantasy.ai, document decisions here. The knowledge base ingests these automatically.
+As you build your project, document decisions here. The knowledge base ingests these automatically.
 
 ---
 
@@ -391,10 +378,10 @@ Create `dev.tfvars` and `prd.tfvars`:
 ```hcl
 aws_region           = "us-east-1"
 environment          = "dev"
-app_name             = "fantacyai-ai-assist"
+app_name             = "outcome-ops-ai-assist"
 
 # GitHub access
-github_token_ssm_path = "/fantacyai/dev/github-token"
+github_token_ssm_path = "/outcome-ops/dev/github-token"
 
 # Bedrock models
 bedrock_embedding_model = "amazon.titan-embed-text-v2:0"
@@ -403,12 +390,12 @@ bedrock_claude_model    = "anthropic.claude-3-5-sonnet-20241022"
 # Repository allowlist
 repos_to_ingest = [
   {
-    name    = "fantacyai-api-aws"
+    name    = "outcome-ops-ai-assist"
     owner   = "bcarpio"
     type    = "application"  # or "standards" for ADR-only repos
   },
   {
-    name    = "fantacyai-analytics"
+    name    = "outcome-ops-analytics"
     owner   = "bcarpio"
     type    = "application"
   }
@@ -421,7 +408,7 @@ Store sensitive data in AWS Secrets Manager:
 
 ```bash
 aws secretsmanager create-secret \
-  --name fantacyai/dev/github-token \
+  --name outcome-ops/dev/github-token \
   --secret-string "your-github-token"
 ```
 
@@ -434,10 +421,10 @@ Lambda functions retrieve at runtime.
 ### CloudWatch Logs
 
 All Lambda functions log to CloudWatch:
-- `dev-fantacyai-ingest-kb`: Ingestion events
-- `dev-fantacyai-vector-query`: Search queries
-- `dev-fantacyai-ask-claude`: RAG generations
-- `dev-fantacyai-generate-code-maps`: Code analysis
+- `dev-outcome-ops-ai-assist-ingest-docs`: Ingestion events
+- `dev-outcome-ops-ai-assist-vector-query`: Search queries
+- `dev-outcome-ops-ai-assist-ask-claude`: RAG generations
+- `dev-outcome-ops-ai-assist-generate-code-maps`: Code analysis
 
 ### CloudWatch Alarms
 
@@ -449,7 +436,7 @@ Set up alerts for:
 
 ```bash
 # View recent errors
-aws logs tail /aws/lambda/dev-fantacyai-ask-claude --follow
+aws logs tail /aws/lambda/dev-outcome-ops-ai-assist-ask-claude --follow
 ```
 
 ---
@@ -475,13 +462,13 @@ Test the full RAG pipeline:
 
 ```bash
 # 1. Ingest knowledge
-aws lambda invoke --function-name dev-fantacyai-ingest-kb response.json
+aws lambda invoke --function-name dev-outcome-ops-ai-assist-ingest-docs response.json
 
 # 2. Generate code maps
-aws lambda invoke --function-name dev-fantacyai-generate-code-maps response.json
+aws lambda invoke --function-name dev-outcome-ops-ai-assist-generate-code-maps response.json
 
 # 3. Query knowledge base
-fantacyai-assist "How should I structure a new Lambda handler?"
+outcome-ops-assist "How should I structure a new Lambda handler?"
 ```
 
 ---
@@ -493,7 +480,7 @@ As the solo developer, here's the recommended flow:
 1. **Define outcome in Claude Code:**
    ```
    "Create a Lambda handler for user profile updates that:
-    - Validates input with Zod
+    - Validates input with Pydantic
     - Updates DynamoDB following our patterns
     - Returns consistent error format
     - Includes proper logging"
@@ -528,9 +515,9 @@ This way, you focus on architecture and outcomes. The system handles consistency
 ### Query Knowledge Base from Terminal
 
 ```bash
-fantacyai-assist "What's our standard for error handling?"
-fantacyai-assist "How should I structure Terraform for a new service?"
-fantacyai-assist "Show me examples of database query patterns"
+outcome-ops-assist "What's our standard for error handling?"
+outcome-ops-assist "How should I structure Terraform for a new service?"
+outcome-ops-assist "Show me examples of database query patterns"
 ```
 
 ### Add a New Repository to Ingest
@@ -538,7 +525,7 @@ fantacyai-assist "Show me examples of database query patterns"
 1. Add to `src/config/allowlist.yaml`:
    ```yaml
    repos:
-     - name: fantacyai-analytics
+     - name: outcome-ops-analytics
        owner: bcarpio
        type: application
    ```
@@ -564,8 +551,8 @@ fantacyai-assist "Show me examples of database query patterns"
 3. Trigger code map regeneration:
    ```bash
    aws lambda invoke \
-     --function-name dev-fantacyai-generate-code-maps \
-     --payload '{"repos": ["fantacyai-api-aws"]}' \
+     --function-name dev-outcome-ops-ai-assist-generate-code-maps \
+     --payload '{"repos": ["outcome-ops-ai-assist"]}' \
      response.json
    ```
 
@@ -577,13 +564,13 @@ fantacyai-assist "Show me examples of database query patterns"
 
 1. Check ingestion completed:
    ```bash
-   aws logs tail /aws/lambda/dev-fantacyai-ingest-kb --follow
+   aws logs tail /aws/lambda/dev-outcome-ops-ai-assist-ingest-docs --follow
    ```
 
 2. Verify documents in DynamoDB:
    ```bash
    aws dynamodb scan \
-     --table-name dev-fantacyai-kb \
+     --table-name dev-outcome-ops-ai-assist-kb \
      --limit 10
    ```
 
@@ -594,8 +581,8 @@ fantacyai-assist "Show me examples of database query patterns"
 1. Check if code map is current:
    ```bash
    aws lambda invoke \
-     --function-name dev-fantacyai-generate-code-maps \
-     --payload '{"repos": ["fantacyai-api-aws"]}' \
+     --function-name dev-outcome-ops-ai-assist-generate-code-maps \
+     --payload '{"repos": ["outcome-ops-ai-assist"]}' \
      response.json
    ```
 
@@ -676,6 +663,6 @@ aws sqs get-queue-attributes \
 
 ---
 
-**Built for solo developer velocity at myfantasy.ai.** 🚀
+**Built for solo developer velocity.** 🚀
 
-Cloud infrastructure by code. Engineering outcomes by Claude. Your vision, automated execution.
+Outcome-driven development. Infrastructure by code. Engineering outcomes by Claude. Your vision, automated execution.

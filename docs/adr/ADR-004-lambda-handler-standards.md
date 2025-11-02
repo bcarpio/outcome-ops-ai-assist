@@ -4,7 +4,7 @@
 
 ## Context
 
-MyFantasy.ai Lambda handlers form the core of the serverless API. Establishing consistent patterns across all handlers ensures maintainability, security, and reliability. This document standardizes handler structure, authentication, validation, error handling, and configuration management.
+OutcomeOps AI Assist Lambda handlers form the core of the serverless API. Establishing consistent patterns across all handlers ensures maintainability, security, and reliability. This document standardizes handler structure, authentication, validation, error handling, and configuration management.
 
 ## Decision
 
@@ -431,7 +431,7 @@ module "api_gateway" {
   version = "~> 4.0"
 
   name          = "${var.environment}-${var.app_name}-api"
-  description   = "API Gateway for MyFantasy.ai"
+  description   = "API Gateway for OutcomeOps AI Assist"
   protocol_type = "HTTP"
 
   integrations = {
@@ -539,4 +539,4 @@ Before considering a handler complete:
 - AWS Lambda Logging Best Practices: https://docs.aws.amazon.com/lambda/latest/dg/python-logging.html
 
 Version History:
-- v1.0 (2025-01-02): Initial Lambda handler standards for MyFantasy.ai
+- v1.0 (2025-01-02): Initial Lambda handler standards for OutcomeOps AI Assist

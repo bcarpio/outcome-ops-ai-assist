@@ -4,7 +4,7 @@
 
 ## Context
 
-MyFantasy.ai infrastructure spans multiple AWS services (Lambda, DynamoDB, S3, SQS, API Gateway, CloudFront, etc.). As the codebase grows, maintaining consistency in how infrastructure is defined becomes critical for:
+OutcomeOps AI Assist infrastructure spans multiple AWS services (Lambda, DynamoDB, S3, SQS, API Gateway, CloudFront, etc.). As the codebase grows, maintaining consistency in how infrastructure is defined becomes critical for:
 - Security (least privilege access controls)
 - Maintainability (consistent patterns across modules)
 - Auditability (clear resource ownership and dependencies)
@@ -115,6 +115,44 @@ module "my_lambda" {
 - Use module outputs for ARNs (not hardcoded strings)
 - Document why each permission is needed in comments
 - Review quarterly - remove unused permissions
+
+### 3a. Lambda CloudWatch Logs
+
+The `terraform-aws-modules/lambda/aws` module automatically creates a CloudWatch log group for Lambda functions. Do NOT create a separate `aws_cloudwatch_log_group` resource when using the Lambda module.
+
+**Incorrect pattern (duplicate log groups):**
+```hcl
+module "my_lambda" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "7.2.1"
+
+  function_name = "my-function"
+  # ... configuration
+}
+
+# DON'T DO THIS - creates duplicate log group
+resource "aws_cloudwatch_log_group" "my_lambda_logs" {
+  name              = "/aws/lambda/${module.my_lambda.lambda_function_name}"
+  retention_in_days = 30
+}
+```
+
+**Correct pattern (let module create the log group):**
+```hcl
+module "my_lambda" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "7.2.1"
+
+  function_name = "my-function"
+  # ... configuration
+}
+
+# The Lambda module automatically creates the log group
+# If you need custom retention, use the module's built-in attributes:
+# logs_retention_in_days = 30
+```
+
+The Lambda module's `logs_retention_in_days` parameter controls CloudWatch log retention. Use that instead of creating a separate log group resource.
 
 ### 4. Module Composition and Dependencies
 
@@ -457,7 +495,7 @@ All resource outputs (bucket names, table names, ARNs, queue URLs) MUST be store
 
 ```hcl
 resource "aws_ssm_parameter" "knowledge_base_bucket" {
-  name  = "/${var.environment}/${var.app_name}-ai-assist/s3/knowledge-base-bucket"
+  name  = "/${var.environment}/${var.app_name}/s3/knowledge-base-bucket"
   type  = "String"
   value = module.knowledge_base_bucket.s3_bucket_id
 
@@ -467,9 +505,9 @@ resource "aws_ssm_parameter" "knowledge_base_bucket" {
 }
 
 resource "aws_ssm_parameter" "dynamodb_table" {
-  name  = "/${var.environment}/${var.app_name}/dynamodb/table"
+  name  = "/${var.environment}/${var.app_name}/dynamodb/code-maps-table"
   type  = "String"
-  value = module.main_dynamodb_table.dynamodb_table_name
+  value = module.code_maps_table.dynamodb_table_id
 }
 ```
 
@@ -477,7 +515,7 @@ resource "aws_ssm_parameter" "dynamodb_table" {
 
 ```
 /{environment}/{app_name}/resource_type/resource_name
-/{environment}/{app_name}-ai-assist/s3/knowledge-base-bucket
+/{environment}/{app_name}/s3/knowledge-base-bucket
 /{environment}/{app_name}/dynamodb/table
 /{environment}/{app_name}/sqs/character-generation-queue
 ```
@@ -499,10 +537,10 @@ ssm = boto3.client("ssm")
 env = os.environ.get("ENV")
 app_name = os.environ.get("APP_NAME")
 
-table_param = f"/{env}/{app_name}/dynamodb/table"
+table_param = f"/{env}/{app_name}/dynamodb/code-maps-table"
 TABLE_NAME = ssm.get_parameter(Name=table_param)["Parameter"]["Value"]
 
-bucket_param = f"/{env}/{app_name}-ai-assist/s3/knowledge-base-bucket"
+bucket_param = f"/{env}/{app_name}/s3/knowledge-base-bucket"
 KB_BUCKET = ssm.get_parameter(Name=bucket_param)["Parameter"]["Value"]
 ```
 
