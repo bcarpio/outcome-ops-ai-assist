@@ -78,8 +78,9 @@ def github_api_request(endpoint: str, method: str = "GET") -> Dict[str, Any]:
     """
     url = f"{GITHUB_API_URL}{endpoint}"
     headers = {
-        "Authorization": f"token {GITHUB_TOKEN}",
-        "Accept": "application/vnd.github.v3+json",
+        "Authorization": f"Bearer {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
         "User-Agent": "outcome-ops-ingest-docs",
     }
 
@@ -106,7 +107,7 @@ def github_api_raw_content(repo: str, path: str, ref: str = "main") -> str:
     """
     url = f"https://raw.githubusercontent.com/{repo}/{ref}/{path}"
     headers = {
-        "Authorization": f"token {GITHUB_TOKEN}",
+        "Authorization": f"Bearer {GITHUB_TOKEN}",
         "User-Agent": "outcome-ops-ingest-docs",
     }
 
