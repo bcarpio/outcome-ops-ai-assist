@@ -40,7 +40,6 @@ ssm_client = boto3.client("ssm")
 # Configuration (loaded from SSM at container startup)
 ENVIRONMENT = os.environ.get("ENV", "dev")
 APP_NAME = os.environ.get("APP_NAME", "outcome-ops-ai-assist")
-REPO_NAME = os.environ.get("REPO_NAME", "outcome-ops-ai-assist")
 
 KB_BUCKET = None
 CODE_MAPS_TABLE = None
@@ -307,7 +306,7 @@ def upload_to_s3(file_key: str, content: str, file_path: str) -> bool:
 
 def store_in_dynamodb(
     pk: str, sk: str, doc_type: str, content: str, embedding: List[float],
-    file_path: str, content_hash: str
+    file_path: str, content_hash: str, repo: str
 ) -> bool:
     """
     Store document metadata and embedding in DynamoDB.
@@ -315,11 +314,12 @@ def store_in_dynamodb(
     Args:
         pk: Partition key
         sk: Sort key
-        doc_type: Document type (adr, readme)
+        doc_type: Document type (adr, readme, doc)
         content: Document content
         embedding: 1024-dimensional embedding vector
         file_path: Original file path
         content_hash: SHA-256 hash of content
+        repo: Repository name
 
     Returns:
         True if successful, False otherwise
@@ -334,7 +334,7 @@ def store_in_dynamodb(
             "file_path": {"S": file_path},
             "content_hash": {"S": content_hash},
             "timestamp": {"S": datetime.utcnow().isoformat()},
-            "repo": {"S": REPO_NAME},
+            "repo": {"S": repo},
         }
 
         dynamodb_client.put_item(TableName=CODE_MAPS_TABLE, Item=item)
@@ -363,7 +363,7 @@ def ingest_adr(repo: str, adr_path: str, content: str) -> bool:
     filename = adr_path.split("/")[-1]
     adr_id = filename.split(".")[0]  # e.g., "ADR-001"
 
-    pk = f"repo#{REPO_NAME}"
+    pk = f"repo#{repo}"
     sk = f"adr#{adr_id}"
     doc_type = "adr"
 
@@ -382,7 +382,7 @@ def ingest_adr(repo: str, adr_path: str, content: str) -> bool:
     content_hash = compute_content_hash(content)
 
     # Store in DynamoDB
-    return store_in_dynamodb(pk, sk, doc_type, content, embedding, adr_path, content_hash)
+    return store_in_dynamodb(pk, sk, doc_type, content, embedding, adr_path, content_hash, repo)
 
 
 def ingest_readme(repo: str, readme_path: str, content: str) -> bool:
@@ -405,7 +405,7 @@ def ingest_readme(repo: str, readme_path: str, content: str) -> bool:
     else:
         readme_id = path_parts[0]
 
-    pk = f"repo#{REPO_NAME}"
+    pk = f"repo#{repo}"
     sk = f"readme#{readme_id}"
     doc_type = "readme"
 
@@ -424,7 +424,7 @@ def ingest_readme(repo: str, readme_path: str, content: str) -> bool:
     content_hash = compute_content_hash(content)
 
     # Store in DynamoDB
-    return store_in_dynamodb(pk, sk, doc_type, content, embedding, readme_path, content_hash)
+    return store_in_dynamodb(pk, sk, doc_type, content, embedding, readme_path, content_hash, repo)
 
 
 def ingest_doc(repo: str, doc_path: str, content: str) -> bool:
@@ -445,7 +445,7 @@ def ingest_doc(repo: str, doc_path: str, content: str) -> bool:
     filename = doc_path.split("/")[-1]
     doc_id = filename.split(".")[0]  # Remove .md extension
 
-    pk = f"repo#{REPO_NAME}"
+    pk = f"repo#{repo}"
     sk = f"doc#{doc_id}"
     doc_type = "doc"
 
@@ -464,7 +464,7 @@ def ingest_doc(repo: str, doc_path: str, content: str) -> bool:
     content_hash = compute_content_hash(content)
 
     # Store in DynamoDB
-    return store_in_dynamodb(pk, sk, doc_type, content, embedding, doc_path, content_hash)
+    return store_in_dynamodb(pk, sk, doc_type, content, embedding, doc_path, content_hash, repo)
 
 
 def handler(event, context):

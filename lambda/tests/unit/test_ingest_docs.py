@@ -114,6 +114,7 @@ class TestGenerateEmbedding:
 class TestUploadToS3:
     """Test S3 upload functionality."""
 
+    @patch("handler.KB_BUCKET", "dev-outcome-ops-ai-assist-kb")
     @patch("handler.s3_client")
     def test_upload_to_s3_success(self, mock_s3):
         """Test successful S3 upload."""
@@ -153,6 +154,7 @@ class TestUploadToS3:
 class TestStoreInDynamoDB:
     """Test DynamoDB storage."""
 
+    @patch("handler.CODE_MAPS_TABLE", "dev-outcome-ops-ai-assist-code-maps")
     @patch("handler.dynamodb_client")
     def test_store_in_dynamodb_success(self, mock_dynamodb):
         """Test successful DynamoDB storage."""
@@ -164,10 +166,11 @@ class TestStoreInDynamoDB:
         embedding = [0.1] * 1024
         file_path = "docs/adr/ADR-001.md"
         content_hash = "abc123"
+        repo = "outcome-ops-ai-assist"
         mock_dynamodb.put_item.return_value = {}
 
         # Act
-        result = store_in_dynamodb(pk, sk, doc_type, content, embedding, file_path, content_hash)
+        result = store_in_dynamodb(pk, sk, doc_type, content, embedding, file_path, content_hash, repo)
 
         # Assert
         assert result is True
@@ -176,6 +179,7 @@ class TestStoreInDynamoDB:
         assert call_kwargs["TableName"] == "dev-outcome-ops-ai-assist-code-maps"
         assert call_kwargs["Item"]["PK"]["S"] == pk
         assert call_kwargs["Item"]["SK"]["S"] == sk
+        assert call_kwargs["Item"]["repo"]["S"] == repo
 
     @patch("handler.dynamodb_client")
     def test_store_in_dynamodb_failure(self, mock_dynamodb):
@@ -189,7 +193,7 @@ class TestStoreInDynamoDB:
 
         # Act
         result = store_in_dynamodb(
-            "pk", "sk", "adr", "content", [0.1] * 1024, "file.md", "hash"
+            "pk", "sk", "adr", "content", [0.1] * 1024, "file.md", "hash", "test-repo"
         )
 
         # Assert
@@ -327,4 +331,4 @@ class TestGithubApiRequest:
         call_args = mock_urlopen.call_args
         request_obj = call_args[0][0]
         assert "Authorization" in request_obj.headers
-        assert "token" in request_obj.headers["Authorization"]
+        assert "Bearer" in request_obj.headers["Authorization"]

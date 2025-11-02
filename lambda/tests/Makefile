@@ -1,24 +1,28 @@
 .PHONY: test test-unit test-integration test-coverage clean
 
+# Python interpreter (use venv if it exists, otherwise system python)
+PYTHON := $(if $(wildcard ../../venv/bin/python),../../venv/bin/python,python3.12)
+PYTEST := $(if $(wildcard ../../venv/bin/pytest),../../venv/bin/pytest,pytest)
+
 # Install dependencies (from repo root)
 install:
-	pip install -r ../ingest-docs/requirements.txt
+	$(PYTHON) -m pip install -q -r ../ingest-docs/requirements.txt
 
 # Run all tests
 test:
-	pytest . -v
+	$(PYTEST) . -v
 
 # Run only unit tests
 test-unit:
-	pytest unit/ -v
+	$(PYTEST) unit/ -v
 
 # Run only integration tests
 test-integration:
-	pytest integration/ -v
+	$(PYTEST) integration/ -v
 
 # Run tests with coverage report
 test-coverage:
-	pytest . --cov=../ingest-docs --cov-report=html --cov-report=term-missing
+	$(PYTEST) . --cov=../ingest-docs --cov-report=html --cov-report=term-missing
 
 # Clean up test artifacts
 clean:

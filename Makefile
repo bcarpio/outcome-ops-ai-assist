@@ -1,8 +1,12 @@
-.PHONY: help fmt validate test test-unit test-integration test-coverage clean all
+.PHONY: help setup install fmt validate test test-unit test-integration test-coverage clean all
 
 # Default target
 help:
 	@echo "OutcomeOps AI Assist - Build System"
+	@echo ""
+	@echo "Setup & Dependencies:"
+	@echo "  make setup            Create Python virtual environment and install deps"
+	@echo "  make install          Install Python dependencies (assumes venv exists)"
 	@echo ""
 	@echo "Infrastructure (Terraform):"
 	@echo "  make fmt              Format terraform code"
@@ -18,6 +22,22 @@ help:
 	@echo "  make all              Run fmt, validate, and all tests"
 	@echo "  make clean            Clean all build artifacts"
 	@echo ""
+
+# ============================================================================
+# Setup & Dependencies: Create venv and install Python packages
+# ============================================================================
+
+setup:
+	@echo "Setting up Python virtual environment..."
+	python3.12 -m venv venv
+	@echo "Installing Python dependencies..."
+	$(MAKE) install
+	@echo "Setup complete! Activate venv with: source venv/bin/activate"
+
+install:
+	@echo "Installing Python dependencies..."
+	venv/bin/pip install -q -r lambda/ingest-docs/requirements.txt
+	@echo "Dependencies installed"
 
 # ============================================================================
 # Infrastructure: Terraform Formatting and Validation
