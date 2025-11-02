@@ -3,7 +3,7 @@ terraform {
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = "~> 5.0"
+      version = "~> 6.0"
     }
   }
 }
@@ -35,10 +35,5 @@ resource "aws_ssm_parameter" "repos_allowlist" {
 
   tags = {
     Purpose = "repos-allowlist"
-  }
-
-  # Recreate parameter if value changes
-  lifecycle {
-    replace_triggered_by = [var.repos_to_ingest]
   }
 }

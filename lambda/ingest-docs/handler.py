@@ -1,12 +1,19 @@
 """
-Lambda handler for ingesting ADRs and READMEs into the knowledge base.
+Lambda handler for ingesting documentation into the knowledge base.
 
 This handler:
-1. Fetches ADRs and README files from GitHub repositories via GitHub API
+1. Fetches ADRs, READMEs, and documentation files from GitHub repositories via GitHub API
 2. Uploads them to S3 knowledge base bucket
-3. Generates embeddings using Bedrock Titan Embeddings v2
+3. Generates embeddings using Bedrock Titan Embeddings v2 (with smart text chunking for large files)
 4. Stores embeddings and metadata in DynamoDB
 5. Runs on EventBridge schedule (hourly)
+
+Documentation sources:
+- ADRs: docs/adr/*.md (from standards repos)
+- READMEs: README.md, docs/README.md (from all repos)
+- Docs: docs/*.md except ADRs and READMEs (from all repos)
+  - This prevents chunking of large combined READMEs
+  - Examples: docs/architecture.md, docs/lambda-*.md, docs/deployment.md
 """
 
 import hashlib
@@ -420,6 +427,46 @@ def ingest_readme(repo: str, readme_path: str, content: str) -> bool:
     return store_in_dynamodb(pk, sk, doc_type, content, embedding, readme_path, content_hash)
 
 
+def ingest_doc(repo: str, doc_path: str, content: str) -> bool:
+    """
+    Ingest a generic documentation file from docs/ directory.
+
+    Args:
+        repo: Repository name
+        doc_path: Path to doc file (e.g., docs/architecture.md)
+        content: File content
+
+    Returns:
+        True if successful
+    """
+    # Extract doc identifier from filename
+    # e.g., "docs/architecture.md" -> "architecture"
+    # e.g., "docs/lambda-ingest-docs.md" -> "lambda-ingest-docs"
+    filename = doc_path.split("/")[-1]
+    doc_id = filename.split(".")[0]  # Remove .md extension
+
+    pk = f"repo#{REPO_NAME}"
+    sk = f"doc#{doc_id}"
+    doc_type = "doc"
+
+    # Upload to S3
+    s3_key = f"docs/{doc_id}.md"
+    if not upload_to_s3(s3_key, content, doc_path):
+        return False
+
+    # Generate embedding
+    embedding = generate_embedding(content)
+    if not embedding:
+        logger.error(f"Failed to generate embedding for doc: {doc_id}")
+        return False
+
+    # Compute content hash
+    content_hash = compute_content_hash(content)
+
+    # Store in DynamoDB
+    return store_in_dynamodb(pk, sk, doc_type, content, embedding, doc_path, content_hash)
+
+
 def handler(event, context):
     """
     Lambda handler for ingesting documents.
@@ -492,6 +539,32 @@ def handler(event, context):
                     except URLError:
                         logger.info(f"README not found: {readme_file}")
                         continue
+
+                # Fetch all documentation files from docs/ directory
+                logger.info(f"Fetching documentation files from {repo_name}...")
+                try:
+                    doc_files = list_directory_files(repo_project, "docs", ref="main")
+                    # Filter out ADRs and READMEs (already handled separately)
+                    doc_files = [
+                        f for f in doc_files
+                        if f.endswith(".md")
+                        and "docs/adr" not in f  # Skip ADRs (handled above)
+                        and not f.endswith("README.md")  # Skip READMEs (handled above)
+                        and not f.endswith("TEMPLATE.md")  # Skip template
+                    ]
+
+                    for doc_file in doc_files:
+                        try:
+                            logger.info(f"Ingesting doc: {doc_file}")
+                            content = github_api_raw_content(repo_project, doc_file)
+                            if ingest_doc(repo_name, doc_file, content):
+                                total_docs_ingested += 1
+                        except URLError:
+                            logger.error(f"Failed to fetch doc: {doc_file}")
+                            continue
+                except Exception as e:
+                    logger.warning(f"Failed to list docs directory: {e}")
+                    # Continue with other processing even if docs fetch fails
 
             except Exception as e:
                 logger.error(f"Error processing {repo_name}: {e}")

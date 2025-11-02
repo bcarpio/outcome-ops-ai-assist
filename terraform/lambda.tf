@@ -1,6 +1,6 @@
 module "ingest_docs_lambda" {
   source  = "terraform-aws-modules/lambda/aws"
-  version = "7.2.1"
+  version = "8.1.2"
 
   function_name = "${var.environment}-${var.app_name}-ingest-docs"
   description   = "Ingest ADRs and READMEs into the knowledge base"
@@ -11,6 +11,9 @@ module "ingest_docs_lambda" {
 
   # Source code from local directory
   source_path = "${path.module}/../lambda/ingest-docs"
+
+  # Suppress verbose archive output
+  quiet_archive_local_exec = true
 
   # Environment variables
   environment_variables = {

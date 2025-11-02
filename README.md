@@ -140,36 +140,37 @@ This system empowers you to move faster as a solo developer by automating the "h
 ```
 outcome-ops-ai-assist/
 ├── docs/
-│   ├── adr/                      # Architecture Decision Records
-│   │   ├── ADR-001-kb-design.md
-│   │   ├── ADR-002-code-generation.md
-│   │   └── ...
-│   ├── architecture.md           # System architecture details
-│   └── deployment.md             # Deployment runbook
+│   ├── adr/                           # Architecture Decision Records
+│   │   ├── ADR-001-create-adrs.md    # ADR pattern and template
+│   │   └── TEMPLATE.md               # Template for new ADRs
+│   ├── lambda-ingest-docs.md         # Ingest Lambda documentation
+│   ├── architecture.md               # System architecture & design
+│   ├── deployment.md                 # Deployment & operations guide
+│   └── README.md                     # This docs directory overview
 ├── lambda/
-│   ├── ingest-docs/             # Lambda function for ingesting ADRs and READMEs
-│   │   ├── handler.py           # Main handler
-│   │   ├── allowlist.yaml       # Repos to ingest
-│   │   └── requirements.txt     # Python dependencies
-│   └── tests/                   # Centralized test suite
-│       ├── unit/                # Unit tests for all Lambdas
-│       ├── integration/         # Integration tests
-│       ├── fixtures/            # Test fixtures and sample data
-│       ├── conftest.py          # Pytest configuration
-│       └── Makefile             # Test execution targets
+│   ├── ingest-docs/                 # Lambda: Ingest ADRs/READMEs/Docs
+│   │   ├── handler.py               # Main ingestion handler
+│   │   ├── requirements.txt         # Python dependencies
+│   │   └── tests/                   # Unit tests for this Lambda
+│   └── tests/
+│       ├── unit/                    # Unit tests for all Lambdas
+│       ├── integration/             # Integration tests
+│       ├── fixtures/                # Test fixtures and sample data
+│       ├── conftest.py              # Pytest configuration
+│       └── Makefile                 # Test execution targets
 ├── terraform/
-│   ├── main.tf                  # Core infrastructure
-│   ├── variables.tf
-│   ├── outputs.tf
-│   ├── dev.tfvars               # Dev environment
-│   ├── prd.tfvars               # Production environment
-│   └── modules/
-│       ├── lambda/
-│       ├── dynamodb/
-│       └── s3/
-├── Makefile                     # Build orchestration (fmt, validate, test)
-├── .gitignore                   # Git ignore patterns
-└── README.md                    # This file
+│   ├── main.tf                      # Core infrastructure
+│   ├── lambda.tf                    # Lambda module configuration
+│   ├── dynamodb.tf                  # DynamoDB table
+│   ├── s3.tf                        # S3 knowledge base bucket
+│   ├── variables.tf                 # Variable definitions
+│   ├── backend.tf                   # Remote state configuration
+│   ├── dev.tfvars                   # Dev environment (in .gitignore)
+│   ├── prd.tfvars                   # Prod environment (in .gitignore)
+│   └── .tfvars.example              # Template for tfvars files
+├── Makefile                         # Build orchestration
+├── .gitignore                       # Git ignore patterns
+└── README.md                        # This file
 ```
 
 ---
@@ -188,24 +189,15 @@ aws lambda invoke \
 ```
 
 **What gets ingested:**
-- ADRs from `docs/adr/` (all markdown files)
-- READMEs from repository roots and key directories
-- Code patterns from Lambda handlers
-- Terraform module examples
-- Test fixtures and schemas
+- **ADRs** from `docs/adr/` (Architecture Decision Records)
+- **READMEs** from repository roots
+- **Function-specific docs** from `docs/lambda-*.md` (avoids chunking large files)
+- **Architecture docs** from `docs/architecture.md`
+- **Deployment docs** from `docs/deployment.md`
 
-**Stored in DynamoDB as:**
-```json
-{
-  "PK": "repo#outcome-ops-ai-assist",
-  "SK": "adr#ADR-001",
-  "type": "adr",
-  "content": "...",
-  "embedding": [0.123, 0.456, ...],
-  "file_path": "docs/adr/ADR-001-error-handling.md",
-  "repo": "outcome-ops-ai-assist"
-}
-```
+**Stored in DynamoDB with embeddings** for semantic search and RAG pipelines.
+
+**Full details:** See [`docs/lambda-ingest-docs.md`](docs/lambda-ingest-docs.md)
 
 ---
 
@@ -645,13 +637,19 @@ aws sqs get-queue-attributes \
 
 ---
 
-## Resources
+## Documentation
 
-- **ADR Template**: `docs/adr/TEMPLATE.md`
-- **Architecture Details**: `docs/architecture.md`
-- **Deployment Runbook**: `docs/deployment.md`
-- **API Documentation**: [Link to Bedrock docs]
-- **Claude 3.5 Sonnet**: [Link to model docs]
+- **[Lambda: Ingest Docs](docs/lambda-ingest-docs.md)** - Ingestion function details, configuration, monitoring
+- **[Architecture Overview](docs/architecture.md)** - System design, data flows, scaling considerations
+- **[Deployment Guide](docs/deployment.md)** - Setup, operations, troubleshooting, rollback procedures
+- **[ADR Template](docs/adr/TEMPLATE.md)** - Template for creating new Architecture Decision Records
+- **[ADR: Creating ADRs](docs/adr/ADR-001-create-adrs.md)** - Pattern for documenting architectural decisions
+
+## External Resources
+
+- **AWS Bedrock Documentation**: https://docs.aws.amazon.com/bedrock/
+- **Claude 3.5 Sonnet**: https://www.anthropic.com/claude
+- **Terraform AWS Lambda Module**: https://registry.terraform.io/modules/terraform-aws-modules/lambda/aws/
 
 ---
 
