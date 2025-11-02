@@ -19,7 +19,6 @@ from urllib.request import Request, urlopen
 from urllib.error import URLError
 
 import boto3
-import yaml
 from botocore.exceptions import ClientError
 
 logger = logging.getLogger(__name__)
@@ -376,16 +375,25 @@ def handler(event, context):
         load_config()
 
     try:
-        # Load allowlist from embedded YAML
-        allowlist_path = os.path.join(os.path.dirname(__file__), "allowlist.yaml")
-        with open(allowlist_path, "r") as f:
-            allowlist = yaml.safe_load(f)
-
-        if not allowlist or "repos" not in allowlist:
-            logger.error("Invalid or missing allowlist.yaml")
+        # Load allowlist from SSM Parameter Store
+        # Users configure repos_to_ingest in tfvars, which gets stored in SSM by Terraform
+        allowlist_param = f"/{ENVIRONMENT}/{APP_NAME}/config/repos-allowlist"
+        try:
+            param_response = ssm_client.get_parameter(Name=allowlist_param)
+            allowlist = json.loads(param_response["Parameter"]["Value"])
+        except ssm_client.exceptions.ParameterNotFound:
+            logger.error(f"Repos allowlist not found in SSM at {allowlist_param}")
+            logger.info("Make sure to deploy Terraform with repos_to_ingest configured in tfvars")
             return {
                 "statusCode": 400,
-                "body": json.dumps({"error": "Invalid allowlist"}),
+                "body": json.dumps({"error": "Repos allowlist not configured in SSM Parameter Store"}),
+            }
+
+        if not allowlist or "repos" not in allowlist:
+            logger.error("Invalid allowlist structure in SSM Parameter Store")
+            return {
+                "statusCode": 400,
+                "body": json.dumps({"error": "Invalid allowlist structure"}),
             }
 
         total_docs_ingested = 0

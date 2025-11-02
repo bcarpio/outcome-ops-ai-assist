@@ -5,6 +5,7 @@ terraform/*.tfstate
 terraform/*.tfstate.*
 terraform/*.out
 terraform/builds/
+terraform/*.tfvars  # Ignore actual tfvars files (use .example files as templates)
 
 # Python
 __pycache__/

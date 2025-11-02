@@ -1,5 +1,4 @@
 boto3>=1.28.0
-pyyaml>=6.0
 
 # Test dependencies
 pytest>=7.0.0
