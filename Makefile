@@ -8,9 +8,11 @@ help:
 	@echo "  make setup            Create Python virtual environment and install deps"
 	@echo "  make install          Install Python dependencies (assumes venv exists)"
 	@echo ""
-	@echo "Infrastructure (Terraform):"
+	@echo "Code Quality & Validation:"
 	@echo "  make fmt              Format terraform code"
-	@echo "  make validate         Validate terraform configuration"
+	@echo "  make validate         Validate Terraform & documentation sizes"
+	@echo "  make validate-tf      Validate Terraform configuration only"
+	@echo "  make validate-docs    Check documentation token counts (for embedding)"
 	@echo ""
 	@echo "Testing (Lambda Functions):"
 	@echo "  make test             Run all Lambda function tests"
@@ -47,9 +49,27 @@ fmt:
 	@echo "Formatting terraform code..."
 	cd terraform && terraform fmt -recursive
 
-validate:
+validate: validate-tf validate-docs
+	@echo "All validation checks passed"
+
+validate-tf:
 	@echo "Validating terraform configuration..."
 	cd terraform && terraform validate
+
+validate-docs:
+	@echo "Validating documentation sizes (must be <7000 tokens for embedding)..."
+	@for file in docs/*.md README.md; do \
+		if [ -f "$$file" ]; then \
+			bytes=$$(wc -c < "$$file"); \
+			tokens=$$((bytes / 4)); \
+			if [ $$tokens -gt 7000 ]; then \
+				echo "  ✗ $$file: $$tokens tokens (exceeds 7000 token limit)"; \
+				exit 1; \
+			else \
+				printf "  ✓ %-40s %5d tokens\n" "$$file:" "$$tokens"; \
+			fi; \
+		fi; \
+	done
 
 # ============================================================================
 # Testing: Lambda Functions (Unit, Integration, Coverage)
