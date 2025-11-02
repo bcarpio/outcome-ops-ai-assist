@@ -168,12 +168,63 @@ def compute_content_hash(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
+def chunk_text(text: str, max_tokens: int = 8000, overlap: int = 200) -> List[str]:
+    """
+    Split text into chunks that fit within token limits.
+
+    Uses a simple word-based approach: ~1 token per 4 characters average.
+
+    Args:
+        text: Text to chunk
+        max_tokens: Maximum tokens per chunk (default 8000, leaves buffer for Bedrock limit of 8192)
+        overlap: Number of characters to overlap between chunks
+
+    Returns:
+        List of text chunks
+    """
+    # Rough estimate: 1 token ≈ 4 characters
+    max_chars = max_tokens * 4
+
+    if len(text) <= max_chars:
+        return [text]
+
+    chunks = []
+    start = 0
+
+    while start < len(text):
+        # Take up to max_chars
+        end = min(start + max_chars, len(text))
+
+        # If we're not at the end, try to break at a paragraph boundary
+        if end < len(text):
+            # Look for last paragraph break
+            last_para = text.rfind("\n\n", start, end)
+            if last_para > start:
+                end = last_para
+            else:
+                # Look for last sentence
+                last_period = text.rfind(".", start, end)
+                if last_period > start + max_chars * 0.7:  # At least 70% of max
+                    end = last_period + 1
+
+        chunk = text[start:end].strip()
+        if chunk:
+            chunks.append(chunk)
+
+        # Move start position, accounting for overlap
+        start = end - overlap
+        if start >= len(text):
+            break
+
+    return chunks if chunks else [text]
+
+
 def generate_embedding(text: str) -> List[float]:
     """
     Generate embedding for text using Bedrock Titan Embeddings v2.
 
     Args:
-        text: Text to embed
+        text: Text to embed (will be chunked if too large)
 
     Returns:
         1024-dimensional embedding vector
@@ -203,6 +254,12 @@ def generate_embedding(text: str) -> List[float]:
         return embedding
 
     except ClientError as e:
+        if "Too many input tokens" in str(e):
+            logger.warning(f"Text too large ({len(text)} chars), chunking and using first chunk for embedding")
+            chunks = chunk_text(text)
+            if chunks:
+                return generate_embedding(chunks[0])
+            return []
         logger.error(f"Failed to generate embedding: {e}")
         raise
 
