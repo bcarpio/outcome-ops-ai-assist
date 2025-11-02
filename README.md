@@ -84,105 +84,17 @@ This system empowers you to move faster as a solo developer by automating the "h
 
 ---
 
-## Development Setup
+## Getting Started
 
-### Prerequisites
+New to the project? Start here: **[Getting Started Guide](docs/getting-started.md)**
 
-1. **Python 3.12+**
-   ```bash
-   pyenv install 3.12
-   pyenv local 3.12
-   ```
+This covers:
+- Prerequisites (Python 3.12+, Terraform, GitHub token)
+- 5-minute quick start (clone → setup → deploy)
+- Development workflow and make commands
+- Troubleshooting common issues
 
-2. **Terraform 1.5+**
-   ```bash
-   brew install terraform
-   ```
-
-3. **GitHub Personal Access Token** (for repo access)
-   ```bash
-   # Create at: https://github.com/settings/tokens
-   # Scopes needed: repo (full control)
-   ```
-
-### Quick Start
-
-1. **Clone the repository:**
-   ```bash
-   git clone git@github.com:bcarpio/outcome-ops-ai-assist.git
-   cd outcome-ops-ai-assist
-   ```
-
-2. **Set up Python environment:**
-   ```bash
-   # Creates venv and installs dependencies
-   make setup
-
-   # Activate the virtual environment
-   source venv/bin/activate
-   ```
-
-3. **Configure Terraform:**
-   ```bash
-   # Copy the example tfvars (NEVER commit real credentials)
-   cp terraform/.tfvars.example terraform/dev.tfvars
-
-   # Edit with your actual values:
-   # - aws_region
-   # - repos_to_ingest (which repos to ingest into knowledge base)
-   #
-   # Store GitHub token in AWS SSM Parameter Store:
-   aws ssm put-parameter \
-     --name /dev/outcome-ops-ai-assist/github/token \
-     --value "YOUR_GITHUB_TOKEN" \
-     --type SecureString \
-     --overwrite
-   ```
-
-4. **Deploy infrastructure:**
-   ```bash
-   cd terraform
-   terraform init
-   terraform workspace new dev
-   terraform plan -var-file=dev.tfvars -out=terraform.dev.out
-   # Review the plan output
-   terraform apply terraform.dev.out
-   ```
-
-5. **Run tests to verify setup:**
-   ```bash
-   # From repo root
-   make test
-   ```
-
-### Development Workflow
-
-This project follows **ADR-002: Development Workflow Standards**. Always run these before committing:
-
-```bash
-# Format code
-make fmt
-
-# Validate Terraform
-make validate
-
-# Run all tests
-make test
-
-# Or run all checks together
-make all
-```
-
-**Important:** Always follow the workflow:
-1. Make code changes
-2. Run local checks (fmt, validate, test)
-3. Commit changes with conventional commits
-4. Push to main
-5. Create Terraform plan (terraform plan -out=terraform.dev.out)
-6. Review and approve
-7. Apply with plan file (terraform apply terraform.dev.out)
-
-See `docs/deployment.md` for detailed deployment instructions.
+Then review the full documentation below.
 
 ---
 
@@ -254,34 +166,9 @@ aws lambda invoke \
 
 ### 2. Code Map Generation
 
-Analyze your repositories to understand architectural patterns:
+Analyze your repositories to extract architectural patterns and code organization.
 
-```bash
-# Generate code maps for all repos (or just changed ones)
-aws lambda invoke \
-  --function-name dev-outcome-ops-ai-assist-generate-code-maps \
-  --payload '{"repos": ["outcome-ops-ai-assist"]}' \
-  response.json
-```
-
-**Generates:**
-- Architectural summaries (directory structure + intent)
-- Batch summaries (groups of related files)
-- File relationship analysis
-- Pattern identification
-
-**Example output stored in DynamoDB:**
-```json
-{
-  "PK": "repo#outcome-ops-ai-assist",
-  "SK": "summary#architecture",
-  "type": "code-map",
-  "content": "This repository implements the OutcomeOps AI Assist backend...",
-  "embedding": [0.789, 0.012, ...],
-  "fileCount": 145,
-  "timestamp": "2025-01-15T10:00:00Z"
-}
-```
+**Full details:** See [`docs/lambda-generate-code-maps.md`](docs/lambda-generate-code-maps.md)
 
 ---
 
@@ -690,11 +577,19 @@ aws sqs get-queue-attributes \
 
 ## Documentation
 
-- **[Lambda: Ingest Docs](docs/lambda-ingest-docs.md)** - Ingestion function details, configuration, monitoring
+**Getting Started**
+- **[Getting Started Guide](docs/getting-started.md)** - Quick start, prerequisites, troubleshooting
+
+**Core Documentation**
 - **[Architecture Overview](docs/architecture.md)** - System design, data flows, scaling considerations
+- **[Lambda: Ingest Docs](docs/lambda-ingest-docs.md)** - Knowledge base ingestion, configuration, monitoring
+- **[Lambda: Generate Code Maps](docs/lambda-generate-code-maps.md)** - Code analysis, pattern extraction (coming soon)
 - **[Deployment Guide](docs/deployment.md)** - Setup, operations, troubleshooting, rollback procedures
-- **[ADR Template](docs/adr/TEMPLATE.md)** - Template for creating new Architecture Decision Records
-- **[ADR: Creating ADRs](docs/adr/ADR-001-create-adrs.md)** - Pattern for documenting architectural decisions
+
+**Architecture Decision Records (ADRs)**
+- **[ADR-001: Creating ADRs](docs/adr/ADR-001-create-adrs.md)** - How to document architectural decisions
+- **[ADR Template](docs/adr/TEMPLATE.md)** - Template for new ADRs
+- **[External ADRs](../fatacyai-adrs/docs/adr/)** - MyFantasyAI-specific architectural decisions
 
 ## External Resources
 
