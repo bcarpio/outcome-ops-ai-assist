@@ -37,17 +37,17 @@ All module source blocks MUST include explicit version pinning to prevent unexpe
 ```hcl
 module "my_lambda" {
   source  = "terraform-aws-modules/lambda/aws"
-  version = "~> 7.0"  # Allows patch updates but not minor
+  version = "7.2.1"  # Exact version pinning
 
   # ... configuration
 }
 ```
 
 **Version pinning strategy:**
-- Use pessimistic constraint operators (~>) to allow patch updates
-- For major versions: `version = "~> 7.0"` allows `7.x.x` but not `8.x`
-- For single version: `version = "7.2.1"` pins exact version (rarely needed)
-- NEVER use unversioned modules or `version = "*"`
+- Pin exact major.minor.patch versions: `version = "7.2.1"`
+- This prevents ANY breaking changes when Terraform re-inits or upgrades
+- Update versions explicitly and intentionally via code review
+- NEVER use pessimistic operators (~>), unversioned modules, or `version = "*"`
 
 **Why version pinning matters:**
 - Prevents breaking changes from automatic module updates
@@ -404,6 +404,106 @@ module "reader_lambda" {
     }
   }
 }
+```
+
+### 7. Environment and Application Name Prefixing
+
+All AWS resources MUST be prefixed with both var.environment and var.app_name to isolate infrastructure across environments and applications:
+
+**Pattern:**
+
+```hcl
+bucket = "${var.environment}-${var.app_name}-ai-assist-kb"
+name   = "${var.environment}-${var.app_name}-main"
+function_name = "${var.environment}-${var.app_name}-character-generator"
+```
+
+**Variables in variables.tf:**
+
+```hcl
+variable "environment" {
+  type        = string
+  description = "Environment name (dev or prd)"
+  validation {
+    condition     = contains(["dev", "prd"], var.environment)
+    error_message = "Environment must be 'dev' or 'prd'."
+  }
+}
+
+variable "app_name" {
+  type        = string
+  description = "Application name"
+  default     = "fantacyai"
+}
+```
+
+**Examples:**
+- Dev bucket: dev-fantacyai-images
+- Prd bucket: prd-fantacyai-images
+- Dev table: dev-fantacyai-main
+- Prd table: prd-fantacyai-main
+
+This ensures:
+- Dev and prd resources don't conflict
+- Resources are clearly labeled by environment
+- Easy to manage separate resource lifecycles
+- Clear cost attribution per environment
+
+### 8. Store Resource Configuration in SSM Parameter Store
+
+All resource outputs (bucket names, table names, ARNs, queue URLs) MUST be stored in SSM Parameter Store so Lambda handlers can retrieve them at runtime without hardcoding:
+
+**Pattern:**
+
+```hcl
+resource "aws_ssm_parameter" "knowledge_base_bucket" {
+  name  = "/${var.environment}/${var.app_name}-ai-assist/s3/knowledge-base-bucket"
+  type  = "String"
+  value = module.knowledge_base_bucket.s3_bucket_id
+
+  tags = {
+    Purpose = "knowledge-base-bucket-name"
+  }
+}
+
+resource "aws_ssm_parameter" "dynamodb_table" {
+  name  = "/${var.environment}/${var.app_name}/dynamodb/table"
+  type  = "String"
+  value = module.main_dynamodb_table.dynamodb_table_name
+}
+```
+
+**Parameter naming convention:**
+
+```
+/{environment}/{app_name}/resource_type/resource_name
+/{environment}/{app_name}-ai-assist/s3/knowledge-base-bucket
+/{environment}/{app_name}/dynamodb/table
+/{environment}/{app_name}/sqs/character-generation-queue
+```
+
+**Why store in SSM Parameter Store:**
+- Lambda handlers retrieve at runtime without hardcoding
+- Easy to reference in IAM policies
+- Centralized configuration management
+- Different values per environment automatically
+- No need to redeploy Lambda when resource names change
+
+**Lambda retrieval pattern (from ADR-004):**
+
+```python
+import boto3
+import os
+
+ssm = boto3.client("ssm")
+env = os.environ.get("ENV")
+app_name = os.environ.get("APP_NAME")
+
+table_param = f"/{env}/{app_name}/dynamodb/table"
+TABLE_NAME = ssm.get_parameter(Name=table_param)["Parameter"]["Value"]
+
+bucket_param = f"/{env}/{app_name}-ai-assist/s3/knowledge-base-bucket"
+KB_BUCKET = ssm.get_parameter(Name=bucket_param)["Parameter"]["Value"]
 ```
 
 ## References
