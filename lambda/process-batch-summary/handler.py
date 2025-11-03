@@ -89,17 +89,18 @@ def fetch_file_content(repo: str, file_path: str) -> str:
         raise
 
 
-def retry_bedrock_call(func, max_retries: int = 3):
+def retry_bedrock_call(func, max_retries: int = 5):
     """
     Retry helper for Bedrock calls with exponential backoff.
 
     Args:
         func: Function to retry
-        max_retries: Maximum number of retry attempts
+        max_retries: Maximum number of retry attempts (default 5)
 
     Returns:
         Result from successful function call
     """
+    import time
     last_error = None
 
     for attempt in range(1, max_retries + 1):
@@ -118,11 +119,10 @@ def retry_bedrock_call(func, max_retries: int = 3):
             if not is_retryable or attempt == max_retries:
                 raise
 
-            delay_ms = min(1000 * (2 ** (attempt - 1)), 8000)  # Exponential backoff, max 8s
-            delay_s = delay_ms / 1000
+            # More aggressive exponential backoff for queue processing
+            # 2s, 4s, 8s, 16s, 30s
+            delay_s = min(2 ** attempt, 30)
             logger.warning(f"Bedrock call failed (attempt {attempt}/{max_retries}), retrying in {delay_s}s...")
-
-            import time
             time.sleep(delay_s)
 
     raise last_error
