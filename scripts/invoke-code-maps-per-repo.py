@@ -161,9 +161,10 @@ def main():
         else:
             failures += 1
 
-        # Brief pause between invocations to avoid throttling
+        # Pause between invocations to avoid Bedrock throttling
+        # Allow previous Lambda to complete most of its Bedrock calls
         if i < len(repos):
-            time.sleep(2)
+            time.sleep(15)
 
     elapsed_time = time.time() - start_time
     minutes = int(elapsed_time // 60)

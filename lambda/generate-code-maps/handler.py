@@ -381,6 +381,44 @@ def group_files_into_batches(files: List[Dict[str, Any]]) -> List[Dict[str, Any]
     return batches
 
 
+def retry_bedrock_call(func, max_retries: int = 3):
+    """
+    Retry helper for Bedrock calls with exponential backoff.
+
+    Args:
+        func: Function to retry
+        max_retries: Maximum number of retry attempts
+
+    Returns:
+        Result from successful function call
+    """
+    import time
+    last_error = None
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            return func()
+        except ClientError as e:
+            last_error = e
+            error_code = e.response.get("Error", {}).get("Code", "")
+
+            is_retryable = error_code in [
+                "ThrottlingException",
+                "ServiceUnavailableException",
+                "InternalServerException"
+            ]
+
+            if not is_retryable or attempt == max_retries:
+                raise
+
+            delay_ms = min(1000 * (2 ** (attempt - 1)), 8000)  # Exponential backoff, max 8s
+            delay_s = delay_ms / 1000
+            logger.warning(f"Bedrock call failed (attempt {attempt}/{max_retries}), retrying in {delay_s}s...")
+            time.sleep(delay_s)
+
+    raise last_error
+
+
 def generate_architectural_summary(repo: str, repo_type: str, files: List[Dict[str, Any]]) -> str:
     """
     Generate architectural summary using Claude via Bedrock.
@@ -430,7 +468,7 @@ Please provide:
 
 Keep the summary concise (2-3 paragraphs) and focused on helping developers understand the codebase structure."""
 
-    try:
+    def call_claude():
         payload = {
             "modelId": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
             "messages": [
@@ -453,7 +491,10 @@ Keep the summary concise (2-3 paragraphs) and focused on helping developers unde
         if not content or not content[0].get("text"):
             raise ValueError("No content in Claude response")
 
-        summary = content[0]["text"]
+        return content[0]["text"]
+
+    try:
+        summary = retry_bedrock_call(call_claude)
         logger.info(f"Generated architectural summary for {repo} ({len(summary)} chars)")
         return summary
 
@@ -472,7 +513,7 @@ def generate_embedding(text: str) -> List[float]:
     Returns:
         1024-dimensional embedding vector
     """
-    try:
+    def call_titan():
         payload = {
             "inputText": text,
             "dimensions": 1024,
@@ -496,6 +537,8 @@ def generate_embedding(text: str) -> List[float]:
         logger.info(f"Generated embedding with {len(embedding)} dimensions")
         return embedding
 
+    try:
+        return retry_bedrock_call(call_titan)
     except ClientError as e:
         logger.error(f"Failed to generate embedding: {e}")
         raise
