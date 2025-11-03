@@ -260,7 +260,8 @@ module "generate_code_maps_lambda" {
         "bedrock:InvokeModel"
       ]
       resources = [
-        "arn:aws:bedrock:${var.aws_region}::foundation-model/us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+        "arn:aws:bedrock:${var.aws_region}::foundation-model/us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        "arn:aws:bedrock:${var.aws_region}:${data.aws_caller_identity.current.account_id}:inference-profile/us.anthropic.claude-sonnet-4-5-20250929-v1:0"
       ]
     }
   }
@@ -366,7 +367,8 @@ module "process_batch_summary_lambda" {
         "bedrock:InvokeModel"
       ]
       resources = [
-        "arn:aws:bedrock:${var.aws_region}::foundation-model/us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+        "arn:aws:bedrock:${var.aws_region}::foundation-model/us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        "arn:aws:bedrock:${var.aws_region}:${data.aws_caller_identity.current.account_id}:inference-profile/us.anthropic.claude-sonnet-4-5-20250929-v1:0"
       ]
     }
 
