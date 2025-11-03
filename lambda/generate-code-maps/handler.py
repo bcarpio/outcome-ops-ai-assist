@@ -204,39 +204,84 @@ def identify_key_files(files: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
         priority = 0
 
-        # Priority 1: Lambda handler files
+        # Priority 1: Backend Lambda handler files
         if lower_name == "handler.py" and "lambda/" in lower_path:
             priority = 1
 
-        # Priority 2: Python modules in lambda directories
+        # Priority 1: Frontend entry points and main app files
+        elif lower_name in ["app.tsx", "app.jsx", "main.tsx", "main.jsx", "index.tsx", "index.jsx"]:
+            priority = 1
+
+        # Priority 2: Backend Python modules in lambda directories
         elif "lambda/" in lower_path and lower_name.endswith(".py") and lower_name != "__init__.py":
+            priority = 2
+
+        # Priority 2: Frontend page components
+        elif ("pages/" in lower_path or "routes/" in lower_path) and (
+            lower_name.endswith(".tsx") or lower_name.endswith(".jsx") or
+            lower_name.endswith(".ts") or lower_name.endswith(".js")
+        ):
             priority = 2
 
         # Priority 3: Terraform infrastructure files
         elif lower_name.endswith(".tf"):
             priority = 3
 
-        # Priority 4: Schema and model files
+        # Priority 3: Frontend component files
+        elif ("components/" in lower_path or "src/" in lower_path) and (
+            lower_name.endswith(".tsx") or lower_name.endswith(".jsx")
+        ):
+            priority = 3
+
+        # Priority 4: Backend schema and model files
         elif (lower_name.endswith("_schema.py") or
               lower_name.endswith("_model.py") or
               "models/" in lower_path or
               "schemas/" in lower_path) and lower_name.endswith(".py"):
             priority = 4
 
-        # Priority 5: Test files
+        # Priority 4: Frontend TypeScript types and interfaces
+        elif ("types/" in lower_path or lower_name.endswith(".types.ts") or
+              lower_name.endswith("types.ts")) and (
+            lower_name.endswith(".ts") or lower_name.endswith(".tsx")
+        ):
+            priority = 4
+
+        # Priority 5: Backend test files
         elif ("test_" in lower_name or "_test.py" in lower_name) and lower_name.endswith(".py"):
             priority = 5
 
-        # Priority 6: Configuration files
+        # Priority 5: Frontend test files
+        elif (lower_name.endswith(".test.ts") or lower_name.endswith(".test.tsx") or
+              lower_name.endswith(".test.js") or lower_name.endswith(".test.jsx") or
+              lower_name.endswith(".spec.ts") or lower_name.endswith(".spec.tsx") or
+              lower_name.endswith(".spec.js") or lower_name.endswith(".spec.jsx")):
+            priority = 5
+
+        # Priority 6: Backend configuration files
         elif lower_name in [
             "requirements.txt", "setup.py", "pyproject.toml", "makefile",
             "justfile", ".gitlab-ci.yml", ".github/workflows"
         ]:
             priority = 6
 
-        # Priority 7: Shared utilities and source files
+        # Priority 6: Frontend configuration files
+        elif lower_name in [
+            "package.json", "tsconfig.json", "vite.config.ts", "vite.config.js",
+            "webpack.config.js", "next.config.js", "tailwind.config.js",
+            "tailwind.config.ts", ".eslintrc.js", ".eslintrc.json"
+        ]:
+            priority = 6
+
+        # Priority 7: Backend shared utilities and source files
         elif (("src/" in lower_path or "utils/" in lower_path or "common/" in lower_path or "shared/" in lower_path)
               and lower_name.endswith(".py") and lower_name != "__init__.py"):
+            priority = 7
+
+        # Priority 7: Frontend utility files
+        elif (("utils/" in lower_path or "helpers/" in lower_path or "lib/" in lower_path or "hooks/" in lower_path)
+              and (lower_name.endswith(".ts") or lower_name.endswith(".tsx") or
+                   lower_name.endswith(".js") or lower_name.endswith(".jsx"))):
             priority = 7
 
         # Priority 8: Documentation files
@@ -314,7 +359,36 @@ def group_files_into_batches(files: List[Dict[str, Any]]) -> List[Dict[str, Any]
             "storage_key": f"summary#handler#{group_key}",
         })
 
-    # Group 3: Tests (by type: unit, integration, fixtures)
+    # Group 3: Frontend pages/routes
+    pages_files = [
+        f for f in relevant_files
+        if ("pages/" in f["path"] or "routes/" in f["path"])
+        and (f["path"].endswith(".tsx") or f["path"].endswith(".jsx") or
+             f["path"].endswith(".ts") or f["path"].endswith(".js"))
+    ]
+    if pages_files:
+        batches.append({
+            "batch_type": "frontend-pages",
+            "group_name": "pages-routes",
+            "files": pages_files,
+            "storage_key": "summary#frontend#pages",
+        })
+
+    # Group 4: Frontend components
+    component_files = [
+        f for f in relevant_files
+        if "components/" in f["path"]
+        and (f["path"].endswith(".tsx") or f["path"].endswith(".jsx"))
+    ]
+    if component_files:
+        batches.append({
+            "batch_type": "frontend-components",
+            "group_name": "components",
+            "files": component_files,
+            "storage_key": "summary#frontend#components",
+        })
+
+    # Group 5: Backend tests (by type: unit, integration, fixtures)
     test_files = [
         f for f in relevant_files
         if "test" in f["path"].lower() and f["path"].endswith(".py")
@@ -339,7 +413,25 @@ def group_files_into_batches(files: List[Dict[str, Any]]) -> List[Dict[str, Any]
             "storage_key": f"summary#tests#{group_key}",
         })
 
-    # Group 4: Shared utilities and common code
+    # Group 6: Frontend tests
+    frontend_test_files = [
+        f for f in relevant_files
+        if "test" in f["path"].lower() and (
+            f["path"].endswith(".test.ts") or f["path"].endswith(".test.tsx") or
+            f["path"].endswith(".test.js") or f["path"].endswith(".test.jsx") or
+            f["path"].endswith(".spec.ts") or f["path"].endswith(".spec.tsx") or
+            f["path"].endswith(".spec.js") or f["path"].endswith(".spec.jsx")
+        )
+    ]
+    if frontend_test_files:
+        batches.append({
+            "batch_type": "frontend-tests",
+            "group_name": "frontend-tests",
+            "files": frontend_test_files,
+            "storage_key": "summary#tests#frontend",
+        })
+
+    # Group 7: Backend shared utilities and common code
     shared_files = [
         f for f in relevant_files
         if any(pattern in f["path"].lower() for pattern in ["src/", "utils/", "common/", "shared/"])
@@ -354,7 +446,23 @@ def group_files_into_batches(files: List[Dict[str, Any]]) -> List[Dict[str, Any]
             "storage_key": "summary#shared",
         })
 
-    # Group 5: Schemas and models
+    # Group 8: Frontend utilities, hooks, and lib files
+    frontend_utils_files = [
+        f for f in relevant_files
+        if any(pattern in f["path"] for pattern in ["utils/", "helpers/", "lib/", "hooks/", "context/"])
+        and (f["path"].endswith(".ts") or f["path"].endswith(".tsx") or
+             f["path"].endswith(".js") or f["path"].endswith(".jsx"))
+        and "test" not in f["path"].lower()
+    ]
+    if frontend_utils_files:
+        batches.append({
+            "batch_type": "frontend-utils",
+            "group_name": "frontend-utilities",
+            "files": frontend_utils_files,
+            "storage_key": "summary#frontend#utils",
+        })
+
+    # Group 9: Backend schemas and models
     schema_files = [
         f for f in relevant_files
         if ("schema" in f["path"].lower() or "model" in f["path"].lower())
@@ -368,7 +476,22 @@ def group_files_into_batches(files: List[Dict[str, Any]]) -> List[Dict[str, Any]
             "storage_key": "summary#schemas",
         })
 
-    # Group 6: Documentation
+    # Group 10: Frontend types and interfaces
+    types_files = [
+        f for f in relevant_files
+        if ("types/" in f["path"] or f["path"].endswith(".types.ts") or
+            f["path"].endswith("types.ts"))
+        and (f["path"].endswith(".ts") or f["path"].endswith(".tsx"))
+    ]
+    if types_files:
+        batches.append({
+            "batch_type": "frontend-types",
+            "group_name": "types-interfaces",
+            "files": types_files,
+            "storage_key": "summary#frontend#types",
+        })
+
+    # Group 11: Documentation
     doc_files = [f for f in relevant_files if f["path"].endswith(".md")]
     if doc_files:
         batches.append({

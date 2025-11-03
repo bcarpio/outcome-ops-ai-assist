@@ -178,6 +178,11 @@ def generate_batch_summary(batch: Dict[str, Any]) -> str:
     prompt_templates = {
         "infrastructure": f"Summarize the infrastructure for {repo} based on these Terraform files. Describe what resources are created, how they're organized, and the overall architecture.\n\n{files_section}",
         "handler-group": f"Summarize the {group_name} handler for {repo}. Describe what this handler does, what endpoints/events it handles, key patterns used, and how it fits in the overall architecture.\n\n{files_section}",
+        "frontend-pages": f"Summarize the pages/routes for {repo}. Describe what pages exist, their routes, key features, state management patterns, and how they connect to the overall application.\n\n{files_section}",
+        "frontend-components": f"Summarize the React components for {repo}. Describe what UI components are provided, their props/interfaces, reusability patterns, and styling approaches.\n\n{files_section}",
+        "frontend-tests": f"Summarize the frontend tests for {repo}. Describe what components/features are tested, testing library used (Jest, Vitest, etc.), and testing patterns.\n\n{files_section}",
+        "frontend-utils": f"Summarize the frontend utilities and hooks for {repo}. Describe what helper functions, custom hooks, and context providers are available and how they're used.\n\n{files_section}",
+        "frontend-types": f"Summarize the TypeScript types and interfaces for {repo}. Describe what data structures, API types, and component prop types are defined.\n\n{files_section}",
         "tests": f"Summarize the {group_name} tests for {repo}. Describe what components are tested, testing patterns used, and coverage approach.\n\n{files_section}",
         "shared": f"Summarize the {group_name} shared code for {repo}. Describe what utilities/helpers are provided and how they're used across the codebase.\n\n{files_section}",
         "schemas": f"Summarize the data schemas for {repo}. Describe what data structures are defined, validation rules, and how they're used.\n\n{files_section}",
