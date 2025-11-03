@@ -368,7 +368,7 @@ def ingest_adr(repo: str, adr_path: str, content: str) -> bool:
     doc_type = "adr"
 
     # Upload to S3
-    s3_key = f"adr/{adr_id}.md"
+    s3_key = f"adr/{repo}/{adr_id}.md"
     if not upload_to_s3(s3_key, content, adr_path):
         return False
 
@@ -410,7 +410,7 @@ def ingest_readme(repo: str, readme_path: str, content: str) -> bool:
     doc_type = "readme"
 
     # Upload to S3
-    s3_key = f"readme/{readme_id}.md"
+    s3_key = f"readme/{repo}/{readme_id}.md"
     if not upload_to_s3(s3_key, content, readme_path):
         return False
 
@@ -450,7 +450,7 @@ def ingest_doc(repo: str, doc_path: str, content: str) -> bool:
     doc_type = "doc"
 
     # Upload to S3
-    s3_key = f"docs/{doc_id}.md"
+    s3_key = f"docs/{repo}/{doc_id}.md"
     if not upload_to_s3(s3_key, content, doc_path):
         return False
 
