@@ -64,8 +64,9 @@ This system empowers you to move faster as a solo developer by automating the "h
 - Returns Claude-generated answers grounded in YOUR conventions
 
 **CLI Tool (`outcome-ops-assist`):**
-- Query knowledge base from terminal: `outcome-ops-assist "How should error handling work?"`
-- See sources and reasoning directly
+- Query knowledge base from terminal
+- Get instant answers with source citations
+- See **[CLI Usage Guide](docs/cli-usage.md)** for complete documentation
 
 ---
 
@@ -174,28 +175,21 @@ Analyze your repositories to extract architectural patterns and code organizatio
 
 ### 3. Query Knowledge Base
 
-Ask questions about your patterns via CLI or API:
+Ask questions about your patterns via CLI:
 
 ```bash
-# CLI query
 outcome-ops-assist "How should Lambda error handling work?"
-
-# Output:
-# 🤖 Querying knowledge base...
-#
-# 📚 Answer:
-# Lambda handlers should follow the error handling pattern defined in ADR-001...
-#
-# 📖 Sources:
-#   - ADR: error-handling-standards
-#   - Code map: handler-patterns
+outcome-ops-assist "What are our Terraform module standards?"
+outcome-ops-assist "Show me examples of DynamoDB patterns"
 ```
 
-**Works by:**
-1. Generating query embedding via Bedrock Titan v2
-2. Vector searching DynamoDB for similar patterns
-3. Passing top results to Claude 3.5 Sonnet
-4. Returning grounded answer with citations
+**How it works:**
+1. Generates query embedding via Bedrock Titan v2
+2. Vector searches DynamoDB for similar patterns
+3. Passes top results to Claude 3.5 Sonnet
+4. Returns grounded answer with source citations
+
+**See:** **[CLI Usage Guide](docs/cli-usage.md)** for installation, options, examples, and troubleshooting
 
 ---
 
@@ -447,8 +441,10 @@ This way, you focus on architecture and outcomes. The system handles consistency
 ```bash
 outcome-ops-assist "What's our standard for error handling?"
 outcome-ops-assist "How should I structure Terraform for a new service?"
-outcome-ops-assist "Show me examples of database query patterns"
+outcome-ops-assist "Show me examples of database query patterns" --topK 10
 ```
+
+**See:** **[CLI Usage Guide](docs/cli-usage.md)** for complete documentation and examples
 
 ### Add a New Repository to Ingest
 
@@ -589,7 +585,10 @@ aws sqs get-queue-attributes \
 **Architecture Decision Records (ADRs)**
 - **[ADR-001: Creating ADRs](docs/adr/ADR-001-create-adrs.md)** - How to document architectural decisions
 - **[ADR Template](docs/adr/TEMPLATE.md)** - Template for new ADRs
-- **[External ADRs](../fatacyai-adrs/docs/adr/)** - MyFantasyAI-specific architectural decisions
+
+**CLI and Development**
+- **[CLI Usage Guide](docs/cli-usage.md)** - Complete guide for using outcome-ops-assist CLI
+- **[Claude Guidance](docs/claude-guidance.md)** - AI assistant development best practices
 
 ## External Resources
 
