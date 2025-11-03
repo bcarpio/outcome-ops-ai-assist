@@ -1,4 +1,4 @@
-.PHONY: help setup install fmt validate test test-unit test-integration test-coverage code-maps-load clean all
+.PHONY: help setup install fmt lint validate test test-unit test-integration test-coverage code-maps-load clean all
 
 # Default target
 help:
@@ -10,6 +10,7 @@ help:
 	@echo ""
 	@echo "Code Quality & Validation:"
 	@echo "  make fmt              Format terraform code"
+	@echo "  make lint             Lint markdown files (check sizes for embedding)"
 	@echo "  make validate         Validate Terraform & documentation sizes"
 	@echo "  make validate-tf      Validate Terraform configuration only"
 	@echo "  make validate-docs    Check documentation token counts (for embedding)"
@@ -52,27 +53,57 @@ fmt:
 	@echo "Formatting terraform code..."
 	cd terraform && terraform fmt -recursive
 
+# Alias for validate-docs (common in many projects)
+lint: validate-docs
+
 validate: validate-tf validate-docs
-	@echo "All validation checks passed"
+	@echo ""
+	@echo "All validation checks passed ✓"
 
 validate-tf:
 	@echo "Validating terraform configuration..."
 	cd terraform && terraform validate
 
 validate-docs:
-	@echo "Validating documentation sizes (must be <7000 tokens for embedding)..."
-	@for file in docs/*.md README.md; do \
+	@echo "Linting markdown files for embedding size limits..."
+	@echo "Token limit: 7000 tokens (~28KB file size)"
+	@echo "Estimate: 1 token ≈ 4 bytes (rough approximation)"
+	@echo ""
+	@FAILED=0; \
+	TOTAL=0; \
+	for file in README.md docs/*.md docs/adr/*.md; do \
 		if [ -f "$$file" ]; then \
+			TOTAL=$$((TOTAL + 1)); \
 			bytes=$$(wc -c < "$$file"); \
 			tokens=$$((bytes / 4)); \
 			if [ $$tokens -gt 7000 ]; then \
-				echo "  ✗ $$file: $$tokens tokens (exceeds 7000 token limit)"; \
-				exit 1; \
+				printf "  ✗ %-50s %6d tokens (EXCEEDS LIMIT by %d)\n" "$$file" "$$tokens" "$$((tokens - 7000))"; \
+				FAILED=$$((FAILED + 1)); \
 			else \
-				printf "  ✓ %-40s %5d tokens\n" "$$file:" "$$tokens"; \
+				remaining=$$((7000 - tokens)); \
+				printf "  ✓ %-50s %6d tokens (%d remaining)\n" "$$file" "$$tokens" "$$remaining"; \
 			fi; \
 		fi; \
-	done
+	done; \
+	echo ""; \
+	if [ $$FAILED -gt 0 ]; then \
+		echo "Documentation validation FAILED: $$FAILED of $$TOTAL files exceed 7000 token limit"; \
+		echo ""; \
+		echo "Files that are too large will cause issues:"; \
+		echo "  - Bedrock Titan embeddings may fail or truncate"; \
+		echo "  - Vector search quality degrades with large chunks"; \
+		echo "  - Claude RAG context window limitations"; \
+		echo ""; \
+		echo "Solutions:"; \
+		echo "  1. Split large files into smaller focused documents"; \
+		echo "  2. Move detailed content to separate files and link them"; \
+		echo "  3. Use docs/lambda-*.md pattern for function-specific docs"; \
+		echo "  4. Create subdirectories for related content"; \
+		echo ""; \
+		exit 1; \
+	else \
+		echo "All $$TOTAL markdown files are within size limits ✓"; \
+	fi
 
 # ============================================================================
 # Testing: Lambda Functions (Unit, Integration, Coverage)
