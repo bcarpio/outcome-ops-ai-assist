@@ -27,10 +27,10 @@ module "code_maps_queue" {
   visibility_timeout_seconds  = 900   # Match Lambda timeout
 
   # Dead letter queue configuration
-  redrive_policy = jsonencode({
+  redrive_policy = {
     deadLetterTargetArn = module.code_maps_dlq.queue_arn
     maxReceiveCount     = 3 # Retry failed messages 3 times
-  })
+  }
 
   tags = {
     Purpose = "code-maps-queue"
