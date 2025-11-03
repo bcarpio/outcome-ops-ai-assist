@@ -1,4 +1,4 @@
-.PHONY: help setup install fmt validate test test-unit test-integration test-coverage clean all
+.PHONY: help setup install fmt validate test test-unit test-integration test-coverage code-maps-load clean all
 
 # Default target
 help:
@@ -19,6 +19,9 @@ help:
 	@echo "  make test-unit        Run only unit tests"
 	@echo "  make test-integration Run only integration tests"
 	@echo "  make test-coverage    Run tests with coverage report"
+	@echo ""
+	@echo "Data Loading:"
+	@echo "  make code-maps-load   Generate code maps for all repos (0-day load)"
 	@echo ""
 	@echo "Combined:"
 	@echo "  make all              Run fmt, validate, and all tests"
@@ -93,6 +96,19 @@ test-integration:
 test-coverage:
 	@echo "Running tests with coverage report..."
 	$(MAKE) -C lambda/tests test-coverage
+
+# ============================================================================
+# Data Loading: Generate code maps and ingest documentation
+# ============================================================================
+
+code-maps-load:
+	@echo "Generating code maps for all repos (0-day load)..."
+	@if [ -z "$$ENV" ]; then \
+		echo "Error: ENV variable not set. Usage: ENV=dev make code-maps-load"; \
+		exit 1; \
+	fi
+	@echo "Environment: $$ENV"
+	python3 scripts/invoke-code-maps-per-repo.py
 
 # ============================================================================
 # Utilities: Clean up build artifacts
