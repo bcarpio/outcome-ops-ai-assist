@@ -5,24 +5,26 @@ import json
 from unittest.mock import MagicMock, patch
 
 import pytest
-
-# Import functions from handler
 import sys
 import os
+import importlib.util
 
-# Add generate-code-maps to path for imports
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../generate-code-maps"))
+# Load the generate-code-maps handler module
+handler_path = os.path.join(os.path.dirname(__file__), '../../generate-code-maps/handler.py')
+spec = importlib.util.spec_from_file_location("generate_code_maps_handler", handler_path)
+handler_module = importlib.util.module_from_spec(spec)
+sys.modules['generate_code_maps_handler'] = handler_module
+spec.loader.exec_module(handler_module)
 
-from handler import (
-    compute_content_hash,
-    generate_architectural_summary,
-    generate_embedding,
-    group_files_into_batches,
-    has_recent_commits,
-    identify_key_files,
-    send_batch_to_sqs,
-    store_code_map_embedding,
-)
+# Import functions from the loaded module
+compute_content_hash = handler_module.compute_content_hash
+generate_architectural_summary = handler_module.generate_architectural_summary
+generate_embedding = handler_module.generate_embedding
+group_files_into_batches = handler_module.group_files_into_batches
+has_recent_commits = handler_module.has_recent_commits
+identify_key_files = handler_module.identify_key_files
+send_batch_to_sqs = handler_module.send_batch_to_sqs
+store_code_map_embedding = handler_module.store_code_map_embedding
 
 
 class TestComputeContentHash:
@@ -278,7 +280,7 @@ class TestGroupFilesIntoBatches:
 class TestGenerateArchitecturalSummary:
     """Test architectural summary generation."""
 
-    @patch("handler.bedrock_client")
+    @patch("generate_code_maps_handler.bedrock_client")
     def test_generate_architectural_summary_success(self, mock_bedrock):
         """Test successful architectural summary generation."""
         # Arrange
@@ -308,7 +310,7 @@ class TestGenerateArchitecturalSummary:
         call_kwargs = mock_bedrock.converse.call_args[1]
         assert call_kwargs["modelId"] == "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
 
-    @patch("handler.bedrock_client")
+    @patch("generate_code_maps_handler.bedrock_client")
     def test_generate_architectural_summary_bedrock_error(self, mock_bedrock):
         """Test handling Bedrock error."""
         # Arrange
@@ -326,7 +328,7 @@ class TestGenerateArchitecturalSummary:
 class TestGenerateEmbedding:
     """Test embedding generation."""
 
-    @patch("handler.bedrock_client")
+    @patch("generate_code_maps_handler.bedrock_client")
     def test_generate_embedding_success(self, mock_bedrock):
         """Test successful embedding generation."""
         # Arrange
@@ -344,7 +346,7 @@ class TestGenerateEmbedding:
         assert len(result) == 1024
         mock_bedrock.invoke_model.assert_called_once()
 
-    @patch("handler.bedrock_client")
+    @patch("generate_code_maps_handler.bedrock_client")
     def test_generate_embedding_empty_response(self, mock_bedrock):
         """Test handling empty embedding response."""
         # Arrange
@@ -363,8 +365,8 @@ class TestGenerateEmbedding:
 class TestStoreCodeMapEmbedding:
     """Test storing code map embeddings in DynamoDB."""
 
-    @patch("handler.CODE_MAPS_TABLE", "dev-outcome-ops-ai-assist-code-maps")
-    @patch("handler.dynamodb_client")
+    @patch("generate_code_maps_handler.CODE_MAPS_TABLE", "dev-outcome-ops-ai-assist-code-maps")
+    @patch("generate_code_maps_handler.dynamodb_client")
     def test_store_code_map_embedding_success(self, mock_dynamodb):
         """Test successful code map storage."""
         # Arrange
@@ -395,7 +397,7 @@ class TestStoreCodeMapEmbedding:
         assert call_kwargs["Item"]["content_hash"]["S"] == content_hash
         assert "timestamp" in call_kwargs["Item"]
 
-    @patch("handler.dynamodb_client")
+    @patch("generate_code_maps_handler.dynamodb_client")
     def test_store_code_map_embedding_failure(self, mock_dynamodb):
         """Test handling DynamoDB storage failure."""
         # Arrange
@@ -417,8 +419,8 @@ class TestStoreCodeMapEmbedding:
 class TestSendBatchToSQS:
     """Test sending batches to SQS."""
 
-    @patch("handler.SQS_QUEUE_URL", "https://sqs.us-west-2.amazonaws.com/123456789012/code-maps-queue.fifo")
-    @patch("handler.sqs_client")
+    @patch("generate_code_maps_handler.SQS_QUEUE_URL", "https://sqs.us-west-2.amazonaws.com/123456789012/code-maps-queue.fifo")
+    @patch("generate_code_maps_handler.sqs_client")
     def test_send_batch_to_sqs_success(self, mock_sqs):
         """Test successful batch send to SQS."""
         # Arrange
@@ -443,7 +445,7 @@ class TestSendBatchToSQS:
         assert call_kwargs["MessageGroupId"] == repo
         assert call_kwargs["MessageDeduplicationId"] == f"{repo}-{batch['storage_key']}"
 
-    @patch("handler.sqs_client")
+    @patch("generate_code_maps_handler.sqs_client")
     def test_send_batch_to_sqs_failure(self, mock_sqs):
         """Test handling SQS send failure."""
         # Arrange
@@ -470,7 +472,7 @@ class TestSendBatchToSQS:
 class TestHasRecentCommits:
     """Test recent commit checking."""
 
-    @patch("handler.github_api_request")
+    @patch("generate_code_maps_handler.github_api_request")
     def test_has_recent_commits_true(self, mock_api):
         """Test repo with recent commits."""
         # Arrange
@@ -491,7 +493,7 @@ class TestHasRecentCommits:
         # Assert
         assert result is True
 
-    @patch("handler.github_api_request")
+    @patch("generate_code_maps_handler.github_api_request")
     def test_has_recent_commits_false(self, mock_api):
         """Test repo without recent commits."""
         # Arrange
@@ -512,7 +514,7 @@ class TestHasRecentCommits:
         # Assert
         assert result is False
 
-    @patch("handler.github_api_request")
+    @patch("generate_code_maps_handler.github_api_request")
     def test_has_recent_commits_error_returns_true(self, mock_api):
         """Test that errors result in True (fail open)."""
         # Arrange

@@ -1,33 +1,45 @@
-.PHONY: test test-unit test-integration test-coverage clean
+.PHONY: test test-unit test-integration test-coverage clean help
 
-# Python interpreter (use venv if it exists, otherwise system python)
-PYTHON := $(if $(wildcard ../../venv/bin/python),../../venv/bin/python,python3.12)
-PYTEST := $(if $(wildcard ../../venv/bin/pytest),../../venv/bin/pytest,pytest)
+help:
+	@echo "OutcomeOps AI Assist Lambda Test Suite"
+	@echo ""
+	@echo "Available commands:"
+	@echo "  make test              - Run all tests"
+	@echo "  make test-unit         - Run only unit tests"
+	@echo "  make test-integration  - Run only integration tests"
+	@echo "  make test-coverage     - Run tests with coverage report"
+	@echo "  make test-verbose      - Run tests with verbose output"
+	@echo "  make clean             - Clean test artifacts"
 
-# Install dependencies (from repo root)
-install:
-	$(PYTHON) -m pip install -q -r ../ingest-docs/requirements.txt
-
-# Run all tests
 test:
-	$(PYTEST) . -v
+	@echo "Running all tests..."
+	pytest -v
 
-# Run only unit tests
 test-unit:
-	$(PYTEST) unit/ -v
+	@echo "Running unit tests..."
+	pytest unit/ -v
 
-# Run only integration tests
 test-integration:
-	$(PYTEST) integration/ -v
+	@echo "Running integration tests..."
+	pytest integration/ -v
 
-# Run tests with coverage report
 test-coverage:
-	$(PYTEST) . --cov=../ingest-docs --cov-report=html --cov-report=term-missing
+	@echo "Running tests with coverage..."
+	pytest --cov=../vector-query --cov=../ask-claude --cov=../query-kb \
+		--cov-report=html --cov-report=term-missing
+	@echo "Coverage report generated in htmlcov/index.html"
 
-# Clean up test artifacts
+test-verbose:
+	@echo "Running tests with verbose output..."
+	pytest -vv --tb=long
+
+test-watch:
+	@echo "Running tests in watch mode..."
+	pytest-watch -v
+
 clean:
-	find . -type f -name '*.pyc' -delete
-	find . -type d -name '__pycache__' -delete
-	find . -type d -name '.pytest_cache' -delete
-	find . -type d -name '.coverage' -delete
-	find . -type d -name 'htmlcov' -delete
+	@echo "Cleaning test artifacts..."
+	rm -rf __pycache__ .pytest_cache htmlcov .coverage
+	find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+	find . -type f -name "*.pyc" -delete
+	@echo "Clean complete"

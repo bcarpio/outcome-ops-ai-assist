@@ -9,6 +9,9 @@ module "ingest_docs_lambda" {
   timeout       = 300
   memory_size   = 512
 
+  # CloudWatch Logs retention
+  cloudwatch_logs_retention_in_days = 7
+
   # Source code from local directory
   source_path = "${path.module}/../lambda/ingest-docs"
 
@@ -152,8 +155,11 @@ module "generate_code_maps_lambda" {
   description   = "Generate code maps and architectural summaries from repository structure"
   handler       = "handler.handler"
   runtime       = "python3.12"
-  timeout       = 900   # 15 minutes for processing multiple repos
-  memory_size   = 1024  # Higher memory for Bedrock API calls
+  timeout       = 900  # 15 minutes for processing multiple repos
+  memory_size   = 1024 # Higher memory for Bedrock API calls
+
+  # CloudWatch Logs retention
+  cloudwatch_logs_retention_in_days = 7
 
   # Source code from local directory
   source_path = "${path.module}/../lambda/generate-code-maps"
@@ -163,9 +169,9 @@ module "generate_code_maps_lambda" {
 
   # Environment variables
   environment_variables = {
-    ENV                 = var.environment
-    APP_NAME            = var.app_name
-    FORCE_FULL_PROCESS  = "false"  # Set to "true" for initial 0-day load
+    ENV                = var.environment
+    APP_NAME           = var.app_name
+    FORCE_FULL_PROCESS = "false" # Set to "true" for initial 0-day load
   }
 
   # IAM permissions
@@ -297,8 +303,11 @@ module "process_batch_summary_lambda" {
   description   = "Process code map batch summaries from SQS queue"
   handler       = "handler.handler"
   runtime       = "python3.12"
-  timeout       = 900   # 15 minutes for processing large batches
-  memory_size   = 1024  # Higher memory for Bedrock API calls
+  timeout       = 900  # 15 minutes for processing large batches
+  memory_size   = 1024 # Higher memory for Bedrock API calls
+
+  # CloudWatch Logs retention
+  cloudwatch_logs_retention_in_days = 7
 
   # Source code from local directory
   source_path = "${path.module}/../lambda/process-batch-summary"
@@ -414,4 +423,267 @@ output "process_batch_summary_lambda_arn" {
 output "process_batch_summary_lambda_name" {
   description = "Name of the process-batch-summary Lambda function"
   value       = module.process_batch_summary_lambda.lambda_function_name
+}
+
+# ============================================================================
+# Vector Query Lambda (Semantic Search)
+# ============================================================================
+
+module "vector_query_lambda" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "8.1.2"
+
+  function_name = "${var.environment}-${var.app_name}-vector-query"
+  description   = "Perform semantic search over knowledge base embeddings"
+  handler       = "handler.handler"
+  runtime       = "python3.12"
+  timeout       = 300 # 5 minutes for DynamoDB scan + embedding generation
+  memory_size   = 512
+
+  # CloudWatch Logs retention
+  cloudwatch_logs_retention_in_days = 7
+
+  # Source code from local directory
+  source_path = "${path.module}/../lambda/vector-query"
+
+  # Suppress verbose archive output
+  quiet_archive_local_exec = true
+
+  # Environment variables
+  environment_variables = {
+    ENV      = var.environment
+    APP_NAME = var.app_name
+  }
+
+  # IAM permissions
+  attach_policy_statements = true
+  policy_statements = {
+    # Read from DynamoDB code maps table
+    dynamodb_read = {
+      effect = "Allow"
+      actions = [
+        "dynamodb:Scan",
+        "dynamodb:Query",
+        "dynamodb:GetItem"
+      ]
+      resources = [
+        module.code_maps_table.dynamodb_table_arn
+      ]
+    }
+
+    # Read SSM parameters
+    ssm_read = {
+      effect = "Allow"
+      actions = [
+        "ssm:GetParameter"
+      ]
+      resources = [
+        "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/*"
+      ]
+    }
+
+    # Decrypt SSM parameters encrypted with AWS managed KMS key
+    kms_decrypt = {
+      effect = "Allow"
+      actions = [
+        "kms:Decrypt"
+      ]
+      resources = [
+        "arn:aws:kms:${var.aws_region}:${data.aws_caller_identity.current.account_id}:alias/aws/ssm"
+      ]
+    }
+
+    # Bedrock embeddings (Titan Embeddings v2)
+    bedrock_titan = {
+      effect = "Allow"
+      actions = [
+        "bedrock:InvokeModel"
+      ]
+      resources = [
+        "arn:aws:bedrock:${var.aws_region}::foundation-model/amazon.titan-embed-text-v2:0"
+      ]
+    }
+  }
+
+  tags = {
+    Purpose = "vector-query"
+  }
+}
+
+# Store Lambda ARN in SSM for query-kb orchestrator
+resource "aws_ssm_parameter" "vector_query_lambda_arn" {
+  name  = "/${var.environment}/${var.app_name}/lambda/vector-query-arn"
+  type  = "String"
+  value = module.vector_query_lambda.lambda_function_arn
+
+  tags = {
+    Purpose = "vector-query-config"
+  }
+}
+
+output "vector_query_lambda_arn" {
+  description = "ARN of the vector-query Lambda function"
+  value       = module.vector_query_lambda.lambda_function_arn
+}
+
+output "vector_query_lambda_name" {
+  description = "Name of the vector-query Lambda function"
+  value       = module.vector_query_lambda.lambda_function_name
+}
+
+# ============================================================================
+# Ask Claude Lambda (RAG Answer Generation)
+# ============================================================================
+
+module "ask_claude_lambda" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "8.1.2"
+
+  function_name = "${var.environment}-${var.app_name}-ask-claude"
+  description   = "Generate RAG answers using Claude 3.5 Sonnet via Bedrock"
+  handler       = "handler.handler"
+  runtime       = "python3.12"
+  timeout       = 300 # 5 minutes for Claude API calls
+  memory_size   = 512
+
+  # CloudWatch Logs retention
+  cloudwatch_logs_retention_in_days = 7
+
+  # Source code from local directory
+  source_path = "${path.module}/../lambda/ask-claude"
+
+  # Suppress verbose archive output
+  quiet_archive_local_exec = true
+
+  # Environment variables
+  environment_variables = {
+    ENV      = var.environment
+    APP_NAME = var.app_name
+  }
+
+  # IAM permissions
+  attach_policy_statements = true
+  policy_statements = {
+    # Bedrock Claude (for RAG generation)
+    # Cross-region inference profiles route to available regions
+    bedrock_claude = {
+      effect = "Allow"
+      actions = [
+        "bedrock:InvokeModel"
+      ]
+      resources = [
+        "arn:aws:bedrock:*::foundation-model/anthropic.claude-sonnet-4-5-20250929-v1:0",
+        "arn:aws:bedrock:*::foundation-model/us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        "arn:aws:bedrock:*:${data.aws_caller_identity.current.account_id}:inference-profile/us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+      ]
+    }
+  }
+
+  tags = {
+    Purpose = "ask-claude"
+  }
+}
+
+# Store Lambda ARN in SSM for query-kb orchestrator
+resource "aws_ssm_parameter" "ask_claude_lambda_arn" {
+  name  = "/${var.environment}/${var.app_name}/lambda/ask-claude-arn"
+  type  = "String"
+  value = module.ask_claude_lambda.lambda_function_arn
+
+  tags = {
+    Purpose = "ask-claude-config"
+  }
+}
+
+output "ask_claude_lambda_arn" {
+  description = "ARN of the ask-claude Lambda function"
+  value       = module.ask_claude_lambda.lambda_function_arn
+}
+
+output "ask_claude_lambda_name" {
+  description = "Name of the ask-claude Lambda function"
+  value       = module.ask_claude_lambda.lambda_function_name
+}
+
+# ============================================================================
+# Query KB Lambda (RAG Orchestrator)
+# ============================================================================
+
+module "query_kb_lambda" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "8.1.2"
+
+  function_name = "${var.environment}-${var.app_name}-query-kb"
+  description   = "Orchestrate RAG pipeline (vector search + Claude generation)"
+  handler       = "handler.handler"
+  runtime       = "python3.12"
+  timeout       = 600 # 10 minutes for full RAG pipeline
+  memory_size   = 512
+
+  # CloudWatch Logs retention
+  cloudwatch_logs_retention_in_days = 7
+
+  # Source code from local directory
+  source_path = "${path.module}/../lambda/query-kb"
+
+  # Suppress verbose archive output
+  quiet_archive_local_exec = true
+
+  # Environment variables
+  environment_variables = {
+    ENV      = var.environment
+    APP_NAME = var.app_name
+  }
+
+  # IAM permissions
+  attach_policy_statements = true
+  policy_statements = {
+    # Read SSM parameters (to get other Lambda ARNs)
+    ssm_read = {
+      effect = "Allow"
+      actions = [
+        "ssm:GetParameter"
+      ]
+      resources = [
+        "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/*"
+      ]
+    }
+
+    # Decrypt SSM parameters encrypted with AWS managed KMS key
+    kms_decrypt = {
+      effect = "Allow"
+      actions = [
+        "kms:Decrypt"
+      ]
+      resources = [
+        "arn:aws:kms:${var.aws_region}:${data.aws_caller_identity.current.account_id}:alias/aws/ssm"
+      ]
+    }
+
+    # Invoke vector-query and ask-claude Lambdas
+    lambda_invoke = {
+      effect = "Allow"
+      actions = [
+        "lambda:InvokeFunction"
+      ]
+      resources = [
+        module.vector_query_lambda.lambda_function_arn,
+        module.ask_claude_lambda.lambda_function_arn
+      ]
+    }
+  }
+
+  tags = {
+    Purpose = "query-kb"
+  }
+}
+
+output "query_kb_lambda_arn" {
+  description = "ARN of the query-kb Lambda function"
+  value       = module.query_kb_lambda.lambda_function_arn
+}
+
+output "query_kb_lambda_name" {
+  description = "Name of the query-kb Lambda function"
+  value       = module.query_kb_lambda.lambda_function_name
 }

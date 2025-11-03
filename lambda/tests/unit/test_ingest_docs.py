@@ -5,17 +5,26 @@ import json
 from unittest.mock import MagicMock, patch
 
 import pytest
+import sys
+import os
+import importlib.util
 
-from handler import (
-    compute_content_hash,
-    generate_embedding,
-    github_api_raw_content,
-    github_api_request,
-    ingest_adr,
-    ingest_readme,
-    store_in_dynamodb,
-    upload_to_s3,
-)
+# Load the ingest-docs handler module
+handler_path = os.path.join(os.path.dirname(__file__), '../../ingest-docs/handler.py')
+spec = importlib.util.spec_from_file_location("ingest_docs_handler", handler_path)
+handler_module = importlib.util.module_from_spec(spec)
+sys.modules['ingest_docs_handler'] = handler_module
+spec.loader.exec_module(handler_module)
+
+# Import functions from the loaded module
+compute_content_hash = handler_module.compute_content_hash
+generate_embedding = handler_module.generate_embedding
+github_api_raw_content = handler_module.github_api_raw_content
+github_api_request = handler_module.github_api_request
+ingest_adr = handler_module.ingest_adr
+ingest_readme = handler_module.ingest_readme
+store_in_dynamodb = handler_module.store_in_dynamodb
+upload_to_s3 = handler_module.upload_to_s3
 
 
 class TestComputeContentHash:
@@ -62,7 +71,7 @@ class TestComputeContentHash:
 class TestGenerateEmbedding:
     """Test embedding generation."""
 
-    @patch("handler.bedrock_client")
+    @patch("ingest_docs_handler.bedrock_client")
     def test_generate_embedding_valid_response(self, mock_bedrock):
         """Test generating embedding with valid Bedrock response."""
         # Arrange
@@ -80,7 +89,7 @@ class TestGenerateEmbedding:
         assert len(result) == 1024
         mock_bedrock.invoke_model.assert_called_once()
 
-    @patch("handler.bedrock_client")
+    @patch("ingest_docs_handler.bedrock_client")
     def test_generate_embedding_empty_response(self, mock_bedrock):
         """Test generating embedding with empty response from Bedrock."""
         # Arrange
@@ -95,7 +104,7 @@ class TestGenerateEmbedding:
         # Assert
         assert result == []
 
-    @patch("handler.bedrock_client")
+    @patch("ingest_docs_handler.bedrock_client")
     def test_generate_embedding_bedrock_error(self, mock_bedrock):
         """Test handling Bedrock client error."""
         # Arrange
@@ -114,8 +123,8 @@ class TestGenerateEmbedding:
 class TestUploadToS3:
     """Test S3 upload functionality."""
 
-    @patch("handler.KB_BUCKET", "dev-outcome-ops-ai-assist-kb")
-    @patch("handler.s3_client")
+    @patch("ingest_docs_handler.KB_BUCKET", "dev-outcome-ops-ai-assist-kb")
+    @patch("ingest_docs_handler.s3_client")
     def test_upload_to_s3_success(self, mock_s3):
         """Test successful S3 upload."""
         # Arrange
@@ -134,7 +143,7 @@ class TestUploadToS3:
         assert call_kwargs["Bucket"] == "dev-outcome-ops-ai-assist-kb"
         assert call_kwargs["Key"] == file_key
 
-    @patch("handler.s3_client")
+    @patch("ingest_docs_handler.s3_client")
     def test_upload_to_s3_failure(self, mock_s3):
         """Test S3 upload failure."""
         # Arrange
@@ -154,8 +163,8 @@ class TestUploadToS3:
 class TestStoreInDynamoDB:
     """Test DynamoDB storage."""
 
-    @patch("handler.CODE_MAPS_TABLE", "dev-outcome-ops-ai-assist-code-maps")
-    @patch("handler.dynamodb_client")
+    @patch("ingest_docs_handler.CODE_MAPS_TABLE", "dev-outcome-ops-ai-assist-code-maps")
+    @patch("ingest_docs_handler.dynamodb_client")
     def test_store_in_dynamodb_success(self, mock_dynamodb):
         """Test successful DynamoDB storage."""
         # Arrange
@@ -181,7 +190,7 @@ class TestStoreInDynamoDB:
         assert call_kwargs["Item"]["SK"]["S"] == sk
         assert call_kwargs["Item"]["repo"]["S"] == repo
 
-    @patch("handler.dynamodb_client")
+    @patch("ingest_docs_handler.dynamodb_client")
     def test_store_in_dynamodb_failure(self, mock_dynamodb):
         """Test DynamoDB storage failure."""
         # Arrange
@@ -203,9 +212,9 @@ class TestStoreInDynamoDB:
 class TestIngestAdr:
     """Test ADR ingestion."""
 
-    @patch("handler.store_in_dynamodb")
-    @patch("handler.generate_embedding")
-    @patch("handler.upload_to_s3")
+    @patch("ingest_docs_handler.store_in_dynamodb")
+    @patch("ingest_docs_handler.generate_embedding")
+    @patch("ingest_docs_handler.upload_to_s3")
     def test_ingest_adr_success(self, mock_upload, mock_embedding, mock_store):
         """Test successful ADR ingestion."""
         # Arrange
@@ -224,7 +233,7 @@ class TestIngestAdr:
         mock_embedding.assert_called_once()
         mock_store.assert_called_once()
 
-    @patch("handler.upload_to_s3")
+    @patch("ingest_docs_handler.upload_to_s3")
     def test_ingest_adr_upload_failure(self, mock_upload):
         """Test ADR ingestion with upload failure."""
         # Arrange
@@ -236,9 +245,9 @@ class TestIngestAdr:
         # Assert
         assert result is False
 
-    @patch("handler.store_in_dynamodb")
-    @patch("handler.generate_embedding")
-    @patch("handler.upload_to_s3")
+    @patch("ingest_docs_handler.store_in_dynamodb")
+    @patch("ingest_docs_handler.generate_embedding")
+    @patch("ingest_docs_handler.upload_to_s3")
     def test_ingest_adr_empty_embedding(self, mock_upload, mock_embedding, mock_store):
         """Test ADR ingestion with empty embedding."""
         # Arrange
@@ -256,9 +265,9 @@ class TestIngestAdr:
 class TestIngestReadme:
     """Test README ingestion."""
 
-    @patch("handler.store_in_dynamodb")
-    @patch("handler.generate_embedding")
-    @patch("handler.upload_to_s3")
+    @patch("ingest_docs_handler.store_in_dynamodb")
+    @patch("ingest_docs_handler.generate_embedding")
+    @patch("ingest_docs_handler.upload_to_s3")
     def test_ingest_readme_root(self, mock_upload, mock_embedding, mock_store):
         """Test ingesting root README."""
         # Arrange
@@ -277,9 +286,9 @@ class TestIngestReadme:
         assert call_kwargs[1] == "readme#root"  # SK should be readme#root
         mock_upload.assert_called_once()
 
-    @patch("handler.store_in_dynamodb")
-    @patch("handler.generate_embedding")
-    @patch("handler.upload_to_s3")
+    @patch("ingest_docs_handler.store_in_dynamodb")
+    @patch("ingest_docs_handler.generate_embedding")
+    @patch("ingest_docs_handler.upload_to_s3")
     def test_ingest_readme_subdirectory(self, mock_upload, mock_embedding, mock_store):
         """Test ingesting README from subdirectory."""
         # Arrange
@@ -301,7 +310,7 @@ class TestIngestReadme:
 class TestGithubApiRequest:
     """Test GitHub API request handling."""
 
-    @patch("handler.urlopen")
+    @patch("ingest_docs_handler.urlopen")
     def test_github_api_request_success(self, mock_urlopen):
         """Test successful GitHub API request."""
         # Arrange
@@ -316,7 +325,7 @@ class TestGithubApiRequest:
         assert isinstance(result, list)
         assert result[0]["name"] == "file.md"
 
-    @patch("handler.urlopen")
+    @patch("ingest_docs_handler.urlopen")
     def test_github_api_request_with_token(self, mock_urlopen):
         """Test GitHub API request includes authorization header."""
         # Arrange

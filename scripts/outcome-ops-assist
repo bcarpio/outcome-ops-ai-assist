@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+
+# outcome-ops-assist - CLI for querying the OutcomeOps AI knowledge base
+# Usage: outcome-ops-assist "your question here" [--topK 5] [--env dev]
+
+set -euo pipefail
+
+# Default values
+ENVIRONMENT="${ENVIRONMENT:-dev}"
+APP_NAME="${APP_NAME:-outcome-ops-ai-assist}"
+TOP_K=5
+QUERY=""
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --env)
+      ENVIRONMENT="$2"
+      shift 2
+      ;;
+    --topK)
+      TOP_K="$2"
+      shift 2
+      ;;
+    --help|-h)
+      echo "outcome-ops-assist - CLI for querying the OutcomeOps AI knowledge base"
+      echo ""
+      echo "Usage:"
+      echo "  outcome-ops-assist \"your question here\" [options]"
+      echo ""
+      echo "Options:"
+      echo "  --env ENV        Environment (default: dev, from \$ENVIRONMENT env var)"
+      echo "  --topK N         Number of top results to retrieve (default: 5)"
+      echo "  --help, -h       Show this help message"
+      echo ""
+      echo "Examples:"
+      echo "  outcome-ops-assist \"What are our Lambda handler standards?\""
+      echo "  outcome-ops-assist \"How should I structure ADRs?\" --topK 3"
+      echo "  outcome-ops-assist \"How should API Gateway routes be defined?\" --topK 10"
+      echo "  AWS_PROFILE=dev outcome-ops-assist \"What Terraform modules should I use?\""
+      echo ""
+      echo "Environment Variables:"
+      echo "  AWS_PROFILE      AWS profile to use for authentication"
+      echo "  ENVIRONMENT      Environment name (dev, prd) - default: dev"
+      echo "  APP_NAME         Application name - default: outcome-ops-ai-assist"
+      echo ""
+      echo "Knowledge Base Contents:"
+      echo "  - Architecture Decision Records (ADRs)"
+      echo "  - Lambda handler patterns and standards"
+      echo "  - Terraform infrastructure conventions"
+      echo "  - Testing best practices"
+      echo "  - Code maps and architectural summaries"
+      exit 0
+      ;;
+    *)
+      QUERY="$1"
+      shift
+      ;;
+  esac
+done
+
+# Validate query
+if [[ -z "$QUERY" ]]; then
+  echo "Error: Query is required" >&2
+  echo "Usage: outcome-ops-assist \"your question here\" [--topK N] [--env ENV]" >&2
+  echo "Run 'outcome-ops-assist --help' for more information" >&2
+  exit 1
+fi
+
+# Construct Lambda function name
+LAMBDA_NAME="${ENVIRONMENT}-${APP_NAME}-query-kb"
+
+echo "🤖 Querying knowledge base..." >&2
+echo "Environment: $ENVIRONMENT" >&2
+echo "Query: $QUERY" >&2
+echo "" >&2
+
+# Construct payload
+PAYLOAD=$(jq -n \
+  --arg query "$QUERY" \
+  --argjson topK "$TOP_K" \
+  '{query: $query, topK: $topK}')
+
+# Invoke Lambda and capture response
+TEMP_FILE=$(mktemp)
+trap "rm -f $TEMP_FILE" EXIT
+
+if ! aws lambda invoke \
+  --function-name "$LAMBDA_NAME" \
+  --payload "$PAYLOAD" \
+  --cli-binary-format raw-in-base64-out \
+  "$TEMP_FILE" > /dev/null 2>&1; then
+  echo "Error: Failed to invoke Lambda function: $LAMBDA_NAME" >&2
+  echo "Make sure the function exists and you have permissions to invoke it" >&2
+  exit 1
+fi
+
+RESPONSE=$(cat "$TEMP_FILE")
+
+# Check for Lambda errors
+if echo "$RESPONSE" | jq -e '.errorMessage' > /dev/null 2>&1; then
+  echo "❌ Error from Lambda:" >&2
+  echo "$RESPONSE" | jq -r '.errorMessage' >&2
+  exit 1
+fi
+
+# Parse response body
+BODY=$(echo "$RESPONSE" | jq -r '.body' 2>/dev/null)
+
+if [[ -z "$BODY" || "$BODY" == "null" ]]; then
+  # Handle direct response format (integration test format)
+  ANSWER=$(echo "$RESPONSE" | jq -r '.answer' 2>/dev/null)
+  SOURCES=$(echo "$RESPONSE" | jq -r '.sources[]' 2>/dev/null || echo "")
+else
+  # Handle wrapped response format (from query-kb Lambda)
+  PARSED_BODY=$(echo "$BODY" | jq -r '.')
+  ANSWER=$(echo "$PARSED_BODY" | jq -r '.answer' 2>/dev/null)
+  SOURCES=$(echo "$PARSED_BODY" | jq -r '.sources[]' 2>/dev/null || echo "")
+fi
+
+# Check for empty answer
+if [[ -z "$ANSWER" || "$ANSWER" == "null" ]]; then
+  echo "❌ Error: No answer received from knowledge base" >&2
+  echo "Response: $RESPONSE" >&2
+  exit 1
+fi
+
+# Display answer
+echo "📚 Answer:" >&2
+echo "" >&2
+echo "$ANSWER"
+echo "" >&2
+
+# Display sources if available
+if [[ -n "$SOURCES" ]]; then
+  echo "📖 Sources:" >&2
+  echo "$SOURCES" | while IFS= read -r source; do
+    echo "  • $source" >&2
+  done
+  echo "" >&2
+fi
+
+exit 0

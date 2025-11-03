@@ -25,8 +25,8 @@ data "aws_caller_identity" "current" {}
 # Store the repos allowlist in SSM Parameter Store
 # This allows users to configure their allowlist via tfvars without changing code
 resource "aws_ssm_parameter" "repos_allowlist" {
-  name  = "/${var.environment}/${var.app_name}/config/repos-allowlist"
-  type  = "String"
+  name = "/${var.environment}/${var.app_name}/config/repos-allowlist"
+  type = "String"
   value = jsonencode({
     repos = var.repos_to_ingest
   })

@@ -1,9 +1,12 @@
-"""Pytest configuration and fixtures."""
+"""
+Pytest configuration and shared fixtures for all tests.
+
+This file is automatically loaded by pytest and makes fixtures
+available to all test files.
+"""
 
 import sys
-from pathlib import Path
+import os
 
-# Add lambda directories to path so we can import handlers
-lambda_dir = Path(__file__).parent.parent
-sys.path.insert(0, str(lambda_dir))
-sys.path.insert(0, str(lambda_dir / "ingest-docs"))
+# Add parent directory to path so tests can import from lambda modules
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))

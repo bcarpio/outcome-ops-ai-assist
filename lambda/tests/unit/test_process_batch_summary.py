@@ -5,22 +5,24 @@ import json
 from unittest.mock import MagicMock, patch
 
 import pytest
-
-# Import functions from handler
 import sys
 import os
+import importlib.util
 
-# Add process-batch-summary to path for imports
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../process-batch-summary"))
+# Load the process-batch-summary handler module
+handler_path = os.path.join(os.path.dirname(__file__), '../../process-batch-summary/handler.py')
+spec = importlib.util.spec_from_file_location("process_batch_summary_handler", handler_path)
+handler_module = importlib.util.module_from_spec(spec)
+sys.modules['process_batch_summary_handler'] = handler_module
+spec.loader.exec_module(handler_module)
 
-from handler import (
-    compute_content_hash,
-    fetch_file_content,
-    generate_batch_summary,
-    generate_embedding,
-    process_batch_record,
-    store_batch_summary,
-)
+# Import functions from the loaded module
+compute_content_hash = handler_module.compute_content_hash
+fetch_file_content = handler_module.fetch_file_content
+generate_batch_summary = handler_module.generate_batch_summary
+generate_embedding = handler_module.generate_embedding
+process_batch_record = handler_module.process_batch_record
+store_batch_summary = handler_module.store_batch_summary
 
 
 class TestComputeContentHash:
@@ -43,7 +45,7 @@ class TestComputeContentHash:
 class TestFetchFileContent:
     """Test file content fetching from GitHub."""
 
-    @patch("handler.urlopen")
+    @patch("process_batch_summary_handler.urlopen")
     def test_fetch_file_content_success(self, mock_urlopen):
         """Test successful file content fetch."""
         # Arrange
@@ -58,7 +60,7 @@ class TestFetchFileContent:
         assert result == "file content here"
         mock_urlopen.assert_called_once()
 
-    @patch("handler.urlopen")
+    @patch("process_batch_summary_handler.urlopen")
     def test_fetch_file_content_url_format(self, mock_urlopen):
         """Test file content fetch uses correct URL format."""
         # Arrange
@@ -79,8 +81,8 @@ class TestFetchFileContent:
 class TestGenerateBatchSummary:
     """Test batch summary generation."""
 
-    @patch("handler.fetch_file_content")
-    @patch("handler.bedrock_client")
+    @patch("process_batch_summary_handler.fetch_file_content")
+    @patch("process_batch_summary_handler.bedrock_client")
     def test_generate_batch_summary_infrastructure(self, mock_bedrock, mock_fetch):
         """Test generating summary for infrastructure batch."""
         # Arrange
@@ -110,8 +112,8 @@ class TestGenerateBatchSummary:
         assert mock_fetch.call_count == 2
         mock_bedrock.converse.assert_called_once()
 
-    @patch("handler.fetch_file_content")
-    @patch("handler.bedrock_client")
+    @patch("process_batch_summary_handler.fetch_file_content")
+    @patch("process_batch_summary_handler.bedrock_client")
     def test_generate_batch_summary_handler_group(self, mock_bedrock, mock_fetch):
         """Test generating summary for handler group batch."""
         # Arrange
@@ -140,7 +142,7 @@ class TestGenerateBatchSummary:
         assert result == mock_summary
         mock_bedrock.converse.assert_called_once()
 
-    @patch("handler.fetch_file_content")
+    @patch("process_batch_summary_handler.fetch_file_content")
     def test_generate_batch_summary_skips_large_files(self, mock_fetch):
         """Test that large files are skipped."""
         # Arrange
@@ -160,7 +162,7 @@ class TestGenerateBatchSummary:
         # Assert
         assert result == "No files available for analysis"
 
-    @patch("handler.fetch_file_content")
+    @patch("process_batch_summary_handler.fetch_file_content")
     def test_generate_batch_summary_handles_fetch_errors(self, mock_fetch):
         """Test that file fetch errors are handled gracefully."""
         # Arrange
@@ -182,7 +184,7 @@ class TestGenerateBatchSummary:
 class TestGenerateEmbedding:
     """Test embedding generation."""
 
-    @patch("handler.bedrock_client")
+    @patch("process_batch_summary_handler.bedrock_client")
     def test_generate_embedding_success(self, mock_bedrock):
         """Test successful embedding generation."""
         # Arrange
@@ -204,8 +206,8 @@ class TestGenerateEmbedding:
 class TestStoreBatchSummary:
     """Test storing batch summaries in DynamoDB."""
 
-    @patch("handler.CODE_MAPS_TABLE", "dev-outcome-ops-ai-assist-code-maps")
-    @patch("handler.dynamodb_client")
+    @patch("process_batch_summary_handler.CODE_MAPS_TABLE", "dev-outcome-ops-ai-assist-code-maps")
+    @patch("process_batch_summary_handler.dynamodb_client")
     def test_store_batch_summary_success(self, mock_dynamodb):
         """Test successful batch summary storage."""
         # Arrange
@@ -234,7 +236,7 @@ class TestStoreBatchSummary:
         assert call_kwargs["Item"]["batch_type"]["S"] == "handler-group"
         assert call_kwargs["Item"]["group_name"]["S"] == "ingest-docs"
 
-    @patch("handler.dynamodb_client")
+    @patch("process_batch_summary_handler.dynamodb_client")
     def test_store_batch_summary_failure(self, mock_dynamodb):
         """Test handling DynamoDB storage failure."""
         # Arrange
@@ -262,9 +264,9 @@ class TestStoreBatchSummary:
 class TestProcessBatchRecord:
     """Test SQS record processing."""
 
-    @patch("handler.store_batch_summary")
-    @patch("handler.generate_embedding")
-    @patch("handler.generate_batch_summary")
+    @patch("process_batch_summary_handler.store_batch_summary")
+    @patch("process_batch_summary_handler.generate_embedding")
+    @patch("process_batch_summary_handler.generate_batch_summary")
     def test_process_batch_record_success(self, mock_summary, mock_embedding, mock_store):
         """Test successful record processing."""
         # Arrange
@@ -291,9 +293,9 @@ class TestProcessBatchRecord:
         mock_embedding.assert_called_once()
         mock_store.assert_called_once()
 
-    @patch("handler.store_batch_summary")
-    @patch("handler.generate_embedding")
-    @patch("handler.generate_batch_summary")
+    @patch("process_batch_summary_handler.store_batch_summary")
+    @patch("process_batch_summary_handler.generate_embedding")
+    @patch("process_batch_summary_handler.generate_batch_summary")
     def test_process_batch_record_storage_failure(self, mock_summary, mock_embedding, mock_store):
         """Test record processing with storage failure."""
         # Arrange
@@ -320,8 +322,8 @@ class TestProcessBatchRecord:
 class TestHandler:
     """Test Lambda handler."""
 
-    @patch("handler.CODE_MAPS_TABLE", "dev-outcome-ops-ai-assist-code-maps")
-    @patch("handler.process_batch_record")
+    @patch("process_batch_summary_handler.CODE_MAPS_TABLE", "dev-outcome-ops-ai-assist-code-maps")
+    @patch("process_batch_summary_handler.process_batch_record")
     def test_handler_success(self, mock_process):
         """Test successful handler execution."""
         # Arrange
@@ -334,15 +336,14 @@ class TestHandler:
         context = {}
 
         # Act
-        from handler import handler as lambda_handler
-        result = lambda_handler(event, context)
+        result = handler_module.handler(event, context)
 
         # Assert
         assert result["statusCode"] == 200
         assert mock_process.call_count == 2
 
-    @patch("handler.CODE_MAPS_TABLE", "dev-outcome-ops-ai-assist-code-maps")
-    @patch("handler.process_batch_record")
+    @patch("process_batch_summary_handler.CODE_MAPS_TABLE", "dev-outcome-ops-ai-assist-code-maps")
+    @patch("process_batch_summary_handler.process_batch_record")
     def test_handler_partial_failure(self, mock_process):
         """Test handler with some failed records."""
         # Arrange
@@ -358,6 +359,5 @@ class TestHandler:
         mock_process.side_effect = [None, Exception("Processing error")]
 
         # Act & Assert
-        from handler import handler as lambda_handler
         with pytest.raises(Exception, match="Failed to process 1 out of 2 batches"):
-            lambda_handler(event, context)
+            handler_module.handler(event, context)

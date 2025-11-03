@@ -23,7 +23,7 @@ variable "repos_to_ingest" {
   type = list(object({
     name    = string
     project = string
-    type    = string  # "application" or "standards"
+    type    = string # "application" or "standards"
   }))
   description = "List of repositories to ingest into the knowledge base"
   default = [
