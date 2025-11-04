@@ -129,6 +129,16 @@ outcome-ops-ai-assist/
 │   ├── analyze-pr/                  # Lambda: GitHub PR analysis orchestration
 │   │   ├── handler.py               # Main PR analysis handler
 │   │   └── requirements.txt         # Python dependencies
+│   ├── process-pr-check/            # Lambda: PR check worker (SQS consumer)
+│   │   ├── handler.py               # Main check processing handler
+│   │   ├── check_handlers/          # Check handler implementations
+│   │   │   ├── __init__.py          # Package exports
+│   │   │   ├── adr_compliance.py    # ADR compliance check
+│   │   │   ├── architectural_duplication.py  # Duplication detection
+│   │   │   ├── breaking_changes.py  # Dependency detection
+│   │   │   ├── readme_freshness.py  # README adequacy check
+│   │   │   └── test_coverage.py     # Test file verification
+│   │   └── requirements.txt         # Python dependencies
 │   └── tests/
 │       ├── unit/                    # Unit tests for all Lambdas
 │       ├── integration/             # Integration tests
@@ -375,6 +385,7 @@ All Lambda functions log to CloudWatch:
 - `dev-outcome-ops-ai-assist-ask-claude`: RAG generations
 - `dev-outcome-ops-ai-assist-generate-code-maps`: Code analysis
 - `dev-outcome-ops-ai-assist-analyze-pr`: PR analysis orchestration
+- `dev-outcome-ops-ai-assist-process-pr-check`: PR check worker (SQS consumer)
 
 ### CloudWatch Alarms
 
@@ -605,7 +616,9 @@ aws sqs get-queue-attributes \
 **Core Documentation**
 - **[Architecture Overview](docs/architecture.md)** - System design, data flows, scaling considerations
 - **[Lambda: Ingest Docs](docs/lambda-ingest-docs.md)** - Knowledge base ingestion, configuration, monitoring
-- **[Lambda: Generate Code Maps](docs/lambda-generate-code-maps.md)** - Code analysis, pattern extraction (coming soon)
+- **[Lambda: Generate Code Maps](docs/lambda-generate-code-maps.md)** - Code analysis, pattern extraction
+- **[Lambda: Analyze PR](docs/lambda-analyze-pr.md)** - PR analysis orchestration, check job queueing
+- **[Lambda: Process PR Check](docs/lambda-process-pr-check.md)** - PR check worker, AI-based code analysis
 - **[Deployment Guide](docs/deployment.md)** - Setup, operations, troubleshooting, rollback procedures
 
 **Architecture Decision Records (ADRs)**
