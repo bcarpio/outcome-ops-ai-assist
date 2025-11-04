@@ -177,7 +177,53 @@ def generate_batch_summary(batch: Dict[str, Any]) -> str:
     # Build prompt based on batch type
     prompt_templates = {
         "infrastructure": f"Summarize the infrastructure for {repo} based on these Terraform files. Describe what resources are created, how they're organized, and the overall architecture.\n\n{files_section}",
-        "handler-group": f"Summarize the {group_name} handler for {repo}. Describe what this handler does, what endpoints/events it handles, key patterns used, and how it fits in the overall architecture.\n\n{files_section}",
+        "handler-group": f"""Analyze the {group_name} Lambda handler for {repo} and provide detailed implementation documentation for debugging.
+
+Extract the following for EACH function in this handler:
+
+## Function Signatures
+- Function name and parameters with types
+- Parameter format specifications (e.g., UUID format, slug format: {{{{name[:90]}}}}-{{{{id[:6]}}}})
+- Query string parameters (for API handlers) or event structure (for event-driven handlers)
+- Required vs optional parameters
+
+## Query Patterns
+- DynamoDB query patterns (PK/SK keys, filters, scans, indexes)
+- S3 access patterns (bucket, key patterns)
+- External API calls and their purposes
+
+## Returns and Errors
+- Success responses with HTTP status codes (e.g., 200, 201)
+- Error responses with HTTP status codes (e.g., 400, 404, 500)
+- What triggers each error condition
+- Response body structure for success and error cases
+
+## Data Contracts
+- Data format specifications (slug format, ID format, timestamp format, etc.)
+- Where data is stored (DynamoDB table/fields, S3 paths, SSM parameters)
+- Data relationships (e.g., slug derived from name + first 6 chars of ID)
+- Field names and their types
+
+## Common Pitfalls
+- Incorrect parameter usage patterns that cause errors
+- What will cause 404s (not found), 400s (bad request), or 500s (server errors)
+- Incorrect assumptions about data formats
+- Examples:
+  - "❌ Passing UUID as 'slug' parameter → 404 not found"
+  - "✅ Pass UUID as 'id' parameter OR actual slug as 'slug' parameter"
+  - "❌ Assuming slug equals character_id"
+  - "✅ Slug is derived from name + first 6 chars of ID"
+
+## Cross-References
+- Related functions in other handlers (with file paths)
+- Shared utilities and their locations (e.g., jwt_helper.py, utils.py)
+- Dependencies on other Lambdas or AWS services
+- Where data transformations happen (e.g., slugify() function in character_management)
+
+Format the output as structured documentation that helps developers debug issues and understand implementation details, not just high-level purpose.
+
+{files_section}
+""",
         "frontend-pages": f"Summarize the pages/routes for {repo}. Describe what pages exist, their routes, key features, state management patterns, and how they connect to the overall application.\n\n{files_section}",
         "frontend-components": f"Summarize the React components for {repo}. Describe what UI components are provided, their props/interfaces, reusability patterns, and styling approaches.\n\n{files_section}",
         "frontend-tests": f"Summarize the frontend tests for {repo}. Describe what components/features are tested, testing library used (Jest, Vitest, etc.), and testing patterns.\n\n{files_section}",
