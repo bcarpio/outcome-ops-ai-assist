@@ -109,6 +109,7 @@ outcome-ops-ai-assist/
 │   │   └── TEMPLATE.md               # Template for new ADRs
 │   ├── lambda-ingest-docs.md         # Ingest Lambda documentation
 │   ├── lambda-generate-code-maps.md  # Code maps Lambda documentation
+│   ├── lambda-analyze-pr.md          # PR analysis Lambda documentation
 │   ├── architecture.md               # System architecture & design
 │   ├── deployment.md                 # Deployment & operations guide
 │   └── README.md                     # This docs directory overview
@@ -124,6 +125,9 @@ outcome-ops-ai-assist/
 │   │   │   ├── factory.py           # Backend registry and factory
 │   │   │   └── lambda_backend.py    # Lambda serverless backend
 │   │   ├── state_tracker.py         # State persistence for incremental updates
+│   │   └── requirements.txt         # Python dependencies
+│   ├── analyze-pr/                  # Lambda: GitHub PR analysis orchestration
+│   │   ├── handler.py               # Main PR analysis handler
 │   │   └── requirements.txt         # Python dependencies
 │   └── tests/
 │       ├── unit/                    # Unit tests for all Lambdas
@@ -370,6 +374,7 @@ All Lambda functions log to CloudWatch:
 - `dev-outcome-ops-ai-assist-vector-query`: Search queries
 - `dev-outcome-ops-ai-assist-ask-claude`: RAG generations
 - `dev-outcome-ops-ai-assist-generate-code-maps`: Code analysis
+- `dev-outcome-ops-ai-assist-analyze-pr`: PR analysis orchestration
 
 ### CloudWatch Alarms
 
