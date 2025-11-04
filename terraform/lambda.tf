@@ -687,3 +687,88 @@ output "query_kb_lambda_name" {
   description = "Name of the query-kb Lambda function"
   value       = module.query_kb_lambda.lambda_function_name
 }
+
+# ============================================================================
+# Analyze PR Lambda (GitHub PR Analysis Orchestration)
+# ============================================================================
+
+module "analyze_pr_lambda" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "8.1.2"
+
+  function_name = "${var.environment}-${var.app_name}-analyze-pr"
+  description   = "Analyze GitHub PRs and queue architecture check jobs"
+  handler       = "handler.handler"
+  runtime       = "python3.12"
+  timeout       = 300 # 5 minutes for GitHub API calls and job queueing
+  memory_size   = 512
+
+  # CloudWatch Logs retention
+  cloudwatch_logs_retention_in_days = 7
+
+  # Source code from local directory
+  source_path = "${path.module}/../lambda/analyze-pr"
+
+  # Suppress verbose archive output
+  quiet_archive_local_exec = true
+
+  # Environment variables
+  environment_variables = {
+    ENV      = var.environment
+    APP_NAME = var.app_name
+  }
+
+  # IAM permissions
+  attach_policy_statements = true
+  policy_statements = {
+    # Read SSM parameters (GitHub token and SQS queue URL)
+    ssm_read = {
+      effect = "Allow"
+      actions = [
+        "ssm:GetParameter"
+      ]
+      resources = [
+        "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/*"
+      ]
+    }
+
+    # Decrypt SSM parameters encrypted with AWS managed KMS key
+    kms_decrypt = {
+      effect = "Allow"
+      actions = [
+        "kms:Decrypt"
+      ]
+      resources = [
+        "arn:aws:kms:${var.aws_region}:${data.aws_caller_identity.current.account_id}:alias/aws/ssm"
+      ]
+    }
+
+    # Send messages to SQS PR checks queue
+    sqs_send = {
+      effect = "Allow"
+      actions = [
+        "sqs:SendMessage",
+        "sqs:GetQueueAttributes"
+      ]
+      resources = [
+        module.pr_checks_queue.queue_arn
+      ]
+    }
+  }
+
+  tags = {
+    Purpose = "analyze-pr"
+  }
+}
+
+# No EventBridge schedule - this Lambda is invoked manually or via GitHub webhook
+
+output "analyze_pr_lambda_arn" {
+  description = "ARN of the analyze-pr Lambda function"
+  value       = module.analyze_pr_lambda.lambda_function_arn
+}
+
+output "analyze_pr_lambda_name" {
+  description = "Name of the analyze-pr Lambda function"
+  value       = module.analyze_pr_lambda.lambda_function_name
+}

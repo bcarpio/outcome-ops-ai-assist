@@ -51,6 +51,58 @@ resource "aws_ssm_parameter" "code_maps_queue_url" {
 }
 
 # ============================================================================
+# SQS Queue for PR Checks Processing
+# ============================================================================
+
+# Dead Letter Queue for failed PR check jobs
+module "pr_checks_dlq" {
+  source  = "terraform-aws-modules/sqs/aws"
+  version = "4.3.0"
+
+  name                        = "${var.environment}-${var.app_name}-pr-checks-dlq.fifo"
+  fifo_queue                  = true
+  content_based_deduplication = true
+
+  tags = {
+    Purpose = "pr-checks-dlq"
+  }
+}
+
+# Main FIFO queue for PR checks processing
+module "pr_checks_queue" {
+  source  = "terraform-aws-modules/sqs/aws"
+  version = "4.3.0"
+
+  name                        = "${var.environment}-${var.app_name}-pr-checks-queue.fifo"
+  fifo_queue                  = true
+  content_based_deduplication = false # We provide explicit MessageDeduplicationId
+  visibility_timeout_seconds  = 300   # 5 minutes for check processing
+
+  # Dead letter queue configuration
+  redrive_policy = {
+    deadLetterTargetArn = module.pr_checks_dlq.queue_arn
+    maxReceiveCount     = 3 # Retry failed checks 3 times
+  }
+
+  tags = {
+    Purpose = "pr-checks-queue"
+  }
+}
+
+# Store SQS queue URL in SSM for Lambda to retrieve
+resource "aws_ssm_parameter" "pr_checks_queue_url" {
+  name  = "/${var.environment}/${var.app_name}/sqs/pr-checks-queue-url"
+  type  = "String"
+  value = module.pr_checks_queue.queue_url
+
+  description = "URL of the PR checks processing queue"
+
+  tags = {
+    Purpose = "pr-checks-queue-url"
+  }
+}
+
+# ============================================================================
 # Outputs
 # ============================================================================
 
@@ -72,4 +124,24 @@ output "code_maps_dlq_url" {
 output "code_maps_dlq_arn" {
   description = "ARN of the code maps dead letter queue"
   value       = module.code_maps_dlq.queue_arn
+}
+
+output "pr_checks_queue_url" {
+  description = "URL of the PR checks processing queue"
+  value       = module.pr_checks_queue.queue_url
+}
+
+output "pr_checks_queue_arn" {
+  description = "ARN of the PR checks processing queue"
+  value       = module.pr_checks_queue.queue_arn
+}
+
+output "pr_checks_dlq_url" {
+  description = "URL of the PR checks dead letter queue"
+  value       = module.pr_checks_dlq.queue_url
+}
+
+output "pr_checks_dlq_arn" {
+  description = "ARN of the PR checks dead letter queue"
+  value       = module.pr_checks_dlq.queue_arn
 }
