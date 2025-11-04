@@ -150,45 +150,53 @@ aws logs tail /aws/lambda/dev-outcome-ops-ai-assist-generate-code-maps --follow
 
 ## Implementation Details
 
-**Current Status**: Lambda function fully implemented and tested.
+**Current Status**: Lambda function fully implemented with pluggable backend abstraction.
 
 The generate-code-maps function:
 1. **Fetches repository structure** via GitHub API (recursive tree)
-2. **Checks for recent commits** (last 61 minutes) to skip unchanged repos (unless `FORCE_FULL_PROCESS=true` or specific repos requested)
-3. **Identifies key files** with prioritization:
-   - Priority 1: Lambda handlers (`lambda/*/handler.py`)
-   - Priority 2: Python modules in lambda directories
-   - Priority 3: Terraform infrastructure files (`*.tf`)
-   - Priority 4: Schema/model files (`*_schema.py`, `models/*.py`)
-   - Priority 5: Test files (`tests/**/*.py`)
-   - Priority 6: Configuration files (`requirements.txt`, `Makefile`, etc.)
-   - Priority 7: Shared utilities (`src/**/*.py`, `utils/**/*.py`)
-   - Priority 8: Documentation (`docs/**/*.md`)
-4. **Groups files into logical batches**:
-   - Infrastructure: All `.tf` files
-   - Handler groups: Lambda functions grouped by directory
-   - Tests: Grouped by type (unit, integration, fixtures)
-   - Shared utilities: Common code and utilities
-   - Schemas: Schema and model definitions
-   - Documentation: All `.md` files
+2. **Uses pluggable backend** to discover code units (Lambda handlers, K8s services, modules, etc.)
+3. **Detects changes via git diff** - compares current commit SHA to last processed commit (incremental updates)
+4. **Discovers code units** using backend-specific logic:
+   - Lambda backend: Groups by function directory (`lambda/*/`)
+   - K8s backend (future): Groups by service
+   - Monolith backend (future): Groups by module/package
 5. **Generates architectural summary** using Claude 3.5 Sonnet via Bedrock
 6. **Creates embeddings** via Bedrock Titan Embeddings v2 (1024 dimensions)
 7. **Stores summaries** in DynamoDB with embeddings and S3 for archival
-8. **Sends batches to SQS** FIFO queue for async detailed processing
+8. **Sends code units to SQS** FIFO queue for async detailed processing
+9. **Tracks state** - saves current commit SHA in DynamoDB for next incremental run
+
+**Backend Abstraction**:
+- **Lambda Serverless Backend**: Discovers Lambda handlers, infrastructure, frontend files, tests, schemas, docs
+- **Pluggable Architecture**: Easy to add new backends (K8s, monolith, microservices)
+- **Backend Factory**: Registry-based factory pattern for backend instantiation
+- **State Tracking**: Per-repo state tracking in DynamoDB (commit SHA, timestamp, files processed)
 
 **Key Features**:
-- **Skip unchanged repos**: Only processes repos with commits in last 61 minutes (configurable)
-- **FIFO queue processing**: Batches sent to SQS for ordered async processing
+- **Incremental updates**: Only processes changed files since last commit (git-based change detection)
+- **Full regeneration mode**: Set `FORCE_FULL_PROCESS=true` or pass specific repos in event
+- **Backend selection**: Set `BACKEND_TYPE` env var (default: "lambda")
+- **FIFO queue processing**: Code units sent to SQS for ordered async processing
 - **Deduplication**: Uses MessageDeduplicationId to prevent duplicate processing
-- **Fail-open design**: If commit check fails, processes repo anyway (ensures availability)
+- **Fail-safe design**: Continues processing even if change detection fails
 - **Retry logic**: Bedrock calls include exponential backoff retry logic
 
-**Future Enhancements**:
-- Automatic detection of shared patterns (factory patterns, middleware chains, etc.)
-- Code metrics extraction (complexity, duplication)
-- Integration with test coverage data
-- Periodic automatic regeneration on main branch updates
-- SQS consumer Lambda for detailed batch processing
+**Backend Types Supported**:
+- **lambda**: Lambda serverless architecture (current implementation)
+- **k8s**: Kubernetes microservices (coming soon)
+- **monolith**: Monolithic applications (coming soon)
+
+**State Tracking**:
+- Stores last processed commit SHA per repository in DynamoDB
+- Schema: `PK=repo#<repo_name>`, `SK=state#last-processed`
+- Fields: `commit_sha`, `timestamp`, `files_processed`, `batches_sent`
+- Enables efficient incremental updates on subsequent runs
+
+**Incremental Update Behavior**:
+- First run: Process all files, save commit SHA
+- Subsequent runs: Compare current SHA to saved SHA, only process if changed
+- Force full: `FORCE_FULL_PROCESS=true` or event with specific repos bypasses incremental
+- Change detection: Uses GitHub API compare endpoint to get changed files
 
 ## Configuration Requirements
 
@@ -202,7 +210,9 @@ The generate-code-maps function:
 **Environment Variables** (set in Terraform):
 - `ENV` - Environment name (dev, prd)
 - `APP_NAME` - Application name (outcome-ops-ai-assist)
-- `FORCE_FULL_PROCESS` - Set to "true" to process all repos regardless of recent commits (default: "false")
+- `FORCE_FULL_PROCESS` - Set to "true" to process all repos regardless of changes (default: "false")
+- `BACKEND_TYPE` - Backend to use: "lambda", "k8s", "monolith" (default: "lambda")
+- `ENABLE_INCREMENTAL` - Enable incremental updates via state tracking (default: "true")
 
 **IAM Permissions Required**:
 - `ssm:GetParameter` - Read SSM parameters

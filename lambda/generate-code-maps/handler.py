@@ -3,12 +3,17 @@ Lambda handler for generating code maps from repository structure.
 
 This handler:
 1. Fetches repository file tree from GitHub API
-2. Checks for recent commits (last 61 minutes) to skip unchanged repos
-3. Identifies key files (Lambda handlers, Terraform, tests, schemas, etc.)
-4. Groups files into logical batches (infrastructure, handler groups, tests, shared)
-5. Generates architectural summary using Claude via Bedrock
-6. Stores summaries in DynamoDB with embeddings
-7. Sends file batches to SQS for detailed async processing
+2. Uses pluggable backend to discover code units (Lambda handlers, K8s services, etc.)
+3. Detects changes since last run using git-based change detection (incremental updates)
+4. Generates architectural summary using Claude via Bedrock
+5. Stores summaries in DynamoDB with embeddings
+6. Sends code unit batches to SQS for detailed async processing
+7. Tracks processing state for incremental updates
+
+Backends supported:
+- Lambda serverless: Discovers Lambda handlers in lambda/ directory
+- Kubernetes: Coming soon
+- Monolith: Coming soon
 
 This Lambda is triggered:
 - Manually via AWS Lambda invoke
@@ -22,14 +27,15 @@ import hashlib
 import json
 import logging
 import os
-from collections import defaultdict
-from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional, Tuple
-from urllib.request import Request, urlopen
-from urllib.error import URLError
+from datetime import datetime
+from typing import Any, Dict, List, Optional
 
 import boto3
 from botocore.exceptions import ClientError
+
+# Backend abstraction imports
+from backends import get_backend, list_backends
+from state_tracker import StateTracker
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -45,18 +51,22 @@ ssm_client = boto3.client("ssm")
 ENVIRONMENT = os.environ.get("ENV", "dev")
 APP_NAME = os.environ.get("APP_NAME", "outcome-ops-ai-assist")
 FORCE_FULL_PROCESS = os.environ.get("FORCE_FULL_PROCESS", "false").lower() == "true"
+BACKEND_TYPE = os.environ.get("BACKEND_TYPE", "lambda")  # Backend to use (lambda, k8s, monolith)
+ENABLE_INCREMENTAL = os.environ.get("ENABLE_INCREMENTAL", "true").lower() == "true"
 
 KB_BUCKET = None
 CODE_MAPS_TABLE = None
 SQS_QUEUE_URL = None
 GITHUB_TOKEN = None
+backend = None
+state_tracker = None
 
 GITHUB_API_URL = "https://api.github.com"
 
 
 def load_config():
-    """Load configuration from SSM Parameter Store at container startup."""
-    global KB_BUCKET, CODE_MAPS_TABLE, SQS_QUEUE_URL, GITHUB_TOKEN
+    """Load configuration from SSM Parameter Store and initialize backend."""
+    global KB_BUCKET, CODE_MAPS_TABLE, SQS_QUEUE_URL, GITHUB_TOKEN, backend, state_tracker
 
     try:
         kb_bucket_param = f"/{ENVIRONMENT}/{APP_NAME}/s3/knowledge-base-bucket"
@@ -75,8 +85,29 @@ def load_config():
         )["Parameter"]["Value"]
 
         logger.info(f"Configuration loaded: KB_BUCKET={KB_BUCKET}, TABLE={CODE_MAPS_TABLE}, SQS_QUEUE={SQS_QUEUE_URL}")
+
+        # Initialize backend
+        backend_config = {
+            "lambda_directory": "lambda",
+            "handler_file": "handler.py",
+            "include_submodules": True,
+            "max_file_size_tokens": 7000,
+            "github_token": GITHUB_TOKEN,
+            "github_api_url": GITHUB_API_URL,
+        }
+        backend = get_backend(BACKEND_TYPE, backend_config)
+        logger.info(f"Initialized backend: {backend.get_backend_name()}")
+
+        # Initialize state tracker for incremental updates
+        state_tracker = StateTracker(dynamodb_client, CODE_MAPS_TABLE)
+        logger.info("State tracker initialized for incremental updates")
+
     except ClientError as e:
         logger.error(f"Failed to load configuration from SSM: {e}")
+        raise
+    except ValueError as e:
+        logger.error(f"Failed to initialize backend: {e}")
+        logger.info(f"Available backends: {list_backends()}")
         raise
 
 
@@ -132,376 +163,10 @@ def list_repository_files(repo: str, ref: str = "main") -> List[Dict[str, Any]]:
         raise
 
 
-def has_recent_commits(repo: str, minutes_ago: int = 61) -> bool:
-    """
-    Check if repository has commits to main branch in the last N minutes.
-
-    Args:
-        repo: Repository in format "owner/repo"
-        minutes_ago: Number of minutes to look back
-
-    Returns:
-        True if repo has recent commits, False otherwise
-    """
-    endpoint = f"/repos/{repo}/branches/main"
-
-    try:
-        response = github_api_request(endpoint)
-
-        commit_date_str = response["commit"]["commit"]["committer"]["date"]
-        last_commit_date = datetime.fromisoformat(commit_date_str.replace("Z", "+00:00"))
-        cutoff_date = datetime.now(last_commit_date.tzinfo) - timedelta(minutes=minutes_ago)
-
-        has_recent = last_commit_date >= cutoff_date
-        logger.info(
-            f"{repo}: Last commit {last_commit_date.isoformat()}, "
-            f"cutoff {cutoff_date.isoformat()}, recent: {has_recent}"
-        )
-
-        return has_recent
-    except Exception as e:
-        logger.warning(f"Error checking commits for {repo}: {e}")
-        return True  # Process repo if we can't determine (fail open)
-
-
-def identify_key_files(files: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """
-    Identify key files for analysis with prioritization.
-
-    Priority levels for Python projects:
-    1. Lambda handlers (lambda/*/handler.py)
-    2. Python modules in lambda directories
-    3. Terraform infrastructure files (*.tf)
-    4. Schema/model files (*_schema.py, models/*.py)
-    5. Test files (tests/**/*.py)
-    6. Configuration files (requirements.txt, Makefile, etc.)
-    7. Shared utilities (src/**/*.py, utils/**/*.py)
-    8. Documentation (docs/**/*.md, README.md)
-
-    Args:
-        files: List of file objects from GitHub API
-
-    Returns:
-        Sorted list of key files with priority
-    """
-    key_files = []
-
-    for file in files:
-        if file["type"] != "blob":
-            continue
-
-        path = file["path"]
-        name = os.path.basename(path)
-        lower_path = path.lower()
-        lower_name = name.lower()
-
-        # Skip excluded directories
-        if any(excluded in lower_path for excluded in [
-            "node_modules", ".git/", "dist/", "build/", "coverage/",
-            "__pycache__", ".pytest_cache", ".venv", "venv/"
-        ]):
-            continue
-
-        priority = 0
-
-        # Priority 1: Backend Lambda handler files
-        if lower_name == "handler.py" and "lambda/" in lower_path:
-            priority = 1
-
-        # Priority 1: Frontend entry points and main app files
-        elif lower_name in ["app.tsx", "app.jsx", "main.tsx", "main.jsx", "index.tsx", "index.jsx"]:
-            priority = 1
-
-        # Priority 2: Backend Python modules in lambda directories
-        elif "lambda/" in lower_path and lower_name.endswith(".py") and lower_name != "__init__.py":
-            priority = 2
-
-        # Priority 2: Frontend page components
-        elif ("pages/" in lower_path or "routes/" in lower_path) and (
-            lower_name.endswith(".tsx") or lower_name.endswith(".jsx") or
-            lower_name.endswith(".ts") or lower_name.endswith(".js")
-        ):
-            priority = 2
-
-        # Priority 3: Terraform infrastructure files
-        elif lower_name.endswith(".tf"):
-            priority = 3
-
-        # Priority 3: Frontend component files
-        elif ("components/" in lower_path or "src/" in lower_path) and (
-            lower_name.endswith(".tsx") or lower_name.endswith(".jsx")
-        ):
-            priority = 3
-
-        # Priority 4: Backend schema and model files
-        elif (lower_name.endswith("_schema.py") or
-              lower_name.endswith("_model.py") or
-              "models/" in lower_path or
-              "schemas/" in lower_path) and lower_name.endswith(".py"):
-            priority = 4
-
-        # Priority 4: Frontend TypeScript types and interfaces
-        elif ("types/" in lower_path or lower_name.endswith(".types.ts") or
-              lower_name.endswith("types.ts")) and (
-            lower_name.endswith(".ts") or lower_name.endswith(".tsx")
-        ):
-            priority = 4
-
-        # Priority 5: Backend test files
-        elif ("test_" in lower_name or "_test.py" in lower_name) and lower_name.endswith(".py"):
-            priority = 5
-
-        # Priority 5: Frontend test files
-        elif (lower_name.endswith(".test.ts") or lower_name.endswith(".test.tsx") or
-              lower_name.endswith(".test.js") or lower_name.endswith(".test.jsx") or
-              lower_name.endswith(".spec.ts") or lower_name.endswith(".spec.tsx") or
-              lower_name.endswith(".spec.js") or lower_name.endswith(".spec.jsx")):
-            priority = 5
-
-        # Priority 6: Backend configuration files
-        elif lower_name in [
-            "requirements.txt", "setup.py", "pyproject.toml", "makefile",
-            "justfile", ".gitlab-ci.yml", ".github/workflows"
-        ]:
-            priority = 6
-
-        # Priority 6: Frontend configuration files
-        elif lower_name in [
-            "package.json", "tsconfig.json", "vite.config.ts", "vite.config.js",
-            "webpack.config.js", "next.config.js", "tailwind.config.js",
-            "tailwind.config.ts", ".eslintrc.js", ".eslintrc.json"
-        ]:
-            priority = 6
-
-        # Priority 7: Backend shared utilities and source files
-        elif (("src/" in lower_path or "utils/" in lower_path or "common/" in lower_path or "shared/" in lower_path)
-              and lower_name.endswith(".py") and lower_name != "__init__.py"):
-            priority = 7
-
-        # Priority 7: Frontend utility files
-        elif (("utils/" in lower_path or "helpers/" in lower_path or "lib/" in lower_path or "hooks/" in lower_path)
-              and (lower_name.endswith(".ts") or lower_name.endswith(".tsx") or
-                   lower_name.endswith(".js") or lower_name.endswith(".jsx"))):
-            priority = 7
-
-        # Priority 8: Documentation files
-        elif lower_name.endswith(".md"):
-            priority = 8
-
-        if priority > 0:
-            key_files.append({
-                "file": file,
-                "priority": priority,
-            })
-
-    # Sort by priority (lower number = higher priority), then by path
-    key_files.sort(key=lambda x: (x["priority"], x["file"]["path"]))
-
-    return [kf["file"] for kf in key_files]
-
-
-def group_files_into_batches(files: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """
-    Group files into logical batches for efficient processing.
-
-    Batch types:
-    - infrastructure: All .tf files
-    - handler-group: Lambda handlers grouped by function directory
-    - tests: Test files grouped by type (unit, integration)
-    - shared: Shared utilities and common code
-    - schemas: Schema and model definitions
-    - docs: Documentation files
-
-    Args:
-        files: List of file objects
-
-    Returns:
-        List of batch objects with metadata
-    """
-    batches = []
-
-    # Filter out excluded files
-    relevant_files = [
-        f for f in files
-        if f["type"] == "blob" and not any(excluded in f["path"].lower() for excluded in [
-            "node_modules", ".git/", "dist/", "build/", "coverage/",
-            "__pycache__", ".pytest_cache", ".venv", "venv/",
-            "package.json", "package-lock.json", ".gitignore"
-        ])
-    ]
-
-    # Group 1: Infrastructure (all .tf files)
-    infra_files = [f for f in relevant_files if f["path"].endswith(".tf")]
-    if infra_files:
-        batches.append({
-            "batch_type": "infrastructure",
-            "group_name": "infrastructure",
-            "files": infra_files,
-            "storage_key": "summary#infrastructure",
-        })
-
-    # Group 2: Lambda handler groups (by function directory)
-    handler_files = [f for f in relevant_files if "lambda/" in f["path"] and f["path"].endswith(".py")]
-    handler_groups = defaultdict(list)
-
-    for file in handler_files:
-        # Extract handler function name: lambda/my-handler/handler.py -> my-handler
-        path_parts = file["path"].split("/")
-        if len(path_parts) >= 2 and path_parts[0] == "lambda":
-            group_key = path_parts[1]
-            handler_groups[group_key].append(file)
-
-    for group_key, group_files in handler_groups.items():
-        batches.append({
-            "batch_type": "handler-group",
-            "group_name": group_key,
-            "files": group_files,
-            "storage_key": f"summary#handler#{group_key}",
-        })
-
-    # Group 3: Frontend pages/routes
-    pages_files = [
-        f for f in relevant_files
-        if ("pages/" in f["path"] or "routes/" in f["path"])
-        and (f["path"].endswith(".tsx") or f["path"].endswith(".jsx") or
-             f["path"].endswith(".ts") or f["path"].endswith(".js"))
-    ]
-    if pages_files:
-        batches.append({
-            "batch_type": "frontend-pages",
-            "group_name": "pages-routes",
-            "files": pages_files,
-            "storage_key": "summary#frontend#pages",
-        })
-
-    # Group 4: Frontend components
-    component_files = [
-        f for f in relevant_files
-        if "components/" in f["path"]
-        and (f["path"].endswith(".tsx") or f["path"].endswith(".jsx"))
-    ]
-    if component_files:
-        batches.append({
-            "batch_type": "frontend-components",
-            "group_name": "components",
-            "files": component_files,
-            "storage_key": "summary#frontend#components",
-        })
-
-    # Group 5: Backend tests (by type: unit, integration, fixtures)
-    test_files = [
-        f for f in relevant_files
-        if "test" in f["path"].lower() and f["path"].endswith(".py")
-    ]
-    test_groups = defaultdict(list)
-
-    for file in test_files:
-        if "unit" in file["path"].lower():
-            test_groups["unit"].append(file)
-        elif "integration" in file["path"].lower():
-            test_groups["integration"].append(file)
-        elif "fixture" in file["path"].lower():
-            test_groups["fixtures"].append(file)
-        else:
-            test_groups["other"].append(file)
-
-    for group_key, group_files in test_groups.items():
-        batches.append({
-            "batch_type": "tests",
-            "group_name": group_key,
-            "files": group_files,
-            "storage_key": f"summary#tests#{group_key}",
-        })
-
-    # Group 6: Frontend tests
-    frontend_test_files = [
-        f for f in relevant_files
-        if "test" in f["path"].lower() and (
-            f["path"].endswith(".test.ts") or f["path"].endswith(".test.tsx") or
-            f["path"].endswith(".test.js") or f["path"].endswith(".test.jsx") or
-            f["path"].endswith(".spec.ts") or f["path"].endswith(".spec.tsx") or
-            f["path"].endswith(".spec.js") or f["path"].endswith(".spec.jsx")
-        )
-    ]
-    if frontend_test_files:
-        batches.append({
-            "batch_type": "frontend-tests",
-            "group_name": "frontend-tests",
-            "files": frontend_test_files,
-            "storage_key": "summary#tests#frontend",
-        })
-
-    # Group 7: Backend shared utilities and common code
-    shared_files = [
-        f for f in relevant_files
-        if any(pattern in f["path"].lower() for pattern in ["src/", "utils/", "common/", "shared/"])
-        and f["path"].endswith(".py")
-        and "__init__" not in f["path"]
-    ]
-    if shared_files:
-        batches.append({
-            "batch_type": "shared",
-            "group_name": "shared-utilities",
-            "files": shared_files,
-            "storage_key": "summary#shared",
-        })
-
-    # Group 8: Frontend utilities, hooks, and lib files
-    frontend_utils_files = [
-        f for f in relevant_files
-        if any(pattern in f["path"] for pattern in ["utils/", "helpers/", "lib/", "hooks/", "context/"])
-        and (f["path"].endswith(".ts") or f["path"].endswith(".tsx") or
-             f["path"].endswith(".js") or f["path"].endswith(".jsx"))
-        and "test" not in f["path"].lower()
-    ]
-    if frontend_utils_files:
-        batches.append({
-            "batch_type": "frontend-utils",
-            "group_name": "frontend-utilities",
-            "files": frontend_utils_files,
-            "storage_key": "summary#frontend#utils",
-        })
-
-    # Group 9: Backend schemas and models
-    schema_files = [
-        f for f in relevant_files
-        if ("schema" in f["path"].lower() or "model" in f["path"].lower())
-        and f["path"].endswith(".py")
-    ]
-    if schema_files:
-        batches.append({
-            "batch_type": "schemas",
-            "group_name": "schemas-and-models",
-            "files": schema_files,
-            "storage_key": "summary#schemas",
-        })
-
-    # Group 10: Frontend types and interfaces
-    types_files = [
-        f for f in relevant_files
-        if ("types/" in f["path"] or f["path"].endswith(".types.ts") or
-            f["path"].endswith("types.ts"))
-        and (f["path"].endswith(".ts") or f["path"].endswith(".tsx"))
-    ]
-    if types_files:
-        batches.append({
-            "batch_type": "frontend-types",
-            "group_name": "types-interfaces",
-            "files": types_files,
-            "storage_key": "summary#frontend#types",
-        })
-
-    # Group 11: Documentation
-    doc_files = [f for f in relevant_files if f["path"].endswith(".md")]
-    if doc_files:
-        batches.append({
-            "batch_type": "docs",
-            "group_name": "documentation",
-            "files": doc_files,
-            "storage_key": "summary#docs",
-        })
-
-    return batches
+# Old functions removed - now handled by backend abstraction:
+# - has_recent_commits() -> backend.detect_changes()
+# - identify_key_files() -> backend.discover_code_units()
+# - group_files_into_batches() -> backend.discover_code_units()
 
 
 def retry_bedrock_call(func, max_retries: int = 3):
@@ -732,12 +397,12 @@ def store_code_map_embedding(
         return False
 
 
-def send_batch_to_sqs(batch: Dict[str, Any], repo: str, repo_project: str) -> bool:
+def send_code_unit_to_sqs(code_unit, repo: str, repo_project: str) -> bool:
     """
-    Send file batch to SQS for async processing.
+    Send code unit batch to SQS for async processing.
 
     Args:
-        batch: Batch object with files and metadata
+        code_unit: CodeUnit object from backend
         repo: Repository name
         repo_project: Repository project path (owner/repo)
 
@@ -745,27 +410,34 @@ def send_batch_to_sqs(batch: Dict[str, Any], repo: str, repo_project: str) -> bo
         True if successful, False otherwise
     """
     try:
+        # Generate batch metadata using backend
+        batch_metadata = backend.generate_batch_metadata(code_unit, repo)
+
         message_body = {
             "repo": repo,
             "repo_project": repo_project,
-            "batch_type": batch["batch_type"],
-            "group_name": batch["group_name"],
-            "file_paths": [f["path"] for f in batch["files"]],
-            "storage_key": batch["storage_key"],
+            "batch_type": batch_metadata["batch_type"],
+            "group_name": batch_metadata["group_name"],
+            "file_paths": code_unit.file_paths,
+            "storage_key": batch_metadata["storage_key"],
+            "backend_type": batch_metadata.get("backend_type", "lambda"),
         }
 
         sqs_client.send_message(
             QueueUrl=SQS_QUEUE_URL,
             MessageBody=json.dumps(message_body),
             MessageGroupId=repo,  # FIFO ordering by repo
-            MessageDeduplicationId=f"{repo}-{batch['storage_key']}",  # Deduplication per batch
+            MessageDeduplicationId=f"{repo}-{batch_metadata['storage_key']}",  # Deduplication per batch
         )
 
-        logger.info(f"Sent {batch['batch_type']} batch to SQS: {batch['group_name']} ({len(batch['files'])} files)")
+        logger.info(
+            f"Sent {batch_metadata['batch_type']} batch to SQS: {batch_metadata['group_name']} "
+            f"({len(code_unit.file_paths)} files)"
+        )
         return True
 
     except ClientError as e:
-        logger.error(f"Failed to send batch to SQS: {e}")
+        logger.error(f"Failed to send code unit to SQS: {e}")
         return False
 
 
@@ -822,31 +494,11 @@ def handler(event, context):
         else:
             logger.info(f"Filtered to {len(application_repos)} application/internal repos")
 
-        # Filter repos with recent commits (unless forced or specific repos requested)
-        repos_to_process = application_repos
-
-        if not FORCE_FULL_PROCESS and not event.get("repos"):
-            logger.info(f"Checking {len(application_repos)} repos for recent commits...")
-            filtered = []
-            for repo in application_repos:
-                has_recent = has_recent_commits(repo["project"])
-                if has_recent:
-                    filtered.append(repo)
-                else:
-                    logger.info(f"Skipping {repo['name']} - no recent commits")
-
-            repos_to_process = filtered
-            logger.info(f"Processing {len(repos_to_process)} of {len(application_repos)} repos with recent changes")
-        elif FORCE_FULL_PROCESS:
-            logger.info(f"FORCE_FULL_PROCESS=true: Processing all {len(application_repos)} repos")
-        else:
-            logger.info(f"Event-driven: Processing {len(application_repos)} specific repos")
-
         # Process each repository
         repos_processed = []
         total_files_analyzed = 0
 
-        for repo_config in repos_to_process:
+        for repo_config in application_repos:
             repo_name = repo_config["name"]
             repo_project = repo_config["project"]
             repo_type = repo_config.get("type", "internal")
@@ -857,7 +509,32 @@ def handler(event, context):
             all_files = list_repository_files(repo_project)
             logger.info(f"Found {len(all_files)} total files in {repo_name}")
 
-            # Generate architectural summary
+            # Check for changes using backend (git-based incremental updates)
+            last_state = None
+            if ENABLE_INCREMENTAL and not FORCE_FULL_PROCESS and not event.get("repos"):
+                last_state = state_tracker.get_last_state(repo_name)
+
+            change_result = backend.detect_changes(
+                repo=repo_name,
+                repo_project=repo_project,
+                last_state=last_state,
+                force_full=FORCE_FULL_PROCESS or event.get("repos") is not None
+            )
+
+            if not change_result.has_changes and not FORCE_FULL_PROCESS:
+                logger.info(f"Skipping {repo_name} - no changes detected since {change_result.last_commit_sha[:7]}")
+                continue
+
+            logger.info(
+                f"Processing {repo_name}: "
+                f"{'full regeneration' if not last_state else f'incremental ({change_result.last_commit_sha[:7]}..{change_result.current_commit_sha[:7]})'}"
+            )
+
+            # Discover code units using backend
+            code_units = backend.discover_code_units(all_files)
+            logger.info(f"Discovered {len(code_units)} code units for {repo_name}")
+
+            # Generate architectural summary (still uses Claude)
             arch_summary = generate_architectural_summary(repo_name, repo_type, all_files)
             logger.info(f"Generated architectural summary for {repo_name}")
 
@@ -885,24 +562,30 @@ def handler(event, context):
 
             logger.info(f"Stored code map for {repo_name}")
 
-            # Group files into logical batches
-            batches = group_files_into_batches(all_files)
-            logger.info(f"Grouped into {len(batches)} batches for {repo_name}")
-
-            # Send each batch to SQS for async processing
+            # Send each code unit to SQS for async processing
             batches_sent = 0
-            for batch in batches:
+            for code_unit in code_units:
                 try:
-                    if send_batch_to_sqs(batch, repo_name, repo_project):
+                    if send_code_unit_to_sqs(code_unit, repo_name, repo_project):
                         batches_sent += 1
-                        total_files_analyzed += len(batch["files"])
+                        total_files_analyzed += len(code_unit.file_paths)
                 except Exception as e:
-                    logger.error(f"Error sending batch {batch['group_name']} to SQS: {e}")
+                    logger.error(f"Error sending code unit {code_unit.name} to SQS: {e}")
                     continue
+
+            # Save state for incremental updates
+            if ENABLE_INCREMENTAL and change_result.current_commit_sha:
+                state_tracker.save_state(
+                    repo=repo_name,
+                    commit_sha=change_result.current_commit_sha,
+                    files_processed=total_files_analyzed,
+                    batches_sent=batches_sent
+                )
+                logger.info(f"Saved state for {repo_name}: {change_result.current_commit_sha[:7]}")
 
             logger.info(
                 f"Completed code map generation for {repo_name} "
-                f"({batches_sent}/{len(batches)} batches sent, {total_files_analyzed} files)"
+                f"({batches_sent}/{len(code_units)} code units sent, {total_files_analyzed} files)"
             )
             repos_processed.append(repo_name)
 
