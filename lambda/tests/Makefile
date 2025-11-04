@@ -1,5 +1,8 @@
 .PHONY: test test-unit test-integration test-coverage clean help
 
+# Python executable from virtual environment
+PYTHON := ../../venv/bin/python3.12
+
 help:
 	@echo "OutcomeOps AI Assist Lambda Test Suite"
 	@echo ""
@@ -13,29 +16,29 @@ help:
 
 test:
 	@echo "Running all tests..."
-	pytest -v
+	$(PYTHON) -m pytest -v
 
 test-unit:
 	@echo "Running unit tests..."
-	pytest unit/ -v
+	$(PYTHON) -m pytest unit/ -v
 
 test-integration:
 	@echo "Running integration tests..."
-	pytest integration/ -v
+	$(PYTHON) -m pytest integration/ -v
 
 test-coverage:
 	@echo "Running tests with coverage..."
-	pytest --cov=../vector-query --cov=../ask-claude --cov=../query-kb \
+	$(PYTHON) -m pytest --cov=../vector-query --cov=../ask-claude --cov=../query-kb \
 		--cov-report=html --cov-report=term-missing
 	@echo "Coverage report generated in htmlcov/index.html"
 
 test-verbose:
 	@echo "Running tests with verbose output..."
-	pytest -vv --tb=long
+	$(PYTHON) -m pytest -vv --tb=long
 
 test-watch:
 	@echo "Running tests in watch mode..."
-	pytest-watch -v
+	$(PYTHON) -m pytest-watch -v
 
 clean:
 	@echo "Cleaning test artifacts..."

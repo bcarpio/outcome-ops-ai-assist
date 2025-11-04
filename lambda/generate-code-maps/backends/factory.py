@@ -5,9 +5,19 @@ Provides factory methods to instantiate backends and list available backends.
 """
 
 import logging
+import os
+import sys
 from typing import Dict, List, Optional, Type
 
-from .base import CodeMapBackend
+# Handle imports for both runtime (relative) and testing (absolute) scenarios
+try:
+    from .base import CodeMapBackend
+except ImportError:
+    # Add backends directory to path for testing
+    backends_dir = os.path.dirname(os.path.abspath(__file__))
+    if backends_dir not in sys.path:
+        sys.path.insert(0, backends_dir)
+    from base import CodeMapBackend  # noqa: F401
 
 logger = logging.getLogger(__name__)
 

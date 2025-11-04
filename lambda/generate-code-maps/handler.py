@@ -27,6 +27,7 @@ import hashlib
 import json
 import logging
 import os
+from collections import defaultdict
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -34,8 +35,17 @@ import boto3
 from botocore.exceptions import ClientError
 
 # Backend abstraction imports
-from backends import get_backend, list_backends
-from state_tracker import StateTracker
+# Import using sys.path to handle both runtime and testing scenarios
+import os
+import sys
+
+# Add current directory to path for imports
+handler_dir = os.path.dirname(os.path.abspath(__file__))
+if handler_dir not in sys.path:
+    sys.path.insert(0, handler_dir)
+
+from backends import get_backend, list_backends  # noqa: E402
+from state_tracker import StateTracker  # noqa: E402
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)

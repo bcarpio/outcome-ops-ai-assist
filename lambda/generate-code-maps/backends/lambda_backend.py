@@ -7,13 +7,22 @@ and supports incremental updates via git-based change detection.
 
 import logging
 import os
+import sys
 from collections import defaultdict
 from typing import Any, Dict, List, Optional
 from urllib.request import Request, urlopen
 from urllib.error import URLError
 import json
 
-from .base import CodeMapBackend, CodeUnit, ChangeDetectionResult
+# Handle imports for both runtime (relative) and testing (absolute) scenarios
+try:
+    from .base import CodeMapBackend, CodeUnit, ChangeDetectionResult
+except ImportError:
+    # Add backends directory to path for testing
+    backends_dir = os.path.dirname(os.path.abspath(__file__))
+    if backends_dir not in sys.path:
+        sys.path.insert(0, backends_dir)
+    from base import CodeMapBackend, CodeUnit, ChangeDetectionResult  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
@@ -519,5 +528,8 @@ class LambdaServerlessBackend(CodeMapBackend):
 
 
 # Auto-register Lambda backend
-from .factory import register_backend
+try:
+    from .factory import register_backend
+except ImportError:
+    from factory import register_backend  # noqa: F401
 register_backend("lambda", LambdaServerlessBackend)
