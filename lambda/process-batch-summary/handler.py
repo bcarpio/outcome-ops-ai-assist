@@ -23,14 +23,23 @@ from urllib.request import Request, urlopen
 from urllib.error import URLError
 
 import boto3
+from botocore.config import Config
 from botocore.exceptions import ClientError
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 # AWS clients (region inferred from environment)
+
+# Configure boto3 with longer timeouts for Bedrock (Claude can take 2-3 minutes for large responses)
+bedrock_config = Config(
+    read_timeout=300,  # 5 minutes read timeout
+    connect_timeout=10,
+    retries={'max_attempts': 3}
+)
+
 dynamodb_client = boto3.client("dynamodb")
-bedrock_client = boto3.client("bedrock-runtime")
+bedrock_client = boto3.client("bedrock-runtime", config=bedrock_config)
 ssm_client = boto3.client("ssm")
 
 # Configuration (loaded from SSM at container startup)
