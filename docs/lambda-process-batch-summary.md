@@ -36,11 +36,19 @@ Delete Message from Queue (success) or Retry (failure)
 The Lambda handles different batch types with specialized prompts:
 
 - **infrastructure**: Terraform files - describes resources and architecture
-- **handler-group**: Lambda handlers - describes endpoints and patterns
+- **handler-group**: Lambda handlers - **detailed implementation documentation** including:
+  - Function signatures with parameter types and format specifications
+  - Query patterns (DynamoDB PK/SK, filters, S3 access)
+  - Returns and error codes (200, 400, 404, 500) with trigger conditions
+  - Data contracts (slug format, ID format, field names)
+  - Common pitfalls with examples (incorrect vs correct usage)
+  - Cross-references to related functions and utilities
 - **tests**: Test files - describes testing patterns and coverage
 - **shared**: Shared utilities - describes common code and helpers
 - **schemas**: Schema definitions - describes data structures and validation
 - **docs**: Documentation files - describes topics and organization
+
+**Note**: The handler-group batch type generates comprehensive debugging documentation, not just high-level summaries. This enables developers to debug issues without reading source code directly.
 
 ## Example Input (SQS Message)
 
