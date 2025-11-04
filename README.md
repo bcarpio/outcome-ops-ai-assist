@@ -108,6 +108,7 @@ outcome-ops-ai-assist/
 │   │   ├── ADR-001-create-adrs.md    # ADR pattern and template
 │   │   └── TEMPLATE.md               # Template for new ADRs
 │   ├── lambda-ingest-docs.md         # Ingest Lambda documentation
+│   ├── lambda-generate-code-maps.md  # Code maps Lambda documentation
 │   ├── architecture.md               # System architecture & design
 │   ├── deployment.md                 # Deployment & operations guide
 │   └── README.md                     # This docs directory overview
@@ -116,6 +117,14 @@ outcome-ops-ai-assist/
 │   │   ├── handler.py               # Main ingestion handler
 │   │   ├── requirements.txt         # Python dependencies
 │   │   └── tests/                   # Unit tests for this Lambda
+│   ├── generate-code-maps/          # Lambda: Generate code maps
+│   │   ├── handler.py               # Main code map generation handler
+│   │   ├── backends/                # Pluggable backend abstraction
+│   │   │   ├── base.py              # Abstract base classes
+│   │   │   ├── factory.py           # Backend registry and factory
+│   │   │   └── lambda_backend.py    # Lambda serverless backend
+│   │   ├── state_tracker.py         # State persistence for incremental updates
+│   │   └── requirements.txt         # Python dependencies
 │   └── tests/
 │       ├── unit/                    # Unit tests for all Lambdas
 │       ├── integration/             # Integration tests
@@ -167,7 +176,19 @@ aws lambda invoke \
 
 ### 2. Code Map Generation
 
-Analyze your repositories to extract architectural patterns and code organization.
+Analyze your repositories to extract architectural patterns and code organization using a **pluggable backend abstraction**.
+
+**Backend Architecture:**
+- **Pluggable design**: Supports multiple architecture types (Lambda, K8s, monolith)
+- **Lambda Serverless Backend**: Discovers Lambda handlers, infrastructure, frontend, tests, and documentation
+- **Backend Factory**: Registry-based pattern for easy backend instantiation
+- **State Tracking**: Incremental updates via git-based change detection
+- **Extensible**: Add new backends by implementing the CodeMapBackend interface
+
+**Currently Supported:**
+- **Lambda serverless**: Analyzes AWS Lambda architectures (current implementation)
+- **Kubernetes**: Coming soon
+- **Monolith**: Coming soon
 
 **Full details:** See [`docs/lambda-generate-code-maps.md`](docs/lambda-generate-code-maps.md)
 
