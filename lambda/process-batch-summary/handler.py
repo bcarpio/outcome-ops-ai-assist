@@ -119,10 +119,10 @@ def retry_bedrock_call(func, max_retries: int = 5):
             if not is_retryable or attempt == max_retries:
                 raise
 
-            # More aggressive exponential backoff for queue processing
-            # 2s, 4s, 8s, 16s, 30s
-            delay_s = min(2 ** attempt, 30)
-            logger.warning(f"Bedrock call failed (attempt {attempt}/{max_retries}), retrying in {delay_s}s...")
+            # VERY aggressive exponential backoff for severe throttling
+            # 10s, 20s, 40s, 80s, 120s = up to 2 minutes per retry
+            delay_s = min(10 * (2 ** (attempt - 1)), 120)
+            logger.warning(f"Bedrock throttled (attempt {attempt}/{max_retries}), waiting {delay_s}s before retry...")
             time.sleep(delay_s)
 
     raise last_error
@@ -375,6 +375,8 @@ def process_batch_record(record: Dict[str, Any]) -> None:
     Raises:
         Exception: If processing fails (triggers SQS retry)
     """
+    import time
+
     batch = json.loads(record["body"])
 
     logger.info(
@@ -393,6 +395,12 @@ def process_batch_record(record: Dict[str, Any]) -> None:
         raise Exception(f"Failed to store batch summary for {batch['group_name']}")
 
     logger.info(f"Successfully processed {batch['batch_type']} summary for {batch['group_name']}")
+
+    # Add cooldown period to prevent Bedrock throttling on next message
+    # This allows rate limits to reset between batches
+    cooldown_seconds = 10
+    logger.info(f"Waiting {cooldown_seconds}s cooldown before next message...")
+    time.sleep(cooldown_seconds)
 
 
 def handler(event, context):
