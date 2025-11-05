@@ -1,6 +1,8 @@
 # CLI Usage Guide: outcome-ops-assist
 
-The `outcome-ops-assist` CLI tool provides a simple command-line interface for querying the OutcomeOps AI knowledge base. It leverages the full RAG (Retrieval Augmented Generation) pipeline to answer questions about your architectural decisions, coding standards, and patterns.
+The `outcome-ops-assist` CLI tool provides a command-line interface for:
+- **Querying the knowledge base** - Ask questions about architectural decisions, coding standards, and patterns using RAG
+- **Analyzing Pull Requests** - Run AI-powered checks on GitHub PRs for compliance, duplication, and quality
 
 ## Installation
 
@@ -37,15 +39,18 @@ outcome-ops-assist --help
    ```
 
 2. **Deployed Infrastructure**: The Lambda functions must be deployed:
-   - `{env}-outcome-ops-ai-assist-query-kb`
-   - `{env}-outcome-ops-ai-assist-vector-query`
-   - `{env}-outcome-ops-ai-assist-ask-claude`
+   - For KB queries: `{env}-outcome-ops-ai-assist-query-kb`, `vector-query`, `ask-claude`
+   - For PR analysis: `{env}-outcome-ops-ai-assist-analyze-pr`, `process-pr-check`
 
 3. **Knowledge Base**: The knowledge base must be populated with ADRs and code maps
 
+4. **GitHub Token** (for PR analysis): Stored in SSM Parameter Store at `/{env}/{app_name}/github/token`
+
 ## Basic Usage
 
-### Simple Query
+The CLI supports two modes: **knowledge base queries** (default) and **PR analysis** (`analyze-pr` command).
+
+### Knowledge Base Query
 
 ```bash
 outcome-ops-assist "What are our Lambda handler standards?"
@@ -85,6 +90,31 @@ outcome-ops-assist "What Terraform modules should I use?" --topK 10
 outcome-ops-assist "How should API routes be defined?" --topK 5 --env dev
 ```
 
+### PR Analysis
+
+```bash
+# Analyze a GitHub Pull Request
+outcome-ops-assist analyze-pr 123 owner/repo
+
+# Specify environment
+outcome-ops-assist analyze-pr 456 myorg/myrepo --env prd
+```
+
+**Output:**
+```
+🔍 Analyzing Pull Request...
+Environment: dev
+Repository: owner/repo
+PR Number: 123
+
+✅ Analysis started for PR #123
+
+Queued 3 check(s) for processing
+Results will be posted as comments on the PR when complete
+
+View PR: https://github.com/owner/repo/pull/123
+```
+
 ## Command-Line Options
 
 | Option | Description | Default | Example |
@@ -112,6 +142,121 @@ ENVIRONMENT=prd outcome-ops-assist "Your question"
 
 # Combine multiple variables
 AWS_PROFILE=production ENVIRONMENT=prd outcome-ops-assist "Your question"
+```
+
+## PR Analysis
+
+The `analyze-pr` command triggers AI-powered checks on GitHub Pull Requests.
+
+### How It Works
+
+1. **Invokes `analyze-pr` Lambda** - Fetches PR metadata and changed files from GitHub
+2. **Queues check jobs** - Sends jobs to SQS for async processing
+3. **Workers process checks** - `process-pr-check` Lambda executes 5 different checks
+4. **Results posted** - Check results appear as GitHub PR comments
+
+### Available Checks
+
+| Check | Description | Trigger Condition |
+|-------|-------------|-------------------|
+| **ADR Compliance** | Verifies code follows documented architectural standards using Claude | Lambda handlers or Terraform files changed |
+| **Architectural Duplication** | Detects similar functionality across repos using similarity analysis | New or modified Lambda handlers |
+| **Breaking Changes** | Identifies dependencies that may be affected | Modified or removed Lambda handlers |
+| **README Freshness** | Ensures README documents new infrastructure | Changes in `lambda/`, `terraform/`, or `docs/` |
+| **Test Coverage** | Verifies new handlers have corresponding tests | New Lambda handler files added |
+
+### Usage Examples
+
+```bash
+# Analyze a PR in your organization
+outcome-ops-assist analyze-pr 42 myorg/myrepo
+
+# Analyze a PR in production environment
+outcome-ops-assist analyze-pr 123 owner/repo --env prd
+
+# The command returns immediately after queueing checks
+# Results appear as GitHub PR comments within 1-2 minutes
+```
+
+### Check Results
+
+Results are posted as individual comments on the PR:
+
+**Example: ADR Compliance PASS**
+```markdown
+✅ ADR COMPLIANCE: All files follow ADR standards
+
+Details:
+- lambda/new-handler/handler.py: Uses Pydantic schemas
+- terraform/main.tf: Follows infrastructure conventions
+
+Check completed at 2025-01-15T10:00:00Z
+```
+
+**Example: README Freshness WARN**
+```markdown
+⚠️ README FRESHNESS: README.md not updated
+
+Details:
+- Infrastructure files changed but README not updated
+
+Check completed at 2025-01-15T10:00:00Z
+```
+
+### Error Handling
+
+**Invalid PR number:**
+```bash
+$ outcome-ops-assist analyze-pr abc owner/repo
+Error: PR number must be a positive integer
+```
+
+**Invalid repository format:**
+```bash
+$ outcome-ops-assist analyze-pr 123 invalid
+Error: Repository must be in format 'owner/repo'
+```
+
+**Lambda not found:**
+```bash
+$ outcome-ops-assist analyze-pr 123 owner/repo
+❌ Error: Failed to invoke Lambda function: dev-outcome-ops-ai-assist-analyze-pr
+Make sure the function exists and you have permissions to invoke it
+```
+
+### Workflow Integration
+
+**Pre-merge checklist:**
+```bash
+# 1. Create PR on GitHub
+# 2. Trigger analysis
+outcome-ops-assist analyze-pr $PR_NUMBER $REPOSITORY
+
+# 3. Wait for check results to appear as comments
+# 4. Address any FAIL or WARN findings
+# 5. Merge when all checks pass
+```
+
+**CI/CD Integration:**
+```yaml
+# .github/workflows/pr-analysis.yml
+name: PR Analysis
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Analyze PR
+        run: |
+          outcome-ops-assist analyze-pr \
+            ${{ github.event.pull_request.number }} \
+            ${{ github.repository }}
+        env:
+          AWS_PROFILE: ${{ secrets.AWS_PROFILE }}
+          ENVIRONMENT: dev
 ```
 
 ## Common Use Cases
@@ -474,11 +619,16 @@ outcome-ops-assist "What SSM parameters are required?"
 
 ## Related Documentation
 
+**Lambda Functions:**
+- **[Lambda: Query KB](lambda-query-kb.md)** - Knowledge base query pipeline
+- **[Lambda: Analyze PR](lambda-analyze-pr.md)** - PR analysis orchestration
+- **[Lambda: Process PR Check](lambda-process-pr-check.md)** - PR check worker and AI-powered analysis
+
+**General:**
 - **[Architecture Overview](architecture.md)** - System design and components
-- **[Lambda Documentation](lambda-query-kb.md)** - Query KB Lambda details
 - **[Getting Started](getting-started.md)** - Initial setup guide
 - **[Claude Guidance](claude-guidance.md)** - Development best practices
 
 ---
 
-**Built for developer velocity.** Query your knowledge base. Get instant answers. Code with confidence.
+**Built for developer velocity.** Query your knowledge base. Analyze your PRs. Code with confidence.
