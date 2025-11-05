@@ -87,17 +87,42 @@ git commit -m "feat(component): clear description of what changed"
 git push origin main
 ```
 
-**Commit messages follow conventional commits:**
+### Git Commit Message Standards
+
+**All commit messages MUST follow the conventional commits format:**
+
 ```
-feat(component): add new feature
-fix(component): fix specific bug
-docs(component): update documentation
-refactor(component): improve code quality
-test(component): add or update tests
-chore(component): maintenance tasks
+<type>(<scope>): <description>
+
+[optional body]
+
+[optional footer]
 ```
 
-**No emojis in commit messages** - See claude-guidance.md for details.
+**Required commit types:**
+- `feat(scope):` - New features or functionality
+- `fix(scope):` - Bug fixes
+- `docs(scope):` - Documentation changes only
+- `refactor(scope):` - Code improvements without changing functionality
+- `test(scope):` - Test additions or updates
+- `chore(scope):` - Maintenance tasks, dependency updates, configuration
+
+**Examples:**
+```
+feat(lambda): add query-kb Lambda function
+fix(terraform): correct IAM policy for DynamoDB access
+docs(readme): update installation instructions
+refactor(handler): improve error handling logic
+test(query-kb): add unit tests for vector search
+chore(deps): upgrade boto3 to version 1.28.0
+```
+
+**Rules:**
+- Scope is required (e.g., lambda, terraform, cli, docs)
+- Description must be clear and concise
+- Use lowercase for type and description
+- No period at the end of the description
+- **No emojis in commit messages**
 
 ### 5. Terraform Deployment Workflow
 
@@ -142,7 +167,7 @@ terraform apply terraform.prd.out
 
 ### 6. Testing Strategy
 
-Tests are organized in `lambda/tests/` directory following ADR-003 Testing Standards.
+Tests are organized in `lambda/tests/` directory.
 
 **Test structure:**
 ```
@@ -348,8 +373,6 @@ outcome-ops-assist "What Terraform module version should I use?"
 ## Related ADRs
 
 - ADR-001: Creating ADRs - How to document architectural decisions
-- ADR-003: Testing Standards - Test pyramid and patterns (referenced in tests)
-- ADR-004: Lambda Handler Standards - Lambda function conventions (referenced in docs)
 
 ## Version History
 
