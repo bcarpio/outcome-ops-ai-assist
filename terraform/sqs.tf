@@ -76,7 +76,7 @@ module "pr_checks_queue" {
   name                        = "${var.environment}-${var.app_name}-pr-checks-queue.fifo"
   fifo_queue                  = true
   content_based_deduplication = false # We provide explicit MessageDeduplicationId
-  visibility_timeout_seconds  = 300   # 5 minutes for check processing
+  visibility_timeout_seconds  = 720   # 12 minutes (Lambda timeout is 10 minutes)
 
   # Dead letter queue configuration
   redrive_policy = {
