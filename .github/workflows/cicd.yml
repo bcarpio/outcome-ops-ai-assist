@@ -135,6 +135,7 @@ jobs:
             --cov=lambda/process-batch-summary \
             --cov-report=xml:lambda/coverage.xml \
             --cov-report=term-missing \
+            --junitxml=lambda/junit.xml \
             -v
         continue-on-error: true
 
