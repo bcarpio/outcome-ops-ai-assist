@@ -123,18 +123,17 @@ jobs:
 
       - name: Run tests with coverage
         run: |
-          cd lambda/tests
-          # Run tests with coverage for SonarCloud
-          python -m pytest unit/ \
-            --cov=../vector-query \
-            --cov=../ask-claude \
-            --cov=../query-kb \
-            --cov=../ingest-docs \
-            --cov=../generate-code-maps \
-            --cov=../analyze-pr \
-            --cov=../process-pr-check \
-            --cov=../process-batch-summary \
-            --cov-report=xml:../coverage.xml \
+          # Run pytest from project root for correct coverage paths
+          python -m pytest lambda/tests/unit/ \
+            --cov=lambda/vector-query \
+            --cov=lambda/ask-claude \
+            --cov=lambda/query-kb \
+            --cov=lambda/ingest-docs \
+            --cov=lambda/generate-code-maps \
+            --cov=lambda/analyze-pr \
+            --cov=lambda/process-pr-check \
+            --cov=lambda/process-batch-summary \
+            --cov-report=xml:lambda/coverage.xml \
             --cov-report=term-missing \
             -v
         continue-on-error: true
