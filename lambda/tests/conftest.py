@@ -8,5 +8,9 @@ available to all test files.
 import sys
 import os
 
+# Set AWS region for tests (required by boto3 clients even with moto mocking)
+os.environ.setdefault('AWS_DEFAULT_REGION', 'us-west-2')
+os.environ.setdefault('AWS_REGION', 'us-west-2')
+
 # Add parent directory to path so tests can import from lambda modules
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
