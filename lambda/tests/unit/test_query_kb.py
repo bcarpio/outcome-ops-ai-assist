@@ -41,6 +41,20 @@ class TestInvokeLambda:
         import boto3
         from moto import mock_aws
 
+        # Create IAM role first (required by moto)
+        iam_client = boto3.client("iam", region_name="us-west-2")
+        iam_client.create_role(
+            RoleName="test-role",
+            AssumeRolePolicyDocument=json.dumps({
+                "Version": "2012-10-17",
+                "Statement": [{
+                    "Effect": "Allow",
+                    "Principal": {"Service": "lambda.amazonaws.com"},
+                    "Action": "sts:AssumeRole"
+                }]
+            })
+        )
+
         # Create a real Lambda client (mocked by moto)
         lambda_client = boto3.client("lambda", region_name="us-west-2")
 

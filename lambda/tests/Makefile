@@ -1,7 +1,8 @@
 .PHONY: test test-unit test-integration test-coverage clean help
 
-# Python executable from virtual environment
-PYTHON := ../../venv/bin/python3.12
+# Python executable - use venv if available, otherwise use system python
+VENV_PYTHON := ../../venv/bin/python3.12
+PYTHON := $(shell test -f $(VENV_PYTHON) && echo $(VENV_PYTHON) || echo python3)
 
 help:
 	@echo "OutcomeOps AI Assist Lambda Test Suite"
