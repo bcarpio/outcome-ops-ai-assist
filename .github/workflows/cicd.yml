@@ -151,50 +151,26 @@ jobs:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
 
-  terraform-plan:
-    name: Terraform Plan
+  terraform-validate:
+    name: Terraform Init & Validate
     runs-on: ubuntu-latest
     needs: sonarcloud
-    outputs:
-      tf_plan_exitcode: ${{ steps.plan.outputs.exitcode }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
-      - name: Configure AWS Credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v2
-        with:
-          role-to-assume: arn:aws:iam::136400015737:role/github-actions-role
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Setup Python 3.12
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
 
       - name: Terraform Init
-        run: terraform init -input=false
+        run: terraform init -input=false -backend=false
         working-directory: ${{ env.TERRAFORM_DIR }}
 
-      - name: Select Terraform Workspace
-        run: terraform workspace select dev
+      - name: Terraform Format Check
+        run: terraform fmt -check -recursive
         working-directory: ${{ env.TERRAFORM_DIR }}
 
       - name: Terraform Validate
         run: terraform validate
         working-directory: ${{ env.TERRAFORM_DIR }}
-
-      - name: Terraform Plan
-        id: plan
-        run: terraform plan -out=tfplan -var-file=${{ env.TF_VARS_FILE }}
-        working-directory: ${{ env.TERRAFORM_DIR }}
-
-      - name: Upload tfplan artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: tfplan
-          path: terraform/tfplan
 
