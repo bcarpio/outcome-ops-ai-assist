@@ -23,8 +23,11 @@ github_api_raw_content = handler_module.github_api_raw_content
 github_api_request = handler_module.github_api_request
 ingest_adr = handler_module.ingest_adr
 ingest_readme = handler_module.ingest_readme
+ingest_doc = handler_module.ingest_doc
+load_config = handler_module.load_config
 store_in_dynamodb = handler_module.store_in_dynamodb
 upload_to_s3 = handler_module.upload_to_s3
+handler = handler_module.handler
 
 
 class TestComputeContentHash:
@@ -341,3 +344,164 @@ class TestGithubApiRequest:
         request_obj = call_args[0][0]
         assert "Authorization" in request_obj.headers
         assert "Bearer" in request_obj.headers["Authorization"]
+
+
+class TestLoadConfig:
+    """Test configuration loading from SSM."""
+
+    @patch("ingest_docs_handler.ssm_client")
+    def test_load_config_success(self, mock_ssm):
+        """Test successful configuration loading."""
+        # Arrange
+        mock_ssm.get_parameter.side_effect = [
+            {"Parameter": {"Value": "test-kb-bucket"}},
+            {"Parameter": {"Value": "test-code-maps-table"}},
+            {"Parameter": {"Value": "ghp_test_token"}}
+        ]
+
+        # Act
+        load_config()
+
+        # Assert
+        assert handler_module.KB_BUCKET == "test-kb-bucket"
+        assert handler_module.CODE_MAPS_TABLE == "test-code-maps-table"
+        assert handler_module.GITHUB_TOKEN == "ghp_test_token"
+        assert mock_ssm.get_parameter.call_count == 3
+
+    @patch("ingest_docs_handler.ssm_client")
+    def test_load_config_failure(self, mock_ssm):
+        """Test configuration loading failure."""
+        # Arrange
+        from botocore.exceptions import ClientError
+        mock_ssm.get_parameter.side_effect = ClientError(
+            {"Error": {"Code": "ParameterNotFound"}}, "get_parameter"
+        )
+
+        # Act & Assert
+        with pytest.raises(ClientError):
+            load_config()
+
+
+class TestIngestDoc:
+    """Test generic document ingestion."""
+
+    @patch("ingest_docs_handler.store_in_dynamodb")
+    @patch("ingest_docs_handler.generate_embedding")
+    @patch("ingest_docs_handler.upload_to_s3")
+    def test_ingest_doc_success(self, mock_upload, mock_embedding, mock_store):
+        """Test successful document ingestion."""
+        # Arrange
+        doc_path = "docs/architecture.md"
+        content = "# Architecture\nTest documentation content"
+        mock_upload.return_value = True
+        mock_embedding.return_value = [0.1] * 1024
+        mock_store.return_value = True
+
+        # Act
+        result = ingest_doc("repo", doc_path, content)
+
+        # Assert
+        assert result is True
+        mock_upload.assert_called_once()
+        mock_embedding.assert_called_once()
+        mock_store.assert_called_once()
+
+    @patch("ingest_docs_handler.upload_to_s3")
+    def test_ingest_doc_upload_failure(self, mock_upload):
+        """Test document ingestion with upload failure."""
+        # Arrange
+        mock_upload.return_value = False
+
+        # Act
+        result = ingest_doc("repo", "docs/test.md", "content")
+
+        # Assert
+        assert result is False
+
+    @patch("ingest_docs_handler.generate_embedding")
+    @patch("ingest_docs_handler.upload_to_s3")
+    def test_ingest_doc_empty_embedding(self, mock_upload, mock_embedding):
+        """Test document ingestion with empty embedding."""
+        # Arrange
+        mock_upload.return_value = True
+        mock_embedding.return_value = []
+
+        # Act
+        result = ingest_doc("repo", "docs/test.md", "content")
+
+        # Assert
+        assert result is False
+
+
+class TestHandler:
+    """Test main Lambda handler."""
+
+    @patch("ingest_docs_handler.KB_BUCKET", None)
+    @patch("ingest_docs_handler.load_config")
+    @patch("ingest_docs_handler.ssm_client")
+    @patch("ingest_docs_handler.ingest_adr")
+    @patch("ingest_docs_handler.ingest_readme")
+    @patch("ingest_docs_handler.ingest_doc")
+    @patch("ingest_docs_handler.list_directory_files")
+    @patch("ingest_docs_handler.github_api_raw_content")
+    def test_handler_success(
+        self, mock_raw_content, mock_list_files, mock_ingest_doc,
+        mock_ingest_readme, mock_ingest_adr, mock_ssm, mock_load_config
+    ):
+        """Test successful handler execution."""
+        # Arrange
+        event = {}
+        context = {}
+
+        # Mock SSM allowlist
+        mock_ssm.get_parameter.return_value = {
+            "Parameter": {
+                "Value": json.dumps({
+                    "repos": [
+                        {
+                            "name": "test-repo",
+                            "project": "owner/test-repo",
+                            "type": "standards"
+                        }
+                    ]
+                })
+            }
+        }
+
+        # Mock GitHub responses
+        mock_list_files.side_effect = [
+            ["docs/adr/ADR-001.md"],  # ADRs
+            []  # docs directory
+        ]
+        mock_raw_content.return_value = "# Test Content"
+        mock_ingest_adr.return_value = True
+        mock_ingest_readme.return_value = True
+
+        # Act
+        response = handler(event, context)
+
+        # Assert
+        assert response["statusCode"] == 200
+        body = json.loads(response["body"])
+        assert "message" in body
+        assert "documents_ingested" in body
+        mock_load_config.assert_called_once()
+
+    @patch("ingest_docs_handler.KB_BUCKET", "test-bucket")
+    @patch("ingest_docs_handler.ssm_client")
+    def test_handler_invalid_allowlist(self, mock_ssm):
+        """Test handler with invalid allowlist structure."""
+        # Arrange
+        event = {}
+        context = {}
+        mock_ssm.get_parameter.return_value = {
+            "Parameter": {"Value": json.dumps({"invalid": "structure"})}
+        }
+
+        # Act
+        response = handler(event, context)
+
+        # Assert
+        assert response["statusCode"] == 400
+        body = json.loads(response["body"])
+        assert "Invalid allowlist structure" in body["error"]
