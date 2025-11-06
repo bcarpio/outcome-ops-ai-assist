@@ -124,14 +124,19 @@ jobs:
       - name: Run tests with coverage
         run: |
           cd lambda/tests
-          make test-unit
-          # Generate coverage for SonarCloud
-          cd ..
-          python -m pytest tests/unit/ \
-            --cov=. \
+          # Run tests with coverage for SonarCloud
+          python -m pytest unit/ \
+            --cov=../vector-query \
+            --cov=../ask-claude \
+            --cov=../query-kb \
+            --cov=../ingest-docs \
+            --cov=../generate-code-maps \
+            --cov=../analyze-pr \
+            --cov=../process-pr-check \
+            --cov=../process-batch-summary \
             --cov-report=xml:coverage.xml \
-            --cov-report=term \
-            -m unit
+            --cov-report=term-missing \
+            -v
         continue-on-error: true
 
       - name: SonarCloud Scan
