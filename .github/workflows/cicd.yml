@@ -131,7 +131,6 @@ jobs:
             -v
           coverage xml -o lambda/coverage.xml
           coverage report --skip-covered
-        continue-on-error: true
 
       - name: SonarCloud Scan
         uses: SonarSource/sonarqube-scan-action@v5.1.0
@@ -146,6 +145,12 @@ jobs:
             -Dsonar.exclusions=**/*_test.py,**/tests/**,**/__pycache__/**,**/venv/**,**/bin/**,**/lib/**
             -Dsonar.test.inclusions=**/tests/**/*.py
             -Dsonar.host.url=https://sonarcloud.io
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+      - name: SonarCloud Quality Gate check
+        uses: SonarSource/sonarqube-quality-gate-action@v1.1.0
+        timeout-minutes: 5
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
