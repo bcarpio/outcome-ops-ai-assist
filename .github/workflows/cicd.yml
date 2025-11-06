@@ -134,7 +134,7 @@ jobs:
             --cov=../analyze-pr \
             --cov=../process-pr-check \
             --cov=../process-batch-summary \
-            --cov-report=xml:coverage.xml \
+            --cov-report=xml:../coverage.xml \
             --cov-report=term-missing \
             -v
         continue-on-error: true
