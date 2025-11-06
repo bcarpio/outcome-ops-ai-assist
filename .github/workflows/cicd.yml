@@ -124,19 +124,13 @@ jobs:
       - name: Run tests with coverage
         run: |
           # Run pytest from project root for correct coverage paths
-          python -m pytest lambda/tests/unit/ \
-            --cov=lambda/vector-query \
-            --cov=lambda/ask-claude \
-            --cov=lambda/query-kb \
-            --cov=lambda/ingest-docs \
-            --cov=lambda/generate-code-maps \
-            --cov=lambda/analyze-pr \
-            --cov=lambda/process-pr-check \
-            --cov=lambda/process-batch-summary \
-            --cov-report=xml:lambda/coverage.xml \
-            --cov-report=term-missing \
+          # Using coverage run to track dynamically loaded modules
+          coverage run --source=lambda/vector-query,lambda/ask-claude,lambda/query-kb,lambda/ingest-docs,lambda/generate-code-maps,lambda/analyze-pr,lambda/process-pr-check,lambda/process-batch-summary \
+            -m pytest lambda/tests/unit/ \
             --junitxml=lambda/junit.xml \
             -v
+          coverage xml -o lambda/coverage.xml
+          coverage report --skip-covered
         continue-on-error: true
 
       - name: SonarCloud Scan
