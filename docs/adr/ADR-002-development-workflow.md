@@ -66,104 +66,35 @@ Before running `git commit`, ALWAYS execute:
 - `terraform apply` - Infrastructure is deployed via CI/CD or manual approval only
 - Direct Lambda function deployments
 
-### 4. Git Workflow (Solo Developer)
+### 4. Git Workflow and Commit Standards
 
-**Branch strategy:** None - all work goes to main
+See **ADR-003: Git Commit Standards** for complete details:
+- Conventional commits format: `<type>(<scope>): <description>`
+- Required commit types: feat, fix, docs, refactor, test, chore
+- Pre-commit checklist requirements
+- No emojis in commit messages
 
-Since this is solo development, create commits directly to main:
-
+**Quick reference:**
 ```bash
-# Pull latest
-git pull origin main
-
-# Make changes locally
-# ... edit files, run all pre-commit checks ...
-
-# Stage and commit with conventional commits
 git add .
-git commit -m "feat(component): clear description of what changed"
-
-# Push to main
+git commit -m "feat(lambda): clear description"
 git push origin main
 ```
 
-### Git Commit Message Standards
-
-**All commit messages MUST follow the conventional commits format:**
-
-```
-<type>(<scope>): <description>
-
-[optional body]
-
-[optional footer]
-```
-
-**Required commit types:**
-- `feat(scope):` - New features or functionality
-- `fix(scope):` - Bug fixes
-- `docs(scope):` - Documentation changes only
-- `refactor(scope):` - Code improvements without changing functionality
-- `test(scope):` - Test additions or updates
-- `chore(scope):` - Maintenance tasks, dependency updates, configuration
-
-**Examples:**
-```
-feat(lambda): add query-kb Lambda function
-fix(terraform): correct IAM policy for DynamoDB access
-docs(readme): update installation instructions
-refactor(handler): improve error handling logic
-test(query-kb): add unit tests for vector search
-chore(deps): upgrade boto3 to version 1.28.0
-```
-
-**Rules:**
-- Scope is required (e.g., lambda, terraform, cli, docs)
-- Description must be clear and concise
-- Use lowercase for type and description
-- No period at the end of the description
-- **No emojis in commit messages**
-
 ### 5. Terraform Deployment Workflow
 
-**Always use plan output files for safety and review:**
+See **ADR-004: Terraform Workflow Standards** for complete details:
+- Always use plan output files (`-out=terraform.dev.out`)
+- Review plans before applying
+- Test in dev before deploying to production
+- Use workspaces for environment isolation
 
+**Quick reference:**
 ```bash
-cd terraform
-
-# Step 1: Select workspace
 terraform workspace select dev
-
-# Step 2: Generate plan for dev environment
 terraform plan -var-file=dev.tfvars -out=terraform.dev.out
-
-# Step 3: Review the plan output
-# Check what resources will be created, modified, or destroyed
-
-# Step 4: Apply the plan (only after review)
 terraform apply terraform.dev.out
-
-# Step 5: Test in dev environment
-# Verify features work as expected
-# Check CloudWatch logs for errors
-
-# Step 6: Deploy to production (only after dev is stable)
-terraform workspace select prd
-terraform plan -var-file=prd.tfvars -out=terraform.prd.out
-# Review and apply
-terraform apply terraform.prd.out
 ```
-
-**Plan file naming:**
-- Dev environment: `terraform.dev.out`
-- Prd environment: `terraform.prd.out`
-- Never commit plan files to git (already in .gitignore)
-
-**Never:**
-- Apply Terraform without showing the plan first
-- Apply to production without testing in dev first
-- Force apply without reviewing the plan
-- Apply infrastructure changes without a commit in git history
 
 ### 6. Testing Strategy
 
@@ -247,10 +178,11 @@ Claude Code assistance follows this protocol:
 - Claude writes code according to ADRs and patterns in the knowledge base
 - Claude queries `outcome-ops-assist` for standards before implementing
 - Claude runs local checks: fmt, lint, test
-- Claude commits changes with proper conventional commit messages
+- Claude commits changes following ADR-003 (conventional commits)
 - Claude asks for approval before pushing to remote
 
 **Claude handles deployment:**
+- Claude follows ADR-004 for Terraform workflow
 - Claude generates terraform plan files with `-out=` flag
 - Claude displays plan output to developer
 - Claude explains the infrastructure changes clearly
@@ -265,8 +197,8 @@ Claude Code assistance follows this protocol:
 
 **Key principles:**
 - Always query `outcome-ops-assist` for standards before implementation
-- No emojis in commits or documentation
-- Follow conventional commit format
+- Follow ADR-003 for git commits (no emojis, conventional format)
+- Follow ADR-004 for Terraform deployments (plan files, review)
 - Include KMS decrypt permissions in all Lambda IAM policies
 - Use PK/SK keys for all DynamoDB items
 
@@ -310,24 +242,20 @@ make test-integration
 
 # Run full pipeline
 make all
-
-# Terraform commands
-cd terraform
-terraform workspace list
-terraform workspace select dev
-terraform validate
-terraform plan -var-file=dev.tfvars -out=terraform.dev.out
-terraform apply terraform.dev.out
 ```
 
-**Git commands:**
+**Git commands** - See ADR-003 for details:
 ```bash
 git pull origin main
-git status
-git add .
-git commit -m "conventional-format: description"
+git commit -m "feat(scope): description"
 git push origin main
-git log --oneline -10
+```
+
+**Terraform commands** - See ADR-004 for details:
+```bash
+terraform workspace select dev
+terraform plan -var-file=dev.tfvars -out=terraform.dev.out
+terraform apply terraform.dev.out
 ```
 
 **Query knowledge base:**
@@ -364,15 +292,16 @@ outcome-ops-assist "What Terraform module version should I use?"
 
 ### Best practices
 1. Run `make all` before every commit
-2. Always use `-out=` flag for terraform plan
-3. Always review plans before apply
+2. Follow git standards from ADR-003 (conventional commits, no emojis)
+3. Follow Terraform workflow from ADR-004 (use plan files, review before apply)
 4. Query `outcome-ops-assist` before implementing new features
-5. Follow conventional commit format without emojis
-6. Update docs/lambda-*.md when creating new Lambda functions
+5. Update docs/lambda-*.md when creating new Lambda functions
 
 ## Related ADRs
 
 - ADR-001: Creating ADRs - How to document architectural decisions
+- ADR-003: Git Commit Standards - Git workflow and commit message format
+- ADR-004: Terraform Workflow Standards - Infrastructure deployment process
 
 ## Version History
 

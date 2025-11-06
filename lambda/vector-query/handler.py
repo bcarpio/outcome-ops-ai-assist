@@ -187,7 +187,7 @@ def search_documents(query_embedding: List[float], documents: List[Dict[str, Any
         # Create result with score and metadata
         result = {
             "score": round(similarity, 4),
-            "text": doc["content"][:1000],  # Limit content size in response
+            "text": doc["content"][:5000],  # Limit content size in response
             "source": format_source(doc),
             "type": doc["type"],
             "repo": doc["repo"],
