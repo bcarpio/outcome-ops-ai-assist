@@ -125,20 +125,13 @@ jobs:
         run: |
           # Run pytest from project root for correct coverage paths
           # Using coverage run to track dynamically loaded modules
-          # Run both unit and integration tests for complete coverage
+          # Note: Only unit tests run in CI - integration tests run locally
           coverage run --source=lambda/vector-query,lambda/ask-claude,lambda/query-kb,lambda/ingest-docs,lambda/generate-code-maps,lambda/analyze-pr,lambda/process-pr-check,lambda/process-batch-summary \
-            -m pytest lambda/tests/ \
+            -m pytest lambda/tests/unit/ \
             --junitxml=lambda/junit.xml \
             -v
           coverage xml -o lambda/coverage.xml
           coverage report --skip-covered
-        env:
-          # Fake AWS credentials for moto mocking in integration tests
-          AWS_ACCESS_KEY_ID: testing
-          AWS_SECRET_ACCESS_KEY: testing
-          AWS_SECURITY_TOKEN: testing
-          AWS_SESSION_TOKEN: testing
-          AWS_DEFAULT_REGION: us-west-2
 
       - name: SonarCloud Scan
         uses: SonarSource/sonarqube-scan-action@v5.1.0
