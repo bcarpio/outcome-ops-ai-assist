@@ -38,7 +38,7 @@ jobs:
 
           PAYLOAD=$(cat <<EOF
           {
-            "prNumber": ${{ github.event.pull_request.number }},
+            "pr_number": ${{ github.event.pull_request.number }},
             "repository": "${{ github.repository }}"
           }
           EOF
