@@ -17,6 +17,8 @@ import sys
 try:
     from .base import CodeMapBackend
     from .factory import get_backend, list_backends, register_backend
+    # Import backends to trigger auto-registration
+    from . import lambda_backend  # noqa: F401
 except ImportError:
     # Add backends directory to path for testing
     backends_dir = os.path.dirname(os.path.abspath(__file__))
@@ -24,6 +26,7 @@ except ImportError:
         sys.path.insert(0, backends_dir)
     from base import CodeMapBackend  # noqa: F401
     from factory import get_backend, list_backends, register_backend  # noqa: F401
+    import lambda_backend  # noqa: F401
 
 __all__ = [
     "CodeMapBackend",

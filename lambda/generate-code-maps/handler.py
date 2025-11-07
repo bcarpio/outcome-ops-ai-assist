@@ -30,6 +30,8 @@ import os
 from collections import defaultdict
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+from urllib.request import Request, urlopen
+from urllib.error import URLError
 
 import boto3
 from botocore.exceptions import ClientError
