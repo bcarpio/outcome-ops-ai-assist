@@ -114,9 +114,12 @@ def query_knowledge_base(lambda_name: str, query: str, top_k: int = 3) -> Dict[s
 
         response_payload = json.loads(response["Payload"].read())
 
+        # Parse the body field (query-kb returns answer/sources inside body)
+        body = json.loads(response_payload.get("body", "{}"))
+
         return {
-            "answer": response_payload.get("answer", ""),
-            "sources": response_payload.get("sources", [])
+            "answer": body.get("answer", ""),
+            "sources": body.get("sources", [])
         }
 
     except ClientError as e:
