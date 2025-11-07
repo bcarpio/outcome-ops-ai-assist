@@ -1,21 +1,28 @@
 """Integration tests for ingest-docs Lambda handler flow."""
 
 import json
+import sys
+import os
+import importlib.util
 from unittest.mock import MagicMock, patch
 
 import boto3
 import pytest
-from moto import mock_dynamodb, mock_s3
+from moto import mock_aws
 
-from handler import handler
+# Import the ingest-docs handler explicitly to avoid conflicts with other handler modules
+_handler_path = os.path.join(os.path.dirname(__file__), '..', '..', 'ingest-docs', 'handler.py')
+_spec = importlib.util.spec_from_file_location("ingest_docs_handler", _handler_path)
+ingest_docs_handler = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(ingest_docs_handler)
+handler = ingest_docs_handler.handler
 
 
-@mock_s3
-@mock_dynamodb
-@patch("handler.GITHUB_TOKEN", "test-token")
-@patch("handler.github_api_request")
-@patch("handler.github_api_raw_content")
-def test_handler_ingest_single_adr(mock_github_raw, mock_github_api, s3, dynamodb):
+@mock_aws
+@patch("ingest_docs_handler.GITHUB_TOKEN", "test-token")
+@patch("ingest_docs_handler.github_api_request")
+@patch("ingest_docs_handler.github_api_raw_content")
+def test_handler_ingest_single_adr(mock_github_raw, mock_github_api):
     """Test handler ingesting a single ADR."""
     # Arrange - Set up AWS resources
     s3_client = boto3.client("s3", region_name="us-west-2")
@@ -48,11 +55,12 @@ def test_handler_ingest_single_adr(mock_github_raw, mock_github_api, s3, dynamod
     ]
 
     # Mock SSM and Bedrock
-    with patch("handler.ssm_client") as mock_ssm, patch("handler.bedrock_client") as mock_bedrock:
+    with patch("ingest_docs_handler.ssm_client") as mock_ssm, patch("ingest_docs_handler.bedrock_client") as mock_bedrock:
         mock_ssm.get_parameter.side_effect = [
             {"Parameter": {"Value": "dev-outcome-ops-ai-assist-kb"}},  # KB_BUCKET
             {"Parameter": {"Value": "dev-outcome-ops-ai-assist-code-maps"}},  # CODE_MAPS_TABLE
             {"Parameter": {"Value": "test-token"}},  # GITHUB_TOKEN
+            {"Parameter": {"Value": json.dumps({"repos": [{"name": "test-repo", "project": "test-owner"}]})}},  # repos-allowlist
         ]
 
         mock_bedrock.invoke_model.return_value = {
@@ -78,16 +86,15 @@ def test_handler_ingest_single_adr(mock_github_raw, mock_github_api, s3, dynamod
         assert scan_response["Count"] > 0
 
 
-@mock_s3
-@mock_dynamodb
-@patch("handler.GITHUB_TOKEN", "test-token")
-@patch("handler.github_api_request")
+@mock_aws
+@patch("ingest_docs_handler.GITHUB_TOKEN", "test-token")
+@patch("ingest_docs_handler.github_api_request")
 def test_handler_github_api_error(mock_github_api):
     """Test handler gracefully handles GitHub API errors."""
     # Arrange
     mock_github_api.side_effect = Exception("GitHub API error")
 
-    with patch("handler.ssm_client") as mock_ssm:
+    with patch("ingest_docs_handler.ssm_client") as mock_ssm:
         mock_ssm.get_parameter.side_effect = [
             {"Parameter": {"Value": "dev-outcome-ops-ai-assist-kb"}},
             {"Parameter": {"Value": "dev-outcome-ops-ai-assist-code-maps"}},
@@ -102,13 +109,12 @@ def test_handler_github_api_error(mock_github_api):
         assert "error" in result["body"].lower()
 
 
-@mock_s3
-@mock_dynamodb
-@patch("handler.GITHUB_TOKEN", "test-token")
+@mock_aws
+@patch("ingest_docs_handler.GITHUB_TOKEN", "test-token")
 def test_handler_with_empty_allowlist():
     """Test handler with invalid/empty allowlist."""
     # Arrange
-    with patch("handler.ssm_client") as mock_ssm, patch(
+    with patch("ingest_docs_handler.ssm_client") as mock_ssm, patch(
         "builtins.open", create=True
     ) as mock_open:
         mock_ssm.get_parameter.side_effect = [
@@ -125,12 +131,11 @@ def test_handler_with_empty_allowlist():
             handler({}, {})
 
 
-@mock_s3
-@mock_dynamodb
-@patch("handler.GITHUB_TOKEN", "test-token")
-@patch("handler.github_api_request")
-@patch("handler.github_api_raw_content")
-@patch("handler.bedrock_client")
+@mock_aws
+@patch("ingest_docs_handler.GITHUB_TOKEN", "test-token")
+@patch("ingest_docs_handler.github_api_request")
+@patch("ingest_docs_handler.github_api_raw_content")
+@patch("ingest_docs_handler.bedrock_client")
 def test_handler_multiple_documents(mock_bedrock, mock_github_raw, mock_github_api):
     """Test handler ingesting multiple documents."""
     # Arrange - Set up AWS resources
@@ -173,11 +178,12 @@ def test_handler_multiple_documents(mock_bedrock, mock_github_raw, mock_github_a
         "body": MagicMock(read=lambda: json.dumps({"embedding": [0.1] * 1024}).encode())
     }
 
-    with patch("handler.ssm_client") as mock_ssm:
+    with patch("ingest_docs_handler.ssm_client") as mock_ssm:
         mock_ssm.get_parameter.side_effect = [
             {"Parameter": {"Value": "dev-outcome-ops-ai-assist-kb"}},
             {"Parameter": {"Value": "dev-outcome-ops-ai-assist-code-maps"}},
             {"Parameter": {"Value": "test-token"}},
+            {"Parameter": {"Value": json.dumps({"repos": [{"name": "test-repo", "project": "test-owner"}]})}},  # repos-allowlist
         ]
 
         # Act

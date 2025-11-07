@@ -486,13 +486,15 @@ def handler(event, context):
         try:
             param_response = ssm_client.get_parameter(Name=allowlist_param)
             allowlist = json.loads(param_response["Parameter"]["Value"])
-        except ssm_client.exceptions.ParameterNotFound:
-            logger.error(f"Repos allowlist not found in SSM at {allowlist_param}")
-            logger.info("Make sure to deploy Terraform with repos_to_ingest configured in tfvars")
-            return {
-                "statusCode": 400,
-                "body": json.dumps({"error": "Repos allowlist not configured in SSM Parameter Store"}),
-            }
+        except ClientError as e:
+            if e.response['Error']['Code'] == 'ParameterNotFound':
+                logger.error(f"Repos allowlist not found in SSM at {allowlist_param}")
+                logger.info("Make sure to deploy Terraform with repos_to_ingest configured in tfvars")
+                return {
+                    "statusCode": 400,
+                    "body": json.dumps({"error": "Repos allowlist not configured in SSM Parameter Store"}),
+                }
+            raise
 
         if not allowlist or "repos" not in allowlist:
             logger.error("Invalid allowlist structure in SSM Parameter Store")
