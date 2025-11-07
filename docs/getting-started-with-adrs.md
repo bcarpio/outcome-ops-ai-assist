@@ -148,8 +148,8 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 ```
 
 ## References
-- Python logging best practices: [link]
-- Pydantic validation: [link]
+- [Python logging best practices](https://docs.python.org/3/howto/logging.html)
+- [Pydantic validation](https://docs.pydantic.dev/latest/concepts/validators/)
 ```
 
 ## More ADR Examples
