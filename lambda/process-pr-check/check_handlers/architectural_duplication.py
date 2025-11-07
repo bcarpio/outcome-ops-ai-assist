@@ -12,13 +12,22 @@ from typing import Dict, List, Any
 
 import boto3
 import requests
+from botocore.config import Config
 from botocore.exceptions import ClientError
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
+# Configure retry strategy for Bedrock to handle throttling better
+bedrock_config = Config(
+    retries={
+        'max_attempts': 10,
+        'mode': 'adaptive'
+    }
+)
+
 # AWS clients
-bedrock_client = boto3.client("bedrock-runtime", region_name="us-east-1")
+bedrock_client = boto3.client("bedrock-runtime", region_name="us-east-1", config=bedrock_config)
 lambda_client = boto3.client("lambda")
 ssm_client = boto3.client("ssm")
 
