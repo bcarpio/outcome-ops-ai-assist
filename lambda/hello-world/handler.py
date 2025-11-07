@@ -7,15 +7,20 @@ This is a simple test Lambda to validate the PR analysis workflow.
 import json
 import logging
 import math
-from typing import List
+from typing import Any, Dict, List
 
 import boto3
+from botocore.exceptions import ClientError
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 # AWS clients
 bedrock_client = boto3.client("bedrock-runtime")
+dynamodb_client = boto3.client("dynamodb")
+
+# Mock config for testing
+CODE_MAPS_TABLE = "test-table"
 
 
 def generate_embedding(text: str) -> List[float]:
@@ -82,6 +87,56 @@ def cosine_similarity(vec1: List[float], vec2: List[float]) -> float:
         return 0.0
 
     return dot_product / (magnitude1 * magnitude2)
+
+
+def scan_documents() -> List[Dict[str, Any]]:
+    """
+    Scan DynamoDB for all documents with embeddings.
+
+    Returns:
+        List of documents with embeddings and metadata
+    """
+    documents = []
+    scan_kwargs = {
+        "TableName": CODE_MAPS_TABLE,
+    }
+
+    try:
+        # Scan with pagination
+        while True:
+            response = dynamodb_client.scan(**scan_kwargs)
+
+            for item in response.get("Items", []):
+                # Extract fields
+                doc = {
+                    "pk": item.get("PK", {}).get("S", ""),
+                    "sk": item.get("SK", {}).get("S", ""),
+                    "type": item.get("type", {}).get("S", ""),
+                    "content": item.get("content", {}).get("S", ""),
+                    "repo": item.get("repo", {}).get("S", ""),
+                    "file_path": item.get("file_path", {}).get("S", ""),
+                }
+
+                # Extract embedding (stored as list of numbers)
+                embedding_list = item.get("embedding", {}).get("L", [])
+                doc["embedding"] = [float(x.get("N", 0)) for x in embedding_list]
+
+                # Only include documents with valid embeddings
+                if doc["embedding"] and len(doc["embedding"]) == 1024:
+                    documents.append(doc)
+
+            # Check if there are more items to scan
+            if "LastEvaluatedKey" not in response:
+                break
+
+            scan_kwargs["ExclusiveStartKey"] = response["LastEvaluatedKey"]
+
+        logger.info(f"[vector-query] Scanned {len(documents)} documents from DynamoDB")
+        return documents
+
+    except ClientError as e:
+        logger.error(f"[vector-query] Failed to scan DynamoDB: {e}")
+        raise
 
 
 def handler(event, context):
