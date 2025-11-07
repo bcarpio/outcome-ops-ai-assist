@@ -1,0 +1,66 @@
+name: PR Analysis
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches:
+      - main
+
+permissions:
+  id-token: write      # Required for OIDC
+  contents: read       # Required to checkout code
+  pull-requests: write # Required to post comments
+
+env:
+  AWS_REGION: us-west-2
+  ENVIRONMENT: prd
+
+jobs:
+  analyze-pr:
+    name: Analyze Pull Request
+    runs-on: ubuntu-latest
+    environment: prd
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials using OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: GitHubActions-PR-Analysis
+
+      - name: Invoke PR Analysis Lambda
+        run: |
+          FUNCTION_NAME="${{ env.ENVIRONMENT }}-outcome-ops-ai-assist-analyze-pr"
+
+          PAYLOAD=$(cat <<EOF
+          {
+            "prNumber": ${{ github.event.pull_request.number }},
+            "repository": "${{ github.repository }}"
+          }
+          EOF
+          )
+
+          echo "Invoking Lambda: $FUNCTION_NAME"
+          echo "Payload: $PAYLOAD"
+
+          aws lambda invoke \
+            --function-name "$FUNCTION_NAME" \
+            --payload "$PAYLOAD" \
+            --cli-binary-format raw-in-base64-out \
+            /tmp/response.json
+
+          echo "Lambda response:"
+          cat /tmp/response.json
+
+          # Check if the invocation was successful
+          if [ $? -eq 0 ]; then
+            echo "✅ PR analysis started successfully"
+            echo "Results will be posted as comments on the PR"
+          else
+            echo "❌ PR analysis failed"
+            exit 1
+          fi
