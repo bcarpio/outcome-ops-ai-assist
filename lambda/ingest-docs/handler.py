@@ -513,9 +513,9 @@ def handler(event, context):
             logger.info(f"Processing {repo_name} ({repo_project})...")
 
             try:
-                # Fetch ADRs from standards repos
-                if repo_type == "standards":
-                    logger.info(f"Fetching ADRs from {repo_name}...")
+                # Fetch ADRs from all repos (if they exist)
+                logger.info(f"Fetching ADRs from {repo_name}...")
+                try:
                     adr_files = list_directory_files(repo_project, "docs/adr", ref="main")
 
                     for adr_file in adr_files:
@@ -524,6 +524,8 @@ def handler(event, context):
                             content = github_api_raw_content(repo_project, adr_file)
                             if ingest_adr(repo_name, adr_file, content):
                                 total_docs_ingested += 1
+                except Exception as e:
+                    logger.info(f"No ADRs found in {repo_name} (docs/adr/ does not exist): {e}")
 
                 # Fetch READMEs from all repos
                 logger.info(f"Fetching READMEs from {repo_name}...")
@@ -543,30 +545,32 @@ def handler(event, context):
                         continue
 
                 # Fetch all documentation files from docs/ directory
-                logger.info(f"Fetching documentation files from {repo_name}...")
-                try:
-                    doc_files = list_directory_files(repo_project, "docs", ref="main")
-                    # Filter out ADRs and READMEs (already handled separately)
-                    doc_files = [
-                        f for f in doc_files
-                        if f.endswith(".md")
-                        and "docs/adr" not in f  # Skip ADRs (handled above)
-                        and not f.endswith("README.md")  # Skip READMEs (handled above)
-                        and not f.endswith("TEMPLATE.md")  # Skip template
-                    ]
+                # Only for application/internal repos (standards repos only need ADRs + READMEs)
+                if repo_type != "standards":
+                    logger.info(f"Fetching documentation files from {repo_name}...")
+                    try:
+                        doc_files = list_directory_files(repo_project, "docs", ref="main")
+                        # Filter out ADRs and READMEs (already handled separately)
+                        doc_files = [
+                            f for f in doc_files
+                            if f.endswith(".md")
+                            and "docs/adr" not in f  # Skip ADRs (handled above)
+                            and not f.endswith("README.md")  # Skip READMEs (handled above)
+                            and not f.endswith("TEMPLATE.md")  # Skip template
+                        ]
 
-                    for doc_file in doc_files:
-                        try:
-                            logger.info(f"Ingesting doc: {doc_file}")
-                            content = github_api_raw_content(repo_project, doc_file)
-                            if ingest_doc(repo_name, doc_file, content):
-                                total_docs_ingested += 1
-                        except URLError:
-                            logger.error(f"Failed to fetch doc: {doc_file}")
-                            continue
-                except Exception as e:
-                    logger.warning(f"Failed to list docs directory: {e}")
-                    # Continue with other processing even if docs fetch fails
+                        for doc_file in doc_files:
+                            try:
+                                logger.info(f"Ingesting doc: {doc_file}")
+                                content = github_api_raw_content(repo_project, doc_file)
+                                if ingest_doc(repo_name, doc_file, content):
+                                    total_docs_ingested += 1
+                            except URLError:
+                                logger.error(f"Failed to fetch doc: {doc_file}")
+                                continue
+                    except Exception as e:
+                        logger.warning(f"Failed to list docs directory: {e}")
+                        # Continue with other processing even if docs fetch fails
 
             except Exception as e:
                 logger.error(f"Error processing {repo_name}: {e}")
