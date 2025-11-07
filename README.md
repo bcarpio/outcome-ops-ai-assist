@@ -100,13 +100,25 @@ make deploy
 
 ---
 
+## OutcomeOps vs Other AI Coding Tools
+
+**GitHub Copilot / Cursor:** Autocomplete and chat, but no organizational context. Generates generic code requiring manual adaptation to your standards.
+
+**Devin:** Autonomous agent for tasks, but doesn't know YOUR patterns. Still generates code that needs refactoring to match your conventions.
+
+**ChatGPT / Claude (standalone):** Powerful, but requires pasting context every time. Not scalable. No integration with your codebase.
+
+**OutcomeOps:** Ingests YOUR ADRs, YOUR patterns, YOUR standards. AI generates code that already matches your organization. Review outcomes, not syntax.
+
+---
+
 ## Who Built This
 
 OutcomeOps was created by Brian Carpio, who previously built:
 
 - **Golden Pipelines (2014)** - Took deployment from 6 weeks → 1 week at Aetna
 - **AWS ProServe** - Led largest Healthcare & Life Sciences engagement in ProServe history
-- **Platform Engineering** - Before it had a name, building self-service infrastructure at Pearson (2012), Aetna (2014), Comcast (2019)
+- **Platform Engineering** - Before it had a name, building self-service infrastructure at Pearson (2012), Aetna (2014), Comcast (2018)
 
 OutcomeOps applies the same playbook to AI-assisted development:
 - Make the easy path the right path
@@ -147,14 +159,23 @@ OutcomeOps applies the same playbook to AI-assisted development:
 
 ---
 
-## Support
+## Get Started
 
-- GitHub Issues for bugs and feature requests
-- [Technical Reference](docs/technical-reference.md) for architecture questions
-- [Getting Started Guide](docs/getting-started.md) for setup help
+**Ready to try OutcomeOps?**
+
+- 🚀 **[Deploy Now](docs/getting-started.md)** - 5-minute setup guide
+- 📚 **[Learn ADRs](docs/getting-started-with-adrs.md)** - New to Architecture Decision Records?
+- 🎥 **[Watch Demo](docs/demo.md)** - See OutcomeOps in action
+- 💬 **[Ask Questions](https://github.com/bcarpio/outcome-ops-ai-assist/issues)** - GitHub Issues
+- 🏢 **Enterprise Support?** [Get in touch](https://www.linkedin.com/in/briancarpio/)
+
+**Contributing:**
+- Found a bug? [Open an issue](https://github.com/bcarpio/outcome-ops-ai-assist/issues)
+- Have a feature idea? [Start a discussion](https://github.com/bcarpio/outcome-ops-ai-assist/discussions)
+- Want to contribute? [Read technical reference](docs/technical-reference.md)
 
 ---
 
-**Built for solo developer velocity.** 🚀
+**Built for engineering velocity.** 🚀
 
-Outcome-driven development. Infrastructure by code. Engineering outcomes by Claude. Your vision, automated execution.
+Outcome-driven development. Infrastructure by code. Engineering outcomes by AI. Your vision, automated execution.

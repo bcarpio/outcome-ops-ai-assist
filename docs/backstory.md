@@ -191,7 +191,7 @@ That worked for infrastructure. It's working for code. And it'll work for whatev
 - **2009**: MongoDB at production scale (BroadHop, acquired by Cisco)
 - **2012**: Platform engineering before it had a name (Pearson - "Nibiru")
 - **2014**: Golden pipelines before Spotify popularized golden paths (Aetna - "Utopia")
-- **2019**: ADR-driven architecture at scale (Comcast)
+- **2018**: ADR-driven architecture at scale (Comcast)
 - **2022**: Largest HCLS platform engineering engagement (AWS ProServe at Gilead, $18M, re:Invent keynote)
 - **2025**: Context Engineering for AI-assisted development (OutcomeOps)
 
