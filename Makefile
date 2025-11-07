@@ -1,4 +1,4 @@
-.PHONY: help setup install fmt lint validate test test-unit test-integration test-coverage code-maps-load clean all
+.PHONY: help setup install fmt lint validate test test-unit test-integration test-coverage ingest-docs ingest-docs-repo generate-code-maps generate-code-maps-repo code-maps-load clean all
 
 # Default target
 help:
@@ -22,7 +22,11 @@ help:
 	@echo "  make test-coverage    Run tests with coverage report"
 	@echo ""
 	@echo "Data Loading:"
-	@echo "  make code-maps-load   Generate code maps for all repos (0-day load)"
+	@echo "  make ingest-docs           Ingest ADRs, READMEs, and docs/ from all repos"
+	@echo "  make ingest-docs-repo      Ingest docs from single repo (REPO=name)"
+	@echo "  make generate-code-maps    Generate code maps for all application repos"
+	@echo "  make generate-code-maps-repo   Generate code maps for single repo (REPO=name)"
+	@echo "  make code-maps-load        (deprecated) Use generate-code-maps instead"
 	@echo ""
 	@echo "Combined:"
 	@echo "  make all              Run fmt, validate, and all tests"
@@ -132,14 +136,51 @@ test-coverage:
 # Data Loading: Generate code maps and ingest documentation
 # ============================================================================
 
-code-maps-load:
-	@echo "Generating code maps for all repos (0-day load)..."
-	@if [ -z "$$ENV" ]; then \
-		echo "Error: ENV variable not set. Usage: ENV=dev make code-maps-load"; \
+ingest-docs:
+	@echo "Ingesting documentation from all repos..."
+	@if [ -z "$$ENVIRONMENT" ]; then \
+		ENVIRONMENT=dev; \
+	fi; \
+	echo "Environment: $$ENVIRONMENT"; \
+	ENVIRONMENT=$$ENVIRONMENT ./scripts/outcome-ops-assist ingest-docs
+
+ingest-docs-repo:
+	@if [ -z "$$REPO" ]; then \
+		echo "Error: REPO variable not set. Usage: REPO=outcome-ops-ai-assist make ingest-docs-repo"; \
 		exit 1; \
 	fi
-	@echo "Environment: $$ENV"
-	python3 scripts/invoke-code-maps-per-repo.py
+	@echo "Ingesting documentation from: $$REPO"
+	@if [ -z "$$ENVIRONMENT" ]; then \
+		ENVIRONMENT=dev; \
+	fi; \
+	echo "Environment: $$ENVIRONMENT"; \
+	ENVIRONMENT=$$ENVIRONMENT ./scripts/outcome-ops-assist ingest-docs $$REPO
+
+generate-code-maps:
+	@echo "Generating code maps for all application repos..."
+	@if [ -z "$$ENVIRONMENT" ]; then \
+		ENVIRONMENT=dev; \
+	fi; \
+	echo "Environment: $$ENVIRONMENT"; \
+	ENVIRONMENT=$$ENVIRONMENT ./scripts/outcome-ops-assist generate-code-maps
+
+generate-code-maps-repo:
+	@if [ -z "$$REPO" ]; then \
+		echo "Error: REPO variable not set. Usage: REPO=outcome-ops-ai-assist make generate-code-maps-repo"; \
+		exit 1; \
+	fi
+	@echo "Generating code maps for: $$REPO"
+	@if [ -z "$$ENVIRONMENT" ]; then \
+		ENVIRONMENT=dev; \
+	fi; \
+	echo "Environment: $$ENVIRONMENT"; \
+	ENVIRONMENT=$$ENVIRONMENT ./scripts/outcome-ops-assist generate-code-maps $$REPO
+
+# Deprecated - use generate-code-maps instead
+code-maps-load:
+	@echo "WARNING: code-maps-load is deprecated. Use 'make generate-code-maps' instead."
+	@echo ""
+	$(MAKE) generate-code-maps
 
 # ============================================================================
 # Utilities: Clean up build artifacts
