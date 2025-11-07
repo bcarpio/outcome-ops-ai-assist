@@ -163,11 +163,11 @@ OutcomeOps applies the same playbook to AI-assisted development:
 
 **Ready to try OutcomeOps?**
 
-- 🚀 **[Deploy Now](docs/getting-started.md)** - 5-minute setup guide
-- 📚 **[Learn ADRs](docs/getting-started-with-adrs.md)** - New to Architecture Decision Records?
-- 🎥 **[Watch Demo](docs/demo.md)** - See OutcomeOps in action
-- 💬 **[Ask Questions](https://github.com/bcarpio/outcome-ops-ai-assist/issues)** - GitHub Issues
-- 🏢 **Enterprise Support?** [Get in touch](https://www.linkedin.com/in/briancarpio/)
+- **[Deploy Now](docs/getting-started.md)** - 5-minute setup guide
+- **[Learn ADRs](docs/getting-started-with-adrs.md)** - New to Architecture Decision Records?
+- **[Watch Demo](docs/demo.md)** - See OutcomeOps in action
+- **[Ask Questions](https://github.com/bcarpio/outcome-ops-ai-assist/issues)** - GitHub Issues
+- **Enterprise Support?** [Get in touch](https://www.linkedin.com/in/briancarpio/)
 
 **Contributing:**
 - Found a bug? [Open an issue](https://github.com/bcarpio/outcome-ops-ai-assist/issues)
@@ -176,6 +176,6 @@ OutcomeOps applies the same playbook to AI-assisted development:
 
 ---
 
-**Built for engineering velocity.** 🚀
+**Built for engineering velocity.**
 
 Outcome-driven development. Infrastructure by code. Engineering outcomes by AI. Your vision, automated execution.
