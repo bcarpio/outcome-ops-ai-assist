@@ -170,10 +170,15 @@ RESPONSE FORMAT:
 Respond with ONLY a JSON object (no markdown, no code blocks):
 {{"compliant": true/false, "explanation": "brief explanation", "suggestions": ["suggestion 1", "suggestion 2"]}}
 
+IMPORTANT: Only set compliant to false and provide suggestions if there are ACTUAL ADR violations visible in the diff. Do NOT make suggestions for:
+- Things that cannot be verified from the diff alone
+- General best practices that are not ADR requirements
+- Assumptions about code outside the diff
+
 Examples:
 - If code follows standards: {{"compliant": true, "explanation": "Handler uses Pydantic schemas and proper error handling", "suggestions": []}}
 - If missing standards: {{"compliant": false, "explanation": "Handler is missing Pydantic schema validation", "suggestions": ["Add a Pydantic model for request validation", "Add try-except error handling"]}}
-- If cannot determine from diff: {{"compliant": true, "explanation": "Changes appear to be refactoring, standards cannot be verified from diff alone", "suggestions": ["Verify schema file exists separately"]}}"""
+- If cannot determine from diff: {{"compliant": true, "explanation": "Changes maintain existing patterns, no violations detected in diff", "suggestions": []}}"""
 
     logger.info(f"Calling Claude to analyze {file_type} compliance for {file_path}...")
 
@@ -276,7 +281,6 @@ def analyze_lambda_handlers(
     # Analyze each handler file with Claude
     details = []
     has_non_compliant = False
-    has_warnings = False
 
     for file in handler_files:
         try:
@@ -295,16 +299,7 @@ def analyze_lambda_handlers(
                     details.append("  Suggestions:")
                     for suggestion in analysis["suggestions"]:
                         details.append(f"  - {suggestion}")
-            else:
-                # Only show compliant files if they have suggestions
-                if analysis["suggestions"]:
-                    has_warnings = True
-                    details.append(f"**{file}**: {analysis['explanation']}")
-                    details.append("  Suggestions:")
-                    for suggestion in analysis["suggestions"]:
-                        details.append(f"  - {suggestion}")
-                else:
-                    details.append(f"**{file}**: {analysis['explanation']}")
+            # Don't show details for compliant files - keep output clean
 
         except Exception as e:
             logger.error(f"Error analyzing {file}: {e}")
@@ -314,9 +309,6 @@ def analyze_lambda_handlers(
     if has_non_compliant:
         status = "WARN"  # Use WARN for advisory-only
         message = f"Found compliance issues in Lambda handlers"
-    elif has_warnings:
-        status = "WARN"
-        message = f"Lambda handlers compliant with suggestions"
     else:
         status = "PASS"
         message = f"All Lambda handlers follow ADR standards"
@@ -357,7 +349,6 @@ def analyze_terraform_files(
     # Analyze each Terraform file with Claude
     details = []
     has_non_compliant = False
-    has_warnings = False
 
     for file in terraform_files:
         try:
@@ -376,16 +367,7 @@ def analyze_terraform_files(
                     details.append("  Suggestions:")
                     for suggestion in analysis["suggestions"]:
                         details.append(f"  - {suggestion}")
-            else:
-                # Only show compliant files if they have suggestions
-                if analysis["suggestions"]:
-                    has_warnings = True
-                    details.append(f"**{file}**: {analysis['explanation']}")
-                    details.append("  Suggestions:")
-                    for suggestion in analysis["suggestions"]:
-                        details.append(f"  - {suggestion}")
-                else:
-                    details.append(f"**{file}**: {analysis['explanation']}")
+            # Don't show details for compliant files - keep output clean
 
         except Exception as e:
             logger.error(f"Error analyzing {file}: {e}")
@@ -395,9 +377,6 @@ def analyze_terraform_files(
     if has_non_compliant:
         status = "WARN"
         message = f"Found compliance issues in Terraform files"
-    elif has_warnings:
-        status = "WARN"
-        message = f"Terraform files compliant with suggestions"
     else:
         status = "PASS"
         message = f"All Terraform files follow module standards"
