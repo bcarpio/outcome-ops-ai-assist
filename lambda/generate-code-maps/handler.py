@@ -15,10 +15,15 @@ Backends supported:
 - Kubernetes: Coming soon
 - Monolith: Coming soon
 
+Invocation modes:
+- Mode 1 (0-day load): Empty event - process all repos, all handlers
+- Mode 2 (single repo): event with repos array - full regeneration for specific repos
+- Mode 3 (incremental): EventBridge hourly - only changed handlers from repos with recent commits
+
 This Lambda is triggered:
-- Manually via AWS Lambda invoke
-- On-demand after major refactorings
-- Optionally via EventBridge schedule
+- Manually via AWS Lambda invoke (Mode 1 or Mode 2)
+- On-demand after major refactorings (Mode 2)
+- Hourly via EventBridge schedule (Mode 3 - incremental)
 
 Documentation: docs/lambda-generate-code-maps.md
 """
@@ -151,6 +156,83 @@ def github_api_request(endpoint: str, method: str = "GET") -> Any:
         raise
 
 
+def has_recent_commits(repo_project: str, minutes_ago: int = 61) -> bool:
+    """
+    Check if a repository has commits to main branch in the last N minutes.
+
+    This is an optimization for EventBridge hourly runs - skip repos without
+    recent commits to avoid unnecessary GitHub API calls.
+
+    Args:
+        repo_project: Repository in format "owner/repo"
+        minutes_ago: Number of minutes to look back (default: 61)
+
+    Returns:
+        True if repo has commits in the last N minutes, False otherwise
+    """
+    try:
+        endpoint = f"/repos/{repo_project}/branches/main"
+        response = github_api_request(endpoint)
+
+        commit_data = response.get("commit", {})
+        commit_info = commit_data.get("commit", {})
+        committer = commit_info.get("committer", {})
+        commit_date_str = committer.get("date")
+
+        if not commit_date_str:
+            logger.warning(f"No commit date found for {repo_project}")
+            return True  # Process anyway if we can't determine
+
+        # Parse ISO 8601 timestamp
+        from datetime import datetime, timedelta, timezone
+        commit_date = datetime.fromisoformat(commit_date_str.replace("Z", "+00:00"))
+        cutoff_time = datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)
+
+        has_recent = commit_date >= cutoff_time
+
+        if has_recent:
+            logger.info(f"{repo_project} has commits from {commit_date.isoformat()} (within {minutes_ago}m)")
+        else:
+            logger.info(f"{repo_project} last commit {commit_date.isoformat()} (older than {minutes_ago}m)")
+
+        return has_recent
+
+    except Exception as e:
+        logger.error(f"Failed to check recent commits for {repo_project}: {e}")
+        return True  # Process anyway on error
+
+
+def filter_changed_code_units(code_units: List[Any], changed_files: List[str]) -> List[Any]:
+    """
+    Filter code units to only those that have files overlapping with changed files.
+
+    This enables incremental code map updates - only regenerate summaries for
+    code units that actually changed.
+
+    Args:
+        code_units: List of CodeUnit objects
+        changed_files: List of changed file paths from git compare
+
+    Returns:
+        List of code units that have at least one file in changed_files
+    """
+    if not changed_files:
+        # Empty changed_files means full regeneration
+        return code_units
+
+    changed_units = []
+    for unit in code_units:
+        # Check if any file in this unit appears in changed files
+        for file_path in unit.file_paths:
+            if file_path in changed_files:
+                changed_units.append(unit)
+                logger.info(f"Code unit {unit.name} has changes: {file_path}")
+                break  # One match is enough, move to next unit
+
+    logger.info(f"Filtered {len(code_units)} code units to {len(changed_units)} changed units")
+    return changed_units
+
+
 def list_repository_files(repo: str, ref: str = "main") -> List[Dict[str, Any]]:
     """
     Fetch all files in a GitHub repository recursively.
@@ -176,7 +258,6 @@ def list_repository_files(repo: str, ref: str = "main") -> List[Dict[str, Any]]:
 
 
 # Old functions removed - now handled by backend abstraction:
-# - has_recent_commits() -> backend.detect_changes()
 # - identify_key_files() -> backend.discover_code_units()
 # - group_files_into_batches() -> backend.discover_code_units()
 
@@ -457,12 +538,20 @@ def handler(event, context):
     """
     Lambda handler for generating code maps.
 
+    Supports three invocation modes:
+    - Mode 1 (0-day load): Empty event {} - process all repos, all handlers
+    - Mode 2 (single repo): event = {"repos": ["repo-name"]} - full regeneration for specified repos
+    - Mode 3 (incremental): EventBridge hourly - only changed handlers from repos with commits in last 61 minutes
+
     Args:
-        event: Lambda event (optional 'repos' list to process specific repos)
+        event: Lambda event
+            - {} or empty: Mode 1 - process all repos
+            - {"repos": ["name1", "name2"]}: Mode 2 - process specific repos
+            - Non-empty event without repos: Mode 3 - incremental mode (EventBridge)
         context: Lambda context
 
     Returns:
-        Response with processing results
+        Response with processing results including repos_processed, total_files_analyzed, batches_queued
     """
     logger.info(f"Generate code maps handler invoked: {json.dumps(event)}")
 
@@ -496,19 +585,29 @@ def handler(event, context):
             if repo.get("type", "internal") != "standards"
         ]
 
+        # Determine invocation mode based on event
+        # Mode 1: 0-day load (empty event) - process all repos, all handlers
+        # Mode 2: Single repo(s) specified - full regeneration for specified repos
+        # Mode 3: EventBridge hourly - incremental updates for repos with recent commits
+        is_single_repo_mode = event.get("repos") is not None
+        is_incremental_mode = not is_single_repo_mode and event  # EventBridge sends non-empty event
+
         # If event.repos is provided, filter to only those repos
-        if event.get("repos"):
+        if is_single_repo_mode:
             application_repos = [
                 repo for repo in application_repos
                 if repo["name"] in event["repos"]
             ]
-            logger.info(f"Processing {len(application_repos)} specific repos from event: {event['repos']}")
+            logger.info(f"Mode 2: Processing {len(application_repos)} specific repos from event: {event['repos']}")
+        elif is_incremental_mode:
+            logger.info(f"Mode 3: Incremental mode - will check for repos with commits in last 61 minutes")
         else:
-            logger.info(f"Filtered to {len(application_repos)} application/internal repos")
+            logger.info(f"Mode 1: 0-day load - processing all {len(application_repos)} application/internal repos")
 
         # Process each repository
         repos_processed = []
         total_files_analyzed = 0
+        total_batches_queued = 0
 
         for repo_config in application_repos:
             repo_name = repo_config["name"]
@@ -517,20 +616,27 @@ def handler(event, context):
 
             logger.info(f"Generating code map for {repo_name}...")
 
+            # Mode 3: For incremental mode, check if repo has commits in last 61 minutes
+            # This is an optimization to skip repos without recent activity
+            if is_incremental_mode:
+                if not has_recent_commits(repo_project, minutes_ago=61):
+                    logger.info(f"Skipping {repo_name} - no commits in last 61 minutes")
+                    continue
+
             # Fetch repository file tree
             all_files = list_repository_files(repo_project)
             logger.info(f"Found {len(all_files)} total files in {repo_name}")
 
             # Check for changes using backend (git-based incremental updates)
             last_state = None
-            if ENABLE_INCREMENTAL and not FORCE_FULL_PROCESS and not event.get("repos"):
+            if ENABLE_INCREMENTAL and not FORCE_FULL_PROCESS and not is_single_repo_mode:
                 last_state = state_tracker.get_last_state(repo_name)
 
             change_result = backend.detect_changes(
                 repo=repo_name,
                 repo_project=repo_project,
                 last_state=last_state,
-                force_full=FORCE_FULL_PROCESS or event.get("repos") is not None
+                force_full=FORCE_FULL_PROCESS or is_single_repo_mode
             )
 
             if not change_result.has_changes and not FORCE_FULL_PROCESS:
@@ -543,8 +649,18 @@ def handler(event, context):
             )
 
             # Discover code units using backend
-            code_units = backend.discover_code_units(all_files)
-            logger.info(f"Discovered {len(code_units)} code units for {repo_name}")
+            all_code_units = backend.discover_code_units(all_files)
+            logger.info(f"Discovered {len(all_code_units)} code units for {repo_name}")
+
+            # Filter to only changed code units for incremental mode
+            if is_incremental_mode and change_result.changed_files:
+                code_units = filter_changed_code_units(all_code_units, change_result.changed_files)
+                if not code_units:
+                    logger.info(f"Skipping {repo_name} - no code units changed (changed files don't overlap with handlers/infrastructure)")
+                    continue
+            else:
+                # Mode 1 or Mode 2: Process all code units
+                code_units = all_code_units
 
             # Generate architectural summary (still uses Claude)
             arch_summary = generate_architectural_summary(repo_name, repo_type, all_files)
@@ -585,6 +701,8 @@ def handler(event, context):
                     logger.error(f"Error sending code unit {code_unit.name} to SQS: {e}")
                     continue
 
+            total_batches_queued += batches_sent
+
             # Save state for incremental updates
             if ENABLE_INCREMENTAL and change_result.current_commit_sha:
                 state_tracker.save_state(
@@ -607,6 +725,7 @@ def handler(event, context):
                 "success": True,
                 "repos_processed": repos_processed,
                 "total_files_analyzed": total_files_analyzed,
+                "batches_queued": total_batches_queued,
                 "timestamp": datetime.utcnow().isoformat(),
             }),
         }
