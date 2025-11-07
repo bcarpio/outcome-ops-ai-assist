@@ -1,4 +1,4 @@
-# OutcomeOps AI Assist
+# OutcomeOps: Context Engineering for AI-Assisted Development
 
 [![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=bcarpio_outcome-ops-ai-assist&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=bcarpio_outcome-ops-ai-assist)
 [![Coverage](https://sonarcloud.io/api/project_badges/measure?project=bcarpio_outcome-ops-ai-assist&metric=coverage)](https://sonarcloud.io/summary/new_code?id=bcarpio_outcome-ops-ai-assist)
@@ -9,648 +9,149 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/)
 
-An AI-powered engineering assistant that shifts from task-oriented to outcome-oriented development. This system ingests your codebase patterns, architectural decisions, and conventions into a knowledge base, then leverages Claude to generate code that matches your exact practices.
+AI generates generic code. You need code that matches **YOUR** standards.
 
-## Purpose
+**The problem:** Engineers spend hours adapting AI-generated code to organizational patterns, standards, and architecture decisions.
 
-Instead of manually coding every feature, the OutcomeOps assistant:
-1. **Ingests your patterns** - ADRs, READMEs, code conventions, test fixtures
-2. **Generates contextual code** - Lambda handlers, Terraform, tests that match YOUR standards
-3. **Validates outcomes** - You review for business logic, the system ensures technical consistency
-4. **Improves iteratively** - Each pattern you refine updates the knowledge base
+**The solution:** Give AI access to your organizational knowledge—ADRs, code-maps, architectural decisions—so it generates code that already matches your patterns.
 
-This system empowers you to move faster as a solo developer by automating the "how" while you focus on the "why."
+**The proof:**
+- 16-hour tasks → 15 minutes
+- $0.68 per feature
+- 100-200x ROI
+- Production-tested at Fortune 500
 
----
-
-## Architecture Overview
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                     Claude Code Interface                        │
-│                    (User Stories via Chat)                       │
-└──────────────────────────┬──────────────────────────────────────┘
-                           │
-                ┌──────────┴──────────┐
-                │                     │
-                ▼                     ▼
-        ┌───────────────┐    ┌──────────────────┐
-        │  Query KB     │    │  Generate Code   │
-        │  (RAG Search) │    │  (Code Maps)     │
-        └───────┬───────┘    └────────┬─────────┘
-                │                     │
-                └──────────┬──────────┘
-                           ▼
-                   ┌───────────────┐
-                   │  AWS Bedrock  │
-                   │  + Claude 3.5 │
-                   └───────┬───────┘
-                           │
-        ┌──────────────────┼──────────────────┐
-        │                  │                  │
-        ▼                  ▼                  ▼
-    ┌────────┐        ┌─────────────┐   ┌─────────┐
-    │Vector  │        │ DynamoDB    │   │    S3   │
-    │Search  │        │(Embeddings) │   │(Docs)   │
-    └────────┘        └─────────────┘   └─────────┘
-```
-
-### Core Components
-
-**Knowledge Base Ingestion:**
-- Scans your ADRs and codebase via GitHub API
-- Generates embeddings using Bedrock Titan v2
-- Stores in DynamoDB for semantic search
-
-**Code Map Generation:**
-- Analyzes repository structure and patterns
-- Groups related files by type (handlers, schemas, infrastructure)
-- Generates Claude summaries of architectural intent
-
-**RAG Pipeline (Retrieval Augmented Generation):**
-- Accepts natural language queries
-- Vector searches knowledge base for relevant patterns
-- Returns Claude-generated answers grounded in YOUR conventions
-
-**CLI Tool (`outcome-ops-assist`):**
-- Query knowledge base from terminal
-- Get instant answers with source citations
-- See **[CLI Usage Guide](docs/cli-usage.md)** for complete documentation
+This is Context Engineering. This is OutcomeOps.
 
 ---
 
-## Tech Stack
+## The Problem With AI Tools Today
 
-| Component | Technology | Notes |
-|-----------|-----------|-------|
-| **Compute** | AWS Lambda (Python 3.12) | Serverless functions |
-| **Knowledge Base** | AWS Bedrock (Titan v2 + Claude) | Embeddings + LLM |
-| **Vector Storage** | DynamoDB | Single-table with embeddings |
-| **Document Storage** | S3 | ADRs, READMEs, code artifacts |
-| **Messaging** | SQS FIFO | Batch processing queue |
-| **Infrastructure** | Terraform | IaC for all AWS resources |
-| **Source Control** | GitHub API | Read-only repo access |
-| **CI/CD** | GitHub Actions | Automated deployments |
+**Current AI coding tools:**
+- Generate generic implementations
+- Don't know your architectural decisions
+- Ignore your coding standards
+- Require hours of manual adaptation
+- **You still spend most of your time rewriting AI code**
 
----
-
-## Getting Started
-
-New to the project? Start here: **[Getting Started Guide](docs/getting-started.md)**
-
-This covers:
-- Prerequisites (Python 3.12+, Terraform, GitHub token)
-- 5-minute quick start (clone → setup → deploy)
-- Development workflow and make commands
-- Troubleshooting common issues
-
-Then review the full documentation below.
+**OutcomeOps is different:**
+- Understands YOUR codebase patterns
+- Knows YOUR architectural decisions (via ADRs)
+- Generates code matching YOUR standards
+- Includes tests automatically
+- **AI does the work. You do the review.**
 
 ---
 
-## Project Structure
+## How OutcomeOps Works
 
-```
-outcome-ops-ai-assist/
-├── docs/
-│   ├── adr/                           # Architecture Decision Records
-│   │   ├── ADR-001-create-adrs.md    # ADR pattern and template
-│   │   └── TEMPLATE.md               # Template for new ADRs
-│   ├── lambda-ingest-docs.md         # Ingest Lambda documentation
-│   ├── lambda-generate-code-maps.md  # Code maps Lambda documentation
-│   ├── lambda-analyze-pr.md          # PR analysis Lambda documentation
-│   ├── architecture.md               # System architecture & design
-│   ├── deployment.md                 # Deployment & operations guide
-│   └── README.md                     # This docs directory overview
-├── lambda/
-│   ├── ingest-docs/                 # Lambda: Ingest ADRs/READMEs/Docs
-│   │   ├── handler.py               # Main ingestion handler
-│   │   ├── requirements.txt         # Python dependencies
-│   │   └── tests/                   # Unit tests for this Lambda
-│   ├── generate-code-maps/          # Lambda: Generate code maps
-│   │   ├── handler.py               # Main code map generation handler
-│   │   ├── backends/                # Pluggable backend abstraction
-│   │   │   ├── base.py              # Abstract base classes
-│   │   │   ├── factory.py           # Backend registry and factory
-│   │   │   └── lambda_backend.py    # Lambda serverless backend
-│   │   ├── state_tracker.py         # State persistence for incremental updates
-│   │   └── requirements.txt         # Python dependencies
-│   ├── analyze-pr/                  # Lambda: GitHub PR analysis orchestration
-│   │   ├── handler.py               # Main PR analysis handler
-│   │   └── requirements.txt         # Python dependencies
-│   ├── process-pr-check/            # Lambda: PR check worker (SQS consumer)
-│   │   ├── handler.py               # Main check processing handler
-│   │   ├── check_handlers/          # Check handler implementations
-│   │   │   ├── __init__.py          # Package exports
-│   │   │   ├── adr_compliance.py    # ADR compliance check
-│   │   │   ├── architectural_duplication.py  # Duplication detection
-│   │   │   ├── breaking_changes.py  # Dependency detection
-│   │   │   ├── readme_freshness.py  # README adequacy check
-│   │   │   └── test_coverage.py     # Test file verification
-│   │   └── requirements.txt         # Python dependencies
-│   └── tests/
-│       ├── unit/                    # Unit tests for all Lambdas
-│       ├── integration/             # Integration tests
-│       ├── fixtures/                # Test fixtures and sample data
-│       ├── conftest.py              # Pytest configuration
-│       └── Makefile                 # Test execution targets
-├── terraform/
-│   ├── main.tf                      # Core infrastructure
-│   ├── lambda.tf                    # Lambda module configuration
-│   ├── dynamodb.tf                  # DynamoDB table
-│   ├── s3.tf                        # S3 knowledge base bucket
-│   ├── variables.tf                 # Variable definitions
-│   ├── backend.tf                   # Remote state configuration
-│   ├── dev.tfvars                   # Dev environment (in .gitignore)
-│   ├── prd.tfvars                   # Prod environment (in .gitignore)
-│   └── .tfvars.example              # Template for tfvars files
-├── Makefile                         # Build orchestration
-├── .gitignore                       # Git ignore patterns
-└── README.md                        # This file
-```
+**1. Ingest Organizational Knowledge**
+- ADRs (Architecture Decision Records)
+- Code-maps (repo structure and patterns)
+- Existing code examples
+- Standards documentation
+
+**2. Vector Search + Context Retrieval**
+- When a feature is requested (Jira story, GitHub issue)
+- OutcomeOps queries your knowledge base
+- Finds relevant patterns, decisions, examples
+
+**3. AI Generation with Context**
+- Claude generates code using YOUR context
+- Matches YOUR patterns, not generic templates
+- Includes tests based on YOUR testing standards
+- Creates MR/PR with full implementation
+
+**4. Automated Review**
+- MR analyzer checks against standards
+- Validates architectural compliance
+- Comments on deviations
+- **Code that's 90% done when you first see it**
+
+[See detailed architecture →](docs/architecture.md)
 
 ---
 
-## Core Features
+## Quick Start (5 Minutes)
 
-### 1. Knowledge Base Ingestion
+**Prerequisites:**
+- GitHub repo with some code
+- AWS account (for Lambda deployment)
+- ADRs or architectural docs (or we'll help you create them)
 
-Automatically ingest patterns from your codebase:
+**Get started:**
 
 ```bash
-# Manual trigger
-aws lambda invoke \
-  --function-name dev-outcome-ops-ai-assist-ingest-docs \
-  response.json
+# Clone and deploy
+git clone https://github.com/bcarpio/outcome-ops-ai-assist
+cd outcome-ops-ai-assist
+make deploy
+
+# Configure GitHub webhook
+# (Instructions will be shown after deploy)
+
+# Create test issue with label "approved-for-generation"
+# Watch OutcomeOps generate a PR in ~15 minutes
 ```
 
-**What gets ingested:**
-- **ADRs** from `docs/adr/` (Architecture Decision Records)
-- **READMEs** from repository roots
-- **Function-specific docs** from `docs/lambda-*.md` (avoids chunking large files)
-- **Architecture docs** from `docs/architecture.md`
-- **Deployment docs** from `docs/deployment.md`
+**New to ADRs?** [Start here →](docs/getting-started-with-adrs.md)
 
-**Stored in DynamoDB with embeddings** for semantic search and RAG pipelines.
-
-**Full details:** See [`docs/lambda-ingest-docs.md`](docs/lambda-ingest-docs.md)
+**Want to see it in action first?** [Watch demo video →](docs/demo.md)
 
 ---
 
-### 2. Code Map Generation
+## Who Built This
 
-Analyze your repositories to extract architectural patterns and code organization using a **pluggable backend abstraction**.
+OutcomeOps was created by Brian Carpio, who previously built:
 
-**Backend Architecture:**
-- **Pluggable design**: Supports multiple architecture types (Lambda, K8s, monolith)
-- **Lambda Serverless Backend**: Discovers Lambda handlers, infrastructure, frontend, tests, and documentation
-- **Backend Factory**: Registry-based pattern for easy backend instantiation
-- **State Tracking**: Incremental updates via git-based change detection
-- **Extensible**: Add new backends by implementing the CodeMapBackend interface
+- **Golden Pipelines (2014)** - Took deployment from 6 weeks → 1 week at Aetna
+- **AWS ProServe** - Led largest Healthcare & Life Sciences engagement in ProServe history
+- **Platform Engineering** - Before it had a name, building self-service infrastructure at Pearson (2012), Aetna (2014), Comcast (2019)
 
-**Currently Supported:**
-- **Lambda serverless**: Analyzes AWS Lambda architectures (current implementation)
-- **Kubernetes**: Coming soon
-- **Monolith**: Coming soon
+OutcomeOps applies the same playbook to AI-assisted development:
+- Make the easy path the right path
+- Bake standards into infrastructure
+- Create velocity through automation
+- **This is golden pipelines for code generation**
 
-**Full details:** See [`docs/lambda-generate-code-maps.md`](docs/lambda-generate-code-maps.md)
-
----
-
-### 3. Query Knowledge Base
-
-Ask questions about your patterns via CLI:
-
-```bash
-outcome-ops-assist "How should Lambda error handling work?"
-outcome-ops-assist "What are our Terraform module standards?"
-outcome-ops-assist "Show me examples of DynamoDB patterns"
-```
-
-**How it works:**
-1. Generates query embedding via Bedrock Titan v2
-2. Vector searches DynamoDB for similar patterns
-3. Passes top results to Claude 3.5 Sonnet
-4. Returns grounded answer with source citations
-
-**See:** **[CLI Usage Guide](docs/cli-usage.md)** for installation, options, examples, and troubleshooting
-
----
-
-### 4. Code Generation
-
-Guide Claude to generate code using your patterns:
-
-```bash
-# In Claude Code (Claude's native IDE):
-# 1. Chat: "Create a new Lambda handler for listing users following ADR-001"
-# 2. Claude queries knowledge base for your handler patterns
-# 3. Claude generates handler code that matches YOUR conventions
-# 4. You review the outcome (business logic), not the implementation
-```
-
-Claude can:
-- Generate Lambda handler boilerplate with error handling
-- Create Terraform infrastructure modules
-- Write test fixtures matching your patterns
-- Generate database schemas and migrations
-
----
-
-## Architecture Decision Records (ADRs)
-
-Store your architectural decisions in `docs/adr/`:
-
-```markdown
-# ADR-001: Error Handling in Lambda Functions
-
-## Status: Accepted
-
-## Context
-Lambda handlers need consistent error handling across the platform.
-
-## Decision
-All handlers will use a standard error wrapper that:
-- Catches exceptions
-- Logs to CloudWatch with correlation IDs
-- Returns consistent error format
-- Includes user-friendly messages
-
-## Consequences
-- Handlers are more maintainable
-- Debugging is faster with structured logs
-- Errors are consistent across platform
-
-## Example Implementation
-[Link to working handler example]
-```
-
-As you build your project, document decisions here. The knowledge base ingests these automatically.
-
----
-
-## ADR Ingestion Pipeline
-
-ADRs flow into the knowledge base:
-
-```
-docs/adr/*.md
-     ↓
-[ingest-kb Lambda]
-     ↓
-Generate embedding via Bedrock Titan v2
-     ↓
-Store in DynamoDB with metadata
-     ↓
-Available for queries + code generation
-```
-
----
-
-## Deployment
-
-### Dev Environment
-
-```bash
-cd terraform
-terraform workspace select dev
-terraform plan -var-file=dev.tfvars
-terraform apply -var-file=dev.tfvars
-```
-
-### Production Environment
-
-```bash
-cd terraform
-terraform workspace select prd
-terraform plan -var-file=prd.tfvars
-terraform apply -var-file=prd.tfvars
-```
-
-### CI/CD Pipeline
-
-GitHub Actions automatically:
-1. Validates Terraform syntax
-2. Runs security scans (Trivy, Snyk)
-3. Plans infrastructure changes
-4. Applies on main branch (with manual approval for prod)
-
----
-
-## Environment Configuration
-
-### Required Parameters
-
-Create `dev.tfvars` and `prd.tfvars`:
-
-```hcl
-aws_region           = "us-east-1"
-environment          = "dev"
-app_name             = "outcome-ops-ai-assist"
-
-# GitHub access
-github_token_ssm_path = "/outcome-ops/dev/github-token"
-
-# Bedrock models
-bedrock_embedding_model = "amazon.titan-embed-text-v2:0"
-bedrock_claude_model    = "anthropic.claude-3-5-sonnet-20241022"
-
-# Repository allowlist
-repos_to_ingest = [
-  {
-    name    = "outcome-ops-ai-assist"
-    owner   = "bcarpio"
-    type    = "application"  # or "standards" for ADR-only repos
-  },
-  {
-    name    = "outcome-ops-analytics"
-    owner   = "bcarpio"
-    type    = "application"
-  }
-]
-```
-
-### Secrets Management
-
-Store sensitive data in AWS Secrets Manager:
-
-```bash
-aws secretsmanager create-secret \
-  --name outcome-ops/dev/github-token \
-  --secret-string "your-github-token"
-```
-
-Lambda functions retrieve at runtime.
-
----
-
-## Monitoring
-
-### CloudWatch Logs
-
-All Lambda functions log to CloudWatch:
-- `dev-outcome-ops-ai-assist-ingest-docs`: Ingestion events
-- `dev-outcome-ops-ai-assist-vector-query`: Search queries
-- `dev-outcome-ops-ai-assist-ask-claude`: RAG generations
-- `dev-outcome-ops-ai-assist-generate-code-maps`: Code analysis
-- `dev-outcome-ops-ai-assist-analyze-pr`: PR analysis orchestration
-- `dev-outcome-ops-ai-assist-process-pr-check`: PR check worker (SQS consumer)
-
-### CloudWatch Alarms
-
-Set up alerts for:
-- Lambda error rates
-- DynamoDB throttling
-- SQS queue depth
-- Bedrock API errors
-
-```bash
-# View recent errors
-aws logs tail /aws/lambda/dev-outcome-ops-ai-assist-ask-claude --follow
-```
-
----
-
-## Testing
-
-### Unit Tests
-
-```bash
-pip install pytest pytest-cov moto boto3
-pytest tests/unit --cov=src
-```
-
-### Integration Tests
-
-```bash
-pytest tests/integration -v
-```
-
-### Manual Testing
-
-Test the full RAG pipeline:
-
-```bash
-# 1. Ingest knowledge
-aws lambda invoke --function-name dev-outcome-ops-ai-assist-ingest-docs response.json
-
-# 2. Generate code maps
-aws lambda invoke --function-name dev-outcome-ops-ai-assist-generate-code-maps response.json
-
-# 3. Query knowledge base
-outcome-ops-assist "How should I structure a new Lambda handler?"
-```
-
----
-
-## Solo Developer Workflow
-
-As the solo developer, here's the recommended flow:
-
-1. **Define outcome in Claude Code:**
-   ```
-   "Create a Lambda handler for user profile updates that:
-    - Validates input with Pydantic
-    - Updates DynamoDB following our patterns
-    - Returns consistent error format
-    - Includes proper logging"
-   ```
-
-2. **Claude queries knowledge base:**
-   - Searches for error handling patterns (ADR-001)
-   - Finds similar handler examples from code maps
-   - Retrieves validation schema standards
-
-3. **Claude generates code:**
-   - Creates handler matching your conventions
-   - Includes tests following your fixtures
-   - Adds Terraform for deployment
-
-4. **You review for:**
-   - Business logic correctness
-   - Outcome achievement
-   - Any patterns you want to refine
-
-5. **Refine patterns if needed:**
-   - Update ADR if decision changes
-   - Update code map if structure shifts
-   - Commit and redeploy
-
-This way, you focus on architecture and outcomes. The system handles consistency.
-
----
-
-## Common Tasks
-
-### Query Knowledge Base from Terminal
-
-```bash
-outcome-ops-assist "What's our standard for error handling?"
-outcome-ops-assist "How should I structure Terraform for a new service?"
-outcome-ops-assist "Show me examples of database query patterns" --topK 10
-```
-
-**See:** **[CLI Usage Guide](docs/cli-usage.md)** for complete documentation and examples
-
-### Add a New Repository to Ingest
-
-1. Add to `src/config/allowlist.yaml`:
-   ```yaml
-   repos:
-     - name: outcome-ops-analytics
-       owner: bcarpio
-       type: application
-   ```
-
-2. Redeploy Lambda:
-   ```bash
-   cd terraform && terraform apply
-   ```
-
-3. Trigger ingestion manually or wait for scheduled run
-
-### Create a New ADR
-
-1. Create file in `docs/adr/ADR-NNN-title.md`
-2. Follow the template in docs/adr/TEMPLATE.md
-3. Commit to main
-4. Next ingest cycle picks it up automatically
-
-### Update an Existing Pattern
-
-1. Update the ADR or code
-2. Commit to main
-3. Trigger code map regeneration:
-   ```bash
-   aws lambda invoke \
-     --function-name dev-outcome-ops-ai-assist-generate-code-maps \
-     --payload '{"repos": ["outcome-ops-ai-assist"]}' \
-     response.json
-   ```
-
----
-
-## Troubleshooting
-
-### Knowledge base returns no results
-
-1. Check ingestion completed:
-   ```bash
-   aws logs tail /aws/lambda/dev-outcome-ops-ai-assist-ingest-docs --follow
-   ```
-
-2. Verify documents in DynamoDB:
-   ```bash
-   aws dynamodb scan \
-     --table-name dev-outcome-ops-ai-assist-kb \
-     --limit 10
-   ```
-
-3. Re-trigger ingestion if needed
-
-### Code generation feels off-pattern
-
-1. Check if code map is current:
-   ```bash
-   aws lambda invoke \
-     --function-name dev-outcome-ops-ai-assist-generate-code-maps \
-     --payload '{"repos": ["outcome-ops-ai-assist"]}' \
-     response.json
-   ```
-
-2. Review and update relevant ADRs for clarity
-
-3. Add code examples to ADRs showing expected patterns
-
-### Bedrock API throttling
-
-The system uses SQS FIFO queue to prevent throttling:
-- Each batch processes sequentially
-- Max 100k tokens per minute respected
-- Failed batches go to DLQ for retry
-
-Check queue depth:
-```bash
-aws sqs get-queue-attributes \
-  --queue-url <queue-url> \
-  --attribute-names ApproximateNumberOfMessages
-```
-
----
-
-## Contributing & Extending
-
-### Adding New Lambda Functions
-
-1. Create handler in `src/handlers/my-handler/`
-2. Add Terraform in `terraform/handlers/`
-3. Add tests in `tests/unit/handlers/`
-4. Update allowlist if needed
-5. Deploy via Terraform
-
-### Modifying Knowledge Base Schema
-
-1. Update `src/config/schemas.yaml`
-2. Update DynamoDB table schema in Terraform
-3. Re-ingest data if schema changed
-4. Test with existing queries
-
----
-
-## Architecture Principles
-
-1. **Knowledge drives generation** - The better your ADRs and code maps, the better Claude generates code
-2. **Patterns matter** - Consistent patterns = better code generation
-3. **You own the outcome** - Claude handles consistency, you own business logic
-4. **Iterate together** - Each pattern you refine improves future generations
-5. **Stay grounded** - RAG ensures answers reference your actual patterns
-
----
-
-## Next Steps
-
-1. Set up dev environment (follow Development Setup)
-2. Deploy infrastructure (`terraform apply`)
-3. Start with ADRs for your key decisions
-4. Test knowledge base with queries
-5. Use in Claude Code for code generation
+[Read the full story →](docs/backstory.md)
 
 ---
 
 ## Documentation
 
 **Getting Started**
-- **[Getting Started Guide](docs/getting-started.md)** - Quick start, prerequisites, troubleshooting
+- [Getting Started Guide](docs/getting-started.md) - Prerequisites, setup, first steps
+- [Getting Started with ADRs](docs/getting-started-with-adrs.md) - Learn about Architecture Decision Records
+- [Demo Video](docs/demo.md) - See OutcomeOps in action
 
 **Core Documentation**
-- **[Architecture Overview](docs/architecture.md)** - System design, data flows, scaling considerations
-- **[Lambda: Ingest Docs](docs/lambda-ingest-docs.md)** - Knowledge base ingestion, configuration, monitoring
-- **[Lambda: Generate Code Maps](docs/lambda-generate-code-maps.md)** - Code analysis, pattern extraction
-- **[Lambda: Analyze PR](docs/lambda-analyze-pr.md)** - PR analysis orchestration, check job queueing
-- **[Lambda: Process PR Check](docs/lambda-process-pr-check.md)** - PR check worker, AI-based code analysis
-- **[Deployment Guide](docs/deployment.md)** - Setup, operations, troubleshooting, rollback procedures
+- [Architecture Overview](docs/architecture.md) - System design and data flows
+- [Technical Reference](docs/technical-reference.md) - Detailed technical documentation
+- [CLI Usage Guide](docs/cli-usage.md) - Using the outcome-ops-assist CLI
+- [Deployment Guide](docs/deployment.md) - Operations and troubleshooting
 
-**Architecture Decision Records (ADRs)**
-- **[ADR-001: Creating ADRs](docs/adr/ADR-001-create-adrs.md)** - How to document architectural decisions
-- **[ADR Template](docs/adr/TEMPLATE.md)** - Template for new ADRs
+**Lambda Documentation**
+- [Lambda: Ingest Docs](docs/lambda-ingest-docs.md) - Knowledge base ingestion
+- [Lambda: Generate Code Maps](docs/lambda-generate-code-maps.md) - Code analysis
+- [Lambda: Analyze PR](docs/lambda-analyze-pr.md) - PR analysis orchestration
+- [Lambda: Process PR Check](docs/lambda-process-pr-check.md) - PR check worker
 
-**CLI and Development**
-- **[CLI Usage Guide](docs/cli-usage.md)** - Complete guide for using outcome-ops-assist CLI
-- **[Claude Guidance](docs/claude-guidance.md)** - AI assistant development best practices
+**Architecture Decision Records**
+- [ADR-001: Creating ADRs](docs/adr/ADR-001-create-adrs.md) - How to document architectural decisions
+- [ADR Template](docs/adr/TEMPLATE.md) - Template for new ADRs
 
-## External Resources
-
-- **AWS Bedrock Documentation**: https://docs.aws.amazon.com/bedrock/
-- **Claude 3.5 Sonnet**: https://www.anthropic.com/claude
-- **Terraform AWS Lambda Module**: https://registry.terraform.io/modules/terraform-aws-modules/lambda/aws/
+**For Developers**
+- [Claude Guidance](docs/claude-guidance.md) - AI assistant development best practices
+- [Backstory](docs/backstory.md) - Why OutcomeOps exists
 
 ---
 
 ## Support
 
 - GitHub Issues for bugs and feature requests
-- ADRs for architectural questions
-- Code generation feedback via Claude Code interface
+- [Technical Reference](docs/technical-reference.md) for architecture questions
+- [Getting Started Guide](docs/getting-started.md) for setup help
 
 ---
 

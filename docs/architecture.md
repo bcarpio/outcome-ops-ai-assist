@@ -1,6 +1,44 @@
 # Architecture Overview
 
-## System Design
+## High-Level Design
+
+OutcomeOps applies **Context Engineering** to AI-assisted development: give AI access to your organizational knowledge (ADRs, code patterns, architectural decisions), and it generates code that already matches your standards.
+
+### The Four-Phase Flow
+
+**1. Ingest Phase**
+- Scan repositories for ADRs, READMEs, code examples
+- Generate embeddings using AWS Bedrock Titan v2
+- Store in DynamoDB knowledge base
+
+**2. Query Phase**
+- Accept natural language query (from CLI or Claude Code)
+- Vector search DynamoDB for relevant patterns
+- Retrieve top-K documents by similarity
+
+**3. Generation Phase**
+- Pass query + retrieved context to Claude 3.5 Sonnet
+- Claude generates code using YOUR patterns
+- Returns implementation matching YOUR standards
+
+**4. Review Phase**
+- Automated PR checks validate against ADRs
+- AI-powered review detects violations
+- Human reviews for business logic only
+
+### Why This Works
+
+**Traditional AI coding:**
+- AI generates generic code → You spend hours adapting it
+
+**Context-engineered AI coding:**
+- AI queries YOUR patterns → Generates YOUR standard code → You review outcomes only
+
+**Result: 100-200x ROI, 16-hour tasks → 15 minutes**
+
+---
+
+## Detailed System Design
 
 OutcomeOps AI Assist is a knowledge-driven code generation system that shifts development from task-oriented to outcome-oriented. It ingests your codebase patterns and architectural decisions, then uses Claude to generate code matching your exact conventions.
 
