@@ -16,14 +16,23 @@ handler_module = importlib.util.module_from_spec(spec)
 sys.modules['generate_code_maps_handler'] = handler_module
 spec.loader.exec_module(handler_module)
 
+# Load the backends module for CodeUnit
+backends_base_path = os.path.join(os.path.dirname(__file__), '../../generate-code-maps/backends/base.py')
+spec_base = importlib.util.spec_from_file_location("backends_base", backends_base_path)
+backends_base = importlib.util.module_from_spec(spec_base)
+spec_base.loader.exec_module(backends_base)
+CodeUnit = backends_base.CodeUnit
+
 # Import functions from the loaded module
-# Note: Some functions (identify_key_files, group_files_into_batches, has_recent_commits, send_batch_to_sqs)
+# Note: Some functions (identify_key_files, group_files_into_batches, send_batch_to_sqs)
 # were removed in favor of backend abstraction. Tests for those are in test_lambda_backend.py
 compute_content_hash = handler_module.compute_content_hash
 generate_architectural_summary = handler_module.generate_architectural_summary
 generate_embedding = handler_module.generate_embedding
 send_code_unit_to_sqs = handler_module.send_code_unit_to_sqs
 store_code_map_embedding = handler_module.store_code_map_embedding
+has_recent_commits = handler_module.has_recent_commits
+filter_changed_code_units = handler_module.filter_changed_code_units
 
 
 class TestComputeContentHash:
@@ -199,4 +208,157 @@ class TestStoreCodeMapEmbedding:
         assert result is False
 
 
-# NOTE: TestSendBatchToSQS and TestHasRecentCommits removed - functions moved to backend abstraction
+class TestHasRecentCommits:
+    """Test checking for recent commits in repositories."""
+
+    @patch("generate_code_maps_handler.github_api_request")
+    def test_has_recent_commits_within_window(self, mock_api):
+        """Test repo with commits within the time window."""
+        # Arrange
+        from datetime import datetime, timezone
+        recent_time = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+        mock_api.return_value = {
+            "commit": {
+                "commit": {
+                    "committer": {
+                        "date": recent_time
+                    }
+                }
+            }
+        }
+
+        # Act
+        result = has_recent_commits("owner/repo", minutes_ago=61)
+
+        # Assert
+        assert result is True
+        mock_api.assert_called_once_with("/repos/owner/repo/branches/main")
+
+    @patch("generate_code_maps_handler.github_api_request")
+    def test_has_recent_commits_outside_window(self, mock_api):
+        """Test repo with commits outside the time window."""
+        # Arrange
+        from datetime import datetime, timedelta, timezone
+        old_time = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat().replace("+00:00", "Z")
+
+        mock_api.return_value = {
+            "commit": {
+                "commit": {
+                    "committer": {
+                        "date": old_time
+                    }
+                }
+            }
+        }
+
+        # Act
+        result = has_recent_commits("owner/repo", minutes_ago=61)
+
+        # Assert
+        assert result is False
+
+    @patch("generate_code_maps_handler.github_api_request")
+    def test_has_recent_commits_no_date(self, mock_api):
+        """Test handling missing commit date (process anyway)."""
+        # Arrange
+        mock_api.return_value = {
+            "commit": {
+                "commit": {
+                    "committer": {}
+                }
+            }
+        }
+
+        # Act
+        result = has_recent_commits("owner/repo", minutes_ago=61)
+
+        # Assert
+        assert result is True  # Process anyway if we can't determine
+
+    @patch("generate_code_maps_handler.github_api_request")
+    def test_has_recent_commits_api_error(self, mock_api):
+        """Test handling API error (process anyway)."""
+        # Arrange
+        mock_api.side_effect = Exception("API error")
+
+        # Act
+        result = has_recent_commits("owner/repo", minutes_ago=61)
+
+        # Assert
+        assert result is True  # Process anyway on error
+
+
+class TestFilterChangedCodeUnits:
+    """Test filtering code units to only changed ones."""
+
+    def test_filter_changed_code_units_with_changes(self):
+        """Test filtering when files have changed."""
+        # Arrange
+        unit1 = CodeUnit(
+            name="handler1",
+            unit_type="lambda-handler",
+            file_paths=["lambda/handler1/handler.py", "lambda/handler1/utils.py"]
+        )
+        unit2 = CodeUnit(
+            name="handler2",
+            unit_type="lambda-handler",
+            file_paths=["lambda/handler2/handler.py"]
+        )
+        unit3 = CodeUnit(
+            name="infrastructure",
+            unit_type="infrastructure",
+            file_paths=["terraform/lambda.tf", "terraform/main.tf"]
+        )
+
+        all_units = [unit1, unit2, unit3]
+        changed_files = ["lambda/handler1/utils.py", "terraform/lambda.tf"]
+
+        # Act
+        result = filter_changed_code_units(all_units, changed_files)
+
+        # Assert
+        assert len(result) == 2
+        assert unit1 in result  # handler1 has changed file
+        assert unit2 not in result  # handler2 has no changed files
+        assert unit3 in result  # infrastructure has changed file
+
+    def test_filter_changed_code_units_no_changes(self):
+        """Test filtering when no files have changed."""
+        # Arrange
+        unit1 = CodeUnit(
+            name="handler1",
+            unit_type="lambda-handler",
+            file_paths=["lambda/handler1/handler.py"]
+        )
+
+        all_units = [unit1]
+        changed_files = ["README.md"]  # No overlap with handler files
+
+        # Act
+        result = filter_changed_code_units(all_units, changed_files)
+
+        # Assert
+        assert len(result) == 0
+
+    def test_filter_changed_code_units_empty_changed_files(self):
+        """Test filtering with empty changed files list (full regeneration)."""
+        # Arrange
+        unit1 = CodeUnit(
+            name="handler1",
+            unit_type="lambda-handler",
+            file_paths=["lambda/handler1/handler.py"]
+        )
+
+        all_units = [unit1]
+        changed_files = []
+
+        # Act
+        result = filter_changed_code_units(all_units, changed_files)
+
+        # Assert
+        assert len(result) == 1  # Empty changed_files means return all
+        assert result == all_units
+
+
+# NOTE: TestSendBatchToSQS removed - function moved to backend abstraction

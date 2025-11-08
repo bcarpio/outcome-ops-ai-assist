@@ -213,12 +213,16 @@ class TestQueryKnowledgeBase:
     def test_query_knowledge_base_success(self, mock_lambda):
         """Test: Successfully query knowledge base"""
         # Arrange
-        mock_response = {
-            "Payload": Mock(read=Mock(return_value=json.dumps({
+        # query-kb Lambda returns answer/sources inside a JSON-stringified body field
+        mock_payload = Mock()
+        mock_payload.read.return_value = json.dumps({
+            "body": json.dumps({
                 "answer": "Test answer from KB",
                 "sources": ["ADR-001", "ADR-002"]
-            }).encode()))
-        }
+            })
+        }).encode()
+
+        mock_response = {"Payload": mock_payload}
         mock_lambda.invoke.return_value = mock_response
 
         # Act
