@@ -1,0 +1,18 @@
+environment = "dev"
+
+# Configure which repositories to ingest into the knowledge base
+# The allowlist is automatically stored in SSM Parameter Store
+# and loaded by the ingest-docs Lambda handler at runtime
+repos_to_ingest = [
+  {
+    name    = "outcome-ops-ai-assist"
+    project = "bcarpio/outcome-ops-ai-assist"
+    type    = "standards"  # "standards" for ADR-only repos, "application" for full apps
+  },
+  # Add your own repositories here:
+  # {
+  #   name    = "your-app"
+  #   project = "your-org/your-app"
+  #   type    = "application"
+  # }
+]
