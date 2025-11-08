@@ -484,7 +484,10 @@ class TestHandler:
         assert response["statusCode"] == 200
         body = json.loads(response["body"])
         assert "message" in body
-        assert "documents_ingested" in body
+        assert "repos_processed" in body
+        assert "total_docs_ingested" in body
+        assert body["repos_processed"] == 1
+        assert body["total_docs_ingested"] == 3
         mock_load_config.assert_called_once()
 
     @patch("ingest_docs_handler.KB_BUCKET", "test-bucket")
