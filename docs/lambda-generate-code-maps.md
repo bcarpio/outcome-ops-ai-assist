@@ -16,13 +16,23 @@ The generate-code-maps Lambda function scans repository structure and creates ar
 
 ## Trigger
 
-- **Manual**: `aws lambda invoke --function-name dev-outcome-ops-ai-assist-generate-code-maps --payload '{"repos": ["outcome-ops-ai-assist"]}' response.json`
-- **On demand**: Call via API after major refactorings
-- **Scheduled**: Can be integrated with EventBridge for periodic updates (not yet scheduled)
+Two invocation modes:
+
+**Full Regeneration** (CLI with repos list):
+- **All repos**: `ENVIRONMENT=prd ./scripts/outcome-ops-assist generate-code-maps`
+- **Single repo**: `ENVIRONMENT=prd ./scripts/outcome-ops-assist generate-code-maps outcome-ops-ai-assist`
+- Processes all handlers in specified repositories
+- Used for: Initial setup, major refactorings, manual updates
+
+**Incremental** (EventBridge with empty event):
+- **EventBridge hourly**: Sends empty event `{}`
+- Checks repos for commits in last 61 minutes
+- Only processes changed handlers from active repos
+- Used for: Automated hourly updates, continuous sync
 
 ## Configuration
 
-Code maps are generated for repositories defined in `repos_to_ingest` variable in your Terraform configuration. Unlike ingestion which runs hourly, code map generation is typically triggered manually or on-demand.
+Code maps are generated for repositories defined in the SSM Parameter Store allowlist at `/{env}/{app_name}/config/repos-allowlist`. The Lambda supports both manual invocation (full regeneration) and automated hourly runs (incremental updates).
 
 ## Example Output
 
@@ -112,32 +122,33 @@ When you ask Claude to implement a feature, Claude queries the knowledge base:
 
 ## Example Workflow
 
-### Generate Code Maps
+### Generate Code Maps for All Repos
 
 ```bash
-# Generate maps for a single repository
-aws lambda invoke \
-  --function-name dev-outcome-ops-ai-assist-generate-code-maps \
-  --payload '{"repos": ["outcome-ops-ai-assist"]}' \
-  response.json
+# Full regeneration of all application/internal repos
+ENVIRONMENT=dev ./scripts/outcome-ops-assist generate-code-maps
 
-# Or multiple repositories
-aws lambda invoke \
-  --function-name dev-outcome-ops-ai-assist-generate-code-maps \
-  --payload '{"repos": ["outcome-ops-ai-assist", "fantacyai-ui"]}' \
-  response.json
+# Production environment
+ENVIRONMENT=prd ./scripts/outcome-ops-assist generate-code-maps
+```
+
+### Generate Code Maps for Single Repo
+
+```bash
+# Single repository regeneration
+ENVIRONMENT=dev ./scripts/outcome-ops-assist generate-code-maps outcome-ops-ai-assist
+
+# Or using make
+ENVIRONMENT=dev make generate-code-maps-repo REPO=outcome-ops-ai-assist
 ```
 
 ### After Major Refactoring
 
-When you restructure your code significantly, regenerate maps:
+When you restructure your code significantly, regenerate maps for that repo:
 
 ```bash
 # After moving all Lambda handlers to a new directory
-aws lambda invoke \
-  --function-name dev-outcome-ops-ai-assist-generate-code-maps \
-  --payload '{"repos": ["outcome-ops-ai-assist"]}' \
-  response.json
+ENVIRONMENT=prd ./scripts/outcome-ops-assist generate-code-maps outcome-ops-ai-assist
 ```
 
 ### Check CloudWatch Logs
@@ -150,21 +161,24 @@ aws logs tail /aws/lambda/dev-outcome-ops-ai-assist-generate-code-maps --follow
 
 ## Implementation Details
 
-**Current Status**: Lambda function fully implemented with pluggable backend abstraction.
+**Current Status**: Lambda function fully implemented with pluggable backend abstraction and incremental updates.
 
 The generate-code-maps function:
-1. **Fetches repository structure** via GitHub API (recursive tree)
-2. **Uses pluggable backend** to discover code units (Lambda handlers, K8s services, modules, etc.)
-3. **Detects changes via git diff** - compares current commit SHA to last processed commit (incremental updates)
-4. **Discovers code units** using backend-specific logic:
+1. **Determines invocation mode** - Empty event = incremental, repos list = full regeneration
+2. **For incremental mode**: Checks each repo for commits in last 61 minutes (optimization)
+3. **Fetches repository structure** via GitHub API (recursive tree)
+4. **Uses pluggable backend** to discover code units (Lambda handlers, K8s services, modules, etc.)
+5. **Detects changes via git diff** - compares current commit SHA to last processed commit
+6. **Filters to changed code units** - For incremental mode, only processes handlers with changed files
+7. **Discovers code units** using backend-specific logic:
    - Lambda backend: Groups by function directory (`lambda/*/`)
    - K8s backend (future): Groups by service
    - Monolith backend (future): Groups by module/package
-5. **Generates architectural summary** using Claude 3.5 Sonnet via Bedrock
-6. **Creates embeddings** via Bedrock Titan Embeddings v2 (1024 dimensions)
-7. **Stores summaries** in DynamoDB with embeddings and S3 for archival
-8. **Sends code units to SQS** FIFO queue for async detailed processing
-9. **Tracks state** - saves current commit SHA in DynamoDB for next incremental run
+8. **Generates architectural summary** using Claude 3.5 Sonnet via Bedrock
+9. **Creates embeddings** via Bedrock Titan Embeddings v2 (1024 dimensions)
+10. **Stores summaries** in DynamoDB with embeddings and S3 for archival
+11. **Sends code units to SQS** FIFO queue for async detailed processing
+12. **Tracks state** - saves current commit SHA in DynamoDB for next incremental run
 
 **Backend Abstraction**:
 - **Lambda Serverless Backend**: Discovers Lambda handlers, infrastructure, frontend files, tests, schemas, docs
@@ -192,11 +206,21 @@ The generate-code-maps function:
 - Fields: `commit_sha`, `timestamp`, `files_processed`, `batches_sent`
 - Enables efficient incremental updates on subsequent runs
 
-**Incremental Update Behavior**:
-- First run: Process all files, save commit SHA
-- Subsequent runs: Compare current SHA to saved SHA, only process if changed
-- Force full: `FORCE_FULL_PROCESS=true` or event with specific repos bypasses incremental
-- Change detection: Uses GitHub API compare endpoint to get changed files
+**Invocation Mode Detection**:
+- **Full regeneration**: Event contains `{"repos": ["repo1", "repo2"]}` - processes all handlers in specified repos
+- **Incremental**: Event is empty `{}` - only processes changed handlers from repos with recent commits
+
+**Incremental Mode Behavior**:
+- **61-minute check**: Skips repos without commits in last 61 minutes (GitHub branches API)
+- **Git compare**: For repos with recent commits, fetches changed files between last SHA and current SHA
+- **Filter code units**: Only queues SQS batches for handlers/infrastructure with changed files
+- **State tracking**: Saves current commit SHA after processing for next incremental run
+- **Optimization**: Reduces Bedrock API costs and SQS messages by only processing changes
+
+**Full Regeneration Behavior**:
+- **CLI invocation**: outcome-ops-assist script queries SSM allowlist and sends all application repos
+- **Process all handlers**: Discovers all code units and queues all batches
+- **Used for**: Initial setup, major refactorings, manual updates
 
 ## Configuration Requirements
 
@@ -241,12 +265,18 @@ aws cloudwatch get-metric-statistics \
 aws logs tail /aws/lambda/dev-outcome-ops-ai-assist-generate-code-maps --follow
 
 # Key log messages:
+# - "Full regeneration mode: Processing X specific repos" - Full mode detected
+# - "Incremental mode: Checking X application/internal repos" - Incremental mode detected
+# - "{repo} has commits from {date} (within 61m)" - Repo has recent commits
+# - "{repo} last commit {date} (older than 61m)" - Repo skipped (no recent commits)
+# - "Skipping {repo} - no commits in last 61 minutes" - Repo optimization skip
 # - "Found X total items in {repo}" - Repository files fetched
+# - "Found X changed files between {sha1}..{sha2}" - Git compare results
+# - "Code unit {name} has changes: {file}" - Handler matched to changed file
+# - "Filtered X code units to Y changed units" - Incremental filtering applied
 # - "Generated architectural summary for {repo}" - Summary created
 # - "Stored code map for {repo}" - Summary stored in DynamoDB/S3
-# - "Grouped into X batches for {repo}" - File batching complete
 # - "Sent {batch_type} batch to SQS: {group_name}" - Batch queued
-# - "Processing X of Y repos with recent changes" - Recent commit filtering
 ```
 
 ## Error Handling

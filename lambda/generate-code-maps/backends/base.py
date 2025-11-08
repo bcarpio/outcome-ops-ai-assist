@@ -59,7 +59,8 @@ class ChangeDetectionResult:
         changed_units: List[CodeUnit],
         unchanged_units: List[CodeUnit],
         last_commit_sha: Optional[str] = None,
-        current_commit_sha: Optional[str] = None
+        current_commit_sha: Optional[str] = None,
+        changed_files: Optional[List[str]] = None
     ):
         """
         Initialize change detection result.
@@ -70,17 +71,20 @@ class ChangeDetectionResult:
             unchanged_units: List of code units that haven't changed
             last_commit_sha: Previous commit SHA (for git-based detection)
             current_commit_sha: Current commit SHA
+            changed_files: List of changed file paths (for incremental filtering)
         """
         self.has_changes = has_changes
         self.changed_units = changed_units
         self.unchanged_units = unchanged_units
         self.last_commit_sha = last_commit_sha
         self.current_commit_sha = current_commit_sha
+        self.changed_files = changed_files or []
 
     def __repr__(self) -> str:
         return (
             f"ChangeDetectionResult(has_changes={self.has_changes}, "
-            f"changed={len(self.changed_units)}, unchanged={len(self.unchanged_units)})"
+            f"changed={len(self.changed_units)}, unchanged={len(self.unchanged_units)}, "
+            f"files={len(self.changed_files)})"
         )
 
 

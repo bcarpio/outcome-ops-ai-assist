@@ -374,9 +374,23 @@ generate_code_maps() {
   # Construct payload
   local payload
   if [[ -n "$repo_name" ]]; then
+    # Single repo mode
     payload=$(jq -n --arg repo "$repo_name" '{repos: [$repo]}')
   else
-    payload='{}'
+    # 0-day load mode: Get all application/internal repos from allowlist
+    local allowlist_param="/${ENVIRONMENT}/${APP_NAME}/config/repos-allowlist"
+    local allowlist=$(aws ssm get-parameter --name "$allowlist_param" --query 'Parameter.Value' --output text 2>/dev/null)
+
+    if [[ -z "$allowlist" ]]; then
+      echo "❌ Error: Failed to fetch repos allowlist from SSM" >&2
+      exit 1
+    fi
+
+    # Filter to application/internal repos only (exclude standards repos)
+    local app_repos=$(echo "$allowlist" | jq -r '.repos[] | select(.type != "standards") | .name')
+
+    # Build repos array for payload
+    payload=$(echo "$app_repos" | jq -R -s -c 'split("\n") | map(select(length > 0)) | {repos: .}')
   fi
 
   # Invoke Lambda and capture response

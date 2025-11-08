@@ -413,7 +413,8 @@ class LambdaServerlessBackend(CodeMapBackend):
                 changed_units=[],  # Will be populated by handler
                 unchanged_units=[],
                 last_commit_sha=last_state.get("commit_sha") if last_state else None,
-                current_commit_sha=current_sha
+                current_commit_sha=current_sha,
+                changed_files=[]  # Empty means full regeneration
             )
 
         last_sha = last_state["commit_sha"]
@@ -425,20 +426,22 @@ class LambdaServerlessBackend(CodeMapBackend):
                 changed_units=[],
                 unchanged_units=[],
                 last_commit_sha=last_sha,
-                current_commit_sha=current_sha
+                current_commit_sha=current_sha,
+                changed_files=[]
             )
 
         # Get changed files via git compare API
         changed_files = self._get_changed_files(repo_project, last_sha, current_sha)
         logger.info(f"Found {len(changed_files)} changed files between {last_sha[:7]}..{current_sha[:7]}")
 
-        # Will be matched against code units by handler
+        # Return changed files for incremental filtering
         return ChangeDetectionResult(
             has_changes=True,
             changed_units=[],  # Will be populated by comparing changed_files to code units
             unchanged_units=[],
             last_commit_sha=last_sha,
-            current_commit_sha=current_sha
+            current_commit_sha=current_sha,
+            changed_files=changed_files
         )
 
     def _get_current_commit_sha(self, repo_project: str) -> str:
