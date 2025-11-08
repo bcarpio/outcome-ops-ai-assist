@@ -73,10 +73,11 @@ class TestCheckTestCoverage:
 
         # Assert
         assert result["checkType"] == "TEST_COVERAGE"
-        assert result["status"] == "WARN"
-        assert "1 handler(s) may be missing tests" in result["message"]
+        assert result["status"] == "FAIL"
+        assert "1 handler(s) missing required tests (ADR-003 violation)" in result["message"]
         assert len(result["details"]) == 1
-        assert "No test file found" in result["details"][0]
+        assert "Missing required tests" in result["details"][0]
+        assert "ADR-003" in result["details"][0]
         assert "new-handler" in result["details"][0]
 
     def test_check_test_coverage_multiple_handlers_mixed_coverage(self):
@@ -93,8 +94,8 @@ class TestCheckTestCoverage:
 
         # Assert
         assert result["checkType"] == "TEST_COVERAGE"
-        assert result["status"] == "WARN"
-        assert "1 handler(s) may be missing tests" in result["message"]
+        assert result["status"] == "FAIL"
+        assert "1 handler(s) missing required tests (ADR-003 violation)" in result["message"]
         assert len(result["details"]) == 1
         assert any("handlerB" in detail for detail in result["details"])
         # handlerA should not be in suggestions since it has a test
