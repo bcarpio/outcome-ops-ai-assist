@@ -7,7 +7,7 @@ repos_to_ingest = [
   {
     name    = "outcome-ops-ai-assist"
     project = "bcarpio/outcome-ops-ai-assist"
-    type    = "standards"  # "standards" for ADR-only repos, "application" for full apps
+    type    = "application"  # "standards" for ADR-only repos, "application" for full apps
   },
   # Add your own repositories here:
   # {

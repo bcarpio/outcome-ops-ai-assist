@@ -131,13 +131,14 @@ class ExecutionPlan(BaseModel):
 class StepExecutionMessage(BaseModel):
     """SQS message for step execution."""
 
+    action: Literal["generate_plan", "execute_step"] = "execute_step"
     issue_number: int
     issue_title: str
     issue_description: str
     repo_full_name: str
     branch_name: str
-    current_step: int
-    total_steps: int
+    current_step: int = 0  # 0 for generate_plan action
+    total_steps: int = 0  # Unknown for generate_plan action
     base_branch: str = "main"
 
 

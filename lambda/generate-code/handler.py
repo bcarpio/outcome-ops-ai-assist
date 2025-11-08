@@ -2,8 +2,8 @@
 Generate Code Lambda Handler.
 
 Main handler that routes between two execution paths:
-1. GitHub webhook (API Gateway) → Plan generation
-2. SQS message → Step execution
+1. GitHub webhook (API Gateway) → Send message to SQS for async plan generation
+2. SQS message → Route to plan generation OR step execution based on action field
 
 GitHub Webhook Event: https://docs.github.com/en/webhooks/webhook-events-and-payloads#label
 """
@@ -12,8 +12,10 @@ import json
 import logging
 import os
 from typing import Any, Dict
+from uuid import uuid4
 
 import boto3
+from botocore.exceptions import ClientError
 
 from github_api import create_branch, get_github_token, get_webhook_secret
 from models import (
@@ -33,6 +35,104 @@ logger.setLevel(logging.INFO)
 # Environment variables
 ENV = os.environ.get("ENV", "dev")
 APP_NAME = os.environ.get("APP_NAME", "outcome-ops-ai-assist")
+
+# AWS clients
+ssm_client = boto3.client("ssm")
+sqs_client = boto3.client("sqs")
+
+
+# ============================================================================
+# SQS Helper Functions
+# ============================================================================
+
+
+def get_queue_url() -> str:
+    """
+    Fetch SQS queue URL from SSM Parameter Store.
+
+    Returns:
+        str: SQS queue URL for code generation
+
+    Raises:
+        Exception: If queue URL not found in SSM
+    """
+    param_name = f"/{ENV}/{APP_NAME}/sqs/code-generation-queue-url"
+
+    try:
+        response = ssm_client.get_parameter(
+            Name=param_name,
+            WithDecryption=False  # Queue URL is not encrypted
+        )
+
+        queue_url = response.get("Parameter", {}).get("Value")
+        if not queue_url:
+            raise Exception(f"Queue URL not found in parameter: {param_name}")
+
+        logger.info(f"Retrieved queue URL from SSM: {param_name}")
+        return queue_url
+
+    except ClientError as e:
+        logger.error(f"Failed to retrieve queue URL: {e}")
+        raise
+
+
+def send_plan_generation_message(
+    issue_number: int,
+    issue_title: str,
+    issue_description: str,
+    repo_full_name: str,
+    branch_name: str,
+    base_branch: str
+) -> Dict[str, Any]:
+    """
+    Send plan generation message to SQS queue.
+
+    Args:
+        issue_number: GitHub issue number
+        issue_title: GitHub issue title
+        issue_description: GitHub issue body/description
+        repo_full_name: Full repository name (owner/repo)
+        branch_name: Branch to create code in
+        base_branch: Base branch (usually main)
+
+    Returns:
+        dict: SQS SendMessage response
+
+    Raises:
+        Exception: If message send fails
+    """
+    queue_url = get_queue_url()
+
+    message_body = StepExecutionMessage(
+        action="generate_plan",
+        issue_number=issue_number,
+        issue_title=issue_title,
+        issue_description=issue_description,
+        repo_full_name=repo_full_name,
+        branch_name=branch_name,
+        current_step=0,
+        total_steps=0,
+        base_branch=base_branch
+    ).model_dump_json()
+
+    try:
+        response = sqs_client.send_message(
+            QueueUrl=queue_url,
+            MessageBody=message_body,
+            MessageGroupId=f"issue-{issue_number}",  # FIFO queue requirement
+            MessageDeduplicationId=str(uuid4())  # Unique ID for deduplication
+        )
+
+        logger.info(
+            f"Sent plan generation message to SQS for issue #{issue_number}. "
+            f"MessageId: {response['MessageId']}"
+        )
+
+        return response
+
+    except ClientError as e:
+        logger.error(f"Failed to send message to SQS: {e}")
+        raise
 
 
 # ============================================================================
@@ -79,9 +179,7 @@ def handle_api_gateway_event(event: Dict[str, Any]) -> Dict[str, Any]:
     1. Verify webhook signature
     2. Parse webhook payload
     3. Create branch (or verify it exists)
-    4. Generate execution plan
-    5. Commit plan to branch
-    6. Send first step to SQS
+    4. Send plan generation message to SQS (returns immediately)
 
     Args:
         event: API Gateway event
@@ -151,12 +249,23 @@ def handle_api_gateway_event(event: Dict[str, Any]) -> Dict[str, Any]:
                 })
             }
 
-        # Generate execution plan and send first step to SQS
-        plan_result = handle_webhook(webhook_event)
+        # Send plan generation message to SQS for async processing
+        send_plan_generation_message(
+            issue_number=webhook_event.issue.number,
+            issue_title=webhook_event.issue.title,
+            issue_description=webhook_event.issue.body or "",
+            repo_full_name=webhook_event.repository.full_name,
+            branch_name=branch_name,
+            base_branch=webhook_event.repository.default_branch
+        )
 
         return {
             "statusCode": 200,
-            "body": json.dumps(plan_result)
+            "body": json.dumps({
+                "message": "Code generation started",
+                "issue_number": webhook_event.issue.number,
+                "branch_name": branch_name
+            })
         }
 
     except Exception as e:
@@ -178,9 +287,18 @@ def handle_api_gateway_event(event: Dict[str, Any]) -> Dict[str, Any]:
 
 def handle_sqs_event(event: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Handle SQS step execution message.
+    Handle SQS message (either plan generation or step execution).
 
-    Flow:
+    Flow depends on message action field:
+
+    For action="generate_plan":
+    1. Parse SQS message
+    2. Query knowledge base for context
+    3. Generate execution plan with Claude
+    4. Commit plan to branch
+    5. Send first step to SQS
+
+    For action="execute_step":
     1. Parse SQS message
     2. Get plan from branch
     3. Execute current step (query KB, generate code, commit files)
@@ -206,15 +324,51 @@ def handle_sqs_event(event: Dict[str, Any]) -> Dict[str, Any]:
             # Parse step execution message
             step_message = StepExecutionMessage(**record.parsed_body)
 
-            logger.info(
-                f"Processing step {step_message.current_step}/{step_message.total_steps} "
-                f"for issue #{step_message.issue_number}"
-            )
+            # Route based on action field
+            if step_message.action == "generate_plan":
+                logger.info(
+                    f"Generating plan for issue #{step_message.issue_number}"
+                )
 
-            # Execute step
-            result = handle_step_message(step_message)
+                # Convert StepExecutionMessage to GitHubWebhookEvent format
+                # This is a bit hacky but allows reuse of existing plan_generator code
+                from models import GitHubIssue, GitHubRepository
 
-            logger.info(f"Step execution result: {result}")
+                mock_webhook_event = type('obj', (object,), {
+                    'issue': GitHubIssue(
+                        number=step_message.issue_number,
+                        title=step_message.issue_title,
+                        body=step_message.issue_description,
+                        html_url=f"https://github.com/{step_message.repo_full_name}/issues/{step_message.issue_number}",
+                        state="open"
+                    ),
+                    'repository': GitHubRepository(
+                        name=step_message.repo_full_name.split('/')[-1],
+                        full_name=step_message.repo_full_name,
+                        owner={"login": step_message.repo_full_name.split('/')[0]},
+                        default_branch=step_message.base_branch
+                    )
+                })()
+
+                # Generate execution plan (this will send first step to SQS)
+                result = handle_webhook(mock_webhook_event)
+
+                logger.info(f"Plan generation result: {result}")
+
+            elif step_message.action == "execute_step":
+                logger.info(
+                    f"Executing step {step_message.current_step}/{step_message.total_steps} "
+                    f"for issue #{step_message.issue_number}"
+                )
+
+                # Execute step
+                result = handle_step_message(step_message)
+
+                logger.info(f"Step execution result: {result}")
+
+            else:
+                logger.error(f"Unknown action: {step_message.action}")
+                raise ValueError(f"Unknown action: {step_message.action}")
 
         except Exception as e:
             logger.error(f"Error processing SQS message: {e}", exc_info=True)

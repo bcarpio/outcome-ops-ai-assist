@@ -995,7 +995,8 @@ module "generate_code_lambda" {
         "bedrock:InvokeModel"
       ]
       resources = [
-        "arn:aws:bedrock:*::foundation-model/anthropic.claude-*"
+        "arn:aws:bedrock:*::foundation-model/anthropic.claude-*",
+        "arn:aws:bedrock:*:*:inference-profile/*"
       ]
     }
 
