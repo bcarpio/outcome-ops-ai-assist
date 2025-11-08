@@ -17,7 +17,7 @@ Backends supported:
 
 Invocation modes:
 - Full regeneration: event = {"repos": ["repo1", "repo2"]} - process specified repos, all handlers
-- Incremental: event = {} - process only changed handlers from repos with commits in last 61 minutes
+- Incremental: event = {} - process only changed handlers from repos with commits in configured activity window
 
 This Lambda is triggered:
 - Manually via CLI with repos list (full regeneration)
@@ -68,6 +68,7 @@ APP_NAME = os.environ.get("APP_NAME", "outcome-ops-ai-assist")
 FORCE_FULL_PROCESS = os.environ.get("FORCE_FULL_PROCESS", "false").lower() == "true"
 BACKEND_TYPE = os.environ.get("BACKEND_TYPE", "lambda")  # Backend to use (lambda, k8s, monolith)
 ENABLE_INCREMENTAL = os.environ.get("ENABLE_INCREMENTAL", "true").lower() == "true"
+ACTIVITY_WINDOW_MINUTES = int(os.environ.get("ACTIVITY_WINDOW_MINUTES", "61"))  # Time window for incremental mode
 
 KB_BUCKET = None
 CODE_MAPS_TABLE = None
@@ -538,7 +539,7 @@ def handler(event, context):
 
     Supports two invocation modes:
     - Full regeneration: event = {"repos": ["repo1", "repo2"]} - process specified repos, all handlers
-    - Incremental: event = {} - process only changed handlers from repos with commits in last 61 minutes
+    - Incremental: event = {} - process only changed handlers from repos with commits in configured activity window
 
     Args:
         event: Lambda event
@@ -606,11 +607,11 @@ def handler(event, context):
 
             logger.info(f"Generating code map for {repo_name}...")
 
-            # For incremental mode, check if repo has commits in last 61 minutes
+            # For incremental mode, check if repo has commits in configured activity window
             # This is an optimization to skip repos without recent activity
             if is_incremental_mode:
-                if not has_recent_commits(repo_project, minutes_ago=61):
-                    logger.info(f"Skipping {repo_name} - no commits in last 61 minutes")
+                if not has_recent_commits(repo_project, minutes_ago=ACTIVITY_WINDOW_MINUTES):
+                    logger.info(f"Skipping {repo_name} - no commits in last {ACTIVITY_WINDOW_MINUTES} minutes")
                     continue
 
             # Fetch repository file tree

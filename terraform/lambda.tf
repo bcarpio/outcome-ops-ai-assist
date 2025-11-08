@@ -169,9 +169,10 @@ module "generate_code_maps_lambda" {
 
   # Environment variables
   environment_variables = {
-    ENV                = var.environment
-    APP_NAME           = var.app_name
-    FORCE_FULL_PROCESS = "false" # Set to "true" for initial 0-day load
+    ENV                     = var.environment
+    APP_NAME                = var.app_name
+    FORCE_FULL_PROCESS      = "false" # Set to "true" for initial 0-day load
+    ACTIVITY_WINDOW_MINUTES = "61"    # Time window for incremental mode (61 = hourly + buffer)
   }
 
   # IAM permissions
@@ -279,7 +280,36 @@ module "generate_code_maps_lambda" {
   }
 }
 
-# No EventBridge schedule - this Lambda is invoked manually or on-demand
+# EventBridge rule to trigger code maps generation hourly (incremental mode)
+resource "aws_cloudwatch_event_rule" "generate_code_maps_schedule" {
+  name                = "${var.environment}-${var.app_name}-generate-code-maps-schedule"
+  description         = "Trigger generate-code-maps Lambda every hour for incremental updates"
+  schedule_expression = "rate(1 hour)"
+
+  tags = {
+    Purpose = "generate-code-maps-schedule"
+  }
+}
+
+resource "aws_cloudwatch_event_target" "generate_code_maps_target" {
+  rule      = aws_cloudwatch_event_rule.generate_code_maps_schedule.name
+  target_id = "GenerateCodeMapsLambda"
+  arn       = module.generate_code_maps_lambda.lambda_function_arn
+
+  # Pass empty payload - Lambda will use default incremental mode (FORCE_FULL_PROCESS=false)
+  input = jsonencode({
+    source = "eventbridge-scheduled"
+  })
+}
+
+# Allow EventBridge to invoke Lambda
+resource "aws_lambda_permission" "allow_eventbridge_generate_code_maps" {
+  statement_id  = "AllowExecutionFromEventBridge"
+  action        = "lambda:InvokeFunction"
+  function_name = module.generate_code_maps_lambda.lambda_function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.generate_code_maps_schedule.arn
+}
 
 output "generate_code_maps_lambda_arn" {
   description = "ARN of the generate-code-maps Lambda function"

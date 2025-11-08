@@ -333,12 +333,12 @@ class TestCreateGitHubBranch:
 class TestHandler:
     """Test main Lambda handler."""
 
-    @patch('generate_code_handler.handle_webhook')
+    @patch('generate_code_handler.send_plan_generation_message')
     @patch('generate_code_handler.verify_webhook_signature')
     @patch('generate_code_handler.get_webhook_secret')
     @patch('generate_code_handler.get_github_token')
     @patch('generate_code_handler.create_branch')
-    def test_handler_success(self, mock_create_branch, mock_get_token, mock_get_secret, mock_verify_sig, mock_handle_webhook):
+    def test_handler_success(self, mock_create_branch, mock_get_token, mock_get_secret, mock_verify_sig, mock_send_message):
         """Test: Successful webhook processing"""
         # Arrange
         mock_get_secret.return_value = "test_webhook_secret"
@@ -350,12 +350,9 @@ class TestHandler:
             "sha": "abc123"
         }
 
-        mock_handle_webhook.return_value = {
-            "success": True,
-            "message": "Code generation plan created",
-            "issue_number": 123,
-            "branch_name": "123-add-feature",
-            "total_steps": 5
+        # Mock the SQS send message (no return value needed)
+        mock_send_message.return_value = {
+            "MessageId": "test-message-id"
         }
 
         webhook_payload = {
@@ -392,10 +389,10 @@ class TestHandler:
         # Assert
         assert response["statusCode"] == 200
         body = json.loads(response["body"])
-        assert body["message"] == "Code generation plan created"
+        assert body["message"] == "Code generation started"
         assert body["issue_number"] == 123
         assert body["branch_name"] == "123-add-feature"
-        mock_handle_webhook.assert_called_once()
+        mock_send_message.assert_called_once()
 
     @patch('generate_code_handler.get_webhook_secret')
     def test_handler_invalid_signature(self, mock_get_secret):
