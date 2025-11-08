@@ -547,7 +547,7 @@ def handler(event, context):
         event: Lambda event
             - {} or empty: Mode 1 - process all repos
             - {"repos": ["name1", "name2"]}: Mode 2 - process specific repos
-            - Non-empty event without repos: Mode 3 - incremental mode (EventBridge)
+            - {"source": "aws.events", ...}: Mode 3 - incremental mode (EventBridge)
         context: Lambda context
 
     Returns:
@@ -590,7 +590,7 @@ def handler(event, context):
         # Mode 2: Single repo(s) specified - full regeneration for specified repos
         # Mode 3: EventBridge hourly - incremental updates for repos with recent commits
         is_single_repo_mode = event.get("repos") is not None
-        is_incremental_mode = not is_single_repo_mode and event  # EventBridge sends non-empty event
+        is_incremental_mode = event.get("source") == "aws.events"  # EventBridge scheduled events
 
         # If event.repos is provided, filter to only those repos
         if is_single_repo_mode:
