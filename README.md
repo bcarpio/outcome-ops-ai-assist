@@ -146,6 +146,7 @@ OutcomeOps applies the same playbook to AI-assisted development:
 **Lambda Documentation**
 - [Lambda: Ingest Docs](docs/lambda-ingest-docs.md) - Knowledge base ingestion
 - [Lambda: Generate Code Maps](docs/lambda-generate-code-maps.md) - Code analysis
+- [Lambda: Generate Code](docs/lambda-generate-code.md) - AI-powered code generation from issues
 - [Lambda: Analyze PR](docs/lambda-analyze-pr.md) - PR analysis orchestration
 - [Lambda: Process PR Check](docs/lambda-process-pr-check.md) - PR check worker
 
