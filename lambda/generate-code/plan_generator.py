@@ -246,7 +246,7 @@ def handle_webhook(webhook_event: GitHubWebhookEvent) -> Dict[str, Any]:
     # Commit plan to branch
     github_token = get_github_token()
 
-    plan_file_path = f"docs/code-gen-plan-{plan.issue_number}.md"
+    plan_file_path = f"issues/code-gen-plan-{plan.issue_number}.md"
 
     logger.info(f"[plan-gen] Committing plan to {plan_file_path}")
 

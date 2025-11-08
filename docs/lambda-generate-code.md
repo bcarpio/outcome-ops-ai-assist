@@ -107,7 +107,7 @@ The Lambda also processes SQS messages for async plan generation and step execut
   - Infrastructure templates
 - Generates execution plan with Claude
 - Breaks work into discrete steps
-- Commits plan to branch as `PLAN.md`
+- Commits plan to branch as `issues/code-gen-plan-{issue_number}.md`
 - Sends "execute_step" message for step 1
 
 ### 3. Step Execution (Async Loop)

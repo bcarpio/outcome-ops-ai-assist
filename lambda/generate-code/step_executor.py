@@ -146,7 +146,7 @@ def execute_step(
     # Step 1: Mark step as in-progress
     plan = update_step_in_plan(plan, step_number, status="in_progress")
 
-    plan_file_path = f"docs/code-gen-plan-{plan.issue_number}.md"
+    plan_file_path = f"issues/code-gen-plan-{plan.issue_number}.md"
     plan_markdown = serialize_plan_to_markdown(plan)
 
     update_file(
@@ -337,7 +337,7 @@ This PR implements the code generation for issue #{plan.issue_number}.
 **Total Cost:** ${plan.total_cost.total_cost_usd:.6f}
 
 ## Implementation Plan
-See the full plan at `docs/code-gen-plan-{plan.issue_number}.md`
+See the full plan at `issues/code-gen-plan-{plan.issue_number}.md`
 
 ### Steps Completed
 """
@@ -399,7 +399,7 @@ def handle_step_message(step_message: StepExecutionMessage) -> Dict[str, Any]:
     github_token = get_github_token()
 
     # Get plan from branch
-    plan_file_path = f"docs/code-gen-plan-{step_message.issue_number}.md"
+    plan_file_path = f"issues/code-gen-plan-{step_message.issue_number}.md"
 
     plan_file = get_file(
         repo_full_name=step_message.repo_full_name,
