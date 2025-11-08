@@ -1,9 +1,9 @@
----
-name: List Recent KB Documents - Example Issue
-about: Example code generation request for listing recent knowledge base documents
-title: '[Lambda]: Add list-recent-docs handler for KB verification'
-labels: ['approved-for-generation']
-assignees: ''
+# Example Code Generation Issue
+
+**Title:** `[Lambda]: Add list-recent-docs handler for KB verification`
+
+This is an example issue showing how to structure code generation requests for Python Lambda handlers. Use this as a reference when creating issues to trigger the AI code generation pipeline.
+
 ---
 
 # Code Generation Request
