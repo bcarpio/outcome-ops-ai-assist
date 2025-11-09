@@ -35,8 +35,16 @@ CRITICAL REQUIREMENTS:
    - Small files (schemas, types): 2-3 files per step if related
    - Tests: 1 test file per step
    - Infrastructure: Separate step for Terraform changes
-3. Include specific KB queries needed for each step
+3. Include ONLY step-specific KB queries (general standards are already provided)
 4. Build incrementally on previous steps
+
+KB QUERY GUIDELINES:
+- General standards (Lambda patterns, error handling, testing, Terraform) are ALREADY available
+- ONLY include queries for step-specific context:
+  - Specific patterns for this step (e.g., "Pydantic validation for DynamoDB pagination")
+  - Examples relevant to this step (e.g., "Lambda handler examples using boto3 scan")
+  - ADRs specific to this feature (e.g., "ADR for API pagination standards")
+- DO NOT query for general standards like "Lambda error handling" or "Testing best practices"
 
 DO NOT include steps for:
 - Manual verification or compliance checks
@@ -53,7 +61,7 @@ Return ONLY valid JSON in this exact format:
       "title": "Brief step title",
       "description": "What this step accomplishes",
       "filesToCreate": ["path/to/file.py"],
-      "kbQueries": ["Specific query for KB"],
+      "kbQueries": ["Step-specific query (NOT general standards)"],
       "status": "pending"
     }
   ]
