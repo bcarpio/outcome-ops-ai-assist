@@ -29,8 +29,8 @@ bedrock_config = Config(
 bedrock_client = boto3.client("bedrock-runtime", config=bedrock_config)
 
 # Claude model configuration
-CLAUDE_MODEL_ID = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"  # Cross-region inference profile
-MAX_RETRIES = 6  # Increased for Bedrock throttling (cross-region inference has lower quotas)
+CLAUDE_MODEL_ID = "anthropic.claude-sonnet-4-5-20250929-v1:0"  # Region-specific (higher quota than cross-region)
+MAX_RETRIES = 6  # Increased for Bedrock throttling
 
 
 # ============================================================================
