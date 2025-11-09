@@ -77,9 +77,9 @@
 
 ---
 
-### Step 4: Create unit tests for happy path scenarios ⏳
+### Step 4: Create unit tests for happy path scenarios 🔄
 
-**Status:** pending
+**Status:** in_progress
 **Description:** Write tests for valid requests with different limit values, default limit behavior, and empty table scenario using moto for DynamoDB mocking
 
 **Files:**
