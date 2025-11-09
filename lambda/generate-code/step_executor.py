@@ -6,6 +6,7 @@ Handles executing individual code generation steps from SQS messages.
 
 import json
 import logging
+import time
 from typing import Dict, Any, List
 
 from bedrock_client import invoke_claude, extract_json_from_response
@@ -308,6 +309,15 @@ def execute_step(
             total_steps=step_message.total_steps,
             base_branch=step_message.base_branch
         )
+
+        # Add delay to avoid Bedrock rate limiting
+        # Cross-region inference profiles have low quotas, spacing out requests helps
+        delay_seconds = 15
+        logger.info(
+            f"[step-exec] Waiting {delay_seconds}s before sending next step "
+            f"(to avoid Bedrock throttling)"
+        )
+        time.sleep(delay_seconds)
 
         logger.info(f"[step-exec] Sending next step ({step_number + 1}) to SQS")
         send_step_message(next_step_message)
