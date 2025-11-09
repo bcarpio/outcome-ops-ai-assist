@@ -110,9 +110,9 @@
 
 ---
 
-### Step 6: Add Terraform Lambda configuration ⏳
+### Step 6: Add Terraform Lambda configuration 🔄
 
-**Status:** pending
+**Status:** in_progress
 **Description:** Add list-recent-docs Lambda module to terraform/lambda.tf with DynamoDB scan/query permissions, SSM parameter access, and environment variables
 
 **KB Queries:**
