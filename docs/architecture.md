@@ -140,6 +140,17 @@ Pass to Claude 3.5 Sonnet with context
 Claude generates answer grounded in YOUR patterns
 ```
 
+### 3. Event-Driven Test Automation
+
+Once Claude finishes writing code, we need fast validation without waiting for GitHub Actions. OutcomeOps now uses an environment-scoped EventBridge bus (`${env}-${app}-bus`) to loosely couple code generation and testing:
+
+1. `generate-code` emits `OutcomeOps.CodeGeneration.Completed` with repo, branch, PR info, and the environment/app identifiers.
+2. An EventBridge rule on the same bus routes those events to the new `run-tests` Lambda.
+3. `run-tests` pulls the latest commit, runs `make test` inside the runtime container, and publishes `OutcomeOps.Tests.Completed` (pass/fail plus S3 artifact pointers).
+4. Future automation—PR commenters, deployment gates, Slack notifications—can subscribe to the same bus without changing the Lambdas.
+
+This keeps the workflow serverless (no Step Functions required) while ensuring every generated branch ships with test results before CI picks it up.
+
 ### 3. Code Generation
 
 Claude generates code using your patterns as context.

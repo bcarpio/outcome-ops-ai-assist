@@ -1,4 +1,7 @@
-.PHONY: help setup install fmt lint validate test test-unit test-integration test-coverage ingest-docs ingest-docs-repo generate-code-maps generate-code-maps-repo code-maps-load clean all
+.PHONY: help setup install fmt lint validate test test-unit test-integration test-coverage ingest-docs ingest-docs-repo generate-code-maps generate-code-maps-repo code-maps-load build-runtime-image clean all
+
+APP_NAME ?= outcome-ops-ai-assist
+AWS_REGION ?= us-west-2
 
 # Default target
 help:
@@ -27,6 +30,9 @@ help:
 	@echo "  make generate-code-maps    Generate code maps for all application repos"
 	@echo "  make generate-code-maps-repo   Generate code maps for single repo (REPO=name)"
 	@echo "  make code-maps-load        (deprecated) Use generate-code-maps instead"
+	@echo ""
+	@echo "Runtime Container:"
+	@echo "  ENVIRONMENT=dev make build-runtime-image   Build & push Lambda runtime image to ECR"
 	@echo ""
 	@echo "Combined:"
 	@echo "  make all              Run fmt, validate, and all tests"
@@ -181,6 +187,38 @@ code-maps-load:
 	@echo "WARNING: code-maps-load is deprecated. Use 'make generate-code-maps' instead."
 	@echo ""
 	$(MAKE) generate-code-maps
+
+# ============================================================================
+# Runtime Container: Build and push Lambda runtime image
+# ============================================================================
+
+build-runtime-image:
+	@if [ -z "$$ENVIRONMENT" ]; then \
+		echo "Error: ENVIRONMENT variable not set. Usage: ENVIRONMENT=dev make build-runtime-image"; \
+		exit 1; \
+	fi
+	@ACCOUNT_ID=$$(aws sts get-caller-identity --query Account --output text); \
+	if [ -z "$$ACCOUNT_ID" ]; then \
+		echo "Error: Unable to determine AWS account ID. Ensure AWS CLI is configured."; \
+		exit 1; \
+	fi; \
+	REPO_NAME="$$ENVIRONMENT-$(APP_NAME)-runtime"; \
+	IMAGE_URI="$$ACCOUNT_ID.dkr.ecr.$(AWS_REGION).amazonaws.com/$$REPO_NAME"; \
+	IMAGE_TAG=$${IMAGE_TAG:-$$(git rev-parse --short HEAD)}; \
+	echo "Using image URI $$IMAGE_URI with tag $$IMAGE_TAG"; \
+	if ! aws ecr describe-repositories --repository-names $$REPO_NAME --region $(AWS_REGION) >/dev/null 2>&1; then \
+		echo "Error: ECR repository $$REPO_NAME not found in region $(AWS_REGION). Deploy Terraform first."; \
+		exit 1; \
+	fi; \
+	aws ecr get-login-password --region $(AWS_REGION) | docker login --username AWS --password-stdin $$ACCOUNT_ID.dkr.ecr.$(AWS_REGION).amazonaws.com; \
+	docker build -f lambda/runtime-container/Dockerfile \
+		-t $$IMAGE_URI:$$IMAGE_TAG .; \
+	docker tag $$IMAGE_URI:$$IMAGE_TAG $$IMAGE_URI:latest; \
+	docker push $$IMAGE_URI:$$IMAGE_TAG; \
+	docker push $$IMAGE_URI:latest; \
+	mkdir -p dist; \
+	echo "$$IMAGE_URI:$$IMAGE_TAG" > dist/runtime-image-uri.txt; \
+	echo "Runtime image pushed to $$IMAGE_URI:$$IMAGE_TAG"
 
 # ============================================================================
 # Utilities: Clean up build artifacts

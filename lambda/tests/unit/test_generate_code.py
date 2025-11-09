@@ -36,6 +36,8 @@ spec.loader.exec_module(handler_module)
 # Import modules for functions that moved
 import github_api
 import utils
+import step_executor
+from models import ExecutionPlan, PlanStep, StepExecutionMessage
 
 # Import functions from appropriate modules
 get_github_token = github_api.get_github_token
@@ -546,3 +548,87 @@ class TestHandler:
         body = json.loads(response["body"])
         assert body["message"] == "Failed to create branch"
         assert "error" in body
+
+
+class TestCodeGenerationCompletionEvent:
+    """Verify EventBridge event emission for completed code generation."""
+
+    @patch.object(step_executor, "events_client")
+    def test_publish_event_payload(self, mock_events):
+        """Ensure detail payload contains repo, branch, and plan info."""
+        plan = ExecutionPlan(
+            issue_number=6,
+            issue_title="Add handler",
+            issue_description="Test",
+            branch_name="feature-branch",
+            repo_full_name="bcarpio/outcome-ops-ai-assist",
+            steps=[PlanStep(step_number=1, title="Step 1", description="Desc")]
+        )
+        step_message = StepExecutionMessage(
+            issue_number=6,
+            issue_title="Add handler",
+            issue_description="Test",
+            repo_full_name="bcarpio/outcome-ops-ai-assist",
+            branch_name="feature-branch",
+            current_step=1,
+            total_steps=1,
+            base_branch="main"
+        )
+
+        step_executor.publish_code_generation_completed_event(
+            plan=plan,
+            step_message=step_message,
+            pr_url="https://github.com/bcarpio/outcome-ops-ai-assist/pull/123",
+            pr_number=123,
+            plan_file_path="issues/plan.md",
+            commit_sha="abc123"
+        )
+
+        mock_events.put_events.assert_called_once()
+        entry = mock_events.put_events.call_args.kwargs["Entries"][0]
+        assert entry["Source"] == "outcomeops.generate-code"
+        detail = json.loads(entry["Detail"])
+        assert detail["branchName"] == "feature-branch"
+        assert detail["commitSha"] == "abc123"
+        assert detail["planFile"] == "issues/plan.md"
+        assert detail["environment"] == "dev"
+        assert detail["appName"] == "outcome-ops-ai-assist"
+
+    @patch.object(step_executor, "publish_code_generation_completed_event")
+    @patch.object(step_executor, "get_branch_head_sha")
+    @patch("step_executor.create_pull_request")
+    def test_finalize_triggers_event(
+        self,
+        mock_create_pr,
+        mock_head_sha,
+        mock_publish
+    ):
+        """finalize_and_create_pr emits follow-up event after PR creation."""
+        plan = ExecutionPlan(
+            issue_number=6,
+            issue_title="Add handler",
+            issue_description="Test",
+            branch_name="feature-branch",
+            repo_full_name="bcarpio/outcome-ops-ai-assist",
+            steps=[PlanStep(step_number=1, title="Step", description="desc")]
+        )
+        step_message = StepExecutionMessage(
+            issue_number=6,
+            issue_title="Add handler",
+            issue_description="Test",
+            repo_full_name="bcarpio/outcome-ops-ai-assist",
+            branch_name="feature-branch",
+            current_step=1,
+            total_steps=1,
+            base_branch="main"
+        )
+
+        mock_create_pr.return_value = {"html_url": "https://github.com/pr", "number": 42}
+        mock_head_sha.return_value = "def456"
+
+        step_executor.finalize_and_create_pr(plan, step_message, github_token="token")
+
+        mock_publish.assert_called_once()
+        _, kwargs = mock_publish.call_args
+        assert kwargs["pr_number"] == 42
+        assert kwargs["commit_sha"] == "def456"

@@ -189,6 +189,34 @@ def create_branch(
     return {"success": False, "error": "Unknown error"}
 
 
+def get_branch_head_sha(
+    repo_full_name: str,
+    branch_name: str,
+    github_token: str
+) -> Optional[str]:
+    """
+    Retrieve the head commit SHA for a branch.
+
+    Args:
+        repo_full_name: Repository name (owner/repo)
+        branch_name: Branch to inspect
+        github_token: GitHub personal access token
+
+    Returns:
+        str: Commit SHA if branch exists
+    """
+    ref_url = f"{GITHUB_API_BASE}/repos/{repo_full_name}/git/ref/heads/{branch_name}"
+    headers = get_headers(github_token)
+
+    try:
+        response = requests.get(ref_url, headers=headers, timeout=30)
+        response.raise_for_status()
+        return response.json().get("object", {}).get("sha")
+    except requests.exceptions.RequestException as exc:
+        logger.error("[github] Failed to fetch branch head SHA: %s", exc)
+        return None
+
+
 # ============================================================================
 # File Operations
 # ============================================================================

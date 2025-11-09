@@ -149,6 +149,7 @@ OutcomeOps applies the same playbook to AI-assisted development:
 - [Lambda: Generate Code](docs/lambda-generate-code.md) - AI-powered code generation from issues
 - [Lambda: Analyze PR](docs/lambda-analyze-pr.md) - PR analysis orchestration
 - [Lambda: Process PR Check](docs/lambda-process-pr-check.md) - PR check worker
+- [Lambda: Run Tests](docs/lambda-run-tests.md) - Executes `make test` for generated branches
 
 **Architecture Decision Records**
 - [ADR-001: Creating ADRs](docs/adr/ADR-001-create-adrs.md) - How to document architectural decisions

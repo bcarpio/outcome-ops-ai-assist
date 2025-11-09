@@ -97,6 +97,16 @@ module "ingest_docs_lambda" {
         "arn:aws:bedrock:${var.aws_region}::foundation-model/amazon.titan-embed-text-v2:0"
       ]
     }
+
+    eventbridge_put = {
+      effect = "Allow"
+      actions = [
+        "events:PutEvents"
+      ]
+      resources = [
+        aws_cloudwatch_event_bus.automation.arn
+      ]
+    }
   }
 
   tags = {
@@ -349,6 +359,7 @@ module "process_batch_summary_lambda" {
   environment_variables = {
     ENV      = var.environment
     APP_NAME = var.app_name
+    EVENT_BUS_NAME = aws_cloudwatch_event_bus.automation.name
   }
 
   # IAM permissions
@@ -1058,6 +1069,111 @@ resource "aws_lambda_event_source_mapping" "code_generation_queue_to_lambda" {
   function_response_types = ["ReportBatchItemFailures"]
 }
 
+# ============================================================================
+# Run Tests Lambda (container image)
+# ============================================================================
+
+module "run_tests_lambda" {
+  source             = "terraform-aws-modules/lambda/aws"
+  version            = "8.1.2"
+  function_name      = "${var.environment}-${var.app_name}-run-tests"
+  description        = "Clone repo branches and run make test after code generation completes"
+  package_type       = "Image"
+  image_uri          = "${aws_ecr_repository.code_runtime.repository_url}:latest"
+  create_package     = false
+  timeout            = 900
+  memory_size        = 2048
+  ephemeral_storage_size = 1024
+  architectures      = ["x86_64"]
+  publish            = true
+
+  environment_variables = {
+    ENV                 = var.environment
+    APP_NAME            = var.app_name
+    TEST_RESULTS_BUCKET = module.knowledge_base_bucket.s3_bucket_id
+    TEST_RESULTS_PREFIX = "test-results"
+    EVENT_BUS_NAME      = aws_cloudwatch_event_bus.automation.name
+  }
+
+  cloudwatch_logs_retention_in_days = 7
+
+  attach_policy_statements = true
+  policy_statements = {
+    s3_put_results = {
+      effect = "Allow"
+      actions = [
+        "s3:PutObject"
+      ]
+      resources = [
+        "${module.knowledge_base_bucket.s3_bucket_arn}/*"
+      ]
+    }
+
+    ssm_read = {
+      effect = "Allow"
+      actions = [
+        "ssm:GetParameter"
+      ]
+      resources = [
+        "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/*"
+      ]
+    }
+
+    kms_decrypt = {
+      effect = "Allow"
+      actions = [
+        "kms:Decrypt"
+      ]
+      resources = [
+        "arn:aws:kms:${var.aws_region}:${data.aws_caller_identity.current.account_id}:alias/aws/ssm"
+      ]
+    }
+
+    eventbridge_publish = {
+      effect = "Allow"
+      actions = [
+        "events:PutEvents"
+      ]
+      resources = [
+        aws_cloudwatch_event_bus.automation.arn
+      ]
+    }
+  }
+
+  tags = {
+    Purpose = "run-tests"
+  }
+}
+
+resource "aws_cloudwatch_event_rule" "code_generation_completed" {
+  name        = "${var.environment}-${var.app_name}-code-generation-completed"
+  description = "Trigger test runner after code generation finishes"
+  event_bus_name = aws_cloudwatch_event_bus.automation.name
+
+  event_pattern = jsonencode({
+    "source" : ["outcomeops.generate-code"],
+    "detail-type" : ["OutcomeOps.CodeGeneration.Completed"],
+    "detail" : {
+      "environment" : [var.environment],
+      "appName" : [var.app_name]
+    }
+  })
+}
+
+resource "aws_cloudwatch_event_target" "run_tests_target" {
+  rule      = aws_cloudwatch_event_rule.code_generation_completed.name
+  target_id = "RunTestsLambda"
+  arn       = module.run_tests_lambda.lambda_function_arn
+}
+
+resource "aws_lambda_permission" "allow_eventbridge_run_tests" {
+  statement_id  = "AllowExecutionFromEventBridgeRunTests"
+  action        = "lambda:InvokeFunction"
+  function_name = module.run_tests_lambda.lambda_function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.code_generation_completed.arn
+}
+
 output "generate_code_lambda_arn" {
   description = "ARN of the generate-code Lambda function"
   value       = module.generate_code_lambda.lambda_function_arn
@@ -1076,4 +1192,14 @@ output "process_pr_check_lambda_arn" {
 output "process_pr_check_lambda_name" {
   description = "Name of the process-pr-check Lambda function"
   value       = module.process_pr_check_lambda.lambda_function_name
+}
+
+output "run_tests_lambda_arn" {
+  description = "ARN of the run-tests Lambda function"
+  value       = module.run_tests_lambda.lambda_function_arn
+}
+
+output "run_tests_lambda_name" {
+  description = "Name of the run-tests Lambda function"
+  value       = module.run_tests_lambda.lambda_function_name
 }

@@ -201,6 +201,21 @@ See [docs/example-code-generation-issue.md](example-code-generation-issue.md) fo
 - Business logic description
 - Test scenarios
 
+## EventBridge Notifications
+
+After every successful PR creation the Lambda emits an EventBridge event so downstream automation (run-tests, PR commenters, etc.) can react without polling.
+
+- **Bus:** `${env}-${app}-bus`
+- **Source:** `outcomeops.generate-code`
+- **Detail Type:** `OutcomeOps.CodeGeneration.Completed`
+- **Detail Payload:**
+  - `issueNumber`, `issueTitle`, `repoFullName`
+  - `branchName`, `baseBranch`, `planFile`
+  - `prNumber`, `prUrl`, `commitSha`
+  - `environment`, `appName`, `eventVersion`
+
+The `run-tests` Lambda subscribes to this event to clone the branch and run `make test`. Additional consumers can be added via Terraform by pointing new rules at the same bus.
+
 ## Performance
 
 ### Webhook Response Time

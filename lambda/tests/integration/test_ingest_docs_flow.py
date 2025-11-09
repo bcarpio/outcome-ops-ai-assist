@@ -14,8 +14,17 @@ from moto import mock_aws
 _handler_path = os.path.join(os.path.dirname(__file__), '..', '..', 'ingest-docs', 'handler.py')
 _spec = importlib.util.spec_from_file_location("ingest_docs_handler", _handler_path)
 ingest_docs_handler = importlib.util.module_from_spec(_spec)
+sys.modules["ingest_docs_handler"] = ingest_docs_handler
 _spec.loader.exec_module(ingest_docs_handler)
 handler = ingest_docs_handler.handler
+
+
+@pytest.fixture(autouse=True)
+def reset_config():
+    """Ensure module-level config reloads each test."""
+    ingest_docs_handler.KB_BUCKET = None
+    ingest_docs_handler.CODE_MAPS_TABLE = None
+    ingest_docs_handler.GITHUB_TOKEN = None
 
 
 @mock_aws
@@ -50,8 +59,9 @@ def test_handler_ingest_single_adr(mock_github_raw, mock_github_api):
         {"name": "ADR-001-test.md", "path": "docs/adr/ADR-001-test.md", "type": "file"}
     ]
     mock_github_raw.side_effect = [
-        "# ADR-001\nTest ADR",  # First call for ADR
-        "# README\nTest README",  # Second call for root README
+        "# ADR-001\nTest ADR",       # docs/adr/ADR-001-test.md
+        "# README\nTest README",     # README.md
+        "# Docs README\nMore docs"   # docs/README.md
     ]
 
     # Mock SSM and Bedrock
@@ -74,7 +84,7 @@ def test_handler_ingest_single_adr(mock_github_raw, mock_github_api):
         assert result["statusCode"] == 200
         body = json.loads(result["body"])
         assert body["message"] == "Document ingestion completed"
-        assert body["documents_ingested"] > 0
+        assert body["total_docs_ingested"] == 3
 
         # Verify S3 has documents
         response = s3_client.list_objects_v2(Bucket="dev-outcome-ops-ai-assist-kb")
@@ -83,6 +93,7 @@ def test_handler_ingest_single_adr(mock_github_raw, mock_github_api):
         # Verify DynamoDB has items
         table = dynamodb_resource.Table("dev-outcome-ops-ai-assist-code-maps")
         scan_response = table.scan()
+        assert scan_response["Count"] == 3
         assert scan_response["Count"] > 0
 
 
@@ -112,23 +123,20 @@ def test_handler_github_api_error(mock_github_api):
 @mock_aws
 @patch("ingest_docs_handler.GITHUB_TOKEN", "test-token")
 def test_handler_with_empty_allowlist():
-    """Test handler with invalid/empty allowlist."""
-    # Arrange
-    with patch("ingest_docs_handler.ssm_client") as mock_ssm, patch(
-        "builtins.open", create=True
-    ) as mock_open:
+    """Handler should return 500 when allowlist JSON is invalid."""
+    with patch("ingest_docs_handler.ssm_client") as mock_ssm:
         mock_ssm.get_parameter.side_effect = [
             {"Parameter": {"Value": "dev-outcome-ops-ai-assist-kb"}},
             {"Parameter": {"Value": "dev-outcome-ops-ai-assist-code-maps"}},
             {"Parameter": {"Value": "test-token"}},
+            {"Parameter": {"Value": ""}},  # Invalid JSON
         ]
 
-        # Simulate invalid YAML
-        mock_open.return_value.__enter__.return_value.read.return_value = ""
+        result = handler({}, {})
 
-        # Act - This will raise an error
-        with pytest.raises(Exception):
-            handler({}, {})
+        assert result["statusCode"] == 500
+        body = json.loads(result["body"])
+        assert "expecting value" in body["error"].lower()
 
 
 @mock_aws
@@ -192,10 +200,9 @@ def test_handler_multiple_documents(mock_bedrock, mock_github_raw, mock_github_a
         # Assert
         assert result["statusCode"] == 200
         body = json.loads(result["body"])
-        # Should have ingested 4 documents (3 ADRs + 1 README)
-        assert body["documents_ingested"] == 4
+        assert body["total_docs_ingested"] == 4  # 3 ADRs + 1 README
 
         # Verify DynamoDB has all items
-        table = dynamodb_resource.Table("dev-outcome-ops-ai-assistant-code-maps")
+        table = dynamodb_resource.Table("dev-outcome-ops-ai-assist-code-maps")
         scan_response = table.scan()
         assert scan_response["Count"] >= 4

@@ -6,9 +6,12 @@ Handles executing individual code generation steps from SQS messages.
 
 import json
 import logging
+import os
 import time
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
+import boto3
+from botocore.exceptions import ClientError
 from bedrock_client import invoke_claude, extract_json_from_response
 from github_api import (
     get_github_token,
@@ -16,7 +19,8 @@ from github_api import (
     commit_file,
     update_file,
     create_pull_request,
-    post_pr_comment
+    post_pr_comment,
+    get_branch_head_sha
 )
 from knowledge_base import query_knowledge_base
 from models import (
@@ -31,6 +35,11 @@ from sqs_client import send_step_message
 from utils import calculate_cost, generate_branch_name
 
 logger = logging.getLogger()
+
+events_client = boto3.client("events")
+EVENT_BUS_NAME = os.environ.get("EVENT_BUS_NAME", "default")
+ENV = os.environ.get("ENV", "dev")
+APP_NAME = os.environ.get("APP_NAME", "outcome-ops-ai-assist")
 
 
 # ============================================================================
@@ -372,6 +381,54 @@ def execute_step(
 
 
 # ============================================================================
+# Event Emission
+# ============================================================================
+
+
+def publish_code_generation_completed_event(
+    plan: ExecutionPlan,
+    step_message: StepExecutionMessage,
+    pr_url: str,
+    pr_number: int,
+    plan_file_path: str,
+    commit_sha: Optional[str]
+) -> None:
+    """
+    Emit an EventBridge event used to trigger downstream automation (test runner).
+    """
+    detail = {
+        "issueNumber": plan.issue_number,
+        "issueTitle": plan.issue_title,
+        "repoFullName": plan.repo_full_name,
+        "branchName": plan.branch_name,
+        "baseBranch": step_message.base_branch,
+        "prNumber": pr_number,
+        "prUrl": pr_url,
+        "planFile": plan_file_path,
+        "commitSha": commit_sha,
+        "eventVersion": "2024-11-09",
+        "environment": ENV,
+        "appName": APP_NAME
+    }
+
+    entry = {
+        "Source": "outcomeops.generate-code",
+        "DetailType": "OutcomeOps.CodeGeneration.Completed",
+        "Detail": json.dumps(detail),
+        "EventBusName": EVENT_BUS_NAME
+    }
+
+    try:
+        events_client.put_events(Entries=[entry])
+        logger.info(
+            "[step-exec] Published code generation completion event for issue #%s",
+            plan.issue_number
+        )
+    except ClientError as exc:
+        logger.error("[step-exec] Failed to publish completion event: %s", exc)
+
+
+# ============================================================================
 # PR Creation
 # ============================================================================
 
@@ -401,13 +458,19 @@ def finalize_and_create_pr(
     base_name = generate_branch_name(plan.issue_number, plan.issue_title)
     plan_file_path = f"issues/{base_name}-plan.md"
 
+    total_cost_value = (
+        plan.total_cost.total_cost_usd
+        if plan.total_cost and plan.total_cost.total_cost_usd is not None
+        else 0.0
+    )
+
     pr_body = f"""## Summary
 This PR implements the code generation for issue #{plan.issue_number}.
 
 **Issue:** {plan.issue_title}
 **Branch:** `{plan.branch_name}`
 **Total Steps:** {len(plan.steps)}
-**Total Cost:** ${plan.total_cost.total_cost_usd:.6f}
+**Total Cost:** ${total_cost_value:.6f}
 
 ## Implementation Plan
 See the full plan at `{plan_file_path}`
@@ -440,6 +503,21 @@ Closes #{plan.issue_number}
     )
 
     logger.info(f"[step-exec] PR created: {pr_result.get('html_url')}")
+
+    commit_sha = get_branch_head_sha(
+        repo_full_name=plan.repo_full_name,
+        branch_name=plan.branch_name,
+        github_token=github_token
+    )
+
+    publish_code_generation_completed_event(
+        plan=plan,
+        step_message=step_message,
+        pr_url=pr_result.get("html_url"),
+        pr_number=pr_result.get("number"),
+        plan_file_path=plan_file_path,
+        commit_sha=commit_sha
+    )
 
     return {
         "success": True,
