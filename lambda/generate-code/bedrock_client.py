@@ -10,14 +10,23 @@ import time
 from typing import Dict, Any
 
 import boto3
+from botocore.config import Config
 from botocore.exceptions import ClientError
 
 from models import ClaudeResponse, BedrockUsage
 
 logger = logging.getLogger()
 
+# Configure client with longer timeouts for code generation
+# Code generation can take 60-120 seconds, default timeouts are too short
+bedrock_config = Config(
+    connect_timeout=60,      # 60 seconds to establish connection
+    read_timeout=300,        # 5 minutes for response (code generation is slow)
+    retries={'max_attempts': 0}  # We handle retries ourselves
+)
+
 # Initialize Bedrock client (once per container)
-bedrock_client = boto3.client("bedrock-runtime")
+bedrock_client = boto3.client("bedrock-runtime", config=bedrock_config)
 
 # Claude model configuration
 CLAUDE_MODEL_ID = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"  # Cross-region inference profile

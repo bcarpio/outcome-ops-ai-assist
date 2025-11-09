@@ -122,6 +122,11 @@ class ExecutionPlan(BaseModel):
     created_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
     total_cost: Optional[TokenUsage] = None
 
+    # Standards retrieved during plan generation (cached to avoid re-querying)
+    lambda_standards: List[str] = Field(default_factory=list)
+    terraform_standards: List[str] = Field(default_factory=list)
+    testing_standards: List[str] = Field(default_factory=list)
+
 
 # ============================================================================
 # SQS Message Models

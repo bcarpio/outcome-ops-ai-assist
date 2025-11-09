@@ -47,6 +47,22 @@ def serialize_plan_to_markdown(plan: ExecutionPlan) -> str:
         f"",
         f"{plan.issue_description or 'No description provided'}",
         f"",
+        f"## Cached Standards",
+        f"",
+        f"<!-- Standards retrieved during plan generation (avoid re-querying) -->",
+        f"",
+        f"### Lambda Standards",
+        f"",
+        f"{chr(10).join(f'- {std}' for std in plan.lambda_standards) if plan.lambda_standards else '- None'}",
+        f"",
+        f"### Terraform Standards",
+        f"",
+        f"{chr(10).join(f'- {std}' for std in plan.terraform_standards) if plan.terraform_standards else '- None'}",
+        f"",
+        f"### Testing Standards",
+        f"",
+        f"{chr(10).join(f'- {std}' for std in plan.testing_standards) if plan.testing_standards else '- None'}",
+        f"",
         f"## Implementation Steps",
         f""
     ]
@@ -139,6 +155,9 @@ def parse_plan_from_markdown(markdown: str) -> ExecutionPlan:
     repo_full_name = None
     created_at = None
     issue_description = None
+    lambda_standards = []
+    terraform_standards = []
+    testing_standards = []
 
     for i, line in enumerate(lines):
         if line.startswith("**Issue:**"):
@@ -166,6 +185,30 @@ def parse_plan_from_markdown(markdown: str) -> ExecutionPlan:
                     break
                 desc_lines.append(lines[j])
             issue_description = "\n".join(desc_lines).strip()
+
+        elif line.startswith("### Lambda Standards"):
+            # Extract lambda standards (list items until next ###)
+            for j in range(i + 2, len(lines)):  # Skip header and blank line
+                if lines[j].startswith("###") or lines[j].startswith("##"):
+                    break
+                if lines[j].startswith("- ") and not lines[j].startswith("- None"):
+                    lambda_standards.append(lines[j][2:].strip())
+
+        elif line.startswith("### Terraform Standards"):
+            # Extract terraform standards
+            for j in range(i + 2, len(lines)):
+                if lines[j].startswith("###") or lines[j].startswith("##"):
+                    break
+                if lines[j].startswith("- ") and not lines[j].startswith("- None"):
+                    terraform_standards.append(lines[j][2:].strip())
+
+        elif line.startswith("### Testing Standards"):
+            # Extract testing standards
+            for j in range(i + 2, len(lines)):
+                if lines[j].startswith("###") or lines[j].startswith("##"):
+                    break
+                if lines[j].startswith("- ") and not lines[j].startswith("- None"):
+                    testing_standards.append(lines[j][2:].strip())
 
     if not all([issue_number, issue_title, branch_name, repo_full_name]):
         raise ValueError("Missing required metadata in plan markdown")
@@ -245,7 +288,10 @@ def parse_plan_from_markdown(markdown: str) -> ExecutionPlan:
         branch_name=branch_name,
         repo_full_name=repo_full_name,
         steps=steps,
-        created_at=created_at or datetime.utcnow().isoformat()
+        created_at=created_at or datetime.utcnow().isoformat(),
+        lambda_standards=lambda_standards,
+        terraform_standards=terraform_standards,
+        testing_standards=testing_standards
     )
 
 

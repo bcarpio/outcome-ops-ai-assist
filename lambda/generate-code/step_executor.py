@@ -66,7 +66,10 @@ def build_code_generation_prompt(
     issue_description: str,
     current_step: int,
     total_steps: int,
-    kb_results: List[str]
+    kb_results: List[str],
+    lambda_standards: List[str] = None,
+    terraform_standards: List[str] = None,
+    testing_standards: List[str] = None
 ) -> str:
     """
     Build the prompt for code generation.
@@ -76,11 +79,38 @@ def build_code_generation_prompt(
         issue_description: Original issue description
         current_step: Current step number
         total_steps: Total number of steps
-        kb_results: Knowledge base query results
+        kb_results: Knowledge base query results (step-specific)
+        lambda_standards: Cached Lambda standards from plan
+        terraform_standards: Cached Terraform standards from plan
+        testing_standards: Cached Testing standards from plan
 
     Returns:
         str: Complete prompt for Claude
     """
+    # Combine cached standards with step-specific KB results
+    all_context = []
+
+    if lambda_standards:
+        all_context.append("## Lambda Handler Standards")
+        all_context.extend(lambda_standards)
+        all_context.append("")
+
+    if terraform_standards:
+        all_context.append("## Terraform Standards")
+        all_context.extend(terraform_standards)
+        all_context.append("")
+
+    if testing_standards:
+        all_context.append("## Testing Standards")
+        all_context.extend(testing_standards)
+        all_context.append("")
+
+    if kb_results:
+        all_context.append("## Step-Specific Context")
+        all_context.extend(kb_results)
+
+    context_text = chr(10).join(all_context) if all_context else 'No context available'
+
     return f"""You are implementing step {current_step} of {total_steps}.
 
 # User Story
@@ -92,7 +122,7 @@ def build_code_generation_prompt(
 **Files to create:** {', '.join(step.files_to_create)}
 
 # Knowledge Base Context
-{chr(10).join(kb_results) if kb_results else 'No KB context available'}
+{context_text}
 
 # Task
 Generate the code for the files listed in this step. Return ONLY valid JSON following the schema in the system prompt.
@@ -158,9 +188,10 @@ def execute_step(
         github_token=github_token
     )
 
-    # Step 2: Query KB with step's queries
-    logger.info(f"[step-exec] Querying KB with {len(step.kb_queries)} queries")
+    # Step 2: Query KB with step's queries (only for step-specific context)
+    logger.info(f"[step-exec] Querying KB with {len(step.kb_queries)} step-specific queries")
     kb_results = query_knowledge_base(step.kb_queries, top_k=3)
+    logger.info("[step-exec] Using cached standards from plan (no re-querying)")
 
     # Step 3: Build prompt and invoke Claude
     prompt = build_code_generation_prompt(
@@ -168,7 +199,10 @@ def execute_step(
         issue_description=plan.issue_description,
         current_step=step_number,
         total_steps=step_message.total_steps,
-        kb_results=kb_results
+        kb_results=kb_results,
+        lambda_standards=plan.lambda_standards,
+        terraform_standards=plan.terraform_standards,
+        testing_standards=plan.testing_standards
     )
 
     logger.info("[step-exec] Invoking Claude to generate code")

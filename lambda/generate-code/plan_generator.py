@@ -199,7 +199,10 @@ def generate_execution_plan(webhook_event: GitHubWebhookEvent) -> ExecutionPlan:
         issue_description=webhook_event.issue.body,
         branch_name=branch_name,
         repo_full_name=webhook_event.repository.full_name,
-        steps=steps
+        steps=steps,
+        lambda_standards=lambda_standards,
+        terraform_standards=terraform_standards,
+        testing_standards=testing_standards
     )
 
     logger.info(f"[plan-gen] Plan generated with {len(steps)} steps")
