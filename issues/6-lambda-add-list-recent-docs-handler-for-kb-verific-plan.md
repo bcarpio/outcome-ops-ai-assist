@@ -95,9 +95,9 @@
 
 ---
 
-### Step 5: Add unit tests for validation and error cases ⏳
+### Step 5: Add unit tests for validation and error cases 🔄
 
-**Status:** pending
+**Status:** in_progress
 **Description:** Extend test file with validation error tests (invalid limit values), DynamoDB error handling, and edge cases (fewer documents than limit, multiple document types)
 
 **KB Queries:**
