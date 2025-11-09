@@ -11,7 +11,8 @@ This handler:
 Documentation sources:
 - ADRs: docs/adr/*.md (from standards repos)
 - READMEs: README.md, docs/README.md (from all repos)
-- Docs: docs/*.md except ADRs and READMEs (from all repos)
+- Docs: docs/*.md except ADRs, READMEs, and roadmap (from all repos)
+  - Excludes: docs/roadmap/* (planned features, not implemented)
   - This prevents chunking of large combined READMEs
   - Examples: docs/architecture.md, docs/lambda-*.md, docs/deployment.md
 """
@@ -563,11 +564,12 @@ def handler(event, context):
                     logger.info(f"Fetching documentation files from {repo_name}...")
                     try:
                         doc_files = list_directory_files(repo_project, "docs", ref="main")
-                        # Filter out ADRs and READMEs (already handled separately)
+                        # Filter out ADRs, READMEs, and roadmap docs
                         doc_files = [
                             f for f in doc_files
                             if f.endswith(".md")
                             and "docs/adr" not in f  # Skip ADRs (handled above)
+                            and "docs/roadmap" not in f  # Skip roadmap (planned features, not implemented)
                             and not f.endswith("README.md")  # Skip READMEs (handled above)
                             and not f.endswith("TEMPLATE.md")  # Skip template
                         ]
