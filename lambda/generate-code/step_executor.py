@@ -27,7 +27,7 @@ from models import (
 )
 from plan_manager import parse_plan_from_markdown, update_step_in_plan, serialize_plan_to_markdown
 from sqs_client import send_step_message
-from utils import calculate_cost
+from utils import calculate_cost, generate_branch_name
 
 logger = logging.getLogger()
 
@@ -176,7 +176,9 @@ def execute_step(
     # Step 1: Mark step as in-progress
     plan = update_step_in_plan(plan, step_number, status="in_progress")
 
-    plan_file_path = f"issues/code-gen-plan-{plan.issue_number}.md"
+    # Use same naming pattern as plan generation: {issue_number}-{title}-plan.md
+    base_name = generate_branch_name(plan.issue_number, plan.issue_title)
+    plan_file_path = f"issues/{base_name}-plan.md"
     plan_markdown = serialize_plan_to_markdown(plan)
 
     update_file(
@@ -362,6 +364,10 @@ def finalize_and_create_pr(
     # Build PR title and body
     pr_title = f"feat: {plan.issue_title} (issue #{plan.issue_number})"
 
+    # Generate plan filename using same pattern
+    base_name = generate_branch_name(plan.issue_number, plan.issue_title)
+    plan_file_path = f"issues/{base_name}-plan.md"
+
     pr_body = f"""## Summary
 This PR implements the code generation for issue #{plan.issue_number}.
 
@@ -371,7 +377,7 @@ This PR implements the code generation for issue #{plan.issue_number}.
 **Total Cost:** ${plan.total_cost.total_cost_usd:.6f}
 
 ## Implementation Plan
-See the full plan at `issues/code-gen-plan-{plan.issue_number}.md`
+See the full plan at `{plan_file_path}`
 
 ### Steps Completed
 """
@@ -432,8 +438,9 @@ def handle_step_message(step_message: StepExecutionMessage) -> Dict[str, Any]:
     # Get GitHub token
     github_token = get_github_token()
 
-    # Get plan from branch
-    plan_file_path = f"issues/code-gen-plan-{step_message.issue_number}.md"
+    # Get plan from branch (use same naming pattern as plan generation)
+    base_name = generate_branch_name(step_message.issue_number, step_message.issue_title)
+    plan_file_path = f"issues/{base_name}-plan.md"
 
     plan_file = get_file(
         repo_full_name=step_message.repo_full_name,
