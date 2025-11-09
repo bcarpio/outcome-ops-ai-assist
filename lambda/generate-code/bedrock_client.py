@@ -30,7 +30,7 @@ bedrock_client = boto3.client("bedrock-runtime", config=bedrock_config)
 
 # Claude model configuration
 CLAUDE_MODEL_ID = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"  # Cross-region inference profile
-MAX_RETRIES = 3
+MAX_RETRIES = 6  # Increased for Bedrock throttling (cross-region inference has lower quotas)
 
 
 # ============================================================================
@@ -124,7 +124,7 @@ def invoke_claude(
             error_code = e.response.get("Error", {}).get("Code", "")
 
             if error_code == "ThrottlingException":
-                wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s
+                wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s, 8s, 16s, 32s
                 logger.warning(
                     f"[bedrock] Throttled by Bedrock API, retrying in {wait_time}s "
                     f"(attempt {attempt + 1}/{MAX_RETRIES})"
