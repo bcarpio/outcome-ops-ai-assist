@@ -214,7 +214,7 @@ def execute_step(
         prompt=prompt,
         system_prompt=CODE_GENERATION_SYSTEM_PROMPT,
         temperature=0.3,
-        max_tokens=100000  # Claude Sonnet 4.5 supports up to 200K, using 100K for headroom
+        max_tokens=64000  # Bedrock limit for Claude Sonnet 4.5 via Converse API
     )
 
     # Check for truncation
@@ -263,18 +263,41 @@ def execute_step(
 
     for file in generated_files.files:
         file_content = file.decoded_content
-        commit_message = f"feat: add {file.path} (step {step_number})"
 
-        logger.info(f"[step-exec] Committing {file.path}")
-
-        commit_file(
+        # Check if file already exists
+        existing_file = get_file(
             repo_full_name=plan.repo_full_name,
             file_path=file.path,
-            content=file_content,
             branch_name=plan.branch_name,
-            commit_message=commit_message,
             github_token=github_token
         )
+
+        if existing_file:
+            # File exists, update it
+            commit_message = f"feat: update {file.path} (step {step_number})"
+            logger.info(f"[step-exec] Updating existing file {file.path}")
+
+            update_file(
+                repo_full_name=plan.repo_full_name,
+                file_path=file.path,
+                content=file_content,
+                branch_name=plan.branch_name,
+                commit_message=commit_message,
+                github_token=github_token
+            )
+        else:
+            # File doesn't exist, create it
+            commit_message = f"feat: add {file.path} (step {step_number})"
+            logger.info(f"[step-exec] Creating new file {file.path}")
+
+            commit_file(
+                repo_full_name=plan.repo_full_name,
+                file_path=file.path,
+                content=file_content,
+                branch_name=plan.branch_name,
+                commit_message=commit_message,
+                github_token=github_token
+            )
 
     # Step 6: Mark step as completed with cost
     cost = calculate_cost(response.usage.inputTokens, response.usage.outputTokens)

@@ -404,9 +404,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     Returns:
         dict: Response based on event type
     """
-    logger.info(f"[generate-code] Received event: {json.dumps(event)}")
-
-    # Route based on event type
+    # Route based on event type (log event type, not full payload to reduce CloudWatch verbosity)
     if is_sqs_event(event):
         logger.info("[generate-code] Routing to SQS handler (step execution)")
         return handle_sqs_event(event)
