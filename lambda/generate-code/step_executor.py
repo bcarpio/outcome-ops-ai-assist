@@ -214,7 +214,7 @@ def execute_step(
         prompt=prompt,
         system_prompt=CODE_GENERATION_SYSTEM_PROMPT,
         temperature=0.3,
-        max_tokens=8000  # Higher for code generation
+        max_tokens=100000  # Claude Sonnet 4.5 supports up to 200K, using 100K for headroom
     )
 
     # Check for truncation
