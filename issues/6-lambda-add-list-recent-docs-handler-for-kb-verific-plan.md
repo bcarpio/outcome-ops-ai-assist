@@ -44,9 +44,9 @@
 
 ---
 
-### Step 2: Create DynamoDB query utility functions ⏳
+### Step 2: Create DynamoDB query utility functions 🔄
 
-**Status:** pending
+**Status:** in_progress
 **Description:** Implement utility functions to load table name from SSM, scan DynamoDB with filter for documents with embeddings, and sort results by timestamp. Keep business logic separate from handler.
 
 **Files:**
