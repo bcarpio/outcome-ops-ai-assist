@@ -33,10 +33,18 @@ CRITICAL REQUIREMENTS:
 2. File granularity:
    - Large files (handlers, complex logic): 1 file per step
    - Small files (schemas, types): 2-3 files per step if related
-   - Tests: 1 test file per step
    - Infrastructure: Separate step for Terraform changes
-3. Include ONLY step-specific KB queries (general standards are already provided)
-4. Build incrementally on previous steps
+3. Test step granularity (CRITICAL - prevents timeouts):
+   - DO NOT create a single "Create unit tests for handler" step
+   - BREAK DOWN test creation into multiple focused steps based on the testing standards provided:
+     * Step N: Create unit tests for success/happy path cases (1-3 test functions)
+     * Step N+1: Create unit tests for error handling (1-3 test functions)
+     * Step N+2: Create unit tests for edge cases (1-3 test functions)
+     * Additional steps for integration tests if needed
+   - Each test step should generate 1-3 test functions maximum
+   - This keeps each Claude invocation under 3 minutes and prevents timeouts
+4. Include ONLY step-specific KB queries (general standards are already provided)
+5. Build incrementally on previous steps
 
 KB QUERY GUIDELINES:
 - General standards (Lambda patterns, error handling, testing, Terraform) are ALREADY available
@@ -108,6 +116,8 @@ Description:
 
 # Task
 Generate a step-by-step implementation plan for this issue. Focus on creating Lambda handlers, Terraform configs, and tests based on the user story.
+
+IMPORTANT: When creating test-related steps, break them into multiple focused steps (success cases, error handling, edge cases) with 1-3 test functions each. DO NOT create a single monolithic "Create unit tests" step.
 
 Return the plan as JSON following the schema in the system prompt."""
 
