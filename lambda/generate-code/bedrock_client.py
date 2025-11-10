@@ -18,11 +18,11 @@ from models import ClaudeResponse, BedrockUsage
 logger = logging.getLogger()
 
 # Configure client with longer timeouts for code generation
-# Code generation can take 60-120 seconds, sometimes longer for complex steps
-# Lambda timeout is 900s (15 min), set read timeout to 600s (10 min) for buffer
+# Code generation can take 60-120 seconds, sometimes MUCH longer (10+ min) for complex steps
+# Lambda timeout is 900s (15 min), set read timeout to 850s to allow maximum time
 bedrock_config = Config(
     connect_timeout=60,      # 60 seconds to establish connection
-    read_timeout=600,        # 10 minutes for response (allow extra time for complex generation)
+    read_timeout=850,        # ~14 minutes for response (Claude can be very slow, allow near-max time)
     retries={'max_attempts': 0}  # We handle retries ourselves
 )
 
