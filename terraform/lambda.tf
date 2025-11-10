@@ -1091,7 +1091,7 @@ module "run_tests_lambda" {
   function_name          = "${var.environment}-${var.app_name}-run-tests"
   description            = "Clone repo branches and run make test after code generation completes"
   package_type           = "Image"
-  image_uri              = "${aws_ecr_repository.code_runtime.repository_url}:${var.runtime_image_tag}"
+  image_uri              = "${aws_ecr_repository.code_runtime.repository_url}:${data.aws_ecr_image.code_runtime_latest.image_tags[0]}"
   create_package         = false
   timeout                = 900
   memory_size            = 2048

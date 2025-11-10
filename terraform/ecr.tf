@@ -36,7 +36,17 @@ resource "aws_ecr_lifecycle_policy" "code_runtime" {
   })
 }
 
+data "aws_ecr_image" "code_runtime_latest" {
+  repository_name = aws_ecr_repository.code_runtime.name
+  most_recent     = true
+}
+
 output "code_runtime_ecr_repository_url" {
   description = "ECR repository URL for the code runtime container image"
   value       = aws_ecr_repository.code_runtime.repository_url
+}
+
+output "code_runtime_latest_image_tag" {
+  description = "Latest image tag in the code runtime ECR repository"
+  value       = data.aws_ecr_image.code_runtime_latest.image_tags[0]
 }

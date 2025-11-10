@@ -218,8 +218,8 @@ build-runtime-image:
 	echo "$$IMAGE_URI:$$IMAGE_TAG" > dist/runtime-image-uri.txt; \
 	echo "Runtime image pushed to $$IMAGE_URI:$$IMAGE_TAG"; \
 	echo ""; \
-	echo "To deploy this image, update terraform/variables.tf:"; \
-	echo "  runtime_image_tag = \"$$IMAGE_TAG\""
+	echo "Terraform will automatically use the latest image from ECR"; \
+	echo "Run 'terraform apply' to update the Lambda with this new image"
 
 # ============================================================================
 # Utilities: Clean up build artifacts

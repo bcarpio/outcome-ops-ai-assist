@@ -34,9 +34,3 @@ variable "repos_to_ingest" {
     }
   ]
 }
-
-variable "runtime_image_tag" {
-  type        = string
-  description = "Tag for the Lambda runtime container image (e.g., git commit SHA)"
-  default     = "b62cf5d"
-}
