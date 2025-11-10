@@ -23,6 +23,8 @@ AI generates generic code. You need code that matches **YOUR** standards.
 
 This is Context Engineering. This is OutcomeOps.
 
+[Learn more about the OutcomeOps Methodology →](https://www.outcomeops.ai)
+
 ---
 
 ## The Problem With AI Tools Today
@@ -165,6 +167,7 @@ OutcomeOps applies the same playbook to AI-assisted development:
 
 **Ready to try OutcomeOps?**
 
+- **[Learn the Methodology](https://www.outcomeops.ai)** - Understand the OutcomeOps approach
 - **[Deploy Now](docs/getting-started.md)** - 5-minute setup guide
 - **[Learn ADRs](docs/getting-started-with-adrs.md)** - New to Architecture Decision Records?
 - **[Watch Demo](docs/demo.md)** - See OutcomeOps in action
