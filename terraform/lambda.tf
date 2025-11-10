@@ -965,8 +965,9 @@ module "generate_code_lambda" {
 
   # Environment variables
   environment_variables = {
-    ENV      = var.environment
-    APP_NAME = var.app_name
+    ENV            = var.environment
+    APP_NAME       = var.app_name
+    EVENT_BUS_NAME = aws_cloudwatch_event_bus.automation.name
   }
 
   # API Gateway trigger permission
@@ -1049,6 +1050,17 @@ module "generate_code_lambda" {
       ]
       resources = [
         module.query_kb_lambda.lambda_function_arn
+      ]
+    }
+
+    # Publish completion events to EventBridge automation bus
+    eventbridge_publish = {
+      effect = "Allow"
+      actions = [
+        "events:PutEvents"
+      ]
+      resources = [
+        aws_cloudwatch_event_bus.automation.arn
       ]
     }
   }
