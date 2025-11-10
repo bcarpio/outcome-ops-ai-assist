@@ -213,12 +213,13 @@ build-runtime-image:
 	aws ecr get-login-password --region $(AWS_REGION) | docker login --username AWS --password-stdin $$ACCOUNT_ID.dkr.ecr.$(AWS_REGION).amazonaws.com; \
 	docker build -f lambda/runtime-container/Dockerfile \
 		-t $$IMAGE_URI:$$IMAGE_TAG .; \
-	docker tag $$IMAGE_URI:$$IMAGE_TAG $$IMAGE_URI:latest; \
 	docker push $$IMAGE_URI:$$IMAGE_TAG; \
-	docker push $$IMAGE_URI:latest; \
 	mkdir -p dist; \
 	echo "$$IMAGE_URI:$$IMAGE_TAG" > dist/runtime-image-uri.txt; \
-	echo "Runtime image pushed to $$IMAGE_URI:$$IMAGE_TAG"
+	echo "Runtime image pushed to $$IMAGE_URI:$$IMAGE_TAG"; \
+	echo ""; \
+	echo "To deploy this image, update terraform/variables.tf:"; \
+	echo "  runtime_image_tag = \"$$IMAGE_TAG\""
 
 # ============================================================================
 # Utilities: Clean up build artifacts

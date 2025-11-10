@@ -357,8 +357,8 @@ module "process_batch_summary_lambda" {
 
   # Environment variables
   environment_variables = {
-    ENV      = var.environment
-    APP_NAME = var.app_name
+    ENV            = var.environment
+    APP_NAME       = var.app_name
     EVENT_BUS_NAME = aws_cloudwatch_event_bus.automation.name
   }
 
@@ -1074,18 +1074,18 @@ resource "aws_lambda_event_source_mapping" "code_generation_queue_to_lambda" {
 # ============================================================================
 
 module "run_tests_lambda" {
-  source             = "terraform-aws-modules/lambda/aws"
-  version            = "8.1.2"
-  function_name      = "${var.environment}-${var.app_name}-run-tests"
-  description        = "Clone repo branches and run make test after code generation completes"
-  package_type       = "Image"
-  image_uri          = "${aws_ecr_repository.code_runtime.repository_url}:latest"
-  create_package     = false
-  timeout            = 900
-  memory_size        = 2048
+  source                 = "terraform-aws-modules/lambda/aws"
+  version                = "8.1.2"
+  function_name          = "${var.environment}-${var.app_name}-run-tests"
+  description            = "Clone repo branches and run make test after code generation completes"
+  package_type           = "Image"
+  image_uri              = "${aws_ecr_repository.code_runtime.repository_url}:${var.runtime_image_tag}"
+  create_package         = false
+  timeout                = 900
+  memory_size            = 2048
   ephemeral_storage_size = 1024
-  architectures      = ["x86_64"]
-  publish            = true
+  architectures          = ["x86_64"]
+  publish                = true
 
   environment_variables = {
     ENV                 = var.environment
@@ -1138,6 +1138,16 @@ module "run_tests_lambda" {
         aws_cloudwatch_event_bus.automation.arn
       ]
     }
+
+    ecr_pull = {
+      effect = "Allow"
+      actions = [
+        "ecr:GetAuthorizationToken",
+        "ecr:BatchGetImage",
+        "ecr:GetDownloadUrlForLayer"
+      ]
+      resources = ["*"]
+    }
   }
 
   tags = {
@@ -1146,8 +1156,8 @@ module "run_tests_lambda" {
 }
 
 resource "aws_cloudwatch_event_rule" "code_generation_completed" {
-  name        = "${var.environment}-${var.app_name}-code-generation-completed"
-  description = "Trigger test runner after code generation finishes"
+  name           = "${var.environment}-${var.app_name}-code-generation-completed"
+  description    = "Trigger test runner after code generation finishes"
   event_bus_name = aws_cloudwatch_event_bus.automation.name
 
   event_pattern = jsonencode({
@@ -1161,9 +1171,10 @@ resource "aws_cloudwatch_event_rule" "code_generation_completed" {
 }
 
 resource "aws_cloudwatch_event_target" "run_tests_target" {
-  rule      = aws_cloudwatch_event_rule.code_generation_completed.name
-  target_id = "RunTestsLambda"
-  arn       = module.run_tests_lambda.lambda_function_arn
+  rule           = aws_cloudwatch_event_rule.code_generation_completed.name
+  event_bus_name = aws_cloudwatch_event_bus.automation.name
+  target_id      = "RunTestsLambda"
+  arn            = module.run_tests_lambda.lambda_function_arn
 }
 
 resource "aws_lambda_permission" "allow_eventbridge_run_tests" {
