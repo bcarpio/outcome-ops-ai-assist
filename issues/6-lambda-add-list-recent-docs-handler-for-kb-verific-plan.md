@@ -111,9 +111,9 @@
 
 ---
 
-### Step 6: Create unit tests for input validation errors ⏳
+### Step 6: Create unit tests for input validation errors 🔄
 
-**Status:** pending
+**Status:** in_progress
 **Description:** Create test functions for validation error cases: limit=0 (below minimum), limit=101 (above maximum), and invalid limit type. Verify 400 status codes and error messages match specification.
 
 **KB Queries:**
