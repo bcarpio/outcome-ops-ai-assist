@@ -446,6 +446,40 @@ def cleanup_workspace(path: str) -> None:
 
 
 # ============================================================================
+# Error Classification and Auto-Fix
+# ============================================================================
+
+
+def classify_test_failure(test_output: str) -> str:
+    """
+    Classify test failure type to determine if auto-fix should be attempted.
+
+    Args:
+        test_output: Combined stdout/stderr from test execution
+
+    Returns:
+        "import_error" - Missing module imports (auto-fixable)
+        "syntax_error" - Python syntax errors (auto-fixable)
+        "logic_error" - Test assertions or business logic (human escalation)
+    """
+    output_lower = test_output.lower()
+
+    # Import errors - auto-fixable
+    if "modulenotfounderror" in output_lower or "importerror" in output_lower:
+        logger.info("[classify] Detected import error - auto-fixable")
+        return "import_error"
+
+    # Syntax errors - auto-fixable
+    if "syntaxerror" in output_lower:
+        logger.info("[classify] Detected syntax error - auto-fixable")
+        return "syntax_error"
+
+    # Everything else is a logic error - needs human review
+    logger.info("[classify] Detected logic error - requires human review")
+    return "logic_error"
+
+
+# ============================================================================
 # Lambda handler
 # ============================================================================
 
@@ -491,8 +525,13 @@ def handler(event: Dict[str, Any], _context: Any) -> Dict[str, Any]:
         command_outputs.append(test_result)
         test_exit_code = test_result.exit_code
         tests_passed = test_result.succeeded
+
         if not tests_passed:
-            failure_reason = "Tests failed"
+            # Classify the failure type
+            test_output = test_result.stdout + "\n" + test_result.stderr
+            failure_type = classify_test_failure(test_output)
+            failure_reason = f"Tests failed ({failure_type})"
+            logger.info(f"[run-tests] Test failure classified as: {failure_type}")
 
         junit_path = Path(repo_dir) / "lambda" / "junit.xml"
         junit_content = read_file_if_exists(junit_path)

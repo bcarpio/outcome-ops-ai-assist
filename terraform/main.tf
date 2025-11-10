@@ -37,3 +37,16 @@ resource "aws_ssm_parameter" "repos_allowlist" {
     Purpose = "repos-allowlist"
   }
 }
+
+# Store GitHub usernames to tag when tests fail
+# Supports teams by accepting comma-separated usernames
+resource "aws_ssm_parameter" "github_usernames_to_tag" {
+  name        = "/${var.environment}/${var.app_name}/config/github-usernames-to-tag"
+  type        = "String"
+  value       = var.github_usernames_to_tag
+  description = "Comma-separated GitHub usernames to tag when tests fail (supports teams)"
+
+  tags = {
+    Purpose = "github-usernames-to-tag"
+  }
+}

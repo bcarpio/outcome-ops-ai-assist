@@ -25,3 +25,5 @@ repos_to_ingest = [
     type    = "application"
   }
 ]
+
+github_usernames_to_tag = "bcarpio"

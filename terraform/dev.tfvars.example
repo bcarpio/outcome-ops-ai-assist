@@ -16,3 +16,8 @@ repos_to_ingest = [
   #   type    = "application"
   # }
 ]
+
+# GitHub usernames to tag when tests fail
+# Single user: "yourusername"
+# Team: "user1,user2,user3"
+github_usernames_to_tag = "yourusername"

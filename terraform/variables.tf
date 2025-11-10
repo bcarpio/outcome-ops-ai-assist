@@ -34,3 +34,13 @@ variable "repos_to_ingest" {
     }
   ]
 }
+
+variable "github_usernames_to_tag" {
+  type        = string
+  description = "Comma-separated GitHub usernames to tag when tests fail (e.g., 'user1,user2' for teams or 'user1' for single user)"
+  default     = ""
+  validation {
+    condition     = can(regex("^[a-zA-Z0-9_,-]*$", var.github_usernames_to_tag))
+    error_message = "GitHub usernames must contain only alphanumeric characters, underscores, hyphens, and commas."
+  }
+}
