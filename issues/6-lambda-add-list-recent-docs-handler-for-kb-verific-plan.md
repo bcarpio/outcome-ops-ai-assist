@@ -138,9 +138,9 @@
 
 ---
 
-### Step 8: Add Terraform Lambda configuration ⏳
+### Step 8: Add Terraform Lambda configuration 🔄
 
-**Status:** pending
+**Status:** in_progress
 **Description:** Add Lambda function module to terraform/lambda.tf with IAM permissions for DynamoDB scan/query and SSM parameter access, environment variables, and proper version pinning.
 
 **KB Queries:**
