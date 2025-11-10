@@ -536,22 +536,90 @@ Provide a concise fix for this error."""
         return None
 
 
-def attempt_import_fix(error_output: str, repo_dir: str) -> bool:
+def apply_fix_to_file(file_path: str, error_output: str, failure_type: str) -> bool:
+    """
+    Apply Claude-suggested fix to a file.
+
+    Args:
+        file_path: Path to file to fix
+        error_output: The error output
+        failure_type: Type of error (import_error or syntax_error)
+
+    Returns:
+        True if fix was applied successfully
+    """
+    try:
+        # Read the current file content
+        with open(file_path, 'r') as f:
+            original_content = f.read()
+
+        logger.info(f"[auto-fix] Read {len(original_content)} bytes from {file_path}")
+
+        # Get Claude's fix suggestion with full context
+        prompt = f"""Fix this Python {failure_type.replace('_', ' ')}:
+
+File: {file_path}
+
+Error:
+{error_output[:1500]}
+
+Current file content:
+{original_content[:3000]}
+
+Provide the COMPLETE fixed file content. Output ONLY the Python code, no explanations."""
+
+        system_prompt = f"""You are fixing a Python {failure_type.replace('_', ' ')}.
+Analyze the error and file content, then output the COMPLETE corrected file.
+Output ONLY valid Python code - no markdown, no explanations."""
+
+        response = bedrock_client.converse(
+            modelId=CLAUDE_MODEL_ID,
+            messages=[{"role": "user", "content": [{"text": prompt}]}],
+            system=[{"text": system_prompt}],
+            inferenceConfig={"temperature": 0.3, "maxTokens": 4000}
+        )
+
+        fixed_content = response.get("output", {}).get("message", {}).get("content", [{}])[0].get("text", "")
+
+        if not fixed_content or len(fixed_content) < 10:
+            logger.warning("[auto-fix] Claude returned empty or very short content")
+            return False
+
+        # Remove markdown code fences if present
+        fixed_content = re.sub(r'^```python\s*\n', '', fixed_content)
+        fixed_content = re.sub(r'\n```\s*$', '', fixed_content)
+        fixed_content = fixed_content.strip()
+
+        # Write the fixed content
+        with open(file_path, 'w') as f:
+            f.write(fixed_content)
+
+        logger.info(f"[auto-fix] Applied fix to {file_path}")
+        return True
+
+    except Exception as e:
+        logger.error(f"[auto-fix] Failed to apply fix: {e}")
+        return False
+
+
+def attempt_import_fix(error_output: str, repo_dir: str, github_token: str, detail: CodeGenerationCompletedDetail) -> bool:
     """
     Attempt to fix import errors by analyzing error and updating code.
 
     Args:
         error_output: The pytest error output
         repo_dir: Path to repository
+        github_token: GitHub API token
+        detail: Event detail with repo/branch info
 
     Returns:
-        True if fix was attempted, False otherwise
+        True if fix was applied and committed, False otherwise
     """
     logger.info("[auto-fix] Attempting import error fix")
 
     # Parse error to find the problematic file
     # Format: "  File \"/path/to/file.py\", line X"
-    file_match = re.search(r'File "([^"]+)", line (\d+)', error_output)
+    file_match = re.search(r'File "([^"]+\.py)", line (\d+)', error_output)
     if not file_match:
         logger.warning("[auto-fix] Could not parse file path from error")
         return False
@@ -559,15 +627,143 @@ def attempt_import_fix(error_output: str, repo_dir: str) -> bool:
     error_file = file_match.group(1)
     logger.info(f"[auto-fix] Error in file: {error_file}")
 
-    # For now, log that we would fix it
-    # Full implementation would:
-    # 1. Read the file
-    # 2. Get Claude's suggestion
-    # 3. Apply the fix
-    # 4. Commit the change
+    # Apply the fix
+    if not apply_fix_to_file(error_file, error_output, "import_error"):
+        return False
 
-    logger.info("[auto-fix] Import fix logged but not yet implemented")
-    return False  # Not yet fully implemented
+    # Commit the fix
+    try:
+        # Get relative path for commit message
+        relative_path = error_file.replace(f"{repo_dir}/", "")
+
+        commit_result = run_command(
+            ["git", "add", error_file],
+            cwd=repo_dir
+        )
+        if not commit_result.succeeded:
+            logger.error(f"[auto-fix] git add failed: {commit_result.stderr}")
+            return False
+
+        commit_msg = f"fix: auto-fix import error in {relative_path}\n\nAutomatically fixed by OutcomeOps run-tests Lambda"
+        commit_result = run_command(
+            ["git", "commit", "-m", commit_msg],
+            cwd=repo_dir
+        )
+        if not commit_result.succeeded:
+            logger.error(f"[auto-fix] git commit failed: {commit_result.stderr}")
+            return False
+
+        # Temporarily add token back for push
+        repo_url_with_token = f"https://x-access-token:{github_token}@github.com/{detail.repoFullName}.git"
+        run_command(
+            ["git", "remote", "set-url", "origin", repo_url_with_token],
+            cwd=repo_dir
+        )
+
+        # Push the fix
+        push_result = run_command(
+            ["git", "push"],
+            cwd=repo_dir,
+            mask_terms=[github_token]
+        )
+
+        # Remove token from remote again
+        run_command(
+            ["git", "remote", "set-url", "origin", f"https://github.com/{detail.repoFullName}.git"],
+            cwd=repo_dir
+        )
+
+        if not push_result.succeeded:
+            logger.error(f"[auto-fix] git push failed: {push_result.stderr}")
+            return False
+
+        logger.info(f"[auto-fix] Successfully committed and pushed fix for {relative_path}")
+        return True
+
+    except Exception as e:
+        logger.error(f"[auto-fix] Failed to commit fix: {e}")
+        return False
+
+
+def attempt_syntax_fix(error_output: str, repo_dir: str, github_token: str, detail: CodeGenerationCompletedDetail) -> bool:
+    """
+    Attempt to fix syntax errors.
+
+    Args:
+        error_output: The pytest error output
+        repo_dir: Path to repository
+        github_token: GitHub API token
+        detail: Event detail with repo/branch info
+
+    Returns:
+        True if fix was applied and committed, False otherwise
+    """
+    logger.info("[auto-fix] Attempting syntax error fix")
+
+    # Parse error to find the problematic file
+    file_match = re.search(r'File "([^"]+\.py)", line (\d+)', error_output)
+    if not file_match:
+        logger.warning("[auto-fix] Could not parse file path from error")
+        return False
+
+    error_file = file_match.group(1)
+    logger.info(f"[auto-fix] Syntax error in file: {error_file}")
+
+    # Apply the fix
+    if not apply_fix_to_file(error_file, error_output, "syntax_error"):
+        return False
+
+    # Commit the fix (same as import fix)
+    try:
+        relative_path = error_file.replace(f"{repo_dir}/", "")
+
+        commit_result = run_command(
+            ["git", "add", error_file],
+            cwd=repo_dir
+        )
+        if not commit_result.succeeded:
+            logger.error(f"[auto-fix] git add failed: {commit_result.stderr}")
+            return False
+
+        commit_msg = f"fix: auto-fix syntax error in {relative_path}\n\nAutomatically fixed by OutcomeOps run-tests Lambda"
+        commit_result = run_command(
+            ["git", "commit", "-m", commit_msg],
+            cwd=repo_dir
+        )
+        if not commit_result.succeeded:
+            logger.error(f"[auto-fix] git commit failed: {commit_result.stderr}")
+            return False
+
+        # Temporarily add token back for push
+        repo_url_with_token = f"https://x-access-token:{github_token}@github.com/{detail.repoFullName}.git"
+        run_command(
+            ["git", "remote", "set-url", "origin", repo_url_with_token],
+            cwd=repo_dir
+        )
+
+        # Push the fix
+        push_result = run_command(
+            ["git", "push"],
+            cwd=repo_dir,
+            mask_terms=[github_token]
+        )
+
+        # Remove token from remote again
+        run_command(
+            ["git", "remote", "set-url", "origin", f"https://github.com/{detail.repoFullName}.git"],
+            cwd=repo_dir
+        )
+
+        if not push_result.succeeded:
+            logger.error(f"[auto-fix] git push failed: {push_result.stderr}")
+            return False
+
+        logger.info(f"[auto-fix] Successfully committed and pushed syntax fix for {relative_path}")
+        return True
+
+    except Exception as e:
+        logger.error(f"[auto-fix] Failed to commit syntax fix: {e}")
+        return False
 
 
 # ============================================================================
@@ -608,21 +804,48 @@ def handler(event: Dict[str, Any], _context: Any) -> Dict[str, Any]:
             failure_reason = "Dependency installation failed"
             raise RuntimeError("Failed to install dependencies")
 
-        test_result = run_command(
-            TEST_COMMAND.split(),
-            cwd=repo_dir,
-            env=os.environ.copy()
-        )
-        command_outputs.append(test_result)
-        test_exit_code = test_result.exit_code
-        tests_passed = test_result.succeeded
+        # Test execution with auto-fix retry loop
+        fix_attempt = 0
+        while fix_attempt <= MAX_FIX_ATTEMPTS:
+            logger.info(f"[run-tests] Test execution attempt {fix_attempt + 1}/{MAX_FIX_ATTEMPTS + 1}")
 
-        if not tests_passed:
-            # Classify the failure type
+            test_result = run_command(
+                TEST_COMMAND.split(),
+                cwd=repo_dir,
+                env=os.environ.copy()
+            )
+            command_outputs.append(test_result)
+            test_exit_code = test_result.exit_code
+            tests_passed = test_result.succeeded
+
+            if tests_passed:
+                logger.info("[run-tests] Tests passed!")
+                break
+
+            # Tests failed - classify and potentially auto-fix
             test_output = test_result.stdout + "\n" + test_result.stderr
             failure_type = classify_test_failure(test_output)
             failure_reason = f"Tests failed ({failure_type})"
             logger.info(f"[run-tests] Test failure classified as: {failure_type}")
+
+            # If this is the last attempt or it's a logic error, don't try to fix
+            if fix_attempt >= MAX_FIX_ATTEMPTS or failure_type == "logic_error":
+                logger.info(f"[run-tests] No more fix attempts (attempt {fix_attempt + 1}, type: {failure_type})")
+                break
+
+            # Attempt auto-fix
+            fix_applied = False
+            if failure_type == "import_error":
+                fix_applied = attempt_import_fix(test_output, repo_dir, github_token, detail)
+            elif failure_type == "syntax_error":
+                fix_applied = attempt_syntax_fix(test_output, repo_dir, github_token, detail)
+
+            if not fix_applied:
+                logger.warning(f"[run-tests] Auto-fix failed for {failure_type}")
+                break
+
+            logger.info(f"[run-tests] Fix applied, retrying tests (attempt {fix_attempt + 2})")
+            fix_attempt += 1
 
         junit_path = Path(repo_dir) / "lambda" / "junit.xml"
         junit_content = read_file_if_exists(junit_path)
