@@ -64,9 +64,9 @@
 
 ---
 
-### Step 3: Create requirements.txt for Lambda dependencies ⏳
+### Step 3: Create requirements.txt for Lambda dependencies 🔄
 
-**Status:** pending
+**Status:** in_progress
 **Description:** Define Python dependencies including boto3, pydantic, and any other required packages for the Lambda function.
 
 **Files:**
