@@ -90,9 +90,9 @@
 
 ---
 
-### Step 5: Create unit tests for schemas ⏳
+### Step 5: Create unit tests for schemas 🔄
 
-**Status:** pending
+**Status:** in_progress
 **Description:** Test Pydantic validation for valid/invalid limit values, default values, and edge cases (0, 101, missing limit).
 
 **Files:**
