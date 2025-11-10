@@ -76,9 +76,9 @@
 
 ---
 
-### Step 4: Create Lambda requirements file ⏳
+### Step 4: Create Lambda requirements file 🔄
 
-**Status:** pending
+**Status:** in_progress
 **Description:** Define Python dependencies including boto3, pydantic, and any other required packages with version pinning.
 
 **Files:**
