@@ -1160,6 +1160,19 @@ module "run_tests_lambda" {
       ]
       resources = ["*"]
     }
+
+    # Bedrock Claude (for auto-fixing import/syntax errors)
+    # Cross-region inference profiles route to available regions
+    bedrock_claude = {
+      effect = "Allow"
+      actions = [
+        "bedrock:InvokeModel"
+      ]
+      resources = [
+        "arn:aws:bedrock:*::foundation-model/anthropic.claude-*",
+        "arn:aws:bedrock:*:*:inference-profile/*"
+      ]
+    }
   }
 
   tags = {

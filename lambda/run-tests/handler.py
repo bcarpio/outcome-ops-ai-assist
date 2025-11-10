@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -21,10 +22,11 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import boto3
 import requests
+from botocore.config import Config
 from botocore.exceptions import ClientError
 from pydantic import BaseModel, Field, ValidationError
 
@@ -50,6 +52,16 @@ if not TEST_RESULTS_BUCKET:
 ssm_client = boto3.client("ssm")
 s3_client = boto3.client("s3")
 events_client = boto3.client("events")
+
+# Bedrock client for Claude API (auto-fix)
+bedrock_config = Config(
+    connect_timeout=60,
+    read_timeout=300,  # 5 minutes for auto-fix generation
+    retries={'max_attempts': 2}
+)
+bedrock_client = boto3.client("bedrock-runtime", config=bedrock_config)
+CLAUDE_MODEL_ID = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+MAX_FIX_ATTEMPTS = 2  # Maximum auto-fix retry attempts
 
 
 # ============================================================================
@@ -477,6 +489,85 @@ def classify_test_failure(test_output: str) -> str:
     # Everything else is a logic error - needs human review
     logger.info("[classify] Detected logic error - requires human review")
     return "logic_error"
+
+
+def invoke_claude_for_fix(error_output: str, failure_type: str) -> Optional[str]:
+    """
+    Invoke Claude to suggest a fix for the error.
+
+    Args:
+        error_output: The test error output
+        failure_type: Type of failure (import_error or syntax_error)
+
+    Returns:
+        Suggested fix as text, or None if Claude fails
+    """
+    logger.info(f"[auto-fix] Invoking Claude for {failure_type} fix")
+
+    if failure_type == "import_error":
+        system_prompt = """You are helping fix a Python import error.
+Analyze the error and provide ONLY the specific fix needed.
+For missing modules, respond with: "Add missing import: from module import Class"
+Be concise and specific."""
+    else:  # syntax_error
+        system_prompt = """You are helping fix a Python syntax error.
+Analyze the error and provide ONLY the specific fix needed.
+Be concise and specific about what to change."""
+
+    prompt = f"""Error output:
+{error_output[:2000]}
+
+Provide a concise fix for this error."""
+
+    try:
+        response = bedrock_client.converse(
+            modelId=CLAUDE_MODEL_ID,
+            messages=[{"role": "user", "content": [{"text": prompt}]}],
+            system=[{"text": system_prompt}],
+            inferenceConfig={"temperature": 0.3, "maxTokens": 500}
+        )
+
+        fix_suggestion = response.get("output", {}).get("message", {}).get("content", [{}])[0].get("text", "")
+        logger.info(f"[auto-fix] Claude suggestion: {fix_suggestion[:200]}")
+        return fix_suggestion
+
+    except Exception as e:
+        logger.error(f"[auto-fix] Claude invocation failed: {e}")
+        return None
+
+
+def attempt_import_fix(error_output: str, repo_dir: str) -> bool:
+    """
+    Attempt to fix import errors by analyzing error and updating code.
+
+    Args:
+        error_output: The pytest error output
+        repo_dir: Path to repository
+
+    Returns:
+        True if fix was attempted, False otherwise
+    """
+    logger.info("[auto-fix] Attempting import error fix")
+
+    # Parse error to find the problematic file
+    # Format: "  File \"/path/to/file.py\", line X"
+    file_match = re.search(r'File "([^"]+)", line (\d+)', error_output)
+    if not file_match:
+        logger.warning("[auto-fix] Could not parse file path from error")
+        return False
+
+    error_file = file_match.group(1)
+    logger.info(f"[auto-fix] Error in file: {error_file}")
+
+    # For now, log that we would fix it
+    # Full implementation would:
+    # 1. Read the file
+    # 2. Get Claude's suggestion
+    # 3. Apply the fix
+    # 4. Commit the change
+
+    logger.info("[auto-fix] Import fix logged but not yet implemented")
+    return False  # Not yet fully implemented
 
 
 # ============================================================================
