@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import boto3
+import requests
 from botocore.exceptions import ClientError
 from pydantic import BaseModel, Field, ValidationError
 
@@ -64,8 +65,8 @@ class CodeGenerationCompletedDetail(BaseModel):
     repoFullName: str = Field(..., alias="repoFullName")
     branchName: str = Field(..., alias="branchName")
     baseBranch: str = Field(..., alias="baseBranch")
-    prNumber: int = Field(..., alias="prNumber")
-    prUrl: str = Field(..., alias="prUrl")
+    prNumber: Optional[int] = Field(default=None, alias="prNumber")  # Created by run-tests if None
+    prUrl: Optional[str] = Field(default=None, alias="prUrl")  # Created by run-tests if None
     planFile: str = Field(..., alias="planFile")
     commitSha: Optional[str] = Field(default=None, alias="commitSha")
     eventVersion: Optional[str] = Field(default=None, alias="eventVersion")
@@ -321,6 +322,60 @@ def read_file_if_exists(path: Path) -> Optional[str]:
     return None
 
 
+def create_pull_request(
+    detail: CodeGenerationCompletedDetail,
+    github_token: str
+) -> Dict[str, Any]:
+    """
+    Create a pull request after tests pass.
+
+    Args:
+        detail: Event detail with repo and branch info
+        github_token: GitHub PAT
+
+    Returns:
+        dict with pr_url and pr_number
+    """
+    pr_title = f"feat: {detail.issueTitle} (issue #{detail.issueNumber})"
+    pr_body = f"""## Summary
+This PR implements the code generation for issue #{detail.issueNumber}.
+
+**Issue:** {detail.issueTitle}
+**Branch:** `{detail.branchName}`
+**Implementation Plan:** See `{detail.planFile}`
+
+## Test Results
+All tests passed successfully.
+
+---
+Generated with OutcomeOps AI Assist
+Closes #{detail.issueNumber}
+"""
+
+    url = f"https://api.github.com/repos/{detail.repoFullName}/pulls"
+    headers = {
+        "Authorization": f"token {github_token}",
+        "Accept": "application/vnd.github.v3+json"
+    }
+    payload = {
+        "title": pr_title,
+        "body": pr_body,
+        "head": detail.branchName,
+        "base": detail.baseBranch
+    }
+
+    response = requests.post(url, headers=headers, json=payload, timeout=30)
+    response.raise_for_status()
+
+    pr_data = response.json()
+    logger.info(f"[run-tests] PR created: {pr_data['html_url']}")
+
+    return {
+        "pr_url": pr_data["html_url"],
+        "pr_number": pr_data["number"]
+    }
+
+
 def upload_artifacts(
     command_outputs: List[CommandResult],
     junit_content: Optional[str],
@@ -442,6 +497,15 @@ def handler(event: Dict[str, Any], _context: Any) -> Dict[str, Any]:
         junit_path = Path(repo_dir) / "lambda" / "junit.xml"
         junit_content = read_file_if_exists(junit_path)
 
+        # Create PR if tests passed and PR doesn't exist yet
+        if tests_passed and detail.prUrl is None:
+            logger.info("[run-tests] Tests passed - creating pull request")
+            pr_result = create_pull_request(detail, github_token)
+            detail.prUrl = pr_result["pr_url"]
+            detail.prNumber = pr_result["pr_number"]
+        elif not tests_passed:
+            logger.warning("[run-tests] Tests failed - skipping PR creation")
+
     except Exception as exc:  # pragma: no cover - aggregated handling
         logger.exception("Test runner failed: %s", exc)
         if not failure_reason:
@@ -460,8 +524,8 @@ def handler(event: Dict[str, Any], _context: Any) -> Dict[str, Any]:
             issueNumber=detail.issueNumber,
             branchName=detail.branchName,
             repoFullName=detail.repoFullName,
-            prNumber=detail.prNumber,
-            prUrl=detail.prUrl,
+            prNumber=detail.prNumber or 0,  # Default to 0 if no PR created
+            prUrl=detail.prUrl or "",  # Default to empty string if no PR created
             status="passed" if tests_passed else "failed",
             success=tests_passed,
             testCommand=TEST_COMMAND,

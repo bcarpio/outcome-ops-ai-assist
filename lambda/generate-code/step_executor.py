@@ -362,10 +362,10 @@ def execute_step(
         }
 
     else:
-        # All steps completed - create PR
-        logger.info("[step-exec] All steps completed - creating PR")
+        # All steps completed - emit event for test runner (NO PR yet)
+        logger.info("[step-exec] All steps completed - emitting event for test runner")
 
-        pr_result = finalize_and_create_pr(
+        finalize_and_publish_event(
             plan=plan,
             step_message=step_message,
             github_token=github_token
@@ -375,8 +375,7 @@ def execute_step(
             "success": True,
             "step": step_number,
             "status": "completed",
-            "all_steps_completed": True,
-            "pr_url": pr_result.get("pr_url")
+            "all_steps_completed": True
         }
 
 
@@ -388,13 +387,16 @@ def execute_step(
 def publish_code_generation_completed_event(
     plan: ExecutionPlan,
     step_message: StepExecutionMessage,
-    pr_url: str,
-    pr_number: int,
+    pr_url: Optional[str],
+    pr_number: Optional[int],
     plan_file_path: str,
     commit_sha: Optional[str]
 ) -> None:
     """
     Emit an EventBridge event used to trigger downstream automation (test runner).
+
+    NOTE: pr_url and pr_number are optional - they will be None when PR creation
+    is deferred to the test runner.
     """
     detail = {
         "issueNumber": plan.issue_number,
@@ -402,14 +404,18 @@ def publish_code_generation_completed_event(
         "repoFullName": plan.repo_full_name,
         "branchName": plan.branch_name,
         "baseBranch": step_message.base_branch,
-        "prNumber": pr_number,
-        "prUrl": pr_url,
         "planFile": plan_file_path,
         "commitSha": commit_sha,
         "eventVersion": "2024-11-09",
         "environment": ENV,
         "appName": APP_NAME
     }
+
+    # Only include PR fields if they exist (backward compatibility)
+    if pr_url is not None:
+        detail["prUrl"] = pr_url
+    if pr_number is not None:
+        detail["prNumber"] = pr_number
 
     entry = {
         "Source": "outcomeops.generate-code",
@@ -433,76 +439,26 @@ def publish_code_generation_completed_event(
 # ============================================================================
 
 
-def finalize_and_create_pr(
+def finalize_and_publish_event(
     plan: ExecutionPlan,
     step_message: StepExecutionMessage,
     github_token: str
-) -> Dict[str, Any]:
+) -> None:
     """
-    Finalize code generation and create PR.
+    Finalize code generation and publish event for test runner.
+
+    NOTE: PR creation is deferred to run-tests Lambda after tests pass.
 
     Args:
         plan: Execution plan
         step_message: Step message with repo info
         github_token: GitHub token
-
-    Returns:
-        dict: PR creation result with URL
     """
-    logger.info("[step-exec] Creating pull request")
-
-    # Build PR title and body
-    pr_title = f"feat: {plan.issue_title} (issue #{plan.issue_number})"
+    logger.info("[step-exec] Publishing completion event (PR will be created after tests)")
 
     # Generate plan filename using same pattern
     base_name = generate_branch_name(plan.issue_number, plan.issue_title)
     plan_file_path = f"issues/{base_name}-plan.md"
-
-    total_cost_value = (
-        plan.total_cost.total_cost_usd
-        if plan.total_cost and plan.total_cost.total_cost_usd is not None
-        else 0.0
-    )
-
-    pr_body = f"""## Summary
-This PR implements the code generation for issue #{plan.issue_number}.
-
-**Issue:** {plan.issue_title}
-**Branch:** `{plan.branch_name}`
-**Total Steps:** {len(plan.steps)}
-**Total Cost:** ${total_cost_value:.6f}
-
-## Implementation Plan
-See the full plan at `{plan_file_path}`
-
-### Steps Completed
-"""
-
-    for step in plan.steps:
-        status_emoji = "✅" if step.status == "completed" else "❌"
-        pr_body += f"\n{status_emoji} **Step {step.step_number}:** {step.title}"
-
-    pr_body += f"""
-
-## Validation
-Validation and testing results will be added as PR comments.
-
----
-Generated with OutcomeOps AI Assist
-Closes #{plan.issue_number}
-"""
-
-    # Create PR
-    pr_result = create_pull_request(
-        repo_full_name=plan.repo_full_name,
-        title=pr_title,
-        body=pr_body,
-        head_branch=plan.branch_name,
-        base_branch=step_message.base_branch,
-        github_token=github_token
-    )
-
-    logger.info(f"[step-exec] PR created: {pr_result.get('html_url')}")
 
     commit_sha = get_branch_head_sha(
         repo_full_name=plan.repo_full_name,
@@ -513,17 +469,11 @@ Closes #{plan.issue_number}
     publish_code_generation_completed_event(
         plan=plan,
         step_message=step_message,
-        pr_url=pr_result.get("html_url"),
-        pr_number=pr_result.get("number"),
+        pr_url=None,  # Will be created by run-tests after tests pass
+        pr_number=None,
         plan_file_path=plan_file_path,
         commit_sha=commit_sha
     )
-
-    return {
-        "success": True,
-        "pr_url": pr_result.get("html_url"),
-        "pr_number": pr_result.get("number")
-    }
 
 
 # ============================================================================
