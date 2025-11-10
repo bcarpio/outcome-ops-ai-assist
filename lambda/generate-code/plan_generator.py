@@ -196,17 +196,29 @@ def generate_execution_plan(webhook_event: GitHubWebhookEvent) -> ExecutionPlan:
     if not steps_data:
         raise Exception("No steps in plan JSON")
 
-    steps = [
-        PlanStep(
-            step_number=step["stepNumber"],
-            title=step["title"],
-            description=step["description"],
-            files_to_create=step.get("filesToCreate", []),
-            kb_queries=step.get("kbQueries", []),
-            status="pending"
+    steps = []
+    for step in steps_data:
+        kb_queries = step.get("kbQueries", [])
+        files_to_create = step.get("filesToCreate", [])
+
+        # Enhance requirements.txt steps with ADR-006 (per ADR-006 implementation)
+        has_requirements = any(f.endswith("requirements.txt") for f in files_to_create)
+        adr_query = "ADR-006 Python dependency management standards"
+
+        if has_requirements and adr_query not in kb_queries:
+            logger.info(f"[plan-gen] Adding ADR-006 query to step {step['stepNumber']} (creates requirements.txt)")
+            kb_queries.append(adr_query)
+
+        steps.append(
+            PlanStep(
+                step_number=step["stepNumber"],
+                title=step["title"],
+                description=step["description"],
+                files_to_create=files_to_create,
+                kb_queries=kb_queries,
+                status="pending"
+            )
         )
-        for step in steps_data
-    ]
 
     # Step 6: Create execution plan
     branch_name = generate_branch_name(webhook_event.issue.number, webhook_event.issue.title)
