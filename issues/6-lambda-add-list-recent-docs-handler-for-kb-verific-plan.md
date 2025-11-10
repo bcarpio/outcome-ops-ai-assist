@@ -107,9 +107,9 @@
 
 ---
 
-### Step 6: Create unit tests for DynamoDB utilities ⏳
+### Step 6: Create unit tests for DynamoDB utilities 🔄
 
-**Status:** pending
+**Status:** in_progress
 **Description:** Test DynamoDB query functions with moto mocking: successful scans, empty results, error handling, and filtering logic.
 
 **Files:**
