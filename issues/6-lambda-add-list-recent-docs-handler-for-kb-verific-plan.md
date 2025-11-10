@@ -140,9 +140,9 @@
 
 ---
 
-### Step 8: Create unit tests for edge cases ⏳
+### Step 8: Create unit tests for edge cases 🔄
 
-**Status:** pending
+**Status:** in_progress
 **Description:** Create test functions for edge cases: table has fewer documents than requested limit, multiple document types returned (ADRs, READMEs, code maps), and documents from multiple repositories. Verify correct sorting by timestamp and metadata extraction.
 
 **KB Queries:**
