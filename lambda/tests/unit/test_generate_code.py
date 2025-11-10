@@ -596,14 +596,12 @@ class TestCodeGenerationCompletionEvent:
 
     @patch.object(step_executor, "publish_code_generation_completed_event")
     @patch.object(step_executor, "get_branch_head_sha")
-    @patch("step_executor.create_pull_request")
     def test_finalize_triggers_event(
         self,
-        mock_create_pr,
         mock_head_sha,
         mock_publish
     ):
-        """finalize_and_create_pr emits follow-up event after PR creation."""
+        """finalize_and_publish_event emits event without creating PR (deferred to run-tests)."""
         plan = ExecutionPlan(
             issue_number=6,
             issue_title="Add handler",
@@ -623,12 +621,12 @@ class TestCodeGenerationCompletionEvent:
             base_branch="main"
         )
 
-        mock_create_pr.return_value = {"html_url": "https://github.com/pr", "number": 42}
         mock_head_sha.return_value = "def456"
 
-        step_executor.finalize_and_create_pr(plan, step_message, github_token="token")
+        step_executor.finalize_and_publish_event(plan, step_message, github_token="token")
 
         mock_publish.assert_called_once()
         _, kwargs = mock_publish.call_args
-        assert kwargs["pr_number"] == 42
+        assert kwargs["pr_number"] is None  # PR creation deferred to run-tests
+        assert kwargs["pr_url"] is None  # PR creation deferred to run-tests
         assert kwargs["commit_sha"] == "def456"
