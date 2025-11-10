@@ -124,9 +124,9 @@
 
 ---
 
-### Step 7: Create unit tests for handler ⏳
+### Step 7: Create unit tests for handler 🔄
 
-**Status:** pending
+**Status:** in_progress
 **Description:** Test main handler function covering happy path, input validation errors, DynamoDB errors, edge cases (no documents, fewer than limit), and error logging.
 
 **Files:**
