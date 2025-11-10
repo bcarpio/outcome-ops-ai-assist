@@ -93,9 +93,9 @@
 
 ---
 
-### Step 5: Create unit tests for happy path scenarios ⏳
+### Step 5: Create unit tests for happy path scenarios 🔄
 
-**Status:** pending
+**Status:** in_progress
 **Description:** Create test functions for successful request handling: valid request with limit=5, valid request with default limit (no limit provided), and empty table returning empty array. Mock DynamoDB scan responses using moto.
 
 **Files:**
