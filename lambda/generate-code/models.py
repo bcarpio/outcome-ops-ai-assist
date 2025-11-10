@@ -205,7 +205,18 @@ class GeneratedFile(BaseModel):
         import base64
 
         if self.content_base64:
-            return base64.b64decode(self.content_base64).decode("utf-8")
+            decoded_bytes = base64.b64decode(self.content_base64)
+            try:
+                return decoded_bytes.decode("utf-8")
+            except UnicodeDecodeError:
+                # Try latin-1 as fallback (accepts all byte values)
+                try:
+                    return decoded_bytes.decode("latin-1")
+                except Exception as e:
+                    raise ValueError(
+                        f"Cannot decode content for {self.path}: not valid UTF-8 or Latin-1. "
+                        f"File may be binary. Error: {e}"
+                    ) from e
         elif self.content:
             return self.content
         else:
