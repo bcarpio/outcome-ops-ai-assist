@@ -78,9 +78,9 @@
 
 ---
 
-### Step 4: Add Terraform Lambda module configuration ⏳
+### Step 4: Add Terraform Lambda module configuration 🔄
 
-**Status:** pending
+**Status:** in_progress
 **Description:** Add Lambda function module to terraform/lambda.tf using terraform-aws-modules/lambda/aws version 7.14.0. Configure environment variables (ENV, APP_NAME, CODE_MAPS_TABLE), timeout (30s), memory (512MB), and IAM permissions for DynamoDB scan/query and SSM parameter access.
 
 **KB Queries:**
