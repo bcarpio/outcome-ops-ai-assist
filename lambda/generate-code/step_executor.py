@@ -7,7 +7,10 @@ Handles executing individual code generation steps from SQS messages.
 import json
 import logging
 import os
+import subprocess
+import tempfile
 import time
+from pathlib import Path
 from typing import Dict, Any, List, Optional
 
 import boto3
@@ -40,6 +43,77 @@ events_client = boto3.client("events")
 EVENT_BUS_NAME = os.environ.get("EVENT_BUS_NAME", "default")
 ENV = os.environ.get("ENV", "dev")
 APP_NAME = os.environ.get("APP_NAME", "outcome-ops-ai-assist")
+
+
+# ============================================================================
+# Validation Functions
+# ============================================================================
+
+
+def validate_requirements_file(file_path: str, content: str) -> Optional[str]:
+    """
+    Validate Python requirements.txt file using pip.
+
+    Per ADR-006, all requirements.txt files must be validated before commit
+    to prevent hallucinated or non-existent packages.
+
+    Args:
+        file_path: Path to the requirements file (for logging)
+        content: Content of the requirements.txt file
+
+    Returns:
+        None if valid, error message string if invalid
+    """
+    # Only validate requirements.txt files
+    if not file_path.endswith("requirements.txt"):
+        return None
+
+    logger.info(f"[validation] Validating {file_path} per ADR-006")
+
+    # Create temporary file with requirements content
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as tmp_file:
+        tmp_file.write(content)
+        tmp_path = tmp_file.name
+
+    try:
+        # Run pip install --dry-run to validate
+        result = subprocess.run(
+            ['pip', 'install', '--dry-run', '-r', tmp_path],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+
+        if result.returncode != 0:
+            # Extract package name from error if possible
+            error_lines = result.stderr.strip().split('\n')
+            package_error = None
+            for line in error_lines:
+                if 'Could not find a version' in line or 'No matching distribution' in line:
+                    package_error = line
+                    break
+
+            error_msg = f"requirements.txt validation failed: {package_error or result.stderr[:200]}"
+            logger.error(f"[validation] {error_msg}")
+            return error_msg
+
+        logger.info(f"[validation] {file_path} passed validation")
+        return None
+
+    except subprocess.TimeoutExpired:
+        error_msg = "requirements.txt validation timed out after 30s"
+        logger.error(f"[validation] {error_msg}")
+        return error_msg
+    except Exception as e:
+        error_msg = f"requirements.txt validation error: {str(e)}"
+        logger.error(f"[validation] {error_msg}")
+        return error_msg
+    finally:
+        # Clean up temp file
+        try:
+            Path(tmp_path).unlink()
+        except Exception:
+            pass
 
 
 # ============================================================================
@@ -267,8 +341,33 @@ def execute_step(
         )
         raise
 
+    # Step 4.5: Validate generated files (ADR-006)
+    logger.info(f"[step-exec] Validating {len(generated_files.files)} files")
+    validation_errors = []
+
+    for file in generated_files.files:
+        validation_error = validate_requirements_file(file.path, file.decoded_content)
+        if validation_error:
+            validation_errors.append(f"{file.path}: {validation_error}")
+
+    if validation_errors:
+        error_msg = f"File validation failed:\n" + "\n".join(validation_errors)
+        logger.error(f"[step-exec] {error_msg}")
+
+        # Mark step as failed with validation error
+        plan = update_step_in_plan(plan, step_number, status="failed")
+        update_file(
+            repo_full_name=plan.repo_full_name,
+            file_path=plan_file_path,
+            content=serialize_plan_to_markdown(plan),
+            branch_name=plan.branch_name,
+            commit_message=f"docs: update plan - step {step_number} failed (validation)",
+            github_token=github_token
+        )
+        raise Exception(error_msg)
+
     # Step 5: Commit generated files to branch
-    logger.info(f"[step-exec] Committing {len(generated_files.files)} files")
+    logger.info(f"[step-exec] Validation passed. Committing {len(generated_files.files)} files")
 
     for file in generated_files.files:
         file_content = file.decoded_content
