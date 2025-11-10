@@ -62,9 +62,9 @@
 
 ---
 
-### Step 3: Create main Lambda handler ⏳
+### Step 3: Create main Lambda handler 🔄
 
-**Status:** pending
+**Status:** in_progress
 **Description:** Implement the main handler function that validates input using Pydantic schemas, calls DynamoDB utility functions, formats response, and handles errors according to Lambda handler standards.
 
 **Files:**
