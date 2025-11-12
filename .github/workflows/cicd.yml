@@ -126,7 +126,7 @@ jobs:
           # Run pytest from project root for correct coverage paths
           # Using coverage run to track dynamically loaded modules
           # Note: Only unit tests run in CI - integration tests run locally
-          coverage run --source=lambda/vector-query,lambda/ask-claude,lambda/query-kb,lambda/ingest-docs,lambda/generate-code-maps,lambda/generate-code,lambda/analyze-pr,lambda/process-pr-check,lambda/process-batch-summary \
+          coverage run --source=lambda/analyze-pr,lambda/ask-claude,lambda/generate-code,lambda/generate-code-maps,lambda/ingest-docs,lambda/process-batch-summary,lambda/process-pr-check,lambda/query-kb,lambda/run-tests,lambda/vector-query \
             -m pytest lambda/tests/unit/ \
             --junitxml=lambda/junit.xml \
             -v
