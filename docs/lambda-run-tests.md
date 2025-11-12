@@ -1,6 +1,6 @@
 # Lambda: run-tests
 
-Automated test runner that validates generated branches before OutcomeOps posts a PR update. This Lambda consumes `OutcomeOps.CodeGeneration.Completed` events, clones the branch associated with the issue, installs dependencies inside the runtime container, runs `make test`, and reports the results back to EventBridge plus S3.
+Automated test runner that validates generated branches before OutcomeOps posts a PR update. This Lambda consumes `OutcomeOps.CodeGeneration.Completed` events, clones the branch associated with the issue, installs dependencies using a Lambda layer that provides git/make/terraform, runs `make test`, and reports the results back to EventBridge plus S3.
 
 ## Trigger & Event Flow
 
@@ -36,9 +36,9 @@ Automated test runner that validates generated branches before OutcomeOps posts 
 The Terraform module grants the Lambda role:
 
 - `ssm:GetParameter` + `kms:Decrypt` for `/{ENV}/{APP}/*` secrets.
-- `ecr:GetAuthorizationToken` implicitly (handled by Lambda for image access).
 - `s3:PutObject` to `${knowledge_base_bucket}/*` for log + junit uploads.
 - `events:PutEvents` to the automation bus for publishing `OutcomeOps.Tests.Completed`.
+- `bedrock:InvokeModel` for auto-fix functionality (import and syntax error fixes).
 
 ## Failure Handling
 
@@ -48,9 +48,10 @@ The Terraform module grants the Lambda role:
 
 ## Local Validation
 
-1. Build/push the runtime image: `ENVIRONMENT=dev make build-runtime-image`.
-2. (Optional) Invoke the Lambda using `aws lambda invoke --function-name dev-outcome-ops-ai-assist-run-tests ...` with a sample EventBridge payload (see below).
-3. Inspect uploaded artifacts under `s3://dev-outcome-ops-ai-assist-kb/test-results/...`.
+1. Build the runtime layer: `make build-runtime-layer` (only needed if layer dependencies change).
+2. Deploy with Terraform: `terraform apply` will package and deploy both handler code and layer.
+3. (Optional) Invoke the Lambda using `aws lambda invoke --function-name dev-outcome-ops-ai-assist-run-tests ...` with a sample EventBridge payload (see below).
+4. Inspect uploaded artifacts under `s3://dev-outcome-ops-ai-assist-kb/test-results/...`.
 
 ### Sample Event Payload
 
