@@ -156,7 +156,7 @@ outcome-ops-assist "Show me examples of DynamoDB patterns"
 **How it works:**
 1. Generates query embedding via Bedrock Titan v2
 2. Vector searches DynamoDB for similar patterns
-3. Passes top results to Claude 3.5 Sonnet
+3. Passes top results to Claude Sonnet 4.5
 4. Returns grounded answer with source citations
 
 **See:** [CLI Usage Guide](cli-usage.md) for installation, options, examples, and troubleshooting
@@ -249,7 +249,7 @@ github_token_ssm_path = "/outcome-ops/dev/github-token"
 
 # Bedrock models
 bedrock_embedding_model = "amazon.titan-embed-text-v2:0"
-bedrock_claude_model    = "anthropic.claude-3-5-sonnet-20241022"
+bedrock_claude_model    = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
 
 # Repository allowlist
 repos_to_ingest = [
@@ -538,5 +538,5 @@ aws sqs get-queue-attributes \
 ## External Resources
 
 - **AWS Bedrock Documentation**: https://docs.aws.amazon.com/bedrock/
-- **Claude 3.5 Sonnet**: https://www.anthropic.com/claude
+- **Claude Sonnet 4.5**: https://www.anthropic.com/claude
 - **Terraform AWS Lambda Module**: https://registry.terraform.io/modules/terraform-aws-modules/lambda/aws/

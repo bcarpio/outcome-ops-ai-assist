@@ -1,10 +1,10 @@
 # Lambda: Ask Claude
 
-Generates natural language answers using Claude 3.5 Sonnet via Bedrock Converse API.
+Generates natural language answers using Claude Sonnet 4.5 via Bedrock Converse API.
 
 ## Purpose
 
-The ask-claude Lambda function implements Retrieval Augmented Generation (RAG) by taking context from vector search and generating grounded, factual responses using Claude 3.5 Sonnet. It ensures answers cite sources and stay within the provided context.
+The ask-claude Lambda function implements Retrieval Augmented Generation (RAG) by taking context from vector search and generating grounded, factual responses using Claude Sonnet 4.5. It ensures answers cite sources and stay within the provided context.
 
 ## Trigger
 
@@ -16,7 +16,7 @@ The ask-claude Lambda function implements Retrieval Augmented Generation (RAG) b
 
 1. **Receive query + context**: Accepts natural language question and relevant document chunks
 2. **Build RAG prompt**: Constructs prompt with context documents and instructions
-3. **Invoke Claude**: Calls Claude 3.5 Sonnet via Bedrock Converse API
+3. **Invoke Claude**: Calls Claude Sonnet 4.5 via Bedrock Converse API
 4. **Extract answer**: Parses response and extracts generated text
 5. **Return with sources**: Returns answer with cited sources from context
 
@@ -69,7 +69,7 @@ The ask-claude Lambda function implements Retrieval Augmented Generation (RAG) b
 
 ## IAM Permissions Required
 
-- `bedrock:InvokeModel` - Call Claude 3.5 Sonnet via Bedrock
+- `bedrock:InvokeModel` - Call Claude Sonnet 4.5 via Bedrock
   - Foundation model ARN
   - Cross-region inference profile ARN
 
@@ -104,7 +104,7 @@ ANSWER:
 
 - **Temperature**: 0.3 (low for factual, deterministic responses)
 - **Max tokens**: 2000 (prevents overly long responses)
-- **Model**: Claude 3.5 Sonnet (balance of speed and quality)
+- **Model**: Claude Sonnet 4.5 (balance of speed and quality)
 
 ## Retry Logic
 
@@ -192,7 +192,7 @@ Monitor these for cost tracking and optimization.
 
 ## Cost Considerations
 
-**Claude 3.5 Sonnet pricing** (approximate):
+**Claude Sonnet 4.5 pricing** (approximate):
 - Input: $3 per million tokens
 - Output: $15 per million tokens
 

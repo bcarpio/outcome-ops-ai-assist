@@ -17,7 +17,7 @@ OutcomeOps applies **Context Engineering** to AI-assisted development: give AI a
 - Retrieve top-K documents by similarity
 
 **3. Generation Phase**
-- Pass query + retrieved context to Claude 3.5 Sonnet
+- Pass query + retrieved context to Claude Sonnet 4.5
 - Claude generates code using YOUR patterns
 - Returns implementation matching YOUR standards
 
@@ -135,7 +135,7 @@ Search DynamoDB for similar embeddings
          ↓
 Return top 5 documents (ADRs, code examples)
          ↓
-Pass to Claude 3.5 Sonnet with context
+Pass to Claude Sonnet 4.5 with context
          ↓
 Claude generates answer grounded in YOUR patterns
 ```
@@ -162,7 +162,7 @@ Claude generates code using your patterns as context.
 4. You review for business logic; system ensures technical consistency
 
 **Handled by:**
-- Bedrock Claude 3.5 Sonnet model
+- Bedrock Claude Sonnet 4.5 model
 - RAG context from knowledge base
 - Your custom ADRs and patterns
 
