@@ -52,3 +52,7 @@ env/
 
 # Logs
 *.log
+
+# Lambda layer binaries (built locally via scripts/build-runtime-layer.sh)
+lambda/runtime-layer/bin/
+lambda/runtime-layer/lib/
