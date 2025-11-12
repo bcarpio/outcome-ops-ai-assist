@@ -1082,22 +1082,57 @@ resource "aws_lambda_event_source_mapping" "code_generation_queue_to_lambda" {
 }
 
 # ============================================================================
-# Run Tests Lambda (container image)
+# Runtime Tools Lambda Layer
+# ============================================================================
+
+module "runtime_tools_layer" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "8.1.2"
+
+  create_layer = true
+
+  layer_name          = "${var.environment}-${var.app_name}-runtime-tools"
+  description         = "Git, Make, Terraform, and build tools for run-tests Lambda"
+  compatible_runtimes = ["python3.12"]
+
+  source_path = "${path.module}/../lambda/runtime-layer"
+
+  # Suppress verbose archive output
+  quiet_archive_local_exec = true
+}
+
+# ============================================================================
+# Run Tests Lambda (zip with layer)
 # ============================================================================
 
 module "run_tests_lambda" {
-  source                 = "terraform-aws-modules/lambda/aws"
-  version                = "8.1.2"
-  function_name          = "${var.environment}-${var.app_name}-run-tests"
-  description            = "Clone repo branches and run make test after code generation completes"
-  package_type           = "Image"
-  image_uri              = "${aws_ecr_repository.code_runtime.repository_url}:${data.aws_ecr_image.code_runtime_latest.image_tags[0]}"
-  create_package         = false
-  timeout                = 900
-  memory_size            = 2048
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "8.1.2"
+
+  function_name = "${var.environment}-${var.app_name}-run-tests"
+  description   = "Clone repo branches and run make test after code generation completes"
+  handler       = "handler.handler"
+  runtime       = "python3.12"
+  timeout       = 900
+  memory_size   = 2048
+  publish       = true
+
+  # CloudWatch Logs retention
+  cloudwatch_logs_retention_in_days = 7
+
+  # Source code from local directory
+  source_path = "${path.module}/../lambda/run-tests"
+
+  # Suppress verbose archive output
+  quiet_archive_local_exec = true
+
+  # Attach runtime tools layer
+  layers = [
+    module.runtime_tools_layer.lambda_layer_arn
+  ]
+
   ephemeral_storage_size = 1024
   architectures          = ["x86_64"]
-  publish                = true
 
   environment_variables = {
     ENV                 = var.environment
@@ -1106,8 +1141,6 @@ module "run_tests_lambda" {
     TEST_RESULTS_PREFIX = "test-results"
     EVENT_BUS_NAME      = aws_cloudwatch_event_bus.automation.name
   }
-
-  cloudwatch_logs_retention_in_days = 7
 
   attach_policy_statements = true
   policy_statements = {
