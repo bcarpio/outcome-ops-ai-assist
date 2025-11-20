@@ -66,6 +66,115 @@ MAX_FIX_ATTEMPTS = 2  # Maximum auto-fix retry attempts
 
 
 # ============================================================================
+# Knowledge Base Query Functions
+# ============================================================================
+
+
+def query_knowledge_base(queries: List[str], top_k: int = 3) -> List[str]:
+    """
+    Query knowledge base for relevant standards and examples.
+
+    Invokes the query-kb Lambda function with multiple queries and returns
+    the combined results. This ensures auto-fix has the same organizational
+    context that generate-code had when creating the code.
+
+    Args:
+        queries: List of search queries (e.g., ["Python testing import patterns"])
+        top_k: Number of top results to return per query (default 3)
+
+    Returns:
+        List[str]: List of relevant document excerpts from the knowledge base
+    """
+    if not queries:
+        logger.warning("[kb] No queries provided")
+        return []
+
+    logger.info(f"[kb] Querying knowledge base with {len(queries)} queries")
+
+    results = []
+    query_kb_function_name = f"{ENV}-{APP_NAME}-query-kb"
+
+    for query in queries:
+        try:
+            logger.info(f"[kb] Query: {query}")
+
+            payload = {
+                "query": query,
+                "top_k": top_k
+            }
+
+            response = lambda_client.invoke(
+                FunctionName=query_kb_function_name,
+                InvocationType="RequestResponse",
+                Payload=json.dumps(payload)
+            )
+
+            # Parse response
+            response_payload = json.loads(response["Payload"].read())
+
+            # Check for Lambda errors
+            if response.get("FunctionError"):
+                error_msg = response_payload.get("errorMessage", "Unknown error")
+                logger.error(f"[kb] query-kb Lambda error: {error_msg}")
+                continue
+
+            # Parse body (query-kb returns API Gateway format)
+            if "body" in response_payload:
+                body = json.loads(response_payload["body"])
+                answer = body.get("answer", "")
+                if answer:
+                    results.append(f"# Query: {query}\n\n{answer}")
+            else:
+                logger.warning(f"[kb] No body in query-kb response for query: {query}")
+
+        except ClientError as e:
+            logger.error(f"[kb] Failed to invoke query-kb Lambda: {e}")
+        except Exception as e:
+            logger.error(f"[kb] Unexpected error querying KB: {e}")
+
+    logger.info(f"[kb] Retrieved {len(results)} results from knowledge base")
+    return results
+
+
+def query_kb_for_fix(error_type: str, file_path: str) -> List[str]:
+    """
+    Query knowledge base for relevant patterns based on error type and file.
+
+    This provides the same organizational context to auto-fix that generate-code
+    had when creating the code, following ADR-007's principle that documentation
+    should guide behavior at all stages.
+
+    Args:
+        error_type: Type of error (import_error, syntax_error, etc.)
+        file_path: Path to the file with the error
+
+    Returns:
+        List[str]: Relevant ADRs, patterns, and standards from knowledge base
+    """
+    queries = []
+
+    # If it's a test file, get testing standards and patterns
+    if "test" in file_path.lower():
+        queries.extend([
+            "Python testing import patterns and conventions",
+            "Lambda function test structure and best practices",
+            "Testing standards pytest patterns"
+        ])
+
+    # Add error-type-specific queries
+    if error_type == "syntax_error":
+        queries.append("Python syntax patterns and common errors")
+    elif error_type == "import_error":
+        queries.append("Python import patterns and module structure")
+
+    # Always include general standards for context
+    queries.append("Python coding standards and conventions")
+
+    logger.info(f"[auto-fix] Querying KB for {error_type} in {file_path}")
+    return query_knowledge_base(queries, top_k=3)
+
+
+# ============================================================================
 # Data models
 # ============================================================================
 
@@ -660,7 +769,11 @@ Provide a concise fix for this error."""
 
 def apply_fix_to_file(file_path: str, error_output: str, failure_type: str) -> bool:
     """
-    Apply Claude-suggested fix to a file.
+    Apply Claude-suggested fix to a file with knowledge base context.
+
+    This follows ADR-007's principle: provide the same organizational context
+    (ADRs, patterns, standards) to auto-fix that generate-code had when creating
+    the code. This significantly improves fix success rate.
 
     Args:
         file_path: Path to file to fix
@@ -677,6 +790,19 @@ def apply_fix_to_file(file_path: str, error_output: str, failure_type: str) -> b
 
         logger.info(f"[auto-fix] Read {len(original_content)} bytes from {file_path}")
 
+        # Query knowledge base for relevant patterns and standards
+        kb_context = query_kb_for_fix(failure_type, file_path)
+
+        # Build context section for prompt
+        kb_context_text = ""
+        if kb_context:
+            kb_context_text = "\n\n# Organizational Standards and Patterns:\n\n"
+            kb_context_text += "\n\n---\n\n".join(kb_context)
+            kb_context_text += "\n\n# Important: Follow the patterns and conventions above when fixing the error.\n"
+            logger.info(f"[auto-fix] Including {len(kb_context)} KB results in context")
+        else:
+            logger.warning("[auto-fix] No KB context retrieved - proceeding without organizational standards")
+
         # Get Claude's fix suggestion with full context
         prompt = f"""Fix this Python {failure_type.replace('_', ' ')}:
 
@@ -687,11 +813,12 @@ Error:
 
 Current file content:
 {original_content[:3000]}
-
-Provide the COMPLETE fixed file content. Output ONLY the Python code, no explanations."""
+{kb_context_text}
+Provide the COMPLETE fixed file content following the organizational standards above. Output ONLY the Python code, no explanations."""
 
         system_prompt = f"""You are fixing a Python {failure_type.replace('_', ' ')}.
-Analyze the error and file content, then output the COMPLETE corrected file.
+You have been provided with organizational standards, ADRs, and coding patterns.
+Analyze the error and file content, then output the COMPLETE corrected file that follows the organizational standards.
 Output ONLY valid Python code - no markdown, no explanations."""
 
         response = bedrock_client.converse(

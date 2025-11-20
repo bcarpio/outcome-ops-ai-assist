@@ -1256,6 +1256,16 @@ module "run_tests_lambda" {
       ]
     }
 
+    invoke_query_kb = {
+      effect = "Allow"
+      actions = [
+        "lambda:InvokeFunction"
+      ]
+      resources = [
+        module.query_kb_lambda.lambda_function_arn
+      ]
+    }
+
     ecr_pull = {
       effect = "Allow"
       actions = [
