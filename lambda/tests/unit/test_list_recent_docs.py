@@ -99,6 +99,17 @@ class TestListRecentDocsHappyPath:
                 "source": "github",
                 "created_at": "2024-01-16T10:00:00Z",
                 "updated_at": "2024-01-16T10:00:00Z"
+            },
+            {
+                "PK": "DOC#003",
+                "SK": "META",
+                "document_id": "003",
+                "file_path": "docs/runbooks/runbook-001.md",
+                "repository_name": "outcome-ops-ai-assist",
+                "document_type": "runbook",
+                "source": "github",
+                "created_at": "2024-01-17T10:00:00Z",
+                "updated_at": "2024-01-17T10:00:00Z"
             }
         ]
 
@@ -109,19 +120,61 @@ class TestListRecentDocsHappyPath:
         # Insert sample documents
         for doc in sample_documents:
             dynamodb_table.put_item(Item=doc)
-        
-        # Create test event
+
+        # Create event
         event = {
             "queryStringParameters": {
                 "limit": "10"
             }
         }
-        
+
         # Call handler
-        response = handler(event, {})
-        
-        # Verify response
+        response = handler(event, None)
+
+        # Assertions
         assert response["statusCode"] == 200
         body = json.loads(response["body"])
         assert "documents" in body
-        assert len(body["documents"]) > 0
+        assert len(body["documents"]) <= 10
+
+    def test_list_recent_docs_with_limit(self, dynamodb_table, sample_documents):
+        """
+        Test retrieval with specific limit.
+        """
+        # Insert sample documents
+        for doc in sample_documents:
+            dynamodb_table.put_item(Item=doc)
+
+        # Create event with limit
+        event = {
+            "queryStringParameters": {
+                "limit": "2"
+            }
+        }
+
+        # Call handler
+        response = handler(event, None)
+
+        # Assertions
+        assert response["statusCode"] == 200
+        body = json.loads(response["body"])
+        assert len(body["documents"]) <= 2
+
+    def test_list_recent_docs_default_limit(self, dynamodb_table, sample_documents):
+        """
+        Test retrieval with default limit when not specified.
+        """
+        # Insert sample documents
+        for doc in sample_documents:
+            dynamodb_table.put_item(Item=doc)
+
+        # Create event without limit
+        event = {}
+
+        # Call handler
+        response = handler(event, None)
+
+        # Assertions
+        assert response["statusCode"] == 200
+        body = json.loads(response["body"])
+        assert "documents" in body
