@@ -963,6 +963,11 @@ module "generate_code_lambda" {
   # Suppress verbose archive output
   quiet_archive_local_exec = true
 
+  # Attach terraform layer for terraform fmt
+  layers = [
+    module.terraform_tools_layer.lambda_layer_arn
+  ]
+
   # Environment variables
   environment_variables = {
     ENV            = var.environment
@@ -1117,6 +1122,44 @@ module "runtime_tools_layer" {
 
   # Ensure layer is built before packaging
   depends_on = [null_resource.build_runtime_layer]
+}
+
+# ============================================================================
+# Terraform Tools Lambda Layer (for generate-code)
+# ============================================================================
+
+# Build the terraform layer before packaging
+resource "null_resource" "build_terraform_layer" {
+  triggers = {
+    # Rebuild when build script changes
+    build_script = filemd5("${path.module}/../scripts/build-terraform-layer.sh")
+    # Force rebuild by changing this timestamp if needed
+    force_rebuild = "2025-11-20T16:30:00Z"
+  }
+
+  provisioner "local-exec" {
+    command     = "./scripts/build-terraform-layer.sh"
+    working_dir = "${path.module}/.."
+  }
+}
+
+module "terraform_tools_layer" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "8.1.2"
+
+  create_layer = true
+
+  layer_name          = "${var.environment}-${var.app_name}-terraform-tools"
+  description         = "Terraform CLI for formatting and validating .tf files"
+  compatible_runtimes = ["python3.12"]
+
+  source_path = "${path.module}/../lambda/terraform-layer"
+
+  # Suppress verbose archive output
+  quiet_archive_local_exec = true
+
+  # Ensure layer is built before packaging
+  depends_on = [null_resource.build_terraform_layer]
 }
 
 # ============================================================================

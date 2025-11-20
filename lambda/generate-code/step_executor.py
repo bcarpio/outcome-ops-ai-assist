@@ -46,6 +46,124 @@ APP_NAME = os.environ.get("APP_NAME", "outcome-ops-ai-assist")
 
 
 # ============================================================================
+# Terraform Formatting Functions
+# ============================================================================
+
+
+def format_terraform_files(
+    repo_full_name: str,
+    branch_name: str,
+    terraform_files: List[str],
+    github_token: str,
+    step_number: int
+) -> None:
+    """
+    Format Terraform files using terraform fmt and commit changes.
+
+    Args:
+        repo_full_name: Full repository name (owner/repo)
+        branch_name: Branch to format files on
+        terraform_files: List of .tf file paths to format
+        github_token: GitHub API token
+        step_number: Current step number for commit message
+    """
+    logger.info(f"[terraform-fmt] Formatting {len(terraform_files)} Terraform files")
+
+    try:
+        # Create temp directory for repo
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_dir = Path(tmp_dir) / "repo"
+            repo_url = f"https://x-access-token:{github_token}@github.com/{repo_full_name}.git"
+
+            # Clone repo and checkout branch
+            subprocess.run(
+                ["git", "clone", "--depth=1", "--branch", branch_name, repo_url, str(repo_dir)],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+
+            # Run terraform fmt on each file
+            formatted_files = []
+            for tf_file in terraform_files:
+                tf_path = repo_dir / tf_file
+                if not tf_path.exists():
+                    logger.warning(f"[terraform-fmt] File not found: {tf_file}")
+                    continue
+
+                result = subprocess.run(
+                    ["terraform", "fmt", str(tf_path)],
+                    cwd=repo_dir,
+                    capture_output=True,
+                    text=True,
+                    timeout=30
+                )
+
+                if result.returncode == 0:
+                    # Check if file was modified
+                    git_status = subprocess.run(
+                        ["git", "status", "--porcelain", str(tf_file)],
+                        cwd=repo_dir,
+                        capture_output=True,
+                        text=True
+                    )
+
+                    if git_status.stdout.strip():
+                        formatted_files.append(tf_file)
+                        logger.info(f"[terraform-fmt] Formatted {tf_file}")
+
+            # If files were formatted, commit and push
+            if formatted_files:
+                subprocess.run(
+                    ["git", "config", "user.name", "OutcomeOps Bot"],
+                    cwd=repo_dir,
+                    check=True
+                )
+                subprocess.run(
+                    ["git", "config", "user.email", "bot@outcomeops.ai"],
+                    cwd=repo_dir,
+                    check=True
+                )
+
+                for tf_file in formatted_files:
+                    subprocess.run(
+                        ["git", "add", tf_file],
+                        cwd=repo_dir,
+                        check=True
+                    )
+
+                commit_msg = f"style: terraform fmt for step {step_number}\n\nAutomatically formatted {len(formatted_files)} Terraform file(s)"
+                subprocess.run(
+                    ["git", "commit", "-m", commit_msg],
+                    cwd=repo_dir,
+                    check=True,
+                    capture_output=True,
+                    text=True
+                )
+
+                subprocess.run(
+                    ["git", "push"],
+                    cwd=repo_dir,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=60
+                )
+
+                logger.info(f"[terraform-fmt] Committed and pushed {len(formatted_files)} formatted files")
+            else:
+                logger.info("[terraform-fmt] No files needed formatting")
+
+    except subprocess.TimeoutExpired:
+        logger.error("[terraform-fmt] Terraform fmt timed out")
+    except subprocess.CalledProcessError as e:
+        logger.error(f"[terraform-fmt] Command failed: {e.cmd}, stderr: {e.stderr}")
+    except Exception as e:
+        logger.error(f"[terraform-fmt] Unexpected error: {e}", exc_info=True)
+
+
+# ============================================================================
 # Validation Functions
 # ============================================================================
 
@@ -369,8 +487,14 @@ def execute_step(
     # Step 5: Commit generated files to branch
     logger.info(f"[step-exec] Validation passed. Committing {len(generated_files.files)} files")
 
+    terraform_files = []
+
     for file in generated_files.files:
         file_content = file.decoded_content
+
+        # Track .tf files for formatting
+        if file.path.endswith('.tf'):
+            terraform_files.append(file.path)
 
         # Check if file already exists
         existing_file = get_file(
@@ -406,6 +530,16 @@ def execute_step(
                 commit_message=commit_message,
                 github_token=github_token
             )
+
+    # Format terraform files if any were created
+    if terraform_files:
+        format_terraform_files(
+            repo_full_name=plan.repo_full_name,
+            branch_name=plan.branch_name,
+            terraform_files=terraform_files,
+            github_token=github_token,
+            step_number=step_number
+        )
 
     # Step 6: Mark step as completed with cost
     cost = calculate_cost(response.usage.inputTokens, response.usage.outputTokens)
