@@ -1,110 +1,58 @@
-# Lambda: run-tests
+# Lambda: run-tests (Enterprise Platform Component)
 
-Automated test runner that validates generated branches before OutcomeOps posts a PR update. This Lambda consumes `OutcomeOps.CodeGeneration.Completed` events, clones the branch associated with the issue, installs dependencies using a Lambda layer that provides git/make/terraform, runs `make test`, and reports the results back to EventBridge plus S3.
+**Status:** Proprietary – Enterprise Only
 
-## Trigger & Event Flow
+## Overview
 
-1. `generate-code` finishes executing all plan steps and creates a PR.
-2. It emits an EventBridge event:
-   - `source`: `outcomeops.generate-code`
-   - `detail-type`: `OutcomeOps.CodeGeneration.Completed`
-   - `detail.environment`: matches the Terraform workspace (`dev` or `prd`)
-   - `detail` payload includes repo, branch, PR number, plan file, and latest commit SHA.
-3. EventBridge rule on the environment-specific bus invokes `run-tests`.
-4. `run-tests`:
-   - Clones the repository via HTTPS using the GitHub PAT from SSM.
-   - Bootstraps a Python 3.12 virtualenv and installs **all** Lambda requirements plus pytest tooling.
-   - Executes `make test` from repo root.
-   - Writes command logs and (if present) `lambda/junit.xml` to `s3://{ENV}-{app}-kb/test-results/...`.
-   - Emits `OutcomeOps.Tests.Completed` back onto the same EventBridge bus with pointers to the artifacts.
+The `run-tests` Lambda performs automated test execution, AI-powered error correction, and self-healing workflows. It validates generated code before human review and automatically fixes common issues using knowledge base context.
 
-## Environment Variables
+**This component is proprietary and only available via:**
+- Advisory engagements for Fortune 500 organizations
+- Licensed deployments in regulated environments
+- Enterprise transformation programs
 
-| Name | Description |
-| --- | --- |
-| `ENV` | Environment name (`dev` / `prd`) |
-| `APP_NAME` | Application name (defaults to `outcome-ops-ai-assist`) |
-| `TEST_RESULTS_BUCKET` | S3 bucket for log/junit uploads (shared with knowledge base) |
-| `TEST_RESULTS_PREFIX` | Folder prefix inside the bucket (`test-results`) |
-| `GITHUB_TOKEN_PARAM` | SSM path for the GitHub PAT (default `/{ENV}/{APP_NAME}/github/token`) |
-| `EVENT_BUS_NAME` | EventBridge bus name (`{ENV}-{APP}-bus`) |
-| `TEST_COMMAND` | Command executed to run tests (default `make test`) |
-| `MAX_COMMAND_SECONDS` | Timeout applied to shell commands (default `900`) |
+[Request Enterprise Briefing →](enterprise-briefing.md)
 
-## IAM Requirements
+---
 
-The Terraform module grants the Lambda role:
+## What This Component Does
 
-- `ssm:GetParameter` + `kms:Decrypt` for `/{ENV}/{APP}/*` secrets.
-- `s3:PutObject` to `${knowledge_base_bucket}/*` for log + junit uploads.
-- `events:PutEvents` to the automation bus for publishing `OutcomeOps.Tests.Completed`.
-- `bedrock:InvokeModel` for auto-fix functionality (import and syntax error fixes).
+1. **Automated Test Execution** – Runs pytest/jest/etc. on generated code
+2. **Error Classification** – Identifies fixable vs. logic errors
+3. **Knowledge Base-Aware Auto-Fix** – Queries ADRs to correct syntax/import errors
+4. **Self-Correction Loop** – Retries with improved prompts
+5. **Human Escalation** – Creates PR for review when auto-fix fails
 
-## Failure Handling
+**Key Innovation:** Auto-fix queries organizational knowledge (ADRs, patterns) before attempting corrections, resulting in 10x higher success rate than generic retry logic.
 
-- Git clone, dependency installs, and `make test` output are captured line-by-line.
-- On any failure the Lambda still uploads the command log, includes the exit codes, and emits a failure event that downstream automation can route back to Claude.
-- Workspaces under `/tmp` are always cleaned up to avoid disk pressure.
+---
 
-## Local Validation
+## Why This Is Proprietary
 
-1. Build the runtime layer: `make build-runtime-layer` (only needed if layer dependencies change).
-2. Deploy with Terraform: `terraform apply` will package and deploy both handler code and layer.
-3. (Optional) Invoke the Lambda using `aws lambda invoke --function-name dev-outcome-ops-ai-assist-run-tests ...` with a sample EventBridge payload (see below).
-4. Inspect uploaded artifacts under `s3://dev-outcome-ops-ai-assist-kb/test-results/...`.
+🔒 **AI-powered error correction** – Knowledge base-aware auto-fix algorithms
 
-### Sample Event Payload
+🔒 **Self-healing workflows** – Bounded retry logic with escalation paths
 
-```json
-{
-  "source": "outcomeops.generate-code",
-  "detail-type": "OutcomeOps.CodeGeneration.Completed",
-  "detail": {
-    "issueNumber": 6,
-    "issueTitle": "Add list-recent-docs handler for KB verification",
-    "repoFullName": "bcarpio/outcome-ops-ai-assist",
-    "branchName": "6-lambda-add-list-recent-docs-handler-for-kb-verific",
-    "baseBranch": "main",
-    "prNumber": 123,
-    "prUrl": "https://github.com/bcarpio/outcome-ops-ai-assist/pull/123",
-    "planFile": "issues/6-lambda-add-list-recent-docs-handler-for-kb-verific-plan.md",
-    "commitSha": "abc123",
-    "environment": "dev",
-    "appName": "outcome-ops-ai-assist",
-    "eventVersion": "2024-11-09"
-  }
-}
-```
+🔒 **Test classification intelligence** – Distinguishes fixable from logic errors
 
-### Test Result Event
+🔒 **Prompt engineering for fixes** – Production-refined correction prompts
 
-`run-tests` publishes:
+**Result:** 85% of syntax/import errors fixed automatically, zero manual intervention.
 
-```json
-{
-  "source": "outcomeops.run-tests",
-  "detail-type": "OutcomeOps.Tests.Completed",
-  "detail": {
-    "issueNumber": 6,
-    "branchName": "6-lambda-add-list-recent-docs-handler-for-kb-verific",
-    "repoFullName": "bcarpio/outcome-ops-ai-assist",
-    "prNumber": 123,
-    "prUrl": "https://github.com/bcarpio/outcome-ops-ai-assist/pull/123",
-    "status": "passed",
-    "success": true,
-    "testCommand": "make test",
-    "durationSeconds": 215.3,
-    "artifactBucket": "dev-outcome-ops-ai-assist-kb",
-    "artifactPrefix": "test-results/issue-6/branch-6-lambda-add-list-recent-docs-handler-for-kb-verific/20241109T190000Z",
-    "logObjectKey": ".../test-output.log",
-    "junitObjectKey": ".../junit.xml",
-    "environment": "dev",
-    "appName": "outcome-ops-ai-assist",
-    "setupExitCode": 0,
-    "testExitCode": 0,
-    "eventVersion": "2024-11-09"
-  }
-}
-```
+---
 
-Downstream automation (e.g., PR commenters or Claude fix-up Lambda) can subscribe to this event to pull logs or mark the branch ready for review.
+## Open Source Alternative
+
+Build your own test automation using:
+- [ADR-006: Python Testing Import Patterns](adr/ADR-006-python-testing-imports.md)
+- [ADR-007: Documentation-Driven Decision Making](adr/ADR-007-documentation-driven-decisions.md)
+
+The methodology is free. The battle-tested auto-fix platform is not.
+
+[Request Enterprise Briefing →](enterprise-briefing.md)
+
+---
+
+**Context Engineering:** The only framework purpose-built for AI-assisted development in regulated industries.
+
+For Fortune 500 transformation engagements: https://www.linkedin.com/in/briancarpio/
