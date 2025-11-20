@@ -8,9 +8,9 @@ This layer provides git, make, terraform, and related build tools for the run-te
 
 - `/opt/bin/git` - Git version control
 - `/opt/bin/make` - GNU Make
-- `/opt/bin/terraform` - Terraform CLI
 - `/opt/bin/tar`, `/opt/bin/gzip`, `/opt/bin/unzip` - Archive tools
 - `/opt/lib/` - Shared library dependencies
+- `/opt/libexec/git-core/` - Git helper programs (git-remote-https, etc.)
 
 ## Usage
 
