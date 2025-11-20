@@ -56,4 +56,5 @@ env/
 # Lambda layer binaries (built locally via scripts/build-runtime-layer.sh)
 lambda/runtime-layer/bin/
 lambda/runtime-layer/lib/
+lambda/runtime-layer/libexec/
 terraform-layer/
