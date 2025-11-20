@@ -1201,6 +1201,7 @@ module "run_tests_lambda" {
     TEST_RESULTS_BUCKET = module.knowledge_base_bucket.s3_bucket_id
     TEST_RESULTS_PREFIX = "test-results"
     EVENT_BUS_NAME      = aws_cloudwatch_event_bus.automation.name
+    TEST_COMMAND        = "venv/bin/python3.12 -m pytest lambda/tests/ -v --junitxml=lambda/junit.xml"
   }
 
   attach_policy_statements = true
