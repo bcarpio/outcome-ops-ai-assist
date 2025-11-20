@@ -759,6 +759,18 @@ def attempt_import_fix(error_output: str, repo_dir: str, github_token: str, deta
         env = os.environ.copy()
         env["GIT_EXEC_PATH"] = "/opt/libexec/git-core"
 
+        # Configure git user identity for commits
+        run_command(
+            ["git", "config", "user.name", "OutcomeOps Bot"],
+            cwd=repo_dir,
+            env=env
+        )
+        run_command(
+            ["git", "config", "user.email", "bot@outcomeops.ai"],
+            cwd=repo_dir,
+            env=env
+        )
+
         # Get relative path for commit message
         relative_path = error_file.replace(f"{repo_dir}/", "")
 
@@ -849,6 +861,18 @@ def attempt_syntax_fix(error_output: str, repo_dir: str, github_token: str, deta
         # Set up environment for git commands
         env = os.environ.copy()
         env["GIT_EXEC_PATH"] = "/opt/libexec/git-core"
+
+        # Configure git user identity for commits
+        run_command(
+            ["git", "config", "user.name", "OutcomeOps Bot"],
+            cwd=repo_dir,
+            env=env
+        )
+        run_command(
+            ["git", "config", "user.email", "bot@outcomeops.ai"],
+            cwd=repo_dir,
+            env=env
+        )
 
         relative_path = error_file.replace(f"{repo_dir}/", "")
 
