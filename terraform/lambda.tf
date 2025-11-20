@@ -1245,6 +1245,16 @@ module "run_tests_lambda" {
       ]
     }
 
+    invoke_analyze_pr = {
+      effect = "Allow"
+      actions = [
+        "lambda:InvokeFunction"
+      ]
+      resources = [
+        module.analyze_pr_lambda.lambda_function_arn
+      ]
+    }
+
     ecr_pull = {
       effect = "Allow"
       actions = [

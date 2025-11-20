@@ -52,6 +52,7 @@ if not TEST_RESULTS_BUCKET:
 ssm_client = boto3.client("ssm")
 s3_client = boto3.client("s3")
 events_client = boto3.client("events")
+lambda_client = boto3.client("lambda")
 
 # Bedrock client for Claude API (auto-fix)
 bedrock_config = Config(
@@ -403,6 +404,33 @@ Closes #{detail.issueNumber}
         "pr_url": pr_data["html_url"],
         "pr_number": pr_data["number"]
     }
+
+
+def trigger_pr_analyzer(pr_number: int, repository: str) -> None:
+    """
+    Trigger analyze-pr Lambda to analyze the newly created PR.
+
+    Args:
+        pr_number: PR number
+        repository: Full repository name (owner/repo)
+    """
+    logger.info(f"[run-tests] Triggering PR analyzer for PR #{pr_number}")
+
+    analyze_pr_function = f"{ENV}-{APP_NAME}-analyze-pr"
+    payload = {
+        "pr_number": pr_number,
+        "repository": repository
+    }
+
+    try:
+        response = lambda_client.invoke(
+            FunctionName=analyze_pr_function,
+            InvocationType="Event",  # Async invocation
+            Payload=json.dumps(payload)
+        )
+        logger.info(f"[run-tests] PR analyzer triggered: StatusCode={response['StatusCode']}")
+    except Exception as e:
+        logger.error(f"[run-tests] Failed to trigger PR analyzer: {e}", exc_info=True)
 
 
 def post_test_failure_comment(
@@ -972,6 +1000,9 @@ def handler(event: Dict[str, Any], _context: Any) -> Dict[str, Any]:
             pr_result = create_pull_request(detail, github_token)
             detail.prUrl = pr_result["pr_url"]
             detail.prNumber = pr_result["pr_number"]
+
+            # Trigger PR analyzer to check the newly created PR
+            trigger_pr_analyzer(pr_result["pr_number"], detail.repoFullName)
         elif not tests_passed and failure_type == "logic_error":
             # Logic errors need human review - create PR and post comment
             logger.info("[run-tests] Logic error detected - creating PR for human review")
@@ -979,6 +1010,9 @@ def handler(event: Dict[str, Any], _context: Any) -> Dict[str, Any]:
                 pr_result = create_pull_request(detail, github_token)
                 detail.prUrl = pr_result["pr_url"]
                 detail.prNumber = pr_result["pr_number"]
+
+                # Trigger PR analyzer to check the newly created PR
+                trigger_pr_analyzer(pr_result["pr_number"], detail.repoFullName)
 
             # Post failure comment tagging the configured users
             post_test_failure_comment(
