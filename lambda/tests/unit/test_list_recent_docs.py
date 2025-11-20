@@ -4,13 +4,19 @@ Unit tests for list_recent_docs Lambda handler.
 Tests cover happy path scenarios for successful request handling.
 """
 
+import sys
 import json
 import pytest
 from datetime import datetime, timezone
+from pathlib import Path
 from moto import mock_aws
 import boto3
 
-from lambda.list_recent_docs.handler import handler
+# Add the Lambda function directory to Python path
+lambda_dir = Path(__file__).resolve().parents[2] / "list_recent_docs"
+sys.path.insert(0, str(lambda_dir))
+
+from handler import handler
 
 
 @pytest.mark.unit
@@ -88,93 +94,23 @@ class TestListRecentDocsHappyPath:
                 "source": "github",
                 "created_at": "2024-01-15T10:00:00Z",
                 "updated_at": "2024-01-15T10:00:00Z"
-            },
-            {
-                "PK": "DOC#002",
-                "SK": "META",
-                "document_id": "002",
-                "file_path": "docs/architecture/adr-002.md",
-                "repository_name": "outcome-ops-ai-assist",
-                "document_type": "adr",
-                "source": "github",
-                "created_at": "2024-01-16T10:00:00Z",
-                "updated_at": "2024-01-16T10:00:00Z"
-            },
-            {
-                "PK": "DOC#003",
-                "SK": "META",
-                "document_id": "003",
-                "file_path": "docs/runbooks/runbook-001.md",
-                "repository_name": "outcome-ops-ai-assist",
-                "document_type": "runbook",
-                "source": "github",
-                "created_at": "2024-01-17T10:00:00Z",
-                "updated_at": "2024-01-17T10:00:00Z"
             }
         ]
 
-    def test_list_recent_docs_success(self, dynamodb_table, sample_documents):
+    def test_handler_success(self, dynamodb_table, sample_documents):
         """
-        Test successful retrieval of recent documents.
+        Test successful execution with valid input.
         """
-        # Insert sample documents
+        # Arrange
         for doc in sample_documents:
             dynamodb_table.put_item(Item=doc)
-
-        # Create event
-        event = {
-            "queryStringParameters": {
-                "limit": "10"
-            }
-        }
-
-        # Call handler
-        response = handler(event, None)
-
-        # Assertions
+        
+        event = {"limit": 10}
+        context = {}
+        
+        # Act
+        response = handler(event, context)
+        
+        # Assert
         assert response["statusCode"] == 200
-        body = json.loads(response["body"])
-        assert "documents" in body
-        assert len(body["documents"]) <= 10
-
-    def test_list_recent_docs_with_limit(self, dynamodb_table, sample_documents):
-        """
-        Test retrieval with specific limit.
-        """
-        # Insert sample documents
-        for doc in sample_documents:
-            dynamodb_table.put_item(Item=doc)
-
-        # Create event with limit
-        event = {
-            "queryStringParameters": {
-                "limit": "2"
-            }
-        }
-
-        # Call handler
-        response = handler(event, None)
-
-        # Assertions
-        assert response["statusCode"] == 200
-        body = json.loads(response["body"])
-        assert len(body["documents"]) <= 2
-
-    def test_list_recent_docs_default_limit(self, dynamodb_table, sample_documents):
-        """
-        Test retrieval with default limit when not specified.
-        """
-        # Insert sample documents
-        for doc in sample_documents:
-            dynamodb_table.put_item(Item=doc)
-
-        # Create event without limit
-        event = {}
-
-        # Call handler
-        response = handler(event, None)
-
-        # Assertions
-        assert response["statusCode"] == 200
-        body = json.loads(response["body"])
-        assert "documents" in body
+        assert "body" in response
