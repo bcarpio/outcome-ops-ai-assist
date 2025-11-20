@@ -1085,6 +1085,21 @@ resource "aws_lambda_event_source_mapping" "code_generation_queue_to_lambda" {
 # Runtime Tools Lambda Layer
 # ============================================================================
 
+# Build the runtime layer before packaging
+resource "null_resource" "build_runtime_layer" {
+  triggers = {
+    # Rebuild when build script changes
+    build_script = filemd5("${path.module}/../scripts/build-runtime-layer.sh")
+    # Force rebuild by changing this timestamp if needed
+    force_rebuild = "2025-11-20T16:20:00Z"
+  }
+
+  provisioner "local-exec" {
+    command     = "./scripts/build-runtime-layer.sh"
+    working_dir = "${path.module}/.."
+  }
+}
+
 module "runtime_tools_layer" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "8.1.2"
@@ -1092,13 +1107,16 @@ module "runtime_tools_layer" {
   create_layer = true
 
   layer_name          = "${var.environment}-${var.app_name}-runtime-tools"
-  description         = "Git, Make, Terraform, and build tools for run-tests Lambda"
+  description         = "Git, Make, and build tools for run-tests Lambda"
   compatible_runtimes = ["python3.12"]
 
   source_path = "${path.module}/../lambda/runtime-layer"
 
   # Suppress verbose archive output
   quiet_archive_local_exec = true
+
+  # Ensure layer is built before packaging
+  depends_on = [null_resource.build_runtime_layer]
 }
 
 # ============================================================================

@@ -244,6 +244,7 @@ def clone_repository(
 
     env = os.environ.copy()
     env["GIT_TERMINAL_PROMPT"] = "0"
+    env["GIT_EXEC_PATH"] = "/opt/libexec/git-core"  # Tell git where to find helper programs
 
     clone_result = run_command(
         ["git", "clone", repo_url, repo_dir],
@@ -256,7 +257,8 @@ def clone_repository(
 
     fetch_result = run_command(
         ["git", "fetch", "origin", detail.branchName],
-        cwd=repo_dir
+        cwd=repo_dir,
+        env=env
     )
     command_outputs.append(fetch_result)
     if not fetch_result.succeeded:
@@ -264,7 +266,8 @@ def clone_repository(
 
     checkout_result = run_command(
         ["git", "checkout", detail.branchName],
-        cwd=repo_dir
+        cwd=repo_dir,
+        env=env
     )
     command_outputs.append(checkout_result)
     if not checkout_result.succeeded:
@@ -273,7 +276,8 @@ def clone_repository(
     # Remove token from remote to avoid leaking credentials in future logs
     remote_update = run_command(
         ["git", "remote", "set-url", "origin", f"https://github.com/{detail.repoFullName}.git"],
-        cwd=repo_dir
+        cwd=repo_dir,
+        env=env
     )
     command_outputs.append(remote_update)
     return repo_dir
@@ -723,12 +727,17 @@ def attempt_import_fix(error_output: str, repo_dir: str, github_token: str, deta
 
     # Commit the fix
     try:
+        # Set up environment for git commands
+        env = os.environ.copy()
+        env["GIT_EXEC_PATH"] = "/opt/libexec/git-core"
+
         # Get relative path for commit message
         relative_path = error_file.replace(f"{repo_dir}/", "")
 
         commit_result = run_command(
             ["git", "add", error_file],
-            cwd=repo_dir
+            cwd=repo_dir,
+            env=env
         )
         if not commit_result.succeeded:
             logger.error(f"[auto-fix] git add failed: {commit_result.stderr}")
@@ -737,7 +746,8 @@ def attempt_import_fix(error_output: str, repo_dir: str, github_token: str, deta
         commit_msg = f"fix: auto-fix import error in {relative_path}\n\nAutomatically fixed by OutcomeOps run-tests Lambda"
         commit_result = run_command(
             ["git", "commit", "-m", commit_msg],
-            cwd=repo_dir
+            cwd=repo_dir,
+            env=env
         )
         if not commit_result.succeeded:
             logger.error(f"[auto-fix] git commit failed: {commit_result.stderr}")
@@ -747,20 +757,23 @@ def attempt_import_fix(error_output: str, repo_dir: str, github_token: str, deta
         repo_url_with_token = f"https://x-access-token:{github_token}@github.com/{detail.repoFullName}.git"
         run_command(
             ["git", "remote", "set-url", "origin", repo_url_with_token],
-            cwd=repo_dir
+            cwd=repo_dir,
+            env=env
         )
 
         # Push the fix
         push_result = run_command(
             ["git", "push"],
             cwd=repo_dir,
+            env=env,
             mask_terms=[github_token]
         )
 
         # Remove token from remote again
         run_command(
             ["git", "remote", "set-url", "origin", f"https://github.com/{detail.repoFullName}.git"],
-            cwd=repo_dir
+            cwd=repo_dir,
+            env=env
         )
 
         if not push_result.succeeded:
@@ -805,11 +818,16 @@ def attempt_syntax_fix(error_output: str, repo_dir: str, github_token: str, deta
 
     # Commit the fix (same as import fix)
     try:
+        # Set up environment for git commands
+        env = os.environ.copy()
+        env["GIT_EXEC_PATH"] = "/opt/libexec/git-core"
+
         relative_path = error_file.replace(f"{repo_dir}/", "")
 
         commit_result = run_command(
             ["git", "add", error_file],
-            cwd=repo_dir
+            cwd=repo_dir,
+            env=env
         )
         if not commit_result.succeeded:
             logger.error(f"[auto-fix] git add failed: {commit_result.stderr}")
@@ -818,7 +836,8 @@ def attempt_syntax_fix(error_output: str, repo_dir: str, github_token: str, deta
         commit_msg = f"fix: auto-fix syntax error in {relative_path}\n\nAutomatically fixed by OutcomeOps run-tests Lambda"
         commit_result = run_command(
             ["git", "commit", "-m", commit_msg],
-            cwd=repo_dir
+            cwd=repo_dir,
+            env=env
         )
         if not commit_result.succeeded:
             logger.error(f"[auto-fix] git commit failed: {commit_result.stderr}")
@@ -828,20 +847,23 @@ def attempt_syntax_fix(error_output: str, repo_dir: str, github_token: str, deta
         repo_url_with_token = f"https://x-access-token:{github_token}@github.com/{detail.repoFullName}.git"
         run_command(
             ["git", "remote", "set-url", "origin", repo_url_with_token],
-            cwd=repo_dir
+            cwd=repo_dir,
+            env=env
         )
 
         # Push the fix
         push_result = run_command(
             ["git", "push"],
             cwd=repo_dir,
+            env=env,
             mask_terms=[github_token]
         )
 
         # Remove token from remote again
         run_command(
             ["git", "remote", "set-url", "origin", f"https://github.com/{detail.repoFullName}.git"],
-            cwd=repo_dir
+            cwd=repo_dir,
+            env=env
         )
 
         if not push_result.succeeded:

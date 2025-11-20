@@ -4,17 +4,16 @@ set -e
 # Build a Lambda layer containing git, make, terraform, and runtime tools
 # Output: lambda/runtime-layer/ directory with /opt structure
 
-TERRAFORM_VERSION="1.9.5"
 LAYER_DIR="lambda/runtime-layer"
 
 echo "Building Lambda runtime layer..."
-echo "Terraform version: $TERRAFORM_VERSION"
 echo "Output directory: $LAYER_DIR"
 echo ""
 
 # Clean and create layer directory structure
-rm -rf "$LAYER_DIR"
-mkdir -p "$LAYER_DIR"/{bin,lib}
+# Use sudo to remove any root-owned files from previous Docker builds
+sudo rm -rf "$LAYER_DIR"/{bin,lib,libexec} 2>/dev/null || rm -rf "$LAYER_DIR"/{bin,lib,libexec} 2>/dev/null || true
+mkdir -p "$LAYER_DIR"/{bin,lib,libexec/git-core}
 
 # Use a Docker container based on Amazon Linux 2 to build the layer
 # This ensures compatibility with Lambda's execution environment
@@ -31,14 +30,11 @@ docker run --rm --entrypoint /bin/bash \
       make \
       which \
       findutils \
-      procps-ng
-
-    # Download and install Terraform
-    curl -fsSL "https://releases.hashicorp.com/terraform/'$TERRAFORM_VERSION'/terraform_'$TERRAFORM_VERSION'_linux_amd64.zip" -o /tmp/terraform.zip
-    unzip -q /tmp/terraform.zip -d /tmp
+      procps-ng \
+      file
 
     # Copy binaries to layer structure
-    mkdir -p /output/bin /output/lib
+    mkdir -p /output/bin /output/lib /output/libexec/git-core
 
     # Copy git and dependencies
     cp /usr/bin/git /output/bin/
@@ -48,11 +44,19 @@ docker run --rm --entrypoint /bin/bash \
     cp /usr/bin/unzip /output/bin/
     cp /usr/bin/which /output/bin/
     cp /usr/bin/find /output/bin/
-    cp /tmp/terraform /output/bin/
+
+    # Copy only essential git helper programs (to keep layer size small)
+    echo "Copying essential git helper programs..."
+    # Only copy the remote helpers needed for cloning (not all 180+ files)
+    for helper in git-remote-https git-remote-http git-remote-ftp git-remote-ftps git-sh-setup; do
+      if [ -f "/usr/libexec/git-core/$helper" ]; then
+        cp "/usr/libexec/git-core/$helper" /output/libexec/git-core/
+      fi
+    done
 
     # Find and copy shared library dependencies
     echo "Copying shared library dependencies..."
-    for binary in /output/bin/*; do
+    for binary in /output/bin/* /output/libexec/git-core/*; do
       if [ -f "$binary" ] && file "$binary" | grep -q "ELF"; then
         # Get library dependencies
         ldd "$binary" 2>/dev/null | grep "=> /" | awk "{print \$3}" | while read lib; do
@@ -68,9 +72,13 @@ docker run --rm --entrypoint /bin/bash \
       fi
     done
 
-    # Set permissions
+    # Set permissions and fix ownership to match host user
     chmod -R 755 /output/bin
     chmod -R 755 /output/lib
+    chmod -R 755 /output/libexec
+
+    # Change ownership to host user (UID/GID from mounted volume)
+    chown -R $(stat -c "%u:%g" /output) /output/bin /output/lib /output/libexec 2>/dev/null || true
 
     echo "Layer build complete!"
   '
@@ -81,27 +89,34 @@ cat > "$LAYER_DIR/README.md" <<'EOF'
 
 This layer provides git, make, terraform, and related build tools for the run-tests Lambda.
 
+**Note:** Layer binaries (`bin/` and `lib/`) are not committed to git. You must build the layer locally before running `terraform apply`.
+
 ## Contents
 
 - `/opt/bin/git` - Git version control
 - `/opt/bin/make` - GNU Make
-- `/opt/bin/terraform` - Terraform CLI
 - `/opt/bin/tar`, `/opt/bin/gzip`, `/opt/bin/unzip` - Archive tools
 - `/opt/lib/` - Shared library dependencies
+- `/opt/libexec/git-core/` - Git helper programs (git-remote-https, etc.)
 
 ## Usage
 
 Add this layer to your Lambda function, and the tools will be available in `/opt/bin/`.
 The Lambda execution environment automatically adds `/opt/bin` to the PATH.
 
-## Rebuild
+## Build Layer (Required Before Terraform Apply)
 
-To rebuild this layer:
+The layer binaries are built locally and not checked into git:
+
 ```bash
+# Build the layer (creates bin/ and lib/ directories)
 ./scripts/build-runtime-layer.sh
+
+# Deploy with Terraform
+terraform apply
 ```
 
-Then run `terraform apply` to update the layer version.
+The build script uses Docker to compile binaries compatible with Amazon Linux 2 (Lambda runtime environment).
 EOF
 
 # Calculate layer size
