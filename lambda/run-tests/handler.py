@@ -1027,9 +1027,9 @@ def handler(event: Dict[str, Any], _context: Any) -> Dict[str, Any]:
 
             # Trigger PR analyzer to check the newly created PR
             trigger_pr_analyzer(pr_result["pr_number"], detail.repoFullName)
-        elif not tests_passed and failure_type == "logic_error":
-            # Logic errors need human review - create PR and post comment
-            logger.info("[run-tests] Logic error detected - creating PR for human review")
+        elif not tests_passed:
+            # All test failures need human review - create PR and post comment
+            logger.info(f"[run-tests] Tests failed ({failure_type}) - creating PR for human review")
             if detail.prUrl is None:
                 pr_result = create_pull_request(detail, github_token)
                 detail.prUrl = pr_result["pr_url"]
@@ -1046,8 +1046,6 @@ def handler(event: Dict[str, Any], _context: Any) -> Dict[str, Any]:
                 failure_reason=failure_reason or "Tests failed",
                 github_usernames=github_usernames
             )
-        elif not tests_passed:
-            logger.warning("[run-tests] Tests failed - skipping PR creation")
 
     except Exception as exc:  # pragma: no cover - aggregated handling
         logger.exception("Test runner failed: %s", exc)
