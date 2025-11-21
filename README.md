@@ -1,186 +1,222 @@
-# OutcomeOps: Context Engineering for AI-Assisted Development
+# OutcomeOps – Open Framework
 
-[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=bcarpio_outcome-ops-ai-assist&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=bcarpio_outcome-ops-ai-assist)
-[![Coverage](https://sonarcloud.io/api/project_badges/measure?project=bcarpio_outcome-ops-ai-assist&metric=coverage)](https://sonarcloud.io/summary/new_code?id=bcarpio_outcome-ops-ai-assist)
-[![Maintainability Rating](https://sonarcloud.io/api/project_badges/measure?project=bcarpio_outcome-ops-ai-assist&metric=sqale_rating)](https://sonarcloud.io/summary/new_code?id=bcarpio_outcome-ops-ai-assist)
-[![Security Rating](https://sonarcloud.io/api/project_badges/measure?project=bcarpio_outcome-ops-ai-assist&metric=security_rating)](https://sonarcloud.io/summary/new_code?id=bcarpio_outcome-ops-ai-assist)
-[![Reliability Rating](https://sonarcloud.io/api/project_badges/measure?project=bcarpio_outcome-ops-ai-assist&metric=reliability_rating)](https://sonarcloud.io/summary/new_code?id=bcarpio_outcome-ops-ai-assist)
 [![CI/CD](https://github.com/bcarpio/outcome-ops-ai-assist/actions/workflows/cicd.yml/badge.svg)](https://github.com/bcarpio/outcome-ops-ai-assist/actions/workflows/cicd.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/)
 
-AI generates generic code. You need code that matches **YOUR** standards.
+This repository contains the **open portion** of OutcomeOps: ADR templates, methodology, documentation standards, and educational examples.
 
-**The problem:** Engineers spend hours adapting AI-generated code to organizational patterns, standards, and architecture decisions.
+OutcomeOps is the operating model that powers Context Engineering™ – the practice of grounding AI in organizational knowledge so engineers own outcomes, not syntax.
 
-**The solution:** Give AI access to your organizational knowledge—ADRs, code-maps, architectural decisions—so it generates code that already matches your patterns.
+The full autonomous agent platform (issue → code generation → PR → test execution → self-correction loop, air-gapped deployment, integration with internal LLMs) is proprietary, battle-tested at Fortune 10 scale in regulated environments, and only available via advisory engagements or licensed deployments.
 
-**The proof:**
+**For enterprise briefings, transformation engagements, or licensing:** https://www.outcomeops.ai
+
+---
+
+## The Enterprise Problem
+
+**Generic AI generates generic code. Regulated industries need code that matches YOUR standards.**
+
+Fortune 500 engineering organizations face a common challenge:
+- AI tools generate code that violates internal security policies
+- Generic implementations don't match architectural decisions
+- Teams spend hours adapting AI output to organizational patterns
+- Compliance requirements prohibit sending code to external LLMs
+- **$200K/yr GitHub Copilot seats still require extensive human rework**
+
+**The OutcomeOps solution:**
+- AI trained on YOUR ADRs, YOUR patterns, YOUR standards
+- Runs on YOUR infrastructure (air-gapped, internal LLMs)
+- Zero IP exfiltration, full compliance with regulatory requirements
+- **10-15x velocity improvement in regulated codebases**
+
+---
+
+## What's Open Source vs. Proprietary
+
+### Open Source (This Repository)
+
+✅ **ADR Methodology**
+- [ADR Template](docs/adr/TEMPLATE.md)
+- [Getting Started with ADRs](docs/getting-started-with-adrs.md)
+- Example ADRs demonstrating best practices
+
+✅ **OutcomeOps Philosophy**
+- [Backstory](docs/backstory.md) - Why OutcomeOps matters
+- [High-level Architecture](docs/architecture.md) - Conceptual design
+- Methodology and approach
+
+✅ **Educational Resources**
+- How to structure organizational knowledge
+- Best practices for AI-assisted development
+- Community learning materials
+
+### Proprietary Enterprise Platform
+
+🔒 **Autonomous Agent System**
+- Issue → Code Generation → PR → Test → Self-Correction Loop
+- Prompt engineering and tool-calling chains
+- Multi-agent orchestration architecture
+
+🔒 **Production Infrastructure**
+- Air-gapped deployment for regulated environments
+- Integration with internal LLMs (Bedrock, Azure OpenAI, on-prem)
+- Zero IP exfiltration architecture
+
+🔒 **Enterprise Features**
+- SSO/SAML integration
+- Compliance reporting and audit trails
+- Custom model fine-tuning on organizational code
+- 24/7 SLA support
+
+**Available only via:**
+- 6-24 month transformation engagements
+- Licensed deployments for Fortune 500
+- Advisory services for platform engineering teams
+
+[Request Enterprise Briefing →](docs/enterprise-briefing.md)
+
+---
+
+## Proven at Scale
+
+**Fortune 10 Pharmaceutical Company:**
+- 87% reduction in feature delivery time
+- Zero IP exfiltration (air-gapped deployment)
+- Full HIPAA/SOX compliance
+- Engineering velocity from 2-week sprints to same-day delivery
+
+**Consumer Digital Platform (>100M users):**
 - 16-hour tasks → 15 minutes
-- $0.68 per feature
+- $0.68 per feature (vs. $15K manual development)
 - 100-200x ROI
-- Production-tested at Fortune 500
+- Production-tested, self-correcting code generation
 
-This is Context Engineering. This is OutcomeOps.
-
-[Learn more about the OutcomeOps Methodology →](https://www.outcomeops.ai)
+**All deployments:** Air-gapped, internal LLMs, zero external API calls, full audit trails.
 
 ---
 
-## The Problem With AI Tools Today
+## The OutcomeOps Methodology
 
-**Current AI coding tools:**
-- Generate generic implementations
-- Don't know your architectural decisions
-- Ignore your coding standards
-- Require hours of manual adaptation
-- **You still spend most of your time rewriting AI code**
+**Phase 1: Capture Organizational Knowledge (Weeks 1-4)**
+- Document architectural decisions as ADRs
+- Generate code-maps of existing patterns
+- Codify testing, security, and compliance standards
+- Build searchable knowledge base
 
-**OutcomeOps is different:**
-- Understands YOUR codebase patterns
-- Knows YOUR architectural decisions (via ADRs)
-- Generates code matching YOUR standards
-- Includes tests automatically
-- **AI does the work. You do the review.**
+**Phase 2: Deploy Agent Platform (Weeks 5-8)**
+- Air-gapped infrastructure on your AWS/Azure
+- Integration with internal LLM endpoints
+- GitHub/GitLab/Bitbucket integration
+- SSO and access controls
 
----
+**Phase 3: Pilot & Validation (Weeks 9-16)**
+- Select pilot team and feature backlog
+- Monitor generation quality and velocity
+- Refine ADRs based on agent output
+- Measure time-to-PR and approval rates
 
-## How OutcomeOps Works
+**Phase 4: Scale & Optimize (Weeks 17-24)**
+- Roll out to additional teams
+- Custom model fine-tuning (optional)
+- Advanced self-correction workflows
+- Executive metrics and reporting
 
-**1. Ingest Organizational Knowledge**
-- ADRs (Architecture Decision Records)
-- Code-maps (repo structure and patterns)
-- Existing code examples
-- Standards documentation
-
-**2. Vector Search + Context Retrieval**
-- When a feature is requested (Jira story, GitHub issue)
-- OutcomeOps queries your knowledge base
-- Finds relevant patterns, decisions, examples
-
-**3. AI Generation with Context**
-- Claude generates code using YOUR context
-- Matches YOUR patterns, not generic templates
-- Includes tests based on YOUR testing standards
-- Creates MR/PR with full implementation
-
-**4. Automated Review**
-- MR analyzer checks against standards
-- Validates architectural compliance
-- Comments on deviations
-- **Code that's 90% done when you first see it**
-
-[See detailed architecture →](docs/architecture.md)
+**Result:** 10-15x velocity improvement, full compliance, zero vendor lock-in.
 
 ---
 
-## Quick Start (5 Minutes)
+## Open Framework: Getting Started with ADRs
 
-**Prerequisites:**
-- GitHub repo with some code
-- AWS account (for Lambda deployment)
-- ADRs or architectural docs (or we'll help you create them)
-
-**Get started:**
-
-```bash
-# Clone and deploy
-git clone https://github.com/bcarpio/outcome-ops-ai-assist
-cd outcome-ops-ai-assist
-make deploy
-
-# Configure GitHub webhook
-# (Instructions will be shown after deploy)
-
-# Create test issue with label "approved-for-generation"
-# Watch OutcomeOps generate a PR in ~15 minutes
-```
+The foundation of OutcomeOps is capturing organizational knowledge in a machine-readable format. **Architecture Decision Records (ADRs)** are the key.
 
 **New to ADRs?** [Start here →](docs/getting-started-with-adrs.md)
 
-**Want to see it in action first?** [Watch demo video →](docs/demo.md)
+**Example ADRs in this repository:**
+- [ADR-001: Creating ADRs](docs/adr/ADR-001-create-adrs.md)
+- [ADR-006: Python Testing Import Patterns](docs/adr/ADR-006-python-testing-imports.md)
+- [ADR-007: Documentation-Driven Decision Making](docs/adr/ADR-007-documentation-driven-decisions.md)
 
----
+**Using the ADR template:**
+```bash
+# Copy template for new decision
+cp docs/adr/TEMPLATE.md docs/adr/ADR-XXX-your-decision.md
 
-## OutcomeOps vs Other AI Coding Tools
+# Document the decision
+# - Context: Why this decision is needed
+# - Decision: What you decided and why
+# - Consequences: Impact and tradeoffs
+```
 
-**GitHub Copilot / Cursor:** Autocomplete and chat, but no organizational context. Generates generic code requiring manual adaptation to your standards.
-
-**Devin:** Autonomous agent for tasks, but doesn't know YOUR patterns. Still generates code that needs refactoring to match your conventions.
-
-**ChatGPT / Claude (standalone):** Powerful, but requires pasting context every time. Not scalable. No integration with your codebase.
-
-**OutcomeOps:** Ingests YOUR ADRs, YOUR patterns, YOUR standards. AI generates code that already matches your organization. Review outcomes, not syntax.
-
----
-
-## Who Built This
-
-OutcomeOps was created by Brian Carpio, who previously built:
-
-- **Golden Pipelines (2014)** - Took deployment from 6 weeks → 1 week at Aetna
-- **AWS ProServe** - Led largest Healthcare & Life Sciences engagement in ProServe history
-- **Platform Engineering** - Before it had a name, building self-service infrastructure at Pearson (2012), Aetna (2014), Comcast (2018)
-
-OutcomeOps applies the same playbook to AI-assisted development:
-- Make the easy path the right path
-- Bake standards into infrastructure
-- Create velocity through automation
-- **This is golden pipelines for code generation**
-
-[Read the full story →](docs/backstory.md)
+**ADRs enable:**
+- AI understanding of organizational patterns
+- Consistent code generation across teams
+- Knowledge transfer for new engineers
+- Audit trails for compliance
 
 ---
 
 ## Documentation
 
-**Getting Started**
-- [Getting Started Guide](docs/getting-started.md) - Prerequisites, setup, first steps
-- [Getting Started with ADRs](docs/getting-started-with-adrs.md) - Learn about Architecture Decision Records
-- [Demo Video](docs/demo.md) - See OutcomeOps in action
+**Open Source Resources**
+- [Getting Started with ADRs](docs/getting-started-with-adrs.md)
+- [ADR Template](docs/adr/TEMPLATE.md)
+- [Example ADRs](docs/adr/)
+- [Backstory: Why OutcomeOps](docs/backstory.md)
+- [High-Level Architecture](docs/architecture.md)
 
-**Core Documentation**
-- [Architecture Overview](docs/architecture.md) - System design and data flows
-- [Technical Reference](docs/technical-reference.md) - Detailed technical documentation
-- [CLI Usage Guide](docs/cli-usage.md) - Using the outcome-ops-assist CLI
-- [Deployment Guide](docs/deployment.md) - Operations and troubleshooting
+**Enterprise Platform** (proprietary)
+- Lambda function implementations
+- Prompt engineering and agent chains
+- Multi-agent orchestration
+- Self-correction algorithms
+- Deployment automation
 
-**Lambda Documentation**
-- [Lambda: Ingest Docs](docs/lambda-ingest-docs.md) - Knowledge base ingestion
-- [Lambda: Generate Code Maps](docs/lambda-generate-code-maps.md) - Code analysis
-- [Lambda: Generate Code](docs/lambda-generate-code.md) - AI-powered code generation from issues
-- [Lambda: Analyze PR](docs/lambda-analyze-pr.md) - PR analysis orchestration
-- [Lambda: Process PR Check](docs/lambda-process-pr-check.md) - PR check worker
-- [Lambda: Run Tests](docs/lambda-run-tests.md) - Executes `make test` for generated branches
+[Request Enterprise Documentation →](docs/enterprise-briefing.md)
 
-**Architecture Decision Records**
-- [ADR-001: Creating ADRs](docs/adr/ADR-001-create-adrs.md) - How to document architectural decisions
-- [ADR Template](docs/adr/TEMPLATE.md) - Template for new ADRs
+---
 
-**For Developers**
-- [Claude Guidance](docs/claude-guidance.md) - AI assistant development best practices
-- [Backstory](docs/backstory.md) - Why OutcomeOps exists
+## Who Built This
+
+**Brian Carpio** – Former AWS ProServe Principal, Platform Engineering Leader
+
+**Track record:**
+- **AWS ProServe (2017-2020):** Led largest Healthcare & Life Sciences engagement in ProServe history
+- **Golden Pipelines (2014):** 6 weeks → 1 week deployment cycles at Aetna
+- **Platform Engineering Pioneer:** Built self-service infrastructure before it had a name (Pearson 2012, Aetna 2014, Comcast 2018)
+
+**OutcomeOps** applies the same playbook to AI-assisted development:
+- Make the easy path the right path
+- Bake standards into infrastructure
+- Create velocity through automation
+- **Golden pipelines for code generation**
+
+[Read the full story →](docs/backstory.md)
 
 ---
 
 ## Get Started
 
-**Ready to try OutcomeOps?**
+**Learn the Methodology (Free):**
+- [Getting Started with ADRs](docs/getting-started-with-adrs.md)
+- [Backstory: Why OutcomeOps](docs/backstory.md)
+- [Example ADRs](docs/adr/)
+- [Join Community Discussions](https://github.com/bcarpio/outcome-ops-ai-assist/discussions)
 
-- **[Learn the Methodology](https://www.outcomeops.ai)** - Understand the OutcomeOps approach
-- **[Deploy Now](docs/getting-started.md)** - 5-minute setup guide
-- **[Learn ADRs](docs/getting-started-with-adrs.md)** - New to Architecture Decision Records?
-- **[Watch Demo](docs/demo.md)** - See OutcomeOps in action
-- **[Ask Questions](https://github.com/bcarpio/outcome-ops-ai-assist/issues)** - GitHub Issues
-- **Enterprise Support?** [Get in touch](https://www.linkedin.com/in/briancarpio/)
+**Enterprise Transformation:**
+- [Request 30-Minute Briefing](docs/enterprise-briefing.md)
+- [Review Enterprise Platform Overview](docs/enterprise-briefing.md)
+- [Connect on LinkedIn](https://www.linkedin.com/in/briancarpio/)
 
-**Contributing:**
-- Found a bug? [Open an issue](https://github.com/bcarpio/outcome-ops-ai-assist/issues)
-- Have a feature idea? [Start a discussion](https://github.com/bcarpio/outcome-ops-ai-assist/discussions)
-- Want to contribute? [Read technical reference](docs/technical-reference.md)
+**Questions or Inquiries:**
+- [Contact us](https://www.outcomeops.ai/contact)
 
 ---
 
 **Built for engineering velocity.**
 
 Outcome-driven development. Infrastructure by code. Engineering outcomes by AI. Your vision, automated execution.
+
+**OutcomeOps:** The only framework purpose-built for AI-assisted development in regulated industries.
+
+For Fortune 500 transformation engagements: https://www.outcomeops.ai

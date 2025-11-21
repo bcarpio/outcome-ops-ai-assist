@@ -1,7 +1,11 @@
 terraform {
   backend "s3" {
-    bucket = "terraform-state-136400015737-us-west-2-dev"
-    key    = "outcome-ops-ai-assist.tfstate"
-    region = "us-west-2"
+    # Backend configuration provided at init time
+    # Example usage:
+    # terraform init \
+    #   -backend-config="bucket=your-state-bucket" \
+    #   -backend-config="key=outcomeops/terraform.tfstate" \
+    #   -backend-config="region=us-east-1" \
+    #   -backend-config="dynamodb_table=your-lock-table"
   }
 }

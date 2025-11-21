@@ -1,220 +1,70 @@
-# Lambda: Analyze PR
+# Analyze PR
 
-Orchestrates Pull Request analysis by detecting changed files, determining necessary checks, and queueing jobs for async processing.
+**Enterprise Component**
 
-## Purpose
+## Overview
 
-The analyze-pr Lambda function integrates with GitHub to automatically analyze Pull Requests. It:
+The `analyze-pr` Lambda orchestrates automated pull request analysis for architectural compliance. It analyzes PR diffs, determines which organizational checks to run based on changed files, and queues jobs for async processing.
 
-- **Fetches PR details** from GitHub API (PR metadata, changed files)
-- **Parses changed files** to determine which checks are relevant
-- **Queues check jobs** to SQS FIFO for async execution
-- **Posts status comments** to PRs with analysis progress
+This Lambda is triggered manually or via GitHub webhooks. It fetches the PR diff from GitHub API, parses changed files to determine relevant checks (ADR compliance, test coverage, breaking changes, architectural duplication, README freshness), queues SQS jobs for parallel check execution, and posts an initial analysis status comment to the PR.
 
-## Trigger
+## Architecture
 
-- **Manual**: `aws lambda invoke --function-name dev-outcome-ops-ai-assist-analyze-pr --payload '{"pr_number": 123, "repository": "owner/repo"}' response.json`
-- **GitHub Webhook** (future): Triggered automatically on PR events
+- **Input:** GitHub webhook or manual invocation with PR details (pr_number, repository)
+- **Process:**
+  - Fetch PR diff from GitHub API
+  - Parse changed files and determine relevant checks
+  - For each check type:
+    - ADR Compliance: Validates Lambda handlers and Terraform against ADR standards
+    - README Freshness: Checks if README needs updating based on changes
+    - Test Coverage: Ensures new handlers have corresponding tests
+    - Breaking Changes: Detects API/interface breaking changes
+    - Architectural Duplication: Identifies code that violates DRY principles
+  - Queue check jobs to SQS FIFO queue for async processing
+  - Post initial comment to PR with analysis status
+- **Output:** SQS messages for each check + GitHub PR comment
 
-## Input Schema
-
-```json
-{
-  "pr_number": 123,
-  "repository": "owner/repo"
-}
+**Workflow:**
+```
+GitHub Webhook/Manual → analyze-pr → [Fetch PR Diff] → [Determine Checks] → SQS Jobs → GitHub Comment
 ```
 
-**Validation:**
-- `pr_number` must be a positive integer
-- `repository` must be in format `owner/repo`
+## Enterprise Features
 
-## Check Types
+- Air-gapped deployment (no external dependencies)
+- Custom LLM integration (Azure OpenAI, AWS Bedrock, on-prem models)
+- Policy-based cost controls
+- Compliance audit logging
+- Multi-tenant knowledge base architecture
 
-The Lambda determines which checks to run based on changed file patterns:
+## Configuration
 
-### ADR Compliance
-**Triggered by:** Lambda handlers (`lambda/**/*.py`) or Terraform files (`terraform/**/*.tf`)
+The enterprise deployment uses SSM Parameter Store for configuration:
+- LLM endpoints and credentials
+- Knowledge base connection details
+- GitHub/GitLab/Bitbucket integration tokens
+- Cost and policy guardrails
 
-**Purpose:** Verify architectural decisions are documented
+Specific parameter structures are documented in enterprise deployments.
 
-**Files checked:**
-- Lambda handlers (excludes test files)
-- Terraform infrastructure definitions
+## Deployment
 
-### README Freshness
-**Triggered by:** Changes in `lambda/`, `terraform/`, or `docs/` directories
+This component is deployed as part of the full OutcomeOps platform via:
+- Terraform (infrastructure as code)
+- Air-gapped installer (for regulated environments)
 
-**Purpose:** Ensure documentation stays up-to-date with code changes
-
-### Test Coverage
-**Triggered by:** New Lambda handler files (`lambda/*/handler.py` with status `added`)
-
-**Purpose:** Verify new handlers have corresponding unit tests
-
-### Breaking Changes
-**Triggered by:** Modified or removed Lambda handlers
-
-**Purpose:** Detect API contract changes that could break consumers
-
-### Architectural Duplication
-**Triggered by:** New or modified Lambda handlers
-
-**Purpose:** Identify duplicate patterns that could be abstracted
-
-## Job Queueing
-
-Check jobs are sent to SQS FIFO queue for async processing:
-
-```json
-{
-  "check_type": "ADR_COMPLIANCE",
-  "pr_number": 123,
-  "repository": "owner/repo",
-  "changed_files": ["lambda/new-handler/handler.py", "terraform/main.tf"]
-}
-```
-
-**FIFO Attributes:**
-- **MessageGroupId**: `pr-{owner}-{repo}-{pr_number}` (ensures ordered processing per PR)
-- **MessageDeduplicationId**: `{MessageGroupId}-{check_type}-{timestamp_ms}` (prevents duplicate jobs)
-
-Queue URL retrieved from SSM: `/{environment}/{app_name}/sqs/pr-checks-queue-url`
-
-## GitHub Integration
-
-### Authentication
-GitHub Personal Access Token retrieved from SSM Parameter Store:
-- Parameter: `/{environment}/{app_name}/github/token`
-- Scope required: `repo` (read access to repository)
-
-### API Endpoints Used
-
-**Fetch PR details:**
-```
-GET /repos/{owner}/{repo}/pulls/{pr_number}
-```
-
-**Fetch changed files:**
-```
-GET /repos/{owner}/{repo}/pulls/{pr_number}/files
-```
-
-**Post comment:**
-```
-POST /repos/{owner}/{repo}/issues/{pr_number}/comments
-```
-
-### Example PR Comment
-
-When checks are queued:
-```markdown
-**OutcomeOps Analysis Started**
-
-Running 3 checks:
-- ADR COMPLIANCE
-- README FRESHNESS
-- TEST COVERAGE
-
-Results will be posted as comments when complete.
-```
-
-When no checks needed:
-```markdown
-**OutcomeOps Analysis:** No checks needed for this PR (no relevant files changed)
-```
-
-## Error Handling
-
-- **Invalid input**: Raises validation error with detailed message
-- **GitHub API errors**: Logs error with request details, raises exception
-- **SSM parameter missing**: Logs error, raises exception
-- **SQS send failures**: Logs error with check type, raises ClientError
-- **All errors** include full stack traces in CloudWatch logs
-
-## Example Responses
-
-**Successful analysis with checks:**
-```json
-{
-  "message": "Analysis started for PR #123",
-  "pr_number": 123,
-  "checks_queued": 3
-}
-```
-
-**No checks needed:**
-```json
-{
-  "message": "No checks needed for this PR",
-  "pr_number": 123,
-  "checks_queued": 0
-}
-```
-
-**Validation error:**
-```json
-{
-  "error": "validation error for AnalyzePrRequest",
-  "detail": [
-    {
-      "loc": ["pr_number"],
-      "msg": "Input should be greater than 0",
-      "type": "greater_than"
-    }
-  ]
-}
-```
-
-## Dependencies
-
-- **boto3**: AWS SDK for SSM and SQS operations
-- **requests**: GitHub API HTTP client
-- **pydantic**: Request/response validation
-
-See `lambda/analyze-pr/requirements.txt` for full dependency list.
-
-## CloudWatch Logs
-
-All logs written to: `/aws/lambda/{environment}-{app_name}-analyze-pr`
-
-**Log examples:**
-
-```
-INFO - Analyzing PR #123 in owner/repo
-INFO - Fetched PR #123 from owner/repo: Add new Lambda handler
-INFO - Fetched 5 changed files for PR #123
-INFO - Changed files: 5, Checks to run: 3
-INFO - Queued check job: ADR_COMPLIANCE for PR #123
-INFO - Posted comment to PR #123 in owner/repo
-INFO - Successfully queued 3 checks for PR #123
-```
+Deployment scripts and configurations are included in enterprise licensing.
 
 ## Testing
 
-Comprehensive test suite with 25 unit tests covering:
-- Pydantic schema validation
-- GitHub API integration (with mocks)
-- File parsing and check determination logic
-- SQS job queueing
-- End-to-end handler orchestration
+The enterprise platform includes comprehensive test coverage:
+- Unit tests with >90% coverage
+- Integration tests with mocked AWS services
+- End-to-end workflow tests
+- Performance and cost benchmarking
 
-Run tests:
-```bash
-cd lambda/tests
-make test-unit
-```
+## Support
 
-## Future Enhancements
+For enterprise briefings: https://www.outcomeops.ai
 
-- [ ] GitHub webhook integration for automatic triggering
-- [ ] Check result aggregation and status updates
-- [ ] Configurable check rules via SSM parameters
-- [ ] Batch processing for large PRs
-- [ ] Check result caching to avoid duplicate work
-
-## Related Documentation
-
-- [Architecture Overview](architecture.md)
-- [ADR-002: Development Workflow](adr/ADR-002-development-workflow.md)
-- [ADR-003: Testing Standards](adr/ADR-003-testing-standards.md)
+For technical questions: https://www.outcomeops.ai/contact

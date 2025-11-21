@@ -1,72 +1,50 @@
 #!/bin/bash
-set -e
 
-# Build a Lambda layer containing just terraform
-# Output: lambda/terraform-layer/ directory with /opt structure
+# Build Terraform Layer - Enterprise Component
+#
+# This is a proprietary component of the OutcomeOps enterprise platform.
+#
+# What this script does:
+# - Builds Lambda layer containing Terraform CLI
+# - Downloads specific Terraform version from HashiCorp
+# - Uses Docker container (Amazon Linux 2) for Lambda compatibility
+# - Creates optimized layer structure for /opt mount
+# - Generates layer package for Terraform deployment
+#
+# Enterprise features:
+# - Air-gapped build process (no external dependencies)
+# - Lambda runtime environment compatibility
+# - Version pinning for reproducible builds
+# - Automated build and deployment pipeline
+# - Infrastructure-as-code validation in Lambda functions
+#
+# This component is available only via licensed deployments.
+#
+# For enterprise briefings: https://www.outcomeops.ai
+# For questions: https://www.outcomeops.ai/contact
 
-TERRAFORM_VERSION="1.9.5"
-LAYER_DIR="lambda/terraform-layer"
+cat << 'EOF'
 
-echo "Building Terraform Lambda layer..."
-echo "Terraform version: $TERRAFORM_VERSION"
-echo "Output directory: $LAYER_DIR"
-echo ""
+╔═══════════════════════════════════════════════════════════════════════════╗
+║                                                                           ║
+║                      OutcomeOps - Enterprise Component                    ║
+║                                                                           ║
+╚═══════════════════════════════════════════════════════════════════════════╝
 
-# Clean and create layer directory structure
-sudo rm -rf "$LAYER_DIR"/{bin,lib} 2>/dev/null || rm -rf "$LAYER_DIR"/{bin,lib} 2>/dev/null || true
-mkdir -p "$LAYER_DIR"/bin
+This build script is part of the proprietary OutcomeOps enterprise platform.
 
-# Use a Docker container based on Amazon Linux 2 to build the layer
-docker run --rm --entrypoint /bin/bash \
-  -v "$(pwd)/$LAYER_DIR:/output" \
-  public.ecr.aws/lambda/python:3.12 \
-  -c '
-    # Download and install Terraform
-    curl -fsSL "https://releases.hashicorp.com/terraform/'$TERRAFORM_VERSION'/terraform_'$TERRAFORM_VERSION'_linux_amd64.zip" -o /tmp/terraform.zip
-    unzip -q /tmp/terraform.zip -d /tmp
+The full implementation includes:
+  • Docker-based build for Lambda compatibility
+  • Terraform CLI version pinning
+  • Optimized layer structure for /opt mount
+  • Automated packaging for Terraform deployment
+  • Infrastructure validation capabilities
 
-    # Copy terraform to layer structure
-    mkdir -p /output/bin
-    cp /tmp/terraform /output/bin/
+Available via enterprise licensing only.
 
-    # Set permissions and fix ownership to match host user
-    chmod 755 /output/bin/terraform
-    chown -R $(stat -c "%u:%g" /output) /output/bin 2>/dev/null || true
+For enterprise briefings:  https://www.outcomeops.ai
+For technical questions:   https://www.outcomeops.ai/contact
 
-    echo "Terraform layer build complete!"
-  '
-
-# Create a README in the layer directory
-cat > "$LAYER_DIR/README.md" <<'EOF'
-# Terraform Lambda Layer
-
-This layer provides the Terraform CLI for Lambda functions that need to format or validate Terraform files.
-
-**Note:** Layer binaries are not committed to git. You must build the layer before running `terraform apply`.
-
-## Contents
-
-- `/opt/bin/terraform` - Terraform CLI v1.9.5
-
-## Usage
-
-Add this layer to your Lambda function, and terraform will be available in `/opt/bin/`.
-The Lambda execution environment automatically adds `/opt/bin` to the PATH.
-
-## Build Layer
-
-```bash
-./scripts/build-terraform-layer.sh
-```
-
-Then run `terraform apply` to update the layer version.
 EOF
 
-# Calculate layer size
-LAYER_SIZE=$(du -sh "$LAYER_DIR" | cut -f1)
-echo ""
-echo "Terraform layer build complete!"
-echo "Layer size: $LAYER_SIZE"
-echo "Location: $LAYER_DIR"
-echo ""
-echo "The layer will be automatically packaged by Terraform."
+exit 1

@@ -8,7 +8,7 @@ For 20 years, I've been at the bleeding edge—not following trends, but buildin
 **Platform engineering before it had a name** (2012 at Pearson, building "Nibiru")
 **Golden paths before Spotify popularized the term** (2014 at Aetna, building "Utopia")
 
-I don't just implement. I create categories.
+The pattern has always been the same: identify what's coming, build it at scale, and watch it become industry standard 2–5 years later.
 
 ## The Pattern: Make the Right Path the Easy Path
 
@@ -63,16 +63,7 @@ What began as tactical DevOps quickly evolved into full-spectrum Cloud Platform 
 
 The insight: **Transformation is organizational as much as technical.**
 
-### Stealth AI Company (2025-Present): Solo Full-Stack Execution
-
-Founded and launched a generative AI platform—solo, full-stack, production-ready:
-- Architected and deployed **45+ modular API endpoints**
-- Built serverless, event-driven backend (Lambda, S3, DynamoDB, SQS, API Gateway)
-- Integrated GPT-based pipelines for content generation
-- Reached **closed beta in 25 days** with real users transacting
-- Complete CI/CD automation with Terraform, GitHub Actions, security scans
-
-This wasn't a prototype. It was a **functional ecosystem built for scale from day one.**
+### 2025-Present: Applied the same playbook to AI-assisted development at scale in regulated consumer platforms.
 
 ## The Problem: AI Generates Generic Code
 
@@ -113,6 +104,8 @@ Just like "Utopia" made the right deployment path the easy path at Aetna.
 Just like ADRs made best practices automatic at Comcast.
 
 **OutcomeOps makes the right code patterns the easy path.**
+
+Every engagement ended the same way: the client asked for DevOps or cloud transformation and left with a new operating model. The difference? I never sold tools. I sold outcomes — and delivered them by baking standards into automation so deeply that breaking them became harder than following them.
 
 ## The Results: Production-Tested at Scale
 
@@ -155,34 +148,13 @@ OutcomeOps ties engineering directly to business results.
 
 **Context Engineering** is how you implement it in the AI era—grounding AI code generation in organizational knowledge so engineers focus on outcomes while AI handles syntax.
 
-## Why Open Source This?
+## Open Framework + Enterprise Platform
 
-I built OutcomeOps for myself as a solo developer building a production AI platform in 25 days. But the pattern is universal:
+The open framework (ADR templates, methodology, examples) is free for anyone to use. The full autonomous agent platform — air-gapped, running on internal LLMs, proven in GxP environments — is proprietary and delivered only via transformation engagements or licensed deployments.
 
-- Solo developers need velocity
-- Small teams need consistency
-- Large organizations need standardization
-
-This isn't just a tool. It's a methodology:
-
-**Context Engineering > Prompt Engineering**
-
-Give AI access to your organizational knowledge, and it generates better code. That's the insight. That's the playbook.
-
-## What's Next
-
-OutcomeOps is in production use managing multiple repositories. The next evolution:
-
-1. **Broader backend support** - Kubernetes, monoliths, microservices
-2. **Richer context** - API schemas, database models, deployment configs
-3. **Tighter feedback loops** - PR analysis, automated refactoring suggestions
-4. **Community patterns** - Share ADRs and code maps across organizations
-
-But the core remains the same playbook from Pearson, Aetna, Comcast, AWS ProServe:
-
-**Make the easy path the right path.**
-
-That worked for infrastructure. It's working for code. And it'll work for whatever comes next.
+The open framework is on GitHub.
+The enterprise platform is in production at Fortune 10 scale.
+If you're ready to move from generic AI code to outcome-owned engineering, let's talk.
 
 ---
 

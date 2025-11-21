@@ -1,492 +1,53 @@
 #!/usr/bin/env bash
 
-# outcome-ops-assist - CLI for OutcomeOps AI (knowledge base queries & PR analysis)
-# Usage:
-#   outcome-ops-assist "your question here" [--topK 5] [--env dev]
-#   outcome-ops-assist analyze-pr <pr_number> <repository> [--env dev]
+# outcome-ops-assist - Enterprise CLI Component
+#
+# This is a proprietary component of the OutcomeOps enterprise platform.
+#
+# What this CLI does:
+# - Query knowledge base with natural language questions
+# - Analyze pull requests against organizational standards
+# - Ingest documentation (ADRs, READMEs) into knowledge base
+# - Generate code maps and architectural summaries
+# - Integrate with MS Teams, Slack, and other interfaces
+#
+# Enterprise features:
+# - Air-gapped deployment (no external API calls)
+# - Custom LLM integration (Azure OpenAI, AWS Bedrock, on-prem)
+# - Lambda orchestration for serverless execution
+# - SSO/SAML authentication integration
+# - Audit trail generation for compliance
+# - Policy-based execution controls
+#
+# This component is available only via licensed deployments.
+#
+# For enterprise briefings: https://www.outcomeops.ai
+# For questions: https://www.outcomeops.ai/contact
 
-set -euo pipefail
+cat << 'EOF'
 
-# Default values
-ENVIRONMENT="${ENVIRONMENT:-dev}"
-APP_NAME="${APP_NAME:-outcome-ops-ai-assist}"
-TOP_K=5
-QUERY=""
-COMMAND=""
-PR_NUMBER=""
-REPOSITORY=""
-REPO_NAME=""
+╔═══════════════════════════════════════════════════════════════════════════╗
+║                                                                           ║
+║                      OutcomeOps - Enterprise Component                    ║
+║                                                                           ║
+╚═══════════════════════════════════════════════════════════════════════════╝
 
-# Show help
-show_help() {
-  cat << EOF
-outcome-ops-assist - CLI for OutcomeOps AI knowledge base and PR analysis
+This CLI is part of the proprietary OutcomeOps enterprise platform.
 
-USAGE:
-  Knowledge Base Query:
-    outcome-ops-assist "your question here" [options]
+The full implementation includes:
+  • Natural language knowledge base queries
+  • Pull request analysis against organizational standards
+  • Documentation ingestion (ADRs, READMEs, code maps)
+  • Lambda orchestration for serverless execution
+  • Integration with MS Teams, Slack, and other interfaces
+  • SSO/SAML authentication
+  • Audit logging and compliance reporting
 
-  PR Analysis:
-    outcome-ops-assist analyze-pr <pr_number> <repository> [options]
+Available via enterprise licensing only.
 
-  Documentation Ingestion:
-    outcome-ops-assist ingest-docs [repo_name] [options]
+For enterprise briefings:  https://www.outcomeops.ai
+For technical questions:   https://www.outcomeops.ai/contact
 
-  Code Maps Generation:
-    outcome-ops-assist generate-code-maps [repo_name] [options]
-
-COMMANDS:
-  analyze-pr           Analyze a GitHub Pull Request
-  ingest-docs          Ingest ADRs, READMEs, and docs/ from repositories
-  generate-code-maps   Generate code maps and architectural summaries
-  (default)            Query the knowledge base
-
-OPTIONS:
-  --env ENV         Environment (default: dev, from \$ENVIRONMENT env var)
-  --topK N          Number of top results for KB queries (default: 5)
-  --help, -h        Show this help message
-
-EXAMPLES:
-  Knowledge Base Queries:
-    outcome-ops-assist "What are our Lambda handler standards?"
-    outcome-ops-assist "How should I structure ADRs?" --topK 3
-    outcome-ops-assist "What Terraform modules should I use?" --env prd
-
-  PR Analysis:
-    outcome-ops-assist analyze-pr 123 owner/repo
-    outcome-ops-assist analyze-pr 456 myorg/myrepo --env prd
-
-  Documentation Ingestion:
-    outcome-ops-assist ingest-docs                           # Ingest all repos
-    outcome-ops-assist ingest-docs outcome-ops-ai-assist     # Single repo
-    outcome-ops-assist ingest-docs --env prd                 # Production
-
-  Code Maps Generation:
-    outcome-ops-assist generate-code-maps                    # Generate for all repos
-    outcome-ops-assist generate-code-maps outcome-ops-ai-assist  # Single repo
-    outcome-ops-assist generate-code-maps --env prd          # Production
-
-ENVIRONMENT VARIABLES:
-  AWS_PROFILE       AWS profile to use for authentication
-  ENVIRONMENT       Environment name (dev, prd) - default: dev
-  APP_NAME          Application name - default: outcome-ops-ai-assist
-
-KNOWLEDGE BASE CONTENTS:
-  • Architecture Decision Records (ADRs)
-  • Lambda handler patterns and standards
-  • Terraform infrastructure conventions
-  • Testing best practices
-  • Code maps and architectural summaries
 EOF
-  exit 0
-}
 
-# Parse arguments
-while [[ $# -gt 0 ]]; do
-  case $1 in
-    analyze-pr)
-      COMMAND="analyze-pr"
-      shift
-      if [[ $# -lt 2 ]]; then
-        echo "Error: analyze-pr requires <pr_number> and <repository>" >&2
-        echo "Usage: outcome-ops-assist analyze-pr <pr_number> <repository> [--env ENV]" >&2
-        exit 1
-      fi
-      PR_NUMBER="$1"
-      REPOSITORY="$2"
-      shift 2
-      ;;
-    ingest-docs)
-      COMMAND="ingest-docs"
-      shift
-      # Optional repo name
-      if [[ $# -gt 0 && ! "$1" =~ ^-- ]]; then
-        REPO_NAME="$1"
-        shift
-      fi
-      ;;
-    generate-code-maps)
-      COMMAND="generate-code-maps"
-      shift
-      # Optional repo name
-      if [[ $# -gt 0 && ! "$1" =~ ^-- ]]; then
-        REPO_NAME="$1"
-        shift
-      fi
-      ;;
-    --env)
-      ENVIRONMENT="$2"
-      shift 2
-      ;;
-    --topK)
-      TOP_K="$2"
-      shift 2
-      ;;
-    --help|-h)
-      show_help
-      ;;
-    *)
-      if [[ -z "$COMMAND" ]]; then
-        QUERY="$1"
-      else
-        echo "Error: Unknown argument: $1" >&2
-        exit 1
-      fi
-      shift
-      ;;
-  esac
-done
-
-# ============================================================================
-# Command: Query Knowledge Base (default)
-# ============================================================================
-
-query_kb() {
-  local query="$1"
-  local lambda_name="${ENVIRONMENT}-${APP_NAME}-query-kb"
-
-  echo "🤖 Querying knowledge base..." >&2
-  echo "Environment: $ENVIRONMENT" >&2
-  echo "Query: $query" >&2
-  echo "" >&2
-
-  # Construct payload
-  local payload=$(jq -n \
-    --arg query "$query" \
-    --argjson topK "$TOP_K" \
-    '{query: $query, topK: $topK}')
-
-  # Invoke Lambda and capture response
-  local temp_file=$(mktemp)
-  trap "rm -f $temp_file" EXIT
-
-  if ! aws lambda invoke \
-    --function-name "$lambda_name" \
-    --payload "$payload" \
-    --cli-binary-format raw-in-base64-out \
-    "$temp_file" > /dev/null 2>&1; then
-    echo "❌ Error: Failed to invoke Lambda function: $lambda_name" >&2
-    echo "Make sure the function exists and you have permissions to invoke it" >&2
-    exit 1
-  fi
-
-  local response=$(cat "$temp_file")
-
-  # Check for Lambda errors
-  if echo "$response" | jq -e '.errorMessage' > /dev/null 2>&1; then
-    echo "❌ Error from Lambda:" >&2
-    echo "$response" | jq -r '.errorMessage' >&2
-    exit 1
-  fi
-
-  # Parse response body
-  local body=$(echo "$response" | jq -r '.body' 2>/dev/null)
-
-  local answer sources
-  if [[ -z "$body" || "$body" == "null" ]]; then
-    # Handle direct response format (integration test format)
-    answer=$(echo "$response" | jq -r '.answer' 2>/dev/null)
-    sources=$(echo "$response" | jq -r '.sources[]' 2>/dev/null || echo "")
-  else
-    # Handle wrapped response format (from query-kb Lambda)
-    local parsed_body=$(echo "$body" | jq -r '.')
-    answer=$(echo "$parsed_body" | jq -r '.answer' 2>/dev/null)
-    sources=$(echo "$parsed_body" | jq -r '.sources[]' 2>/dev/null || echo "")
-  fi
-
-  # Check for empty answer
-  if [[ -z "$answer" || "$answer" == "null" ]]; then
-    echo "❌ Error: No answer received from knowledge base" >&2
-    echo "Response: $response" >&2
-    exit 1
-  fi
-
-  # Display answer
-  echo "📚 Answer:" >&2
-  echo "" >&2
-  echo "$answer"
-  echo "" >&2
-
-  # Display sources if available
-  if [[ -n "$sources" ]]; then
-    echo "📖 Sources:" >&2
-    echo "$sources" | while IFS= read -r source; do
-      echo "  • $source" >&2
-    done
-    echo "" >&2
-  fi
-}
-
-# ============================================================================
-# Command: Analyze PR
-# ============================================================================
-
-analyze_pr() {
-  local pr_number="$1"
-  local repository="$2"
-  local lambda_name="${ENVIRONMENT}-${APP_NAME}-analyze-pr"
-
-  echo "🔍 Analyzing Pull Request..." >&2
-  echo "Environment: $ENVIRONMENT" >&2
-  echo "Repository: $repository" >&2
-  echo "PR Number: $pr_number" >&2
-  echo "" >&2
-
-  # Construct payload
-  local payload=$(jq -n \
-    --argjson pr_number "$pr_number" \
-    --arg repository "$repository" \
-    '{pr_number: $pr_number, repository: $repository}')
-
-  # Invoke Lambda and capture response
-  local temp_file=$(mktemp)
-  trap "rm -f $temp_file" EXIT
-
-  if ! aws lambda invoke \
-    --function-name "$lambda_name" \
-    --payload "$payload" \
-    --cli-binary-format raw-in-base64-out \
-    "$temp_file" > /dev/null 2>&1; then
-    echo "❌ Error: Failed to invoke Lambda function: $lambda_name" >&2
-    echo "Make sure the function exists and you have permissions to invoke it" >&2
-    exit 1
-  fi
-
-  local response=$(cat "$temp_file")
-
-  # Check for Lambda errors
-  if echo "$response" | jq -e '.errorMessage' > /dev/null 2>&1; then
-    echo "❌ Error from Lambda:" >&2
-    echo "$response" | jq -r '.errorMessage' >&2
-    exit 1
-  fi
-
-  # Parse response
-  local message=$(echo "$response" | jq -r '.message' 2>/dev/null)
-  local checks_queued=$(echo "$response" | jq -r '.checks_queued' 2>/dev/null)
-
-  if [[ -z "$message" || "$message" == "null" ]]; then
-    echo "❌ Error: Invalid response from analyze-pr Lambda" >&2
-    echo "Response: $response" >&2
-    exit 1
-  fi
-
-  # Display result
-  echo "✅ $message" >&2
-  echo "" >&2
-
-  if [[ "$checks_queued" != "null" && "$checks_queued" != "0" ]]; then
-    echo "Queued $checks_queued check(s) for processing" >&2
-    echo "Results will be posted as comments on the PR when complete" >&2
-    echo "" >&2
-    echo "View PR: https://github.com/$repository/pull/$pr_number" >&2
-  else
-    echo "No checks were needed for this PR" >&2
-  fi
-}
-
-# ============================================================================
-# Command: Ingest Docs
-# ============================================================================
-
-ingest_docs() {
-  local repo_name="${1:-}"
-  local lambda_name="${ENVIRONMENT}-${APP_NAME}-ingest-docs"
-
-  echo "📚 Ingesting documentation..." >&2
-  echo "Environment: $ENVIRONMENT" >&2
-  if [[ -n "$repo_name" ]]; then
-    echo "Repository: $repo_name" >&2
-  else
-    echo "Repositories: All configured repos" >&2
-  fi
-  echo "" >&2
-
-  # Construct payload
-  local payload
-  if [[ -n "$repo_name" ]]; then
-    payload=$(jq -n --arg repo "$repo_name" '{repos: [$repo]}')
-  else
-    payload='{}'
-  fi
-
-  # Invoke Lambda and capture response
-  local temp_file=$(mktemp)
-  trap "rm -f $temp_file" EXIT
-
-  if ! aws lambda invoke \
-    --function-name "$lambda_name" \
-    --payload "$payload" \
-    --cli-binary-format raw-in-base64-out \
-    "$temp_file" > /dev/null 2>&1; then
-    echo "❌ Error: Failed to invoke Lambda function: $lambda_name" >&2
-    echo "Make sure the function exists and you have permissions to invoke it" >&2
-    exit 1
-  fi
-
-  local response=$(cat "$temp_file")
-
-  # Check for Lambda errors
-  if echo "$response" | jq -e '.errorMessage' > /dev/null 2>&1; then
-    echo "❌ Error from Lambda:" >&2
-    echo "$response" | jq -r '.errorMessage' >&2
-    exit 1
-  fi
-
-  # Parse response
-  local status_code=$(echo "$response" | jq -r '.statusCode' 2>/dev/null)
-  local body=$(echo "$response" | jq -r '.body' 2>/dev/null)
-
-  if [[ "$status_code" != "200" ]]; then
-    echo "❌ Error: Ingestion failed with status $status_code" >&2
-    echo "$body" >&2
-    exit 1
-  fi
-
-  # Parse body
-  local parsed_body=$(echo "$body" | jq -r '.')
-  local repos_processed=$(echo "$parsed_body" | jq -r '.repos_processed' 2>/dev/null)
-  local total_docs=$(echo "$parsed_body" | jq -r '.total_docs_ingested' 2>/dev/null)
-
-  echo "✅ Documentation ingestion complete" >&2
-  echo "" >&2
-  echo "Repositories processed: $repos_processed" >&2
-  echo "Total documents ingested: $total_docs" >&2
-}
-
-# ============================================================================
-# Command: Generate Code Maps
-# ============================================================================
-
-generate_code_maps() {
-  local repo_name="${1:-}"
-  local lambda_name="${ENVIRONMENT}-${APP_NAME}-generate-code-maps"
-
-  echo "🗺️  Generating code maps..." >&2
-  echo "Environment: $ENVIRONMENT" >&2
-  if [[ -n "$repo_name" ]]; then
-    echo "Repository: $repo_name" >&2
-  else
-    echo "Repositories: All application/internal repos" >&2
-  fi
-  echo "" >&2
-
-  # Construct payload
-  local payload
-  if [[ -n "$repo_name" ]]; then
-    # Single repo mode
-    payload=$(jq -n --arg repo "$repo_name" '{repos: [$repo]}')
-  else
-    # 0-day load mode: Get all application/internal repos from allowlist
-    local allowlist_param="/${ENVIRONMENT}/${APP_NAME}/config/repos-allowlist"
-    local allowlist=$(aws ssm get-parameter --name "$allowlist_param" --query 'Parameter.Value' --output text 2>/dev/null)
-
-    if [[ -z "$allowlist" ]]; then
-      echo "❌ Error: Failed to fetch repos allowlist from SSM" >&2
-      exit 1
-    fi
-
-    # Filter to application/internal repos only (exclude standards repos)
-    local app_repos=$(echo "$allowlist" | jq -r '.repos[] | select(.type != "standards") | .name')
-
-    # Build repos array for payload
-    payload=$(echo "$app_repos" | jq -R -s -c 'split("\n") | map(select(length > 0)) | {repos: .}')
-  fi
-
-  # Invoke Lambda and capture response
-  local temp_file=$(mktemp)
-  trap "rm -f $temp_file" EXIT
-
-  if ! aws lambda invoke \
-    --function-name "$lambda_name" \
-    --payload "$payload" \
-    --cli-binary-format raw-in-base64-out \
-    "$temp_file" > /dev/null 2>&1; then
-    echo "❌ Error: Failed to invoke Lambda function: $lambda_name" >&2
-    echo "Make sure the function exists and you have permissions to invoke it" >&2
-    exit 1
-  fi
-
-  local response=$(cat "$temp_file")
-
-  # Check for Lambda errors
-  if echo "$response" | jq -e '.errorMessage' > /dev/null 2>&1; then
-    echo "❌ Error from Lambda:" >&2
-    echo "$response" | jq -r '.errorMessage' >&2
-    exit 1
-  fi
-
-  # Parse response
-  local status_code=$(echo "$response" | jq -r '.statusCode' 2>/dev/null)
-  local body=$(echo "$response" | jq -r '.body' 2>/dev/null)
-
-  if [[ "$status_code" != "200" ]]; then
-    echo "❌ Error: Code map generation failed with status $status_code" >&2
-    echo "$body" >&2
-    exit 1
-  fi
-
-  # Parse body
-  local parsed_body=$(echo "$body" | jq -r '.')
-  local repos_processed=$(echo "$parsed_body" | jq -r '.repos_processed | length' 2>/dev/null)
-  local total_files=$(echo "$parsed_body" | jq -r '.total_files_analyzed' 2>/dev/null)
-  local batches_queued=$(echo "$parsed_body" | jq -r '.batches_queued' 2>/dev/null)
-
-  echo "✅ Code map generation complete" >&2
-  echo "" >&2
-  echo "Repositories processed: $repos_processed" >&2
-  echo "Total files analyzed: $total_files" >&2
-  echo "Batches queued for processing: $batches_queued" >&2
-}
-
-# ============================================================================
-# Main Execution
-# ============================================================================
-
-# Route to appropriate command
-case "$COMMAND" in
-  analyze-pr)
-    # Validate PR number and repository
-    if [[ -z "$PR_NUMBER" || -z "$REPOSITORY" ]]; then
-      echo "Error: analyze-pr requires <pr_number> and <repository>" >&2
-      echo "Usage: outcome-ops-assist analyze-pr <pr_number> <repository> [--env ENV]" >&2
-      exit 1
-    fi
-
-    # Validate PR number is a positive integer
-    if ! [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
-      echo "Error: PR number must be a positive integer" >&2
-      exit 1
-    fi
-
-    # Validate repository format (owner/repo)
-    if ! [[ "$REPOSITORY" =~ ^[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+$ ]]; then
-      echo "Error: Repository must be in format 'owner/repo'" >&2
-      exit 1
-    fi
-
-    analyze_pr "$PR_NUMBER" "$REPOSITORY"
-    ;;
-
-  ingest-docs)
-    ingest_docs "$REPO_NAME"
-    ;;
-
-  generate-code-maps)
-    generate_code_maps "$REPO_NAME"
-    ;;
-
-  *)
-    # Default: Query knowledge base
-    if [[ -z "$QUERY" ]]; then
-      echo "Error: Query is required" >&2
-      echo "Usage: outcome-ops-assist \"your question here\" [--topK N] [--env ENV]" >&2
-      echo "Run 'outcome-ops-assist --help' for more information" >&2
-      exit 1
-    fi
-
-    query_kb "$QUERY"
-    ;;
-esac
-
-exit 0
+exit 1

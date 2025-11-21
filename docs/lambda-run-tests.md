@@ -1,110 +1,68 @@
-# Lambda: run-tests
+# Run Tests
 
-Automated test runner that validates generated branches before OutcomeOps posts a PR update. This Lambda consumes `OutcomeOps.CodeGeneration.Completed` events, clones the branch associated with the issue, installs dependencies using a Lambda layer that provides git/make/terraform, runs `make test`, and reports the results back to EventBridge plus S3.
+**Enterprise Component**
 
-## Trigger & Event Flow
+## Overview
 
-1. `generate-code` finishes executing all plan steps and creates a PR.
-2. It emits an EventBridge event:
-   - `source`: `outcomeops.generate-code`
-   - `detail-type`: `OutcomeOps.CodeGeneration.Completed`
-   - `detail.environment`: matches the Terraform workspace (`dev` or `prd`)
-   - `detail` payload includes repo, branch, PR number, plan file, and latest commit SHA.
-3. EventBridge rule on the environment-specific bus invokes `run-tests`.
-4. `run-tests`:
-   - Clones the repository via HTTPS using the GitHub PAT from SSM.
-   - Bootstraps a Python 3.12 virtualenv and installs **all** Lambda requirements plus pytest tooling.
-   - Executes `make test` from repo root.
-   - Writes command logs and (if present) `lambda/junit.xml` to `s3://{ENV}-{app}-kb/test-results/...`.
-   - Emits `OutcomeOps.Tests.Completed` back onto the same EventBridge bus with pointers to the artifacts.
+The `run-tests` Lambda performs automated test execution, AI-powered error correction, and self-healing workflows. It validates generated code before human review and automatically fixes common issues using knowledge base context.
 
-## Environment Variables
+This Lambda is triggered by EventBridge after code generation completes. It clones the target branch, bootstraps a test environment, runs the repository's test suite, classifies errors (syntax vs logic), queries the knowledge base for relevant organizational patterns, and attempts automatic fixes with bounded retry logic. Syntax/import errors are typically fixed automatically using ADR context, while logic errors are escalated to human review.
 
-| Name | Description |
-| --- | --- |
-| `ENV` | Environment name (`dev` / `prd`) |
-| `APP_NAME` | Application name (defaults to `outcome-ops-ai-assist`) |
-| `TEST_RESULTS_BUCKET` | S3 bucket for log/junit uploads (shared with knowledge base) |
-| `TEST_RESULTS_PREFIX` | Folder prefix inside the bucket (`test-results`) |
-| `GITHUB_TOKEN_PARAM` | SSM path for the GitHub PAT (default `/{ENV}/{APP_NAME}/github/token`) |
-| `EVENT_BUS_NAME` | EventBridge bus name (`{ENV}-{APP}-bus`) |
-| `TEST_COMMAND` | Command executed to run tests (default `make test`) |
-| `MAX_COMMAND_SECONDS` | Timeout applied to shell commands (default `900`) |
+## Architecture
 
-## IAM Requirements
+- **Input:** EventBridge event from `generate-code` Lambda (includes repo, branch, PR details)
+- **Process:**
+  - Clone target branch using GitHub PAT
+  - Bootstrap virtual environment and install dependencies
+  - Execute `make test` to run test suite
+  - Classify test failures (syntax_error, import_error, logic_error)
+  - For fixable errors: Query knowledge base for organizational patterns (ADR-006, etc.)
+  - Apply KB-aware auto-fix with LLM
+  - Retry tests (bounded attempts)
+  - Upload test results and logs to S3
+- **Output:** EventBridge event with test results + S3 artifacts + GitHub PR comment
 
-The Terraform module grants the Lambda role:
-
-- `ssm:GetParameter` + `kms:Decrypt` for `/{ENV}/{APP}/*` secrets.
-- `s3:PutObject` to `${knowledge_base_bucket}/*` for log + junit uploads.
-- `events:PutEvents` to the automation bus for publishing `OutcomeOps.Tests.Completed`.
-- `bedrock:InvokeModel` for auto-fix functionality (import and syntax error fixes).
-
-## Failure Handling
-
-- Git clone, dependency installs, and `make test` output are captured line-by-line.
-- On any failure the Lambda still uploads the command log, includes the exit codes, and emits a failure event that downstream automation can route back to Claude.
-- Workspaces under `/tmp` are always cleaned up to avoid disk pressure.
-
-## Local Validation
-
-1. Build the runtime layer: `make build-runtime-layer` (only needed if layer dependencies change).
-2. Deploy with Terraform: `terraform apply` will package and deploy both handler code and layer.
-3. (Optional) Invoke the Lambda using `aws lambda invoke --function-name dev-outcome-ops-ai-assist-run-tests ...` with a sample EventBridge payload (see below).
-4. Inspect uploaded artifacts under `s3://dev-outcome-ops-ai-assist-kb/test-results/...`.
-
-### Sample Event Payload
-
-```json
-{
-  "source": "outcomeops.generate-code",
-  "detail-type": "OutcomeOps.CodeGeneration.Completed",
-  "detail": {
-    "issueNumber": 6,
-    "issueTitle": "Add list-recent-docs handler for KB verification",
-    "repoFullName": "bcarpio/outcome-ops-ai-assist",
-    "branchName": "6-lambda-add-list-recent-docs-handler-for-kb-verific",
-    "baseBranch": "main",
-    "prNumber": 123,
-    "prUrl": "https://github.com/bcarpio/outcome-ops-ai-assist/pull/123",
-    "planFile": "issues/6-lambda-add-list-recent-docs-handler-for-kb-verific-plan.md",
-    "commitSha": "abc123",
-    "environment": "dev",
-    "appName": "outcome-ops-ai-assist",
-    "eventVersion": "2024-11-09"
-  }
-}
+**Workflow:**
+```
+EventBridge Event → run-tests → [Clone Repo] → [Run Tests] → [Classify Errors] → [KB Query] → [Auto-Fix] → [Retry] → EventBridge (success/failure) + S3 Logs
 ```
 
-### Test Result Event
+## Enterprise Features
 
-`run-tests` publishes:
+- Air-gapped deployment (no external dependencies)
+- Custom LLM integration (Azure OpenAI, AWS Bedrock, on-prem models)
+- Policy-based cost controls
+- Compliance audit logging
+- Multi-tenant knowledge base architecture
 
-```json
-{
-  "source": "outcomeops.run-tests",
-  "detail-type": "OutcomeOps.Tests.Completed",
-  "detail": {
-    "issueNumber": 6,
-    "branchName": "6-lambda-add-list-recent-docs-handler-for-kb-verific",
-    "repoFullName": "bcarpio/outcome-ops-ai-assist",
-    "prNumber": 123,
-    "prUrl": "https://github.com/bcarpio/outcome-ops-ai-assist/pull/123",
-    "status": "passed",
-    "success": true,
-    "testCommand": "make test",
-    "durationSeconds": 215.3,
-    "artifactBucket": "dev-outcome-ops-ai-assist-kb",
-    "artifactPrefix": "test-results/issue-6/branch-6-lambda-add-list-recent-docs-handler-for-kb-verific/20241109T190000Z",
-    "logObjectKey": ".../test-output.log",
-    "junitObjectKey": ".../junit.xml",
-    "environment": "dev",
-    "appName": "outcome-ops-ai-assist",
-    "setupExitCode": 0,
-    "testExitCode": 0,
-    "eventVersion": "2024-11-09"
-  }
-}
-```
+## Configuration
 
-Downstream automation (e.g., PR commenters or Claude fix-up Lambda) can subscribe to this event to pull logs or mark the branch ready for review.
+The enterprise deployment uses SSM Parameter Store for configuration:
+- LLM endpoints and credentials
+- Knowledge base connection details
+- GitHub/GitLab/Bitbucket integration tokens
+- Cost and policy guardrails
+
+Specific parameter structures are documented in enterprise deployments.
+
+## Deployment
+
+This component is deployed as part of the full OutcomeOps platform via:
+- Terraform (infrastructure as code)
+- Air-gapped installer (for regulated environments)
+
+Deployment scripts and configurations are included in enterprise licensing.
+
+## Testing
+
+The enterprise platform includes comprehensive test coverage:
+- Unit tests with >90% coverage
+- Integration tests with mocked AWS services
+- End-to-end workflow tests
+- Performance and cost benchmarking
+
+## Support
+
+For enterprise briefings: https://www.outcomeops.ai
+
+For technical questions: https://www.outcomeops.ai/contact
