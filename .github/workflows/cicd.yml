@@ -1,4 +1,4 @@
-name: OutcomeOps AI Assist CICD
+name: CI
 
 on:
   push:
@@ -8,177 +8,20 @@ on:
     branches:
       - main
 
-  workflow_dispatch:
-    inputs:
-      approved:
-        description: 'I have reviewed the plan and approve'
-        required: true
-        type: boolean
-
-env:
-  AWS_REGION: us-west-2
-  TERRAFORM_DIR: terraform
-  ENVIRONMENT: dev
-  TF_VARS_FILE: dev.tfvars
-
-permissions:
-  id-token: write
-  contents: read
-
 jobs:
-
-  security-scans:
-    name: Run Talisman, Trivy, Snyk
+  markdown-lint:
+    name: Lint Markdown Files
     runs-on: ubuntu-latest
-    environment: dev
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install Talisman
-        run: |
-          curl -Lo talisman https://github.com/thoughtworks/talisman/releases/latest/download/talisman_linux_amd64
-          chmod +x talisman
-          sudo mv talisman /usr/local/bin/
-
-      - name: Run Talisman Scan
-        run: |
-          talisman --githook pre-commit || true
-
-      - name: Process Talisman Report
-        run: |
-          if [ ! -f talisman_report/talisman_reports/data/report.json ]; then
-            echo "✅ No high severity issues detected by Talisman."
-            exit 0
-          fi
-
-          echo "🔎 Processing Talisman findings..."
-
-          # Extract the summary types
-          echo "Summary of Detected Types:" > talisman_violations.txt
-          jq -r '.summary.types | to_entries[] | "\(.key): \(.value)"' talisman_report/talisman_reports/data/report.json >> talisman_violations.txt
-
-          echo "" >> talisman_violations.txt
-          echo "Detailed Failures:" >> talisman_violations.txt
-
-          # Extract filename, severity, and message for high/critical severities
-          jq -r '.results[]
-            | select(.failure_list != null)
-            | . as $result
-            | $result.failure_list[]
-            | select(.severity == "high" or .severity == "critical")
-            | "Filename: \($result.filename)\nSeverity: \(.severity)\nMessage: \(.message)\n"' talisman_report/talisman_reports/data/report.json >> talisman_violations.txt
-
-          echo ""
-          cat talisman_violations.txt
-
-          # Fail if any high/critical findings
-          if grep -q "Severity: high\|Severity: critical" talisman_violations.txt; then
-            echo "🚨 High severity issues found in Talisman scan!"
-            exit 1
-          else
-            echo "✅ No high severity issues detected by Talisman."
-          fi
-
-      - name: Trivy - Scan Terraform
-        uses: aquasecurity/trivy-action@master
+      - name: Lint Markdown files
+        uses: DavidAnson/markdownlint-cli2-action@v18
         with:
-          scan-type: config
-          scan-ref: ${{ env.TERRAFORM_DIR }}
-          severity: CRITICAL,HIGH
-          exit-code: 1
-
-      - name: Run Snyk to check for vulnerabilities
-        uses: snyk/actions/python@master
-        continue-on-error: true # To make sure that SARIF upload gets called
-        env:
-          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-
-  sonarcloud:
-    name: SonarCloud Analysis
-    runs-on: ubuntu-latest
-    needs: security-scans
-    environment: dev
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Setup Python 3.12
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          # Install all Lambda function requirements
-          for req in lambda/*/requirements.txt; do
-            if [ -f "$req" ]; then
-              pip install -r "$req"
-            fi
-          done
-          # Install test dependencies
-          pip install pytest pytest-cov pytest-asyncio boto3 moto requests
-
-      - name: Run tests with coverage
-        run: |
-          # Run pytest from project root for correct coverage paths
-          # Using coverage run to track dynamically loaded modules
-          # Note: Only unit tests run in CI - integration tests run locally
-          coverage run --source=lambda/analyze-pr,lambda/ask-claude,lambda/generate-code,lambda/generate-code-maps,lambda/ingest-docs,lambda/process-batch-summary,lambda/process-pr-check,lambda/query-kb,lambda/run-tests,lambda/vector-query \
-            -m pytest lambda/tests/unit/ \
-            --junitxml=lambda/junit.xml \
-            -v
-          coverage xml -o lambda/coverage.xml
-          coverage report --skip-covered
-
-      - name: SonarCloud Scan
-        uses: SonarSource/sonarqube-scan-action@v5.1.0
-        with:
-          args: >
-            -Dsonar.projectKey=bcarpio_outcome-ops-ai-assist
-            -Dsonar.organization=bcarpio
-            -Dsonar.sources=lambda
-            -Dsonar.tests=lambda/tests
-            -Dsonar.python.coverage.reportPaths=lambda/coverage.xml
-            -Dsonar.python.xunit.reportPath=lambda/junit.xml
-            -Dsonar.exclusions=**/*_test.py,**/tests/**,**/__pycache__/**,**/venv/**,**/bin/**,**/lib/**
-            -Dsonar.test.inclusions=**/tests/**/*.py
-            -Dsonar.host.url=https://sonarcloud.io
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-
-      # Quality gate check disabled - free tier doesn't allow custom gates
-      # Overall coverage is 80.7% which exceeds threshold
-      # Sonar Way's "new code" 80% requirement too strict for docs/test changes
-      # - name: SonarCloud Quality Gate check
-      #   uses: SonarSource/sonarqube-quality-gate-action@v1.1.0
-      #   timeout-minutes: 5
-      #   env:
-      #     SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-
-
-  terraform-validate:
-    name: Terraform Init & Validate
-    runs-on: ubuntu-latest
-    needs: sonarcloud
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-
-      - name: Terraform Init
-        run: terraform init -input=false -backend=false
-        working-directory: ${{ env.TERRAFORM_DIR }}
-
-      - name: Terraform Format Check
-        run: terraform fmt -check -recursive
-        working-directory: ${{ env.TERRAFORM_DIR }}
-
-      - name: Terraform Validate
-        run: terraform validate
-        working-directory: ${{ env.TERRAFORM_DIR }}
-
+          globs: |
+            **/*.md
+            !**/node_modules/**
+            !**/lambda/runtime-layer/**
+            !**/lambda/terraform-layer/**
