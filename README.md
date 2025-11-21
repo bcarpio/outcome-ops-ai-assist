@@ -201,7 +201,6 @@ cp docs/adr/TEMPLATE.md docs/adr/ADR-XXX-your-decision.md
 - [Getting Started with ADRs](docs/getting-started-with-adrs.md)
 - [Backstory: Why OutcomeOps](docs/backstory.md)
 - [Example ADRs](docs/adr/)
-- [Join Community Discussions](https://github.com/bcarpio/outcome-ops-ai-assist/discussions)
 
 **Enterprise Transformation:**
 - [Request 30-Minute Briefing](docs/enterprise-briefing.md)
