@@ -1,0 +1,47 @@
+# Markdown linting configuration
+# Relaxed rules appropriate for documentation-focused repository
+
+# Ignore downloaded modules and dependencies
+ignores:
+  - "terraform/.terraform/**"
+  - "venv/**"
+
+config:
+  # Disable line length rule (docs have long lines)
+  MD013: false
+
+  # Disable blanks around lists (too strict for documentation)
+  MD032: false
+
+  # Disable blanks around fences (too strict)
+  MD031: false
+
+  # Disable bare URLs (docs have many reference URLs)
+  MD034: false
+
+  # Disable fenced code language (not all examples need language)
+  MD040: false
+
+  # Disable emphasis as heading (used for callouts in docs)
+  MD036: false
+
+  # Disable duplicate headings (common in templates and examples)
+  MD024: false
+
+  # Disable blanks around headings (too strict)
+  MD022: false
+
+  # Disable multiple H1 headings (issue templates have multiple)
+  MD025: false
+
+  # Disable table column style (too strict)
+  MD060: false
+
+  # Disable multiple blank lines
+  MD012: false
+
+  # Disable trailing punctuation in headings
+  MD026: false
+
+  # Disable ordered list prefix (docs use various styles)
+  MD029: false
