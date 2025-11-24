@@ -20,6 +20,7 @@ This Lambda is triggered manually or via GitHub webhooks. It fetches the PR diff
     - Test Coverage: Ensures new handlers have corresponding tests
     - Breaking Changes: Detects API/interface breaking changes
     - Architectural Duplication: Identifies code that violates DRY principles
+    - License Compliance: Detects prohibited licenses and validates copyright headers
   - Queue check jobs to SQS FIFO queue for async processing
   - Post initial comment to PR with analysis status
 - **Output:** SQS messages for each check + GitHub PR comment

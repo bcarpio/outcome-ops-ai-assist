@@ -3,7 +3,7 @@
 **Purpose**
 Orchestrates Pull Request analysis in regulated environments:
 - Detects changed files and determines relevant compliance checks
-- Queues async jobs for ADR compliance, test coverage, architectural duplication, etc.
+- Queues async jobs for ADR compliance, test coverage, architectural duplication, license compliance, etc.
 - Posts status updates to PRs
 - Routes check execution to specialized worker Lambdas
 
@@ -14,6 +14,8 @@ Orchestrates Pull Request analysis in regulated environments:
 - Audit trails for every architectural decision
 - Air-gapped deployment with internal LLMs
 - Policy-based check selection and cost controls
+- Open source license compliance scanning (GPL/AGPL/SSPL detection)
+- Copyright header validation and enforcement
 
 This component is part of the proprietary enterprise platform and is only available via licensed deployments or transformation engagements.
 

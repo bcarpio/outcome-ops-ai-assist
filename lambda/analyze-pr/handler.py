@@ -5,7 +5,7 @@ This is a proprietary component of the OutcomeOps enterprise platform.
 
 What this component does:
 - Analyzes pull request diffs for architectural compliance
-- Determines which organizational checks to run (ADR compliance, test coverage, breaking changes)
+- Determines which organizational checks to run (ADR compliance, test coverage, breaking changes, license compliance)
 - Queues check jobs for async processing
 - Posts analysis summaries to PR comments
 
@@ -37,6 +37,8 @@ def handler(event, context):
     - Breaking change detection
     - Architectural duplication detection
     - README freshness validation
+    - License compliance scanning (GPL/AGPL/SSPL detection)
+    - Copyright header validation
     - SQS job queueing for async processing
     - PR comment posting with analysis summary
     - Cost guardrails and policy enforcement
