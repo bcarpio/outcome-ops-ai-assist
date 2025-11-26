@@ -25,6 +25,30 @@
    pyenv local 3.12
    ```
 
+5. **AWS Bedrock Model Access**
+
+   **Bedrock models are now auto-enabled on first use** (as of 2024):
+
+   - Most models activate automatically when first invoked via API
+   - **Exception**: Anthropic Claude models require use case submission for first-time users
+
+   **If you encounter this error:**
+   ```
+   ResourceNotFoundException: Model use case details have not been submitted
+   ```
+
+   **You need to request Claude access via Model Catalog:**
+   1. Go to AWS Console → Bedrock → Model catalog
+   2. Select **Claude Sonnet 4.5** (Anthropic)
+   3. Fill out the quick access request form:
+      - Use case: "Internal development automation and knowledge base"
+      - Description: "AI-assisted code generation, PR analysis, and documentation"
+   4. Submit and wait ~15 minutes for approval
+   5. Retry your Lambda invocation
+
+   **Note**: After one-time enablement, all users in the account can access Claude models.
+   Model access can be restricted via IAM policies if needed.
+
 ## Environment Setup
 
 ### 1. Clone Repository
