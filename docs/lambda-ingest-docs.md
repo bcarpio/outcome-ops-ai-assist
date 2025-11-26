@@ -4,9 +4,28 @@
 
 ## Overview
 
-The `ingest-docs` Lambda scans repositories via GitHub API and ingests documentation into the knowledge base for semantic search and code generation. It processes ADRs (Architecture Decision Records), READMEs, and function-specific documentation with smart chunking for large files.
+The `ingest-docs` Lambda scans repositories via GitHub API and ingests documentation into the knowledge base for semantic search and code generation. It processes:
+
+- **ADRs** (Architecture Decision Records) - Architectural decisions and their rationale
+- **READMEs** - Project structure and purpose documentation
+- **Function-specific docs** - Lambda, service, and module documentation
+- **Dependency manifests** - Track available libraries across your stack
 
 This Lambda runs on a schedule (hourly by default) and supports both full ingestion of all configured repositories and filtered ingestion of specific repositories.
+
+## Multi-Language Dependency Tracking
+
+OutcomeOps automatically discovers and ingests dependency files across all major languages, enabling Claude to understand what libraries are available in your codebase:
+
+| Language | Dependency Files |
+|----------|------------------|
+| Python | `requirements.txt`, `pyproject.toml`, `setup.py`, `Pipfile` |
+| Node.js/TypeScript | `package.json` |
+| Java/Kotlin | `pom.xml`, `build.gradle`, `build.gradle.kts` |
+| Go | `go.mod` |
+| Rust | `Cargo.toml` |
+
+Dependencies are stored with language metadata, enabling Claude to suggest appropriate libraries when generating code for your specific stack.
 
 ## Architecture
 

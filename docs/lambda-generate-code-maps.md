@@ -8,6 +8,28 @@ The `generate-code-maps` Lambda discovers code units from repository structure a
 
 This Lambda supports both full regeneration (for initial setup or major refactorings) and incremental updates (hourly automated runs that only process changed components), optimizing for cost and performance.
 
+## Multi-Language Support
+
+OutcomeOps discovers code units across all major enterprise stacks using a pluggable backend architecture:
+
+| Backend | Languages | What Gets Discovered |
+|---------|-----------|---------------------|
+| **Python/Lambda** | Python | Lambda handlers, shared modules, infrastructure, tests |
+| **Java** | Java, Kotlin | Maven/Gradle modules, Spring Boot services, Lambda handlers, domain packages |
+| **TypeScript** | TypeScript, JavaScript | API handlers, routes, React/Vue/Svelte components, schemas, shared modules |
+| **Kubernetes** | Any | Services, deployments, config maps (coming soon) |
+
+### Intelligent Code Unit Discovery
+
+The system uses a generic algorithm to identify logical code boundaries:
+
+- **File Count Threshold**: Directories with 2+ source files become code units
+- **Boundary Pattern Matching**: Recognizes common patterns (`service`, `handler`, `controller`, `model`, `repository`, `util`, `impl`, etc.)
+- **Build Module Detection**: Identifies project boundaries via `pom.xml`, `build.gradle`, `package.json`, `pyproject.toml`, etc.
+- **Namespace Handling**: Deep Java package hierarchies are intelligently traversed without creating spurious code units
+
+This enables Claude to understand your project's architecture regardless of language or framework.
+
 ## Architecture
 
 - **Input:** EventBridge schedule (hourly) or direct invocation with repository list
