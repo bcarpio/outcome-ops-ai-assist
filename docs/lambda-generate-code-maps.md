@@ -14,15 +14,27 @@ This Lambda supports both full regeneration (for initial setup or major refactor
 - **Process:**
   - Discover code units (Lambda handlers, K8s services, modules)
   - Detect changes via git-based comparison (incremental mode)
-  - Generate architectural summaries with LLM
-  - Create vector embeddings for semantic search
-  - Send detailed batches to SQS for async processing
-- **Output:** Code maps stored in DynamoDB/S3 + SQS messages for batch processing
+  - Queue repositories to SQS for async architectural summary generation
+  - Async processing naturally rate-limits LLM API calls
+- **Output:** Repository messages sent to SQS for downstream processing
 
 **Workflow:**
 ```
-EventBridge/CLI → generate-code-maps → [Git Change Detection] → [Code Discovery] → [LLM Summary] → DynamoDB/S3 + SQS
+EventBridge/CLI → generate-code-maps → [Git Change Detection] → [Code Discovery]
+                                                                       ↓
+                                                            [Queue to repo-summaries-queue]
+                                                                       ↓
+                                                            process-repo-summary → [LLM Summary] → DynamoDB/S3
+                                                                                 ↓
+                                                                      [Queue code units] → code-maps-queue
+                                                                                 ↓
+                                                                      process-batch-summary → DynamoDB
 ```
+
+This async architecture enables:
+- **Scalability**: Process 100s of repos without hitting LLM rate limits
+- **Resilience**: Failed repos retry independently via SQS/DLQ
+- **Enterprise**: Works in new AWS accounts, Azure shops, isolated environments
 
 ## Enterprise Features
 
