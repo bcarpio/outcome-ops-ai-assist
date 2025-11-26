@@ -32,7 +32,53 @@ GitHub Issue → generate-code → [KB Query] → [Plan Generation] → [Step Ex
 - Compliance audit logging
 - Multi-tenant knowledge base architecture
 
-## Configuration
+## Multi-Language Support
+
+The generate-code Lambda supports multiple programming languages and frameworks through a pluggable backend architecture:
+
+| Backend | Language/Framework | Use Case |
+|---------|-------------------|----------|
+| `python-lambda` | Python + AWS Lambda | Serverless Python microservices |
+| `java-spring` | Java + Spring Boot | Enterprise Java applications |
+| `typescript-express` | TypeScript + Express | Node.js APIs and services |
+
+Each backend provides:
+- Language-specific code generation prompts
+- Syntax and dependency file validation
+- Appropriate test patterns (pytest, JUnit, Jest)
+- Code formatters (black, google-java-format, prettier)
+
+## Repository Configuration
+
+Configure code generation behavior by adding `.outcomeops.yaml` to your repository root:
+
+```yaml
+# .outcomeops.yaml - Repository configuration for OutcomeOps AI Assist
+
+# Code generation settings
+code_generation:
+  # Backend selection (default: python-lambda)
+  backend: "java-spring"  # Options: python-lambda, java-spring, typescript-express
+
+  # Optional: Custom guidelines for this repository
+  custom_guidelines: |
+    Use constructor injection for all Spring beans.
+    Follow the existing package structure in src/main/java.
+
+  # Optional: Additional knowledge base queries
+  additional_kb_queries:
+    - "Spring Security authentication patterns"
+    - "JPA repository custom query methods"
+
+# Optional: Project context for plan generation
+project_context: |
+  This is a Spring Boot 3.x application using Java 17.
+  We use PostgreSQL for persistence and Redis for caching.
+```
+
+When no `.outcomeops.yaml` is present, the system defaults to `python-lambda` backend.
+
+## Platform Configuration
 
 The enterprise deployment uses SSM Parameter Store for configuration:
 - LLM endpoints and credentials
