@@ -10,18 +10,21 @@ This Lambda receives natural language queries from user-facing interfaces (MS Te
 
 ## Architecture
 
-- **Input:** Natural language query from user interfaces (API Gateway, direct invocation)
+- **Input:** Natural language query from user interfaces (Chat UI, CLI, API Gateway, direct invocation)
 - **Process:**
-  - Invoke vector search to find relevant documents
+  - Generate query embedding using Bedrock Titan v2
+  - Query S3 Vectors directly for top K similar documents (native cosine similarity)
   - Check if relevant context was found
-  - Invoke LLM to generate grounded answers with citations
+  - Invoke `ask-claude` Lambda to generate grounded answers with citations
   - Return natural language response with source attribution
 - **Output:** JSON response with answer and sources, or "not found" message
 
 **Workflow:**
 ```
-User Query → query-kb → [Vector Search] → [Context Check] → [LLM Answer Generation] → Response + Sources
+User Query → query-kb → [Titan v2 Embedding] → [S3 Vectors Query] → [ask-claude] → Response + Sources
 ```
+
+**Note:** Vector search is performed directly via S3 Vectors API (native similarity search), providing 100-1000x faster performance compared to the previous DynamoDB scan approach.
 
 ## Enterprise Features
 

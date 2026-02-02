@@ -29,18 +29,28 @@ Dependencies are stored with language metadata, enabling Claude to suggest appro
 
 ## Architecture
 
-- **Input:** EventBridge schedule (hourly) or direct invocation with optional repository filter
+- **Input:** SQS FIFO message (one per repo) from dispatcher, or direct invocation
 - **Process:**
   - Fetch documentation from GitHub repositories
+  - Check commit SHA for incremental processing (skip unchanged repos)
   - Apply smart text chunking for large documents
-  - Generate vector embeddings for semantic search
-  - Store in knowledge base with metadata
-- **Output:** Documentation stored in DynamoDB with embeddings + S3 archival
+  - Generate vector embeddings using Bedrock Titan v2
+  - Store embeddings in S3 Vectors for native similarity search
+  - Track state in DynamoDB (commit SHAs, timestamps)
+  - Archive raw content in S3
+- **Output:** Embeddings in S3 Vectors + state in DynamoDB + archive in S3
 
-**Workflow:**
+**Dispatcher Pattern:**
 ```
-EventBridge/CLI → ingest-docs → [GitHub API] → [Text Chunking] → [Embedding Generation] → DynamoDB/S3
+EventBridge (hourly) → dispatcher Lambda → SQS FIFO Queue → ingest-docs worker (per repo)
 ```
+
+**Worker Workflow:**
+```
+SQS Message → ingest-docs → [GitHub API] → [Change Detection] → [Chunking] → [Titan v2 Embeddings] → S3 Vectors
+```
+
+This dispatcher pattern enables parallel processing of multiple repos with rate limiting and FIFO ordering.
 
 ## Enterprise Features
 

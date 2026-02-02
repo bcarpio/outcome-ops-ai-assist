@@ -2,7 +2,7 @@ module "knowledge_base_bucket" {
   source  = "terraform-aws-modules/s3-bucket/aws"
   version = "4.1.1"
 
-  bucket = "${var.environment}-${var.app_name}-kb"
+  bucket = "${var.environment}-${var.app_name}-kb-${data.aws_caller_identity.current.account_id}"
 
   # Versioning for recoverability
   versioning = {

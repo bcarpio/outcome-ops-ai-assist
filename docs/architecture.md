@@ -9,11 +9,11 @@ OutcomeOps applies **Context Engineering** to AI-assisted development: give AI a
 **1. Ingest Phase**
 - Scan repositories for ADRs, READMEs, code examples
 - Generate embeddings using AWS Bedrock Titan v2
-- Store in DynamoDB knowledge base
+- Store in S3 Vectors for native similarity search
 
 **2. Query Phase**
-- Accept natural language query (from CLI or Claude Code)
-- Vector search DynamoDB for relevant patterns
+- Accept natural language query (from CLI, Chat UI, or Claude Code)
+- Native vector search via S3 Vectors (cosine similarity)
 - Retrieve top-K documents by similarity
 
 **3. Generation Phase**
@@ -44,8 +44,8 @@ OutcomeOps AI Assist is a knowledge-driven code generation system that shifts de
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                     Claude Code Interface                        │
-│                    (User Stories via Chat)                       │
+│              User Interfaces                                      │
+│    (Chat UI, Claude Code, CLI, MS Teams, Slack)                  │
 └──────────────────────────┬──────────────────────────────────────┘
                            │
                 ┌──────────┴──────────┐
@@ -60,16 +60,16 @@ OutcomeOps AI Assist is a knowledge-driven code generation system that shifts de
                            ▼
                    ┌───────────────┐
                    │  AWS Bedrock  │
-                   │  + Claude 3.5 │
+                   │  Claude 4.5   │
                    └───────┬───────┘
                            │
         ┌──────────────────┼──────────────────┐
         │                  │                  │
         ▼                  ▼                  ▼
-    ┌────────┐        ┌─────────────┐   ┌─────────┐
-    │Vector  │        │ DynamoDB    │   │    S3   │
-    │Search  │        │(Embeddings) │   │(Docs)   │
-    └────────┘        └─────────────┘   └─────────┘
+    ┌────────────┐    ┌─────────────┐   ┌─────────┐
+    │ S3 Vectors │    │ DynamoDB    │   │    S3   │
+    │(Embeddings)│    │(State Only) │   │(Docs)   │
+    └────────────┘    └─────────────┘   └─────────┘
 ```
 
 ## Core Components
@@ -100,18 +100,31 @@ Available for queries + code generation
 - Function-specific docs from `docs/lambda-*.md`, `docs/architecture.md`, etc.
 - Code patterns via code maps (future)
 
-**Storage schema (DynamoDB):**
+**Storage architecture:**
+
+*S3 Vectors (embeddings + content):*
+```json
+{
+  "key": "adr#outcome-ops-ai-assist#ADR-001",   // Unique vector key
+  "data": [0.123, 0.456, ...],                  // 1024-dimensional Titan v2 embedding
+  "metadata": {
+    "type": "adr",                              // Document type (filterable)
+    "repo": "outcome-ops-ai-assist",            // Source repo (filterable)
+    "content": "... full text ...",             // Document content (non-filterable)
+    "file_path": "docs/adr/ADR-001.md",         // Original location (non-filterable)
+    "content_hash": "abc123...",                // SHA-256 for change detection
+    "timestamp": "2025-01-15T10:00:00Z"         // When ingested
+  }
+}
+```
+
+*DynamoDB (state tracking only):*
 ```json
 {
   "PK": "repo#outcome-ops-ai-assist",           // Partition key
-  "SK": "adr#ADR-001",                          // Sort key (type#id)
-  "type": "adr",                                // Document type
-  "content": "... full text ...",               // Document content
-  "embedding": [0.123, 0.456, ...],             // 1024-dimensional vector
-  "file_path": "docs/adr/ADR-001.md",           // Original location
-  "content_hash": "abc123...",                  // SHA-256 for change detection
-  "timestamp": "2025-01-15T10:00:00Z",          // When ingested
-  "repo": "outcome-ops-ai-assist"               // Source repo
+  "SK": "state#ingest",                         // Sort key
+  "last_commit_sha": "abc123...",               // For incremental processing
+  "last_processed": "2025-01-15T10:00:00Z"      // Timestamp
 }
 ```
 
@@ -121,8 +134,8 @@ Retrieval Augmented Generation pipeline for intelligent queries.
 
 **Components:**
 - Query embedding: Convert natural language to vector via Bedrock Titan v2
-- Vector search: DynamoDB scan with cosine similarity matching
-- Result ranking: Top K most relevant documents
+- Vector search: S3 Vectors native cosine similarity (no client-side computation)
+- Result ranking: Top K most relevant documents with metadata filtering
 - Context assembly: Pass top results to Claude
 
 **Example flow:**
@@ -131,7 +144,7 @@ User query: "How should Lambda error handling work?"
          ↓
 Generate embedding (Titan v2)
          ↓
-Search DynamoDB for similar embeddings
+Query S3 Vectors (native similarity search)
          ↓
 Return top 5 documents (ADRs, code examples)
          ↓
@@ -139,6 +152,12 @@ Pass to Claude Sonnet 4.5 with context
          ↓
 Claude generates answer grounded in YOUR patterns
 ```
+
+**S3 Vectors advantages:**
+- Native similarity search at database level (100-1000x faster than DynamoDB scan)
+- No client-side cosine similarity calculations
+- Metadata filtering for type/repo constraints
+- Scales to millions of vectors
 
 ### 3. Event-Driven Test Automation
 
@@ -172,13 +191,18 @@ Claude generates code using your patterns as context.
 
 | Component | Service | Purpose |
 |-----------|---------|---------|
-| **Compute** | Lambda | Serverless functions (ingest, query, generate) |
-| **Knowledge Base** | Bedrock (Titan v2 + Claude) | Embeddings + LLM for generation |
-| **Vector Storage** | DynamoDB | Single-table with embeddings and similarity search |
+| **Compute** | Lambda | Serverless functions (ingest, query, generate, chat) |
+| **Chat UI** | Fargate Spot + ALB | React frontend with streaming chat interface |
+| **Knowledge Base** | Bedrock (Titan v2 + Claude 4.5) | Embeddings + LLM for generation |
+| **Vector Storage** | S3 Vectors | Native similarity search with cosine distance |
+| **State Tracking** | DynamoDB | Commit SHAs, processing state (no vectors) |
 | **Document Archive** | S3 | Versioned storage of ingested documents |
+| **Message Queues** | SQS FIFO | Decoupled processing (ingest, code-maps, PR checks) |
 | **Configuration** | SSM Parameter Store | GitHub token, repo allowlist, service endpoints |
-| **Encryption** | AWS KMS | Encrypt sensitive SSM parameters |
-| **Scheduling** | EventBridge | Hourly ingestion triggers |
+| **Encryption** | AWS KMS | Encrypt CloudWatch logs and SSM parameters |
+| **Authentication** | ALB + OIDC | Azure AD integration for Chat UI access |
+| **Scheduling** | EventBridge | Hourly ingestion and code-map triggers |
+| **Container Registry** | ECR | Container images for run-tests and chat UI |
 | **Infrastructure** | Terraform | IaC for all AWS resources |
 | **Source Control** | GitHub API | Read-only repo access |
 | **Monitoring** | CloudWatch | Logs, metrics, alarms |

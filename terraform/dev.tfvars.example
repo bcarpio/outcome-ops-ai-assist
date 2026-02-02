@@ -1,4 +1,5 @@
 environment = "dev"
+aws_region  = "us-west-2"
 
 # Configure which repositories to ingest into the knowledge base
 # The allowlist is automatically stored in SSM Parameter Store
@@ -7,7 +8,7 @@ repos_to_ingest = [
   {
     name    = "outcome-ops-ai-assist"
     project = "bcarpio/outcome-ops-ai-assist"
-    type    = "application"  # "standards" for ADR-only repos, "application" for full apps
+    type    = "application" # "standards" for ADR-only repos, "application" for full apps
   },
   # Add your own repositories here:
   # {
@@ -21,3 +22,65 @@ repos_to_ingest = [
 # Single user: "yourusername"
 # Team: "user1,user2,user3"
 github_usernames_to_tag = "yourusername"
+
+# ============================================================================
+# Integration Toggles
+# ============================================================================
+
+# Enable GitHub Issues integration - webhook triggers code generation from issue labels (default: true)
+# Set to false if you only want Jira integration
+enable_github_issue_integration = true
+
+# Enable Jira Automation integration via SSM Document (default: false)
+# Set to true to enable Jira as a trigger source
+enable_jira_integration = false
+
+# Atlassian Automation AWS account ID for SSM document sharing
+# Required if enable_jira_integration is true
+# Find this in your Jira Automation settings under AWS integration
+# atlassian_automation_account_id = "123456789012"
+
+# Jira to GitHub Repo Mapping (via Jira Components)
+# ------------------------------------------------
+# No Terraform mapping needed! Instead, create a Jira component with the
+# GitHub repo path as its name (e.g., "bcarpio/my-repo").
+#
+# In Jira Automation, use these Smart Values:
+#   - issueKey         → {{issue.key}}
+#   - issueSummary     → {{issue.summary}}
+#   - issueDescription → {{issue.description}}
+#   - componentKey     → {{issue.components.name}}
+
+# ============================================================================
+# Chat UI Deployment
+# ============================================================================
+
+# deploy_ui             = true
+# ui_vpc_id             = "vpc-xxxxxxxx"
+# ui_private_subnet_ids = ["subnet-xxxxxxxx", "subnet-yyyyyyyy"]
+# ui_container_image    = "123456789012.dkr.ecr.us-west-2.amazonaws.com/outcome-ops-ai-assist-ui:latest"
+
+# ALB Access Mode:
+#   true  = Internal ALB (default) - customer provides VPC/TGW/DX/VPN access
+#   false = Public ALB - secured by Azure AD OIDC
+# ui_alb_internal = true
+
+# ============================================================================
+# OIDC Authentication (Azure AD)
+# ============================================================================
+
+# Domain for HTTPS + OIDC (required when oidc_enabled = true)
+# FQDN: {ui_subdomain}-dev.{domain} for dev environment
+# Requires a Route53 hosted zone for this domain in your account
+# domain = "example.com"
+# ui_subdomain = "outcomeops"  # default
+
+# Azure AD Configuration
+# oidc_enabled   = true
+# oidc_client_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"  # Azure App (client) ID
+# oidc_tenant_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"  # Azure Directory (tenant) ID
+
+# Before enabling OIDC, store the client secret in SSM:
+#   aws ssm put-parameter --name "/dev/outcome-ops-ai-assist/oidc/client-secret" \
+#     --type SecureString --value "your-client-secret"
+# See docs/azure-ad-setup.md for full setup instructions

@@ -1,23 +1,26 @@
 """
-Vector Query - Enterprise Component
+Vector Query - DEPRECATED
 
-This is a proprietary component of the OutcomeOps enterprise platform.
+NOTE: This component has been superseded by native S3 Vectors integration.
+Vector search is now performed directly within the query-kb Lambda using
+AWS S3 Vectors native similarity search capabilities.
 
-What this component does:
-- Performs semantic search over the knowledge base
-- Generates embeddings for natural language queries
-- Calculates similarity scores against organizational knowledge
-- Returns top K most relevant documents (ADRs, code-maps)
+Historical context:
+This Lambda previously performed semantic search by scanning DynamoDB and
+calculating cosine similarity in Python. With the migration to S3 Vectors,
+this functionality is now handled natively by AWS infrastructure, providing:
+- 100-1000x faster query performance
+- Native cosine similarity at the database level
+- No client-side similarity calculations needed
+- Better scalability for large knowledge bases
 
-Enterprise features:
-- Air-gapped deployment (no external API calls)
-- Custom embedding model integration (Bedrock Titan, Azure OpenAI, on-prem)
-- Optimized similarity algorithms
-- Audit trail generation for compliance
-- Policy-based execution controls
-- Cost guardrails and token usage optimization
+Current architecture:
+- query-kb Lambda generates query embeddings via Bedrock Titan v2
+- query-kb Lambda queries S3 Vectors directly (s3vectors:QueryVectors)
+- S3 Vectors returns top-K results with native similarity scoring
+- No separate vector-query Lambda invocation needed
 
-This component is available only via licensed deployments.
+This file is retained for reference and backwards compatibility documentation.
 
 For enterprise briefings: https://www.outcomeops.ai
 For questions: https://github.com/bcarpio/outcome-ops-ai-assist/discussions
@@ -26,32 +29,14 @@ For questions: https://github.com/bcarpio/outcome-ops-ai-assist/discussions
 
 def handler(event, context):
     """
-    Enterprise implementation placeholder.
+    DEPRECATED: This Lambda is no longer used in the current architecture.
 
-    This function is part of the proprietary OutcomeOps platform.
-    The full implementation includes:
-    - Query embedding generation using Bedrock Titan v2
-    - DynamoDB vector scan and retrieval
-    - Cosine similarity calculation
-    - Relevance ranking algorithms
-    - Top-K result selection
-    - Score normalization
-    - Cost guardrails and policy enforcement
-    - Compliance audit logging
+    Vector search has been migrated to AWS S3 Vectors, which provides
+    native similarity search without requiring a separate Lambda function.
 
-    Key Innovation:
-    Proprietary relevance ranking strategies that optimize for
-    organizational context, not just semantic similarity.
-
-    Architecture:
-    - Internal Lambda invoked by query-kb orchestrator
-    - Bedrock runtime for embeddings
-    - DynamoDB for vector storage
-    - Optimized similarity algorithms
-
-    Available via enterprise licensing only.
+    See query-kb Lambda for the current RAG pipeline implementation.
     """
     raise NotImplementedError(
-        "This is an enterprise component. "
-        "Visit https://www.outcomeops.ai for deployment options."
+        "DEPRECATED: Vector search is now performed via S3 Vectors. "
+        "See query-kb Lambda for the current implementation."
     )

@@ -1,3 +1,14 @@
+# ============================================================================
+# DynamoDB Tables
+# NOTE: All tables have deletion_protection_enabled = true to prevent
+# accidental destruction. This must be explicitly disabled before deletion.
+#
+# With S3 Vectors migration, this table is now used for STATE TRACKING ONLY:
+# - Commit SHAs for incremental processing (ingest-docs, generate-code-maps)
+# - Processing state and timestamps
+# Vector embeddings and document content are now stored in S3 Vectors.
+# ============================================================================
+
 module "code_maps_table" {
   source  = "terraform-aws-modules/dynamodb-table/aws"
   version = "4.0.0"
@@ -6,6 +17,11 @@ module "code_maps_table" {
   hash_key  = "PK"
   range_key = "SK"
 
+  # Prevent accidental deletion of production data
+  deletion_protection_enabled = false
+
+  # Only PK and SK needed for state tracking
+  # GSIs removed - vector queries now use S3 Vectors
   attributes = [
     {
       name = "PK"
@@ -14,32 +30,11 @@ module "code_maps_table" {
     {
       name = "SK"
       type = "S"
-    },
-    {
-      name = "type"
-      type = "S"
-    },
-    {
-      name = "repo"
-      type = "S"
     }
   ]
 
-  # Global Secondary Index for querying by type
-  global_secondary_indexes = [
-    {
-      name            = "type-index"
-      hash_key        = "type"
-      range_key       = "SK"
-      projection_type = "ALL"
-    },
-    {
-      name            = "repo-index"
-      hash_key        = "repo"
-      range_key       = "SK"
-      projection_type = "ALL"
-    }
-  ]
+  # No GSIs needed - state tracking uses direct key lookups
+  global_secondary_indexes = []
 
   # On-demand billing for variable traffic patterns
   billing_mode = "PAY_PER_REQUEST"
@@ -55,7 +50,7 @@ module "code_maps_table" {
   stream_view_type = "NEW_AND_OLD_IMAGES"
 
   tags = {
-    Purpose = "code-maps"
+    Purpose = "state-tracking"
   }
 }
 

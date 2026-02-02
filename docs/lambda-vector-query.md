@@ -1,29 +1,41 @@
 # Vector Query
 
-**Enterprise Component**
+**DEPRECATED - Superseded by S3 Vectors**
 
 ## Overview
 
-The `vector-query` Lambda performs semantic search over the knowledge base. It generates embeddings for natural language queries and returns the most relevant organizational documents (ADRs, code-maps).
+> **Note:** This Lambda has been deprecated. Vector search is now performed directly
+> within the `query-kb` Lambda using AWS S3 Vectors native similarity search.
+> This documentation is retained for historical reference.
 
-This Lambda is invoked by the `query-kb` orchestrator. It receives a natural language query and optional topK parameter, generates an embedding for the query using Bedrock Titan Embeddings v2, scans DynamoDB for all document embeddings, calculates cosine similarity between query and documents, and returns top K most similar documents with scores.
+The `vector-query` Lambda previously performed semantic search over the knowledge base by scanning DynamoDB and calculating cosine similarity in Python.
 
-## Architecture
+## Migration to S3 Vectors
 
-- **Input:** Internal Lambda invocation from query-kb orchestrator (includes query and topK parameter)
+With the migration to S3 Vectors, this functionality is now handled natively:
+- **100-1000x faster** query performance
+- **Native cosine similarity** at the database level
+- **No client-side** similarity calculations needed
+- **Better scalability** for large knowledge bases
+
+## Current Architecture
+
+Vector search is now integrated into `query-kb`:
+```
+query-kb → [Generate Embedding (Titan v2)] → [S3 Vectors QueryVectors] → [Return Top K]
+```
+
+See [lambda-query-kb.md](lambda-query-kb.md) for the current implementation.
+
+## Legacy Architecture (Deprecated)
+
+- **Input:** Internal Lambda invocation from query-kb orchestrator
 - **Process:**
-  - Receive natural language query and topK (default: 5)
-  - Generate embedding for query using Bedrock Titan Embeddings v2
+  - Generate embedding for query using Bedrock Titan v2
   - Scan DynamoDB code-maps table for document embeddings
-  - Calculate cosine similarity between query embedding and each document
-  - Rank documents by similarity score
-  - Return top K most similar documents with scores and metadata
-- **Output:** Top K documents with similarity scores, content, and source attribution
-
-**Workflow:**
-```
-query-kb → vector-query → [Generate Embedding] → [Scan DynamoDB] → [Calculate Similarity] → [Rank + Return Top K]
-```
+  - Calculate cosine similarity in Python
+  - Rank and return top K documents
+- **Output:** Top K documents with similarity scores
 
 ## Enterprise Features
 

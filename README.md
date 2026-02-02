@@ -60,11 +60,23 @@ Fortune 500 engineering organizations face a common challenge:
 
 🔒 **Production Infrastructure**
 - Air-gapped deployment for regulated environments
-- Integration with internal LLMs (Bedrock, Azure OpenAI, on-prem)
+- Integration with internal LLMs (Bedrock Claude 4.5, Azure OpenAI, on-prem)
+- AWS S3 Vectors for high-performance semantic search
 - Zero IP exfiltration architecture
 
+🔒 **Chat UI**
+- Real-time streaming chat interface (React + Fargate)
+- OIDC authentication (Azure AD integration)
+- RAG-augmented responses grounded in organizational knowledge
+- Persistent conversation history
+
+🔒 **Multi-Language Code Analysis**
+- Python, Java, TypeScript, React, ABAP backends
+- Pluggable architecture for custom languages
+- Architectural summary generation
+
 🔒 **Enterprise Features**
-- SSO/SAML integration
+- SSO/SAML/OIDC integration
 - Compliance reporting and audit trails
 - Custom model fine-tuning on organizational code
 - 24/7 SLA support
