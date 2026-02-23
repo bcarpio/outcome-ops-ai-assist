@@ -21,14 +21,37 @@ from moto import mock_aws
 import boto3
 import requests
 from botocore.exceptions import ClientError
+from types import ModuleType
 
-# Load the readme_freshness handler module
+# First, load bedrock_utils module (dependency for readme_freshness)
+bedrock_utils_path = os.path.join(
+    os.path.dirname(__file__),
+    '../../process-pr-check/check_handlers/bedrock_utils.py'
+)
+bedrock_spec = importlib.util.spec_from_file_location("bedrock_utils", bedrock_utils_path)
+bedrock_module = importlib.util.module_from_spec(bedrock_spec)
+bedrock_spec.loader.exec_module(bedrock_module)
+
+# Create a fake check_handlers package that contains bedrock_utils
+check_handlers_package = ModuleType("check_handlers")
+check_handlers_package.__path__ = [os.path.dirname(bedrock_utils_path)]
+check_handlers_package.bedrock_utils = bedrock_module
+sys.modules['check_handlers'] = check_handlers_package
+sys.modules['check_handlers.bedrock_utils'] = bedrock_module
+
+# Load the readme_freshness handler module as part of check_handlers package
 handler_path = os.path.join(
     os.path.dirname(__file__),
     '../../process-pr-check/check_handlers/readme_freshness.py'
 )
-spec = importlib.util.spec_from_file_location("readme_freshness_handler", handler_path)
+spec = importlib.util.spec_from_file_location(
+    "check_handlers.readme_freshness",
+    handler_path,
+    submodule_search_locations=[os.path.dirname(handler_path)]
+)
 handler_module = importlib.util.module_from_spec(spec)
+handler_module.__package__ = "check_handlers"
+sys.modules['check_handlers.readme_freshness'] = handler_module
 sys.modules['readme_freshness_handler'] = handler_module
 spec.loader.exec_module(handler_module)
 
@@ -274,7 +297,7 @@ class TestExtractInfrastructureNames:
 class TestAnalyzeReadmeWithClaude:
     """Test Claude analysis of README adequacy"""
 
-    @patch('readme_freshness_handler.bedrock_client')
+    @patch.object(bedrock_module, 'bedrock_client')
     def test_analyze_readme_adequate(self, mock_bedrock):
         """Test: Claude determines README is adequate"""
         # Arrange
@@ -285,21 +308,25 @@ class TestAnalyzeReadmeWithClaude:
                         "text": '{"adequate": true, "explanation": "README documents the new hello Lambda handler"}'
                     }]
                 }
-            }
+            },
+            "usage": {"inputTokens": 100, "outputTokens": 50}
         }
+        usage_tracker = bedrock_module.UsageTracker()
 
         # Act
         result = analyze_readme_with_claude(
             "+## New Lambda\n+- hello: Greeting handler",
             ["hello"],
-            []
+            [],
+            usage_tracker
         )
 
         # Assert
         assert result["adequate"] is True
         assert "hello" in result["explanation"]
+        assert usage_tracker.total_tokens > 0
 
-    @patch('readme_freshness_handler.bedrock_client')
+    @patch.object(bedrock_module, 'bedrock_client')
     def test_analyze_readme_inadequate(self, mock_bedrock):
         """Test: Claude finds README inadequate"""
         # Arrange
@@ -310,21 +337,24 @@ class TestAnalyzeReadmeWithClaude:
                         "text": '{"adequate": false, "explanation": "README does not mention the new handler"}'
                     }]
                 }
-            }
+            },
+            "usage": {"inputTokens": 100, "outputTokens": 50}
         }
+        usage_tracker = bedrock_module.UsageTracker()
 
         # Act
         result = analyze_readme_with_claude(
             "+Minor typo fix",
             ["hello"],
-            []
+            [],
+            usage_tracker
         )
 
         # Assert
         assert result["adequate"] is False
         assert "does not mention" in result["explanation"]
 
-    @patch('readme_freshness_handler.bedrock_client')
+    @patch.object(bedrock_module, 'bedrock_client')
     def test_analyze_readme_invalid_json_response(self, mock_bedrock):
         """Test: Handle invalid JSON response from Claude (fallback parsing)"""
         # Arrange
@@ -335,14 +365,17 @@ class TestAnalyzeReadmeWithClaude:
                         "text": "not valid json at all"
                     }]
                 }
-            }
+            },
+            "usage": {"inputTokens": 100, "outputTokens": 50}
         }
+        usage_tracker = bedrock_module.UsageTracker()
 
         # Act
         result = analyze_readme_with_claude(
             "+changes",
             ["hello"],
-            []
+            [],
+            usage_tracker
         )
 
         # Assert
@@ -350,7 +383,7 @@ class TestAnalyzeReadmeWithClaude:
         assert "explanation" in result
         assert result["explanation"] == "Could not parse analysis response"
 
-    @patch('readme_freshness_handler.bedrock_client')
+    @patch.object(bedrock_module, 'bedrock_client')
     def test_analyze_readme_bedrock_error(self, mock_bedrock):
         """Test: Bedrock API error"""
         # Arrange
@@ -358,10 +391,11 @@ class TestAnalyzeReadmeWithClaude:
             {"Error": {"Code": "ThrottlingException", "Message": "Rate exceeded"}},
             "converse"
         )
+        usage_tracker = bedrock_module.UsageTracker()
 
         # Act & Assert
         with pytest.raises(ClientError):
-            analyze_readme_with_claude("+changes", ["hello"], [])
+            analyze_readme_with_claude("+changes", ["hello"], [], usage_tracker)
 
 
 class TestCheckReadmeFreshness:

@@ -1,10 +1,12 @@
 # ============================================================================
-# API Gateway v2 (HTTP API)
+# API Gateway v2 (HTTP API) - Conditional on enable_github_issue_integration
 # ============================================================================
 
 module "outcome_ops_api" {
   source  = "terraform-aws-modules/apigateway-v2/aws"
   version = "5.2.1"
+
+  count = var.enable_github_issue_integration ? 1 : 0
 
   name          = "${var.environment}-${var.app_name}-api"
   description   = "OutcomeOps AI Assist HTTP API Gateway"
@@ -47,10 +49,10 @@ module "outcome_ops_api" {
 
 output "api_gateway_endpoint" {
   description = "API Gateway endpoint URL"
-  value       = module.outcome_ops_api.stage_invoke_url
+  value       = var.enable_github_issue_integration ? module.outcome_ops_api[0].stage_invoke_url : null
 }
 
 output "github_webhook_url" {
   description = "GitHub webhook URL for code generation"
-  value       = "${module.outcome_ops_api.stage_invoke_url}/webhooks/github"
+  value       = var.enable_github_issue_integration ? "${module.outcome_ops_api[0].stage_invoke_url}/webhooks/github" : null
 }

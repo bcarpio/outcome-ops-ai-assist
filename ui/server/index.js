@@ -1,0 +1,1155 @@
+/**
+ * Streaming proxy backend for OutcomeOps Chat UI
+ *
+ * This server:
+ * 1. Serves static React build files
+ * 2. Proxies /api/chat to Lambda Function URL with IAM auth (SigV4)
+ * 3. Streams the response back to the browser
+ *
+ * Security: Lambda Function URL requires IAM auth.
+ * The Fargate task role has permission to invoke the Function URL.
+ * Requests are signed with SigV4 using task credentials.
+ */
+
+import express from "express";
+import { SignatureV4 } from "@aws-sdk/signature-v4";
+import { Sha256 } from "@aws-crypto/sha256-js";
+import { defaultProvider } from "@aws-sdk/credential-provider-node";
+import { readFileSync, existsSync } from "fs";
+import { join, extname } from "path";
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+const LAMBDA_FUNCTION_URL = process.env.LAMBDA_FUNCTION_URL;
+const WORKSPACE_LAMBDA_URL = process.env.WORKSPACE_LAMBDA_URL;
+const CONFLUENCE_LAMBDA_URL = process.env.CONFLUENCE_LAMBDA_URL;
+const JIRA_LAMBDA_URL = process.env.JIRA_LAMBDA_URL;
+const GITHUB_LAMBDA_URL = process.env.GITHUB_LAMBDA_URL;
+const AWS_REGION = process.env.AWS_REGION || "us-west-2";
+const STATIC_DIR = process.env.STATIC_DIR || "/app/static";
+const LOCAL_DEV_MODE = process.env.LOCAL_DEV_MODE === "true";
+
+// MIME types for static file serving
+const MIME_TYPES = {
+  ".html": "text/html",
+  ".js": "application/javascript",
+  ".css": "text/css",
+  ".json": "application/json",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".svg": "image/svg+xml",
+  ".ico": "image/x-icon",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
+  ".ttf": "font/ttf",
+};
+
+// Initialize SigV4 signer
+const signer = new SignatureV4({
+  service: "lambda",
+  region: AWS_REGION,
+  credentials: defaultProvider(),
+  sha256: Sha256,
+});
+
+// Parse JSON bodies
+app.use(express.json({ limit: "1mb" }));
+
+// Health check endpoint
+app.get("/health", (req, res) => {
+  res.json({ status: "healthy" });
+});
+
+/**
+ * Extract user identity from ALB OIDC headers.
+ * When OIDC is enabled, ALB sets x-amzn-oidc-data (JWT) and x-amzn-oidc-identity.
+ * The JWT payload contains email, name, and sub claims.
+ */
+function extractUser(req) {
+  const oidcData = req.headers["x-amzn-oidc-data"];
+  if (!oidcData) {
+    return { email: "anonymous", name: "anonymous" };
+  }
+
+  try {
+    // ALB OIDC JWT is base64url-encoded; payload is the second segment
+    const payload = JSON.parse(
+      Buffer.from(oidcData.split(".")[1], "base64url").toString()
+    );
+    return {
+      email: payload.email || payload.sub || "unknown",
+      name: payload.name || payload.email || "unknown",
+    };
+  } catch {
+    return { email: "unknown", name: "unknown" };
+  }
+}
+
+/**
+ * Sign and send a request to a Lambda Function URL.
+ * Returns the fetch Response object.
+ */
+async function signedFetch(lambdaUrl, method, path, { body, extraHeaders } = {}) {
+  const url = new URL(lambdaUrl);
+
+  // Parse path and query string separately for proper SigV4 signing
+  const [pathPart, queryString] = path.split("?");
+  const targetPath = url.pathname.replace(/\/$/, "") + pathPart;
+
+  // Parse query string into object for SigV4 - signer expects decoded values
+  const query = {};
+  if (queryString) {
+    const params = new URLSearchParams(queryString);
+    for (const [key, value] of params) {
+      query[key] = value;
+    }
+  }
+
+  const request = {
+    method,
+    protocol: url.protocol,
+    hostname: url.hostname,
+    path: targetPath,
+    headers: {
+      "Content-Type": "application/json",
+      host: url.hostname,
+      ...extraHeaders,
+    },
+  };
+  if (Object.keys(query).length > 0) request.query = query;
+  if (body) request.body = body;
+
+  const signedRequest = await signer.sign(request);
+
+  // Rebuild query string from parsed values to ensure consistency with signing
+  // The signer encodes the values, so we must use the same encoding for the actual request
+  const rebuiltQueryString = Object.keys(query).length > 0
+    ? Object.entries(query)
+        .sort(([a], [b]) => a.localeCompare(b)) // SigV4 requires sorted params
+        .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
+        .join("&")
+    : "";
+
+  const fullUrl = rebuiltQueryString
+    ? `${url.origin}${targetPath}?${rebuiltQueryString}`
+    : `${url.origin}${targetPath}`;
+
+  return fetch(fullUrl, {
+    method,
+    headers: signedRequest.headers,
+    body: body || undefined,
+  });
+}
+
+/**
+ * Sign and send a request to the Chat Lambda Function URL.
+ */
+async function signedChatFetch(method, path, options = {}) {
+  return signedFetch(LAMBDA_FUNCTION_URL, method, path, options);
+}
+
+/**
+ * Sign and send a request to the Workspace Lambda Function URL.
+ */
+async function signedWorkspaceFetch(method, path, options = {}) {
+  return signedFetch(WORKSPACE_LAMBDA_URL, method, path, options);
+}
+
+/**
+ * Sign and send a request to the Confluence Lambda Function URL.
+ */
+async function signedConfluenceFetch(method, path, options = {}) {
+  return signedFetch(CONFLUENCE_LAMBDA_URL, method, path, options);
+}
+
+/**
+ * Sign and send a request to the Jira Lambda Function URL.
+ */
+async function signedJiraFetch(method, path, options = {}) {
+  return signedFetch(JIRA_LAMBDA_URL, method, path, options);
+}
+
+/**
+ * Sign and send a request to the GitHub Lambda Function URL.
+ */
+async function signedGitHubFetch(method, path, options = {}) {
+  return signedFetch(GITHUB_LAMBDA_URL, method, path, options);
+}
+
+// Streaming chat proxy endpoint with SigV4 auth
+app.post("/api/chat", async (req, res) => {
+  if (!LAMBDA_FUNCTION_URL) {
+    console.error("[proxy] LAMBDA_FUNCTION_URL not configured");
+    res.status(500).json({ error: "Lambda function URL not configured" });
+    return;
+  }
+
+  const user = extractUser(req);
+  console.log(`[proxy] User: ${user.email}`);
+  console.log(`[proxy] Chat request: ${JSON.stringify(req.body).slice(0, 200)}...`);
+
+  try {
+    const body = JSON.stringify({ ...req.body, user });
+
+    const response = await signedChatFetch("POST", "/", {
+      body,
+      extraHeaders: { "x-user-email": user.email },
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`[proxy] Lambda error: ${response.status} - ${errorText}`);
+      res.status(response.status).json({ error: errorText });
+      return;
+    }
+
+    // Set headers for NDJSON streaming
+    res.setHeader("Content-Type", "application/x-ndjson");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+
+    // Stream the response
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunk = decoder.decode(value, { stream: true });
+      res.write(chunk);
+    }
+
+    res.end();
+    console.log("[proxy] Stream completed");
+  } catch (error) {
+    console.error(`[proxy] Error: ${error.message}`);
+
+    // If headers not sent, send error response
+    if (!res.headersSent) {
+      res.status(500).json({ error: "Failed to process request" });
+    } else {
+      // If streaming already started, send error as NDJSON
+      res.write(JSON.stringify({ type: "error", error: error.message }) + "\n");
+      res.end();
+    }
+  }
+});
+
+// ============================================================================
+// REST Conversation API (proxied to Lambda with SigV4)
+// ============================================================================
+
+// List conversations for the authenticated user
+app.get("/api/conversations", async (req, res) => {
+  if (!LAMBDA_FUNCTION_URL) {
+    res.status(500).json({ error: "Lambda function URL not configured" });
+    return;
+  }
+
+  const user = extractUser(req);
+  console.log(`[proxy] List conversations for: ${user.email}`);
+
+  try {
+    const response = await signedChatFetch("GET", "/conversations", {
+      extraHeaders: { "x-user-email": user.email },
+    });
+    const data = await response.json();
+    res.status(response.status).json(data);
+  } catch (error) {
+    console.error(`[proxy] Error listing conversations: ${error.message}`);
+    res.status(500).json({ error: "Failed to list conversations" });
+  }
+});
+
+// Get conversation with messages
+app.get("/api/conversations/:id", async (req, res) => {
+  if (!LAMBDA_FUNCTION_URL) {
+    res.status(500).json({ error: "Lambda function URL not configured" });
+    return;
+  }
+
+  const user = extractUser(req);
+  console.log(`[proxy] Get conversation ${req.params.id} for: ${user.email}`);
+
+  try {
+    const response = await signedChatFetch("GET", `/conversations/${req.params.id}`, {
+      extraHeaders: { "x-user-email": user.email },
+    });
+    const data = await response.json();
+    res.status(response.status).json(data);
+  } catch (error) {
+    console.error(`[proxy] Error getting conversation: ${error.message}`);
+    res.status(500).json({ error: "Failed to get conversation" });
+  }
+});
+
+// Delete conversation
+app.delete("/api/conversations/:id", async (req, res) => {
+  if (!LAMBDA_FUNCTION_URL) {
+    res.status(500).json({ error: "Lambda function URL not configured" });
+    return;
+  }
+
+  const user = extractUser(req);
+  console.log(`[proxy] Delete conversation ${req.params.id} for: ${user.email}`);
+
+  try {
+    const response = await signedChatFetch("DELETE", `/conversations/${req.params.id}`, {
+      extraHeaders: { "x-user-email": user.email },
+    });
+    const data = await response.json();
+    res.status(response.status).json(data);
+  } catch (error) {
+    console.error(`[proxy] Error deleting conversation: ${error.message}`);
+    res.status(500).json({ error: "Failed to delete conversation" });
+  }
+});
+
+// ============================================================================
+// Workspace Management API (proxied to Workspace Lambda with SigV4)
+// ============================================================================
+
+// In-memory mock data for local development
+const mockWorkspaces = new Map();
+const mockMembers = new Map();
+const mockRepos = new Map();
+
+// Mock workspace handlers for local development
+function handleMockWorkspaceRequest(req, res, method, path) {
+  const user = extractUser(req);
+  const userEmail = user.email || "local@dev.com";
+  console.log(`[mock] Workspace ${method} ${path} for: ${userEmail}`);
+
+  const pathParts = path.split("/").filter(Boolean);
+
+  // POST /workspaces - Create workspace
+  if (method === "POST" && pathParts.length === 1 && pathParts[0] === "workspaces") {
+    const { name, description } = req.body;
+    const id = `ws-${Date.now()}`;
+    const workspace = {
+      workspace_id: id,
+      name,
+      description: description || "",
+      created_at: new Date().toISOString(),
+      created_by: userEmail,
+    };
+    mockWorkspaces.set(id, workspace);
+    mockMembers.set(id, [{ user_email: userEmail, role: "workspace_admin", joined_at: new Date().toISOString() }]);
+    mockRepos.set(id, []);
+    return res.status(201).json({ workspace });
+  }
+
+  // GET /workspaces - List workspaces
+  if (method === "GET" && pathParts.length === 1 && pathParts[0] === "workspaces") {
+    const workspaces = Array.from(mockWorkspaces.values()).map(ws => ({
+      ...ws,
+      role: "workspace_admin",
+    }));
+    return res.json({ workspaces });
+  }
+
+  // GET /workspaces/:id - Get workspace
+  if (method === "GET" && pathParts.length === 2 && pathParts[0] === "workspaces") {
+    const workspace = mockWorkspaces.get(pathParts[1]);
+    if (!workspace) return res.status(404).json({ error: "Workspace not found" });
+    return res.json({ workspace: { ...workspace, role: "workspace_admin" } });
+  }
+
+  // DELETE /workspaces/:id - Delete workspace
+  if (method === "DELETE" && pathParts.length === 2 && pathParts[0] === "workspaces") {
+    mockWorkspaces.delete(pathParts[1]);
+    mockMembers.delete(pathParts[1]);
+    mockRepos.delete(pathParts[1]);
+    return res.json({ deleted: pathParts[1] });
+  }
+
+  // GET /workspaces/:id/members - List members
+  if (method === "GET" && pathParts.length === 3 && pathParts[2] === "members") {
+    const members = mockMembers.get(pathParts[1]) || [];
+    return res.json({ members });
+  }
+
+  // POST /workspaces/:id/members - Add member
+  if (method === "POST" && pathParts.length === 3 && pathParts[2] === "members") {
+    const { email, role } = req.body;
+    const members = mockMembers.get(pathParts[1]) || [];
+    const member = { user_email: email, role: role || "member", joined_at: new Date().toISOString() };
+    members.push(member);
+    mockMembers.set(pathParts[1], members);
+    return res.status(201).json({ member });
+  }
+
+  // GET /workspaces/:id/repos - List repos
+  if (method === "GET" && pathParts.length === 3 && pathParts[2] === "repos") {
+    const repos = mockRepos.get(pathParts[1]) || [];
+    return res.json({ repos });
+  }
+
+  // GET /workspaces/:id/repos/available - List available repos (mock)
+  if (method === "GET" && pathParts.length === 4 && pathParts[2] === "repos" && pathParts[3] === "available") {
+    return res.json({
+      repos: [
+        { full_name: "org/repo-1", name: "repo-1", description: "Mock repo 1", private: false },
+        { full_name: "org/repo-2", name: "repo-2", description: "Mock repo 2", private: true },
+        { full_name: "org/repo-3", name: "repo-3", description: "Mock repo 3", private: false },
+      ],
+    });
+  }
+
+  // POST /workspaces/:id/repos - Add repo
+  if (method === "POST" && pathParts.length === 3 && pathParts[2] === "repos") {
+    const { repo_name } = req.body;
+    const repos = mockRepos.get(pathParts[1]) || [];
+    const repo = { repo_name, enabled: true, added_at: new Date().toISOString(), added_by: userEmail };
+    repos.push(repo);
+    mockRepos.set(pathParts[1], repos);
+    return res.status(201).json({ repo });
+  }
+
+  // DELETE /workspaces/:id/repos/:name - Remove repo
+  if (method === "DELETE" && pathParts.length === 4 && pathParts[2] === "repos") {
+    const repoName = decodeURIComponent(pathParts[3]);
+    const repos = mockRepos.get(pathParts[1]) || [];
+    const filtered = repos.filter(r => r.repo_name !== repoName);
+    mockRepos.set(pathParts[1], filtered);
+    return res.json({ removed: repoName });
+  }
+
+  return res.status(404).json({ error: "Not found" });
+}
+
+// Helper to proxy workspace requests
+async function proxyWorkspaceRequest(req, res, method, path) {
+  // Use mock handlers in local development mode
+  if (LOCAL_DEV_MODE) {
+    return handleMockWorkspaceRequest(req, res, method, path);
+  }
+
+  if (!WORKSPACE_LAMBDA_URL) {
+    console.log("[proxy] WORKSPACE_LAMBDA_URL not configured - workspaces feature disabled");
+    res.status(404).json({ error: "Workspaces feature not enabled. Set WORKSPACE_LAMBDA_URL or LOCAL_DEV_MODE=true." });
+    return;
+  }
+
+  const user = extractUser(req);
+  console.log(`[proxy] Workspace ${method} ${path} for: ${user.email}`);
+
+  try {
+    const options = {
+      extraHeaders: { "x-user-email": user.email },
+    };
+    if (req.body && Object.keys(req.body).length > 0) {
+      options.body = JSON.stringify(req.body);
+    }
+
+    const response = await signedWorkspaceFetch(method, path, options);
+
+    // Handle non-OK responses
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`[proxy] Workspace Lambda error: ${response.status} - ${errorText}`);
+      res.status(response.status).json({ error: errorText || "Workspace request failed" });
+      return;
+    }
+
+    // Parse JSON response safely
+    const text = await response.text();
+    if (!text) {
+      console.error("[proxy] Empty response from workspace Lambda");
+      res.status(500).json({ error: "Empty response from workspace service" });
+      return;
+    }
+
+    try {
+      const data = JSON.parse(text);
+      res.status(response.status).json(data);
+    } catch (parseError) {
+      console.error(`[proxy] Failed to parse workspace response: ${text}`);
+      res.status(500).json({ error: "Invalid response from workspace service" });
+    }
+  } catch (error) {
+    console.error(`[proxy] Workspace error: ${error.message}`);
+    // Provide more helpful error for credential issues
+    if (error.message.includes("credentials") || error.message.includes("Credential")) {
+      res.status(500).json({ error: "AWS credentials not configured. Run locally with AWS credentials or deploy to Fargate." });
+    } else {
+      res.status(500).json({ error: `Failed to process workspace request: ${error.message}` });
+    }
+  }
+}
+
+// Workspace CRUD
+app.post("/api/workspaces", (req, res) => proxyWorkspaceRequest(req, res, "POST", "/workspaces"));
+app.get("/api/workspaces", (req, res) => proxyWorkspaceRequest(req, res, "GET", "/workspaces"));
+app.get("/api/workspaces/:id", (req, res) => proxyWorkspaceRequest(req, res, "GET", `/workspaces/${req.params.id}`));
+app.patch("/api/workspaces/:id", (req, res) => proxyWorkspaceRequest(req, res, "PATCH", `/workspaces/${req.params.id}`));
+app.delete("/api/workspaces/:id", (req, res) => proxyWorkspaceRequest(req, res, "DELETE", `/workspaces/${req.params.id}`));
+
+// Workspace members
+app.post("/api/workspaces/:id/members", (req, res) => proxyWorkspaceRequest(req, res, "POST", `/workspaces/${req.params.id}/members`));
+app.get("/api/workspaces/:id/members", (req, res) => proxyWorkspaceRequest(req, res, "GET", `/workspaces/${req.params.id}/members`));
+app.patch("/api/workspaces/:id/members/:email", (req, res) => proxyWorkspaceRequest(req, res, "PATCH", `/workspaces/${req.params.id}/members/${encodeURIComponent(req.params.email)}`));
+app.delete("/api/workspaces/:id/members/:email", (req, res) => proxyWorkspaceRequest(req, res, "DELETE", `/workspaces/${req.params.id}/members/${encodeURIComponent(req.params.email)}`));
+
+// Workspace repos
+app.get("/api/workspaces/:id/repos/available", (req, res) => proxyWorkspaceRequest(req, res, "GET", `/workspaces/${req.params.id}/repos/available`));
+app.get("/api/workspaces/:id/repos", (req, res) => proxyWorkspaceRequest(req, res, "GET", `/workspaces/${req.params.id}/repos`));
+app.post("/api/workspaces/:id/repos", (req, res) => proxyWorkspaceRequest(req, res, "POST", `/workspaces/${req.params.id}/repos`));
+app.delete("/api/workspaces/:id/repos/*", (req, res) => {
+  // Extract repo name from the wildcard path (supports slashes like "owner/repo")
+  const repoName = req.params[0];
+  proxyWorkspaceRequest(req, res, "DELETE", `/workspaces/${req.params.id}/repos/${encodeURIComponent(repoName)}`);
+});
+
+// Workspace sharing
+app.get("/api/workspaces/:id/sharing", (req, res) => proxyWorkspaceRequest(req, res, "GET", `/workspaces/${req.params.id}/sharing`));
+app.put("/api/workspaces/:id/sharing", (req, res) => proxyWorkspaceRequest(req, res, "PUT", `/workspaces/${req.params.id}/sharing`));
+app.get("/api/workspaces/:id/sharing/available", (req, res) => proxyWorkspaceRequest(req, res, "GET", `/workspaces/${req.params.id}/sharing/available`));
+
+// Workspace documents
+app.post("/api/workspaces/:id/documents/upload", (req, res) => proxyWorkspaceRequest(req, res, "POST", `/workspaces/${req.params.id}/documents/upload`));
+app.get("/api/workspaces/:id/documents", (req, res) => {
+  // Pass through query params
+  const prefix = req.query.prefix ? `?prefix=${encodeURIComponent(req.query.prefix)}` : "";
+  proxyWorkspaceRequest(req, res, "GET", `/workspaces/${req.params.id}/documents${prefix}`);
+});
+app.delete("/api/workspaces/:id/documents/*", (req, res) => {
+  // Extract document path from the wildcard (supports slashes in path)
+  const documentPath = req.params[0];
+  proxyWorkspaceRequest(req, res, "DELETE", `/workspaces/${req.params.id}/documents/${encodeURIComponent(documentPath)}`);
+});
+
+// ============================================================================
+// Org Management API (proxied to Workspace Lambda with SigV4)
+// ============================================================================
+
+// Org members
+app.get("/api/org/members", (req, res) => proxyWorkspaceRequest(req, res, "GET", "/org/members"));
+app.post("/api/org/members", (req, res) => proxyWorkspaceRequest(req, res, "POST", "/org/members"));
+app.patch("/api/org/members/:email", (req, res) => proxyWorkspaceRequest(req, res, "PATCH", `/org/members/${encodeURIComponent(req.params.email)}`));
+app.delete("/api/org/members/:email", (req, res) => proxyWorkspaceRequest(req, res, "DELETE", `/org/members/${encodeURIComponent(req.params.email)}`));
+
+// Chat searchable workspaces
+app.get("/api/chat/searchable-workspaces", (req, res) => proxyWorkspaceRequest(req, res, "GET", "/chat/searchable-workspaces"));
+
+// ============================================================================
+// Confluence Integration API (proxied to Confluence Lambda with SigV4)
+// ============================================================================
+
+// Mock Confluence data for local development
+const mockConfluenceConnections = new Map();
+
+// Mock Confluence handlers for local development
+function handleMockConfluenceRequest(req, res, method, path) {
+  const user = extractUser(req);
+  const userEmail = user.email || "local@dev.com";
+  console.log(`[mock] Confluence ${method} ${path} for: ${userEmail}`);
+
+  const pathParts = path.split("/").filter(Boolean);
+
+  // GET /confluence/authorize?workspace_id=... - Return mock OAuth URL
+  if (method === "GET" && pathParts[0] === "confluence" && pathParts[1] === "authorize") {
+    const workspaceId = req.query.workspace_id;
+    if (!workspaceId) return res.status(400).json({ error: "workspace_id required" });
+    // In local dev mode, return a mock URL that would normally redirect to Atlassian
+    return res.json({
+      auth_url: `http://localhost:3000/api/confluence/callback?code=mock_code&state=${encodeURIComponent(JSON.stringify({ workspace_id: workspaceId }))}`,
+    });
+  }
+
+  // GET /confluence/callback - Mock OAuth callback
+  if (method === "GET" && pathParts[0] === "confluence" && pathParts[1] === "callback") {
+    const { code, state } = req.query;
+    if (!code || !state) {
+      return res.redirect("/?error=invalid_callback");
+    }
+    try {
+      const stateData = JSON.parse(decodeURIComponent(state));
+      const workspaceId = stateData.workspace_id;
+      const connectionId = `conn-${Date.now()}`;
+
+      // Create mock connection
+      const connections = mockConfluenceConnections.get(workspaceId) || [];
+      connections.push({
+        connection_id: connectionId,
+        workspace_id: workspaceId,
+        cloud_id: "mock-cloud-id",
+        site_name: "Mock Confluence Site",
+        site_url: "https://mock.atlassian.net/wiki",
+        selected_spaces: [],
+        include_attachments: false,
+        last_sync_at: null,
+        last_sync_status: "needs_configuration",
+        page_count: 0,
+        attachment_count: 0,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      });
+      mockConfluenceConnections.set(workspaceId, connections);
+
+      return res.redirect(`/workspaces/${workspaceId}/settings?tab=integrations&configure=${connectionId}`);
+    } catch {
+      return res.redirect("/?error=invalid_state");
+    }
+  }
+
+  // GET /workspaces/:id/confluence/connections - List connections
+  if (
+    method === "GET" &&
+    pathParts[0] === "workspaces" &&
+    pathParts[2] === "confluence" &&
+    pathParts[3] === "connections" &&
+    pathParts.length === 4
+  ) {
+    const connections = mockConfluenceConnections.get(pathParts[1]) || [];
+    return res.json({ connections });
+  }
+
+  // GET /workspaces/:id/confluence/connections/:connId/spaces - List spaces
+  if (
+    method === "GET" &&
+    pathParts[0] === "workspaces" &&
+    pathParts[2] === "confluence" &&
+    pathParts[3] === "connections" &&
+    pathParts[5] === "spaces"
+  ) {
+    // Return mock spaces
+    return res.json({
+      spaces: [
+        { id: "space-1", key: "ENG", name: "Engineering", type: "global", selected: false },
+        { id: "space-2", key: "PROD", name: "Product", type: "global", selected: false },
+        { id: "space-3", key: "DOC", name: "Documentation", type: "global", selected: false },
+      ],
+      selected_count: 0,
+    });
+  }
+
+  // PUT /workspaces/:id/confluence/connections/:connId/spaces - Update spaces
+  if (
+    method === "PUT" &&
+    pathParts[0] === "workspaces" &&
+    pathParts[2] === "confluence" &&
+    pathParts[3] === "connections" &&
+    pathParts[5] === "spaces"
+  ) {
+    const { selected_spaces } = req.body;
+    const workspaceId = pathParts[1];
+    const connectionId = pathParts[4];
+    const connections = mockConfluenceConnections.get(workspaceId) || [];
+    const conn = connections.find(c => c.connection_id === connectionId);
+    if (conn) {
+      conn.selected_spaces = selected_spaces;
+      conn.last_sync_status = "queued";
+      conn.updated_at = new Date().toISOString();
+    }
+    return res.json({ message: "Spaces updated", selected_count: selected_spaces.length });
+  }
+
+  // POST /workspaces/:id/confluence/connections/:connId/sync - Trigger sync
+  if (
+    method === "POST" &&
+    pathParts[0] === "workspaces" &&
+    pathParts[2] === "confluence" &&
+    pathParts[3] === "connections" &&
+    pathParts[5] === "sync"
+  ) {
+    const workspaceId = pathParts[1];
+    const connectionId = pathParts[4];
+    const connections = mockConfluenceConnections.get(workspaceId) || [];
+    const conn = connections.find(c => c.connection_id === connectionId);
+    if (conn) {
+      conn.last_sync_status = "queued";
+    }
+    return res.json({ message: "Sync queued", status: "queued" });
+  }
+
+  // DELETE /workspaces/:id/confluence/connections/:connId - Delete connection
+  if (
+    method === "DELETE" &&
+    pathParts[0] === "workspaces" &&
+    pathParts[2] === "confluence" &&
+    pathParts[3] === "connections" &&
+    pathParts.length === 5
+  ) {
+    const workspaceId = pathParts[1];
+    const connectionId = pathParts[4];
+    const connections = mockConfluenceConnections.get(workspaceId) || [];
+    const filtered = connections.filter(c => c.connection_id !== connectionId);
+    mockConfluenceConnections.set(workspaceId, filtered);
+    return res.json({ message: "Connection deleted" });
+  }
+
+  return res.status(404).json({ error: "Not found" });
+}
+
+// Helper to proxy Confluence requests
+async function proxyConfluenceRequest(req, res, method, path) {
+  // Use mock handlers in local development mode
+  if (LOCAL_DEV_MODE) {
+    return handleMockConfluenceRequest(req, res, method, path);
+  }
+
+  if (!CONFLUENCE_LAMBDA_URL) {
+    console.log("[proxy] CONFLUENCE_LAMBDA_URL not configured - Confluence integration disabled");
+    res.status(404).json({ error: "Confluence integration not enabled. Set CONFLUENCE_LAMBDA_URL or LOCAL_DEV_MODE=true." });
+    return;
+  }
+
+  const user = extractUser(req);
+  console.log(`[proxy] Confluence ${method} ${path} for: ${user.email}`);
+
+  try {
+    const options = {
+      extraHeaders: { "x-user-email": user.email },
+    };
+    if (req.body && Object.keys(req.body).length > 0) {
+      options.body = JSON.stringify(req.body);
+    }
+
+    const response = await signedConfluenceFetch(method, path, options);
+
+    // Handle redirects (OAuth callback)
+    if (response.status === 302) {
+      const location = response.headers.get("location");
+      return res.redirect(location);
+    }
+
+    // Handle non-OK responses
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`[proxy] Confluence Lambda error: ${response.status} - ${errorText}`);
+      res.status(response.status).json({ error: errorText || "Confluence request failed" });
+      return;
+    }
+
+    // Parse JSON response safely
+    const text = await response.text();
+    if (!text) {
+      console.error("[proxy] Empty response from Confluence Lambda");
+      res.status(500).json({ error: "Empty response from Confluence service" });
+      return;
+    }
+
+    try {
+      const data = JSON.parse(text);
+      res.status(response.status).json(data);
+    } catch (parseError) {
+      console.error(`[proxy] Failed to parse Confluence response: ${text}`);
+      res.status(500).json({ error: "Invalid response from Confluence service" });
+    }
+  } catch (error) {
+    console.error(`[proxy] Confluence error: ${error.message}`);
+    if (error.message.includes("credentials") || error.message.includes("Credential")) {
+      res.status(500).json({ error: "AWS credentials not configured." });
+    } else {
+      res.status(500).json({ error: `Failed to process Confluence request: ${error.message}` });
+    }
+  }
+}
+
+// Confluence OAuth routes
+app.get("/api/confluence/authorize", (req, res) => {
+  const workspaceId = req.query.workspace_id;
+  proxyConfluenceRequest(req, res, "GET", `/confluence/authorize?workspace_id=${encodeURIComponent(workspaceId)}`);
+});
+app.get("/api/confluence/callback", async (req, res) => {
+  // OAuth callback - pass params in body to avoid query string SigV4 issues
+  const { code, state, error } = req.query;
+
+  if (error) {
+    return res.redirect(`/?error=${encodeURIComponent(error)}`);
+  }
+
+  try {
+    // POST the OAuth params to Lambda instead of GET with query string
+    const response = await signedConfluenceFetch("POST", "/confluence/callback", {
+      body: JSON.stringify({ code, state }),
+    });
+
+    // Handle redirect response
+    if (response.status === 302) {
+      const location = response.headers.get("location");
+      return res.redirect(location);
+    }
+
+    // Try to get redirect from body
+    const text = await response.text();
+    try {
+      const data = JSON.parse(text);
+      if (data.redirect) {
+        return res.redirect(data.redirect);
+      }
+      res.status(response.status).json(data);
+    } catch {
+      res.status(response.status).send(text);
+    }
+  } catch (error) {
+    console.error(`[proxy] Confluence callback error: ${error.message}`);
+    res.redirect(`/?error=callback_failed`);
+  }
+});
+
+// Confluence connections
+app.get("/api/workspaces/:id/confluence/connections", (req, res) => {
+  proxyConfluenceRequest(req, res, "GET", `/workspaces/${req.params.id}/confluence/connections`);
+});
+
+// Confluence spaces
+app.get("/api/workspaces/:id/confluence/connections/:connId/spaces", (req, res) => {
+  proxyConfluenceRequest(req, res, "GET", `/workspaces/${req.params.id}/confluence/connections/${req.params.connId}/spaces`);
+});
+app.put("/api/workspaces/:id/confluence/connections/:connId/spaces", (req, res) => {
+  proxyConfluenceRequest(req, res, "PUT", `/workspaces/${req.params.id}/confluence/connections/${req.params.connId}/spaces`);
+});
+
+// Confluence sync
+app.post("/api/workspaces/:id/confluence/connections/:connId/sync", (req, res) => {
+  proxyConfluenceRequest(req, res, "POST", `/workspaces/${req.params.id}/confluence/connections/${req.params.connId}/sync`);
+});
+
+// Delete Confluence connection
+app.delete("/api/workspaces/:id/confluence/connections/:connId", (req, res) => {
+  proxyConfluenceRequest(req, res, "DELETE", `/workspaces/${req.params.id}/confluence/connections/${req.params.connId}`);
+});
+
+// ============================================================================
+// Jira Integration Routes
+// ============================================================================
+
+// Helper to proxy Jira requests
+async function proxyJiraRequest(req, res, method, path) {
+  if (!JIRA_LAMBDA_URL) {
+    console.log("[proxy] JIRA_LAMBDA_URL not configured - Jira integration disabled");
+    res.status(404).json({ error: "Jira integration not enabled. Set JIRA_LAMBDA_URL." });
+    return;
+  }
+
+  const user = extractUser(req);
+  console.log(`[proxy] Jira ${method} ${path} for: ${user.email}`);
+
+  try {
+    const options = {
+      extraHeaders: { "x-user-email": user.email },
+    };
+    if (req.body && Object.keys(req.body).length > 0) {
+      options.body = JSON.stringify(req.body);
+    }
+
+    const response = await signedJiraFetch(method, path, options);
+
+    // Handle redirects (OAuth callback)
+    if (response.status === 302) {
+      const location = response.headers.get("location");
+      return res.redirect(location);
+    }
+
+    // Handle non-OK responses
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`[proxy] Jira Lambda error: ${response.status} - ${errorText}`);
+      res.status(response.status).json({ error: errorText || "Jira request failed" });
+      return;
+    }
+
+    // Parse JSON response safely
+    const text = await response.text();
+    if (!text) {
+      console.error("[proxy] Empty response from Jira Lambda");
+      res.status(500).json({ error: "Empty response from Jira service" });
+      return;
+    }
+
+    try {
+      const data = JSON.parse(text);
+      res.status(response.status).json(data);
+    } catch (parseError) {
+      console.error(`[proxy] Failed to parse Jira response: ${text}`);
+      res.status(500).json({ error: "Invalid response from Jira service" });
+    }
+  } catch (error) {
+    console.error(`[proxy] Jira error: ${error.message}`);
+    if (error.message.includes("credentials") || error.message.includes("Credential")) {
+      res.status(500).json({ error: "AWS credentials not configured." });
+    } else {
+      res.status(500).json({ error: `Failed to process Jira request: ${error.message}` });
+    }
+  }
+}
+
+// Jira OAuth routes
+app.get("/api/jira/authorize", (req, res) => {
+  const workspaceId = req.query.workspace_id;
+  proxyJiraRequest(req, res, "GET", `/jira/authorize?workspace_id=${encodeURIComponent(workspaceId)}`);
+});
+app.get("/api/jira/callback", async (req, res) => {
+  // OAuth callback - pass params in body to avoid query string SigV4 issues
+  const { code, state, error } = req.query;
+
+  if (error) {
+    return res.redirect(`/?error=${encodeURIComponent(error)}`);
+  }
+
+  if (!JIRA_LAMBDA_URL) {
+    return res.redirect(`/?error=jira_not_configured`);
+  }
+
+  try {
+    // POST the OAuth params to Lambda instead of GET with query string
+    const response = await signedJiraFetch("POST", "/jira/callback", {
+      body: JSON.stringify({ code, state }),
+    });
+
+    // Handle redirect response
+    if (response.status === 302) {
+      const location = response.headers.get("location");
+      return res.redirect(location);
+    }
+
+    // Try to get redirect from body
+    const text = await response.text();
+    try {
+      const data = JSON.parse(text);
+      if (data.redirect) {
+        return res.redirect(data.redirect);
+      }
+      res.status(response.status).json(data);
+    } catch {
+      res.status(response.status).send(text);
+    }
+  } catch (error) {
+    console.error(`[proxy] Jira callback error: ${error.message}`);
+    res.redirect(`/?error=jira_callback_failed`);
+  }
+});
+
+// Jira connections
+app.get("/api/workspaces/:id/jira/connections", (req, res) => {
+  proxyJiraRequest(req, res, "GET", `/workspaces/${req.params.id}/jira/connections`);
+});
+
+// Jira projects
+app.get("/api/workspaces/:id/jira/connections/:connId/projects", (req, res) => {
+  proxyJiraRequest(req, res, "GET", `/workspaces/${req.params.id}/jira/connections/${req.params.connId}/projects`);
+});
+app.put("/api/workspaces/:id/jira/connections/:connId/projects", (req, res) => {
+  proxyJiraRequest(req, res, "PUT", `/workspaces/${req.params.id}/jira/connections/${req.params.connId}/projects`);
+});
+
+// Jira sync
+app.post("/api/workspaces/:id/jira/connections/:connId/sync", (req, res) => {
+  proxyJiraRequest(req, res, "POST", `/workspaces/${req.params.id}/jira/connections/${req.params.connId}/sync`);
+});
+
+// Delete Jira connection
+app.delete("/api/workspaces/:id/jira/connections/:connId", (req, res) => {
+  proxyJiraRequest(req, res, "DELETE", `/workspaces/${req.params.id}/jira/connections/${req.params.connId}`);
+});
+
+// ============================================================================
+// GitHub Integration Routes
+// ============================================================================
+
+// Helper to proxy GitHub requests
+async function proxyGitHubRequest(req, res, method, path) {
+  if (!GITHUB_LAMBDA_URL) {
+    console.log("[proxy] GITHUB_LAMBDA_URL not configured - GitHub integration disabled");
+    res.status(404).json({ error: "GitHub integration not enabled. Set GITHUB_LAMBDA_URL." });
+    return;
+  }
+
+  const user = extractUser(req);
+  console.log(`[proxy] GitHub ${method} ${path} for: ${user.email}`);
+
+  try {
+    const options = {
+      extraHeaders: { "x-user-email": user.email },
+    };
+    if (req.body && Object.keys(req.body).length > 0) {
+      options.body = JSON.stringify(req.body);
+    }
+
+    const response = await signedGitHubFetch(method, path, options);
+
+    // Handle redirects (OAuth callback)
+    if (response.status === 302) {
+      const location = response.headers.get("location");
+      return res.redirect(location);
+    }
+
+    // Handle non-OK responses
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`[proxy] GitHub Lambda error: ${response.status} - ${errorText}`);
+      res.status(response.status).json({ error: errorText || "GitHub request failed" });
+      return;
+    }
+
+    // Parse JSON response safely
+    const text = await response.text();
+    if (!text) {
+      console.error("[proxy] Empty response from GitHub Lambda");
+      res.status(500).json({ error: "Empty response from GitHub service" });
+      return;
+    }
+
+    try {
+      const data = JSON.parse(text);
+      res.status(response.status).json(data);
+    } catch (parseError) {
+      console.error(`[proxy] Failed to parse GitHub response: ${text}`);
+      res.status(500).json({ error: "Invalid response from GitHub service" });
+    }
+  } catch (error) {
+    console.error(`[proxy] GitHub error: ${error.message}`);
+    if (error.message.includes("credentials") || error.message.includes("Credential")) {
+      res.status(500).json({ error: "AWS credentials not configured." });
+    } else {
+      res.status(500).json({ error: `Failed to process GitHub request: ${error.message}` });
+    }
+  }
+}
+
+// GitHub OAuth/App install routes
+app.get("/api/github/authorize", (req, res) => {
+  const workspaceId = req.query.workspace_id;
+  proxyGitHubRequest(req, res, "GET", `/github/authorize?workspace_id=${encodeURIComponent(workspaceId)}`);
+});
+app.get("/api/github/callback", async (req, res) => {
+  // GitHub App installation callback
+  const { installation_id, setup_action, state, error } = req.query;
+
+  if (error) {
+    return res.redirect(`/?error=${encodeURIComponent(error)}`);
+  }
+
+  if (!GITHUB_LAMBDA_URL) {
+    return res.redirect(`/?error=github_not_configured`);
+  }
+
+  try {
+    // POST the callback params to Lambda
+    const response = await signedGitHubFetch("POST", "/github/callback", {
+      body: JSON.stringify({ installation_id, setup_action, state }),
+    });
+
+    // Handle redirect response
+    if (response.status === 302) {
+      const location = response.headers.get("location");
+      return res.redirect(location);
+    }
+
+    // Try to get redirect from body
+    const text = await response.text();
+    try {
+      const data = JSON.parse(text);
+      if (data.redirect) {
+        return res.redirect(data.redirect);
+      }
+      res.status(response.status).json(data);
+    } catch {
+      res.status(response.status).send(text);
+    }
+  } catch (error) {
+    console.error(`[proxy] GitHub callback error: ${error.message}`);
+    res.redirect(`/?error=github_callback_failed`);
+  }
+});
+
+// GitHub installations for workspace
+app.get("/api/workspaces/:id/github/installations", (req, res) => {
+  proxyGitHubRequest(req, res, "GET", `/workspaces/${req.params.id}/github/installations`);
+});
+
+// List repos available in an installation
+app.get("/api/workspaces/:id/github/installations/:instId/repos", (req, res) => {
+  proxyGitHubRequest(req, res, "GET", `/workspaces/${req.params.id}/github/installations/${req.params.instId}/repos`);
+});
+
+// GitHub repos for workspace
+app.get("/api/workspaces/:id/github/repos", (req, res) => {
+  proxyGitHubRequest(req, res, "GET", `/workspaces/${req.params.id}/github/repos`);
+});
+app.post("/api/workspaces/:id/github/repos", (req, res) => {
+  proxyGitHubRequest(req, res, "POST", `/workspaces/${req.params.id}/github/repos`);
+});
+app.put("/api/workspaces/:id/github/repos/*", (req, res) => {
+  // Extract repo name from wildcard (supports slashes like "owner/repo")
+  const repoName = req.params[0];
+  proxyGitHubRequest(req, res, "PUT", `/workspaces/${req.params.id}/github/repos/${encodeURIComponent(repoName)}`);
+});
+app.delete("/api/workspaces/:id/github/repos/*", (req, res) => {
+  // Extract repo name from wildcard (supports slashes like "owner/repo")
+  const repoName = req.params[0];
+  proxyGitHubRequest(req, res, "DELETE", `/workspaces/${req.params.id}/github/repos/${encodeURIComponent(repoName)}`);
+});
+
+// GitHub sync
+app.post("/api/workspaces/:id/github/sync", (req, res) => {
+  proxyGitHubRequest(req, res, "POST", `/workspaces/${req.params.id}/github/sync`);
+});
+
+// ============================================================================
+// Logout (clear ALB OIDC session cookies)
+// ============================================================================
+
+app.get("/api/logout", (req, res) => {
+  console.log("[logout] Clearing ALB OIDC session cookies");
+
+  // ALB OIDC sets HttpOnly session cookies - clear them by setting to expired
+  // ALB may use multiple cookie segments (AWSELBAuthSessionCookie-0, -1, etc.)
+  for (let i = 0; i < 5; i++) {
+    res.cookie(`AWSELBAuthSessionCookie-${i}`, "", {
+      expires: new Date(0),
+      path: "/",
+      httpOnly: true,
+      secure: true,
+    });
+  }
+
+  // Redirect to root - ALB will force re-authentication
+  res.redirect("/");
+});
+
+// Serve static files with SPA fallback
+app.use((req, res) => {
+  // Get the requested path
+  let filePath = join(STATIC_DIR, req.path);
+
+  // Check if file exists
+  if (existsSync(filePath) && !filePath.endsWith("/")) {
+    const ext = extname(filePath);
+    const mimeType = MIME_TYPES[ext] || "application/octet-stream";
+
+    // Set cache headers for assets
+    if (req.path.startsWith("/assets/")) {
+      res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+    }
+
+    res.setHeader("Content-Type", mimeType);
+    res.send(readFileSync(filePath));
+  } else {
+    // SPA fallback - serve index.html for all routes
+    const indexPath = join(STATIC_DIR, "index.html");
+    if (existsSync(indexPath)) {
+      res.setHeader("Content-Type", "text/html");
+      res.send(readFileSync(indexPath));
+    } else {
+      res.status(404).send("Not found");
+    }
+  }
+});
+
+// Start server
+app.listen(PORT, () => {
+  console.log(`[server] OutcomeOps UI server listening on port ${PORT}`);
+  console.log(`[server] Static files: ${STATIC_DIR}`);
+  console.log(`[server] Chat Lambda URL: ${LAMBDA_FUNCTION_URL ? "configured" : "NOT CONFIGURED"}`);
+  console.log(`[server] Workspace Lambda URL: ${WORKSPACE_LAMBDA_URL ? "configured" : "disabled"}`);
+  console.log(`[server] Confluence Lambda URL: ${CONFLUENCE_LAMBDA_URL ? "configured" : "disabled"}`);
+  console.log(`[server] Jira Lambda URL: ${JIRA_LAMBDA_URL ? "configured" : "disabled"}`);
+  console.log(`[server] GitHub Lambda URL: ${GITHUB_LAMBDA_URL ? "configured" : "disabled"}`);
+  console.log(`[server] Local dev mode: ${LOCAL_DEV_MODE ? "ENABLED (using mock data)" : "disabled"}`);
+  console.log(`[server] AWS Region: ${AWS_REGION}`);
+});

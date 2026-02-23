@@ -1,6 +1,6 @@
 # Lambda: Process Batch Summary
 
-Processes code map batch summaries from SQS queue and stores them in DynamoDB with embeddings.
+Processes code map batch summaries from SQS queue and stores them in S3 Vectors with embeddings.
 
 ## Purpose
 
@@ -8,11 +8,11 @@ The process-batch-summary Lambda function is an SQS consumer that processes file
 1. Fetches file contents from GitHub
 2. Generates detailed summaries using Claude via Bedrock
 3. Creates embeddings using Bedrock Titan v2
-4. Stores summaries in DynamoDB for semantic search
+4. Stores embeddings in S3 Vectors for semantic search
 
 ## Trigger
 
-- **SQS Event Source Mapping**: Automatically triggered when messages arrive in the code maps FIFO queue
+- **SQS Event Source Mapping**: Automatically triggered when messages arrive in the code maps queue
 - **Batch Size**: 1 message at a time (each message already contains a batch of files)
 
 ## Processing Flow
@@ -22,11 +22,11 @@ SQS Message → Lambda Triggered
     ↓
 Fetch File Contents from GitHub
     ↓
-Generate Summary with Claude 3.5 Sonnet
+Generate Summary with Claude Sonnet 4.5
     ↓
 Create Embedding with Titan v2
     ↓
-Store in DynamoDB (PK=repo#{repo}, SK=summary#{type}#{name})
+Store in S3 Vectors (key=repo#type#name)
     ↓
 Delete Message from Queue (success) or Retry (failure)
 ```
@@ -66,28 +66,30 @@ The Lambda handles different batch types with specialized prompts:
 }
 ```
 
-## Example Output (DynamoDB)
+## Example Output (S3 Vectors)
 
 ```json
 {
-  "PK": "repo#outcome-ops-ai-assist",
-  "SK": "summary#handler#ingest-docs",
-  "content": "This handler ingests documentation from GitHub repositories...",
-  "content_hash": "abc123def456...",
-  "embedding": [0.123, 0.456, ..., 0.789],
-  "repo": "outcome-ops-ai-assist",
-  "type": "handler-group-summary",
-  "batch_type": "handler-group",
-  "group_name": "ingest-docs",
-  "file_count": 2,
-  "timestamp": "2025-01-15T10:00:00.000Z"
+  "key": "outcome-ops-ai-assist#summary#handler#ingest-docs",
+  "data": {"float32": [0.123, 0.456, ..., 0.789]},
+  "metadata": {
+    "content": "This handler ingests documentation from GitHub repositories...",
+    "content_hash": "abc123def456...",
+    "repo": "outcome-ops-ai-assist",
+    "type": "handler-group-summary",
+    "batch_type": "handler-group",
+    "group_name": "ingest-docs",
+    "file_count": 2,
+    "timestamp": "2025-01-15T10:00:00.000Z"
+  }
 }
 ```
 
 ## Configuration Requirements
 
 **SSM Parameters** (loaded at container startup):
-- `/{env}/{app_name}/dynamodb/code-maps-table` - DynamoDB table name
+- `/{env}/{app_name}/s3vectors/bucket-name` - S3 Vectors bucket name
+- `/{env}/{app_name}/s3vectors/index-name` - S3 Vectors index name
 - `/{env}/{app_name}/github/token` - GitHub personal access token (encrypted)
 
 **Environment Variables** (set in Terraform):
@@ -96,7 +98,7 @@ The Lambda handles different batch types with specialized prompts:
 
 **IAM Permissions Required**:
 - `ssm:GetParameter` - Read SSM parameters
-- `dynamodb:PutItem` - Store summaries in DynamoDB
+- `s3vectors:PutVectors` - Store summaries in S3 Vectors
 - `bedrock:InvokeModel` - Call Bedrock Titan and Claude
 - `sqs:ReceiveMessage`, `sqs:DeleteMessage`, `sqs:GetQueueAttributes` - SQS event source mapping
 - GitHub API access via personal access token
@@ -142,7 +144,7 @@ The Lambda handles different batch types with specialized prompts:
 
 **CloudWatch Logs**:
 ```bash
-aws logs tail /aws/lambda/dev-outcome-ops-ai-assist-process-batch-summary --follow
+aws logs tail /aws/lambda/prd-outcome-ops-ai-assist-process-batch-summary --follow
 ```
 
 **Key Log Messages**:
@@ -158,7 +160,7 @@ aws logs tail /aws/lambda/dev-outcome-ops-ai-assist-process-batch-summary --foll
 aws cloudwatch get-metric-statistics \
   --namespace AWS/Lambda \
   --metric-name Invocations \
-  --dimensions Name=FunctionName,Value=dev-outcome-ops-ai-assist-process-batch-summary \
+  --dimensions Name=FunctionName,Value=prd-outcome-ops-ai-assist-process-batch-summary \
   --start-time 2025-01-01T00:00:00Z \
   --end-time 2025-01-15T00:00:00Z \
   --period 3600 \
@@ -185,7 +187,7 @@ aws sqs receive-message \
 - File fetch: ~100-500ms per file
 - Claude summary: ~5-15 seconds (depends on content size)
 - Embedding generation: ~500ms-1s
-- DynamoDB storage: ~50-100ms
+- S3 Vectors storage: ~50-100ms
 - **Total per batch**: ~10-30 seconds typically
 
 **Batch Size Configuration**:
@@ -194,9 +196,8 @@ aws sqs receive-message \
 - Timeout: 900s (15 minutes) handles large batches
 
 **Throughput**:
-- FIFO queue processes sequentially per MessageGroupId (repo)
-- Multiple repos can process in parallel
-- Lambda concurrency: Matches queue configuration
+- Standard queue with maximum concurrency of 20
+- Lambda concurrency: Matches queue scaling configuration
 
 ## Common Issues
 
@@ -225,3 +226,5 @@ aws sqs receive-message \
 - **Producer Lambda**: `docs/lambda-generate-code-maps.md`
 - **ADR-001**: Terraform Infrastructure Patterns
 - **ADR-004**: Lambda Handler Standards
+
+<!-- Confluence sync -->

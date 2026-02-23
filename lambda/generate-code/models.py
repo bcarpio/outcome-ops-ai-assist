@@ -63,10 +63,16 @@ class GitHubWebhookEvent(BaseModel):
 
     @validator("label")
     def validate_label_name(cls, v):
-        """Ensure label is 'approved-for-generation'."""
-        if v.name != "approved-for-generation":
+        """Ensure label is a supported trigger label."""
+        supported_labels = ["approved-for-generation", "approved-for-plan"]
+        if v.name not in supported_labels:
             raise ValueError(f"Unsupported label: {v.name}")
         return v
+
+    @property
+    def is_plan_only(self) -> bool:
+        """Check if this is a plan-only request (no code generation)."""
+        return self.label.name == "approved-for-plan"
 
 
 class APIGatewayProxyEvent(BaseModel):
@@ -108,6 +114,8 @@ class PlanStep(BaseModel):
     completed_at: Optional[str] = None
     error: Optional[str] = None
     cost: Optional[TokenUsage] = None
+    # Debug context showing what was passed to Claude (for troubleshooting)
+    debug_context: Optional[Dict[str, Any]] = None
 
 
 class ExecutionPlan(BaseModel):
@@ -122,6 +130,22 @@ class ExecutionPlan(BaseModel):
     created_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
     total_cost: Optional[TokenUsage] = None
 
+    # Haiku summarization cost for KB standards (separate from Sonnet code gen cost)
+    summarization_cost: Optional[TokenUsage] = None
+
+    # Plan generation cost (Sonnet) - cost of generating the plan itself
+    plan_generation_cost: Optional[TokenUsage] = None
+    plan_completed_at: Optional[str] = None
+
+    # Standards retrieved during plan generation (cached to avoid re-querying)
+    lambda_standards: List[str] = Field(default_factory=list)
+    terraform_standards: List[str] = Field(default_factory=list)
+    testing_standards: List[str] = Field(default_factory=list)
+    code_style_standards: List[str] = Field(default_factory=list)
+
+    # Backend used for code generation (e.g., 'python', 'java', 'typescript')
+    backend_name: str = Field(default="python")
+
 
 # ============================================================================
 # SQS Message Models
@@ -131,14 +155,30 @@ class ExecutionPlan(BaseModel):
 class StepExecutionMessage(BaseModel):
     """SQS message for step execution."""
 
+    action: Literal["generate_plan", "execute_step"] = "execute_step"
     issue_number: int
     issue_title: str
     issue_description: str
     repo_full_name: str
     branch_name: str
-    current_step: int
-    total_steps: int
+    current_step: int = 0  # 0 for generate_plan action
+    total_steps: int = 0  # Unknown for generate_plan action
     base_branch: str = "main"
+    plan_only: bool = False  # If True, skip code generation and create PR with just the plan
+    customer_id: Optional[str] = None  # License customer ID for usage tracking in DLQ
+
+
+class PRCommandMessage(BaseModel):
+    """SQS message for PR comment commands (fix readme, fix tests, etc.)."""
+
+    action: Literal["fix_readme", "fix_tests", "fix_adr", "regenerate"]
+    pr_number: int
+    repo_full_name: str
+    branch_name: str
+    commenter: str  # GitHub username who issued the command
+    base_branch: str = "main"
+    customer_id: Optional[str] = None  # License customer ID for usage tracking
+    guidance: Optional[str] = None  # User-provided guidance for fix commands
 
 
 class SQSRecord(BaseModel):
@@ -199,7 +239,18 @@ class GeneratedFile(BaseModel):
         import base64
 
         if self.content_base64:
-            return base64.b64decode(self.content_base64).decode("utf-8")
+            decoded_bytes = base64.b64decode(self.content_base64)
+            try:
+                return decoded_bytes.decode("utf-8")
+            except UnicodeDecodeError:
+                # Try latin-1 as fallback (accepts all byte values)
+                try:
+                    return decoded_bytes.decode("latin-1")
+                except Exception as e:
+                    raise ValueError(
+                        f"Cannot decode content for {self.path}: not valid UTF-8 or Latin-1. "
+                        f"File may be binary. Error: {e}"
+                    ) from e
         elif self.content:
             return self.content
         else:

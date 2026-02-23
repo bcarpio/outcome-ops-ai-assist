@@ -204,3 +204,5 @@ The pattern: **I don't follow trends. I set them.**
 Platform Engineer. AWS ProServe Alum. Golden Pipeline Architect. Context Engineering Pioneer.
 
 [LinkedIn](https://www.linkedin.com/in/briancarpio/) | [GitHub](https://github.com/bcarpio)
+
+<!-- Confluence sync -->

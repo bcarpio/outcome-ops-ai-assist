@@ -14,6 +14,8 @@ from collections import defaultdict
 import boto3
 from botocore.exceptions import ClientError
 
+from .bedrock_utils import UsageTracker
+
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
@@ -221,7 +223,8 @@ def check_breaking_changes(
             "checkType": check_type,
             "status": "PASS",
             "message": "No schema, logic, or infrastructure changes detected",
-            "details": []
+            "details": [],
+            "usage": UsageTracker()
         }
 
     # Group files by handler and change type
@@ -330,9 +333,11 @@ def check_breaking_changes(
         details.append("These may be new handlers, internal-only, or not yet documented.")
         details.append("Changes appear safe to merge.")
 
+    # BREAKING_CHANGES doesn't use Claude, return empty usage tracker
     return {
         "checkType": check_type,
         "status": status,
         "message": message,
-        "details": details
+        "details": details,
+        "usage": UsageTracker()
     }

@@ -1,5 +1,6 @@
 boto3>=1.28.0
 requests>=2.31.0
+urllib3>=2.6.3
 pydantic>=2.0.0
 
 # Test dependencies

@@ -14,11 +14,17 @@ This is an internal Lambda invoked by query-kb orchestrator.
 import json
 import logging
 import os
+import sys
 import time
 from typing import Any, Dict, List
 
 import boto3
 from botocore.exceptions import ClientError
+
+# Add shared module to path for Lambda deployment
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from shared.audit import log_audit_entry
+from shared.prompts import build_rag_system_prompt
 
 # Setup logging
 logger = logging.getLogger()
@@ -31,8 +37,41 @@ bedrock_client = boto3.client("bedrock-runtime")
 ENVIRONMENT = os.environ.get("ENV", "dev")
 APP_NAME = os.environ.get("APP_NAME", "outcome-ops-ai-assist")
 
-# Claude model ID (using cross-region inference profile for better availability)
-CLAUDE_MODEL_ID = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+# Claude model IDs
+# Haiku: Cost-effective for simple RAG synthesis (default)
+# Sonnet: Advanced reasoning for complex architecture/integration questions
+HAIKU_MODEL_ID = "us.anthropic.claude-3-5-haiku-20241022-v1:0"
+SONNET_MODEL_ID = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+
+# Pricing (as of 2025)
+HAIKU_PRICE_PER_MILLION_INPUT_TOKENS = 0.80
+HAIKU_PRICE_PER_MILLION_OUTPUT_TOKENS = 4.0
+SONNET_PRICE_PER_MILLION_INPUT_TOKENS = 3.0
+SONNET_PRICE_PER_MILLION_OUTPUT_TOKENS = 15.0
+
+
+def calculate_cost(input_tokens: int, output_tokens: int, model: str = "haiku") -> float:
+    """
+    Calculate USD cost for token usage.
+
+    Args:
+        input_tokens: Number of input tokens
+        output_tokens: Number of output tokens
+        model: Model type - "haiku" or "sonnet" (default: "haiku")
+
+    Returns:
+        Total cost in USD
+    """
+    if model == "sonnet":
+        input_price = SONNET_PRICE_PER_MILLION_INPUT_TOKENS
+        output_price = SONNET_PRICE_PER_MILLION_OUTPUT_TOKENS
+    else:
+        input_price = HAIKU_PRICE_PER_MILLION_INPUT_TOKENS
+        output_price = HAIKU_PRICE_PER_MILLION_OUTPUT_TOKENS
+
+    input_cost = (input_tokens / 1_000_000) * input_price
+    output_cost = (output_tokens / 1_000_000) * output_price
+    return round(input_cost + output_cost, 6)
 
 
 def build_prompt(query: str, context: List[Dict[str, Any]]) -> str:
@@ -56,18 +95,12 @@ def build_prompt(query: str, context: List[Dict[str, Any]]) -> str:
         context_text += f"\n[Document {i}] (Relevance: {score:.2f}) - Source: {source}\n"
         context_text += f"{text}\n"
 
-    # Build full prompt
-    prompt = f"""You are a helpful assistant that answers questions about software development patterns and architectural decisions based ONLY on the provided context.
+    # Build full prompt using shared system prompt
+    system_prompt = build_rag_system_prompt()
+    prompt = f"""{system_prompt}
 
 CONTEXT:
 {context_text}
-
-INSTRUCTIONS:
-1. Answer the question using ONLY information from the provided context
-2. Cite the specific sources you use (e.g., "According to ADR-001...")
-3. If the context doesn't contain enough information, say so clearly
-4. Be concise but thorough
-5. Do not make assumptions or add information not in the context
 
 QUESTION: {query}
 
@@ -76,12 +109,13 @@ ANSWER:"""
     return prompt
 
 
-def invoke_claude_with_retry(prompt: str, max_retries: int = 3) -> Dict[str, Any]:
+def invoke_claude_with_retry(prompt: str, model: str = "haiku", max_retries: int = 3) -> Dict[str, Any]:
     """
-    Invoke Claude 3.5 Sonnet via Bedrock Converse API with retry logic.
+    Invoke Claude via Bedrock Converse API with retry logic.
 
     Args:
         prompt: The prompt to send to Claude
+        model: Model to use - "haiku" (default) or "sonnet" (advanced)
         max_retries: Maximum number of retry attempts
 
     Returns:
@@ -90,10 +124,15 @@ def invoke_claude_with_retry(prompt: str, max_retries: int = 3) -> Dict[str, Any
     Raises:
         ClientError: If all retries fail
     """
+    model_id = SONNET_MODEL_ID if model == "sonnet" else HAIKU_MODEL_ID
+    max_tokens = 4000 if model == "sonnet" else 2000  # More tokens for complex reasoning
+
+    logger.info(f"[ask-claude] Using model: {model} ({model_id})")
+
     for attempt in range(max_retries):
         try:
             response = bedrock_client.converse(
-                modelId=CLAUDE_MODEL_ID,
+                modelId=model_id,
                 messages=[
                     {
                         "role": "user",
@@ -102,7 +141,7 @@ def invoke_claude_with_retry(prompt: str, max_retries: int = 3) -> Dict[str, Any
                 ],
                 inferenceConfig={
                     "temperature": 0.3,  # Low temperature for factual, grounded responses
-                    "maxTokens": 2000,
+                    "maxTokens": max_tokens,
                 },
             )
 
@@ -175,7 +214,8 @@ def handler(event, context):
                 "text": "API Gateway routes are defined...",
                 "source": "ADR: api-gateway-standards"
             }
-        ]
+        ],
+        "model": "haiku"  // Optional: "haiku" (default) or "sonnet" (advanced)
     }
 
     Returns:
@@ -183,16 +223,23 @@ def handler(event, context):
         "statusCode": 200,
         "body": {
             "answer": "API routes should be defined...",
-            "sources": ["ADR: api-gateway-standards", "README.md - hpe-journey"]
+            "sources": ["ADR: api-gateway-standards", "README.md - hpe-journey"],
+            "usage": {"input_tokens": 100, "output_tokens": 50, "cost_usd": 0.001, "model": "haiku"}
         }
     }
     """
     logger.info(f"[ask-claude] Handler invoked: {json.dumps(event)}")
 
     try:
-        # Extract query and context from event
+        # Extract query, context, and model from event
         query = event.get("query")
         context_docs = event.get("context", [])
+        model = event.get("model", "haiku")  # Default to haiku for cost-effectiveness
+
+        # Validate model
+        if model not in ("haiku", "sonnet"):
+            logger.warning(f"[ask-claude] Invalid model '{model}', defaulting to haiku")
+            model = "haiku"
 
         if not query:
             logger.warning("[ask-claude] Missing required field: query")
@@ -211,13 +258,13 @@ def handler(event, context):
                 }),
             }
 
-        logger.info(f"[ask-claude] Generating answer for query: '{query}' with {len(context_docs)} context documents")
+        logger.info(f"[ask-claude] Generating answer for query: '{query}' with {len(context_docs)} context documents (model: {model})")
 
         # Build prompt
         prompt = build_prompt(query, context_docs)
 
-        # Invoke Claude
-        response = invoke_claude_with_retry(prompt)
+        # Invoke Claude with selected model
+        response = invoke_claude_with_retry(prompt, model=model)
 
         # Extract answer from response
         output = response.get("output", {})
@@ -236,19 +283,43 @@ def handler(event, context):
         # Extract sources from context
         sources = extract_sources_from_context(context_docs)
 
-        # Log token usage
+        # Calculate token usage and cost based on model
         usage = response.get("usage", {})
         input_tokens = usage.get("inputTokens", 0)
         output_tokens = usage.get("outputTokens", 0)
-        logger.info(f"[ask-claude] Token usage - Input: {input_tokens}, Output: {output_tokens}")
+        cost_usd = calculate_cost(input_tokens, output_tokens, model=model)
+
+        logger.info(
+            f"[ask-claude] Token usage ({model}) - Input: {input_tokens}, Output: {output_tokens}, "
+            f"Cost: ${cost_usd:.6f}"
+        )
 
         logger.info(f"[ask-claude] Successfully generated answer ({len(answer)} chars) with {len(sources)} sources")
+
+        # Audit log the Bedrock call
+        ask_model_id = SONNET_MODEL_ID if model == "sonnet" else HAIKU_MODEL_ID
+        log_audit_entry(
+            audit_table_name=os.environ.get("AUDIT_TABLE", ""),
+            lambda_name="ask-claude",
+            model_id=ask_model_id,
+            input_text=prompt,
+            output_text=answer,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cost_usd=cost_usd,
+        )
 
         return {
             "statusCode": 200,
             "body": json.dumps({
                 "answer": answer,
-                "sources": sources
+                "sources": sources,
+                "usage": {
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "cost_usd": cost_usd,
+                    "model": model
+                }
             }),
         }
 

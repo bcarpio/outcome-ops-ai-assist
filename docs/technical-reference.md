@@ -7,7 +7,9 @@ Complete technical documentation for OutcomeOps AI Assist system internals, depl
 - [Tech Stack](#tech-stack)
 - [Project Structure](#project-structure)
 - [Core Features](#core-features)
+- [Repository Configuration (.outcomeops.yaml)](#repository-configuration-outcomeopsyaml)
 - [Environment Configuration](#environment-configuration)
+- [Resource Tagging](#resource-tagging)
 - [Deployment](#deployment)
 - [Monitoring](#monitoring)
 - [Testing](#testing)
@@ -25,7 +27,8 @@ Complete technical documentation for OutcomeOps AI Assist system internals, depl
 |-----------|-----------|-------|
 | **Compute** | AWS Lambda (Python 3.12) | Serverless functions |
 | **Knowledge Base** | AWS Bedrock (Titan v2 + Claude) | Embeddings + LLM |
-| **Vector Storage** | DynamoDB | Single-table with embeddings |
+| **Vector Storage** | S3 Vectors | Native vector database for semantic search |
+| **State Tracking** | DynamoDB | Commit SHAs for incremental ingestion |
 | **Document Storage** | S3 | ADRs, READMEs, code artifacts |
 | **Messaging** | SQS FIFO | Batch processing queue |
 | **Infrastructure** | Terraform | IaC for all AWS resources |
@@ -87,7 +90,6 @@ outcome-ops-ai-assist/
 │   ├── s3.tf                        # S3 knowledge base bucket
 │   ├── variables.tf                 # Variable definitions
 │   ├── backend.tf                   # Remote state configuration
-│   ├── dev.tfvars                   # Dev environment (in .gitignore)
 │   ├── prd.tfvars                   # Prod environment (in .gitignore)
 │   └── .tfvars.example              # Template for tfvars files
 ├── Makefile                         # Build orchestration
@@ -106,7 +108,7 @@ Automatically ingest patterns from your codebase:
 ```bash
 # Manual trigger
 aws lambda invoke \
-  --function-name dev-outcome-ops-ai-assist-ingest-docs \
+  --function-name prd-outcome-ops-ai-assist-ingest-docs \
   response.json
 ```
 
@@ -117,7 +119,7 @@ aws lambda invoke \
 - **Architecture docs** from `docs/architecture.md`
 - **Deployment docs** from `docs/deployment.md`
 
-**Stored in DynamoDB with embeddings** for semantic search and RAG pipelines.
+**Stored in S3 Vectors with embeddings** for semantic search and RAG pipelines.
 
 **Full details:** See [lambda-ingest-docs.md](lambda-ingest-docs.md)
 
@@ -155,8 +157,8 @@ outcome-ops-assist "Show me examples of DynamoDB patterns"
 
 **How it works:**
 1. Generates query embedding via Bedrock Titan v2
-2. Vector searches DynamoDB for similar patterns
-3. Passes top results to Claude 3.5 Sonnet
+2. Vector searches S3 Vectors for similar patterns (<100ms)
+3. Passes top results to Claude Sonnet 4.5
 4. Returns grounded answer with source citations
 
 **See:** [CLI Usage Guide](cli-usage.md) for installation, options, examples, and troubleshooting
@@ -180,6 +182,213 @@ Claude can:
 - Create Terraform infrastructure modules
 - Write test fixtures matching your patterns
 - Generate database schemas and migrations
+
+---
+
+## Repository Configuration (.outcomeops.yaml)
+
+Each repository can have a `.outcomeops.yaml` file at the root to configure code generation, testing, and auto-fix behavior.
+
+### Full Configuration Reference
+
+```yaml
+# .outcomeops.yaml - Repository configuration for OutcomeOps AI Assist
+version: "1.0"
+
+# Ingestion settings - controls how files are classified during sync
+ingestion:
+  # Directories containing standards/ADRs (files here get doc_type="adr")
+  # Used by generate-code for standards context
+  # Default: ["docs/adr"]
+  standards_paths:
+    - "docs/adr"
+    - "decisions"
+    - "engineering-standards"
+
+# Code generation settings
+code_generation:
+  # Backend type: "python", "java", or "typescript"
+  backend: "python"
+
+  # Custom guidelines for this repository (included in every plan)
+  custom_guidelines: |
+    Follow ADR-006 for Python dependency management (pin exact versions).
+    Use Pydantic for all request/response validation.
+    All Lambda handlers must follow the pattern in existing handlers.
+
+  # Additional KB queries to run for every plan
+  additional_kb_queries:
+    - "Lambda handler patterns"
+    - "Bedrock Claude integration"
+
+  # Python-specific configuration (when backend: "python")
+  python:
+    # Directories containing local modules (for auto-fix module detection)
+    source_paths:
+      - "src"
+      - "app"
+      - "myproject"
+
+    # Regex patterns for local module names (skip pip install, use Claude fix)
+    local_module_patterns:
+      - "^mycompany_"
+      - "^internal_"
+
+  # Java-specific configuration (when backend: "java")
+  java:
+    # Directories containing Java source files
+    source_paths:
+      - "src/main/java"
+      - "src/test/java"
+      - "app/src/main/java"
+
+  # TypeScript-specific configuration (when backend: "typescript")
+  typescript:
+    # Directories containing TypeScript/JavaScript source files
+    source_paths:
+      - "src"
+      - "lib"
+      - "packages/core/src"  # monorepo
+
+# Project context for plan generation
+project_context: |
+  This is a Django web application with the following structure:
+  - myproject/ - Django project settings
+  - users/ - User management app
+  - orders/ - Order processing app
+  - api/ - REST API endpoints
+
+# Testing configuration
+testing:
+  framework: "pytest"  # or "junit", "jest"
+  test_directory: "tests/"  # or "lambda/tests/unit", "src/test/java"
+  min_coverage: 80
+
+# Infrastructure configuration
+infrastructure:
+  tool: "terraform"  # or "cloudformation", "pulumi"
+  directory: "terraform"
+
+# ADRs to always include in context
+required_adrs:
+  # ADRs from this repository
+  repo:
+    - "ADR-001-authentication"
+    - "ADR-002-database-patterns"
+  # ADRs from global/organization ADR repositories
+  global:
+    - "ADR-001-terraform-infrastructure-patterns"
+    - "ADR-004-lambda-handler-standards"
+```
+
+### Python Backend Configuration
+
+For Python projects (Lambda, Flask, Django, etc.), the `python` section controls auto-fix behavior:
+
+```yaml
+code_generation:
+  backend: "python"
+  python:
+    # Where to look for local modules
+    source_paths:
+      - "src"           # src/mymodule/
+      - "app"           # app/models.py
+      - "myproject"     # myproject/__init__.py
+
+    # Patterns that indicate a local module (not PyPI)
+    local_module_patterns:
+      - "^mycompany_"   # mycompany_utils, mycompany_auth
+      - "^internal_"    # internal_services
+```
+
+**Default source paths** (always included, combined with config):
+- Root directory
+- `src/`, `app/`, `apps/`, `lib/`
+- `lambda/`, `lambdas/`, `functions/`
+- `django/`, `flask_app/`
+
+**Default local module patterns** (always included, combined with config):
+- `^lambda_` - Lambda function modules
+- `^test_` - Test modules
+- `_handler$` - Handler modules
+- `_service$` - Service modules
+- `_utils$`, `_helpers$` - Utility modules
+- `_models$`, `_views$` - Django/Flask modules
+
+### Java Backend Configuration
+
+For Java/Kotlin projects (Spring Boot, Gradle, Maven):
+
+```yaml
+code_generation:
+  backend: "java"
+  java:
+    # Where to look for Java source files
+    source_paths:
+      - "src/main/java"
+      - "src/test/java"
+      - "app/src/main/java"  # Android
+```
+
+**Default source paths** (always included, combined with config):
+- `src/main/java`, `src/test/java`
+- `src/main/kotlin`, `src/test/kotlin`
+- `*/src/main/java` (multi-module)
+- `app/src/main/java` (Android)
+
+### TypeScript Backend Configuration
+
+For TypeScript/JavaScript projects (Next.js, React, Node.js):
+
+```yaml
+code_generation:
+  backend: "typescript"
+  typescript:
+    # Where to look for TypeScript/JavaScript source files
+    source_paths:
+      - "src"
+      - "lib"
+      - "packages/core/src"  # monorepo
+```
+
+**Default source paths** (always included, combined with config):
+- Root directory
+- `src/`, `lib/`, `app/`, `pages/`, `components/`
+- `utils/`, `services/`
+- `test/`, `tests/`, `__tests__/`, `spec/`
+
+**Supported package managers**: npm, yarn, pnpm (auto-detected)
+**Supported test runners**: Jest, Vitest, Mocha (auto-detected)
+
+### Auto-Fix Behavior
+
+When tests fail with import/compilation errors, OutcomeOps:
+
+1. **Detects error type**: import_error, syntax_error, or logic_error
+2. **For import errors**:
+   - Checks if module is local (using `source_paths` and `local_module_patterns`)
+   - **Local module**: Uses Claude to analyze and fix the import
+   - **External package**: Tries `pip install` first, falls back to Claude if it fails
+3. **For syntax errors**: Uses Claude to fix the syntax
+4. **For logic errors**: Creates PR and notifies humans (no auto-fix)
+
+**Example auto-fix flow for Python:**
+
+```
+Error: ModuleNotFoundError: No module named 'users.models'
+
+1. Check source_paths: Found 'users/' in configured paths → LOCAL
+2. Skip pip install (it's not a PyPI package)
+3. Query knowledge base for:
+   - "Python import patterns and module structure"
+   - "Python testing import patterns and conventions"
+4. Send to Claude with:
+   - File content
+   - Error message
+   - Knowledge base context
+5. Apply Claude's fix
+6. Re-run tests
+```
 
 ---
 
@@ -222,11 +431,11 @@ ADRs flow into the knowledge base:
 ```
 docs/adr/*.md
      ↓
-[ingest-kb Lambda]
+[ingest-docs Lambda]
      ↓
 Generate embedding via Bedrock Titan v2
      ↓
-Store in DynamoDB with metadata
+Store in S3 Vectors with metadata
      ↓
 Available for queries + code generation
 ```
@@ -237,19 +446,19 @@ Available for queries + code generation
 
 ### Required Parameters
 
-Create `dev.tfvars` and `prd.tfvars`:
+Create `prd.tfvars`:
 
 ```hcl
 aws_region           = "us-east-1"
-environment          = "dev"
+environment          = "prd"
 app_name             = "outcome-ops-ai-assist"
 
 # GitHub access
-github_token_ssm_path = "/outcome-ops/dev/github-token"
+github_token_ssm_path = "/outcome-ops/prd/github-token"
 
 # Bedrock models
 bedrock_embedding_model = "amazon.titan-embed-text-v2:0"
-bedrock_claude_model    = "anthropic.claude-3-5-sonnet-20241022"
+bedrock_claude_model    = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
 
 # Repository allowlist
 repos_to_ingest = [
@@ -265,6 +474,69 @@ repos_to_ingest = [
   }
 ]
 ```
+
+### Resource Tagging
+
+All AWS resources are automatically tagged with default tags for cost allocation, compliance, and resource management. You can also add custom tags for your organization's requirements.
+
+**Default Tags (Applied Automatically)**
+
+All resources created by Terraform include these tags:
+
+| Tag Key | Value | Purpose |
+|---------|-------|---------|
+| `Environment` | `dev` or `prd` | Environment identification |
+| `Application` | `outcome-ops-ai-assist` | Application/cost center grouping |
+| `ManagedBy` | `Terraform` | Infrastructure management tracking |
+
+**Adding Custom Tags**
+
+Add custom tags in your environment's tfvars file (`dev.tfvars` or `prd.tfvars`):
+
+```hcl
+# Additional Tags
+# Add custom tags here - they will be merged with default tags
+tags = {
+  CostCenter  = "engineering"
+  Team        = "platform"
+  Owner       = "devops@company.com"
+  Project     = "ai-assist"
+  Compliance  = "sox"
+}
+```
+
+**Enterprise Tag Examples**
+
+Common enterprise tagging patterns:
+
+```hcl
+# Cost allocation
+tags = {
+  CostCenter   = "12345"
+  BusinessUnit = "engineering"
+  Project      = "outcome-ops"
+}
+
+# Compliance and governance
+tags = {
+  DataClassification = "internal"
+  Compliance         = "hipaa"
+  Owner              = "security-team"
+}
+
+# Operations
+tags = {
+  SupportTeam  = "platform-engineering"
+  OnCallGroup  = "devops-oncall"
+  BackupPolicy = "daily"
+}
+```
+
+**Tag Naming Convention**
+
+Follow PascalCase for tag keys (e.g., `CostCenter`, `BusinessUnit`, `DataClassification`) to maintain consistency with AWS best practices and the default tags.
+
+---
 
 ### Secrets Management
 
@@ -286,9 +558,9 @@ Lambda functions retrieve at runtime.
 
 ```bash
 cd terraform
-terraform workspace select dev
-terraform plan -var-file=dev.tfvars
-terraform apply -var-file=dev.tfvars
+terraform workspace select prd
+terraform plan -var-file=prd.tfvars
+terraform apply -var-file=prd.tfvars
 ```
 
 ### Production Environment
@@ -315,12 +587,12 @@ GitHub Actions automatically:
 ### CloudWatch Logs
 
 All Lambda functions log to CloudWatch:
-- `dev-outcome-ops-ai-assist-ingest-docs`: Ingestion events
-- `dev-outcome-ops-ai-assist-vector-query`: Search queries
-- `dev-outcome-ops-ai-assist-ask-claude`: RAG generations
-- `dev-outcome-ops-ai-assist-generate-code-maps`: Code analysis
-- `dev-outcome-ops-ai-assist-analyze-pr`: PR analysis orchestration
-- `dev-outcome-ops-ai-assist-process-pr-check`: PR check worker (SQS consumer)
+- `prd-outcome-ops-ai-assist-ingest-docs`: Ingestion events
+- `prd-outcome-ops-ai-assist-query-kb`: Knowledge base queries (vector search + RAG)
+- `prd-outcome-ops-ai-assist-ask-claude`: RAG generations
+- `prd-outcome-ops-ai-assist-generate-code-maps`: Code analysis
+- `prd-outcome-ops-ai-assist-analyze-pr`: PR analysis orchestration
+- `prd-outcome-ops-ai-assist-process-pr-check`: PR check worker (SQS consumer)
 
 ### CloudWatch Alarms
 
@@ -332,7 +604,7 @@ Set up alerts for:
 
 ```bash
 # View recent errors
-aws logs tail /aws/lambda/dev-outcome-ops-ai-assist-ask-claude --follow
+aws logs tail /aws/lambda/prd-outcome-ops-ai-assist-ask-claude --follow
 ```
 
 ---
@@ -358,10 +630,10 @@ Test the full RAG pipeline:
 
 ```bash
 # 1. Ingest knowledge
-aws lambda invoke --function-name dev-outcome-ops-ai-assist-ingest-docs response.json
+aws lambda invoke --function-name prd-outcome-ops-ai-assist-ingest-docs response.json
 
 # 2. Generate code maps
-aws lambda invoke --function-name dev-outcome-ops-ai-assist-generate-code-maps response.json
+aws lambda invoke --function-name prd-outcome-ops-ai-assist-generate-code-maps response.json
 
 # 3. Query knowledge base
 outcome-ops-assist "How should I structure a new Lambda handler?"
@@ -420,7 +692,7 @@ outcome-ops-assist "Show me examples of database query patterns" --topK 10
 
 ### Add a New Repository to Ingest
 
-1. Add to `terraform/dev.tfvars`:
+1. Add to `terraform/prd.tfvars`:
    ```hcl
    repos_to_ingest = [
      {
@@ -452,7 +724,7 @@ outcome-ops-assist "Show me examples of database query patterns" --topK 10
 3. Trigger code map regeneration:
    ```bash
    aws lambda invoke \
-     --function-name dev-outcome-ops-ai-assist-generate-code-maps \
+     --function-name prd-outcome-ops-ai-assist-generate-code-maps \
      --payload '{"repos": ["outcome-ops-ai-assist"]}' \
      response.json
    ```
@@ -465,14 +737,16 @@ outcome-ops-assist "Show me examples of database query patterns" --topK 10
 
 1. Check ingestion completed:
    ```bash
-   aws logs tail /aws/lambda/dev-outcome-ops-ai-assist-ingest-docs --follow
+   aws logs tail /aws/lambda/prd-outcome-ops-ai-assist-ingest-docs --follow
    ```
 
-2. Verify documents in DynamoDB:
+2. Verify embeddings exist:
    ```bash
-   aws dynamodb scan \
-     --table-name dev-outcome-ops-ai-assist-kb \
-     --limit 10
+   # Check S3 Vectors index has vectors
+   aws s3vectors list-vectors \
+     --vector-bucket-name prd-outcome-ops-ai-assist-vectors \
+     --index-name knowledge-base \
+     --max-results 10
    ```
 
 3. Re-trigger ingestion if needed
@@ -482,7 +756,7 @@ outcome-ops-assist "Show me examples of database query patterns" --topK 10
 1. Check if code map is current:
    ```bash
    aws lambda invoke \
-     --function-name dev-outcome-ops-ai-assist-generate-code-maps \
+     --function-name prd-outcome-ops-ai-assist-generate-code-maps \
      --payload '{"repos": ["outcome-ops-ai-assist"]}' \
      response.json
    ```
@@ -538,5 +812,7 @@ aws sqs get-queue-attributes \
 ## External Resources
 
 - **AWS Bedrock Documentation**: https://docs.aws.amazon.com/bedrock/
-- **Claude 3.5 Sonnet**: https://www.anthropic.com/claude
+- **Claude Sonnet 4.5**: https://www.anthropic.com/claude
 - **Terraform AWS Lambda Module**: https://registry.terraform.io/modules/terraform-aws-modules/lambda/aws/
+
+<!-- Confluence sync -->

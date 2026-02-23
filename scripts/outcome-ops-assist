@@ -4,18 +4,22 @@
 # Usage:
 #   outcome-ops-assist "your question here" [--topK 5] [--env dev]
 #   outcome-ops-assist analyze-pr <pr_number> <repository> [--env dev]
+#
+# Legacy subcommands (ingest-docs, generate-code-maps) have been removed.
+# These functions are now handled by the workspace pipeline (github-sync -> process-repo-summary).
 
 set -euo pipefail
 
 # Default values
-ENVIRONMENT="${ENVIRONMENT:-dev}"
+ENVIRONMENT="${ENVIRONMENT:-prd}"
 APP_NAME="${APP_NAME:-outcome-ops-ai-assist}"
 TOP_K=5
 QUERY=""
 COMMAND=""
 PR_NUMBER=""
 REPOSITORY=""
-REPO_NAME=""
+SHOW_COST=false
+MODEL="haiku"
 
 # Show help
 show_help() {
@@ -29,21 +33,15 @@ USAGE:
   PR Analysis:
     outcome-ops-assist analyze-pr <pr_number> <repository> [options]
 
-  Documentation Ingestion:
-    outcome-ops-assist ingest-docs [repo_name] [options]
-
-  Code Maps Generation:
-    outcome-ops-assist generate-code-maps [repo_name] [options]
-
 COMMANDS:
   analyze-pr           Analyze a GitHub Pull Request
-  ingest-docs          Ingest ADRs, READMEs, and docs/ from repositories
-  generate-code-maps   Generate code maps and architectural summaries
   (default)            Query the knowledge base
 
 OPTIONS:
   --env ENV         Environment (default: dev, from \$ENVIRONMENT env var)
   --topK N          Number of top results for KB queries (default: 5)
+  --cost            Show token usage and cost for KB queries
+  --advanced        Use Sonnet model for complex reasoning (default: Haiku)
   --help, -h        Show this help message
 
 EXAMPLES:
@@ -55,16 +53,6 @@ EXAMPLES:
   PR Analysis:
     outcome-ops-assist analyze-pr 123 owner/repo
     outcome-ops-assist analyze-pr 456 myorg/myrepo --env prd
-
-  Documentation Ingestion:
-    outcome-ops-assist ingest-docs                           # Ingest all repos
-    outcome-ops-assist ingest-docs outcome-ops-ai-assist     # Single repo
-    outcome-ops-assist ingest-docs --env prd                 # Production
-
-  Code Maps Generation:
-    outcome-ops-assist generate-code-maps                    # Generate for all repos
-    outcome-ops-assist generate-code-maps outcome-ops-ai-assist  # Single repo
-    outcome-ops-assist generate-code-maps --env prd          # Production
 
 ENVIRONMENT VARIABLES:
   AWS_PROFILE       AWS profile to use for authentication
@@ -96,24 +84,6 @@ while [[ $# -gt 0 ]]; do
       REPOSITORY="$2"
       shift 2
       ;;
-    ingest-docs)
-      COMMAND="ingest-docs"
-      shift
-      # Optional repo name
-      if [[ $# -gt 0 && ! "$1" =~ ^-- ]]; then
-        REPO_NAME="$1"
-        shift
-      fi
-      ;;
-    generate-code-maps)
-      COMMAND="generate-code-maps"
-      shift
-      # Optional repo name
-      if [[ $# -gt 0 && ! "$1" =~ ^-- ]]; then
-        REPO_NAME="$1"
-        shift
-      fi
-      ;;
     --env)
       ENVIRONMENT="$2"
       shift 2
@@ -121,6 +91,14 @@ while [[ $# -gt 0 ]]; do
     --topK)
       TOP_K="$2"
       shift 2
+      ;;
+    --cost)
+      SHOW_COST=true
+      shift
+      ;;
+    --advanced)
+      MODEL="sonnet"
+      shift
       ;;
     --help|-h)
       show_help
@@ -148,13 +126,19 @@ query_kb() {
   echo "🤖 Querying knowledge base..." >&2
   echo "Environment: $ENVIRONMENT" >&2
   echo "Query: $query" >&2
+  if [[ "$MODEL" == "sonnet" ]]; then
+    echo "Model: Sonnet (advanced reasoning)" >&2
+  else
+    echo "Model: Haiku (fast)" >&2
+  fi
   echo "" >&2
 
   # Construct payload
   local payload=$(jq -n \
     --arg query "$query" \
     --argjson topK "$TOP_K" \
-    '{query: $query, topK: $topK}')
+    --arg model "$MODEL" \
+    '{query: $query, topK: $topK, model: $model}')
 
   # Invoke Lambda and capture response
   local temp_file=$(mktemp)
@@ -214,6 +198,34 @@ query_kb() {
       echo "  • $source" >&2
     done
     echo "" >&2
+  fi
+
+  # Display cost if --cost flag was passed
+  if [[ "$SHOW_COST" == "true" ]]; then
+    local usage
+    if [[ -z "$body" || "$body" == "null" ]]; then
+      usage=$(echo "$response" | jq -r '.usage' 2>/dev/null)
+    else
+      usage=$(echo "$parsed_body" | jq -r '.usage' 2>/dev/null)
+    fi
+
+    if [[ -n "$usage" && "$usage" != "null" ]]; then
+      local input_tokens=$(echo "$usage" | jq -r '.input_tokens // 0' 2>/dev/null)
+      local output_tokens=$(echo "$usage" | jq -r '.output_tokens // 0' 2>/dev/null)
+      local cost_usd=$(echo "$usage" | jq -r '.cost_usd // 0' 2>/dev/null)
+      local used_model=$(echo "$usage" | jq -r '.model // "haiku"' 2>/dev/null)
+
+      local model_display="Haiku"
+      if [[ "$used_model" == "sonnet" ]]; then
+        model_display="Sonnet"
+      fi
+
+      echo "💰 Cost ($model_display):" >&2
+      echo "  • Input tokens: $input_tokens" >&2
+      echo "  • Output tokens: $output_tokens" >&2
+      echo "  • Cost: \$$cost_usd" >&2
+      echo "" >&2
+    fi
   fi
 }
 
@@ -286,160 +298,6 @@ analyze_pr() {
 }
 
 # ============================================================================
-# Command: Ingest Docs
-# ============================================================================
-
-ingest_docs() {
-  local repo_name="${1:-}"
-  local lambda_name="${ENVIRONMENT}-${APP_NAME}-ingest-docs"
-
-  echo "📚 Ingesting documentation..." >&2
-  echo "Environment: $ENVIRONMENT" >&2
-  if [[ -n "$repo_name" ]]; then
-    echo "Repository: $repo_name" >&2
-  else
-    echo "Repositories: All configured repos" >&2
-  fi
-  echo "" >&2
-
-  # Construct payload
-  local payload
-  if [[ -n "$repo_name" ]]; then
-    payload=$(jq -n --arg repo "$repo_name" '{repos: [$repo]}')
-  else
-    payload='{}'
-  fi
-
-  # Invoke Lambda and capture response
-  local temp_file=$(mktemp)
-  trap "rm -f $temp_file" EXIT
-
-  if ! aws lambda invoke \
-    --function-name "$lambda_name" \
-    --payload "$payload" \
-    --cli-binary-format raw-in-base64-out \
-    "$temp_file" > /dev/null 2>&1; then
-    echo "❌ Error: Failed to invoke Lambda function: $lambda_name" >&2
-    echo "Make sure the function exists and you have permissions to invoke it" >&2
-    exit 1
-  fi
-
-  local response=$(cat "$temp_file")
-
-  # Check for Lambda errors
-  if echo "$response" | jq -e '.errorMessage' > /dev/null 2>&1; then
-    echo "❌ Error from Lambda:" >&2
-    echo "$response" | jq -r '.errorMessage' >&2
-    exit 1
-  fi
-
-  # Parse response
-  local status_code=$(echo "$response" | jq -r '.statusCode' 2>/dev/null)
-  local body=$(echo "$response" | jq -r '.body' 2>/dev/null)
-
-  if [[ "$status_code" != "200" ]]; then
-    echo "❌ Error: Ingestion failed with status $status_code" >&2
-    echo "$body" >&2
-    exit 1
-  fi
-
-  # Parse body
-  local parsed_body=$(echo "$body" | jq -r '.')
-  local repos_processed=$(echo "$parsed_body" | jq -r '.repos_processed' 2>/dev/null)
-  local total_docs=$(echo "$parsed_body" | jq -r '.total_docs_ingested' 2>/dev/null)
-
-  echo "✅ Documentation ingestion complete" >&2
-  echo "" >&2
-  echo "Repositories processed: $repos_processed" >&2
-  echo "Total documents ingested: $total_docs" >&2
-}
-
-# ============================================================================
-# Command: Generate Code Maps
-# ============================================================================
-
-generate_code_maps() {
-  local repo_name="${1:-}"
-  local lambda_name="${ENVIRONMENT}-${APP_NAME}-generate-code-maps"
-
-  echo "🗺️  Generating code maps..." >&2
-  echo "Environment: $ENVIRONMENT" >&2
-  if [[ -n "$repo_name" ]]; then
-    echo "Repository: $repo_name" >&2
-  else
-    echo "Repositories: All application/internal repos" >&2
-  fi
-  echo "" >&2
-
-  # Construct payload
-  local payload
-  if [[ -n "$repo_name" ]]; then
-    # Single repo mode
-    payload=$(jq -n --arg repo "$repo_name" '{repos: [$repo]}')
-  else
-    # 0-day load mode: Get all application/internal repos from allowlist
-    local allowlist_param="/${ENVIRONMENT}/${APP_NAME}/config/repos-allowlist"
-    local allowlist=$(aws ssm get-parameter --name "$allowlist_param" --query 'Parameter.Value' --output text 2>/dev/null)
-
-    if [[ -z "$allowlist" ]]; then
-      echo "❌ Error: Failed to fetch repos allowlist from SSM" >&2
-      exit 1
-    fi
-
-    # Filter to application/internal repos only (exclude standards repos)
-    local app_repos=$(echo "$allowlist" | jq -r '.repos[] | select(.type != "standards") | .name')
-
-    # Build repos array for payload
-    payload=$(echo "$app_repos" | jq -R -s -c 'split("\n") | map(select(length > 0)) | {repos: .}')
-  fi
-
-  # Invoke Lambda and capture response
-  local temp_file=$(mktemp)
-  trap "rm -f $temp_file" EXIT
-
-  if ! aws lambda invoke \
-    --function-name "$lambda_name" \
-    --payload "$payload" \
-    --cli-binary-format raw-in-base64-out \
-    "$temp_file" > /dev/null 2>&1; then
-    echo "❌ Error: Failed to invoke Lambda function: $lambda_name" >&2
-    echo "Make sure the function exists and you have permissions to invoke it" >&2
-    exit 1
-  fi
-
-  local response=$(cat "$temp_file")
-
-  # Check for Lambda errors
-  if echo "$response" | jq -e '.errorMessage' > /dev/null 2>&1; then
-    echo "❌ Error from Lambda:" >&2
-    echo "$response" | jq -r '.errorMessage' >&2
-    exit 1
-  fi
-
-  # Parse response
-  local status_code=$(echo "$response" | jq -r '.statusCode' 2>/dev/null)
-  local body=$(echo "$response" | jq -r '.body' 2>/dev/null)
-
-  if [[ "$status_code" != "200" ]]; then
-    echo "❌ Error: Code map generation failed with status $status_code" >&2
-    echo "$body" >&2
-    exit 1
-  fi
-
-  # Parse body
-  local parsed_body=$(echo "$body" | jq -r '.')
-  local repos_processed=$(echo "$parsed_body" | jq -r '.repos_processed | length' 2>/dev/null)
-  local total_files=$(echo "$parsed_body" | jq -r '.total_files_analyzed' 2>/dev/null)
-  local batches_queued=$(echo "$parsed_body" | jq -r '.batches_queued' 2>/dev/null)
-
-  echo "✅ Code map generation complete" >&2
-  echo "" >&2
-  echo "Repositories processed: $repos_processed" >&2
-  echo "Total files analyzed: $total_files" >&2
-  echo "Batches queued for processing: $batches_queued" >&2
-}
-
-# ============================================================================
 # Main Execution
 # ============================================================================
 
@@ -466,14 +324,6 @@ case "$COMMAND" in
     fi
 
     analyze_pr "$PR_NUMBER" "$REPOSITORY"
-    ;;
-
-  ingest-docs)
-    ingest_docs "$REPO_NAME"
-    ;;
-
-  generate-code-maps)
-    generate_code_maps "$REPO_NAME"
     ;;
 
   *)

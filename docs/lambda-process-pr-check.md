@@ -31,14 +31,14 @@ The process-pr-check Lambda function is the **worker** in the PR analysis system
 ```
 
 **Validation:**
-- `checkType` must be one of: `ADR_COMPLIANCE`, `README_FRESHNESS`, `TEST_COVERAGE`, `BREAKING_CHANGES`, `ARCHITECTURAL_DUPLICATION`
+- `checkType` must be one of: `ADR_COMPLIANCE`, `README_FRESHNESS`, `TEST_COVERAGE`, `BREAKING_CHANGES`, `ARCHITECTURAL_DUPLICATION`, `LICENSE_COMPLIANCE`
 - `pr_number` must be a positive integer
 - `repository` must be in format `owner/repo`
 - `changedFiles` must be an array of file paths
 
 ## Check Handlers
 
-The Lambda routes to five specialized check handlers:
+The Lambda routes to six specialized check handlers:
 
 ### 1. ADR Compliance (`adr_compliance.py`)
 
@@ -110,6 +110,59 @@ The Lambda routes to five specialized check handlers:
 
 **Dependencies:**
 - None (simple pattern matching)
+
+### 6. License Compliance (`license_compliance.py`)
+
+**Purpose:** Detect prohibited licenses, ensure copyright headers, and detect code similarity to copyrighted OSS per ADR-008
+
+**Analysis Method (Tiered Approach):**
+
+**Phase 1: License Header Detection (Always Runs)**
+- Scans all source code files (.py, .js, .ts, .go, .java, etc.) for license text
+- Detects prohibited licenses (GPL, AGPL, SSPL) using regex patterns
+- Detects allowed licenses (MIT, Apache-2.0, BSD, ISC)
+- Detects review-required licenses (LGPL, MPL)
+- Checks new files for copyright headers
+- Returns FAIL for prohibited licenses, WARN for review-required or missing copyright
+
+**Phase 2: AI Code Similarity Detection (AI-Generated Code Only)**
+- Filters to commits with "Generated with Claude Code" marker
+- **Phase 2.1 (Quick Pattern Matching)**: Fast regex check for known GPL algorithm patterns (quicksort, B-tree, JWT validation, etc.)
+  - If no pattern match → skip expensive Claude analysis (80-90% cost savings)
+  - If pattern match → proceed to Phase 2.2
+- **Phase 2.2 (Claude Semantic Analysis)**: Deep similarity analysis
+  - Asks Claude: "What problem does this code solve?"
+  - Asks Claude: "Name 3 OSS projects that solve this similarly"
+  - Analyzes similarity percentage, confidence level, matching patterns
+  - Returns WARN for HIGH/MEDIUM confidence matches to GPL/AGPL/SSPL projects
+- **Advisory-Only**: Always returns WARN (never FAIL) to allow human review
+
+**Dependencies:**
+- Knowledge base (via query-kb Lambda for ADR-008)
+- GitHub API (for file diffs and commit metadata)
+- Bedrock Claude (for license compliance analysis and code similarity detection)
+
+**License Detection Patterns:**
+- PROHIBITED (FAIL): GPL, GPLv2, GPLv3, AGPL, SSPL
+- ALLOWED (PASS): MIT, Apache-2.0, BSD, ISC
+- REVIEW REQUIRED (WARN): LGPL, MPL, Unknown, AI code similarity detected
+
+**Copyright Header Format:**
+```python
+# Copyright 2024-2025 [Company Name]
+# SPDX-License-Identifier: Apache-2.0
+```
+
+**Example Output (Phase 2 Triggered):**
+```
+License Compliance Check: WARN
+
+Scanned 5 source files (3 AI-generated)
+
+- src/auth/token_validator.py: Code similarity detected: 85% similar to jwt-auth-gpl (GPL-3.0) - HIGH confidence
+- src/utils/cache.py: No prohibited licenses detected
+- src/api/routes.py: New file missing copyright header
+```
 
 ## Processing Flow
 
@@ -322,3 +375,5 @@ cd lambda/tests
 - [Architecture Overview](architecture.md) - System design and data flows
 - [ADR-002: Development Workflow](adr/ADR-002-development-workflow.md) - PR analysis workflow
 - [ADR-003: Testing Standards](adr/ADR-003-testing-standards.md) - Test patterns
+
+<!-- Confluence sync -->

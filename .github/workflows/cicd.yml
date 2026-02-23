@@ -93,6 +93,8 @@ jobs:
         continue-on-error: true # To make sure that SARIF upload gets called
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --all-projects --severity-threshold=high
 
   sonarcloud:
     name: SonarCloud Analysis
@@ -126,7 +128,7 @@ jobs:
           # Run pytest from project root for correct coverage paths
           # Using coverage run to track dynamically loaded modules
           # Note: Only unit tests run in CI - integration tests run locally
-          coverage run --source=lambda/vector-query,lambda/ask-claude,lambda/query-kb,lambda/ingest-docs,lambda/generate-code-maps,lambda/generate-code,lambda/analyze-pr,lambda/process-pr-check,lambda/process-batch-summary \
+          coverage run --source=lambda/analyze-pr,lambda/ask-claude,lambda/generate-code,lambda/process-batch-summary,lambda/process-pr-check,lambda/process-repo-summary,lambda/query-kb,lambda/run-tests,lambda/vector-query \
             -m pytest lambda/tests/unit/ \
             --junitxml=lambda/junit.xml \
             -v
@@ -134,10 +136,10 @@ jobs:
           coverage report --skip-covered
 
       - name: SonarCloud Scan
-        uses: SonarSource/sonarqube-scan-action@v5.1.0
+        uses: SonarSource/sonarqube-scan-action@v6.0.0
         with:
           args: >
-            -Dsonar.projectKey=bcarpio_outcome-ops-ai-assist
+            -Dsonar.projectKey=bcarpio_outcome-ops-ai-assist-private
             -Dsonar.organization=bcarpio
             -Dsonar.sources=lambda
             -Dsonar.tests=lambda/tests

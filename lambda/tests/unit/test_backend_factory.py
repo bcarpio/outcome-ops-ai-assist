@@ -6,14 +6,14 @@ import os
 import importlib.util
 
 # Load the backend modules
-base_path = os.path.join(os.path.dirname(__file__), '../../generate-code-maps/backends/base.py')
+base_path = os.path.join(os.path.dirname(__file__), '../../process-repo-summary/backends/base.py')
 spec = importlib.util.spec_from_file_location("backend_base", base_path)
 base_module = importlib.util.module_from_spec(spec)
 sys.modules['backend_base'] = base_module
 sys.modules['base'] = base_module  # Also register as 'base' for factory.py imports
 spec.loader.exec_module(base_module)
 
-factory_path = os.path.join(os.path.dirname(__file__), '../../generate-code-maps/backends/factory.py')
+factory_path = os.path.join(os.path.dirname(__file__), '../../process-repo-summary/backends/factory.py')
 spec = importlib.util.spec_from_file_location("backend_factory", factory_path)
 factory_module = importlib.util.module_from_spec(spec)
 sys.modules['backend_factory'] = factory_module

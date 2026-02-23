@@ -16,11 +16,60 @@ import sys
 from datetime import datetime
 from unittest.mock import Mock, patch
 import importlib.util
+from types import ModuleType
 
 import pytest
 from pydantic import ValidationError
 
-# Add process-pr-check directory to Python path for check_handlers import
+# Set up the check_handlers package with all modules
+# This is needed because handler.py imports from check_handlers
+check_handlers_dir = os.path.join(os.path.dirname(__file__), '../../process-pr-check/check_handlers')
+
+# First, load bedrock_utils
+bedrock_utils_path = os.path.join(check_handlers_dir, 'bedrock_utils.py')
+bedrock_spec = importlib.util.spec_from_file_location("bedrock_utils", bedrock_utils_path)
+bedrock_module = importlib.util.module_from_spec(bedrock_spec)
+bedrock_spec.loader.exec_module(bedrock_module)
+
+# Create check_handlers package
+check_handlers_package = ModuleType("check_handlers")
+check_handlers_package.__path__ = [check_handlers_dir]
+check_handlers_package.bedrock_utils = bedrock_module
+check_handlers_package.UsageTracker = bedrock_module.UsageTracker
+sys.modules['check_handlers'] = check_handlers_package
+sys.modules['check_handlers.bedrock_utils'] = bedrock_module
+
+# Helper to load a check handler module
+def load_check_handler(name):
+    path = os.path.join(check_handlers_dir, f'{name}.py')
+    spec = importlib.util.spec_from_file_location(
+        f"check_handlers.{name}",
+        path,
+        submodule_search_locations=[check_handlers_dir]
+    )
+    module = importlib.util.module_from_spec(spec)
+    module.__package__ = "check_handlers"
+    sys.modules[f'check_handlers.{name}'] = module
+    spec.loader.exec_module(module)
+    return module
+
+# Load all check handler modules
+adr_compliance_module = load_check_handler('adr_compliance')
+architectural_duplication_module = load_check_handler('architectural_duplication')
+breaking_changes_module = load_check_handler('breaking_changes')
+license_compliance_module = load_check_handler('license_compliance')
+readme_freshness_module = load_check_handler('readme_freshness')
+test_coverage_module = load_check_handler('test_coverage')
+
+# Set up exports in check_handlers package
+check_handlers_package.check_adr_compliance = adr_compliance_module.check_adr_compliance
+check_handlers_package.check_architectural_duplication = architectural_duplication_module.check_architectural_duplication
+check_handlers_package.check_breaking_changes = breaking_changes_module.check_breaking_changes
+check_handlers_package.check_license_compliance = license_compliance_module.check_license_compliance
+check_handlers_package.check_readme_freshness = readme_freshness_module.check_readme_freshness
+check_handlers_package.check_test_coverage = test_coverage_module.check_test_coverage
+
+# Add process-pr-check directory to Python path for handler.py
 process_pr_check_dir = os.path.join(os.path.dirname(__file__), '../../process-pr-check')
 sys.path.insert(0, process_pr_check_dir)
 

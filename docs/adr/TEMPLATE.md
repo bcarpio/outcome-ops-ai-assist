@@ -78,3 +78,5 @@ resource "aws_example" "resource" {
 Version History:
 
 - v1.0 (YYYY-MM-DD): Initial decision
+
+<!-- Confluence sync -->

@@ -6,7 +6,7 @@ import os
 import importlib.util
 
 # Load the backend base module
-base_path = os.path.join(os.path.dirname(__file__), '../../generate-code-maps/backends/base.py')
+base_path = os.path.join(os.path.dirname(__file__), '../../process-repo-summary/backends/base.py')
 spec = importlib.util.spec_from_file_location("backend_base", base_path)
 base_module = importlib.util.module_from_spec(spec)
 sys.modules['backend_base'] = base_module

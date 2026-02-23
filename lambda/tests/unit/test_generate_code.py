@@ -36,6 +36,8 @@ spec.loader.exec_module(handler_module)
 # Import modules for functions that moved
 import github_api
 import utils
+import step_executor
+from models import ExecutionPlan, PlanStep, StepExecutionMessage
 
 # Import functions from appropriate modules
 get_github_token = github_api.get_github_token
@@ -333,12 +335,12 @@ class TestCreateGitHubBranch:
 class TestHandler:
     """Test main Lambda handler."""
 
-    @patch('generate_code_handler.handle_webhook')
+    @patch('generate_code_handler.send_plan_generation_message')
     @patch('generate_code_handler.verify_webhook_signature')
     @patch('generate_code_handler.get_webhook_secret')
     @patch('generate_code_handler.get_github_token')
     @patch('generate_code_handler.create_branch')
-    def test_handler_success(self, mock_create_branch, mock_get_token, mock_get_secret, mock_verify_sig, mock_handle_webhook):
+    def test_handler_success(self, mock_create_branch, mock_get_token, mock_get_secret, mock_verify_sig, mock_send_message):
         """Test: Successful webhook processing"""
         # Arrange
         mock_get_secret.return_value = "test_webhook_secret"
@@ -350,12 +352,9 @@ class TestHandler:
             "sha": "abc123"
         }
 
-        mock_handle_webhook.return_value = {
-            "success": True,
-            "message": "Code generation plan created",
-            "issue_number": 123,
-            "branch_name": "123-add-feature",
-            "total_steps": 5
+        # Mock the SQS send message (no return value needed)
+        mock_send_message.return_value = {
+            "MessageId": "test-message-id"
         }
 
         webhook_payload = {
@@ -392,10 +391,72 @@ class TestHandler:
         # Assert
         assert response["statusCode"] == 200
         body = json.loads(response["body"])
-        assert body["message"] == "Code generation plan created"
+        assert body["message"] == "Code generation started (full code generation)"
         assert body["issue_number"] == 123
         assert body["branch_name"] == "123-add-feature"
-        mock_handle_webhook.assert_called_once()
+        mock_send_message.assert_called_once()
+
+    @patch('generate_code_handler.send_plan_generation_message')
+    @patch('generate_code_handler.verify_webhook_signature')
+    @patch('generate_code_handler.get_webhook_secret')
+    @patch('generate_code_handler.get_github_token')
+    @patch('generate_code_handler.create_branch')
+    def test_handler_plan_only_mode(self, mock_create_branch, mock_get_token, mock_get_secret, mock_verify_sig, mock_send_message):
+        """Test: Plan-only mode with approved-for-plan label"""
+        # Arrange
+        mock_get_secret.return_value = "test_webhook_secret"
+        mock_verify_sig.return_value = True
+        mock_get_token.return_value = "ghp_test_token"
+        mock_create_branch.return_value = {
+            "success": True,
+            "branch_name": "123-add-feature",
+            "sha": "abc123"
+        }
+        mock_send_message.return_value = {"MessageId": "test-message-id"}
+
+        # Use approved-for-plan label
+        webhook_payload = {
+            "action": "labeled",
+            "label": {"name": "approved-for-plan", "color": "ffcc00"},
+            "issue": {
+                "number": 123,
+                "title": "Add Feature",
+                "body": "Issue description",
+                "html_url": "https://github.com/owner/repo/issues/123",
+                "state": "open"
+            },
+            "repository": {
+                "name": "repo",
+                "full_name": "owner/repo",
+                "owner": {"login": "owner"},
+                "default_branch": "main"
+            }
+        }
+
+        payload_str = json.dumps(webhook_payload)
+
+        event = {
+            "body": payload_str,
+            "headers": {
+                "x-hub-signature-256": "sha256=fake_signature"
+            },
+            "requestContext": {}
+        }
+
+        # Act
+        response = handler(event, None)
+
+        # Assert
+        assert response["statusCode"] == 200
+        body = json.loads(response["body"])
+        assert body["message"] == "Code generation started (plan only)"
+        assert body["issue_number"] == 123
+        assert body["branch_name"] == "123-add-feature"
+        assert body["plan_only"] is True
+        mock_send_message.assert_called_once()
+        # Verify plan_only was passed to the message
+        call_kwargs = mock_send_message.call_args.kwargs
+        assert call_kwargs.get("plan_only") is True
 
     @patch('generate_code_handler.get_webhook_secret')
     def test_handler_invalid_signature(self, mock_get_secret):
@@ -549,3 +610,85 @@ class TestHandler:
         body = json.loads(response["body"])
         assert body["message"] == "Failed to create branch"
         assert "error" in body
+
+
+class TestCodeGenerationCompletionEvent:
+    """Verify EventBridge event emission for completed code generation."""
+
+    @patch.object(step_executor, "events_client")
+    def test_publish_event_payload(self, mock_events):
+        """Ensure detail payload contains repo, branch, and plan info."""
+        plan = ExecutionPlan(
+            issue_number=6,
+            issue_title="Add handler",
+            issue_description="Test",
+            branch_name="feature-branch",
+            repo_full_name="bcarpio/outcome-ops-ai-assist",
+            steps=[PlanStep(step_number=1, title="Step 1", description="Desc")]
+        )
+        step_message = StepExecutionMessage(
+            issue_number=6,
+            issue_title="Add handler",
+            issue_description="Test",
+            repo_full_name="bcarpio/outcome-ops-ai-assist",
+            branch_name="feature-branch",
+            current_step=1,
+            total_steps=1,
+            base_branch="main"
+        )
+
+        step_executor.publish_code_generation_completed_event(
+            plan=plan,
+            step_message=step_message,
+            pr_url="https://github.com/bcarpio/outcome-ops-ai-assist/pull/123",
+            pr_number=123,
+            plan_file_path="issues/plan.md",
+            commit_sha="abc123"
+        )
+
+        mock_events.put_events.assert_called_once()
+        entry = mock_events.put_events.call_args.kwargs["Entries"][0]
+        assert entry["Source"] == "outcomeops.generate-code"
+        detail = json.loads(entry["Detail"])
+        assert detail["branchName"] == "feature-branch"
+        assert detail["commitSha"] == "abc123"
+        assert detail["planFile"] == "issues/plan.md"
+        assert detail["environment"] == "dev"
+        assert detail["appName"] == "outcome-ops-ai-assist"
+
+    @patch.object(step_executor, "publish_code_generation_completed_event")
+    @patch.object(step_executor, "get_branch_head_sha")
+    def test_finalize_triggers_event(
+        self,
+        mock_head_sha,
+        mock_publish
+    ):
+        """finalize_and_publish_event emits event without creating PR (deferred to run-tests)."""
+        plan = ExecutionPlan(
+            issue_number=6,
+            issue_title="Add handler",
+            issue_description="Test",
+            branch_name="feature-branch",
+            repo_full_name="bcarpio/outcome-ops-ai-assist",
+            steps=[PlanStep(step_number=1, title="Step", description="desc")]
+        )
+        step_message = StepExecutionMessage(
+            issue_number=6,
+            issue_title="Add handler",
+            issue_description="Test",
+            repo_full_name="bcarpio/outcome-ops-ai-assist",
+            branch_name="feature-branch",
+            current_step=1,
+            total_steps=1,
+            base_branch="main"
+        )
+
+        mock_head_sha.return_value = "def456"
+
+        step_executor.finalize_and_publish_event(plan, step_message, github_token="token")
+
+        mock_publish.assert_called_once()
+        _, kwargs = mock_publish.call_args
+        assert kwargs["pr_number"] is None  # PR creation deferred to run-tests
+        assert kwargs["pr_url"] is None  # PR creation deferred to run-tests
+        assert kwargs["commit_sha"] == "def456"

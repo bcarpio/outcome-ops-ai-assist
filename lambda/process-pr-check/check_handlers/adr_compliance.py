@@ -13,11 +13,12 @@ import boto3
 import requests
 from botocore.exceptions import ClientError
 
+from .bedrock_utils import call_bedrock, UsageTracker, SONNET_MODEL_ID
+
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 # AWS clients
-bedrock_client = boto3.client("bedrock-runtime", region_name="us-east-1")
 lambda_client = boto3.client("lambda")
 ssm_client = boto3.client("ssm")
 
@@ -131,7 +132,8 @@ def analyze_code_with_claude(
     file_path: str,
     file_diff: str,
     standards: str,
-    file_type: Literal["lambda", "terraform"]
+    file_type: Literal["lambda", "terraform"],
+    usage_tracker: UsageTracker
 ) -> Dict[str, Any]:
     """
     Ask Claude to analyze code against ADR standards.
@@ -186,29 +188,14 @@ Examples:
     logger.info(f"Calling Claude to analyze {file_type} compliance for {file_path}...")
 
     try:
-        # Use Bedrock Converse API
-        response = bedrock_client.converse(
-            modelId="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
-            messages=[
-                {
-                    "role": "user",
-                    "content": [{"text": prompt}]
-                }
-            ],
-            inferenceConfig={
-                "maxTokens": 1000,
-                "temperature": 0.1
-            }
+        response_text, usage = call_bedrock(
+            prompt=prompt,
+            model_id=SONNET_MODEL_ID,
+            max_tokens=1000,
+            temperature=0.1
         )
+        usage_tracker.add(usage)
 
-        # Extract response text
-        output_message = response.get("output", {}).get("message", {})
-        content = output_message.get("content", [])
-
-        if not content or not content[0].get("text"):
-            raise Exception("No content in Claude response")
-
-        response_text = content[0]["text"].strip()
         logger.info(f"Claude response for {file_path}: {response_text}")
 
         # Parse JSON response (handle markdown code blocks)
@@ -255,7 +242,8 @@ def analyze_lambda_handlers(
     pr_number: int,
     files: List[str],
     query_kb_lambda_name: str,
-    github_token: str
+    github_token: str,
+    usage_tracker: UsageTracker
 ) -> Dict[str, Any]:
     """Analyze Lambda handlers against ADR standards using Claude."""
     # Filter for Lambda handler files (exclude tests, shared libs)
@@ -292,7 +280,7 @@ def analyze_lambda_handlers(
 
             # Analyze with Claude
             analysis = analyze_code_with_claude(
-                file, file_diff, kb_result["answer"], "lambda"
+                file, file_diff, kb_result["answer"], "lambda", usage_tracker
             )
 
             if not analysis["compliant"]:
@@ -328,7 +316,8 @@ def analyze_terraform_files(
     pr_number: int,
     files: List[str],
     query_kb_lambda_name: str,
-    github_token: str
+    github_token: str,
+    usage_tracker: UsageTracker
 ) -> Dict[str, Any]:
     """Analyze Terraform files against module standards using Claude."""
     terraform_files = [f for f in files if f.startswith("terraform/") and f.endswith(".tf")]
@@ -360,7 +349,7 @@ def analyze_terraform_files(
 
             # Analyze with Claude
             analysis = analyze_code_with_claude(
-                file, file_diff, kb_result["answer"], "terraform"
+                file, file_diff, kb_result["answer"], "terraform", usage_tracker
             )
 
             if not analysis["compliant"]:
@@ -409,17 +398,20 @@ def check_adr_compliance(
     """
     logger.info(f"Running ADR compliance check for PR #{pr_number}")
 
+    # Create usage tracker
+    usage_tracker = UsageTracker()
+
     try:
         # Fetch GitHub token
         token = get_github_token(github_token_param)
 
         # Analyze Lambda handlers and Terraform files with Claude
         lambda_result = analyze_lambda_handlers(
-            repository, pr_number, changed_files, query_kb_lambda_name, token
+            repository, pr_number, changed_files, query_kb_lambda_name, token, usage_tracker
         )
 
         terraform_result = analyze_terraform_files(
-            repository, pr_number, changed_files, query_kb_lambda_name, token
+            repository, pr_number, changed_files, query_kb_lambda_name, token, usage_tracker
         )
 
         # Combine results
@@ -443,7 +435,8 @@ def check_adr_compliance(
             "checkType": check_type,
             "status": overall_status,
             "message": message,
-            "details": all_details
+            "details": all_details,
+            "usage": usage_tracker
         }
 
     except Exception as e:
@@ -456,5 +449,6 @@ def check_adr_compliance(
                 "Could not complete automated analysis",
                 "Please manually review code for ADR compliance",
                 f"Error: {str(e)}"
-            ]
+            ],
+            "usage": usage_tracker
         }

@@ -19,8 +19,10 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
+# Python lib directories (but not ui/src/lib/)
+/lib/
 lib64/
+!ui/src/lib/
 parts/
 sdist/
 var/
@@ -52,3 +54,18 @@ env/
 
 # Logs
 *.log
+
+# Lambda layer binaries (built locally via scripts/build-*-layer.sh)
+# Runtime layer
+lambda/runtime-layer/bin/
+lambda/runtime-layer/lib/
+lambda/runtime-layer/libexec/
+
+# Java layer
+lambda/java-layer/java/
+
+# Terraform layer
+terraform-layer/
+
+# Scratch/working directory
+.scratch/

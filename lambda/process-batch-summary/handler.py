@@ -17,14 +17,20 @@ import hashlib
 import json
 import logging
 import os
+import sys
 from datetime import datetime
 from typing import Any, Dict, List
 from urllib.request import Request, urlopen
 from urllib.error import URLError
+from urllib.parse import quote
 
 import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
+
+# Add shared module to path for Lambda deployment
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from shared.audit import log_audit_entry
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -41,20 +47,24 @@ bedrock_config = Config(
 dynamodb_client = boto3.client("dynamodb")
 bedrock_client = boto3.client("bedrock-runtime", config=bedrock_config)
 ssm_client = boto3.client("ssm")
+s3vectors_client = boto3.client("s3vectors")
 
 # Configuration (loaded from SSM at container startup)
 ENVIRONMENT = os.environ.get("ENV", "dev")
 APP_NAME = os.environ.get("APP_NAME", "outcome-ops-ai-assist")
+ENABLE_BEDROCK_COOLDOWN = os.environ.get("ENABLE_BEDROCK_COOLDOWN", "true").lower() == "true"
 
 CODE_MAPS_TABLE = None
 GITHUB_TOKEN = None
+VECTOR_BUCKET = None
+VECTOR_INDEX = None
 
 GITHUB_API_URL = "https://api.github.com"
 
 
 def load_config():
     """Load configuration from SSM Parameter Store at container startup."""
-    global CODE_MAPS_TABLE, GITHUB_TOKEN
+    global CODE_MAPS_TABLE, GITHUB_TOKEN, VECTOR_BUCKET, VECTOR_INDEX
 
     try:
         code_maps_param = f"/{ENVIRONMENT}/{APP_NAME}/dynamodb/code-maps-table"
@@ -66,10 +76,55 @@ def load_config():
             WithDecryption=True
         )["Parameter"]["Value"]
 
-        logger.info(f"Configuration loaded: TABLE={CODE_MAPS_TABLE}")
+        # S3 Vectors configuration
+        vector_bucket_param = f"/{ENVIRONMENT}/{APP_NAME}/s3vectors/bucket-name"
+        VECTOR_BUCKET = ssm_client.get_parameter(Name=vector_bucket_param)["Parameter"]["Value"]
+
+        vector_index_param = f"/{ENVIRONMENT}/{APP_NAME}/s3vectors/index-name"
+        VECTOR_INDEX = ssm_client.get_parameter(Name=vector_index_param)["Parameter"]["Value"]
+
+        logger.info(f"Configuration loaded: VECTOR_BUCKET={VECTOR_BUCKET}")
     except ClientError as e:
         logger.error(f"Failed to load configuration from SSM: {e}")
         raise
+
+
+# Cache for default branch per repo (persists within Lambda container)
+_default_branch_cache: Dict[str, str] = {}
+
+
+def get_default_branch(repo: str) -> str:
+    """
+    Get the default branch for a repository.
+
+    Args:
+        repo: Repository in format "owner/repo"
+
+    Returns:
+        Default branch name (e.g., "main" or "master")
+    """
+    if repo in _default_branch_cache:
+        return _default_branch_cache[repo]
+
+    url = f"{GITHUB_API_URL}/repos/{repo}"
+    headers = {
+        "Authorization": f"Bearer {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "outcome-ops-process-batch-summary",
+    }
+
+    try:
+        request = Request(url, headers=headers)
+        with urlopen(request) as response:
+            data = json.loads(response.read().decode("utf-8"))
+            default_branch = data.get("default_branch", "main")
+            _default_branch_cache[repo] = default_branch
+            logger.info(f"Default branch for {repo}: {default_branch}")
+            return default_branch
+    except URLError as e:
+        logger.warning(f"Failed to get default branch for {repo}, using 'main': {e}")
+        return "main"
 
 
 def fetch_file_content(repo: str, file_path: str) -> str:
@@ -83,7 +138,11 @@ def fetch_file_content(repo: str, file_path: str) -> str:
     Returns:
         Raw file content as string
     """
-    url = f"https://raw.githubusercontent.com/{repo}/main/{file_path}"
+    default_branch = get_default_branch(repo)
+    # URL-encode the file path to handle special characters like # in ABAP filenames
+    # (e.g., #dmo#cl_flight.clas.abap -> %23dmo%23cl_flight.clas.abap)
+    encoded_path = quote(file_path, safe='/')
+    url = f"https://raw.githubusercontent.com/{repo}/{default_branch}/{encoded_path}"
     headers = {
         "Authorization": f"Bearer {GITHUB_TOKEN}",
         "User-Agent": "outcome-ops-process-batch-summary",
@@ -137,6 +196,74 @@ def retry_bedrock_call(func, max_retries: int = 5):
     raise last_error
 
 
+# Constants for chunking
+MAX_FILE_SIZE = 50000  # 50K chars - files larger than this get chunked
+CHUNK_SIZE = 40000     # 40K chars per chunk (leaves room for overlap)
+CHUNK_OVERLAP = 2000   # 2K char overlap between chunks for context
+
+
+def chunk_large_content(content: str, file_path: str) -> List[Dict[str, Any]]:
+    """
+    Chunk large file content into manageable pieces.
+
+    For files over MAX_FILE_SIZE, split into CHUNK_SIZE pieces with CHUNK_OVERLAP
+    overlap between chunks to maintain context.
+
+    Args:
+        content: Full file content
+        file_path: Path to file (for logging)
+
+    Returns:
+        List of chunk dicts with path, content, chunk_index, total_chunks
+    """
+    content_len = len(content)
+
+    # Small enough to process as single chunk
+    if content_len <= MAX_FILE_SIZE:
+        return [{
+            "path": file_path,
+            "content": content[:10000],  # Still truncate display to 10KB
+            "chunk_index": 0,
+            "total_chunks": 1,
+            "is_chunked": False
+        }]
+
+    # Need to chunk this file
+    chunks = []
+    chunk_index = 0
+    position = 0
+
+    while position < content_len:
+        # Calculate chunk end position
+        chunk_end = min(position + CHUNK_SIZE, content_len)
+
+        # Extract chunk content
+        chunk_content = content[position:chunk_end]
+
+        chunks.append({
+            "path": file_path,
+            "content": chunk_content[:10000],  # Truncate display to 10KB per chunk
+            "full_chunk": chunk_content,  # Keep full chunk for summarization
+            "chunk_index": chunk_index,
+            "start_char": position,
+            "end_char": chunk_end,
+            "is_chunked": True
+        })
+
+        chunk_index += 1
+        # Move position forward, accounting for overlap
+        position = chunk_end - CHUNK_OVERLAP if chunk_end < content_len else content_len
+
+    # Set total_chunks on all chunks
+    for chunk in chunks:
+        chunk["total_chunks"] = len(chunks)
+
+    logger.info(
+        f"Chunked large file {file_path}: {content_len} chars -> {len(chunks)} chunks"
+    )
+    return chunks
+
+
 def generate_batch_summary(batch: Dict[str, Any]) -> str:
     """
     Generate batch summary using Claude via Bedrock.
@@ -160,16 +287,10 @@ def generate_batch_summary(batch: Dict[str, Any]) -> str:
         try:
             content = fetch_file_content(repo_project, file_path)
 
-            # Skip very large files
-            if len(content) > 50000:
-                logger.info(f"Skipping large file in batch: {file_path} ({len(content)} chars)")
-                continue
+            # Chunk large files instead of skipping them
+            chunks = chunk_large_content(content, file_path)
+            file_contents.extend(chunks)
 
-            # Truncate to 10KB per file
-            file_contents.append({
-                "path": file_path,
-                "content": content[:10000]
-            })
         except Exception as e:
             logger.error(f"Error fetching file {file_path}: {e}")
             # Continue with other files
@@ -177,11 +298,20 @@ def generate_batch_summary(batch: Dict[str, Any]) -> str:
     if not file_contents:
         return "No files available for analysis"
 
-    # Build files section for prompt
-    files_section = "\n".join([
-        f"File: {fc['path']}\n```\n{fc['content']}\n{'... (truncated)\n' if len(fc['content']) == 10000 else ''}```\n"
-        for fc in file_contents
-    ])
+    # Build files section for prompt, indicating chunks for large files
+    def format_file_content(fc: Dict[str, Any]) -> str:
+        """Format a file content entry for the prompt."""
+        if fc.get("is_chunked"):
+            chunk_info = f" [Chunk {fc['chunk_index'] + 1}/{fc['total_chunks']}]"
+            char_range = f" (chars {fc.get('start_char', 0)}-{fc.get('end_char', 0)})"
+        else:
+            chunk_info = ""
+            char_range = ""
+
+        truncated = "... (truncated)\n" if len(fc['content']) == 10000 else ""
+        return f"File: {fc['path']}{chunk_info}{char_range}\n```\n{fc['content']}\n{truncated}```\n"
+
+    files_section = "\n".join([format_file_content(fc) for fc in file_contents])
 
     # Build prompt based on batch type
     prompt_templates = {
@@ -233,14 +363,347 @@ Format the output as structured documentation that helps developers debug issues
 
 {files_section}
 """,
+        # =========================================================================
+        # Java-specific batch types (ADR-009 source modules)
+        # =========================================================================
+        "source-module": f"""Analyze the {group_name} Java module for {repo} and provide detailed implementation documentation.
+
+Extract the following for EACH class in this module:
+
+## Class Overview
+- Class name, package, and purpose
+- Inheritance hierarchy (@MappedSuperclass, extends, implements)
+- Key annotations (@Entity, @Controller, @Service, @Repository, @Component, etc.)
+
+## Fields and Properties
+For each field:
+- Field name and type
+- Annotations (@Column, @Id, @GeneratedValue, @ManyToOne, @OneToMany, etc.)
+- Validation constraints (@NotBlank, @Size, @Pattern, @Valid, etc.)
+- Default values and nullability
+
+## Method Signatures
+For each public method:
+- Method name, parameters with types, return type
+- HTTP mapping annotations (@GetMapping, @PostMapping, path, params)
+- Request/response body types (@RequestBody, @ResponseBody)
+- Path variables (@PathVariable) and query parameters (@RequestParam)
+
+## JPA/Hibernate Patterns
+- Entity relationships (cascade types, fetch strategies, orphan removal)
+- Query methods (Spring Data naming conventions, @Query annotations)
+- Transaction boundaries (@Transactional)
+- ID generation strategies
+
+## Spring Patterns
+- Dependency injection (@Autowired, constructor injection)
+- Bean scopes (@Scope, @RequestScope)
+- Exception handling (@ExceptionHandler, @ControllerAdvice)
+- Security annotations (@PreAuthorize, @Secured)
+
+## Validation Rules
+| Field | Constraint | Error Message |
+|-------|-----------|---------------|
+- List all validation annotations and their error codes/messages
+
+## Common Pitfalls
+- Incorrect usage patterns that cause errors
+- What triggers validation errors, 404s, or 500s
+- N+1 query problems with lazy loading
+- Transaction boundaries and rollback scenarios
+- Examples:
+  - "❌ Calling repository method outside @Transactional → LazyInitializationException"
+  - "✅ Use @Transactional or fetch eagerly"
+
+## Cross-References
+- Related classes in other packages (with file paths)
+- Shared utilities (validators, formatters, converters)
+- Dependencies on other services or repositories
+
+Format as structured documentation for developers debugging issues.
+
+{files_section}
+""",
+        "build": f"""Analyze the build configuration for {repo} and document:
+
+## Build Tool
+- Maven (pom.xml) or Gradle (build.gradle/build.gradle.kts)
+- Parent POM or build plugin versions
+
+## Dependencies
+List key dependencies with their purposes:
+| Group ID | Artifact ID | Version | Purpose |
+|----------|-------------|---------|---------|
+
+## Plugins
+- Build plugins and their configurations
+- Test plugins (Surefire, Failsafe, JaCoCo)
+- Packaging plugins (Spring Boot Maven plugin, etc.)
+
+## Profiles
+- Available Maven profiles or Gradle tasks
+- Environment-specific configurations
+
+## Module Structure
+- Multi-module project structure (if applicable)
+- Inter-module dependencies
+
+{files_section}
+""",
+        "kubernetes": f"""Analyze the Kubernetes manifests for {repo} and document:
+
+## Resources
+For each manifest:
+- Resource type (Deployment, Service, ConfigMap, Secret, Ingress, etc.)
+- Resource name and namespace
+- Key configuration (replicas, ports, environment variables)
+
+## Deployment Configuration
+- Container images and tags
+- Resource limits and requests
+- Probes (liveness, readiness, startup)
+- Volume mounts and persistent storage
+
+## Service Configuration
+- Service types (ClusterIP, NodePort, LoadBalancer)
+- Port mappings
+- Selectors and labels
+
+## Configuration Management
+- ConfigMaps and their usage
+- Secrets (without values) and their references
+- Environment variable injection
+
+## Networking
+- Ingress rules and paths
+- Network policies
+- Service mesh configuration (if applicable)
+
+{files_section}
+""",
+        # =========================================================================
+        # TypeScript-specific batch types
+        # =========================================================================
+        "api-routes": f"""Analyze the {group_name} API routes for {repo} and provide detailed implementation documentation.
+
+Extract the following for EACH route/endpoint:
+
+## Route Definitions
+- HTTP method (GET, POST, PUT, DELETE, PATCH)
+- Route path with parameters (e.g., /users/:id, /api/v1/items)
+- Middleware applied (authentication, validation, rate limiting)
+
+## Request Format
+- Path parameters with types and validation
+- Query parameters with types and defaults
+- Request body schema (TypeScript interface or Zod/Yup schema)
+- Headers required (Authorization, Content-Type, custom headers)
+
+## Response Format
+- Success response structure with HTTP status codes
+- Error response structure with error codes
+- Pagination format (if applicable)
+
+## Authentication & Authorization
+- Auth middleware used (JWT, session, API key)
+- Required roles or permissions
+- Token/session handling
+
+## Validation
+- Request validation library (Zod, Yup, Joi, class-validator)
+- Validation rules for each field
+- Error messages returned on validation failure
+
+## Database Operations
+- ORM queries (Prisma, TypeORM, Drizzle, Knex)
+- Raw SQL queries (if any)
+- Transaction handling
+
+## Common Pitfalls
+- Invalid parameter formats that cause errors
+- Missing required headers or body fields
+- Authorization edge cases
+- Examples:
+  - "❌ Sending id as number when string UUID expected → 400 Bad Request"
+  - "✅ Send id as string UUID format"
+
+## Cross-References
+- Shared middleware locations
+- Related routes in other files
+- Service layer dependencies
+
+{files_section}
+""",
+        "frontend": f"""Analyze the {group_name} frontend components for {repo} and provide detailed documentation.
+
+## Component Overview
+For each component:
+- Component name and purpose
+- File path and export type (default/named)
+
+## Props Interface
+```typescript
+// Document the exact TypeScript interface
+interface ComponentProps {{
+  // prop: type - description
+}}
+```
+- Required vs optional props
+- Default values
+- Callback function signatures
+
+## State Management
+- Local state (useState, useReducer)
+- Global state (Context, Redux, Zustand, Jotai)
+- Server state (React Query, SWR, Apollo)
+
+## Hooks Used
+- Custom hooks and their purposes
+- Side effects (useEffect) and their triggers
+- Memoization (useMemo, useCallback)
+
+## Event Handlers
+- User interaction handlers (onClick, onChange, onSubmit)
+- Event types and payloads
+- Form handling patterns
+
+## Styling
+- Styling approach (CSS Modules, Tailwind, styled-components, etc.)
+- Theme integration
+- Responsive breakpoints
+
+## Testing
+- Test file location (if exists)
+- Testing patterns (render, user events, mocks)
+
+## Common Pitfalls
+- Incorrect prop types that cause runtime errors
+- Missing required props
+- Stale closure issues in callbacks
+- Examples:
+  - "❌ Passing string to number prop → runtime error"
+  - "✅ Parse string to number before passing"
+
+## Cross-References
+- Child components used
+- Parent components that use this
+- Shared hooks and utilities
+
+{files_section}
+""",
+        "schemas": f"""Analyze the data schemas for {repo} and provide detailed documentation.
+
+## Schema Definitions
+For each schema/type:
+- Schema name and purpose
+- Validation library (Zod, Yup, Joi, io-ts, class-validator)
+
+## Field Specifications
+| Field | Type | Required | Validation | Default |
+|-------|------|----------|------------|---------|
+- List all fields with their constraints
+
+## Validation Rules
+- Custom validators and their logic
+- Error messages for each validation rule
+- Transformation/coercion rules
+
+## Type Inference
+- TypeScript types derived from schemas
+- Runtime type guards
+
+## Usage Patterns
+- Where schemas are used (API validation, form validation, etc.)
+- How to extend or compose schemas
+
+{files_section}
+""",
+        "shared": f"""Analyze the {group_name} shared code for {repo} and provide detailed documentation.
+
+## Utility Functions
+For each function:
+- Function name and purpose
+- Parameter types and return type
+- Side effects (if any)
+
+## Function Signatures
+```typescript
+// Document exact signatures
+function utilityName(param: Type): ReturnType
+```
+
+## Usage Examples
+- Common usage patterns
+- Edge cases and error handling
+
+## Dependencies
+- External libraries used
+- Other internal utilities referenced
+
+## Common Pitfalls
+- Incorrect parameter usage
+- Error conditions
+- Thread safety / async considerations
+
+{files_section}
+""",
+        "config": f"""Analyze the configuration files for {repo} and document:
+
+## Configuration Files
+For each config file:
+- File name and purpose
+- Key settings and their effects
+
+## Build Configuration
+- TypeScript settings (tsconfig.json)
+- Bundler settings (vite, webpack, esbuild)
+- Test configuration (jest, vitest)
+
+## Deployment Configuration
+- Serverless Framework settings
+- Environment variables
+- AWS/Cloud provider settings
+
+## Development Tools
+- Linting rules (ESLint)
+- Formatting settings (Prettier)
+- Git hooks (Husky, lint-staged)
+
+{files_section}
+""",
+        # =========================================================================
+        # Common batch types (shared across backends)
+        # =========================================================================
         "frontend-pages": f"Summarize the pages/routes for {repo}. Describe what pages exist, their routes, key features, state management patterns, and how they connect to the overall application.\n\n{files_section}",
         "frontend-components": f"Summarize the React components for {repo}. Describe what UI components are provided, their props/interfaces, reusability patterns, and styling approaches.\n\n{files_section}",
         "frontend-tests": f"Summarize the frontend tests for {repo}. Describe what components/features are tested, testing library used (Jest, Vitest, etc.), and testing patterns.\n\n{files_section}",
         "frontend-utils": f"Summarize the frontend utilities and hooks for {repo}. Describe what helper functions, custom hooks, and context providers are available and how they're used.\n\n{files_section}",
         "frontend-types": f"Summarize the TypeScript types and interfaces for {repo}. Describe what data structures, API types, and component prop types are defined.\n\n{files_section}",
-        "tests": f"Summarize the {group_name} tests for {repo}. Describe what components are tested, testing patterns used, and coverage approach.\n\n{files_section}",
-        "shared": f"Summarize the {group_name} shared code for {repo}. Describe what utilities/helpers are provided and how they're used across the codebase.\n\n{files_section}",
-        "schemas": f"Summarize the data schemas for {repo}. Describe what data structures are defined, validation rules, and how they're used.\n\n{files_section}",
+        "tests": f"""Analyze the {group_name} tests for {repo} and document:
+
+## Test Overview
+- Testing framework (JUnit, Jest, pytest, etc.)
+- Test runner and configuration
+- Coverage approach
+
+## Test Classes/Files
+For each test file:
+- What is being tested (class, function, feature)
+- Test setup (@BeforeEach, beforeAll, fixtures)
+- Mocking strategy (Mockito, Jest mocks, etc.)
+
+## Test Patterns
+- Unit test patterns
+- Integration test patterns
+- Test data builders/factories
+
+## Key Test Cases
+- Critical functionality covered
+- Edge cases tested
+- Error scenarios validated
+
+{files_section}
+""",
         "docs": f"Summarize the documentation for {repo}. Describe what topics are covered and how the documentation is organized.\n\n{files_section}",
     }
 
@@ -272,10 +735,21 @@ Format the output as structured documentation that helps developers debug issues
         if not content or not content[0].get("text"):
             raise ValueError("No content in Claude response")
 
-        return content[0]["text"]
+        return content[0]["text"], response.get("usage", {})
 
-    summary = retry_bedrock_call(call_claude)
+    summary, usage = retry_bedrock_call(call_claude)
     logger.info(f"Generated batch summary for {group_name} ({len(summary)} chars)")
+
+    log_audit_entry(
+        audit_table_name=os.environ.get("AUDIT_TABLE", ""),
+        lambda_name="process-batch-summary",
+        model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        input_text=prompt,
+        output_text=summary,
+        input_tokens=usage.get("inputTokens", 0),
+        output_tokens=usage.get("outputTokens", 0),
+    )
+
     return summary
 
 
@@ -335,12 +809,14 @@ def store_batch_summary(
     embedding: List[float]
 ) -> bool:
     """
-    Store batch summary in DynamoDB.
+    Store batch summary in S3 Vectors.
 
-    Schema: PK=repo#{repo}, SK={storage_key}
+    Vector key format:
+    - Workspace repos: {workspace_id}#github#{repo}#{batch_type}-summary#{group_name}
+    - Legacy repos: {repo}#{batch_type}-summary#{group_name}
 
     Args:
-        batch: Batch message with metadata
+        batch: Batch message with metadata (may include workspace_id)
         summary: Generated summary text
         embedding: Embedding vector
 
@@ -349,28 +825,46 @@ def store_batch_summary(
     """
     try:
         content_hash = compute_content_hash(summary)
+        doc_type = f"{batch['batch_type']}-summary"
+        workspace_id = batch.get("workspace_id")
 
-        item = {
-            "PK": {"S": f"repo#{batch['repo']}"},
-            "SK": {"S": batch["storage_key"]},
-            "content": {"S": summary},
-            "content_hash": {"S": content_hash},
-            "embedding": {"L": [{"N": str(x)} for x in embedding]},
-            "repo": {"S": batch["repo"]},
-            "type": {"S": f"{batch['batch_type']}-summary"},
-            "batch_type": {"S": batch["batch_type"]},
-            "group_name": {"S": batch["group_name"]},
-            "file_count": {"N": str(len(batch["file_paths"]))},
-            "timestamp": {"S": datetime.utcnow().isoformat()}
+        # Construct vector key
+        # Workspace repos: {workspace_id}#github#{repo}#{doc_type}#{group_name}
+        # Legacy repos: {repo}#{doc_type}#{group_name}
+        if workspace_id:
+            vector_key = f"{workspace_id}#github#{batch['repo']}#{doc_type}#{batch['group_name']}"
+        else:
+            vector_key = f"{batch['repo']}#{doc_type}#{batch['group_name']}"
+
+        metadata = {
+            "content": summary,
+            "content_hash": content_hash,
+            "repo": batch["repo"],
+            "type": doc_type,
+            "batch_type": batch["batch_type"],
+            "group_name": batch["group_name"],
+            "file_count": str(len(batch["file_paths"])),
+            "timestamp": datetime.utcnow().isoformat()
         }
+        if workspace_id:
+            metadata["workspace_id"] = workspace_id
+            metadata["source"] = "github"
 
-        dynamodb_client.put_item(TableName=CODE_MAPS_TABLE, Item=item)
+        s3vectors_client.put_vectors(
+            vectorBucketName=VECTOR_BUCKET,
+            indexName=VECTOR_INDEX,
+            vectors=[{
+                "key": vector_key,
+                "data": {"float32": embedding},
+                "metadata": metadata
+            }]
+        )
 
-        logger.info(f"Stored {batch['batch_type']} summary for {batch['group_name']}")
+        logger.info(f"Stored {batch['batch_type']} summary for {batch['group_name']} in S3 Vectors: {vector_key}")
         return True
 
     except ClientError as e:
-        logger.error(f"Failed to store batch summary in DynamoDB: {e}")
+        logger.error(f"Failed to store batch summary in S3 Vectors: {e}")
         return False
 
 
@@ -405,11 +899,12 @@ def process_batch_record(record: Dict[str, Any]) -> None:
 
     logger.info(f"Successfully processed {batch['batch_type']} summary for {batch['group_name']}")
 
-    # Add cooldown period to prevent Bedrock throttling on next message
-    # This allows rate limits to reset between batches
-    cooldown_seconds = 10
-    logger.info(f"Waiting {cooldown_seconds}s cooldown before next message...")
-    time.sleep(cooldown_seconds)
+    # Optional cooldown period to prevent Bedrock throttling on next message
+    # Useful for accounts with low Bedrock quotas; disable for enterprise accounts
+    if ENABLE_BEDROCK_COOLDOWN:
+        cooldown_seconds = 10
+        logger.info(f"Waiting {cooldown_seconds}s cooldown before next message...")
+        time.sleep(cooldown_seconds)
 
 
 def handler(event, context):

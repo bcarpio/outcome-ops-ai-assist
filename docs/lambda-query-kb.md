@@ -4,16 +4,14 @@ Orchestrates the full RAG pipeline for knowledge base queries.
 
 ## Purpose
 
-The query-kb Lambda function is the single entry point for querying the OutcomeOps AI Assist knowledge base. It orchestrates the complete RAG (Retrieval Augmented Generation) pipeline by coordinating vector search and Claude answer generation.
+The query-kb Lambda function is the single entry point for querying the OutcomeOps AI Assist knowledge base. It orchestrates the complete RAG (Retrieval Augmented Generation) pipeline by performing vector search via S3 Vectors and coordinating Claude answer generation.
 
 ## Trigger
 
 - **Invoked by**:
-  - MS Teams bot
-  - CLI tools (outcome-ops-assist command)
-  - Slack integrations
+  - CLI tool (`scripts/outcome-ops-assist`)
+  - Code generation Lambda (with `raw=true`)
   - Direct Lambda invocation
-  - Any user-facing interface
 - **Invocation type**: Synchronous (RequestResponse)
 - **Typical latency**: 7-20 seconds
 
@@ -24,17 +22,19 @@ User Query
     ↓
 [query-kb Lambda]
     ↓
-1. Invoke vector-query Lambda
+1. Generate query embedding (Bedrock Titan v2)
+    ↓
+2. Query S3 Vectors for similar documents (<100ms)
     → Find top K relevant documents
     ↓
-2. Check if results found
+3. Check if results found
     → If empty: Return "not found" message
-    → If found: Continue to step 3
+    → If found: Continue to step 4
     ↓
-3. Invoke ask-claude Lambda
+4. Invoke ask-claude Lambda
     → Generate answer from context
     ↓
-4. Return answer + sources
+5. Return answer + sources
 ```
 
 ## Input
@@ -42,13 +42,17 @@ User Query
 ```json
 {
   "query": "How should API Gateway routes be defined?",
-  "topK": 5
+  "topK": 5,
+  "repo": "spring-petclinic",
+  "raw": false
 }
 ```
 
 **Parameters**:
 - `query` (required): Natural language question
 - `topK` (optional): Number of documents to retrieve (default: 5)
+- `repo` (optional): Filter results to a specific repository (e.g., "spring-petclinic")
+- `raw` (optional): If true, returns vector search results directly without Claude synthesis (default: false)
 
 ## Output
 
@@ -63,13 +67,35 @@ User Query
 }
 ```
 
+**Raw mode response** (when `raw=true`):
+```json
+{
+  "statusCode": 200,
+  "body": {
+    "results": [
+      {
+        "score": 0.93,
+        "text": "API Gateway routes are defined inline in infra/apigw.tf...",
+        "source": "ADR: api-gateway-standards",
+        "type": "adr",
+        "repo": "outcome-ops-ai-assist",
+        "file_path": "docs/adr/ADR-001.md"
+      }
+    ]
+  }
+}
+```
+
+Raw mode is used by code generation to avoid double-processing - the results will be passed to Claude for code generation anyway, so we skip the synthesis step.
+
 **No results found**:
 ```json
 {
   "statusCode": 404,
   "body": {
     "answer": "I couldn't find any relevant information in the knowledge base to answer this question. This could mean:\n\n1. The topic hasn't been documented yet\n2. The relevant documentation hasn't been ingested\n3. The query uses different terminology than the documentation\n\nTry rephrasing your question or check if the relevant ADRs and documentation have been added to the knowledge base.",
-    "sources": []
+    "sources": [],
+    "results": []
   }
 }
 ```
@@ -77,7 +103,8 @@ User Query
 ## Configuration
 
 **SSM Parameters** (loaded at container startup):
-- `/{env}/{app_name}/lambda/vector-query-arn` - Vector query Lambda ARN
+- `/{env}/{app_name}/s3vectors/bucket-name` - S3 Vectors bucket name
+- `/{env}/{app_name}/s3vectors/index-name` - S3 Vectors index name
 - `/{env}/{app_name}/lambda/ask-claude-arn` - Ask Claude Lambda ARN
 
 **Environment Variables** (set in Terraform):
@@ -86,28 +113,36 @@ User Query
 
 ## IAM Permissions Required
 
-- `ssm:GetParameter` - Load Lambda ARNs from SSM
+- `ssm:GetParameter` - Load configuration from SSM
 - `kms:Decrypt` - Decrypt SSM parameters
-- `lambda:InvokeFunction` - Invoke vector-query and ask-claude Lambdas
+- `s3vectors:QueryVectors` - Search the vector index
+- `bedrock:InvokeModel` - Generate query embeddings (Titan v2)
+- `lambda:InvokeFunction` - Invoke ask-claude Lambda
 
 ## Pipeline Stages
 
-### Stage 1: Vector Search
+### Stage 1: Vector Search (S3 Vectors)
 
-**Invokes**: vector-query Lambda
-
-**Input**:
-```json
-{
-  "query": "How should API Gateway routes be defined?",
-  "topK": 5
-}
-```
+**Direct API call**: `s3vectors:QueryVectors`
 
 **Processing**:
-- Generates query embedding
-- Searches DynamoDB for similar documents
-- Returns top K results ranked by cosine similarity
+1. Generates query embedding using Bedrock Titan Embeddings v2 (1024 dimensions)
+2. Queries S3 Vectors index with cosine similarity
+3. Optionally filters by repo metadata
+4. Returns top K results ranked by similarity
+
+**S3 Vectors Query**:
+```python
+response = s3vectors_client.query_vectors(
+    vectorBucketName=VECTOR_BUCKET,
+    indexName=VECTOR_INDEX,
+    queryVector={"float32": query_embedding},
+    topK=5,
+    returnMetadata=True,
+    returnDistance=True,
+    filter={"repo": {"equals": "spring-petclinic"}}  # optional
+)
+```
 
 **Output**:
 ```json
@@ -115,7 +150,10 @@ User Query
   {
     "score": 0.93,
     "text": "...",
-    "source": "ADR: api-gateway-standards"
+    "source": "ADR: api-gateway-standards",
+    "type": "adr",
+    "repo": "outcome-ops-ai-assist",
+    "file_path": "docs/adr/ADR-001.md"
   }
 ]
 ```
@@ -135,8 +173,8 @@ User Query
 ```
 
 **Processing**:
-- Builds RAG prompt with context
-- Calls Claude 3.5 Sonnet
+- Builds RAG prompt with context from S3 Vectors results
+- Calls Claude 3.5 Haiku (cost-effective for RAG synthesis)
 - Extracts answer and sources
 
 **Output**:
@@ -185,12 +223,12 @@ User Query
 
 **CloudWatch Logs**:
 ```bash
-aws logs tail /aws/lambda/dev-outcome-ops-ai-assist-query-kb --follow
+aws logs tail /aws/lambda/prd-outcome-ops-ai-assist-query-kb --follow
 ```
 
 **Key Log Messages**:
 - `[query-kb] Processing query: '...' (top X results)` - Started
-- `[query-kb] Invoking vector-query Lambda...` - Stage 1 start
+- `[query-kb] Querying S3 Vectors...` - Stage 1 start
 - `[query-kb] Found X relevant documents` - Stage 1 complete
 - `[query-kb] No relevant documents found` - Empty results
 - `[query-kb] Invoking ask-claude Lambda...` - Stage 2 start
@@ -201,7 +239,7 @@ aws logs tail /aws/lambda/dev-outcome-ops-ai-assist-query-kb --follow
 aws cloudwatch get-metric-statistics \
   --namespace AWS/Lambda \
   --metric-name Duration \
-  --dimensions Name=FunctionName,Value=dev-outcome-ops-ai-assist-query-kb \
+  --dimensions Name=FunctionName,Value=prd-outcome-ops-ai-assist-query-kb \
   --start-time 2025-01-01T00:00:00Z \
   --end-time 2025-01-15T00:00:00Z \
   --period 3600 \
@@ -211,9 +249,10 @@ aws cloudwatch get-metric-statistics \
 ## Performance
 
 **Typical latency breakdown**:
-- Vector search: 2-5 seconds
+- Embedding generation: 100-200ms
+- S3 Vectors search: <100ms
 - Answer generation: 5-15 seconds
-- **Total**: 7-20 seconds
+- **Total**: 5-16 seconds
 
 **Timeout**: 10 minutes (600 seconds) - conservative for reliability
 
@@ -228,7 +267,7 @@ aws cloudwatch get-metric-statistics \
 **Manual test**:
 ```bash
 aws lambda invoke \
-  --function-name dev-outcome-ops-ai-assist-query-kb \
+  --function-name prd-outcome-ops-ai-assist-query-kb \
   --payload '{"query": "How should Lambda error handling work?", "topK": 3}' \
   response.json
 
@@ -240,16 +279,9 @@ cat response.json | jq '.body | fromjson'
 - Body contains: answer (string) and sources (array)
 - Execution time: 7-20 seconds
 
-**Integration test**:
+**Using the CLI**:
 ```bash
-# Test full pipeline
-./test-query-kb.sh "How should Lambda handlers be structured?"
-
-# Expected output:
-# ✓ Vector search: 3 documents found
-# ✓ Answer generated: 450 chars
-# ✓ Sources cited: 2
-# ✓ Total time: 12.3s
+scripts/outcome-ops-assist "How should Lambda handlers be structured?"
 ```
 
 ## Usage Examples
@@ -257,32 +289,7 @@ cat response.json | jq '.body | fromjson'
 ### From CLI
 
 ```bash
-# outcome-ops-assist command (future implementation)
-outcome-ops-assist "How should I handle errors in Lambda functions?"
-
-# Output:
-# 🤖 Querying knowledge base...
-#
-# 📚 Answer:
-# Lambda handlers should follow the error handling pattern defined in ADR-004...
-#
-# 📖 Sources:
-#   - ADR: lambda-handler-standards
-#   - Code map - outcome-ops-ai-assist
-```
-
-### From MS Teams Bot
-
-```
-User: @OutcomeOpsBot How should API Gateway routes be defined?
-
-Bot: API routes should be defined using Terraform with inline integrations
-in infra/apigw.tf, in accordance with ADR-APIGW-V5 v2.1. This approach
-centralizes route definitions and ensures consistency across deployments.
-
-Sources:
-• ADR: api-gateway-standards
-• README.md - hpe-journey
+scripts/outcome-ops-assist "How should I handle errors in Lambda functions?"
 ```
 
 ### From Python
@@ -294,7 +301,7 @@ import json
 lambda_client = boto3.client("lambda")
 
 response = lambda_client.invoke(
-    FunctionName="dev-outcome-ops-ai-assist-query-kb",
+    FunctionName="prd-outcome-ops-ai-assist-query-kb",
     InvocationType="RequestResponse",
     Payload=json.dumps({
         "query": "How should Lambda error handling work?",
@@ -320,8 +327,8 @@ print(f"Sources: {', '.join(body['sources'])}")
 - Fix: Check CloudWatch logs, reduce topK, verify Bedrock availability
 
 **3. "Failed to search knowledge base"**
-- Cause: vector-query Lambda error
-- Fix: Check vector-query logs, verify DynamoDB table exists
+- Cause: S3 Vectors query error
+- Fix: Check CloudWatch logs, verify S3 Vectors bucket/index exist, check IAM permissions
 
 **4. "Failed to generate answer"**
 - Cause: ask-claude Lambda error
@@ -331,7 +338,9 @@ print(f"Sources: {', '.join(body['sources'])}")
 
 - **Handler code**: `lambda/query-kb/handler.py`
 - **Dependencies**:
-  - `docs/lambda-vector-query.md` (vector search)
   - `docs/lambda-ask-claude.md` (answer generation)
-- **Terraform**: `terraform/lambda.tf` (query_kb_lambda module)
-- **Consumers**: MS Teams bot, CLI tools, Slack integrations
+  - S3 Vectors (`{env}-outcome-ops-ai-assist-vectors` bucket)
+- **Terraform**: `terraform/lambda-query.tf` (query_kb_lambda module)
+- **Consumers**: CLI (`scripts/outcome-ops-assist`), code generation Lambda
+
+<!-- Confluence sync -->

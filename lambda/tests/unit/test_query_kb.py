@@ -116,20 +116,23 @@ class TestInvokeLambda:
 class TestHandler:
     """Test Lambda handler (RAG orchestrator)."""
 
-    @patch('query_kb_handler.VECTOR_QUERY_LAMBDA_ARN', 'arn:aws:lambda:us-east-1:123:function:vector-query')
+    @patch('query_kb_handler.VECTOR_BUCKET', 'test-bucket')
+    @patch('query_kb_handler.VECTOR_INDEX', 'test-index')
     @patch('query_kb_handler.ASK_CLAUDE_LAMBDA_ARN', 'arn:aws:lambda:us-east-1:123:function:ask-claude')
+    @patch('query_kb_handler.query_s3_vectors')
+    @patch('query_kb_handler.generate_embedding')
     @patch('query_kb_handler.invoke_lambda')
-    def test_handler_full_pipeline_success(self, mock_invoke):
+    def test_handler_full_pipeline_success(self, mock_invoke, mock_embedding, mock_query):
         # Arrange
         event = {"query": "How should Lambda handlers be structured?", "topK": 5}
 
-        # Mock vector-query response
-        vector_response = {
-            "statusCode": 200,
-            "body": json.dumps([
-                {"score": 0.95, "text": "Lambda handlers should...", "source": "ADR: ADR-004"}
-            ])
-        }
+        # Mock embedding generation
+        mock_embedding.return_value = [0.1] * 1024
+
+        # Mock S3 Vectors query response
+        mock_query.return_value = [
+            {"score": 0.95, "text": "Lambda handlers should...", "source": "ADR: ADR-004", "type": "adr", "repo": "test-repo", "file_path": "docs/adrs/ADR-004.md"}
+        ]
 
         # Mock ask-claude response
         claude_response = {
@@ -140,7 +143,7 @@ class TestHandler:
             })
         }
 
-        mock_invoke.side_effect = [vector_response, claude_response]
+        mock_invoke.return_value = claude_response
 
         # Act
         response = handler(event, None)
@@ -150,9 +153,12 @@ class TestHandler:
         body = json.loads(response["body"])
         assert "answer" in body
         assert "sources" in body
-        assert mock_invoke.call_count == 2
+        mock_embedding.assert_called_once()
+        mock_query.assert_called_once()
+        mock_invoke.assert_called_once()
 
-    @patch('query_kb_handler.VECTOR_QUERY_LAMBDA_ARN', 'arn:aws:lambda:us-east-1:123:function:vector-query')
+    @patch('query_kb_handler.VECTOR_BUCKET', 'test-bucket')
+    @patch('query_kb_handler.VECTOR_INDEX', 'test-index')
     @patch('query_kb_handler.ASK_CLAUDE_LAMBDA_ARN', 'arn:aws:lambda:us-east-1:123:function:ask-claude')
     def test_handler_missing_query(self):
         # Arrange
@@ -166,20 +172,18 @@ class TestHandler:
         body = json.loads(response["body"])
         assert "error" in body
 
-    @patch('query_kb_handler.VECTOR_QUERY_LAMBDA_ARN', 'arn:aws:lambda:us-east-1:123:function:vector-query')
+    @patch('query_kb_handler.VECTOR_BUCKET', 'test-bucket')
+    @patch('query_kb_handler.VECTOR_INDEX', 'test-index')
     @patch('query_kb_handler.ASK_CLAUDE_LAMBDA_ARN', 'arn:aws:lambda:us-east-1:123:function:ask-claude')
-    @patch('query_kb_handler.invoke_lambda')
-    def test_handler_no_results_found(self, mock_invoke):
+    @patch('query_kb_handler.query_s3_vectors')
+    @patch('query_kb_handler.generate_embedding')
+    def test_handler_no_results_found(self, mock_embedding, mock_query):
         # Arrange
         event = {"query": "non-existent topic", "topK": 5}
 
-        # Mock vector-query returning empty results
-        vector_response = {
-            "statusCode": 200,
-            "body": json.dumps([])
-        }
-
-        mock_invoke.return_value = vector_response
+        mock_embedding.return_value = [0.1] * 1024
+        # Mock S3 Vectors returning empty results
+        mock_query.return_value = []
 
         # Act
         response = handler(event, None)
@@ -189,16 +193,43 @@ class TestHandler:
         body = json.loads(response["body"])
         assert "couldn't find any relevant information" in body["answer"]
         assert body["sources"] == []
-        assert mock_invoke.call_count == 1  # Only vector-query called, not ask-claude
 
-    @patch('query_kb_handler.VECTOR_QUERY_LAMBDA_ARN', 'arn:aws:lambda:us-east-1:123:function:vector-query')
+    @patch('query_kb_handler.VECTOR_BUCKET', 'test-bucket')
+    @patch('query_kb_handler.VECTOR_INDEX', 'test-index')
     @patch('query_kb_handler.ASK_CLAUDE_LAMBDA_ARN', 'arn:aws:lambda:us-east-1:123:function:ask-claude')
-    @patch('query_kb_handler.invoke_lambda')
-    def test_handler_vector_query_fails(self, mock_invoke):
+    @patch('query_kb_handler.generate_embedding')
+    def test_handler_embedding_fails(self, mock_embedding):
         # Arrange
         event = {"query": "test query", "topK": 5}
 
-        # Mock vector-query failure
+        # Mock embedding failure (returns empty)
+        mock_embedding.return_value = []
+
+        # Act
+        response = handler(event, None)
+
+        # Assert
+        assert response["statusCode"] == 500
+        body = json.loads(response["body"])
+        assert "Failed to generate query embedding" in body["error"]
+
+    @patch('query_kb_handler.VECTOR_BUCKET', 'test-bucket')
+    @patch('query_kb_handler.VECTOR_INDEX', 'test-index')
+    @patch('query_kb_handler.ASK_CLAUDE_LAMBDA_ARN', 'arn:aws:lambda:us-east-1:123:function:ask-claude')
+    @patch('query_kb_handler.query_s3_vectors')
+    @patch('query_kb_handler.generate_embedding')
+    @patch('query_kb_handler.invoke_lambda')
+    def test_handler_ask_claude_fails(self, mock_invoke, mock_embedding, mock_query):
+        # Arrange
+        event = {"query": "test query", "topK": 5}
+
+        mock_embedding.return_value = [0.1] * 1024
+        # Mock successful S3 Vectors query
+        mock_query.return_value = [
+            {"score": 0.95, "text": "content", "source": "source", "type": "adr", "repo": "test-repo", "file_path": "docs/adr.md"}
+        ]
+
+        # Mock ask-claude failure
         mock_invoke.return_value = None
 
         # Act
@@ -207,71 +238,23 @@ class TestHandler:
         # Assert
         assert response["statusCode"] == 500
         body = json.loads(response["body"])
-        assert "Failed to search knowledge base" in body["error"]
-
-    @patch('query_kb_handler.VECTOR_QUERY_LAMBDA_ARN', 'arn:aws:lambda:us-east-1:123:function:vector-query')
-    @patch('query_kb_handler.ASK_CLAUDE_LAMBDA_ARN', 'arn:aws:lambda:us-east-1:123:function:ask-claude')
-    @patch('query_kb_handler.invoke_lambda')
-    def test_handler_vector_query_non_200_status(self, mock_invoke):
-        # Arrange
-        event = {"query": "test query", "topK": 5}
-
-        # Mock vector-query returning error status
-        vector_response = {
-            "statusCode": 500,
-            "body": json.dumps({"error": "Internal error"})
-        }
-
-        mock_invoke.return_value = vector_response
-
-        # Act
-        response = handler(event, None)
-
-        # Assert
-        assert response["statusCode"] == 500
-        body = json.loads(response["body"])
-        assert "Failed to search knowledge base" in body["error"]
-
-    @patch('query_kb_handler.VECTOR_QUERY_LAMBDA_ARN', 'arn:aws:lambda:us-east-1:123:function:vector-query')
-    @patch('query_kb_handler.ASK_CLAUDE_LAMBDA_ARN', 'arn:aws:lambda:us-east-1:123:function:ask-claude')
-    @patch('query_kb_handler.invoke_lambda')
-    def test_handler_ask_claude_fails(self, mock_invoke):
-        # Arrange
-        event = {"query": "test query", "topK": 5}
-
-        # Mock successful vector-query
-        vector_response = {
-            "statusCode": 200,
-            "body": json.dumps([
-                {"score": 0.95, "text": "content", "source": "source"}
-            ])
-        }
-
-        # Mock ask-claude failure
-        mock_invoke.side_effect = [vector_response, None]
-
-        # Act
-        response = handler(event, None)
-
-        # Assert
-        assert response["statusCode"] == 500
-        body = json.loads(response["body"])
         assert "Failed to generate answer" in body["error"]
 
-    @patch('query_kb_handler.VECTOR_QUERY_LAMBDA_ARN', 'arn:aws:lambda:us-east-1:123:function:vector-query')
+    @patch('query_kb_handler.VECTOR_BUCKET', 'test-bucket')
+    @patch('query_kb_handler.VECTOR_INDEX', 'test-index')
     @patch('query_kb_handler.ASK_CLAUDE_LAMBDA_ARN', 'arn:aws:lambda:us-east-1:123:function:ask-claude')
+    @patch('query_kb_handler.query_s3_vectors')
+    @patch('query_kb_handler.generate_embedding')
     @patch('query_kb_handler.invoke_lambda')
-    def test_handler_ask_claude_non_200_status(self, mock_invoke):
+    def test_handler_ask_claude_non_200_status(self, mock_invoke, mock_embedding, mock_query):
         # Arrange
         event = {"query": "test query", "topK": 5}
 
-        # Mock successful vector-query
-        vector_response = {
-            "statusCode": 200,
-            "body": json.dumps([
-                {"score": 0.95, "text": "content", "source": "source"}
-            ])
-        }
+        mock_embedding.return_value = [0.1] * 1024
+        # Mock successful S3 Vectors query
+        mock_query.return_value = [
+            {"score": 0.95, "text": "content", "source": "source", "type": "adr", "repo": "test-repo", "file_path": "docs/adr.md"}
+        ]
 
         # Mock ask-claude error status
         claude_response = {
@@ -279,7 +262,7 @@ class TestHandler:
             "body": json.dumps({"error": "Claude error"})
         }
 
-        mock_invoke.side_effect = [vector_response, claude_response]
+        mock_invoke.return_value = claude_response
 
         # Act
         response = handler(event, None)
@@ -289,19 +272,20 @@ class TestHandler:
         body = json.loads(response["body"])
         assert "Failed to generate answer" in body["error"]
 
-    @patch('query_kb_handler.VECTOR_QUERY_LAMBDA_ARN', 'arn:aws:lambda:us-east-1:123:function:vector-query')
+    @patch('query_kb_handler.VECTOR_BUCKET', 'test-bucket')
+    @patch('query_kb_handler.VECTOR_INDEX', 'test-index')
     @patch('query_kb_handler.ASK_CLAUDE_LAMBDA_ARN', 'arn:aws:lambda:us-east-1:123:function:ask-claude')
+    @patch('query_kb_handler.query_s3_vectors')
+    @patch('query_kb_handler.generate_embedding')
     @patch('query_kb_handler.invoke_lambda')
-    def test_handler_default_top_k(self, mock_invoke):
+    def test_handler_default_top_k(self, mock_invoke, mock_embedding, mock_query):
         # Arrange
         event = {"query": "test query"}  # No topK specified
 
-        vector_response = {
-            "statusCode": 200,
-            "body": json.dumps([
-                {"score": 0.95, "text": "content", "source": "source"}
-            ])
-        }
+        mock_embedding.return_value = [0.1] * 1024
+        mock_query.return_value = [
+            {"score": 0.95, "text": "content", "source": "source", "type": "adr", "repo": "test-repo", "file_path": "docs/adr.md"}
+        ]
 
         claude_response = {
             "statusCode": 200,
@@ -311,24 +295,25 @@ class TestHandler:
             })
         }
 
-        mock_invoke.side_effect = [vector_response, claude_response]
+        mock_invoke.return_value = claude_response
 
         # Act
         response = handler(event, None)
 
         # Assert
         assert response["statusCode"] == 200
-        # Verify vector-query was called with default topK=5
-        call_args = mock_invoke.call_args_list[0]
-        assert call_args[0][1]["topK"] == 5
+        # Verify query_s3_vectors was called with default topK=5
+        call_args = mock_query.call_args
+        assert call_args[0][1] == 5  # topK parameter
 
-    @patch('query_kb_handler.VECTOR_QUERY_LAMBDA_ARN', 'arn:aws:lambda:us-east-1:123:function:vector-query')
+    @patch('query_kb_handler.VECTOR_BUCKET', 'test-bucket')
+    @patch('query_kb_handler.VECTOR_INDEX', 'test-index')
     @patch('query_kb_handler.ASK_CLAUDE_LAMBDA_ARN', 'arn:aws:lambda:us-east-1:123:function:ask-claude')
-    @patch('query_kb_handler.invoke_lambda')
-    def test_handler_exception_handling(self, mock_invoke):
+    @patch('query_kb_handler.generate_embedding')
+    def test_handler_exception_handling(self, mock_embedding):
         # Arrange
         event = {"query": "test query"}
-        mock_invoke.side_effect = Exception("Unexpected error")
+        mock_embedding.side_effect = Exception("Unexpected error")
 
         # Act
         response = handler(event, None)
@@ -337,3 +322,26 @@ class TestHandler:
         assert response["statusCode"] == 500
         body = json.loads(response["body"])
         assert "error" in body
+
+    @patch('query_kb_handler.VECTOR_BUCKET', 'test-bucket')
+    @patch('query_kb_handler.VECTOR_INDEX', 'test-index')
+    @patch('query_kb_handler.ASK_CLAUDE_LAMBDA_ARN', 'arn:aws:lambda:us-east-1:123:function:ask-claude')
+    @patch('query_kb_handler.query_s3_vectors')
+    @patch('query_kb_handler.generate_embedding')
+    def test_handler_raw_mode(self, mock_embedding, mock_query):
+        # Arrange - raw mode returns vector results without Claude synthesis
+        event = {"query": "test query", "raw": True}
+
+        mock_embedding.return_value = [0.1] * 1024
+        mock_query.return_value = [
+            {"score": 0.95, "text": "content", "source": "source", "type": "adr", "repo": "test-repo", "file_path": "docs/adr.md"}
+        ]
+
+        # Act
+        response = handler(event, None)
+
+        # Assert
+        assert response["statusCode"] == 200
+        body = json.loads(response["body"])
+        assert "results" in body
+        assert len(body["results"]) == 1

@@ -1,0 +1,5 @@
+boto3>=1.36.0
+botocore>=1.36.0
+urllib3>=2.6.3
+PyJWT[crypto]>=2.8.0
+PyYAML>=6.0

@@ -179,7 +179,7 @@ ADRs are ingested automatically when you deploy:
 ```bash
 # In your infrastructure
 cd terraform
-terraform apply -var-file=dev.tfvars
+terraform apply -var-file=prd.tfvars
 ```
 
 The ingest-docs Lambda:
@@ -193,7 +193,7 @@ To manually re-ingest:
 
 ```bash
 aws lambda invoke \
-  --function-name dev-outcome-ops-ai-assist-ingest-docs \
+  --function-name prd-outcome-ops-ai-assist-ingest-docs \
   response.json
 ```
 
@@ -291,3 +291,6 @@ See [fatacyai-adrs](https://github.com/bcarpio/fatacyai-adrs) for example ADRs i
 
 Version History:
 - v1.0 (2025-01-02): Initial ADR explaining ADRs and providing template
+
+<!-- Confluence sync -->
+

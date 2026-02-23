@@ -9,15 +9,15 @@ OutcomeOps applies **Context Engineering** to AI-assisted development: give AI a
 **1. Ingest Phase**
 - Scan repositories for ADRs, READMEs, code examples
 - Generate embeddings using AWS Bedrock Titan v2
-- Store in DynamoDB knowledge base
+- Store embeddings in S3 Vectors for fast semantic search
 
 **2. Query Phase**
 - Accept natural language query (from CLI or Claude Code)
-- Vector search DynamoDB for relevant patterns
+- Vector search S3 Vectors for relevant patterns (<100ms)
 - Retrieve top-K documents by similarity
 
 **3. Generation Phase**
-- Pass query + retrieved context to Claude 3.5 Sonnet
+- Pass query + retrieved context to Claude Sonnet 4.5
 - Claude generates code using YOUR patterns
 - Returns implementation matching YOUR standards
 
@@ -60,16 +60,16 @@ OutcomeOps AI Assist is a knowledge-driven code generation system that shifts de
                            ▼
                    ┌───────────────┐
                    │  AWS Bedrock  │
-                   │  + Claude 3.5 │
+                   │  + Claude 4.5 │
                    └───────┬───────┘
                            │
         ┌──────────────────┼──────────────────┐
         │                  │                  │
         ▼                  ▼                  ▼
-    ┌────────┐        ┌─────────────┐   ┌─────────┐
-    │Vector  │        │ DynamoDB    │   │    S3   │
-    │Search  │        │(Embeddings) │   │(Docs)   │
-    └────────┘        └─────────────┘   └─────────┘
+    ┌────────────┐   ┌─────────────┐   ┌─────────┐
+    │ S3 Vectors │   │ DynamoDB    │   │    S3   │
+    │(Embeddings)│   │  (State)    │   │ (Docs)  │
+    └────────────┘   └─────────────┘   └─────────┘
 ```
 
 ## Core Components
@@ -87,9 +87,9 @@ GitHub Repos (ADRs, READMEs, Docs)
          ↓
 Generate embeddings via Bedrock Titan v2
          ↓
-Store in DynamoDB with metadata
+Store embeddings in S3 Vectors
          ↓
-Archive in S3
+Archive raw content in S3
          ↓
 Available for queries + code generation
 ```
@@ -100,18 +100,29 @@ Available for queries + code generation
 - Function-specific docs from `docs/lambda-*.md`, `docs/architecture.md`, etc.
 - Code patterns via code maps (future)
 
-**Storage schema (DynamoDB):**
+**Storage (S3 Vectors):**
+
+Embeddings are stored in AWS S3 Vectors for native vector search:
+```
+Vector Bucket: {env}-outcome-ops-ai-assist-vectors
+Index: knowledge-base
+Dimension: 1024 (Titan v2)
+Distance Metric: cosine
+```
+
+Each vector includes metadata:
 ```json
 {
-  "PK": "repo#outcome-ops-ai-assist",           // Partition key
-  "SK": "adr#ADR-001",                          // Sort key (type#id)
-  "type": "adr",                                // Document type
-  "content": "... full text ...",               // Document content
-  "embedding": [0.123, 0.456, ...],             // 1024-dimensional vector
-  "file_path": "docs/adr/ADR-001.md",           // Original location
-  "content_hash": "abc123...",                  // SHA-256 for change detection
-  "timestamp": "2025-01-15T10:00:00Z",          // When ingested
-  "repo": "outcome-ops-ai-assist"               // Source repo
+  "key": "outcome-ops-ai-assist#adr#ADR-001",
+  "data": {"float32": [0.123, 0.456, ...]},
+  "metadata": {
+    "content": "... full text ...",
+    "type": "adr",
+    "repo": "outcome-ops-ai-assist",
+    "file_path": "docs/adr/ADR-001.md",
+    "content_hash": "abc123...",
+    "timestamp": "2025-01-15T10:00:00Z"
+  }
 }
 ```
 
@@ -121,8 +132,8 @@ Retrieval Augmented Generation pipeline for intelligent queries.
 
 **Components:**
 - Query embedding: Convert natural language to vector via Bedrock Titan v2
-- Vector search: DynamoDB scan with cosine similarity matching
-- Result ranking: Top K most relevant documents
+- Vector search: S3 Vectors native query_vectors API (<100ms)
+- Result ranking: Top K most relevant documents by cosine similarity
 - Context assembly: Pass top results to Claude
 
 **Example flow:**
@@ -131,14 +142,25 @@ User query: "How should Lambda error handling work?"
          ↓
 Generate embedding (Titan v2)
          ↓
-Search DynamoDB for similar embeddings
+Query S3 Vectors for similar embeddings
          ↓
 Return top 5 documents (ADRs, code examples)
          ↓
-Pass to Claude 3.5 Sonnet with context
+Pass to Claude Sonnet 4.5 with context
          ↓
 Claude generates answer grounded in YOUR patterns
 ```
+
+### 3. Event-Driven Test Automation
+
+Once Claude finishes writing code, we need fast validation without waiting for GitHub Actions. OutcomeOps now uses an environment-scoped EventBridge bus (`${env}-${app}-bus`) to loosely couple code generation and testing:
+
+1. `generate-code` emits `OutcomeOps.CodeGeneration.Completed` with repo, branch, PR info, and the environment/app identifiers.
+2. An EventBridge rule on the same bus routes those events to the new `run-tests` Lambda.
+3. `run-tests` pulls the latest commit, runs `make test` inside the runtime container, and publishes `OutcomeOps.Tests.Completed` (pass/fail plus S3 artifact pointers).
+4. Future automation—PR commenters, deployment gates, Slack notifications—can subscribe to the same bus without changing the Lambdas.
+
+This keeps the workflow serverless (no Step Functions required) while ensuring every generated branch ships with test results before CI picks it up.
 
 ### 3. Code Generation
 
@@ -151,7 +173,7 @@ Claude generates code using your patterns as context.
 4. You review for business logic; system ensures technical consistency
 
 **Handled by:**
-- Bedrock Claude 3.5 Sonnet model
+- Bedrock Claude Sonnet 4.5 model
 - RAG context from knowledge base
 - Your custom ADRs and patterns
 
@@ -163,7 +185,8 @@ Claude generates code using your patterns as context.
 |-----------|---------|---------|
 | **Compute** | Lambda | Serverless functions (ingest, query, generate) |
 | **Knowledge Base** | Bedrock (Titan v2 + Claude) | Embeddings + LLM for generation |
-| **Vector Storage** | DynamoDB | Single-table with embeddings and similarity search |
+| **Vector Storage** | S3 Vectors | Native vector database with cosine similarity search |
+| **State Tracking** | DynamoDB | Commit SHAs for incremental ingestion |
 | **Document Archive** | S3 | Versioned storage of ingested documents |
 | **Configuration** | SSM Parameter Store | GitHub token, repo allowlist, service endpoints |
 | **Encryption** | AWS KMS | Encrypt sensitive SSM parameters |
@@ -192,7 +215,7 @@ Claude generates code using your patterns as context.
       │  ├→ Fetch docs/* from GitHub API
       │  ├→ Generate embeddings via Bedrock
       │  ├→ Upload raw content to S3
-      │  └→ Store metadata + embedding in DynamoDB
+      │  └→ Store embeddings in S3 Vectors
       └→ Return: { statusCode: 200, documents_ingested: N }
 ```
 
@@ -200,10 +223,10 @@ Claude generates code using your patterns as context.
 
 ```
 1. User query: "How should I handle errors?"
-   └→ vector-query Lambda (future)
-      ├→ Generate embedding via Bedrock
-      ├→ Search DynamoDB for top K results
-      ├→ Pass results to Claude
+   └→ query-kb Lambda
+      ├→ Generate embedding via Bedrock Titan v2
+      ├→ Search S3 Vectors for top K results (<100ms)
+      ├→ Pass results to ask-claude Lambda
       └→ Return: { answer: "...", sources: [...] }
 ```
 
@@ -229,9 +252,8 @@ Claude generates code using your patterns as context.
 ### Future Optimizations
 
 1. **Batch processing**: SQS FIFO queue for large ingestions
-2. **Vector search efficiency**: Dedicated vector database (Pinecone, Weaviate)
-3. **Caching**: Redis for frequently accessed patterns
-4. **Rate limiting**: Bedrock token limits (~100k/minute)
+2. **Caching**: Redis for frequently accessed patterns
+3. **Rate limiting**: Bedrock token limits (~100k/minute)
 
 ### Throttling Prevention
 
@@ -250,7 +272,7 @@ If scaling beyond 100k tokens/minute:
 
 ### Data Protection
 
-- **Encryption at rest**: S3 default encryption, DynamoDB point-in-time recovery
+- **Encryption at rest**: S3 default encryption, S3 Vectors AES-256
 - **Encryption in transit**: HTTPS for GitHub API, AWS service endpoints
 - **GitHub token**: Stored in SSM with KMS encryption
 
@@ -263,8 +285,7 @@ If scaling beyond 100k tokens/minute:
 ### Monitoring
 
 - **CloudWatch logs**: All Lambda execution details
-- **Audit trail**: DynamoDB streams for data changes
-- **Alarms**: Lambda errors, DynamoDB throttling
+- **Alarms**: Lambda errors, Bedrock throttling
 
 ## Related Documentation
 
@@ -272,3 +293,5 @@ If scaling beyond 100k tokens/minute:
 - **Deployment**: See `docs/deployment.md` for setup instructions
 - **ADRs**: See `docs/adr/` for architectural decisions
 - **Terraform**: See `terraform/` for infrastructure definitions
+
+<!-- Confluence sync -->

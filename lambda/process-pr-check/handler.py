@@ -29,8 +29,10 @@ from check_handlers import (
     check_adr_compliance,
     check_architectural_duplication,
     check_breaking_changes,
+    check_license_compliance,
     check_readme_freshness,
     check_test_coverage,
+    UsageTracker,
 )
 
 # Setup logging
@@ -55,6 +57,7 @@ class CheckType(str, Enum):
     TEST_COVERAGE = "TEST_COVERAGE"
     BREAKING_CHANGES = "BREAKING_CHANGES"
     ARCHITECTURAL_DUPLICATION = "ARCHITECTURAL_DUPLICATION"
+    LICENSE_COMPLIANCE = "LICENSE_COMPLIANCE"
 
 
 class CheckStatus(str, Enum):
@@ -231,7 +234,9 @@ def run_check(job: CheckJob) -> Dict[str, Any]:
             check_type=job.check_type.value,
             pr_number=job.pr_number,
             repository=job.repository,
-            changed_files=job.changed_files
+            changed_files=job.changed_files,
+            github_token_param=github_token_param,
+            query_kb_lambda_name=QUERY_KB_LAMBDA_NAME
         )
 
     elif job.check_type == CheckType.BREAKING_CHANGES:
@@ -253,16 +258,27 @@ def run_check(job: CheckJob) -> Dict[str, Any]:
             github_token_param=github_token_param
         )
 
+    elif job.check_type == CheckType.LICENSE_COMPLIANCE:
+        return check_license_compliance(
+            check_type=job.check_type.value,
+            pr_number=job.pr_number,
+            repository=job.repository,
+            changed_files=job.changed_files,
+            query_kb_lambda_name=QUERY_KB_LAMBDA_NAME,
+            github_token_param=github_token_param
+        )
+
     else:
         raise ValueError(f"Unknown check type: {job.check_type}")
 
 
-def format_check_comment(result: CheckResult) -> str:
+def format_check_comment(result: CheckResult, usage: UsageTracker | None = None) -> str:
     """
     Format check result as GitHub PR comment.
 
     Args:
         result: CheckResult to format
+        usage: Optional UsageTracker with API usage metrics
 
     Returns:
         Markdown-formatted comment string
@@ -282,7 +298,15 @@ def format_check_comment(result: CheckResult) -> str:
         for detail in result.details:
             comment += f"{detail}\n"
 
+    # Add usage info if available
+    if usage and usage.total_tokens > 0:
+        comment += f"\n**Usage:**\n"
+        comment += f"Model: {usage.primary_model}\n"
+        comment += f"Tokens: {usage.total_input_tokens:,} input + {usage.total_output_tokens:,} output = {usage.total_tokens:,} total\n"
+        comment += f"Cost: ${usage.total_cost:.4f}\n"
+
     comment += f"\n_Check completed at {result.timestamp}_"
+    comment += "\n\n---\n*Powered by [OutcomeOps AI Assist](https://outcomeops.ai)*"
 
     return comment
 
@@ -305,6 +329,9 @@ def process_check_job(job: CheckJob) -> CheckResult:
     # Run the appropriate check
     check_result = run_check(job)
 
+    # Extract usage tracker if present
+    usage = check_result.get("usage")
+
     # Build full result
     timestamp = datetime.utcnow().isoformat() + "Z"
     result = CheckResult(
@@ -320,9 +347,9 @@ def process_check_job(job: CheckJob) -> CheckResult:
     # Store result in DynamoDB
     store_check_result(result)
 
-    # Post result as PR comment
+    # Post result as PR comment (with usage info)
     token = get_github_token()
-    comment = format_check_comment(result)
+    comment = format_check_comment(result, usage)
     comment_response = post_pr_comment(job.repository, job.pr_number, comment, token)
 
     # Update result with comment URL

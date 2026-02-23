@@ -160,3 +160,5 @@ When Claude Code commits changes:
 ## Version History
 
 - v1.0 (2025-01-06): Initial git commit standards for outcome-ops-ai-assist
+
+<!-- Confluence sync -->

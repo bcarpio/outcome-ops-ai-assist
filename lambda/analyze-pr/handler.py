@@ -3,10 +3,11 @@ Lambda handler for analyzing Pull Requests and queueing architecture checks.
 
 This handler:
 1. Fetches PR diff from GitHub API
-2. Parses changed files to determine which checks to run
-3. Queues check jobs to SQS FIFO queue for async processing
-4. Posts initial comment to PR with analysis status
-5. Checks: ADR Compliance, README Freshness, Test Coverage, Breaking Changes, Architectural Duplication
+2. Loads .outcomeops.yaml to determine backend type
+3. Parses changed files using backend-specific patterns
+4. Queues check jobs to SQS FIFO queue for async processing
+5. Posts initial comment to PR with analysis status
+6. Checks: ADR Compliance, README Freshness, Test Coverage, Breaking Changes, Architectural Duplication, License Compliance
 
 Input: { "pr_number": int, "repository": "owner/repo" }
 Output: { "message": str, "pr_number": int, "checks_queued": int }
@@ -14,15 +15,18 @@ Output: { "message": str, "pr_number": int, "checks_queued": int }
 This Lambda is triggered manually or via GitHub webhooks.
 """
 
+import base64
 import json
 import logging
 import os
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Dict, List, Set
+from typing import Any, Dict, List, Optional, Set
 from enum import Enum
 
 import boto3
 import requests
+import yaml
 from botocore.exceptions import ClientError
 from pydantic import BaseModel, Field, field_validator
 
@@ -46,6 +50,7 @@ class CheckType(str, Enum):
     TEST_COVERAGE = "TEST_COVERAGE"
     BREAKING_CHANGES = "BREAKING_CHANGES"
     ARCHITECTURAL_DUPLICATION = "ARCHITECTURAL_DUPLICATION"
+    LICENSE_COMPLIANCE = "LICENSE_COMPLIANCE"
 
 
 class AnalyzePrRequest(BaseModel):
@@ -241,19 +246,183 @@ def post_pr_comment(repository: str, pr_number: int, body: str, token: str) -> D
         raise Exception(f"GitHub API error: {str(e)}")
 
 
-def parse_changed_files(files: List[GitHubFile]) -> Dict[str, Any]:
-    """
-    Parse changed files and determine which checks to run.
+@dataclass
+class BackendPatterns:
+    """File patterns for a specific backend type."""
+    source_dirs: List[str]  # Directories containing source code
+    source_extensions: List[str]  # File extensions for source code
+    test_dirs: List[str]  # Directories containing tests
+    test_patterns: List[str]  # Patterns for test files
+    config_files: List[str]  # Build/config files (pom.xml, package.json, etc.)
+    handler_patterns: List[str]  # Patterns for main entry points/handlers
 
-    Checks are triggered based on file paths:
-    - ADR_COMPLIANCE: Lambda handlers (lambda/**/*.py) or Terraform (terraform/**/*.tf)
-    - README_FRESHNESS: Lambda/Terraform/docs changes
-    - TEST_COVERAGE: New Lambda handlers
-    - BREAKING_CHANGES: Handler or schema modifications
-    - ARCHITECTURAL_DUPLICATION: New or modified Lambda handlers
+
+# Backend-specific file patterns
+BACKEND_PATTERNS: Dict[str, BackendPatterns] = {
+    "python": BackendPatterns(
+        source_dirs=["lambda/", "src/"],
+        source_extensions=[".py"],
+        test_dirs=["lambda/tests/", "tests/"],
+        test_patterns=["test_*.py", "*_test.py"],
+        config_files=["requirements.txt", "pyproject.toml", "setup.py"],
+        handler_patterns=["handler.py", "main.py", "app.py"],
+    ),
+    "java": BackendPatterns(
+        source_dirs=["src/main/java/"],
+        source_extensions=[".java"],
+        test_dirs=["src/test/java/"],
+        test_patterns=["*Tests.java", "*Test.java"],
+        config_files=["pom.xml", "build.gradle", "build.gradle.kts"],
+        handler_patterns=["*Controller.java", "*Application.java", "*Handler.java"],
+    ),
+    "typescript": BackendPatterns(
+        source_dirs=["src/", "lib/"],
+        source_extensions=[".ts", ".tsx"],
+        test_dirs=["test/", "tests/", "__tests__/"],
+        test_patterns=["*.spec.ts", "*.test.ts", "*.spec.tsx", "*.test.tsx"],
+        config_files=["package.json", "tsconfig.json"],
+        handler_patterns=["handler.ts", "index.ts", "main.ts", "app.ts"],
+    ),
+}
+
+
+def fetch_repo_config(repository: str, token: str, ref: str = "main") -> Optional[Dict[str, Any]]:
+    """
+    Fetch .outcomeops.yaml configuration from the repository.
+
+    Args:
+        repository: Repository in format "owner/repo"
+        token: GitHub personal access token
+        ref: Git ref (branch/tag/commit) to fetch from
+
+    Returns:
+        Parsed YAML config dict, or None if not found
+    """
+    url = f"https://api.github.com/repos/{repository}/contents/.outcomeops.yaml"
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github.v3+json",
+        "X-GitHub-Api-Version": "2022-11-28"
+    }
+
+    params = {"ref": ref}
+
+    try:
+        response = requests.get(url, headers=headers, params=params, timeout=30)
+
+        if response.status_code == 404:
+            logger.info(f"No .outcomeops.yaml found in {repository}, using defaults")
+            return None
+
+        response.raise_for_status()
+
+        data = response.json()
+        content = base64.b64decode(data["content"]).decode("utf-8")
+        config = yaml.safe_load(content)
+
+        logger.info(f"Loaded .outcomeops.yaml from {repository}: {config}")
+        return config
+
+    except requests.exceptions.RequestException as e:
+        logger.warning(f"Failed to fetch .outcomeops.yaml from {repository}: {e}")
+        return None
+    except yaml.YAMLError as e:
+        logger.warning(f"Failed to parse .outcomeops.yaml from {repository}: {e}")
+        return None
+
+
+def get_backend_from_config(config: Optional[Dict[str, Any]]) -> str:
+    """
+    Extract backend type from repo config.
+
+    Args:
+        config: Parsed .outcomeops.yaml config dict
+
+    Returns:
+        Backend type string ("python", "java", or "typescript"), defaults to "python"
+    """
+    if not config:
+        return "python"
+
+    code_gen_config = config.get("code_generation", {})
+    backend = code_gen_config.get("backend", "python")
+
+    # Normalize backend name
+    backend = backend.lower().strip()
+    if backend not in BACKEND_PATTERNS:
+        logger.warning(f"Unknown backend '{backend}', defaulting to python")
+        return "python"
+
+    return backend
+
+
+def _matches_pattern(filepath: str, pattern: str) -> bool:
+    """
+    Check if a filepath matches a glob-like pattern.
+
+    Supports simple patterns like:
+    - "*Controller.java" - ends with Controller.java
+    - "test_*.py" - starts with test_ and ends with .py
+    - "*.spec.ts" - ends with .spec.ts
+
+    Args:
+        filepath: File path to check
+        pattern: Glob-like pattern
+
+    Returns:
+        True if filepath matches pattern
+    """
+    import fnmatch
+    filename = filepath.split("/")[-1]
+    return fnmatch.fnmatch(filename, pattern)
+
+
+def _is_in_source_dir(filepath: str, patterns: BackendPatterns) -> bool:
+    """Check if file is in a source directory (not test directory)."""
+    # First check if it's in a test directory
+    for test_dir in patterns.test_dirs:
+        if filepath.startswith(test_dir):
+            return False
+
+    # Check if it's in a source directory
+    for source_dir in patterns.source_dirs:
+        if filepath.startswith(source_dir):
+            return True
+
+    return False
+
+
+def _is_test_file(filepath: str, patterns: BackendPatterns) -> bool:
+    """Check if file is a test file based on directory and pattern."""
+    # Check if in test directory
+    in_test_dir = any(filepath.startswith(test_dir) for test_dir in patterns.test_dirs)
+    if not in_test_dir:
+        return False
+
+    # Check if matches test pattern
+    return any(_matches_pattern(filepath, pattern) for pattern in patterns.test_patterns)
+
+
+def _is_handler_file(filepath: str, patterns: BackendPatterns) -> bool:
+    """Check if file is a handler/controller/entry point."""
+    return any(_matches_pattern(filepath, pattern) for pattern in patterns.handler_patterns)
+
+
+def parse_changed_files(files: List[GitHubFile], backend: str = "python") -> Dict[str, Any]:
+    """
+    Parse changed files and determine which checks to run based on backend type.
+
+    Uses backend-specific patterns from BACKEND_PATTERNS to identify:
+    - Source files (triggers ADR_COMPLIANCE)
+    - Test files (triggers TEST_COVERAGE)
+    - Handler/Controller files (triggers BREAKING_CHANGES, ARCHITECTURAL_DUPLICATION)
+    - Documentation changes (triggers README_FRESHNESS)
+    - All source code (triggers LICENSE_COMPLIANCE)
 
     Args:
         files: List of GitHubFile objects
+        backend: Backend type ("python", "java", or "typescript")
 
     Returns:
         Dict with "changed_files" list and "checks_to_run" list
@@ -261,35 +430,72 @@ def parse_changed_files(files: List[GitHubFile]) -> Dict[str, Any]:
     changed_files = [f.filename for f in files]
     checks_to_run: Set[CheckType] = set()
 
+    # Get patterns for this backend
+    patterns = BACKEND_PATTERNS.get(backend, BACKEND_PATTERNS["python"])
+    logger.info(f"Using {backend} backend patterns for file analysis")
+
+    # Source code extensions for license checking (all supported languages)
+    source_extensions = {
+        '.py', '.js', '.ts', '.tsx', '.jsx', '.go', '.java',
+        '.rb', '.php', '.rs', '.c', '.cpp', '.h', '.hpp',
+        '.scala', '.kt', '.swift', '.cs', '.sh', '.bash', '.md'
+    }
+
     for file in files:
         filepath = file.filename
         status = file.status
 
-        # ADR Compliance: Lambda handlers or Terraform files
-        if filepath.startswith("lambda/") and filepath.endswith(".py"):
-            if not any(x in filepath for x in ["/tests/", "__pycache__", ".pyc"]):
-                checks_to_run.add(CheckType.ADR_COMPLIANCE)
+        # Check file extension matches backend
+        has_backend_extension = any(filepath.endswith(ext) for ext in patterns.source_extensions)
 
+        # ADR Compliance: Source files in source directories (not tests)
+        if has_backend_extension and _is_in_source_dir(filepath, patterns):
+            # Exclude common non-source paths
+            exclude_patterns = ["__pycache__", ".pyc", "/node_modules/", "/dist/", "/build/"]
+            if not any(excl in filepath for excl in exclude_patterns):
+                checks_to_run.add(CheckType.ADR_COMPLIANCE)
+                logger.debug(f"ADR_COMPLIANCE triggered by: {filepath}")
+
+        # ADR Compliance: Terraform files (always check)
         if filepath.startswith("terraform/") and filepath.endswith(".tf"):
             checks_to_run.add(CheckType.ADR_COMPLIANCE)
 
-        # README Freshness: Lambda/Terraform/docs changes
-        if filepath.startswith(("lambda/", "terraform/", "docs/")):
+        # README Freshness: Source/Terraform/docs changes
+        triggers_readme = (
+            any(filepath.startswith(src_dir) for src_dir in patterns.source_dirs) or
+            filepath.startswith("terraform/") or
+            filepath.startswith("docs/")
+        )
+        if triggers_readme:
             checks_to_run.add(CheckType.README_FRESHNESS)
 
-        # Test Coverage: New Lambda handlers
-        if filepath.startswith("lambda/") and filepath.endswith("/handler.py"):
-            checks_to_run.add(CheckType.TEST_COVERAGE)
+        # Test Coverage: Handler/Controller files need tests
+        if has_backend_extension and _is_handler_file(filepath, patterns):
+            if _is_in_source_dir(filepath, patterns):
+                checks_to_run.add(CheckType.TEST_COVERAGE)
+                logger.debug(f"TEST_COVERAGE triggered by: {filepath}")
 
-        # Breaking Changes: Handler modifications
-        if filepath.startswith("lambda/") and filepath.endswith(".py"):
-            if status in ["modified", "removed"] and "/handler.py" in filepath:
+        # Breaking Changes: Handler/Controller modifications
+        if has_backend_extension and _is_handler_file(filepath, patterns):
+            if status in ["modified", "removed"]:
                 checks_to_run.add(CheckType.BREAKING_CHANGES)
+                logger.debug(f"BREAKING_CHANGES triggered by: {filepath}")
 
-        # Architectural Duplication: New or modified handlers
-        if filepath.startswith("lambda/") and filepath.endswith("/handler.py"):
+        # Architectural Duplication: New or modified handlers/controllers
+        if has_backend_extension and _is_handler_file(filepath, patterns):
             if status in ["added", "modified"]:
                 checks_to_run.add(CheckType.ARCHITECTURAL_DUPLICATION)
+                logger.debug(f"ARCHITECTURAL_DUPLICATION triggered by: {filepath}")
+
+        # License Compliance: All source code files
+        # Skip generated files and dependencies
+        skip_dirs = ['node_modules/', 'vendor/', 'dist/', 'build/', '.git/', 'target/']
+        is_skippable = any(skip_dir in filepath for skip_dir in skip_dirs)
+
+        if not is_skippable and any(filepath.endswith(ext) for ext in source_extensions):
+            checks_to_run.add(CheckType.LICENSE_COMPLIANCE)
+
+    logger.info(f"Checks to run for {backend} backend: {[c.value for c in checks_to_run]}")
 
     return {
         "changed_files": changed_files,
@@ -380,11 +586,18 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         # Fetch PR details
         pr = fetch_pull_request(request.repository, request.pr_number, token)
 
+        # Fetch repo config to determine backend type
+        # Use PR's base branch ref for config lookup
+        base_ref = pr.base.get("ref", "main")
+        repo_config = fetch_repo_config(request.repository, token, ref=base_ref)
+        backend = get_backend_from_config(repo_config)
+        logger.info(f"Detected backend type: {backend}")
+
         # Fetch PR file changes
         files = fetch_pr_files(request.repository, request.pr_number, token)
 
-        # Parse changed files and determine checks
-        parse_result = parse_changed_files(files)
+        # Parse changed files and determine checks based on backend
+        parse_result = parse_changed_files(files, backend=backend)
         changed_files = parse_result["changed_files"]
         checks_to_run = parse_result["checks_to_run"]
 
@@ -392,7 +605,10 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
         # If no checks needed, post comment and return
         if not checks_to_run:
-            comment_body = "**OutcomeOps Analysis:** No checks needed for this PR (no relevant files changed)"
+            comment_body = """**OutcomeOps Analysis:** No checks needed for this PR (no relevant files changed)
+
+---
+*Powered by [OutcomeOps AI Assist](https://outcomeops.ai)*"""
             post_pr_comment(request.repository, request.pr_number, comment_body, token)
 
             response = AnalyzePrResponse(
@@ -409,7 +625,10 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 Running {len(checks_to_run)} checks:
 {checks_list}
 
-Results will be posted as comments when complete."""
+Results will be posted as comments when complete.
+
+---
+*Powered by [OutcomeOps AI Assist](https://outcomeops.ai)*"""
 
         post_pr_comment(request.repository, request.pr_number, comment_body, token)
 

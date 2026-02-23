@@ -15,11 +15,12 @@ import boto3
 import requests
 from botocore.exceptions import ClientError
 
+from .bedrock_utils import call_bedrock, UsageTracker, SONNET_MODEL_ID
+
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 # AWS clients
-bedrock_client = boto3.client("bedrock-runtime", region_name="us-east-1")
 ssm_client = boto3.client("ssm")
 
 
@@ -123,7 +124,8 @@ def extract_infrastructure_names(files: List[str]) -> List[str]:
 def analyze_readme_with_claude(
     readme_diff: str,
     handler_names: List[str],
-    infra_names: List[str]
+    infra_names: List[str],
+    usage_tracker: UsageTracker
 ) -> Dict[str, Any]:
     """
     Ask Claude to analyze if README diff adequately documents the changes.
@@ -170,27 +172,14 @@ Examples:
     logger.info("Calling Claude to analyze README adequacy...")
 
     try:
-        response = bedrock_client.converse(
-            modelId="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
-            messages=[
-                {
-                    "role": "user",
-                    "content": [{"text": prompt}]
-                }
-            ],
-            inferenceConfig={
-                "maxTokens": 500,
-                "temperature": 0.1  # Very low temperature for factual analysis
-            }
+        response_text, usage = call_bedrock(
+            prompt=prompt,
+            model_id=SONNET_MODEL_ID,
+            max_tokens=500,
+            temperature=0.1
         )
+        usage_tracker.add(usage)
 
-        output_message = response.get("output", {}).get("message", {})
-        content = output_message.get("content", [])
-
-        if not content or not content[0].get("text"):
-            raise Exception("No content in Claude response")
-
-        response_text = content[0]["text"].strip()
         logger.info(f"Claude response: {response_text}")
 
         # Parse JSON response (handle markdown code blocks)
@@ -247,6 +236,9 @@ def check_readme_freshness(
     """
     logger.info(f"Running README freshness check for PR #{pr_number}")
 
+    # Create usage tracker
+    usage_tracker = UsageTracker()
+
     terraform_files = [f for f in changed_files if f.startswith("terraform/") and f.endswith(".tf")]
     handler_files = [
         f for f in changed_files
@@ -260,7 +252,8 @@ def check_readme_freshness(
             "checkType": check_type,
             "status": "PASS",
             "message": "No infrastructure or handler changes detected",
-            "details": []
+            "details": [],
+            "usage": usage_tracker
         }
 
     # If README not updated at all, immediate WARN
@@ -280,7 +273,8 @@ def check_readme_freshness(
             "checkType": check_type,
             "status": "WARN",
             "message": "README.md not updated",
-            "details": details
+            "details": details,
+            "usage": usage_tracker
         }
 
     # README was updated - use Claude to check if it's meaningful
@@ -299,7 +293,8 @@ def check_readme_freshness(
                 "checkType": check_type,
                 "status": "PASS",
                 "message": "README.md updated",
-                "details": ["README.md was modified (diff not available for analysis)"]
+                "details": ["README.md was modified (diff not available for analysis)"],
+                "usage": usage_tracker
             }
 
         # Extract names of changed handlers and infrastructure
@@ -307,14 +302,15 @@ def check_readme_freshness(
         infra_names = extract_infrastructure_names(changed_files)
 
         # Ask Claude to analyze
-        analysis = analyze_readme_with_claude(readme_diff, handler_names, infra_names)
+        analysis = analyze_readme_with_claude(readme_diff, handler_names, infra_names, usage_tracker)
 
         if analysis["adequate"]:
             return {
                 "checkType": check_type,
                 "status": "PASS",
                 "message": "README.md adequately documents changes",
-                "details": [analysis["explanation"]]
+                "details": [analysis["explanation"]],
+                "usage": usage_tracker
             }
         else:
             return {
@@ -328,7 +324,8 @@ def check_readme_freshness(
                     "- Ensure new Lambda handlers are listed in the Lambda functions section",
                     "- Update directory structure diagrams",
                     "- Document the purpose and usage of new components"
-                ]
+                ],
+                "usage": usage_tracker
             }
 
     except Exception as e:
@@ -342,5 +339,6 @@ def check_readme_freshness(
                 "README.md was modified, but automated analysis failed.",
                 "Please manually verify the documentation is adequate.",
                 f"Error: {str(e)}"
-            ]
+            ],
+            "usage": usage_tracker
         }

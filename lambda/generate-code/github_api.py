@@ -189,6 +189,34 @@ def create_branch(
     return {"success": False, "error": "Unknown error"}
 
 
+def get_branch_head_sha(
+    repo_full_name: str,
+    branch_name: str,
+    github_token: str
+) -> Optional[str]:
+    """
+    Retrieve the head commit SHA for a branch.
+
+    Args:
+        repo_full_name: Repository name (owner/repo)
+        branch_name: Branch to inspect
+        github_token: GitHub personal access token
+
+    Returns:
+        str: Commit SHA if branch exists
+    """
+    ref_url = f"{GITHUB_API_BASE}/repos/{repo_full_name}/git/ref/heads/{branch_name}"
+    headers = get_headers(github_token)
+
+    try:
+        response = requests.get(ref_url, headers=headers, timeout=30)
+        response.raise_for_status()
+        return response.json().get("object", {}).get("sha")
+    except requests.exceptions.RequestException as exc:
+        logger.error("[github] Failed to fetch branch head SHA: %s", exc)
+        return None
+
+
 # ============================================================================
 # File Operations
 # ============================================================================
@@ -451,3 +479,140 @@ def post_pr_comment(
     except requests.exceptions.RequestException as e:
         logger.error(f"[github] Failed to post PR comment: {e}")
         raise Exception(f"GitHub API error: {str(e)}")
+
+
+def get_pr_comments(
+    repo_full_name: str,
+    pr_number: int,
+    github_token: str
+) -> list:
+    """
+    Get all comments on a pull request.
+
+    Args:
+        repo_full_name: Repository full name (e.g., "owner/repo")
+        pr_number: PR number
+        github_token: GitHub personal access token
+
+    Returns:
+        list: List of comment dicts with 'body', 'user', 'created_at', etc.
+    """
+    url = f"{GITHUB_API_BASE}/repos/{repo_full_name}/issues/{pr_number}/comments"
+    headers = get_headers(github_token)
+
+    try:
+        response = requests.get(url, headers=headers, timeout=30)
+        response.raise_for_status()
+
+        comments = response.json()
+        logger.info(f"[github] Fetched {len(comments)} comments from PR #{pr_number}")
+        return comments
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"[github] Failed to get PR comments: {e}")
+        return []
+
+
+def get_pr_changed_files(
+    repo_full_name: str,
+    pr_number: int,
+    github_token: str
+) -> list:
+    """
+    Get list of files changed in a PR.
+
+    Args:
+        repo_full_name: Repository full name (e.g., "owner/repo")
+        pr_number: PR number
+        github_token: GitHub personal access token
+
+    Returns:
+        list: List of file paths changed in the PR
+    """
+    url = f"{GITHUB_API_BASE}/repos/{repo_full_name}/pulls/{pr_number}/files"
+    headers = get_headers(github_token)
+
+    try:
+        response = requests.get(url, headers=headers, timeout=30)
+        response.raise_for_status()
+
+        files = response.json()
+        file_paths = [f.get("filename") for f in files if f.get("filename")]
+
+        logger.info(f"[github] PR #{pr_number} has {len(file_paths)} changed files")
+        return file_paths
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"[github] Failed to get PR files: {e}")
+        return []
+
+
+def get_pr_diff(
+    repo_full_name: str,
+    pr_number: int,
+    github_token: str
+) -> str:
+    """
+    Get the full diff for a PR.
+
+    Args:
+        repo_full_name: Repository full name (e.g., "owner/repo")
+        pr_number: PR number
+        github_token: GitHub personal access token
+
+    Returns:
+        str: Full diff text for the PR
+    """
+    url = f"{GITHUB_API_BASE}/repos/{repo_full_name}/pulls/{pr_number}"
+    headers = {
+        "Authorization": f"Bearer {github_token}",
+        "Accept": "application/vnd.github.v3.diff",
+        "X-GitHub-Api-Version": "2022-11-28"
+    }
+
+    try:
+        response = requests.get(url, headers=headers, timeout=60)
+        response.raise_for_status()
+
+        logger.info(f"[github] Fetched diff for PR #{pr_number}")
+        return response.text
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"[github] Failed to get PR diff: {e}")
+        return ""
+
+
+def get_pr_info(
+    repo_full_name: str,
+    pr_number: int,
+    github_token: str
+) -> Optional[Dict[str, Any]]:
+    """
+    Get PR information including branch name.
+
+    Args:
+        repo_full_name: Repository full name (e.g., "owner/repo")
+        pr_number: PR number
+        github_token: GitHub personal access token
+
+    Returns:
+        dict: PR info with head branch, base branch, etc.
+    """
+    url = f"{GITHUB_API_BASE}/repos/{repo_full_name}/pulls/{pr_number}"
+    headers = get_headers(github_token)
+
+    try:
+        response = requests.get(url, headers=headers, timeout=30)
+        response.raise_for_status()
+
+        pr_data = response.json()
+        return {
+            "head_branch": pr_data.get("head", {}).get("ref"),
+            "base_branch": pr_data.get("base", {}).get("ref"),
+            "title": pr_data.get("title"),
+            "html_url": pr_data.get("html_url")
+        }
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"[github] Failed to get PR info: {e}")
+        return None

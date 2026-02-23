@@ -39,6 +39,10 @@ fetch_pr_files = handler_module.fetch_pr_files
 post_pr_comment = handler_module.post_pr_comment
 parse_changed_files = handler_module.parse_changed_files
 queue_check_jobs = handler_module.queue_check_jobs
+fetch_repo_config = handler_module.fetch_repo_config
+get_backend_from_config = handler_module.get_backend_from_config
+BackendPatterns = handler_module.BackendPatterns
+BACKEND_PATTERNS = handler_module.BACKEND_PATTERNS
 
 
 class TestSchemas:
@@ -377,7 +381,7 @@ class TestParseChangedFiles:
         # Arrange
         files = [
             GitHubFile(
-                filename="README.md",
+                filename="assets/logo.png",  # Image file shouldn't trigger any checks
                 status="modified",
                 additions=5,
                 deletions=2,
@@ -390,6 +394,227 @@ class TestParseChangedFiles:
 
         # Assert
         assert len(result["checks_to_run"]) == 0
+
+
+class TestBackendPatterns:
+    """Test backend-specific file pattern configuration."""
+
+    def test_backend_patterns_exist(self):
+        """Test that all expected backends have patterns defined."""
+        assert "python" in BACKEND_PATTERNS
+        assert "java" in BACKEND_PATTERNS
+        assert "typescript" in BACKEND_PATTERNS
+
+    def test_java_patterns(self):
+        """Test Java backend patterns."""
+        patterns = BACKEND_PATTERNS["java"]
+        assert "src/main/java/" in patterns.source_dirs
+        assert ".java" in patterns.source_extensions
+        assert "src/test/java/" in patterns.test_dirs
+        assert "*Controller.java" in patterns.handler_patterns
+
+    def test_typescript_patterns(self):
+        """Test TypeScript backend patterns."""
+        patterns = BACKEND_PATTERNS["typescript"]
+        assert "src/" in patterns.source_dirs
+        assert ".ts" in patterns.source_extensions
+        assert "test/" in patterns.test_dirs
+        assert "*.spec.ts" in patterns.test_patterns
+
+
+class TestParseChangedFilesJava:
+    """Test file change parsing for Java backend."""
+
+    def test_parse_java_controller(self):
+        """Test parsing Java controller changes."""
+        files = [
+            GitHubFile(
+                filename="src/main/java/com/example/PetController.java",
+                status="modified",
+                additions=10,
+                deletions=5,
+                changes=15
+            )
+        ]
+
+        result = parse_changed_files(files, backend="java")
+
+        assert CheckType.ADR_COMPLIANCE.value in result["checks_to_run"]
+        assert CheckType.BREAKING_CHANGES.value in result["checks_to_run"]
+        assert CheckType.TEST_COVERAGE.value in result["checks_to_run"]
+
+    def test_parse_java_new_controller(self):
+        """Test parsing new Java controller."""
+        files = [
+            GitHubFile(
+                filename="src/main/java/com/example/stats/StatisticsController.java",
+                status="added",
+                additions=100,
+                deletions=0,
+                changes=100
+            )
+        ]
+
+        result = parse_changed_files(files, backend="java")
+
+        assert CheckType.ADR_COMPLIANCE.value in result["checks_to_run"]
+        assert CheckType.TEST_COVERAGE.value in result["checks_to_run"]
+        assert CheckType.ARCHITECTURAL_DUPLICATION.value in result["checks_to_run"]
+
+    def test_parse_java_test_files_excluded(self):
+        """Test that Java test files don't trigger ADR checks."""
+        files = [
+            GitHubFile(
+                filename="src/test/java/com/example/PetControllerTests.java",
+                status="modified",
+                additions=10,
+                deletions=5,
+                changes=15
+            )
+        ]
+
+        result = parse_changed_files(files, backend="java")
+
+        assert CheckType.ADR_COMPLIANCE.value not in result["checks_to_run"]
+
+    def test_parse_java_model_file(self):
+        """Test parsing Java model/entity changes."""
+        files = [
+            GitHubFile(
+                filename="src/main/java/com/example/model/Pet.java",
+                status="modified",
+                additions=10,
+                deletions=5,
+                changes=15
+            )
+        ]
+
+        result = parse_changed_files(files, backend="java")
+
+        # Models should trigger ADR compliance but not handler-specific checks
+        assert CheckType.ADR_COMPLIANCE.value in result["checks_to_run"]
+        assert CheckType.LICENSE_COMPLIANCE.value in result["checks_to_run"]
+        assert CheckType.TEST_COVERAGE.value not in result["checks_to_run"]
+
+
+class TestParseChangedFilesTypeScript:
+    """Test file change parsing for TypeScript backend."""
+
+    def test_parse_typescript_handler(self):
+        """Test parsing TypeScript handler changes."""
+        files = [
+            GitHubFile(
+                filename="src/handlers/index.ts",
+                status="modified",
+                additions=10,
+                deletions=5,
+                changes=15
+            )
+        ]
+
+        result = parse_changed_files(files, backend="typescript")
+
+        assert CheckType.ADR_COMPLIANCE.value in result["checks_to_run"]
+        assert CheckType.BREAKING_CHANGES.value in result["checks_to_run"]
+
+    def test_parse_typescript_spec_file_excluded(self):
+        """Test that TypeScript spec files don't trigger ADR checks."""
+        files = [
+            GitHubFile(
+                filename="src/handlers/api.spec.ts",
+                status="modified",
+                additions=10,
+                deletions=5,
+                changes=15
+            )
+        ]
+
+        result = parse_changed_files(files, backend="typescript")
+
+        # Spec files are in test_dirs/test_patterns, should be excluded from ADR
+        # But they're source files so license compliance still applies
+        assert CheckType.LICENSE_COMPLIANCE.value in result["checks_to_run"]
+
+
+class TestFetchRepoConfig:
+    """Test fetching .outcomeops.yaml from GitHub."""
+
+    @patch('analyze_pr_handler.requests.get')
+    def test_fetch_repo_config_success(self, mock_get):
+        """Test successful config fetch."""
+        import base64
+        config_content = "code_generation:\n  backend: java\n"
+        encoded = base64.b64encode(config_content.encode()).decode()
+
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"content": encoded}
+        mock_get.return_value = mock_response
+
+        result = fetch_repo_config("owner/repo", "test-token")
+
+        assert result is not None
+        assert result["code_generation"]["backend"] == "java"
+
+    @patch('analyze_pr_handler.requests.get')
+    def test_fetch_repo_config_not_found(self, mock_get):
+        """Test config not found returns None."""
+        mock_response = Mock()
+        mock_response.status_code = 404
+        mock_get.return_value = mock_response
+
+        result = fetch_repo_config("owner/repo", "test-token")
+
+        assert result is None
+
+    @patch('analyze_pr_handler.requests.get')
+    def test_fetch_repo_config_invalid_yaml(self, mock_get):
+        """Test invalid YAML returns None."""
+        import base64
+        invalid_yaml = "invalid: yaml: content: ["
+        encoded = base64.b64encode(invalid_yaml.encode()).decode()
+
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"content": encoded}
+        mock_get.return_value = mock_response
+
+        result = fetch_repo_config("owner/repo", "test-token")
+
+        assert result is None
+
+
+class TestGetBackendFromConfig:
+    """Test extracting backend type from config."""
+
+    def test_get_backend_java(self):
+        """Test getting java backend."""
+        config = {"code_generation": {"backend": "java"}}
+        result = get_backend_from_config(config)
+        assert result == "java"
+
+    def test_get_backend_typescript(self):
+        """Test getting typescript backend."""
+        config = {"code_generation": {"backend": "typescript"}}
+        result = get_backend_from_config(config)
+        assert result == "typescript"
+
+    def test_get_backend_python_default(self):
+        """Test defaulting to python when no config."""
+        result = get_backend_from_config(None)
+        assert result == "python"
+
+    def test_get_backend_unknown_defaults_to_python(self):
+        """Test unknown backend defaults to python."""
+        config = {"code_generation": {"backend": "unknown"}}
+        result = get_backend_from_config(config)
+        assert result == "python"
+
+    def test_get_backend_missing_code_generation(self):
+        """Test missing code_generation section defaults to python."""
+        config = {"other_section": {}}
+        result = get_backend_from_config(config)
+        assert result == "python"
 
 
 class TestQueueCheckJobs:
@@ -448,12 +673,14 @@ class TestHandler:
     @patch('analyze_pr_handler.queue_check_jobs')
     @patch('analyze_pr_handler.post_pr_comment')
     @patch('analyze_pr_handler.fetch_pr_files')
+    @patch('analyze_pr_handler.fetch_repo_config')
     @patch('analyze_pr_handler.fetch_pull_request')
     @patch('analyze_pr_handler.get_github_token')
     def test_handler_success(
         self,
         mock_get_token,
         mock_fetch_pr,
+        mock_fetch_config,
         mock_fetch_files,
         mock_post_comment,
         mock_queue_jobs
@@ -473,6 +700,7 @@ class TestHandler:
             base={"ref": "main"},
             head={"ref": "feature"}
         )
+        mock_fetch_config.return_value = None  # Defaults to python backend
         mock_fetch_files.return_value = [
             GitHubFile(
                 filename="lambda/handler/handler.py",
@@ -495,18 +723,21 @@ class TestHandler:
 
         mock_get_token.assert_called_once()
         mock_fetch_pr.assert_called_once()
+        mock_fetch_config.assert_called_once()
         mock_fetch_files.assert_called_once()
         assert mock_post_comment.call_count == 1
         mock_queue_jobs.assert_called_once()
 
     @patch('analyze_pr_handler.post_pr_comment')
     @patch('analyze_pr_handler.fetch_pr_files')
+    @patch('analyze_pr_handler.fetch_repo_config')
     @patch('analyze_pr_handler.fetch_pull_request')
     @patch('analyze_pr_handler.get_github_token')
     def test_handler_no_checks_needed(
         self,
         mock_get_token,
         mock_fetch_pr,
+        mock_fetch_config,
         mock_fetch_files,
         mock_post_comment
     ):
@@ -525,6 +756,7 @@ class TestHandler:
             base={"ref": "main"},
             head={"ref": "feature"}
         )
+        mock_fetch_config.return_value = None
         mock_fetch_files.return_value = [
             GitHubFile(
                 filename=".gitignore",
@@ -543,6 +775,57 @@ class TestHandler:
         assert result["pr_number"] == 123
         assert result["checks_queued"] == 0
         assert "No checks needed" in result["message"]
+
+    @patch('analyze_pr_handler.queue_check_jobs')
+    @patch('analyze_pr_handler.post_pr_comment')
+    @patch('analyze_pr_handler.fetch_pr_files')
+    @patch('analyze_pr_handler.fetch_repo_config')
+    @patch('analyze_pr_handler.fetch_pull_request')
+    @patch('analyze_pr_handler.get_github_token')
+    def test_handler_java_backend(
+        self,
+        mock_get_token,
+        mock_fetch_pr,
+        mock_fetch_config,
+        mock_fetch_files,
+        mock_post_comment,
+        mock_queue_jobs
+    ):
+        """Test PR analysis with Java backend config."""
+        # Arrange
+        event = {
+            "pr_number": 123,
+            "repository": "owner/repo"
+        }
+
+        mock_get_token.return_value = "test-token"
+        mock_fetch_pr.return_value = GitHubPullRequest(
+            number=123,
+            title="Test PR",
+            html_url="https://github.com/owner/repo/pull/123",
+            base={"ref": "main"},
+            head={"ref": "feature"}
+        )
+        mock_fetch_config.return_value = {"code_generation": {"backend": "java"}}
+        mock_fetch_files.return_value = [
+            GitHubFile(
+                filename="src/main/java/com/example/PetController.java",
+                status="modified",
+                additions=10,
+                deletions=5,
+                changes=15
+            )
+        ]
+        mock_post_comment.return_value = {"id": 456}
+        mock_queue_jobs.return_value = 4
+
+        # Act
+        result = handler(event, None)
+
+        # Assert
+        assert result["pr_number"] == 123
+        assert result["checks_queued"] == 4
+        mock_fetch_config.assert_called_once()
 
     def test_handler_invalid_request(self):
         """Test handler with invalid request."""

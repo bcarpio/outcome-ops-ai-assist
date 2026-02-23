@@ -2,7 +2,7 @@ module "knowledge_base_bucket" {
   source  = "terraform-aws-modules/s3-bucket/aws"
   version = "4.1.1"
 
-  bucket = "${var.environment}-${var.app_name}-kb"
+  bucket = "${var.environment}-${var.app_name}-kb-${data.aws_caller_identity.current.account_id}"
 
   # Versioning for recoverability
   versioning = {
@@ -35,6 +35,20 @@ module "knowledge_base_bucket" {
   block_public_policy     = true
   ignore_public_acls      = true
   restrict_public_buckets = true
+
+  # CORS configuration for browser-based document uploads via presigned URLs
+  cors_rule = [
+    {
+      allowed_headers = ["*"]
+      allowed_methods = ["PUT", "POST"]
+      allowed_origins = concat(
+        var.domain != "" ? ["https://*.${var.domain}"] : [],
+        var.cors_allowed_origins
+      )
+      expose_headers  = ["ETag"]
+      max_age_seconds = 3600
+    }
+  ]
 
   tags = {
     Purpose = "knowledge-base"

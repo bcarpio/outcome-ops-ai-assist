@@ -1,14 +1,16 @@
 # Lambda: Ask Claude
 
-Generates natural language answers using Claude 3.5 Sonnet via Bedrock Converse API.
+Generates natural language answers using Claude 3.5 Haiku via Bedrock Converse API.
 
 ## Purpose
 
-The ask-claude Lambda function implements Retrieval Augmented Generation (RAG) by taking context from vector search and generating grounded, factual responses using Claude 3.5 Sonnet. It ensures answers cite sources and stay within the provided context.
+The ask-claude Lambda function implements Retrieval Augmented Generation (RAG) by taking context from vector search and generating grounded, factual responses using Claude 3.5 Haiku. It ensures answers cite sources and stay within the provided context. Haiku is used for cost-effective RAG synthesis since the heavy lifting is done by the vector search.
 
 ## Trigger
 
-- **Invoked by**: query-kb orchestrator Lambda
+- **Invoked by**:
+  - query-kb orchestrator Lambda (when `raw=false`, the default)
+  - generate-code Lambda (for standards summarization after vector search)
 - **Invocation type**: Synchronous (RequestResponse)
 - **Typical latency**: 5-15 seconds
 
@@ -16,7 +18,7 @@ The ask-claude Lambda function implements Retrieval Augmented Generation (RAG) b
 
 1. **Receive query + context**: Accepts natural language question and relevant document chunks
 2. **Build RAG prompt**: Constructs prompt with context documents and instructions
-3. **Invoke Claude**: Calls Claude 3.5 Sonnet via Bedrock Converse API
+3. **Invoke Claude**: Calls Claude 3.5 Haiku via Bedrock Converse API
 4. **Extract answer**: Parses response and extracts generated text
 5. **Return with sources**: Returns answer with cited sources from context
 
@@ -64,12 +66,12 @@ The ask-claude Lambda function implements Retrieval Augmented Generation (RAG) b
 - `APP_NAME` - Application name (outcome-ops-ai-assist)
 
 **Claude Model**:
-- Model ID: `us.anthropic.claude-sonnet-4-5-20250929-v1:0`
+- Model ID: `us.anthropic.claude-3-5-haiku-20241022-v1:0`
 - Using cross-region inference profile for better availability
 
 ## IAM Permissions Required
 
-- `bedrock:InvokeModel` - Call Claude 3.5 Sonnet via Bedrock
+- `bedrock:InvokeModel` - Call Claude 3.5 Haiku via Bedrock
   - Foundation model ARN
   - Cross-region inference profile ARN
 
@@ -104,7 +106,7 @@ ANSWER:
 
 - **Temperature**: 0.3 (low for factual, deterministic responses)
 - **Max tokens**: 2000 (prevents overly long responses)
-- **Model**: Claude 3.5 Sonnet (balance of speed and quality)
+- **Model**: Claude 3.5 Haiku (cost-effective for RAG synthesis)
 
 ## Retry Logic
 
@@ -166,7 +168,7 @@ The Lambda implements exponential backoff retry for transient errors:
 
 **CloudWatch Logs**:
 ```bash
-aws logs tail /aws/lambda/dev-outcome-ops-ai-assist-ask-claude --follow
+aws logs tail /aws/lambda/prd-outcome-ops-ai-assist-ask-claude --follow
 ```
 
 **Key Log Messages**:
@@ -192,14 +194,16 @@ Monitor these for cost tracking and optimization.
 
 ## Cost Considerations
 
-**Claude 3.5 Sonnet pricing** (approximate):
-- Input: $3 per million tokens
-- Output: $15 per million tokens
+**Claude 3.5 Haiku pricing** (approximate):
+- Input: $0.80 per million tokens
+- Output: $4 per million tokens
 
 **Typical query cost**:
 - Context (5 docs × 1000 chars): ~1500 input tokens
 - Answer (500 chars): ~150 output tokens
-- **Cost per query**: ~$0.0045 - $0.007
+- **Cost per query**: ~$0.0018
+
+Using Haiku instead of Sonnet reduces RAG synthesis costs by ~75% while maintaining good quality for summarization tasks.
 
 **Optimization tips**:
 - Limit context to top 3-5 most relevant docs
@@ -211,7 +215,7 @@ Monitor these for cost tracking and optimization.
 **Manual test**:
 ```bash
 aws lambda invoke \
-  --function-name dev-outcome-ops-ai-assist-ask-claude \
+  --function-name prd-outcome-ops-ai-assist-ask-claude \
   --payload '{
     "query": "How should Lambda error handling work?",
     "context": [
@@ -254,6 +258,10 @@ cat response.json | jq '.body | fromjson'
 ## Related
 
 - **Handler code**: `lambda/ask-claude/handler.py`
-- **Consumer**: `docs/lambda-query-kb.md` (orchestrator)
+- **Consumers**:
+  - `docs/lambda-query-kb.md` (orchestrator, when `raw=false`)
+  - `docs/lambda-generate-code.md` (for standards summarization)
 - **Terraform**: `terraform/lambda.tf` (ask_claude_lambda module)
 - **Claude Documentation**: https://docs.anthropic.com/claude/reference/bedrock
+
+<!-- Confluence sync -->

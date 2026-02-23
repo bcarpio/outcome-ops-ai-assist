@@ -1,0 +1,61 @@
+# .outcomeops.yaml - Repository configuration for OutcomeOps AI Assist
+# This is the configuration for the outcome-ops-ai-assist platform itself
+
+version: "1.0"
+
+code_generation:
+  backend: "python"
+
+  # Custom guidelines for this repository
+  custom_guidelines: |
+    Follow ADR-006 for Python dependency management (pin exact versions).
+    Use Pydantic for all request/response validation.
+    All Lambda handlers must follow the pattern in existing handlers.
+    Tests use pytest with moto for AWS mocking.
+    Terraform resources follow the naming pattern: {env}-{app_name}-{resource}.
+
+  # Additional KB queries for every plan
+  additional_kb_queries:
+    - "Lambda handler patterns"
+    - "Bedrock Claude integration"
+    - "Lambda test import structure"
+
+# Project context for plan generation
+project_context: |
+  This is the OutcomeOps AI Assist platform - a Context Engineering autonomous agent
+  that generates code from GitHub issues using organizational knowledge.
+
+  Tech stack:
+  - Python 3.12 AWS Lambda functions
+  - Terraform for infrastructure
+  - Amazon Bedrock (Claude) for LLM
+  - DynamoDB for state management and vector embeddings
+  - SQS FIFO queues for step execution
+
+  Project structure:
+  - lambda/{function-name}/handler.py - Lambda handlers
+  - lambda/{function-name}/requirements.txt - Per-function dependencies
+  - lambda/tests/unit/ - pytest unit tests
+  - terraform/*.tf - Infrastructure as code
+  - docs/ - Documentation and ADRs
+
+# Testing configuration
+testing:
+  framework: "pytest"
+  test_directory: "lambda/tests/unit"
+  min_coverage: 80
+
+# Infrastructure configuration
+infrastructure:
+  tool: "terraform"
+  directory: "terraform"
+
+# ADRs to always include in context (use full names for accurate lookup)
+required_adrs:
+  # ADRs from this repository (none for this repo)
+  repo: []
+  # ADRs from global/organization ADR repositories
+  global:
+    - "ADR-001-terraform-infrastructure-patterns"
+    - "ADR-004-lambda-handler-standards"
+    - "ADR-006-python-dependency-management"

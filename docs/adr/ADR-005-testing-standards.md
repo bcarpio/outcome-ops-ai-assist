@@ -261,3 +261,5 @@ If coverage falls below 80%:
 ## Version History
 
 - v1.0 (2025-01-06): Initial testing standards for OutcomeOps AI Assist
+
+<!-- Confluence sync -->

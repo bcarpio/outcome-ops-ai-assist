@@ -1,4 +1,5 @@
-boto3>=1.28.0
+boto3>=1.36.0
+urllib3>=2.6.3
 
 # Test dependencies
 pytest>=7.0.0

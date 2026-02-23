@@ -23,6 +23,8 @@ AI generates generic code. You need code that matches **YOUR** standards.
 
 This is Context Engineering. This is OutcomeOps.
 
+[Learn more about the OutcomeOps Methodology →](https://www.outcomeops.ai)
+
 ---
 
 ## The Problem With AI Tools Today
@@ -72,27 +74,22 @@ This is Context Engineering. This is OutcomeOps.
 
 ---
 
-## Quick Start (5 Minutes)
+## Get Started
 
 **Prerequisites:**
 - GitHub repo with some code
 - AWS account (for Lambda deployment)
 - ADRs or architectural docs (or we'll help you create them)
 
-**Get started:**
+**Ready to get started?**
 
-```bash
-# Clone and deploy
-git clone https://github.com/bcarpio/outcome-ops-ai-assist
-cd outcome-ops-ai-assist
-make deploy
+OutcomeOps is a commercial platform licensed for enterprise use. [Contact us](https://www.linkedin.com/in/briancarpio/) to discuss licensing and implementation for your organization.
 
-# Configure GitHub webhook
-# (Instructions will be shown after deploy)
-
-# Create test issue with label "approved-for-generation"
-# Watch OutcomeOps generate a PR in ~15 minutes
-```
+Once licensed, deployment takes approximately 5 minutes:
+- Deploy infrastructure to your AWS account
+- Configure GitHub webhook
+- Create test issue with label "approved-for-generation"
+- Watch OutcomeOps generate a PR in ~15 minutes
 
 **New to ADRs?** [Start here →](docs/getting-started-with-adrs.md)
 
@@ -146,8 +143,10 @@ OutcomeOps applies the same playbook to AI-assisted development:
 **Lambda Documentation**
 - [Lambda: Ingest Docs](docs/lambda-ingest-docs.md) - Knowledge base ingestion
 - [Lambda: Generate Code Maps](docs/lambda-generate-code-maps.md) - Code analysis
+- [Lambda: Generate Code](docs/lambda-generate-code.md) - AI-powered code generation from issues
 - [Lambda: Analyze PR](docs/lambda-analyze-pr.md) - PR analysis orchestration
 - [Lambda: Process PR Check](docs/lambda-process-pr-check.md) - PR check worker
+- [Lambda: Run Tests](docs/lambda-run-tests.md) - Executes `make test` for generated branches
 
 **Architecture Decision Records**
 - [ADR-001: Creating ADRs](docs/adr/ADR-001-create-adrs.md) - How to document architectural decisions
@@ -161,21 +160,23 @@ OutcomeOps applies the same playbook to AI-assisted development:
 
 ## Get Started
 
-**Ready to try OutcomeOps?**
+**Ready to implement OutcomeOps?**
 
-- **[Deploy Now](docs/getting-started.md)** - 5-minute setup guide
+- **[Learn the Methodology](https://www.outcomeops.ai)** - Understand the OutcomeOps approach
 - **[Learn ADRs](docs/getting-started-with-adrs.md)** - New to Architecture Decision Records?
 - **[Watch Demo](docs/demo.md)** - See OutcomeOps in action
-- **[Ask Questions](https://github.com/bcarpio/outcome-ops-ai-assist/issues)** - GitHub Issues
-- **Enterprise Support?** [Get in touch](https://www.linkedin.com/in/briancarpio/)
+- **[Technical Documentation](docs/getting-started.md)** - Implementation guide for licensed users
+- **Licensing & Support** - [Get in touch](https://www.linkedin.com/in/briancarpio/)
 
-**Contributing:**
-- Found a bug? [Open an issue](https://github.com/bcarpio/outcome-ops-ai-assist/issues)
-- Have a feature idea? [Start a discussion](https://github.com/bcarpio/outcome-ops-ai-assist/discussions)
-- Want to contribute? [Read technical reference](docs/technical-reference.md)
+**For Licensed Customers:**
+- Technical support and implementation assistance
+- Custom feature development
+- Training and onboarding
+- Architecture consultation
 
 ---
 
 **Built for engineering velocity.**
 
 Outcome-driven development. Infrastructure by code. Engineering outcomes by AI. Your vision, automated execution.
+

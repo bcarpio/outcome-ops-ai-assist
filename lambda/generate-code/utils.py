@@ -20,27 +20,43 @@ logger = logging.getLogger()
 # ============================================================================
 
 # Claude Sonnet 4.5 pricing (as of 2025)
-PRICE_PER_MILLION_INPUT_TOKENS = 3.0
-PRICE_PER_MILLION_OUTPUT_TOKENS = 15.0
+SONNET_PRICE_PER_MILLION_INPUT_TOKENS = 3.0
+SONNET_PRICE_PER_MILLION_OUTPUT_TOKENS = 15.0
+
+# Claude Haiku 3.5 pricing (as of 2025)
+HAIKU_PRICE_PER_MILLION_INPUT_TOKENS = 0.80
+HAIKU_PRICE_PER_MILLION_OUTPUT_TOKENS = 4.0
+
+# Legacy alias for backwards compatibility
+PRICE_PER_MILLION_INPUT_TOKENS = SONNET_PRICE_PER_MILLION_INPUT_TOKENS
+PRICE_PER_MILLION_OUTPUT_TOKENS = SONNET_PRICE_PER_MILLION_OUTPUT_TOKENS
 
 
-def calculate_cost(input_tokens: int, output_tokens: int) -> TokenUsage:
+def calculate_cost(input_tokens: int, output_tokens: int, model: str = "sonnet") -> TokenUsage:
     """
     Calculate USD cost from token usage.
 
-    Claude Sonnet 4.5 pricing:
-    - Input: $3 per 1M tokens
-    - Output: $15 per 1M tokens
+    Pricing (as of 2025):
+    - Claude Sonnet 4.5: Input $3/1M, Output $15/1M
+    - Claude Haiku 3.5: Input $0.80/1M, Output $4/1M
 
     Args:
         input_tokens: Number of input tokens
         output_tokens: Number of output tokens
+        model: Model type - "sonnet" or "haiku" (default: "sonnet")
 
     Returns:
         TokenUsage: Token counts and total cost in USD
     """
-    input_cost = (input_tokens / 1_000_000) * PRICE_PER_MILLION_INPUT_TOKENS
-    output_cost = (output_tokens / 1_000_000) * PRICE_PER_MILLION_OUTPUT_TOKENS
+    if model == "haiku":
+        input_price = HAIKU_PRICE_PER_MILLION_INPUT_TOKENS
+        output_price = HAIKU_PRICE_PER_MILLION_OUTPUT_TOKENS
+    else:
+        input_price = SONNET_PRICE_PER_MILLION_INPUT_TOKENS
+        output_price = SONNET_PRICE_PER_MILLION_OUTPUT_TOKENS
+
+    input_cost = (input_tokens / 1_000_000) * input_price
+    output_cost = (output_tokens / 1_000_000) * output_price
     total_cost = input_cost + output_cost
 
     return TokenUsage(

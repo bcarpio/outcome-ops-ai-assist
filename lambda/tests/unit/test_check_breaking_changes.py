@@ -20,14 +20,37 @@ from unittest.mock import Mock, patch
 from moto import mock_aws
 import boto3
 from botocore.exceptions import ClientError
+from types import ModuleType
 
-# Load the breaking_changes handler module
+# First, load bedrock_utils module (dependency for breaking_changes)
+bedrock_utils_path = os.path.join(
+    os.path.dirname(__file__),
+    '../../process-pr-check/check_handlers/bedrock_utils.py'
+)
+bedrock_spec = importlib.util.spec_from_file_location("bedrock_utils", bedrock_utils_path)
+bedrock_module = importlib.util.module_from_spec(bedrock_spec)
+bedrock_spec.loader.exec_module(bedrock_module)
+
+# Create a fake check_handlers package that contains bedrock_utils
+check_handlers_package = ModuleType("check_handlers")
+check_handlers_package.__path__ = [os.path.dirname(bedrock_utils_path)]
+check_handlers_package.bedrock_utils = bedrock_module
+sys.modules['check_handlers'] = check_handlers_package
+sys.modules['check_handlers.bedrock_utils'] = bedrock_module
+
+# Load the breaking_changes handler module as part of check_handlers package
 handler_path = os.path.join(
     os.path.dirname(__file__),
     '../../process-pr-check/check_handlers/breaking_changes.py'
 )
-spec = importlib.util.spec_from_file_location("breaking_changes_handler", handler_path)
+spec = importlib.util.spec_from_file_location(
+    "check_handlers.breaking_changes",
+    handler_path,
+    submodule_search_locations=[os.path.dirname(handler_path)]
+)
 handler_module = importlib.util.module_from_spec(spec)
+handler_module.__package__ = "check_handlers"
+sys.modules['check_handlers.breaking_changes'] = handler_module
 sys.modules['breaking_changes_handler'] = handler_module
 spec.loader.exec_module(handler_module)
 

@@ -1,4 +1,7 @@
-.PHONY: help setup install fmt lint validate test test-unit test-integration test-coverage ingest-docs ingest-docs-repo generate-code-maps generate-code-maps-repo code-maps-load clean all
+.PHONY: help setup install fmt lint validate test test-unit test-integration test-coverage build-run-tests-image build-ui-image clean all
+
+APP_NAME ?= outcome-ops-ai-assist
+AWS_REGION ?= us-west-2
 
 # Default target
 help:
@@ -21,12 +24,9 @@ help:
 	@echo "  make test-integration Run only integration tests"
 	@echo "  make test-coverage    Run tests with coverage report"
 	@echo ""
-	@echo "Data Loading:"
-	@echo "  make ingest-docs           Ingest ADRs, READMEs, and docs/ from all repos"
-	@echo "  make ingest-docs-repo      Ingest docs from single repo (REPO=name)"
-	@echo "  make generate-code-maps    Generate code maps for all application repos"
-	@echo "  make generate-code-maps-repo   Generate code maps for single repo (REPO=name)"
-	@echo "  make code-maps-load        (deprecated) Use generate-code-maps instead"
+	@echo "Container Images:"
+	@echo "  make build-run-tests-image Build run-tests container (auto-creates ECR, ENVIRONMENT=dev|prd)"
+	@echo "  make build-ui-image        Build chat UI container (auto-creates ECR, ENVIRONMENT=dev|prd)"
 	@echo ""
 	@echo "Combined:"
 	@echo "  make all              Run fmt, validate, and all tests"
@@ -46,7 +46,11 @@ setup:
 
 install:
 	@echo "Installing Python dependencies..."
-	venv/bin/pip install -q -r lambda/ingest-docs/requirements.txt
+	@for req in lambda/*/requirements.txt; do \
+		if [ -f "$$req" ]; then \
+			venv/bin/pip install -q -r "$$req"; \
+		fi; \
+	done
 	@echo "Dependencies installed"
 
 # ============================================================================
@@ -69,29 +73,46 @@ validate-tf:
 	cd terraform && terraform validate
 
 validate-docs:
-	@echo "Linting markdown files for embedding size limits..."
-	@echo "Token limit: 7000 tokens (~28KB file size)"
+	@echo "Validating file sizes for code map embedding..."
+	@echo "Token limit: 12000 tokens (~48KB file size)"
 	@echo "Estimate: 1 token ≈ 4 bytes (rough approximation)"
 	@echo ""
 	@FAILED=0; \
 	TOTAL=0; \
+	echo "Markdown files:"; \
 	for file in README.md docs/*.md docs/adr/*.md; do \
 		if [ -f "$$file" ]; then \
 			TOTAL=$$((TOTAL + 1)); \
 			bytes=$$(wc -c < "$$file"); \
 			tokens=$$((bytes / 4)); \
-			if [ $$tokens -gt 7000 ]; then \
-				printf "  ✗ %-50s %6d tokens (EXCEEDS LIMIT by %d)\n" "$$file" "$$tokens" "$$((tokens - 7000))"; \
+			if [ $$tokens -gt 12000 ]; then \
+				printf "  ✗ %-50s %6d tokens (EXCEEDS LIMIT by %d)\n" "$$file" "$$tokens" "$$((tokens - 12000))"; \
 				FAILED=$$((FAILED + 1)); \
 			else \
-				remaining=$$((7000 - tokens)); \
+				remaining=$$((12000 - tokens)); \
+				printf "  ✓ %-50s %6d tokens (%d remaining)\n" "$$file" "$$tokens" "$$remaining"; \
+			fi; \
+		fi; \
+	done; \
+	echo ""; \
+	echo "Terraform files:"; \
+	for file in terraform/*.tf; do \
+		if [ -f "$$file" ]; then \
+			TOTAL=$$((TOTAL + 1)); \
+			bytes=$$(wc -c < "$$file"); \
+			tokens=$$((bytes / 4)); \
+			if [ $$tokens -gt 12000 ]; then \
+				printf "  ✗ %-50s %6d tokens (EXCEEDS LIMIT by %d)\n" "$$file" "$$tokens" "$$((tokens - 12000))"; \
+				FAILED=$$((FAILED + 1)); \
+			else \
+				remaining=$$((12000 - tokens)); \
 				printf "  ✓ %-50s %6d tokens (%d remaining)\n" "$$file" "$$tokens" "$$remaining"; \
 			fi; \
 		fi; \
 	done; \
 	echo ""; \
 	if [ $$FAILED -gt 0 ]; then \
-		echo "Documentation validation FAILED: $$FAILED of $$TOTAL files exceed 7000 token limit"; \
+		echo "File validation FAILED: $$FAILED of $$TOTAL files exceed 12000 token limit"; \
 		echo ""; \
 		echo "Files that are too large will cause issues:"; \
 		echo "  - Bedrock Titan embeddings may fail or truncate"; \
@@ -100,13 +121,13 @@ validate-docs:
 		echo ""; \
 		echo "Solutions:"; \
 		echo "  1. Split large files into smaller focused documents"; \
-		echo "  2. Move detailed content to separate files and link them"; \
+		echo "  2. For Terraform: group related resources into separate files"; \
 		echo "  3. Use docs/lambda-*.md pattern for function-specific docs"; \
 		echo "  4. Create subdirectories for related content"; \
 		echo ""; \
 		exit 1; \
 	else \
-		echo "All $$TOTAL markdown files are within size limits ✓"; \
+		echo "All $$TOTAL files are within size limits ✓"; \
 	fi
 
 # ============================================================================
@@ -133,54 +154,48 @@ test-coverage:
 	$(MAKE) -C lambda/tests test-coverage
 
 # ============================================================================
-# Data Loading: Generate code maps and ingest documentation
+# Container Images
+# Build before 'terraform apply' for container-based Lambdas
 # ============================================================================
 
-ingest-docs:
-	@echo "Ingesting documentation from all repos..."
+# Build run-tests container image for multi-language test execution
+# Automatically creates ECR repository if it doesn't exist (terraform targeted apply)
+# Usage: ENVIRONMENT=dev make build-run-tests-image
+#        ENVIRONMENT=prd make build-run-tests-image
+build-run-tests-image:
 	@if [ -z "$$ENVIRONMENT" ]; then \
-		ENVIRONMENT=dev; \
-	fi; \
-	echo "Environment: $$ENVIRONMENT"; \
-	ENVIRONMENT=$$ENVIRONMENT ./scripts/outcome-ops-assist ingest-docs
-
-ingest-docs-repo:
-	@if [ -z "$$REPO" ]; then \
-		echo "Error: REPO variable not set. Usage: REPO=outcome-ops-ai-assist make ingest-docs-repo"; \
+		echo "Error: ENVIRONMENT variable not set."; \
+		echo "Usage: ENVIRONMENT=dev make build-run-tests-image"; \
+		echo "       ENVIRONMENT=prd make build-run-tests-image"; \
 		exit 1; \
 	fi
-	@echo "Ingesting documentation from: $$REPO"
-	@if [ -z "$$ENVIRONMENT" ]; then \
-		ENVIRONMENT=dev; \
-	fi; \
-	echo "Environment: $$ENVIRONMENT"; \
-	ENVIRONMENT=$$ENVIRONMENT ./scripts/outcome-ops-assist ingest-docs $$REPO
-
-generate-code-maps:
-	@echo "Generating code maps for all application repos..."
-	@if [ -z "$$ENVIRONMENT" ]; then \
-		ENVIRONMENT=dev; \
-	fi; \
-	echo "Environment: $$ENVIRONMENT"; \
-	ENVIRONMENT=$$ENVIRONMENT ./scripts/outcome-ops-assist generate-code-maps
-
-generate-code-maps-repo:
-	@if [ -z "$$REPO" ]; then \
-		echo "Error: REPO variable not set. Usage: REPO=outcome-ops-ai-assist make generate-code-maps-repo"; \
-		exit 1; \
-	fi
-	@echo "Generating code maps for: $$REPO"
-	@if [ -z "$$ENVIRONMENT" ]; then \
-		ENVIRONMENT=dev; \
-	fi; \
-	echo "Environment: $$ENVIRONMENT"; \
-	ENVIRONMENT=$$ENVIRONMENT ./scripts/outcome-ops-assist generate-code-maps $$REPO
-
-# Deprecated - use generate-code-maps instead
-code-maps-load:
-	@echo "WARNING: code-maps-load is deprecated. Use 'make generate-code-maps' instead."
+	@echo "Ensuring ECR repository exists for environment: $$ENVIRONMENT"
+	@cd terraform && \
+		terraform init -input=false > /dev/null 2>&1 && \
+		(terraform workspace select $$ENVIRONMENT 2>/dev/null || terraform workspace new $$ENVIRONMENT) && \
+		terraform apply -var-file=$$ENVIRONMENT.tfvars -target=aws_ecr_repository.run_tests -auto-approve
 	@echo ""
-	$(MAKE) generate-code-maps
+	@echo "Building run-tests container image for environment: $$ENVIRONMENT"
+	./scripts/build-run-tests-image.sh --env $$ENVIRONMENT
+
+# Build chat UI container image (nginx + React)
+# Usage: ENVIRONMENT=dev make build-ui-image
+#        ENVIRONMENT=prd make build-ui-image
+build-ui-image:
+	@if [ -z "$$ENVIRONMENT" ]; then \
+		echo "Error: ENVIRONMENT variable not set."; \
+		echo "Usage: ENVIRONMENT=dev make build-ui-image"; \
+		echo "       ENVIRONMENT=prd make build-ui-image"; \
+		exit 1; \
+	fi
+	@echo "Ensuring ECR repository exists for environment: $$ENVIRONMENT"
+	@cd terraform && \
+		terraform init -input=false > /dev/null 2>&1 && \
+		(terraform workspace select $$ENVIRONMENT 2>/dev/null || terraform workspace new $$ENVIRONMENT) && \
+		terraform apply -var-file=$$ENVIRONMENT.tfvars -target=aws_ecr_repository.chat_ui -auto-approve
+	@echo ""
+	@echo "Building chat UI container image for environment: $$ENVIRONMENT"
+	./scripts/build-ui-image.sh --env $$ENVIRONMENT
 
 # ============================================================================
 # Utilities: Clean up build artifacts

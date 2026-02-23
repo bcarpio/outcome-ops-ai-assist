@@ -20,14 +20,38 @@ from moto import mock_aws
 import boto3
 import requests
 from botocore.exceptions import ClientError
+from types import ModuleType
 
-# Load the adr_compliance handler module
+# First, load bedrock_utils module (dependency for adr_compliance)
+bedrock_utils_path = os.path.join(
+    os.path.dirname(__file__),
+    '../../process-pr-check/check_handlers/bedrock_utils.py'
+)
+bedrock_spec = importlib.util.spec_from_file_location("bedrock_utils", bedrock_utils_path)
+bedrock_module = importlib.util.module_from_spec(bedrock_spec)
+bedrock_spec.loader.exec_module(bedrock_module)
+
+# Create a fake check_handlers package that contains bedrock_utils
+# This is needed because check handlers use relative import: from .bedrock_utils import ...
+check_handlers_package = ModuleType("check_handlers")
+check_handlers_package.__path__ = [os.path.dirname(bedrock_utils_path)]
+check_handlers_package.bedrock_utils = bedrock_module
+sys.modules['check_handlers'] = check_handlers_package
+sys.modules['check_handlers.bedrock_utils'] = bedrock_module
+
+# Load the adr_compliance handler module as part of check_handlers package
 handler_path = os.path.join(
     os.path.dirname(__file__),
     '../../process-pr-check/check_handlers/adr_compliance.py'
 )
-spec = importlib.util.spec_from_file_location("adr_compliance_handler", handler_path)
+spec = importlib.util.spec_from_file_location(
+    "check_handlers.adr_compliance",
+    handler_path,
+    submodule_search_locations=[os.path.dirname(handler_path)]
+)
 handler_module = importlib.util.module_from_spec(spec)
+handler_module.__package__ = "check_handlers"
+sys.modules['check_handlers.adr_compliance'] = handler_module
 sys.modules['adr_compliance_handler'] = handler_module
 spec.loader.exec_module(handler_module)
 
@@ -252,7 +276,7 @@ class TestQueryKnowledgeBase:
 class TestAnalyzeCodeWithClaude:
     """Test Claude analysis of code compliance"""
 
-    @patch('adr_compliance_handler.bedrock_client')
+    @patch.object(bedrock_module, 'bedrock_client')
     def test_analyze_code_with_claude_compliant(self, mock_bedrock):
         """Test: Claude determines code is compliant"""
         # Arrange
@@ -263,23 +287,27 @@ class TestAnalyzeCodeWithClaude:
                         "text": '{"compliant": true, "explanation": "Code follows standards", "suggestions": []}'
                     }]
                 }
-            }
+            },
+            "usage": {"inputTokens": 100, "outputTokens": 50}
         }
+        usage_tracker = bedrock_module.UsageTracker()
 
         # Act
         result = analyze_code_with_claude(
             "lambda/handler.py",
             "+def handler(): pass",
             "Use Pydantic schemas",
-            "lambda"
+            "lambda",
+            usage_tracker
         )
 
         # Assert
         assert result["compliant"] is True
         assert "follows standards" in result["explanation"]
         assert result["suggestions"] == []
+        assert usage_tracker.total_tokens > 0
 
-    @patch('adr_compliance_handler.bedrock_client')
+    @patch.object(bedrock_module, 'bedrock_client')
     def test_analyze_code_with_claude_non_compliant(self, mock_bedrock):
         """Test: Claude finds compliance issues"""
         # Arrange
@@ -290,15 +318,18 @@ class TestAnalyzeCodeWithClaude:
                         "text": '{"compliant": false, "explanation": "Missing schema", "suggestions": ["Add Pydantic model", "Add error handling"]}'
                     }]
                 }
-            }
+            },
+            "usage": {"inputTokens": 100, "outputTokens": 50}
         }
+        usage_tracker = bedrock_module.UsageTracker()
 
         # Act
         result = analyze_code_with_claude(
             "lambda/handler.py",
             "+def handler(): pass",
             "Use Pydantic schemas",
-            "lambda"
+            "lambda",
+            usage_tracker
         )
 
         # Assert
@@ -307,7 +338,7 @@ class TestAnalyzeCodeWithClaude:
         assert len(result["suggestions"]) == 2
         assert "Add Pydantic model" in result["suggestions"]
 
-    @patch('adr_compliance_handler.bedrock_client')
+    @patch.object(bedrock_module, 'bedrock_client')
     def test_analyze_code_with_claude_bedrock_error(self, mock_bedrock):
         """Test: Bedrock API error"""
         # Arrange
@@ -315,12 +346,13 @@ class TestAnalyzeCodeWithClaude:
             {"Error": {"Code": "ThrottlingException", "Message": "Rate exceeded"}},
             "converse"
         )
+        usage_tracker = bedrock_module.UsageTracker()
 
         # Act & Assert
         with pytest.raises(ClientError):
-            analyze_code_with_claude("file.py", "+code", "standards", "lambda")
+            analyze_code_with_claude("file.py", "+code", "standards", "lambda", usage_tracker)
 
-    @patch('adr_compliance_handler.bedrock_client')
+    @patch.object(bedrock_module, 'bedrock_client')
     def test_analyze_code_with_claude_invalid_json_response(self, mock_bedrock):
         """Test: Claude returns invalid JSON (fallback to text parsing)"""
         # Arrange
@@ -331,11 +363,13 @@ class TestAnalyzeCodeWithClaude:
                         "text": "not valid json at all"
                     }]
                 }
-            }
+            },
+            "usage": {"inputTokens": 100, "outputTokens": 50}
         }
+        usage_tracker = bedrock_module.UsageTracker()
 
         # Act
-        result = analyze_code_with_claude("file.py", "+code", "standards", "lambda")
+        result = analyze_code_with_claude("file.py", "+code", "standards", "lambda", usage_tracker)
 
         # Assert - Should fallback gracefully
         assert "compliant" in result

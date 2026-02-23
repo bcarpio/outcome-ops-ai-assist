@@ -1,0 +1,1126 @@
+/**
+ * API client for OutcomeOps Chat
+ */
+
+// Chat API endpoint - uses same origin (Fargate server proxies to Lambda)
+// For local dev, can override with VITE_API_URL env var
+const CHAT_URL = import.meta.env.VITE_API_URL || '/api/chat'
+const API_BASE = '/api'
+
+export interface Source {
+  repo: string
+  type: string
+  path: string
+}
+
+export interface StreamMetadata {
+  type: 'metadata'
+  conversation_id: string
+  sources: Source[]
+  title: string
+}
+
+export interface StreamToken {
+  type: 'token'
+  text: string
+}
+
+export interface StreamDone {
+  type: 'done'
+  message_id: string
+  cost?: {
+    input_tokens: number
+    output_tokens: number
+    cost: number
+  }
+}
+
+export interface StreamError {
+  type: 'error'
+  error: string
+  status_code?: number
+}
+
+export type StreamEvent = StreamMetadata | StreamToken | StreamDone | StreamError
+
+export interface ChatRequest {
+  conversation_id?: string
+  message: string
+  top_k?: number
+  advanced?: boolean
+  show_cost?: boolean
+  workspace_ids?: string[]
+}
+
+export interface Conversation {
+  conversation_id: string
+  title: string
+  message_count: number
+  created_at: string
+  updated_at: string
+}
+
+export interface Message {
+  message_id: string
+  role: 'user' | 'assistant'
+  content: string
+  sources?: Source[]
+  created_at: string
+}
+
+/**
+ * Send a chat message and stream the response
+ */
+export async function sendChatMessage(
+  request: ChatRequest,
+  onEvent: (event: StreamEvent) => void,
+): Promise<void> {
+  const response = await fetch(CHAT_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(request),
+  })
+
+  if (!response.ok) {
+    throw new Error(`HTTP error: ${response.status}`)
+  }
+
+  const reader = response.body?.getReader()
+  if (!reader) {
+    throw new Error('No response body')
+  }
+
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+
+    buffer += decoder.decode(value, { stream: true })
+
+    // Process complete lines (NDJSON)
+    const lines = buffer.split('\n')
+    buffer = lines.pop() || '' // Keep incomplete line in buffer
+
+    for (const line of lines) {
+      if (line.trim()) {
+        try {
+          const event = JSON.parse(line) as StreamEvent
+          onEvent(event)
+        } catch (e) {
+          console.error('Failed to parse event:', line, e)
+        }
+      }
+    }
+  }
+
+  // Process any remaining buffer
+  if (buffer.trim()) {
+    try {
+      const event = JSON.parse(buffer) as StreamEvent
+      onEvent(event)
+    } catch (e) {
+      console.error('Failed to parse final event:', buffer, e)
+    }
+  }
+}
+
+/**
+ * List all conversations from server
+ */
+export async function listConversations(): Promise<Conversation[]> {
+  try {
+    const response = await fetch(`${API_BASE}/conversations`)
+    if (!response.ok) {
+      console.error('Failed to list conversations:', response.status)
+      return []
+    }
+    const data = await response.json()
+    return (data.conversations || []).map((c: Record<string, unknown>) => ({
+      conversation_id: c.conversation_id as string,
+      title: (c.title as string) || 'Untitled',
+      message_count: (c.message_count as number) || 0,
+      created_at: c.created_at as string,
+      updated_at: c.updated_at as string,
+    }))
+  } catch (error) {
+    console.error('Error listing conversations:', error)
+    return []
+  }
+}
+
+/**
+ * Get a conversation with its messages from server
+ */
+export async function getConversation(conversationId: string): Promise<{ conversation: Conversation; messages: Message[] } | null> {
+  try {
+    const response = await fetch(`${API_BASE}/conversations/${conversationId}`)
+    if (!response.ok) {
+      console.error('Failed to get conversation:', response.status)
+      return null
+    }
+    return await response.json()
+  } catch (error) {
+    console.error('Error getting conversation:', error)
+    return null
+  }
+}
+
+/**
+ * Delete a conversation on the server
+ */
+export async function deleteConversation(conversationId: string): Promise<boolean> {
+  try {
+    const response = await fetch(`${API_BASE}/conversations/${conversationId}`, {
+      method: 'DELETE',
+    })
+    return response.ok
+  } catch (error) {
+    console.error('Error deleting conversation:', error)
+    return false
+  }
+}
+
+// ============================================================================
+// Workspace Types and API
+// ============================================================================
+
+export interface Workspace {
+  workspace_id: string
+  name: string
+  description?: string
+  created_at: string
+  updated_at: string
+  created_by: string
+  role?: 'workspace_admin' | 'member' | 'org_admin'
+}
+
+export interface WorkspaceMember {
+  user_email: string
+  role: 'workspace_admin' | 'member'
+  joined_at: string
+  workspace_id: string
+}
+
+export interface WorkspaceRepo {
+  repo_name: string
+  workspace_id: string
+  enabled: boolean
+  added_at: string
+  added_by: string
+}
+
+export interface AvailableRepo {
+  full_name: string
+  name: string
+  description: string
+  private: boolean
+  updated_at: string
+}
+
+/**
+ * List user's workspaces
+ */
+export async function listWorkspaces(): Promise<Workspace[]> {
+  const response = await fetch(`${API_BASE}/workspaces`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to list workspaces: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return (data?.workspaces as Workspace[]) || []
+}
+
+/**
+ * Helper to safely parse JSON response, returning null if empty
+ */
+async function safeJson(response: Response): Promise<Record<string, unknown> | null> {
+  const text = await response.text()
+  if (!text) return null
+  try {
+    return JSON.parse(text)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Create a new workspace
+ */
+export async function createWorkspace(name: string, description?: string): Promise<Workspace> {
+  const response = await fetch(`${API_BASE}/workspaces`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, description }),
+  })
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to create workspace: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  if (!data?.workspace) {
+    throw new Error('Invalid response from server')
+  }
+  return data.workspace as Workspace
+}
+
+/**
+ * Get workspace details
+ */
+export async function getWorkspace(workspaceId: string): Promise<Workspace> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to get workspace: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return data?.workspace as Workspace
+}
+
+/**
+ * Update workspace
+ */
+export async function updateWorkspace(
+  workspaceId: string,
+  updates: { name?: string; description?: string }
+): Promise<Workspace> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(updates),
+  })
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to update workspace: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return data?.workspace as Workspace
+}
+
+/**
+ * Delete workspace
+ */
+export async function deleteWorkspace(workspaceId: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}`, {
+    method: 'DELETE',
+  })
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to delete workspace: ${response.status}`)
+  }
+}
+
+/**
+ * List workspace members
+ */
+export async function listMembers(workspaceId: string): Promise<WorkspaceMember[]> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/members`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to list members: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return (data?.members as WorkspaceMember[]) || []
+}
+
+/**
+ * Add member to workspace
+ */
+export async function addMember(
+  workspaceId: string,
+  email: string,
+  role: 'member' | 'workspace_admin' = 'member'
+): Promise<WorkspaceMember> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/members`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, role }),
+  })
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to add member: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return data?.member as WorkspaceMember
+}
+
+/**
+ * Update member role
+ */
+export async function updateMember(
+  workspaceId: string,
+  email: string,
+  role: 'member' | 'workspace_admin'
+): Promise<void> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/members/${encodeURIComponent(email)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ role }),
+  })
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to update member: ${response.status}`)
+  }
+}
+
+/**
+ * Remove member from workspace
+ */
+export async function removeMember(workspaceId: string, email: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/members/${encodeURIComponent(email)}`, {
+    method: 'DELETE',
+  })
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to remove member: ${response.status}`)
+  }
+}
+
+/**
+ * List workspace repos
+ */
+export async function listWorkspaceRepos(workspaceId: string): Promise<WorkspaceRepo[]> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/repos`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to list repos: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return (data?.repos as WorkspaceRepo[]) || []
+}
+
+/**
+ * List available repos from GitHub
+ */
+export async function listAvailableRepos(workspaceId: string): Promise<AvailableRepo[]> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/repos/available`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to list available repos: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return (data?.repos as AvailableRepo[]) || []
+}
+
+/**
+ * Add repo to workspace
+ */
+export async function addWorkspaceRepo(workspaceId: string, repoName: string): Promise<WorkspaceRepo> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/repos`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ repo_name: repoName }),
+  })
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to add repo: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return data?.repo as WorkspaceRepo
+}
+
+/**
+ * Remove repo from workspace
+ */
+export async function removeWorkspaceRepo(workspaceId: string, repoName: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/repos/${encodeURIComponent(repoName)}`, {
+    method: 'DELETE',
+  })
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to remove repo: ${response.status}`)
+  }
+}
+
+// ============================================================================
+// Confluence Integration Types and API
+// ============================================================================
+
+export interface ConfluenceConnection {
+  connection_id: string
+  workspace_id: string
+  cloud_id: string
+  site_name: string
+  site_url: string
+  selected_spaces: ConfluenceSpace[]
+  include_attachments: boolean
+  last_sync_at: string | null
+  last_sync_status: 'needs_configuration' | 'queued' | 'syncing' | 'completed' | 'failed'
+  page_count: number
+  attachment_count: number
+  created_at: string
+  updated_at: string
+}
+
+export interface ConfluenceSpace {
+  id: string
+  key: string
+  name: string
+  type: string
+  selected?: boolean
+}
+
+/**
+ * Get Confluence OAuth authorization URL
+ */
+export async function getConfluenceAuthUrl(workspaceId: string): Promise<string> {
+  const response = await fetch(`${API_BASE}/confluence/authorize?workspace_id=${encodeURIComponent(workspaceId)}`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to get auth URL: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return data?.auth_url as string
+}
+
+/**
+ * List Confluence connections for a workspace
+ */
+export async function listConfluenceConnections(workspaceId: string): Promise<ConfluenceConnection[]> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/confluence/connections`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to list connections: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return (data?.connections as ConfluenceConnection[]) || []
+}
+
+/**
+ * List available Confluence spaces for a connection
+ */
+export async function listConfluenceSpaces(
+  workspaceId: string,
+  connectionId: string
+): Promise<{ spaces: ConfluenceSpace[]; selected_count: number }> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/confluence/connections/${connectionId}/spaces`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to list spaces: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return {
+    spaces: (data?.spaces as ConfluenceSpace[]) || [],
+    selected_count: (data?.selected_count as number) || 0,
+  }
+}
+
+/**
+ * Update selected Confluence spaces for a connection
+ */
+export async function updateConfluenceSpaces(
+  workspaceId: string,
+  connectionId: string,
+  selectedSpaces: ConfluenceSpace[],
+  includeAttachments: boolean = false
+): Promise<void> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/confluence/connections/${connectionId}/spaces`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      selected_spaces: selectedSpaces,
+      include_attachments: includeAttachments,
+    }),
+  })
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to update spaces: ${response.status}`)
+  }
+}
+
+/**
+ * Trigger Confluence sync for a connection
+ */
+export async function triggerConfluenceSync(workspaceId: string, connectionId: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/confluence/connections/${connectionId}/sync`, {
+    method: 'POST',
+  })
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to trigger sync: ${response.status}`)
+  }
+}
+
+/**
+ * Delete a Confluence connection
+ */
+export async function deleteConfluenceConnection(workspaceId: string, connectionId: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/confluence/connections/${connectionId}`, {
+    method: 'DELETE',
+  })
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to delete connection: ${response.status}`)
+  }
+}
+
+// ============================================================================
+// Org Management Types and API
+// ============================================================================
+
+export interface OrgMember {
+  user_email: string
+  org_role: 'org_admin' | 'member'
+  joined_at: string
+  invited_by?: string
+}
+
+/**
+ * List all org members (org_admin only)
+ */
+export async function listOrgMembers(): Promise<OrgMember[]> {
+  const response = await fetch(`${API_BASE}/org/members`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to list org members: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return (data?.members as OrgMember[]) || []
+}
+
+/**
+ * Add org member (org_admin only)
+ */
+export async function addOrgMember(
+  email: string,
+  orgRole: 'org_admin' | 'member' = 'member'
+): Promise<OrgMember> {
+  const response = await fetch(`${API_BASE}/org/members`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, org_role: orgRole }),
+  })
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to add org member: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return data?.member as OrgMember
+}
+
+/**
+ * Update org member role (org_admin only)
+ */
+export async function updateOrgMember(
+  email: string,
+  orgRole: 'org_admin' | 'member'
+): Promise<void> {
+  const response = await fetch(`${API_BASE}/org/members/${encodeURIComponent(email)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ org_role: orgRole }),
+  })
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to update org member: ${response.status}`)
+  }
+}
+
+/**
+ * Remove org member (org_admin only)
+ */
+export async function removeOrgMember(email: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/org/members/${encodeURIComponent(email)}`, {
+    method: 'DELETE',
+  })
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to remove org member: ${response.status}`)
+  }
+}
+
+// ============================================================================
+// Workspace Sharing Types and API
+// ============================================================================
+
+export interface WorkspaceSearchAccess {
+  workspace_id: string
+  name: string
+}
+
+/**
+ * Get which workspaces can search this workspace (workspace_admin only)
+ */
+export async function getSearchAccess(workspaceId: string): Promise<WorkspaceSearchAccess[]> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/sharing`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to get search access: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return (data?.search_allowed_workspaces as WorkspaceSearchAccess[]) || []
+}
+
+/**
+ * Update which workspaces can search this workspace (workspace_admin only)
+ */
+export async function updateSearchAccess(
+  workspaceId: string,
+  allowedWorkspaceIds: string[]
+): Promise<WorkspaceSearchAccess[]> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/sharing`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ search_allowed_workspaces: allowedWorkspaceIds }),
+  })
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to update search access: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return (data?.search_allowed_workspaces as WorkspaceSearchAccess[]) || []
+}
+
+/**
+ * List all workspaces available for sharing (workspace_admin only)
+ */
+export async function listSharingOptions(workspaceId: string): Promise<WorkspaceSearchAccess[]> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/sharing/available`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to list sharing options: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return (data?.workspaces as WorkspaceSearchAccess[]) || []
+}
+
+// ============================================================================
+// Searchable Workspaces for Chat
+// ============================================================================
+
+export interface SearchableWorkspace {
+  workspace_id: string
+  name: string
+  access_type: 'member' | 'shared' | 'org_admin'
+}
+
+/**
+ * Get workspaces the user can search in chat
+ */
+export async function getSearchableWorkspaces(): Promise<SearchableWorkspace[]> {
+  const response = await fetch(`${API_BASE}/chat/searchable-workspaces`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to get searchable workspaces: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return (data?.workspaces as SearchableWorkspace[]) || []
+}
+
+// ============================================================================
+// Document Upload Types and API
+// ============================================================================
+
+export interface WorkspaceDocument {
+  path: string
+  s3_key: string
+  filename: string
+  size: number
+  last_modified: string
+}
+
+export interface DocumentUploadUrlResponse {
+  upload_url: string
+  s3_key: string
+  bucket: string
+  expires_in: number
+}
+
+/**
+ * Get a presigned URL for document upload
+ */
+export async function getDocumentUploadUrl(
+  workspaceId: string,
+  filename: string,
+  contentType: string = 'application/octet-stream',
+  folderPath: string = ''
+): Promise<DocumentUploadUrlResponse> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/documents/upload`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      filename,
+      content_type: contentType,
+      folder_path: folderPath,
+    }),
+  })
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to get upload URL: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  if (!data) {
+    throw new Error('Empty response from server')
+  }
+  return {
+    upload_url: data.upload_url as string,
+    s3_key: data.s3_key as string,
+    bucket: data.bucket as string,
+    expires_in: data.expires_in as number,
+  }
+}
+
+/**
+ * Upload a document directly to S3 using presigned URL with progress tracking
+ */
+export async function uploadDocumentToS3(
+  uploadUrl: string,
+  file: File,
+  onProgress?: (progress: number) => void
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+
+    xhr.upload.addEventListener('progress', (event) => {
+      if (event.lengthComputable && onProgress) {
+        const progress = Math.round((event.loaded / event.total) * 100)
+        onProgress(progress)
+      }
+    })
+
+    xhr.addEventListener('load', () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve()
+      } else {
+        reject(new Error(`Upload failed: ${xhr.status} ${xhr.statusText}`))
+      }
+    })
+
+    xhr.addEventListener('error', () => {
+      reject(new Error('Upload failed: Network error'))
+    })
+
+    xhr.addEventListener('abort', () => {
+      reject(new Error('Upload aborted'))
+    })
+
+    xhr.open('PUT', uploadUrl)
+    xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream')
+    xhr.send(file)
+  })
+}
+
+/**
+ * List documents in a workspace
+ */
+export async function listDocuments(
+  workspaceId: string,
+  prefix: string = ''
+): Promise<WorkspaceDocument[]> {
+  const url = prefix
+    ? `${API_BASE}/workspaces/${workspaceId}/documents?prefix=${encodeURIComponent(prefix)}`
+    : `${API_BASE}/workspaces/${workspaceId}/documents`
+
+  const response = await fetch(url)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to list documents: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return (data?.documents as WorkspaceDocument[]) || []
+}
+
+/**
+ * Delete a document from workspace
+ */
+export async function deleteDocument(workspaceId: string, documentPath: string): Promise<void> {
+  const response = await fetch(
+    `${API_BASE}/workspaces/${workspaceId}/documents/${encodeURIComponent(documentPath)}`,
+    { method: 'DELETE' }
+  )
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to delete document: ${response.status}`)
+  }
+}
+
+// ============================================================================
+// Jira Integration Types and API
+// ============================================================================
+
+export interface JiraConnection {
+  connection_id: string
+  workspace_id: string
+  cloud_id: string
+  site_name: string
+  site_url: string
+  selected_projects: JiraProject[]
+  include_attachments: boolean
+  include_comments: boolean
+  last_sync_at: string | null
+  last_sync_status: 'needs_configuration' | 'queued' | 'in_progress' | 'success' | 'failed' | 'auth_error'
+  last_sync_error: string | null
+  issue_count: number
+  created_at: string
+}
+
+export interface JiraProject {
+  id: string
+  key: string
+  name: string
+  projectTypeKey?: string
+  selected?: boolean
+}
+
+/**
+ * Get Jira OAuth authorization URL
+ */
+export async function getJiraAuthUrl(workspaceId: string): Promise<string> {
+  const response = await fetch(`${API_BASE}/jira/authorize?workspace_id=${encodeURIComponent(workspaceId)}`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to get auth URL: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return data?.auth_url as string
+}
+
+/**
+ * List Jira connections for a workspace
+ */
+export async function listJiraConnections(workspaceId: string): Promise<JiraConnection[]> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/jira/connections`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to list Jira connections: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return (data?.connections as JiraConnection[]) || []
+}
+
+/**
+ * List available Jira projects for a connection
+ */
+export async function listJiraProjects(
+  workspaceId: string,
+  connectionId: string
+): Promise<{ projects: JiraProject[]; selected_count: number }> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/jira/connections/${connectionId}/projects`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to list projects: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return {
+    projects: (data?.projects as JiraProject[]) || [],
+    selected_count: (data?.selected_count as number) || 0,
+  }
+}
+
+/**
+ * Update selected Jira projects for a connection
+ */
+export async function updateJiraProjects(
+  workspaceId: string,
+  connectionId: string,
+  projectKeys: string[],
+  includeAttachments: boolean = true,
+  includeComments: boolean = true
+): Promise<void> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/jira/connections/${connectionId}/projects`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      project_keys: projectKeys,
+      include_attachments: includeAttachments,
+      include_comments: includeComments,
+    }),
+  })
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to update projects: ${response.status}`)
+  }
+}
+
+/**
+ * Trigger Jira sync for a connection
+ */
+export async function triggerJiraSync(workspaceId: string, connectionId: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/jira/connections/${connectionId}/sync`, {
+    method: 'POST',
+  })
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to trigger sync: ${response.status}`)
+  }
+}
+
+/**
+ * Delete a Jira connection
+ */
+export async function deleteJiraConnection(workspaceId: string, connectionId: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/jira/connections/${connectionId}`, {
+    method: 'DELETE',
+  })
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to delete connection: ${response.status}`)
+  }
+}
+
+// ============================================================================
+// GitHub Integration Types and API
+// ============================================================================
+
+export interface GitHubInstallation {
+  installation_id: string
+  workspace_id: string
+  account_login: string
+  account_type: 'Organization' | 'User'
+  permissions: Record<string, string>
+  created_by: string
+  created_at: string
+}
+
+export type GitHubRepoType = 'application' | 'standards'
+
+export interface GitHubRepo {
+  repo_name: string
+  workspace_id: string
+  installation_id: string
+  enabled: boolean
+  include_code_maps: boolean
+  repo_type: GitHubRepoType
+  last_sync_at: string | null
+  last_sync_status: 'needs_configuration' | 'queued' | 'in_progress' | 'success' | 'failed' | null
+  last_sync_error: string | null
+  last_commit_sha: string | null
+  added_at: string
+  added_by: string
+}
+
+export interface GitHubAvailableRepo {
+  full_name: string
+  name: string
+  description: string | null
+  private: boolean
+  default_branch: string
+  updated_at: string
+}
+
+/**
+ * Get GitHub App installation URL for connecting GitHub to a workspace
+ */
+export async function getGitHubInstallUrl(workspaceId: string): Promise<string> {
+  const response = await fetch(`${API_BASE}/github/authorize?workspace_id=${encodeURIComponent(workspaceId)}`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to get GitHub install URL: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return data?.install_url as string
+}
+
+/**
+ * List GitHub App installations for a workspace
+ */
+export async function listGitHubInstallations(workspaceId: string): Promise<GitHubInstallation[]> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/github/installations`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to list GitHub installations: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return (data?.installations as GitHubInstallation[]) || []
+}
+
+/**
+ * List repos available from a GitHub App installation
+ */
+export async function listGitHubInstallationRepos(
+  workspaceId: string,
+  installationId: string
+): Promise<GitHubAvailableRepo[]> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/github/installations/${installationId}/repos`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to list installation repos: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return (data?.repos as GitHubAvailableRepo[]) || []
+}
+
+/**
+ * List GitHub repos added to a workspace (for code maps)
+ */
+export async function listGitHubRepos(workspaceId: string): Promise<GitHubRepo[]> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/github/repos`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to list GitHub repos: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return (data?.repos as GitHubRepo[]) || []
+}
+
+/**
+ * Add GitHub repos to a workspace for code map generation
+ */
+export async function addGitHubRepos(
+  workspaceId: string,
+  repos: { repo_name: string; installation_id: string; include_code_maps?: boolean; repo_type?: GitHubRepoType }[]
+): Promise<GitHubRepo[]> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/github/repos`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ repos }),
+  })
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to add GitHub repos: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return (data?.repos as GitHubRepo[]) || []
+}
+
+/**
+ * Update a GitHub repo's settings
+ */
+export async function updateGitHubRepo(
+  workspaceId: string,
+  repoName: string,
+  updates: { enabled?: boolean; include_code_maps?: boolean }
+): Promise<GitHubRepo> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/github/repos/${encodeURIComponent(repoName)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(updates),
+  })
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to update GitHub repo: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return data?.repo as GitHubRepo
+}
+
+/**
+ * Remove a GitHub repo from workspace
+ */
+export async function removeGitHubRepo(workspaceId: string, repoName: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/github/repos/${encodeURIComponent(repoName)}`, {
+    method: 'DELETE',
+  })
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to remove GitHub repo: ${response.status}`)
+  }
+}
+
+/**
+ * Trigger GitHub sync for workspace repos
+ */
+export async function triggerGitHubSync(workspaceId: string, repoName?: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/github/sync`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(repoName ? { repo_name: repoName } : {}),
+  })
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to trigger GitHub sync: ${response.status}`)
+  }
+}

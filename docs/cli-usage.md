@@ -39,7 +39,7 @@ outcome-ops-assist --help
    ```
 
 2. **Deployed Infrastructure**: The Lambda functions must be deployed:
-   - For KB queries: `{env}-outcome-ops-ai-assist-query-kb`, `vector-query`, `ask-claude`
+   - For KB queries: `{env}-outcome-ops-ai-assist-query-kb`, `ask-claude`
    - For PR analysis: `{env}-outcome-ops-ai-assist-analyze-pr`, `process-pr-check`
 
 3. **Knowledge Base**: The knowledge base must be populated with ADRs and code maps
@@ -223,7 +223,7 @@ Error: Repository must be in format 'owner/repo'
 **Lambda not found:**
 ```bash
 $ outcome-ops-assist analyze-pr 123 owner/repo
-❌ Error: Failed to invoke Lambda function: dev-outcome-ops-ai-assist-analyze-pr
+❌ Error: Failed to invoke Lambda function: prd-outcome-ops-ai-assist-analyze-pr
 Make sure the function exists and you have permissions to invoke it
 ```
 
@@ -350,7 +350,7 @@ outcome-ops-assist ingest-docs new-repo-name
 **Lambda not found:**
 ```bash
 $ outcome-ops-assist ingest-docs
-❌ Error: Failed to invoke Lambda function: dev-outcome-ops-ai-assist-ingest-docs
+❌ Error: Failed to invoke Lambda function: prd-outcome-ops-ai-assist-ingest-docs
 Make sure the function exists and you have permissions to invoke it
 ```
 
@@ -537,7 +537,7 @@ Query: Your question here             # Your question echoed back
 ### Error: Lambda function not found
 
 ```
-Error: Failed to invoke Lambda function: dev-outcome-ops-ai-assist-query-kb
+Error: Failed to invoke Lambda function: prd-outcome-ops-ai-assist-query-kb
 Make sure the function exists and you have permissions to invoke it
 ```
 
@@ -567,7 +567,7 @@ Make sure the function exists and you have permissions to invoke it
 1. **Knowledge base is empty** - Run ingestion:
    ```bash
    aws lambda invoke \
-     --function-name dev-outcome-ops-ai-assist-ingest-docs \
+     --function-name prd-outcome-ops-ai-assist-ingest-docs \
      response.json
    ```
 
@@ -578,7 +578,7 @@ Make sure the function exists and you have permissions to invoke it
 
 3. **Claude generation failed** - Check CloudWatch logs:
    ```bash
-   aws logs tail /aws/lambda/dev-outcome-ops-ai-assist-ask-claude --follow
+   aws logs tail /aws/lambda/prd-outcome-ops-ai-assist-ask-claude --follow
    ```
 
 ### Slow responses
@@ -744,3 +744,5 @@ outcome-ops-assist "What SSM parameters are required?"
 ---
 
 **Built for developer velocity.** Query your knowledge base. Analyze your PRs. Code with confidence.
+
+<!-- Confluence sync -->

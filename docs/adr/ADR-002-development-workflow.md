@@ -84,7 +84,7 @@ git push origin main
 ### 5. Terraform Deployment Workflow
 
 See **ADR-004: Terraform Workflow Standards** for complete details:
-- Always use plan output files (`-out=terraform.dev.out`)
+- Always use plan output files (`-out=terraform.prd.out`)
 - Review plans before applying
 - Test in dev before deploying to production
 - Use workspaces for environment isolation
@@ -92,8 +92,8 @@ See **ADR-004: Terraform Workflow Standards** for complete details:
 **Quick reference:**
 ```bash
 terraform workspace select dev
-terraform plan -var-file=dev.tfvars -out=terraform.dev.out
-terraform apply terraform.dev.out
+terraform plan -var-file=prd.tfvars -out=terraform.prd.out
+terraform apply terraform.prd.out
 ```
 
 ### 6. Testing Strategy
@@ -254,8 +254,8 @@ git push origin main
 **Terraform commands** - See ADR-004 for details:
 ```bash
 terraform workspace select dev
-terraform plan -var-file=dev.tfvars -out=terraform.dev.out
-terraform apply terraform.dev.out
+terraform plan -var-file=prd.tfvars -out=terraform.prd.out
+terraform apply terraform.prd.out
 ```
 
 **Query knowledge base:**
@@ -306,3 +306,5 @@ outcome-ops-assist "What Terraform module version should I use?"
 ## Version History
 
 - v1.0 (2025-01-03): Development workflow for outcome-ops-ai-assist with Make, testing standards, and AI assistance protocol
+
+<!-- Confluence sync -->

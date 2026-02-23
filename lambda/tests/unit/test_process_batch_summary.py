@@ -23,6 +23,64 @@ generate_batch_summary = handler_module.generate_batch_summary
 generate_embedding = handler_module.generate_embedding
 process_batch_record = handler_module.process_batch_record
 store_batch_summary = handler_module.store_batch_summary
+chunk_large_content = handler_module.chunk_large_content
+MAX_FILE_SIZE = handler_module.MAX_FILE_SIZE
+CHUNK_SIZE = handler_module.CHUNK_SIZE
+CHUNK_OVERLAP = handler_module.CHUNK_OVERLAP
+
+
+class TestChunkLargeContent:
+    """Test large file chunking."""
+
+    def test_chunk_small_file_no_chunking(self):
+        """Test that small files are not chunked."""
+        # Arrange
+        content = "x" * 10000  # 10KB - well under 50KB limit
+
+        # Act
+        result = chunk_large_content(content, "small_file.py")
+
+        # Assert
+        assert len(result) == 1
+        assert result[0]["path"] == "small_file.py"
+        assert result[0]["chunk_index"] == 0
+        assert result[0]["total_chunks"] == 1
+        assert result[0]["is_chunked"] is False
+
+    def test_chunk_large_file_creates_multiple_chunks(self):
+        """Test that large files are split into multiple chunks."""
+        # Arrange - 100KB file should be split into 3 chunks with 40KB chunk size
+        content = "x" * 100000  # 100KB
+
+        # Act
+        result = chunk_large_content(content, "large_file.py")
+
+        # Assert - should be chunked
+        assert len(result) >= 2  # At least 2 chunks
+        for chunk in result:
+            assert chunk["is_chunked"] is True
+            assert chunk["total_chunks"] == len(result)
+            assert "start_char" in chunk
+            assert "end_char" in chunk
+            assert chunk["path"] == "large_file.py"
+
+    def test_chunk_metadata_is_correct(self):
+        """Test that chunk metadata has correct indices."""
+        # Arrange
+        content = "a" * 60000  # 60KB - just over 50KB limit
+
+        # Act
+        result = chunk_large_content(content, "test.py")
+
+        # Assert
+        assert len(result) >= 2
+        # First chunk
+        assert result[0]["chunk_index"] == 0
+        assert result[0]["start_char"] == 0
+        # All chunks have same total_chunks
+        for i, chunk in enumerate(result):
+            assert chunk["chunk_index"] == i
+            assert chunk["total_chunks"] == len(result)
 
 
 class TestComputeContentHash:
@@ -45,10 +103,12 @@ class TestComputeContentHash:
 class TestFetchFileContent:
     """Test file content fetching from GitHub."""
 
+    @patch("process_batch_summary_handler.get_default_branch")
     @patch("process_batch_summary_handler.urlopen")
-    def test_fetch_file_content_success(self, mock_urlopen):
+    def test_fetch_file_content_success(self, mock_urlopen, mock_get_branch):
         """Test successful file content fetch."""
         # Arrange
+        mock_get_branch.return_value = "main"
         mock_response = MagicMock()
         mock_response.read.return_value = b"file content here"
         mock_urlopen.return_value.__enter__.return_value = mock_response
@@ -60,10 +120,12 @@ class TestFetchFileContent:
         assert result == "file content here"
         mock_urlopen.assert_called_once()
 
+    @patch("process_batch_summary_handler.get_default_branch")
     @patch("process_batch_summary_handler.urlopen")
-    def test_fetch_file_content_url_format(self, mock_urlopen):
+    def test_fetch_file_content_url_format(self, mock_urlopen, mock_get_branch):
         """Test file content fetch uses correct URL format."""
         # Arrange
+        mock_get_branch.return_value = "main"
         mock_response = MagicMock()
         mock_response.read.return_value = b"content"
         mock_urlopen.return_value.__enter__.return_value = mock_response
@@ -143,8 +205,9 @@ class TestGenerateBatchSummary:
         mock_bedrock.converse.assert_called_once()
 
     @patch("process_batch_summary_handler.fetch_file_content")
-    def test_generate_batch_summary_skips_large_files(self, mock_fetch):
-        """Test that large files are skipped."""
+    @patch("process_batch_summary_handler.bedrock_client")
+    def test_generate_batch_summary_chunks_large_files(self, mock_bedrock, mock_fetch):
+        """Test that large files are chunked instead of skipped."""
         # Arrange
         batch = {
             "repo": "test-repo",
@@ -154,13 +217,27 @@ class TestGenerateBatchSummary:
             "file_paths": ["large_file.py"]
         }
 
-        mock_fetch.return_value = "x" * 60000  # 60KB file
+        mock_fetch.return_value = "x" * 60000  # 60KB file - will be chunked
+        mock_summary = "Summary of chunked large file..."
+        mock_bedrock.converse.return_value = {
+            "output": {
+                "message": {
+                    "content": [{"text": mock_summary}]
+                }
+            }
+        }
 
         # Act
         result = generate_batch_summary(batch)
 
-        # Assert
-        assert result == "No files available for analysis"
+        # Assert - should get a summary, not "No files available"
+        assert result == mock_summary
+        mock_bedrock.converse.assert_called_once()
+        # Verify the prompt includes chunk information
+        call_args = mock_bedrock.converse.call_args
+        messages = call_args[1]["messages"]
+        prompt_content = messages[0]["content"][0]["text"]
+        assert "[Chunk" in prompt_content  # Large file should be chunked
 
     @patch("process_batch_summary_handler.fetch_file_content")
     def test_generate_batch_summary_handles_fetch_errors(self, mock_fetch):
@@ -204,11 +281,12 @@ class TestGenerateEmbedding:
 
 
 class TestStoreBatchSummary:
-    """Test storing batch summaries in DynamoDB."""
+    """Test storing batch summaries in S3 Vectors."""
 
-    @patch("process_batch_summary_handler.CODE_MAPS_TABLE", "dev-outcome-ops-ai-assist-code-maps")
-    @patch("process_batch_summary_handler.dynamodb_client")
-    def test_store_batch_summary_success(self, mock_dynamodb):
+    @patch("process_batch_summary_handler.VECTOR_BUCKET", "test-bucket")
+    @patch("process_batch_summary_handler.VECTOR_INDEX", "test-index")
+    @patch("process_batch_summary_handler.s3vectors_client")
+    def test_store_batch_summary_success(self, mock_s3vectors):
         """Test successful batch summary storage."""
         # Arrange
         batch = {
@@ -221,29 +299,35 @@ class TestStoreBatchSummary:
         summary = "This handler ingests documents..."
         embedding = [0.1] * 1024
 
-        mock_dynamodb.put_item.return_value = {}
+        mock_s3vectors.put_vectors.return_value = {}
 
         # Act
         result = store_batch_summary(batch, summary, embedding)
 
         # Assert
         assert result is True
-        mock_dynamodb.put_item.assert_called_once()
-        call_kwargs = mock_dynamodb.put_item.call_args[1]
-        assert call_kwargs["TableName"] == "dev-outcome-ops-ai-assist-code-maps"
-        assert call_kwargs["Item"]["PK"]["S"] == "repo#outcome-ops-ai-assist"
-        assert call_kwargs["Item"]["SK"]["S"] == "summary#handler#ingest-docs"
-        assert call_kwargs["Item"]["batch_type"]["S"] == "handler-group"
-        assert call_kwargs["Item"]["group_name"]["S"] == "ingest-docs"
+        mock_s3vectors.put_vectors.assert_called_once()
+        call_kwargs = mock_s3vectors.put_vectors.call_args[1]
+        assert call_kwargs["vectorBucketName"] == "test-bucket"
+        assert call_kwargs["indexName"] == "test-index"
+        # Verify vector data
+        vectors = call_kwargs["vectors"]
+        assert len(vectors) == 1
+        assert vectors[0]["key"] == "outcome-ops-ai-assist#handler-group-summary#ingest-docs"
+        assert vectors[0]["metadata"]["repo"] == "outcome-ops-ai-assist"
+        assert vectors[0]["metadata"]["batch_type"] == "handler-group"
+        assert vectors[0]["metadata"]["group_name"] == "ingest-docs"
 
-    @patch("process_batch_summary_handler.dynamodb_client")
-    def test_store_batch_summary_failure(self, mock_dynamodb):
-        """Test handling DynamoDB storage failure."""
+    @patch("process_batch_summary_handler.VECTOR_BUCKET", "test-bucket")
+    @patch("process_batch_summary_handler.VECTOR_INDEX", "test-index")
+    @patch("process_batch_summary_handler.s3vectors_client")
+    def test_store_batch_summary_failure(self, mock_s3vectors):
+        """Test handling S3 Vectors storage failure."""
         # Arrange
         from botocore.exceptions import ClientError
 
-        mock_dynamodb.put_item.side_effect = ClientError(
-            {"Error": {"Code": "ValidationException"}}, "PutItem"
+        mock_s3vectors.put_vectors.side_effect = ClientError(
+            {"Error": {"Code": "ValidationException"}}, "PutVectors"
         )
 
         batch = {

@@ -21,14 +21,37 @@ from moto import mock_aws
 import boto3
 import requests
 from botocore.exceptions import ClientError
+from types import ModuleType
 
-# Load the architectural_duplication handler module
+# First, load bedrock_utils module (dependency for architectural_duplication)
+bedrock_utils_path = os.path.join(
+    os.path.dirname(__file__),
+    '../../process-pr-check/check_handlers/bedrock_utils.py'
+)
+bedrock_spec = importlib.util.spec_from_file_location("bedrock_utils", bedrock_utils_path)
+bedrock_module = importlib.util.module_from_spec(bedrock_spec)
+bedrock_spec.loader.exec_module(bedrock_module)
+
+# Create a fake check_handlers package that contains bedrock_utils
+check_handlers_package = ModuleType("check_handlers")
+check_handlers_package.__path__ = [os.path.dirname(bedrock_utils_path)]
+check_handlers_package.bedrock_utils = bedrock_module
+sys.modules['check_handlers'] = check_handlers_package
+sys.modules['check_handlers.bedrock_utils'] = bedrock_module
+
+# Load the architectural_duplication handler module as part of check_handlers package
 handler_path = os.path.join(
     os.path.dirname(__file__),
     '../../process-pr-check/check_handlers/architectural_duplication.py'
 )
-spec = importlib.util.spec_from_file_location("architectural_duplication_handler", handler_path)
+spec = importlib.util.spec_from_file_location(
+    "check_handlers.architectural_duplication",
+    handler_path,
+    submodule_search_locations=[os.path.dirname(handler_path)]
+)
 handler_module = importlib.util.module_from_spec(spec)
+handler_module.__package__ = "check_handlers"
+sys.modules['check_handlers.architectural_duplication'] = handler_module
 sys.modules['architectural_duplication_handler'] = handler_module
 spec.loader.exec_module(handler_module)
 
@@ -38,6 +61,7 @@ fetch_pr_file_diff = handler_module.fetch_pr_file_diff
 extract_file_diff_from_full_diff = handler_module.extract_file_diff_from_full_diff
 query_knowledge_base = handler_module.query_knowledge_base
 summarize_pr_with_claude = handler_module.summarize_pr_with_claude
+extract_functional_keywords = handler_module.extract_functional_keywords
 analyze_similarity_with_claude = handler_module.analyze_similarity_with_claude
 check_architectural_duplication = handler_module.check_architectural_duplication
 
@@ -132,12 +156,20 @@ class TestQueryKnowledgeBase:
     @mock_aws()
     @patch('architectural_duplication_handler.lambda_client')
     def test_query_knowledge_base_success(self, mock_lambda):
-        """Test: Successfully query knowledge base"""
-        # Arrange
+        """Test: Successfully query knowledge base (raw mode)"""
+        # Arrange - raw mode returns results array, not answer
         mock_response = {
             "Payload": Mock(read=Mock(return_value=json.dumps({
-                "answer": "Related functionality found in repo/handler",
-                "sources": ["repo/handler.py"]
+                "statusCode": 200,
+                "body": json.dumps({
+                    "results": [
+                        {
+                            "source": "repo/handler.py",
+                            "text": "Related functionality found in repo/handler",
+                            "score": 0.95
+                        }
+                    ]
+                })
             }).encode()))
         }
         mock_lambda.invoke.return_value = mock_response
@@ -145,7 +177,7 @@ class TestQueryKnowledgeBase:
         # Act
         result = query_knowledge_base("query-kb", "search for similar handlers", 20)
 
-        # Assert
+        # Assert - answer is now formatted from raw results
         assert "Related functionality" in result["answer"]
         assert "repo/handler.py" in result["sources"]
         mock_lambda.invoke.assert_called_once()
@@ -154,7 +186,7 @@ class TestQueryKnowledgeBase:
 class TestSummarizePrWithClaude:
     """Test Claude PR summarization"""
 
-    @patch('architectural_duplication_handler.bedrock_client')
+    @patch.object(bedrock_module, 'bedrock_client')
     def test_summarize_pr_with_claude_success(self, mock_bedrock):
         """Test: Claude successfully summarizes PR"""
         # Arrange
@@ -165,25 +197,29 @@ class TestSummarizePrWithClaude:
                         "text": "This PR adds a Lambda handler that processes GitHub webhook events."
                     }]
                 }
-            }
+            },
+            "usage": {"inputTokens": 100, "outputTokens": 50}
         }
 
         file_diffs = {
             "lambda/hello/handler.py": "+def handler(event, context): pass"
         }
+        usage_tracker = bedrock_module.UsageTracker()
 
         # Act
         result = summarize_pr_with_claude(
             "owner/repo",
             ["lambda/hello/handler.py"],
-            file_diffs
+            file_diffs,
+            usage_tracker
         )
 
         # Assert
         assert "Lambda handler" in result
         assert "GitHub webhook" in result
+        assert usage_tracker.total_tokens > 0
 
-    @patch('architectural_duplication_handler.bedrock_client')
+    @patch.object(bedrock_module, 'bedrock_client')
     def test_summarize_pr_with_claude_bedrock_error(self, mock_bedrock):
         """Test: Bedrock API error"""
         # Arrange
@@ -191,16 +227,102 @@ class TestSummarizePrWithClaude:
             {"Error": {"Code": "ThrottlingException", "Message": "Rate exceeded"}},
             "converse"
         )
+        usage_tracker = bedrock_module.UsageTracker()
 
         # Act & Assert
         with pytest.raises(Exception):
-            summarize_pr_with_claude("owner/repo", ["lambda/hello/handler.py"], {})
+            summarize_pr_with_claude("owner/repo", ["lambda/hello/handler.py"], {}, usage_tracker)
+
+
+class TestExtractFunctionalKeywords:
+    """Test functional keyword extraction for multi-query KB search"""
+
+    @patch.object(bedrock_module, 'bedrock_client')
+    def test_extract_functional_keywords_success(self, mock_bedrock):
+        """Test: Claude successfully extracts search queries"""
+        # Arrange
+        mock_bedrock.converse.return_value = {
+            "output": {
+                "message": {
+                    "content": [{
+                        "text": '["list documents handler", "document listing service", "retrieve recent docs"]'
+                    }]
+                }
+            },
+            "usage": {"inputTokens": 100, "outputTokens": 50}
+        }
+
+        file_diffs = {
+            "lambda/list-docs/handler.py": "+def handler(event, context): pass"
+        }
+        usage_tracker = bedrock_module.UsageTracker()
+
+        # Act
+        result = extract_functional_keywords(
+            "Lists recently ingested documents",
+            file_diffs,
+            usage_tracker
+        )
+
+        # Assert
+        assert isinstance(result, list)
+        assert len(result) == 3
+        assert "list documents handler" in result
+        assert usage_tracker.total_tokens > 0
+
+    @patch.object(bedrock_module, 'bedrock_client')
+    def test_extract_functional_keywords_invalid_json_fallback(self, mock_bedrock):
+        """Test: Falls back to summary when JSON parsing fails"""
+        # Arrange
+        mock_bedrock.converse.return_value = {
+            "output": {
+                "message": {
+                    "content": [{
+                        "text": "not valid json"
+                    }]
+                }
+            },
+            "usage": {"inputTokens": 100, "outputTokens": 50}
+        }
+        usage_tracker = bedrock_module.UsageTracker()
+
+        # Act
+        result = extract_functional_keywords(
+            "Lists recently ingested documents",
+            {},
+            usage_tracker
+        )
+
+        # Assert
+        assert result == ["Lists recently ingested documents"]
+
+    @patch.object(bedrock_module, 'bedrock_client')
+    def test_extract_functional_keywords_limits_to_five(self, mock_bedrock):
+        """Test: Limits results to 5 queries max"""
+        # Arrange
+        mock_bedrock.converse.return_value = {
+            "output": {
+                "message": {
+                    "content": [{
+                        "text": '["q1", "q2", "q3", "q4", "q5", "q6", "q7"]'
+                    }]
+                }
+            },
+            "usage": {"inputTokens": 100, "outputTokens": 50}
+        }
+        usage_tracker = bedrock_module.UsageTracker()
+
+        # Act
+        result = extract_functional_keywords("Summary", {}, usage_tracker)
+
+        # Assert
+        assert len(result) == 5
 
 
 class TestAnalyzeSimilarityWithClaude:
     """Test Claude similarity analysis"""
 
-    @patch('architectural_duplication_handler.bedrock_client')
+    @patch.object(bedrock_module, 'bedrock_client')
     def test_analyze_similarity_has_similar(self, mock_bedrock):
         """Test: Claude finds similar functionality"""
         # Arrange
@@ -211,21 +333,26 @@ class TestAnalyzeSimilarityWithClaude:
                         "text": '{"hasSimilar": true, "findings": ["repo/handler.py has similar webhook processing"]}'
                     }]
                 }
-            }
+            },
+            "usage": {"inputTokens": 100, "outputTokens": 50}
         }
+        usage_tracker = bedrock_module.UsageTracker()
 
         # Act
         result = analyze_similarity_with_claude(
             "PR adds webhook handler",
-            "KB contains: repo/handler.py handles webhooks"
+            "KB contains: repo/handler.py handles webhooks",
+            ["lambda/hello/handler.py"],
+            usage_tracker
         )
 
         # Assert
         assert result["hasSimilar"] is True
         assert len(result["findings"]) > 0
         assert "webhook" in result["findings"][0]
+        assert usage_tracker.total_tokens > 0
 
-    @patch('architectural_duplication_handler.bedrock_client')
+    @patch.object(bedrock_module, 'bedrock_client')
     def test_analyze_similarity_no_similar(self, mock_bedrock):
         """Test: Claude finds no similar functionality"""
         # Arrange
@@ -236,20 +363,24 @@ class TestAnalyzeSimilarityWithClaude:
                         "text": '{"hasSimilar": false, "findings": []}'
                     }]
                 }
-            }
+            },
+            "usage": {"inputTokens": 100, "outputTokens": 50}
         }
+        usage_tracker = bedrock_module.UsageTracker()
 
         # Act
         result = analyze_similarity_with_claude(
             "PR adds unique functionality",
-            "KB contains unrelated code"
+            "KB contains unrelated code",
+            ["lambda/hello/handler.py"],
+            usage_tracker
         )
 
         # Assert
         assert result["hasSimilar"] is False
         assert result["findings"] == []
 
-    @patch('architectural_duplication_handler.bedrock_client')
+    @patch.object(bedrock_module, 'bedrock_client')
     def test_analyze_similarity_invalid_json(self, mock_bedrock):
         """Test: Handle invalid JSON response (fallback parsing)"""
         # Arrange
@@ -260,11 +391,13 @@ class TestAnalyzeSimilarityWithClaude:
                         "text": "not valid json at all"
                     }]
                 }
-            }
+            },
+            "usage": {"inputTokens": 100, "outputTokens": 50}
         }
+        usage_tracker = bedrock_module.UsageTracker()
 
         # Act
-        result = analyze_similarity_with_claude("PR summary", "KB context")
+        result = analyze_similarity_with_claude("PR summary", "KB context", ["lambda/hello/handler.py"], usage_tracker)
 
         # Assert
         assert "hasSimilar" in result
@@ -330,7 +463,7 @@ class TestCheckArchitecturalDuplication:
         # Assert
         assert result["checkType"] == "ARCHITECTURAL_DUPLICATION"
         assert result["status"] == "WARN"
-        assert "Related functionality identified" in result["message"]
+        assert "Similar implementations found" in result["message"]
         assert any("webhook" in str(detail) for detail in result["details"])
 
     @patch('architectural_duplication_handler.get_github_token')
