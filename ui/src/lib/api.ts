@@ -962,6 +962,124 @@ export async function deleteJiraConnection(workspaceId: string, connectionId: st
 }
 
 // ============================================================================
+// Outlook Integration Types and API
+// ============================================================================
+
+export interface OutlookConnection {
+  connection_id: string
+  workspace_id: string
+  user_email: string
+  display_name: string
+  selected_folders: OutlookFolder[]
+  last_sync_at: string | null
+  last_sync_status: 'needs_configuration' | 'queued' | 'syncing' | 'completed' | 'failed' | 'auth_error'
+  last_sync_error?: string | null
+  email_count: number
+  created_at: string
+  updated_at: string
+}
+
+export interface OutlookFolder {
+  id: string
+  displayName: string
+  totalItemCount?: number
+  unreadItemCount?: number
+  selected?: boolean
+}
+
+/**
+ * Get Outlook OAuth authorization URL
+ */
+export async function getOutlookAuthUrl(workspaceId: string): Promise<string> {
+  const response = await fetch(`${API_BASE}/outlook/authorize?workspace_id=${encodeURIComponent(workspaceId)}`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to get auth URL: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return data?.auth_url as string
+}
+
+/**
+ * List Outlook connections for a workspace
+ */
+export async function listOutlookConnections(workspaceId: string): Promise<OutlookConnection[]> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/outlook/connections`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to list Outlook connections: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return (data?.connections as OutlookConnection[]) || []
+}
+
+/**
+ * List available Outlook mail folders for a connection
+ */
+export async function listOutlookFolders(
+  workspaceId: string,
+  connectionId: string
+): Promise<{ folders: OutlookFolder[]; selected_count: number }> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/outlook/connections/${connectionId}/folders`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to list folders: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return {
+    folders: (data?.folders as OutlookFolder[]) || [],
+    selected_count: (data?.selected_count as number) || 0,
+  }
+}
+
+/**
+ * Update selected Outlook folders for a connection
+ */
+export async function updateOutlookFolders(
+  workspaceId: string,
+  connectionId: string,
+  selectedFolders: OutlookFolder[]
+): Promise<void> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/outlook/connections/${connectionId}/folders`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      selected_folders: selectedFolders,
+    }),
+  })
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to update folders: ${response.status}`)
+  }
+}
+
+/**
+ * Trigger Outlook sync for a connection
+ */
+export async function triggerOutlookSync(workspaceId: string, connectionId: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/outlook/connections/${connectionId}/sync`, {
+    method: 'POST',
+  })
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to trigger sync: ${response.status}`)
+  }
+}
+
+/**
+ * Delete an Outlook connection
+ */
+export async function deleteOutlookConnection(workspaceId: string, connectionId: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/outlook/connections/${connectionId}`, {
+    method: 'DELETE',
+  })
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to delete connection: ${response.status}`)
+  }
+}
+
+// ============================================================================
 // GitHub Integration Types and API
 // ============================================================================
 

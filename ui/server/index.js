@@ -25,6 +25,7 @@ const WORKSPACE_LAMBDA_URL = process.env.WORKSPACE_LAMBDA_URL;
 const CONFLUENCE_LAMBDA_URL = process.env.CONFLUENCE_LAMBDA_URL;
 const JIRA_LAMBDA_URL = process.env.JIRA_LAMBDA_URL;
 const GITHUB_LAMBDA_URL = process.env.GITHUB_LAMBDA_URL;
+const OUTLOOK_LAMBDA_URL = process.env.OUTLOOK_LAMBDA_URL;
 const AWS_REGION = process.env.AWS_REGION || "us-west-2";
 const STATIC_DIR = process.env.STATIC_DIR || "/app/static";
 const LOCAL_DEV_MODE = process.env.LOCAL_DEV_MODE === "true";
@@ -176,6 +177,13 @@ async function signedJiraFetch(method, path, options = {}) {
  */
 async function signedGitHubFetch(method, path, options = {}) {
   return signedFetch(GITHUB_LAMBDA_URL, method, path, options);
+}
+
+/**
+ * Sign and send a request to the Outlook Lambda Function URL.
+ */
+async function signedOutlookFetch(method, path, options = {}) {
+  return signedFetch(OUTLOOK_LAMBDA_URL, method, path, options);
 }
 
 // Streaming chat proxy endpoint with SigV4 auth
@@ -1091,6 +1099,139 @@ app.post("/api/workspaces/:id/github/sync", (req, res) => {
 });
 
 // ============================================================================
+// Outlook Integration Routes
+// ============================================================================
+
+// Helper to proxy Outlook requests
+async function proxyOutlookRequest(req, res, method, path) {
+  if (!OUTLOOK_LAMBDA_URL) {
+    console.log("[proxy] OUTLOOK_LAMBDA_URL not configured - Outlook integration disabled");
+    res.status(404).json({ error: "Outlook integration not enabled. Set OUTLOOK_LAMBDA_URL." });
+    return;
+  }
+
+  const user = extractUser(req);
+  console.log(`[proxy] Outlook ${method} ${path} for: ${user.email}`);
+
+  try {
+    const options = {
+      extraHeaders: { "x-user-email": user.email },
+    };
+    if (req.body && Object.keys(req.body).length > 0) {
+      options.body = JSON.stringify(req.body);
+    }
+
+    const response = await signedOutlookFetch(method, path, options);
+
+    // Handle redirects (OAuth callback)
+    if (response.status === 302) {
+      const location = response.headers.get("location");
+      return res.redirect(location);
+    }
+
+    // Handle non-OK responses
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`[proxy] Outlook Lambda error: ${response.status} - ${errorText}`);
+      res.status(response.status).json({ error: errorText || "Outlook request failed" });
+      return;
+    }
+
+    // Parse JSON response safely
+    const text = await response.text();
+    if (!text) {
+      console.error("[proxy] Empty response from Outlook Lambda");
+      res.status(500).json({ error: "Empty response from Outlook service" });
+      return;
+    }
+
+    try {
+      const data = JSON.parse(text);
+      res.status(response.status).json(data);
+    } catch (parseError) {
+      console.error(`[proxy] Failed to parse Outlook response: ${text}`);
+      res.status(500).json({ error: "Invalid response from Outlook service" });
+    }
+  } catch (error) {
+    console.error(`[proxy] Outlook error: ${error.message}`);
+    if (error.message.includes("credentials") || error.message.includes("Credential")) {
+      res.status(500).json({ error: "AWS credentials not configured." });
+    } else {
+      res.status(500).json({ error: `Failed to process Outlook request: ${error.message}` });
+    }
+  }
+}
+
+// Outlook OAuth routes
+app.get("/api/outlook/authorize", (req, res) => {
+  const workspaceId = req.query.workspace_id;
+  proxyOutlookRequest(req, res, "GET", `/outlook/authorize?workspace_id=${encodeURIComponent(workspaceId)}`);
+});
+app.get("/api/outlook/callback", async (req, res) => {
+  // OAuth callback - pass params in body to avoid query string SigV4 issues
+  const { code, state, error } = req.query;
+
+  if (error) {
+    return res.redirect(`/?error=${encodeURIComponent(error)}`);
+  }
+
+  if (!OUTLOOK_LAMBDA_URL) {
+    return res.redirect(`/?error=outlook_not_configured`);
+  }
+
+  try {
+    // POST the OAuth params to Lambda instead of GET with query string
+    const response = await signedOutlookFetch("POST", "/outlook/callback", {
+      body: JSON.stringify({ code, state }),
+    });
+
+    // Handle redirect response
+    if (response.status === 302) {
+      const location = response.headers.get("location");
+      return res.redirect(location);
+    }
+
+    // Try to get redirect from body
+    const text = await response.text();
+    try {
+      const data = JSON.parse(text);
+      if (data.redirect) {
+        return res.redirect(data.redirect);
+      }
+      res.status(response.status).json(data);
+    } catch {
+      res.status(response.status).send(text);
+    }
+  } catch (error) {
+    console.error(`[proxy] Outlook callback error: ${error.message}`);
+    res.redirect(`/?error=outlook_callback_failed`);
+  }
+});
+
+// Outlook connections
+app.get("/api/workspaces/:id/outlook/connections", (req, res) => {
+  proxyOutlookRequest(req, res, "GET", `/workspaces/${req.params.id}/outlook/connections`);
+});
+
+// Outlook folders
+app.get("/api/workspaces/:id/outlook/connections/:connId/folders", (req, res) => {
+  proxyOutlookRequest(req, res, "GET", `/workspaces/${req.params.id}/outlook/connections/${req.params.connId}/folders`);
+});
+app.put("/api/workspaces/:id/outlook/connections/:connId/folders", (req, res) => {
+  proxyOutlookRequest(req, res, "PUT", `/workspaces/${req.params.id}/outlook/connections/${req.params.connId}/folders`);
+});
+
+// Outlook sync
+app.post("/api/workspaces/:id/outlook/connections/:connId/sync", (req, res) => {
+  proxyOutlookRequest(req, res, "POST", `/workspaces/${req.params.id}/outlook/connections/${req.params.connId}/sync`);
+});
+
+// Delete Outlook connection
+app.delete("/api/workspaces/:id/outlook/connections/:connId", (req, res) => {
+  proxyOutlookRequest(req, res, "DELETE", `/workspaces/${req.params.id}/outlook/connections/${req.params.connId}`);
+});
+
+// ============================================================================
 // Logout (clear ALB OIDC session cookies)
 // ============================================================================
 
@@ -1150,6 +1291,7 @@ app.listen(PORT, () => {
   console.log(`[server] Confluence Lambda URL: ${CONFLUENCE_LAMBDA_URL ? "configured" : "disabled"}`);
   console.log(`[server] Jira Lambda URL: ${JIRA_LAMBDA_URL ? "configured" : "disabled"}`);
   console.log(`[server] GitHub Lambda URL: ${GITHUB_LAMBDA_URL ? "configured" : "disabled"}`);
+  console.log(`[server] Outlook Lambda URL: ${OUTLOOK_LAMBDA_URL ? "configured" : "disabled"}`);
   console.log(`[server] Local dev mode: ${LOCAL_DEV_MODE ? "ENABLED (using mock data)" : "disabled"}`);
   console.log(`[server] AWS Region: ${AWS_REGION}`);
 });

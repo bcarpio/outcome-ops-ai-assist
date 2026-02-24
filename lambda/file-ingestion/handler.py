@@ -51,10 +51,11 @@ ssm_client = boto3.client("ssm")
 
 # Cached config
 _oauth_config = None
+_microsoft_oauth_config = None
 
 
 def _load_oauth_config() -> Dict[str, str]:
-    """Load OAuth configuration from SSM."""
+    """Load Atlassian OAuth configuration from SSM."""
     global _oauth_config
     if _oauth_config is not None:
         return _oauth_config
@@ -69,6 +70,25 @@ def _load_oauth_config() -> Dict[str, str]:
         return _oauth_config
     except ClientError as e:
         logger.error(f"Failed to load OAuth config: {e}")
+        raise
+
+
+def _load_microsoft_oauth_config() -> Dict[str, str]:
+    """Load Microsoft OAuth configuration from SSM."""
+    global _microsoft_oauth_config
+    if _microsoft_oauth_config is not None:
+        return _microsoft_oauth_config
+
+    prefix = f"/{ENV}/{APP_NAME}/oauth/microsoft"
+    try:
+        client_id = ssm_client.get_parameter(Name=f"{prefix}/client-id")["Parameter"]["Value"]
+        client_secret = ssm_client.get_parameter(
+            Name=f"{prefix}/client-secret", WithDecryption=True
+        )["Parameter"]["Value"]
+        _microsoft_oauth_config = {"client_id": client_id, "client_secret": client_secret}
+        return _microsoft_oauth_config
+    except ClientError as e:
+        logger.error(f"Failed to load Microsoft OAuth config: {e}")
         raise
 
 
@@ -637,6 +657,198 @@ def process_jira_attachment(
 
 
 # ============================================================================
+# Outlook Handlers
+# ============================================================================
+
+
+def process_outlook_email(
+    workspace_id: str,
+    connection_id: str,
+    file_info: Dict[str, Any],
+    sync_id: Optional[str] = None,
+) -> Optional[str]:
+    """
+    Process an Outlook email and upload to S3.
+
+    The email body is already in file_info (fetched by outlook-sync),
+    so we just wrap it in HTML and upload.
+
+    Args:
+        workspace_id: Workspace ID
+        connection_id: Connection ID
+        file_info: Email data from queue message
+        sync_id: Optional sync tracking ID
+
+    Returns:
+        S3 key if successful, None otherwise
+    """
+    message_id = file_info.get("message_id", "")
+    subject = file_info.get("subject", "No Subject")
+    folder_name = file_info.get("folder_name", "Inbox")
+    from_addr = file_info.get("from", "")
+    received_at = file_info.get("received_at", "")
+    body_content = file_info.get("body_content", "")
+    body_content_type = file_info.get("body_content_type", "html")
+
+    logger.info(f"Processing Outlook email: {subject} ({message_id[:20]}...)")
+
+    if not body_content:
+        logger.warning(f"Empty body for email {message_id}")
+        # Still upload with metadata for subject-based search
+        body_content = "<p><em>No content</em></p>"
+
+    try:
+        # Build full HTML document
+        if body_content_type == "text":
+            body_html = f"<pre>{html.escape(body_content)}</pre>"
+        else:
+            body_html = body_content
+
+        full_html = f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>{html.escape(subject)}</title>
+</head>
+<body>
+<h1>{html.escape(subject)}</h1>
+<div class="email-meta">
+<ul>
+<li><strong>From:</strong> {html.escape(from_addr)}</li>
+<li><strong>Date:</strong> {html.escape(received_at)}</li>
+<li><strong>Folder:</strong> {html.escape(folder_name)}</li>
+</ul>
+</div>
+<div class="email-body">
+{body_html}
+</div>
+</body>
+</html>"""
+
+        # Build S3 path
+        safe_folder = sanitize_filename(folder_name)
+        safe_subject = sanitize_filename(subject)
+        # Use last 12 chars of message_id for uniqueness
+        short_id = message_id[-12:] if len(message_id) > 12 else message_id
+        filename = f"{safe_subject}_{short_id}.html"
+        s3_key = f"workspaces/{workspace_id}/outlook/{safe_folder}/{filename}"
+
+        # Upload to S3
+        metadata = {
+            "source": "outlook",
+            "workspace_id": workspace_id,
+            "connection_id": connection_id,
+            "outlook_message_id": message_id[:128],
+            "outlook_folder": folder_name,
+        }
+
+        if sync_id:
+            metadata["sync_id"] = sync_id
+
+        s3_client.put_object(
+            Bucket=KB_BUCKET,
+            Key=s3_key,
+            Body=full_html.encode("utf-8"),
+            ContentType="text/html",
+            Metadata=metadata,
+        )
+
+        logger.info(f"Uploaded Outlook email to s3://{KB_BUCKET}/{s3_key}")
+        return s3_key
+
+    except ClientError as e:
+        logger.error(f"S3 error uploading email {message_id}: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"Error processing email {message_id}: {e}")
+        return None
+
+
+def process_outlook_attachment(
+    workspace_id: str,
+    connection_id: str,
+    file_info: Dict[str, Any],
+    sync_id: Optional[str] = None,
+) -> Optional[str]:
+    """
+    Process an Outlook email attachment and upload to S3.
+
+    Args:
+        workspace_id: Workspace ID
+        connection_id: Connection ID for token lookup
+        file_info: Attachment metadata
+        sync_id: Optional sync tracking ID
+
+    Returns:
+        S3 key if successful, None otherwise
+    """
+    from outlook_api import download_attachment, OutlookAPIError
+    from outlook_token_manager import refresh_access_token
+
+    attachment_id = file_info.get("attachment_id")
+    message_id = file_info.get("message_id")
+    folder_name = file_info.get("folder_name", "Inbox")
+    filename = file_info.get("filename", f"attachment_{attachment_id}")
+
+    logger.info(f"Processing Outlook attachment: {filename} ({attachment_id})")
+
+    # Get Microsoft OAuth config and refresh token
+    oauth_config = _load_microsoft_oauth_config()
+    access_token = refresh_access_token(
+        connection_id=connection_id,
+        client_id=oauth_config["client_id"],
+        client_secret=oauth_config["client_secret"],
+    )
+
+    if not access_token:
+        logger.error(f"Failed to refresh token for connection {connection_id}")
+        return None
+
+    try:
+        # Download attachment content
+        content = download_attachment(access_token, message_id, attachment_id)
+
+        # Build S3 path
+        safe_folder = sanitize_filename(folder_name)
+        safe_filename = sanitize_filename(filename)
+        short_msg_id = message_id[-12:] if len(message_id) > 12 else message_id
+        s3_key = f"workspaces/{workspace_id}/outlook/{safe_folder}/{short_msg_id}/attachments/{safe_filename}"
+
+        # Determine content type
+        content_type = file_info.get("content_type", "application/octet-stream")
+
+        # Upload to S3
+        metadata = {
+            "source": "outlook_attachment",
+            "workspace_id": workspace_id,
+            "connection_id": connection_id,
+            "outlook_attachment_id": attachment_id[:128] if attachment_id else "",
+            "outlook_message_id": message_id[:128] if message_id else "",
+        }
+
+        if sync_id:
+            metadata["sync_id"] = sync_id
+
+        s3_client.put_object(
+            Bucket=KB_BUCKET,
+            Key=s3_key,
+            Body=content,
+            ContentType=content_type,
+            Metadata=metadata,
+        )
+
+        logger.info(f"Uploaded Outlook attachment to s3://{KB_BUCKET}/{s3_key}")
+        return s3_key
+
+    except OutlookAPIError as e:
+        logger.error(f"Outlook API error for attachment {attachment_id}: {e}")
+        return None
+    except ClientError as e:
+        logger.error(f"S3 error uploading attachment {attachment_id}: {e}")
+        return None
+
+
+# ============================================================================
 # Main Handler
 # ============================================================================
 
@@ -713,6 +925,20 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
                     workspace_id=workspace_id,
                     connection_id=connection_id,
                     cloud_id=cloud_id,
+                    file_info=file_info,
+                    sync_id=sync_id,
+                )
+            elif source == "outlook":
+                s3_key = process_outlook_email(
+                    workspace_id=workspace_id,
+                    connection_id=connection_id,
+                    file_info=file_info,
+                    sync_id=sync_id,
+                )
+            elif source == "outlook_attachment":
+                s3_key = process_outlook_attachment(
+                    workspace_id=workspace_id,
+                    connection_id=connection_id,
                     file_info=file_info,
                     sync_id=sync_id,
                 )

@@ -395,6 +395,10 @@ module "ui_ecs" {
               {
                 name  = "GITHUB_LAMBDA_URL"
                 value = aws_lambda_function_url.github_integration[0].function_url
+              },
+              {
+                name  = "OUTLOOK_LAMBDA_URL"
+                value = aws_lambda_function_url.outlook_integration[0].function_url
               }
             ] : []
           )

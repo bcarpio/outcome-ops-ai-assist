@@ -58,6 +58,18 @@ enable_jira_integration = false
 # ui_alb_internal = true
 
 # ============================================================================
+# Microsoft Outlook 365 Integration
+# ============================================================================
+
+# Microsoft Entra ID (Azure AD) App Registration for Outlook integration
+# Required permissions: Mail.Read, Mail.ReadBasic, offline_access, openid, profile, email
+# microsoft_oauth_client_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+
+# Before enabling Outlook, store the client secret in SSM:
+#   aws ssm put-parameter --name "/prd/outcome-ops-ai-assist/oauth/microsoft/client-secret" \
+#     --type SecureString --value "your-client-secret"
+
+# ============================================================================
 # OIDC Authentication (Azure AD)
 # ============================================================================
 

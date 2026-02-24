@@ -52,6 +52,12 @@ import {
   getDocumentUploadUrl,
   uploadDocumentToS3,
   deleteDocument,
+  listOutlookConnections,
+  getOutlookAuthUrl,
+  listOutlookFolders,
+  updateOutlookFolders,
+  triggerOutlookSync,
+  deleteOutlookConnection,
   getGitHubInstallUrl,
   listGitHubInstallations,
   listGitHubInstallationRepos,
@@ -72,6 +78,8 @@ import {
   type GitHubRepo,
   type GitHubAvailableRepo,
   type GitHubRepoType,
+  type OutlookConnection,
+  type OutlookFolder,
 } from '../lib/api'
 
 type Tab = 'general' | 'members' | 'integrations' | 'sharing' | 'documents'
@@ -130,6 +138,18 @@ export default function WorkspaceSettings() {
   const [jiraIncludeComments, setJiraIncludeComments] = useState(true)
   const [savingProjects, setSavingProjects] = useState(false)
   const [syncingJira, setSyncingJira] = useState<string | null>(null)
+
+  // Outlook integration state
+  const [outlookConnections, setOutlookConnections] = useState<OutlookConnection[]>([])
+  const [connectingOutlook, setConnectingOutlook] = useState(false)
+
+  // Outlook folder configuration modal state
+  const [configuringOutlookConnection, setConfiguringOutlookConnection] = useState<OutlookConnection | null>(null)
+  const [availableFolders, setAvailableFolders] = useState<OutlookFolder[]>([])
+  const [loadingFolders, setLoadingFolders] = useState(false)
+  const [selectedFolders, setSelectedFolders] = useState<Set<string>>(new Set())
+  const [savingFolders, setSavingFolders] = useState(false)
+  const [syncingOutlook, setSyncingOutlook] = useState<string | null>(null)
 
   // Legacy repo state removed - now using GitHub App integration
 
@@ -228,12 +248,14 @@ export default function WorkspaceSettings() {
     if (!workspaceId) return
     setLoadingConnections(true)
     try {
-      const [confluenceData, jiraData] = await Promise.all([
+      const [confluenceData, jiraData, outlookData] = await Promise.all([
         listConfluenceConnections(workspaceId),
         listJiraConnections(workspaceId),
+        listOutlookConnections(workspaceId).catch(() => []),
       ])
       setConfluenceConnections(confluenceData)
       setJiraConnections(jiraData)
+      setOutlookConnections(outlookData)
     } catch (err) {
       console.error('Failed to load connections:', err)
     } finally {
@@ -596,6 +618,101 @@ export default function WorkspaceSettings() {
         next.delete(projectKey)
       } else {
         next.add(projectKey)
+      }
+      return next
+    })
+  }
+
+  // Outlook handlers
+  async function handleConnectOutlook() {
+    if (!workspaceId) return
+    setConnectingOutlook(true)
+    setError(null)
+    try {
+      const authUrl = await getOutlookAuthUrl(workspaceId)
+      window.location.href = authUrl
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to start Outlook connection')
+      setConnectingOutlook(false)
+    }
+  }
+
+  async function openFolderConfiguration(connection: OutlookConnection) {
+    if (!workspaceId) return
+    setConfiguringOutlookConnection(connection)
+    setLoadingFolders(true)
+    setError(null)
+    try {
+      const { folders } = await listOutlookFolders(workspaceId, connection.connection_id)
+      setAvailableFolders(folders)
+      const selected = new Set(connection.selected_folders.map(f => f.id))
+      setSelectedFolders(selected)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load folders')
+      setConfiguringOutlookConnection(null)
+    } finally {
+      setLoadingFolders(false)
+    }
+  }
+
+  async function handleSaveFolders() {
+    if (!workspaceId || !configuringOutlookConnection) return
+    setSavingFolders(true)
+    setError(null)
+    try {
+      const foldersToSave = availableFolders.filter(f => selectedFolders.has(f.id))
+      await updateOutlookFolders(
+        workspaceId,
+        configuringOutlookConnection.connection_id,
+        foldersToSave
+      )
+      setConfiguringOutlookConnection(null)
+      setSuccess('Folders updated and sync queued')
+      loadConnections()
+      setTimeout(() => setSuccess(null), 3000)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save folders')
+    } finally {
+      setSavingFolders(false)
+    }
+  }
+
+  async function handleTriggerOutlookSync(connectionId: string) {
+    if (!workspaceId) return
+    setSyncingOutlook(connectionId)
+    setError(null)
+    try {
+      await triggerOutlookSync(workspaceId, connectionId)
+      setSuccess('Outlook sync queued')
+      loadConnections()
+      setTimeout(() => setSuccess(null), 3000)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to trigger sync')
+    } finally {
+      setSyncingOutlook(null)
+    }
+  }
+
+  async function handleDeleteOutlookConnection(connectionId: string) {
+    if (!workspaceId) return
+    setError(null)
+    try {
+      await deleteOutlookConnection(workspaceId, connectionId)
+      setOutlookConnections(prev => prev.filter(c => c.connection_id !== connectionId))
+      setSuccess('Outlook connection deleted')
+      setTimeout(() => setSuccess(null), 3000)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to delete connection')
+    }
+  }
+
+  function toggleFolder(folderId: string) {
+    setSelectedFolders(prev => {
+      const next = new Set(prev)
+      if (next.has(folderId)) {
+        next.delete(folderId)
+      } else {
+        next.add(folderId)
       }
       return next
     })
@@ -1363,9 +1480,113 @@ export default function WorkspaceSettings() {
               )}
             </div>
 
-            {/* Placeholder for future integrations */}
-            <div className="bg-gray-50 rounded-lg border border-dashed border-gray-300 p-6 text-center text-gray-500">
-              <p className="text-sm">More integrations coming soon: Outlook, SharePoint, and more.</p>
+            {/* Outlook Section */}
+            <div className="bg-white rounded-lg border shadow-sm">
+              <div className="p-4 border-b flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <svg className="w-6 h-6 text-blue-500" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
+                  </svg>
+                  <div>
+                    <h3 className="font-medium">Outlook 365</h3>
+                    <p className="text-sm text-gray-500">Sync emails from Microsoft Outlook</p>
+                  </div>
+                </div>
+                {isAdmin && outlookConnections.length === 0 && (
+                  <button
+                    onClick={handleConnectOutlook}
+                    disabled={connectingOutlook}
+                    className="flex items-center gap-2 px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
+                  >
+                    {connectingOutlook ? (
+                      <Loader2 size={16} className="animate-spin" />
+                    ) : (
+                      <Plus size={16} />
+                    )}
+                    Connect
+                  </button>
+                )}
+              </div>
+              {loadingConnections ? (
+                <div className="p-8 flex items-center justify-center">
+                  <Loader2 className="animate-spin text-gray-400" size={24} />
+                </div>
+              ) : outlookConnections.length === 0 ? (
+                <div className="p-8 text-center text-gray-500">
+                  No Outlook connections yet
+                </div>
+              ) : (
+                <ul className="divide-y">
+                  {outlookConnections.map(conn => (
+                    <li key={conn.connection_id} className="p-4">
+                      <div className="flex items-start justify-between">
+                        <div className="flex-1">
+                          <div className="flex items-center gap-2">
+                            <p className="font-medium text-gray-900">{conn.display_name}</p>
+                          </div>
+                          <p className="text-sm text-gray-500 mt-0.5">{conn.user_email}</p>
+                          <p className="text-sm text-gray-500 mt-1">
+                            {conn.selected_folders.length === 0 ? (
+                              <span className="text-amber-600">No folders selected - click Configure</span>
+                            ) : (
+                              <>
+                                {conn.selected_folders.length} folder{conn.selected_folders.length !== 1 ? 's' : ''} selected
+                                {' | '}
+                                {conn.email_count} emails synced
+                              </>
+                            )}
+                          </p>
+                          <p className="text-xs text-gray-400 mt-1">
+                            Status: <span className={
+                              conn.last_sync_status === 'completed' ? 'text-green-600' :
+                              conn.last_sync_status === 'failed' || conn.last_sync_status === 'auth_error' ? 'text-red-600' :
+                              conn.last_sync_status === 'syncing' || conn.last_sync_status === 'queued' ? 'text-blue-600' :
+                              'text-gray-500'
+                            }>
+                              {conn.last_sync_status}
+                            </span>
+                            {conn.last_sync_at && (
+                              <> | Last sync: {new Date(conn.last_sync_at).toLocaleDateString()}</>
+                            )}
+                            {conn.last_sync_error && (
+                              <span className="text-red-500"> | {conn.last_sync_error}</span>
+                            )}
+                          </p>
+                        </div>
+                        {isAdmin && (
+                          <div className="flex items-center gap-2 ml-4">
+                            <button
+                              onClick={() => openFolderConfiguration(conn)}
+                              className="px-3 py-1.5 text-sm text-blue-600 hover:bg-blue-50 rounded transition-colors"
+                            >
+                              Configure
+                            </button>
+                            <button
+                              onClick={() => handleTriggerOutlookSync(conn.connection_id)}
+                              disabled={syncingOutlook === conn.connection_id || conn.selected_folders.length === 0}
+                              className="p-1.5 text-gray-500 hover:bg-gray-100 rounded transition-colors disabled:opacity-50"
+                              title="Sync now"
+                            >
+                              {syncingOutlook === conn.connection_id ? (
+                                <Loader2 size={16} className="animate-spin" />
+                              ) : (
+                                <RefreshCw size={16} />
+                              )}
+                            </button>
+                            <button
+                              onClick={() => handleDeleteOutlookConnection(conn.connection_id)}
+                              className="p-1.5 text-red-500 hover:bg-red-50 rounded transition-colors"
+                              title="Disconnect"
+                            >
+                              <Trash2 size={16} />
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
             </div>
           </div>
         )}
@@ -1795,6 +2016,78 @@ export default function WorkspaceSettings() {
                   className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors flex items-center gap-2"
                 >
                   {savingProjects && <Loader2 size={16} className="animate-spin" />}
+                  Save & Sync
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Outlook Folder Configuration Modal */}
+      {configuringOutlookConnection && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-lg mx-4 max-h-[80vh] flex flex-col">
+            <div className="p-6 border-b">
+              <h2 className="text-lg font-semibold">Configure Mail Folders</h2>
+              <p className="text-sm text-gray-500 mt-1">
+                Select which folders to sync from {configuringOutlookConnection.user_email}
+              </p>
+            </div>
+            <div className="flex-1 overflow-y-auto p-6">
+              {loadingFolders ? (
+                <div className="py-8 flex items-center justify-center">
+                  <Loader2 className="animate-spin text-gray-400" size={24} />
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <div className="space-y-2">
+                    {availableFolders.map(folder => (
+                      <label
+                        key={folder.id}
+                        className="flex items-center gap-3 p-3 rounded-lg border cursor-pointer hover:bg-gray-50 transition-colors"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={selectedFolders.has(folder.id)}
+                          onChange={() => toggleFolder(folder.id)}
+                          className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
+                        />
+                        <div className="flex-1">
+                          <p className="font-medium text-gray-900">{folder.displayName}</p>
+                          <p className="text-sm text-gray-500">
+                            {folder.totalItemCount} item{folder.totalItemCount !== 1 ? 's' : ''}
+                            {folder.unreadItemCount > 0 && (
+                              <> ({folder.unreadItemCount} unread)</>
+                            )}
+                          </p>
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+                  {availableFolders.length === 0 && (
+                    <p className="text-center text-gray-500 py-4">No mail folders found</p>
+                  )}
+                </div>
+              )}
+            </div>
+            <div className="px-6 py-4 bg-gray-50 rounded-b-lg flex items-center justify-between border-t">
+              <p className="text-sm text-gray-500">
+                {selectedFolders.size} folder{selectedFolders.size !== 1 ? 's' : ''} selected
+              </p>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setConfiguringOutlookConnection(null)}
+                  className="px-4 py-2 text-gray-700 hover:bg-gray-200 rounded-lg transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleSaveFolders}
+                  disabled={savingFolders || selectedFolders.size === 0}
+                  className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors flex items-center gap-2"
+                >
+                  {savingFolders && <Loader2 size={16} className="animate-spin" />}
                   Save & Sync
                 </button>
               </div>

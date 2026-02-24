@@ -50,6 +50,12 @@ variable "atlassian_oauth_client_id" {
   default     = ""
 }
 
+variable "microsoft_oauth_client_id" {
+  type        = string
+  description = "Microsoft OAuth App Client ID for Outlook 365 integration"
+  default     = ""
+}
+
 variable "github_app_slug" {
   type        = string
   description = "GitHub App URL slug (from the App settings page URL, e.g., 'my-company-ai-assist')"
