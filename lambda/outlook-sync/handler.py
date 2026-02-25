@@ -10,6 +10,7 @@ Orchestrates sync of Outlook emails:
 6. Updates connection sync status and delta links
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -179,7 +180,7 @@ def queue_email_ingestion(
             QueueUrl=FILE_INGESTION_QUEUE,
             MessageBody=json.dumps(msg),
             MessageGroupId=f"{workspace_id}-{connection_id}",
-            MessageDeduplicationId=f"{sync_id}-email-{message_id}",
+            MessageDeduplicationId=f"{sync_id}-email-{hashlib.sha256(message_id.encode()).hexdigest()[:32]}",
         )
     except ClientError as e:
         logger.error(f"Failed to queue email {message_id}: {e}")
@@ -214,7 +215,7 @@ def queue_attachment_ingestion(
             QueueUrl=FILE_INGESTION_QUEUE,
             MessageBody=json.dumps(msg),
             MessageGroupId=f"{workspace_id}-{connection_id}",
-            MessageDeduplicationId=f"{sync_id}-attachment-{attachment.get('id')}",
+            MessageDeduplicationId=f"{sync_id}-attachment-{hashlib.sha256((attachment.get('id') or '').encode()).hexdigest()[:32]}",
         )
     except ClientError as e:
         logger.error(f"Failed to queue attachment {attachment.get('id')}: {e}")
