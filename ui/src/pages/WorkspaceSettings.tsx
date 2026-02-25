@@ -2057,7 +2057,7 @@ export default function WorkspaceSettings() {
                           <p className="font-medium text-gray-900">{folder.displayName}</p>
                           <p className="text-sm text-gray-500">
                             {folder.totalItemCount} item{folder.totalItemCount !== 1 ? 's' : ''}
-                            {folder.unreadItemCount > 0 && (
+                            {(folder.unreadItemCount ?? 0) > 0 && (
                               <> ({folder.unreadItemCount} unread)</>
                             )}
                           </p>
