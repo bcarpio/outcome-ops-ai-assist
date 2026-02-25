@@ -38,8 +38,8 @@ test-coverage:
 		--cov=../jira-scheduler --cov=../jira-sync --cov=../outlook-integration \
 		--cov=../outlook-scheduler --cov=../outlook-sync --cov=../process-batch-summary \
 		--cov=../process-documents --cov=../process-pr-check --cov=../process-repo-summary \
-		--cov=../query-kb --cov=../run-tests --cov=../vector-query \
-		--cov=../workspace-management \
+		--cov=../query-kb --cov=../run-tests --cov=../shared \
+		--cov=../vector-query --cov=../workspace-management \
 		--cov-report=html --cov-report=term-missing
 	@echo "Coverage report generated in htmlcov/index.html"
 
