@@ -1,0 +1,859 @@
+"""Unit tests for shared/audit.py module."""
+
+import importlib.util
+import os
+import sys
+import time
+from decimal import Decimal
+from unittest.mock import MagicMock, patch
+
+import pytest
+from botocore.exceptions import ClientError
+
+
+# ============================================================================
+# Module loading
+# ============================================================================
+
+mock_dynamodb_resource = MagicMock()
+
+
+def _load_audit_module():
+    """Load or reload the shared audit module from its exact file path."""
+    if "shared_audit" in sys.modules:
+        del sys.modules["shared_audit"]
+
+    shared_dir = os.path.join(os.path.dirname(__file__), "../../shared")
+    if shared_dir not in sys.path:
+        sys.path.insert(0, shared_dir)
+
+    audit_path = os.path.join(shared_dir, "audit.py")
+    spec = importlib.util.spec_from_file_location("shared_audit", audit_path)
+    audit_module = importlib.util.module_from_spec(spec)
+    sys.modules["shared_audit"] = audit_module
+    spec.loader.exec_module(audit_module)
+
+    # Replace the lazy-initialized DynamoDB resource with our mock
+    audit_module._dynamodb_resource = mock_dynamodb_resource
+
+    return audit_module
+
+
+audit_module = _load_audit_module()
+
+# Import functions, constants, and internals
+log_audit_entry = audit_module.log_audit_entry
+detect_refusal = audit_module.detect_refusal
+_calculate_cost = audit_module._calculate_cost
+_get_dynamodb_table = audit_module._get_dynamodb_table
+MODEL_PRICING = audit_module.MODEL_PRICING
+REFUSAL_PATTERNS = audit_module.REFUSAL_PATTERNS
+
+
+# ============================================================================
+# Fixtures
+# ============================================================================
+
+
+@pytest.fixture(autouse=True)
+def reset_mocks():
+    """Reset mocks between tests."""
+    mock_dynamodb_resource.reset_mock()
+    # Ensure the module always uses our mock resource
+    audit_module._dynamodb_resource = mock_dynamodb_resource
+    yield
+
+
+@pytest.fixture
+def mock_table():
+    """Provide a mock DynamoDB table for put_item calls."""
+    table = MagicMock()
+    mock_dynamodb_resource.Table.return_value = table
+    return table
+
+
+# ============================================================================
+# _get_dynamodb_table
+# ============================================================================
+
+
+class TestGetDynamodbTable:
+    """Test lazy-initialized DynamoDB table accessor."""
+
+    def test_get_dynamodb_table_returns_table(self):
+        """Test returns a Table resource for the given name."""
+        mock_dynamodb_resource.Table.return_value = MagicMock()
+
+        table = _get_dynamodb_table("my-audit-table")
+        mock_dynamodb_resource.Table.assert_called_with("my-audit-table")
+
+    def test_get_dynamodb_table_reuses_resource(self):
+        """Test reuses the existing DynamoDB resource when already initialized."""
+        audit_module._dynamodb_resource = mock_dynamodb_resource
+        _get_dynamodb_table("table-a")
+        _get_dynamodb_table("table-b")
+        # Resource is reused; Table is called twice with different names
+        assert mock_dynamodb_resource.Table.call_count == 2
+
+    def test_get_dynamodb_table_creates_resource_when_none(self):
+        """Test creates a new boto3 resource when _dynamodb_resource is None."""
+        audit_module._dynamodb_resource = None
+        mock_new_resource = MagicMock()
+
+        with patch.object(audit_module.boto3, "resource", return_value=mock_new_resource):
+            table = _get_dynamodb_table("test-table")
+            audit_module.boto3.resource.assert_called_once_with("dynamodb")
+            mock_new_resource.Table.assert_called_once_with("test-table")
+
+        # Restore mock for other tests
+        audit_module._dynamodb_resource = mock_dynamodb_resource
+
+
+# ============================================================================
+# MODEL_PRICING
+# ============================================================================
+
+
+class TestModelPricing:
+    """Test the MODEL_PRICING constant structure."""
+
+    def test_model_pricing_contains_sonnet(self):
+        """Test Claude Sonnet 4.5 models are in pricing table."""
+        assert "us.anthropic.claude-sonnet-4-5-20250929-v1:0" in MODEL_PRICING
+        assert "anthropic.claude-sonnet-4-5-20250929-v1:0" in MODEL_PRICING
+
+    def test_model_pricing_contains_haiku(self):
+        """Test Claude Haiku 3.5 models are in pricing table."""
+        assert "us.anthropic.claude-3-5-haiku-20241022-v1:0" in MODEL_PRICING
+        assert "anthropic.claude-3-5-haiku-20241022-v1:0" in MODEL_PRICING
+
+    def test_model_pricing_contains_titan(self):
+        """Test Titan embeddings model is in pricing table."""
+        assert "amazon.titan-embed-text-v2:0" in MODEL_PRICING
+
+    def test_model_pricing_has_input_output_keys(self):
+        """Test each pricing entry has input and output keys."""
+        for model_id, pricing in MODEL_PRICING.items():
+            assert "input" in pricing, f"Missing 'input' key for {model_id}"
+            assert "output" in pricing, f"Missing 'output' key for {model_id}"
+
+    def test_model_pricing_titan_zero_output_cost(self):
+        """Test Titan embeddings has zero output cost."""
+        pricing = MODEL_PRICING["amazon.titan-embed-text-v2:0"]
+        assert pricing["output"] == 0.0
+
+
+# ============================================================================
+# _calculate_cost
+# ============================================================================
+
+
+class TestCalculateCost:
+    """Test cost calculation from model ID and token counts."""
+
+    def test_calculate_cost_sonnet_known_tokens(self):
+        """Test cost calculation for Claude Sonnet with known token counts."""
+        model_id = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+        # 1000 input tokens at $3/1M = $0.003
+        # 500 output tokens at $15/1M = $0.0075
+        cost = _calculate_cost(model_id, 1000, 500)
+        assert cost == round(0.003 + 0.0075, 6)
+
+    def test_calculate_cost_haiku_known_tokens(self):
+        """Test cost calculation for Claude Haiku with known token counts."""
+        model_id = "us.anthropic.claude-3-5-haiku-20241022-v1:0"
+        # 1_000_000 input tokens at $0.80/1M = $0.80
+        # 1_000_000 output tokens at $4.00/1M = $4.00
+        cost = _calculate_cost(model_id, 1_000_000, 1_000_000)
+        assert cost == 4.80
+
+    def test_calculate_cost_titan_embeddings(self):
+        """Test cost calculation for Titan embeddings (output cost is zero)."""
+        model_id = "amazon.titan-embed-text-v2:0"
+        # 10000 input tokens at $0.02/1M = $0.0002
+        # Output cost is $0/1M
+        cost = _calculate_cost(model_id, 10000, 0)
+        assert cost == 0.0002
+
+    def test_calculate_cost_unknown_model(self):
+        """Test returns 0.0 for unknown model IDs."""
+        cost = _calculate_cost("unknown.model.v1", 1000, 500)
+        assert cost == 0.0
+
+    def test_calculate_cost_zero_tokens(self):
+        """Test returns 0.0 when both token counts are zero."""
+        cost = _calculate_cost("us.anthropic.claude-sonnet-4-5-20250929-v1:0", 0, 0)
+        assert cost == 0.0
+
+    def test_calculate_cost_only_input_tokens(self):
+        """Test cost with only input tokens."""
+        model_id = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+        cost = _calculate_cost(model_id, 1_000_000, 0)
+        assert cost == 3.0
+
+    def test_calculate_cost_only_output_tokens(self):
+        """Test cost with only output tokens."""
+        model_id = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+        cost = _calculate_cost(model_id, 0, 1_000_000)
+        assert cost == 15.0
+
+    def test_calculate_cost_rounds_to_six_decimals(self):
+        """Test cost is rounded to 6 decimal places."""
+        model_id = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+        # Use an odd number of tokens that would produce many decimals
+        cost = _calculate_cost(model_id, 7, 3)
+        # 7/1M * 3.0 + 3/1M * 15.0 = 0.000021 + 0.000045 = 0.000066
+        assert cost == 0.000066
+        # Verify it's actually rounded (no more than 6 decimal places)
+        cost_str = f"{cost:.10f}"
+        assert cost_str == "0.0000660000"
+
+    def test_calculate_cost_cross_region_sonnet(self):
+        """Test cost is the same for cross-region and non-cross-region Sonnet."""
+        cost_us = _calculate_cost("us.anthropic.claude-sonnet-4-5-20250929-v1:0", 5000, 2000)
+        cost_no_prefix = _calculate_cost("anthropic.claude-sonnet-4-5-20250929-v1:0", 5000, 2000)
+        assert cost_us == cost_no_prefix
+
+
+# ============================================================================
+# detect_refusal
+# ============================================================================
+
+
+class TestDetectRefusal:
+    """Test refusal detection in model output text."""
+
+    def test_detect_refusal_none_for_normal_text(self):
+        """Test returns None for non-refusal text."""
+        result = detect_refusal("Here is the code you requested:\n```python\nprint('hello')\n```")
+        assert result is None
+
+    def test_detect_refusal_none_for_empty_string(self):
+        """Test returns None for empty string."""
+        result = detect_refusal("")
+        assert result is None
+
+    def test_detect_refusal_none_for_none_input(self):
+        """Test returns None when passed None."""
+        result = detect_refusal(None)
+        assert result is None
+
+    def test_detect_refusal_cannot_help(self):
+        """Test detects 'I cannot help' pattern."""
+        result = detect_refusal("I cannot help with that request.")
+        assert result is not None
+        assert "cannot help" in result.lower()
+
+    def test_detect_refusal_cant_assist(self):
+        """Test detects \"I can't assist\" pattern."""
+        result = detect_refusal("I can't assist with generating that code.")
+        assert result is not None
+        assert "can't assist" in result.lower()
+
+    def test_detect_refusal_wont_provide(self):
+        """Test detects \"I won't provide\" pattern."""
+        result = detect_refusal("I won't provide instructions for that.")
+        assert result is not None
+        assert "won't provide" in result.lower()
+
+    def test_detect_refusal_will_not_generate(self):
+        """Test detects \"I will not generate\" pattern."""
+        result = detect_refusal("I will not generate that type of content.")
+        assert result is not None
+        assert "will not generate" in result.lower()
+
+    def test_detect_refusal_am_unable_to_create(self):
+        """Test detects 'I am unable to create' pattern."""
+        result = detect_refusal("I am unable to create that kind of output.")
+        assert result is not None
+        assert "unable to create" in result.lower()
+
+    def test_detect_refusal_im_not_able_to_generate(self):
+        """Test detects \"I'm not able to generate\" pattern."""
+        result = detect_refusal("I'm not able to generate that content.")
+        assert result is not None
+        assert "not able to generate" in result.lower()
+
+    def test_detect_refusal_not_able_to_help(self):
+        """Test detects \"I'm not able to help\" pattern."""
+        result = detect_refusal("I'm not able to help with that particular request.")
+        assert result is not None
+
+    def test_detect_refusal_must_decline(self):
+        """Test detects 'I must decline' pattern."""
+        result = detect_refusal("I must decline this request.")
+        assert result is not None
+        assert "must decline" in result.lower()
+
+    def test_detect_refusal_have_to_refuse(self):
+        """Test detects 'I have to refuse' pattern."""
+        result = detect_refusal("I have to refuse that request.")
+        assert result is not None
+        assert "have to refuse" in result.lower()
+
+    def test_detect_refusal_goes_against_my_guidelines(self):
+        """Test detects 'goes against my guidelines' pattern."""
+        result = detect_refusal("This goes against my guidelines.")
+        assert result is not None
+
+    def test_detect_refusal_would_go_beyond_my_principles(self):
+        """Test detects 'would go beyond my principles' pattern."""
+        result = detect_refusal("That would go beyond my principles.")
+        assert result is not None
+
+    def test_detect_refusal_is_against_my_policies(self):
+        """Test detects 'I is against my policies' pattern."""
+        result = detect_refusal("I is against my policies to do that.")
+        assert result is not None
+
+    def test_detect_refusal_dont_think_i_should(self):
+        """Test detects \"I don't think I should\" pattern."""
+        result = detect_refusal("I don't think I should help with that.")
+        assert result is not None
+
+    def test_detect_refusal_dont_feel_comfortable(self):
+        """Test detects \"I don't feel comfortable\" pattern."""
+        result = detect_refusal("I don't feel comfortable generating that code.")
+        assert result is not None
+
+    def test_detect_refusal_violates_guidelines(self):
+        """Test detects 'violates my guidelines' pattern."""
+        result = detect_refusal("This request violates my guidelines and I cannot proceed.")
+        assert result is not None
+
+    def test_detect_refusal_against_the_ethical_principles(self):
+        """Test detects 'against the ethical principles' pattern."""
+        result = detect_refusal("That is against the ethical principles I follow.")
+        assert result is not None
+
+    def test_detect_refusal_apologize_but_cannot(self):
+        """Test detects \"I apologize, but I cannot help\" pattern."""
+        result = detect_refusal("I apologize, but I cannot help with that request.")
+        assert result is not None
+
+    def test_detect_refusal_apologize_but_wont_comply(self):
+        """Test detects 'I apologize but I won't comply' pattern."""
+        result = detect_refusal("I apologize but I won't comply with that request.")
+        assert result is not None
+
+    def test_detect_refusal_apologize_but_cant_fulfill(self):
+        """Test detects 'I apologize, but I can't fulfill' pattern."""
+        result = detect_refusal("I apologize, but I can't fulfill that request.")
+        assert result is not None
+
+    def test_detect_refusal_case_insensitive(self):
+        """Test refusal detection is case insensitive."""
+        result = detect_refusal("I CANNOT HELP with that.")
+        assert result is not None
+
+    def test_detect_refusal_only_checks_first_500_chars(self):
+        """Test only checks the first 500 characters for refusal patterns."""
+        # Refusal buried at position 501+
+        normal_prefix = "A" * 501
+        text = normal_prefix + " I cannot help with that."
+        result = detect_refusal(text)
+        assert result is None
+
+    def test_detect_refusal_found_within_first_500_chars(self):
+        """Test detects refusal within the first 500 characters."""
+        normal_prefix = "A" * 10
+        text = normal_prefix + " I cannot help with that."
+        result = detect_refusal(text)
+        assert result is not None
+
+    def test_detect_refusal_returns_matched_text(self):
+        """Test returns the exact matched refusal string."""
+        result = detect_refusal("I cannot help with that request.")
+        assert result == "I cannot help"
+
+    def test_detect_refusal_normal_code_response(self):
+        """Test does not flag normal code responses that mention 'cannot'."""
+        # This should NOT be flagged because 'cannot' is not followed by help/assist/etc.
+        result = detect_refusal("The variable cannot be null. Here is the fix:\n```\nif x is None: x = 0\n```")
+        assert result is None
+
+
+# ============================================================================
+# log_audit_entry
+# ============================================================================
+
+
+class TestLogAuditEntry:
+    """Test the main audit logging function."""
+
+    def test_log_audit_entry_skips_when_no_table_name(self, mock_table):
+        """Test returns immediately when audit_table_name is empty."""
+        log_audit_entry(
+            audit_table_name="",
+            lambda_name="chat",
+            model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            input_text="hello",
+            output_text="world",
+        )
+        mock_table.put_item.assert_not_called()
+
+    def test_log_audit_entry_writes_item_to_dynamodb(self, mock_table):
+        """Test writes a correctly structured item to DynamoDB."""
+        log_audit_entry(
+            audit_table_name="audit-table",
+            lambda_name="chat",
+            model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            input_text="What is AWS?",
+            output_text="AWS is a cloud platform.",
+            input_tokens=100,
+            output_tokens=50,
+            duration_ms=1500,
+            user_email="user@example.com",
+            workspace_id="ws_123",
+        )
+
+        mock_dynamodb_resource.Table.assert_called_once_with("audit-table")
+        mock_table.put_item.assert_called_once()
+
+        item = mock_table.put_item.call_args[1]["Item"]
+
+        # Verify partition/sort keys
+        assert item["PK"] == "WS#ws_123"
+        assert item["GSI1PK"] == "USER#user@example.com"
+        assert item["SK"].startswith("20")  # ISO timestamp prefix
+        assert "audit_" in item["SK"]
+
+        # Verify content
+        assert item["lambda_name"] == "chat"
+        assert item["model_id"] == "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+        assert item["input_text"] == "What is AWS?"
+        assert item["output_text"] == "AWS is a cloud platform."
+        assert item["input_tokens"] == 100
+        assert item["output_tokens"] == 50
+        assert item["duration_ms"] == 1500
+        assert item["status"] == "success"
+        assert item["user_email"] == "user@example.com"
+        assert item["workspace_id"] == "ws_123"
+
+    def test_log_audit_entry_system_partition_key_without_workspace(self, mock_table):
+        """Test uses WS#SYSTEM when no workspace_id provided."""
+        log_audit_entry(
+            audit_table_name="audit-table",
+            lambda_name="process-documents",
+            model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            input_text="input",
+            output_text="output",
+        )
+
+        item = mock_table.put_item.call_args[1]["Item"]
+        assert item["PK"] == "WS#SYSTEM"
+
+    def test_log_audit_entry_lambda_gsi_key_without_user_email(self, mock_table):
+        """Test uses LAMBDA#<name> GSI key when no user_email provided."""
+        log_audit_entry(
+            audit_table_name="audit-table",
+            lambda_name="generate-code",
+            model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            input_text="input",
+            output_text="output",
+        )
+
+        item = mock_table.put_item.call_args[1]["Item"]
+        assert item["GSI1PK"] == "LAMBDA#generate-code"
+
+    def test_log_audit_entry_auto_calculates_cost(self, mock_table):
+        """Test auto-calculates cost when cost_usd is 0 and tokens are provided."""
+        log_audit_entry(
+            audit_table_name="audit-table",
+            lambda_name="chat",
+            model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            input_text="hello",
+            output_text="world",
+            input_tokens=1_000_000,
+            output_tokens=1_000_000,
+        )
+
+        item = mock_table.put_item.call_args[1]["Item"]
+        # Sonnet: $3/1M input + $15/1M output = $18.00
+        assert item["cost_usd"] == str(18.0)
+
+    def test_log_audit_entry_preserves_explicit_cost(self, mock_table):
+        """Test does not overwrite explicitly provided cost_usd."""
+        log_audit_entry(
+            audit_table_name="audit-table",
+            lambda_name="chat",
+            model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            input_text="hello",
+            output_text="world",
+            input_tokens=1000,
+            output_tokens=500,
+            cost_usd=99.99,
+        )
+
+        item = mock_table.put_item.call_args[1]["Item"]
+        assert item["cost_usd"] == str(99.99)
+
+    def test_log_audit_entry_does_not_auto_calculate_cost_with_zero_tokens(self, mock_table):
+        """Test does not auto-calculate cost when both tokens are zero."""
+        log_audit_entry(
+            audit_table_name="audit-table",
+            lambda_name="chat",
+            model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            input_text="hello",
+            output_text="world",
+            input_tokens=0,
+            output_tokens=0,
+        )
+
+        item = mock_table.put_item.call_args[1]["Item"]
+        assert item["cost_usd"] == str(0.0)
+
+    def test_log_audit_entry_detects_refusal_and_sets_status(self, mock_table):
+        """Test auto-detects refusal in output and changes status."""
+        log_audit_entry(
+            audit_table_name="audit-table",
+            lambda_name="chat",
+            model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            input_text="bad request",
+            output_text="I cannot help with that request.",
+        )
+
+        item = mock_table.put_item.call_args[1]["Item"]
+        assert item["status"] == "refusal"
+        assert "cannot help" in item["flagged_reason"].lower()
+
+    def test_log_audit_entry_skips_refusal_detection_on_error_status(self, mock_table):
+        """Test does not run refusal detection when status is already 'error'."""
+        log_audit_entry(
+            audit_table_name="audit-table",
+            lambda_name="chat",
+            model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            input_text="hello",
+            output_text="I cannot help with that request.",
+            status="error",
+        )
+
+        item = mock_table.put_item.call_args[1]["Item"]
+        # Status should remain "error", not "refusal"
+        assert item["status"] == "error"
+
+    def test_log_audit_entry_skips_refusal_detection_on_empty_output(self, mock_table):
+        """Test skips refusal detection when output_text is empty."""
+        log_audit_entry(
+            audit_table_name="audit-table",
+            lambda_name="chat",
+            model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            input_text="hello",
+            output_text="",
+            status="success",
+        )
+
+        item = mock_table.put_item.call_args[1]["Item"]
+        assert item["status"] == "success"
+
+    def test_log_audit_entry_truncates_long_input_text(self, mock_table):
+        """Test truncates input_text to 50000 characters."""
+        long_input = "x" * 60000
+        log_audit_entry(
+            audit_table_name="audit-table",
+            lambda_name="chat",
+            model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            input_text=long_input,
+            output_text="short",
+        )
+
+        item = mock_table.put_item.call_args[1]["Item"]
+        assert len(item["input_text"]) == 50000
+
+    def test_log_audit_entry_truncates_long_output_text(self, mock_table):
+        """Test truncates output_text to 50000 characters."""
+        long_output = "y" * 60000
+        log_audit_entry(
+            audit_table_name="audit-table",
+            lambda_name="chat",
+            model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            input_text="short",
+            output_text=long_output,
+        )
+
+        item = mock_table.put_item.call_args[1]["Item"]
+        assert len(item["output_text"]) == 50000
+
+    def test_log_audit_entry_handles_none_input_text(self, mock_table):
+        """Test handles None input_text gracefully."""
+        log_audit_entry(
+            audit_table_name="audit-table",
+            lambda_name="chat",
+            model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            input_text=None,
+            output_text="response",
+        )
+
+        item = mock_table.put_item.call_args[1]["Item"]
+        assert item["input_text"] == ""
+
+    def test_log_audit_entry_handles_none_output_text(self, mock_table):
+        """Test handles None output_text gracefully."""
+        log_audit_entry(
+            audit_table_name="audit-table",
+            lambda_name="chat",
+            model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            input_text="hello",
+            output_text=None,
+        )
+
+        item = mock_table.put_item.call_args[1]["Item"]
+        assert item["output_text"] == ""
+
+    def test_log_audit_entry_sets_ttl_approximately_one_year(self, mock_table):
+        """Test TTL is approximately 365 days from now."""
+        before = int(time.time())
+
+        log_audit_entry(
+            audit_table_name="audit-table",
+            lambda_name="chat",
+            model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            input_text="hello",
+            output_text="world",
+        )
+
+        after = int(time.time())
+        item = mock_table.put_item.call_args[1]["Item"]
+        one_year_seconds = 365 * 24 * 60 * 60
+
+        # TTL should be approximately now + 365 days
+        assert item["ttl"] >= before + one_year_seconds
+        assert item["ttl"] <= after + one_year_seconds
+
+    def test_log_audit_entry_generates_unique_request_id(self, mock_table):
+        """Test each entry has a unique request_id starting with 'audit_'."""
+        log_audit_entry(
+            audit_table_name="audit-table",
+            lambda_name="chat",
+            model_id="test-model",
+            input_text="a",
+            output_text="b",
+        )
+        item1 = mock_table.put_item.call_args[1]["Item"]
+
+        mock_table.reset_mock()
+
+        log_audit_entry(
+            audit_table_name="audit-table",
+            lambda_name="chat",
+            model_id="test-model",
+            input_text="c",
+            output_text="d",
+        )
+        item2 = mock_table.put_item.call_args[1]["Item"]
+
+        assert item1["request_id"].startswith("audit_")
+        assert item2["request_id"].startswith("audit_")
+        assert item1["request_id"] != item2["request_id"]
+
+    def test_log_audit_entry_sort_key_contains_timestamp_and_request_id(self, mock_table):
+        """Test SK is formatted as '<timestamp>#<request_id>'."""
+        log_audit_entry(
+            audit_table_name="audit-table",
+            lambda_name="chat",
+            model_id="test-model",
+            input_text="a",
+            output_text="b",
+        )
+
+        item = mock_table.put_item.call_args[1]["Item"]
+        sk = item["SK"]
+        parts = sk.split("#")
+        # Should have at least timestamp and request_id parts
+        assert len(parts) >= 2
+        assert "audit_" in sk
+
+    def test_log_audit_entry_gsi1sk_matches_sk(self, mock_table):
+        """Test GSI1SK is the same sort key as SK."""
+        log_audit_entry(
+            audit_table_name="audit-table",
+            lambda_name="chat",
+            model_id="test-model",
+            input_text="a",
+            output_text="b",
+        )
+
+        item = mock_table.put_item.call_args[1]["Item"]
+        assert item["GSI1SK"] == item["SK"]
+
+    def test_log_audit_entry_iso_timestamp_in_item(self, mock_table):
+        """Test timestamp field is a valid ISO format string."""
+        log_audit_entry(
+            audit_table_name="audit-table",
+            lambda_name="chat",
+            model_id="test-model",
+            input_text="a",
+            output_text="b",
+        )
+
+        item = mock_table.put_item.call_args[1]["Item"]
+        ts = item["timestamp"]
+        # Basic ISO format validation - should contain T and timezone info
+        assert "T" in ts
+        assert "+" in ts or "Z" in ts or ts.endswith("+00:00")
+
+    def test_log_audit_entry_cost_stored_as_string(self, mock_table):
+        """Test cost_usd is stored as a string in DynamoDB."""
+        log_audit_entry(
+            audit_table_name="audit-table",
+            lambda_name="chat",
+            model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            input_text="a",
+            output_text="b",
+            cost_usd=1.23,
+        )
+
+        item = mock_table.put_item.call_args[1]["Item"]
+        assert isinstance(item["cost_usd"], str)
+        assert item["cost_usd"] == "1.23"
+
+    def test_log_audit_entry_nonfatal_on_dynamodb_error(self, mock_table):
+        """Test does not raise on DynamoDB put_item failure."""
+        mock_table.put_item.side_effect = ClientError(
+            {"Error": {"Code": "500", "Message": "Internal error"}}, "PutItem"
+        )
+
+        # Should NOT raise
+        log_audit_entry(
+            audit_table_name="audit-table",
+            lambda_name="chat",
+            model_id="test-model",
+            input_text="hello",
+            output_text="world",
+        )
+
+    def test_log_audit_entry_nonfatal_on_unexpected_exception(self, mock_table):
+        """Test does not raise on unexpected exception."""
+        mock_table.put_item.side_effect = RuntimeError("Something broke")
+
+        # Should NOT raise
+        log_audit_entry(
+            audit_table_name="audit-table",
+            lambda_name="chat",
+            model_id="test-model",
+            input_text="hello",
+            output_text="world",
+        )
+
+    def test_log_audit_entry_logs_warning_on_refusal(self, mock_table):
+        """Test logs a warning when refusal is detected."""
+        with patch.object(audit_module.logger, "warning") as mock_warning:
+            log_audit_entry(
+                audit_table_name="audit-table",
+                lambda_name="chat",
+                model_id="test-model",
+                input_text="prompt",
+                output_text="I cannot help with that request.",
+            )
+
+            mock_warning.assert_called_once()
+            call_msg = mock_warning.call_args[0][0]
+            assert "Refusal detected" in call_msg
+            assert "chat" in call_msg
+
+    def test_log_audit_entry_logs_debug_on_success(self, mock_table):
+        """Test logs a debug message on successful audit write."""
+        with patch.object(audit_module.logger, "debug") as mock_debug:
+            log_audit_entry(
+                audit_table_name="audit-table",
+                lambda_name="chat",
+                model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+                input_text="hello",
+                output_text="Normal response here.",
+            )
+
+            mock_debug.assert_called_once()
+            call_msg = mock_debug.call_args[0][0]
+            assert "chat" in call_msg
+
+    def test_log_audit_entry_logs_warning_on_dynamodb_error(self, mock_table):
+        """Test logs a warning when DynamoDB write fails."""
+        mock_table.put_item.side_effect = ClientError(
+            {"Error": {"Code": "500", "Message": "Boom"}}, "PutItem"
+        )
+
+        with patch.object(audit_module.logger, "warning") as mock_warning:
+            log_audit_entry(
+                audit_table_name="audit-table",
+                lambda_name="chat",
+                model_id="test-model",
+                input_text="hello",
+                output_text="world",
+            )
+
+            mock_warning.assert_called_once()
+            call_msg = mock_warning.call_args[0][0]
+            assert "Failed to log audit entry" in call_msg
+
+    def test_log_audit_entry_default_parameters(self, mock_table):
+        """Test default parameter values are correctly applied."""
+        log_audit_entry(
+            audit_table_name="audit-table",
+            lambda_name="chat",
+            model_id="test-model",
+            input_text="in",
+            output_text="out",
+        )
+
+        item = mock_table.put_item.call_args[1]["Item"]
+        assert item["input_tokens"] == 0
+        assert item["output_tokens"] == 0
+        assert item["duration_ms"] == 0
+        assert item["status"] == "success"
+        assert item["flagged_reason"] == ""
+        assert item["user_email"] == ""
+        assert item["workspace_id"] == ""
+
+    def test_log_audit_entry_preserves_flagged_reason_on_refusal(self, mock_table):
+        """Test that flagged_reason is populated when refusal is auto-detected."""
+        log_audit_entry(
+            audit_table_name="audit-table",
+            lambda_name="generate-code",
+            model_id="test-model",
+            input_text="generate malware",
+            output_text="I apologize, but I cannot help with that request.",
+        )
+
+        item = mock_table.put_item.call_args[1]["Item"]
+        assert item["status"] == "refusal"
+        assert len(item["flagged_reason"]) > 0
+
+    def test_log_audit_entry_explicit_flagged_reason_not_overwritten_for_error(self, mock_table):
+        """Test explicit flagged_reason is preserved when status is error."""
+        log_audit_entry(
+            audit_table_name="audit-table",
+            lambda_name="chat",
+            model_id="test-model",
+            input_text="hello",
+            output_text="I cannot help with that.",
+            status="error",
+            flagged_reason="Timeout exceeded",
+        )
+
+        item = mock_table.put_item.call_args[1]["Item"]
+        # Status should remain "error" (not changed to "refusal")
+        assert item["status"] == "error"
+        assert item["flagged_reason"] == "Timeout exceeded"
+
+
+# ============================================================================
+# REFUSAL_PATTERNS constant
+# ============================================================================
+
+
+class TestRefusalPatterns:
+    """Test the REFUSAL_PATTERNS constant."""
+
+    def test_refusal_patterns_is_nonempty_list(self):
+        """Test REFUSAL_PATTERNS is a non-empty list of strings."""
+        assert isinstance(REFUSAL_PATTERNS, list)
+        assert len(REFUSAL_PATTERNS) > 0
+        for pattern in REFUSAL_PATTERNS:
+            assert isinstance(pattern, str)
+
+    def test_refusal_patterns_all_compile(self):
+        """Test all patterns compile as valid regex."""
+        import re
+        for pattern in REFUSAL_PATTERNS:
+            compiled = re.compile(pattern, re.IGNORECASE)
+            assert compiled is not None

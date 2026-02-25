@@ -53,7 +53,7 @@ class TestGetGitHubToken:
     """Test GitHub token retrieval from SSM."""
 
     @mock_aws()
-    @patch('github_api.ssm_client')
+    @patch.object(github_api, 'ssm_client')
     def test_get_github_token_success(self, mock_ssm):
         """Test: Successfully retrieve GitHub token from SSM"""
         # Arrange
@@ -72,7 +72,7 @@ class TestGetGitHubToken:
         )
 
     @mock_aws()
-    @patch('github_api.ssm_client')
+    @patch.object(github_api, 'ssm_client')
     def test_get_github_token_not_found(self, mock_ssm):
         """Test: SSM parameter not found"""
         # Arrange
@@ -89,7 +89,7 @@ class TestGetWebhookSecret:
     """Test webhook secret retrieval from SSM."""
 
     @mock_aws()
-    @patch('github_api.ssm_client')
+    @patch.object(github_api, 'ssm_client')
     def test_get_webhook_secret_success(self, mock_ssm):
         """Test: Successfully retrieve webhook secret from SSM"""
         # Arrange
