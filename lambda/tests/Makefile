@@ -29,7 +29,17 @@ test-integration:
 
 test-coverage:
 	@echo "Running tests with coverage..."
-	$(PYTHON) -m pytest --cov=../vector-query --cov=../ask-claude --cov=../query-kb \
+	$(PYTHON) -m pytest \
+		--cov=../analyze-pr --cov=../ask-claude --cov=../audit-alert \
+		--cov=../chat --cov=../confluence-integration --cov=../confluence-scheduler \
+		--cov=../confluence-sync --cov=../delete-worker --cov=../file-ingestion \
+		--cov=../generate-code --cov=../github-integration --cov=../github-scheduler \
+		--cov=../github-sync --cov=../handle-command --cov=../jira-integration \
+		--cov=../jira-scheduler --cov=../jira-sync --cov=../outlook-integration \
+		--cov=../outlook-scheduler --cov=../outlook-sync --cov=../process-batch-summary \
+		--cov=../process-documents --cov=../process-pr-check --cov=../process-repo-summary \
+		--cov=../query-kb --cov=../run-tests --cov=../vector-query \
+		--cov=../workspace-management \
 		--cov-report=html --cov-report=term-missing
 	@echo "Coverage report generated in htmlcov/index.html"
 
