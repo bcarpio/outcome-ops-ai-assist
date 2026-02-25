@@ -1,0 +1,1703 @@
+"""Unit tests for chat Lambda handler.
+
+Tests cover:
+- Conversation management (create, get, update, delete, list)
+- Message handling (save, retrieve)
+- Title generation
+- RAG pipeline (embedding, vector search, context formatting)
+- Contextual search query building
+- Conversation memory (create chunks, search, delete, format)
+- Answer generation stream
+- handle_chat_stream orchestration
+- lambda_handler REST routing
+- Audit logging integration
+- Error handling across all layers
+"""
+
+import importlib.util
+import json
+import os
+import sys
+from datetime import datetime, timezone
+from unittest.mock import MagicMock, patch, call
+
+import pytest
+from botocore.exceptions import ClientError
+
+
+# ============================================================================
+# Module loading
+# ============================================================================
+
+# Pre-mock boto3 clients before module import
+mock_dynamodb_resource = MagicMock()
+mock_ssm_client = MagicMock()
+mock_s3vectors_client = MagicMock()
+mock_bedrock_client = MagicMock()
+
+
+def _load_handler_module():
+    """Load or reload the chat handler module."""
+    if "chat_handler" in sys.modules:
+        del sys.modules["chat_handler"]
+
+    # Add chat dir to path so handler can resolve its sibling imports
+    chat_dir = os.path.join(os.path.dirname(__file__), "../../chat")
+    if chat_dir not in sys.path:
+        sys.path.insert(0, chat_dir)
+
+    handler_path = os.path.join(chat_dir, "handler.py")
+    spec = importlib.util.spec_from_file_location("chat_handler", handler_path)
+    handler_module = importlib.util.module_from_spec(spec)
+    sys.modules["chat_handler"] = handler_module
+    spec.loader.exec_module(handler_module)
+
+    # Replace cached boto3 clients with mocks
+    handler_module._dynamodb = mock_dynamodb_resource
+    handler_module._ssm_client = mock_ssm_client
+    handler_module._s3vectors_client = mock_s3vectors_client
+    handler_module._bedrock_client = mock_bedrock_client
+    handler_module._chat_table = "test-chat-table"
+    handler_module._vector_bucket = "test-vector-bucket"
+    handler_module._vector_index = "test-vector-index"
+
+    return handler_module
+
+
+handler_module = _load_handler_module()
+
+# Import functions under test
+generate_id = handler_module.generate_id
+generate_title = handler_module.generate_title
+get_conversation = handler_module.get_conversation
+create_conversation = handler_module.create_conversation
+update_conversation = handler_module.update_conversation
+get_conversation_messages = handler_module.get_conversation_messages
+save_message = handler_module.save_message
+generate_embedding = handler_module.generate_embedding
+build_contextual_search_query = handler_module.build_contextual_search_query
+search_kb = handler_module.search_kb
+format_context = handler_module.format_context
+summarize_messages_for_memory = handler_module.summarize_messages_for_memory
+create_conversation_memory_chunk = handler_module.create_conversation_memory_chunk
+search_conversation_memory = handler_module.search_conversation_memory
+delete_conversation_memory = handler_module.delete_conversation_memory
+format_memory_context = handler_module.format_memory_context
+update_memory_chunk_count = handler_module.update_memory_chunk_count
+generate_answer_stream = handler_module.generate_answer_stream
+handle_chat_stream = handler_module.handle_chat_stream
+lambda_handler = handler_module.lambda_handler
+streaming_handler = handler_module.streaming_handler
+list_conversations = handler_module.list_conversations
+get_conversation_with_messages = handler_module.get_conversation_with_messages
+delete_conversation = handler_module.delete_conversation
+ChatMessageRequest = handler_module.ChatMessageRequest
+_stream_error = handler_module._stream_error
+
+
+# ============================================================================
+# Fixtures
+# ============================================================================
+
+@pytest.fixture(autouse=True)
+def reset_mocks():
+    """Reset all mocks between tests and clear side_effect."""
+    mock_dynamodb_resource.reset_mock()
+    mock_ssm_client.reset_mock()
+    mock_s3vectors_client.reset_mock()
+    mock_bedrock_client.reset_mock()
+
+    # Clear any side_effect from previous tests
+    mock_dynamodb_resource.Table.side_effect = None
+    mock_s3vectors_client.query_vectors.side_effect = None
+    mock_s3vectors_client.put_vectors.side_effect = None
+    mock_s3vectors_client.list_vectors.side_effect = None
+    mock_s3vectors_client.delete_vectors.side_effect = None
+    mock_bedrock_client.invoke_model.side_effect = None
+    mock_bedrock_client.converse_stream.side_effect = None
+
+    # Restore cached config so SSM is not called
+    handler_module._chat_table = "test-chat-table"
+    handler_module._vector_bucket = "test-vector-bucket"
+    handler_module._vector_index = "test-vector-index"
+    yield
+
+
+@pytest.fixture
+def mock_table():
+    """Create mock DynamoDB table."""
+    table = MagicMock()
+    mock_dynamodb_resource.Table.return_value = table
+    return table
+
+
+@pytest.fixture
+def sample_embedding():
+    """Sample embedding vector."""
+    return [0.1] * 1024
+
+
+@pytest.fixture
+def sample_search_results():
+    """Sample S3 Vectors search results."""
+    return {
+        "vectors": [
+            {
+                "key": "doc-001",
+                "distance": 0.95,
+                "metadata": {
+                    "content": "Lambda handlers should use standard patterns...",
+                    "repo": "my-repo",
+                    "type": "adr",
+                    "file_path": "docs/ADR-001.md",
+                    "workspace_id": "ws_test",
+                },
+            },
+            {
+                "key": "doc-002",
+                "distance": 0.82,
+                "metadata": {
+                    "content": "Use pytest for testing...",
+                    "repo": "standards-repo",
+                    "type": "readme",
+                    "file_path": "README.md",
+                    "workspace_id": "ws_test",
+                },
+            },
+        ]
+    }
+
+
+@pytest.fixture
+def sample_conversation():
+    """Sample conversation metadata."""
+    return {
+        "PK": "CONV#conv_test123",
+        "SK": "METADATA",
+        "conversation_id": "conv_test123",
+        "title": "How should Lambda handlers...",
+        "message_count": 4,
+        "memory_chunk_count": 0,
+        "created_at": "2025-01-15T10:00:00+00:00",
+        "updated_at": "2025-01-15T10:05:00+00:00",
+        "user_id": "user@example.com",
+        "workspace_id": "ws_test",
+    }
+
+
+@pytest.fixture
+def sample_messages():
+    """Sample conversation messages."""
+    return [
+        {
+            "PK": "CONV#conv_test123",
+            "SK": "MSG#2025-01-15T10:00:00+00:00#msg_001",
+            "message_id": "msg_001",
+            "role": "user",
+            "content": "How should Lambda handlers be structured?",
+            "created_at": "2025-01-15T10:00:00+00:00",
+        },
+        {
+            "PK": "CONV#conv_test123",
+            "SK": "MSG#2025-01-15T10:01:00+00:00#msg_002",
+            "message_id": "msg_002",
+            "role": "assistant",
+            "content": "According to ADR-004, Lambda handlers should follow...",
+            "created_at": "2025-01-15T10:01:00+00:00",
+        },
+    ]
+
+
+# ============================================================================
+# Request/Response Models
+# ============================================================================
+
+class TestChatMessageRequest:
+    """Test ChatMessageRequest validation."""
+
+    def test_valid_request_minimal(self):
+        req = ChatMessageRequest(message="Hello")
+        assert req.message == "Hello"
+        assert req.top_k == 10
+        assert req.advanced is False
+        assert req.show_cost is False
+        assert req.conversation_id is None
+
+    def test_valid_request_full(self):
+        req = ChatMessageRequest(
+            conversation_id="conv_123",
+            message="What are our standards?",
+            top_k=20,
+            advanced=True,
+            show_cost=True,
+            user={"email": "user@example.com"},
+            workspace_ids=["ws_a", "ws_b"],
+        )
+        assert req.conversation_id == "conv_123"
+        assert req.top_k == 20
+        assert req.advanced is True
+        assert req.workspace_ids == ["ws_a", "ws_b"]
+
+    def test_message_stripped(self):
+        req = ChatMessageRequest(message="  Hello world  ")
+        assert req.message == "Hello world"
+
+    def test_empty_message_rejected(self):
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            ChatMessageRequest(message="")
+
+    def test_whitespace_only_message_stripped_to_empty(self):
+        """Whitespace-only message is stripped by validator; min_length is
+        checked before the strip validator runs in Pydantic v2, but the
+        field_validator runs after, producing an empty string. The handler
+        itself will still get an empty message and the stream will proceed
+        (this matches the actual behavior)."""
+        req = ChatMessageRequest(message="   ")
+        assert req.message == ""
+
+    def test_top_k_bounds(self):
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            ChatMessageRequest(message="test", top_k=0)
+        with pytest.raises(ValidationError):
+            ChatMessageRequest(message="test", top_k=51)
+
+
+class TestStreamError:
+    """Test _stream_error helper."""
+
+    def test_stream_error_default_status(self):
+        result = _stream_error("Bad request")
+        parsed = json.loads(result)
+        assert parsed["type"] == "error"
+        assert parsed["error"] == "Bad request"
+        assert parsed["status_code"] == 400
+
+    def test_stream_error_custom_status(self):
+        result = _stream_error("Not found", 404)
+        parsed = json.loads(result)
+        assert parsed["status_code"] == 404
+
+
+# ============================================================================
+# ID and Title Generation
+# ============================================================================
+
+class TestGenerateId:
+    """Test unique ID generation."""
+
+    def test_generate_id_returns_string(self):
+        result = generate_id()
+        assert isinstance(result, str)
+        assert len(result) > 0
+
+    def test_generate_id_is_unique(self):
+        ids = {generate_id() for _ in range(100)}
+        assert len(ids) == 100
+
+
+class TestGenerateTitle:
+    """Test title generation from messages."""
+
+    def test_short_message_used_as_title(self):
+        result = generate_title("What is Terraform?")
+        assert result == "What is Terraform?"
+
+    def test_long_message_truncated_at_word_boundary(self):
+        msg = "How should Lambda handlers be structured according to the latest standards?"
+        result = generate_title(msg)
+        assert result.endswith("...")
+        assert len(result) <= 55  # 50 + "..."
+
+    def test_long_message_no_good_word_boundary(self):
+        msg = "a" * 60
+        result = generate_title(msg)
+        assert result.endswith("...")
+
+    def test_exactly_50_chars(self):
+        msg = "x" * 50
+        result = generate_title(msg)
+        assert result == msg  # No truncation needed
+
+
+# ============================================================================
+# Conversation Management
+# ============================================================================
+
+class TestGetConversation:
+    """Test getting conversation metadata from DynamoDB."""
+
+    def test_get_conversation_found(self, mock_table, sample_conversation):
+        mock_table.get_item.return_value = {"Item": sample_conversation}
+        result = get_conversation("conv_test123")
+        assert result["conversation_id"] == "conv_test123"
+        mock_table.get_item.assert_called_once_with(
+            Key={"PK": "CONV#conv_test123", "SK": "METADATA"}
+        )
+
+    def test_get_conversation_not_found(self, mock_table):
+        mock_table.get_item.return_value = {}
+        result = get_conversation("nonexistent")
+        assert result is None
+
+    def test_get_conversation_dynamodb_error(self, mock_table):
+        mock_table.get_item.side_effect = ClientError(
+            {"Error": {"Code": "500", "Message": "Error"}}, "GetItem"
+        )
+        result = get_conversation("conv_test123")
+        assert result is None
+
+
+class TestCreateConversation:
+    """Test creating new conversations."""
+
+    def test_create_conversation_basic(self, mock_table):
+        result = create_conversation("Test title")
+        assert "conversation_id" in result
+        assert result["title"] == "Test title"
+        assert result["message_count"] == 0
+        assert result["memory_chunk_count"] == 0
+        mock_table.put_item.assert_called_once()
+
+    def test_create_conversation_with_user_and_workspace(self, mock_table):
+        result = create_conversation(
+            "Test title",
+            user_id="user@example.com",
+            workspace_id="ws_test",
+        )
+        assert result["user_id"] == "user@example.com"
+        assert result["workspace_id"] == "ws_test"
+
+    def test_create_conversation_no_optional_fields(self, mock_table):
+        result = create_conversation("Test title")
+        assert "user_id" not in result
+        assert "workspace_id" not in result
+
+
+class TestUpdateConversation:
+    """Test updating conversation metadata."""
+
+    def test_update_conversation_success(self, mock_table):
+        update_conversation("conv_test123", 5)
+        mock_table.update_item.assert_called_once()
+        call_args = mock_table.update_item.call_args[1]
+        assert call_args["Key"] == {"PK": "CONV#conv_test123", "SK": "METADATA"}
+        assert call_args["ExpressionAttributeValues"][":mc"] == 5
+
+    def test_update_conversation_dynamodb_error(self, mock_table):
+        mock_table.update_item.side_effect = ClientError(
+            {"Error": {"Code": "500", "Message": "Error"}}, "UpdateItem"
+        )
+        # Should not raise
+        update_conversation("conv_test123", 5)
+
+
+class TestGetConversationMessages:
+    """Test retrieving conversation messages."""
+
+    def test_get_messages_returns_chronological(self, mock_table, sample_messages):
+        # DynamoDB returns newest first (ScanIndexForward=False), handler reverses
+        mock_table.query.return_value = {"Items": list(reversed(sample_messages))}
+        result = get_conversation_messages("conv_test123", limit=10)
+        assert len(result) == 2
+        assert result[0]["role"] == "user"
+        assert result[1]["role"] == "assistant"
+
+    def test_get_messages_empty(self, mock_table):
+        mock_table.query.return_value = {"Items": []}
+        result = get_conversation_messages("conv_test123")
+        assert result == []
+
+    def test_get_messages_dynamodb_error(self, mock_table):
+        mock_table.query.side_effect = ClientError(
+            {"Error": {"Code": "500", "Message": "Error"}}, "Query"
+        )
+        result = get_conversation_messages("conv_test123")
+        assert result == []
+
+
+class TestSaveMessage:
+    """Test saving messages to a conversation."""
+
+    def test_save_user_message(self, mock_table):
+        result = save_message("conv_test123", "user", "Hello")
+        assert isinstance(result, str)
+        assert len(result) > 0
+        mock_table.put_item.assert_called_once()
+        item = mock_table.put_item.call_args[1]["Item"]
+        assert item["PK"] == "CONV#conv_test123"
+        assert item["SK"].startswith("MSG#")
+        assert item["role"] == "user"
+        assert item["content"] == "Hello"
+
+    def test_save_assistant_message_with_sources(self, mock_table):
+        sources = [{"repo": "my-repo", "type": "adr", "path": "docs/ADR-001.md"}]
+        save_message("conv_test123", "assistant", "Answer text", sources=sources)
+        item = mock_table.put_item.call_args[1]["Item"]
+        assert item["sources"] == sources
+
+    def test_save_message_without_sources(self, mock_table):
+        save_message("conv_test123", "user", "Question")
+        item = mock_table.put_item.call_args[1]["Item"]
+        assert "sources" not in item
+
+
+# ============================================================================
+# Vector Search
+# ============================================================================
+
+class TestGenerateEmbedding:
+    """Test embedding generation using Bedrock Titan."""
+
+    def test_generate_embedding_success(self, sample_embedding):
+        mock_body = MagicMock()
+        mock_body.read.return_value = json.dumps({"embedding": sample_embedding}).encode()
+        mock_bedrock_client.invoke_model.return_value = {"body": mock_body}
+
+        result = generate_embedding("test query")
+        assert result == sample_embedding
+        mock_bedrock_client.invoke_model.assert_called_once()
+        call_args = mock_bedrock_client.invoke_model.call_args[1]
+        assert call_args["modelId"] == "amazon.titan-embed-text-v2:0"
+        body = json.loads(call_args["body"])
+        assert body["inputText"] == "test query"
+        assert body["dimensions"] == 1024
+
+    def test_generate_embedding_empty_result(self):
+        mock_body = MagicMock()
+        mock_body.read.return_value = json.dumps({}).encode()
+        mock_bedrock_client.invoke_model.return_value = {"body": mock_body}
+
+        result = generate_embedding("test query")
+        assert result == []
+
+    def test_generate_embedding_client_error(self):
+        mock_bedrock_client.invoke_model.side_effect = ClientError(
+            {"Error": {"Code": "ThrottlingException", "Message": "Rate exceeded"}},
+            "InvokeModel",
+        )
+        with pytest.raises(ClientError):
+            generate_embedding("test query")
+
+
+class TestBuildContextualSearchQuery:
+    """Test contextual search query augmentation."""
+
+    def test_no_history_returns_original(self):
+        result = build_contextual_search_query("What is Terraform?", [])
+        assert result == "What is Terraform?"
+
+    def test_short_message_is_follow_up(self):
+        history = [
+            {"role": "user", "content": "Tell me about Terraform modules"},
+            {"role": "assistant", "content": "Terraform modules are reusable configurations..."},
+        ]
+        result = build_contextual_search_query("What about version pinning?", history)
+        assert "Current question: What about version pinning?" in result
+        assert "Previous context:" in result
+
+    def test_explicit_follow_up_indicator(self):
+        history = [
+            {"role": "user", "content": "Tell me about testing"},
+            {"role": "assistant", "content": "Testing should follow a structured approach..."},
+        ]
+        result = build_contextual_search_query(
+            "Can you explain more about integration tests?", history
+        )
+        assert "Current question:" in result
+
+    def test_long_message_not_follow_up(self):
+        history = [
+            {"role": "user", "content": "Previous question"},
+            {"role": "assistant", "content": "Previous answer"},
+        ]
+        # Long message (> 80 chars) without follow-up indicators
+        long_msg = "I need a completely new Terraform module that provisions an S3 bucket with versioning and lifecycle policies configured"
+        result = build_contextual_search_query(long_msg, history)
+        # Should not augment if not a follow-up
+        assert result == long_msg
+
+    def test_history_with_no_assistant_messages(self):
+        history = [
+            {"role": "user", "content": "Previous question"},
+        ]
+        result = build_contextual_search_query("Why?", history)
+        assert "Original topic: Previous question" in result
+
+
+class TestSearchKb:
+    """Test knowledge base search."""
+
+    def test_search_kb_success(self, sample_embedding, sample_search_results):
+        # Mock embedding generation
+        mock_body = MagicMock()
+        mock_body.read.return_value = json.dumps({"embedding": sample_embedding}).encode()
+        mock_bedrock_client.invoke_model.return_value = {"body": mock_body}
+        mock_s3vectors_client.query_vectors.return_value = sample_search_results
+
+        results = search_kb("How should handlers be structured?")
+        assert len(results) == 2
+        assert results[0]["key"] == "doc-001"
+        assert results[0]["score"] == 0.95
+        assert results[0]["repo"] == "my-repo"
+        assert results[0]["content"] == "Lambda handlers should use standard patterns..."
+
+    def test_search_kb_with_single_workspace(self, sample_embedding, sample_search_results):
+        mock_body = MagicMock()
+        mock_body.read.return_value = json.dumps({"embedding": sample_embedding}).encode()
+        mock_bedrock_client.invoke_model.return_value = {"body": mock_body}
+        mock_s3vectors_client.query_vectors.return_value = sample_search_results
+
+        search_kb("query", workspace_id="ws_test")
+        call_args = mock_s3vectors_client.query_vectors.call_args[1]
+        assert call_args["filter"] == {"workspace_id": {"$eq": "ws_test"}}
+
+    def test_search_kb_with_multiple_workspaces(self, sample_embedding, sample_search_results):
+        mock_body = MagicMock()
+        mock_body.read.return_value = json.dumps({"embedding": sample_embedding}).encode()
+        mock_bedrock_client.invoke_model.return_value = {"body": mock_body}
+        mock_s3vectors_client.query_vectors.return_value = sample_search_results
+
+        search_kb("query", workspace_ids=["ws_a", "ws_b"])
+        call_args = mock_s3vectors_client.query_vectors.call_args[1]
+        assert call_args["filter"] == {"workspace_id": {"$in": ["ws_a", "ws_b"]}}
+
+    def test_search_kb_workspace_ids_overrides_workspace_id(self, sample_embedding, sample_search_results):
+        mock_body = MagicMock()
+        mock_body.read.return_value = json.dumps({"embedding": sample_embedding}).encode()
+        mock_bedrock_client.invoke_model.return_value = {"body": mock_body}
+        mock_s3vectors_client.query_vectors.return_value = sample_search_results
+
+        search_kb("query", workspace_id="ws_old", workspace_ids=["ws_new"])
+        call_args = mock_s3vectors_client.query_vectors.call_args[1]
+        assert call_args["filter"] == {"workspace_id": {"$eq": "ws_new"}}
+
+    def test_search_kb_no_workspace_filter(self, sample_embedding, sample_search_results):
+        mock_body = MagicMock()
+        mock_body.read.return_value = json.dumps({"embedding": sample_embedding}).encode()
+        mock_bedrock_client.invoke_model.return_value = {"body": mock_body}
+        mock_s3vectors_client.query_vectors.return_value = sample_search_results
+
+        search_kb("query")
+        call_args = mock_s3vectors_client.query_vectors.call_args[1]
+        assert "filter" not in call_args
+
+    def test_search_kb_empty_embedding(self):
+        mock_body = MagicMock()
+        mock_body.read.return_value = json.dumps({}).encode()
+        mock_bedrock_client.invoke_model.return_value = {"body": mock_body}
+
+        results = search_kb("query")
+        assert results == []
+        mock_s3vectors_client.query_vectors.assert_not_called()
+
+    def test_search_kb_client_error(self, sample_embedding):
+        mock_body = MagicMock()
+        mock_body.read.return_value = json.dumps({"embedding": sample_embedding}).encode()
+        mock_bedrock_client.invoke_model.return_value = {"body": mock_body}
+        mock_s3vectors_client.query_vectors.side_effect = ClientError(
+            {"Error": {"Code": "500", "Message": "Error"}}, "QueryVectors"
+        )
+
+        results = search_kb("query")
+        assert results == []
+
+    def test_search_kb_repo_fallback_from_folder_path(self, sample_embedding):
+        mock_body = MagicMock()
+        mock_body.read.return_value = json.dumps({"embedding": sample_embedding}).encode()
+        mock_bedrock_client.invoke_model.return_value = {"body": mock_body}
+        mock_s3vectors_client.query_vectors.return_value = {
+            "vectors": [
+                {
+                    "key": "doc-003",
+                    "distance": 0.85,
+                    "metadata": {
+                        "content": "Some content",
+                        "source": "github",
+                        "folder_path": "my-repo/src/main.py",
+                        "type": "code",
+                        "file_path": "src/main.py",
+                    },
+                }
+            ]
+        }
+
+        results = search_kb("query")
+        assert results[0]["repo"] == "my-repo"
+
+
+class TestFormatContext:
+    """Test formatting search results as prompt context."""
+
+    def test_format_context_with_results(self):
+        results = [
+            {"repo": "my-repo", "type": "adr", "content": "Handler patterns..."},
+            {"repo": "other-repo", "type": "readme", "content": "Testing guide..."},
+        ]
+        result = format_context(results)
+        assert "[1] Source: my-repo (adr)" in result
+        assert "Handler patterns..." in result
+        assert "[2] Source: other-repo (readme)" in result
+        assert "---" in result
+
+    def test_format_context_empty(self):
+        result = format_context([])
+        assert result == "No relevant documents found."
+
+    def test_format_context_truncates_long_content(self):
+        results = [{"repo": "repo", "type": "doc", "content": "x" * 5000}]
+        result = format_context(results)
+        # Content is truncated to 3000 chars per doc
+        content_part = result.split("\n", 1)[1]
+        assert len(content_part) <= 3001
+
+
+# ============================================================================
+# Conversation Memory
+# ============================================================================
+
+class TestSummarizeMessagesForMemory:
+    """Test message summarization for memory chunks."""
+
+    def test_summarize_basic(self):
+        messages = [
+            {"role": "user", "content": "What is Terraform?"},
+            {"role": "assistant", "content": "Terraform is an IaC tool..."},
+        ]
+        result = summarize_messages_for_memory(messages)
+        assert "User asked: What is Terraform?" in result
+        assert "Assistant answered: Terraform is an IaC tool..." in result
+
+    def test_summarize_truncates_long_messages(self):
+        messages = [
+            {"role": "user", "content": "x" * 600},
+        ]
+        result = summarize_messages_for_memory(messages)
+        assert "..." in result
+        assert len(result) < 600
+
+    def test_summarize_empty_messages(self):
+        result = summarize_messages_for_memory([])
+        assert result == ""
+
+
+class TestCreateConversationMemoryChunk:
+    """Test creating memory chunks in S3 Vectors."""
+
+    def test_create_memory_chunk_success(self, sample_embedding):
+        mock_body = MagicMock()
+        mock_body.read.return_value = json.dumps({"embedding": sample_embedding}).encode()
+        mock_bedrock_client.invoke_model.return_value = {"body": mock_body}
+
+        messages = [
+            {"role": "user", "content": "Question 1"},
+            {"role": "assistant", "content": "Answer 1"},
+        ]
+
+        result = create_conversation_memory_chunk("conv_123", 1, messages)
+        assert result is True
+        mock_s3vectors_client.put_vectors.assert_called_once()
+        call_args = mock_s3vectors_client.put_vectors.call_args[1]
+        assert call_args["vectorBucketName"] == "test-vector-bucket"
+        vector = call_args["vectors"][0]
+        assert vector["key"] == "memory#conv_123#0001"
+        assert vector["metadata"]["type"] == "conversation_memory"
+        assert vector["metadata"]["conversation_id"] == "conv_123"
+
+    def test_create_memory_chunk_embedding_fails(self):
+        mock_bedrock_client.invoke_model.side_effect = ClientError(
+            {"Error": {"Code": "500", "Message": "Error"}}, "InvokeModel"
+        )
+        messages = [{"role": "user", "content": "Question"}]
+        result = create_conversation_memory_chunk("conv_123", 1, messages)
+        assert result is False
+
+    def test_create_memory_chunk_empty_summary(self):
+        result = create_conversation_memory_chunk("conv_123", 1, [])
+        assert result is False
+        mock_bedrock_client.invoke_model.assert_not_called()
+
+    def test_create_memory_chunk_s3vectors_error(self, sample_embedding):
+        mock_body = MagicMock()
+        mock_body.read.return_value = json.dumps({"embedding": sample_embedding}).encode()
+        mock_bedrock_client.invoke_model.return_value = {"body": mock_body}
+        mock_s3vectors_client.put_vectors.side_effect = ClientError(
+            {"Error": {"Code": "500", "Message": "Error"}}, "PutVectors"
+        )
+
+        messages = [{"role": "user", "content": "Question"}]
+        result = create_conversation_memory_chunk("conv_123", 1, messages)
+        assert result is False
+
+
+class TestSearchConversationMemory:
+    """Test searching conversation memory chunks."""
+
+    def test_search_memory_success(self, sample_embedding):
+        mock_body = MagicMock()
+        mock_body.read.return_value = json.dumps({"embedding": sample_embedding}).encode()
+        mock_bedrock_client.invoke_model.return_value = {"body": mock_body}
+        mock_s3vectors_client.query_vectors.return_value = {
+            "vectors": [
+                {
+                    "key": "memory#conv_123#0001",
+                    "distance": 0.9,
+                    "metadata": {
+                        "content": "User asked about Terraform...",
+                        "chunk_number": 1,
+                    },
+                }
+            ]
+        }
+
+        results = search_conversation_memory("conv_123", "question about modules")
+        assert len(results) == 1
+        assert results[0]["content"] == "User asked about Terraform..."
+        # Verify filter uses correct format
+        call_args = mock_s3vectors_client.query_vectors.call_args[1]
+        assert call_args["filter"] == {
+            "$and": [
+                {"type": {"$eq": "conversation_memory"}},
+                {"conversation_id": {"$eq": "conv_123"}},
+            ]
+        }
+
+    def test_search_memory_empty_embedding(self):
+        mock_body = MagicMock()
+        mock_body.read.return_value = json.dumps({}).encode()
+        mock_bedrock_client.invoke_model.return_value = {"body": mock_body}
+
+        results = search_conversation_memory("conv_123", "query")
+        assert results == []
+
+    def test_search_memory_embedding_error(self):
+        mock_bedrock_client.invoke_model.side_effect = ClientError(
+            {"Error": {"Code": "500", "Message": "Error"}}, "InvokeModel"
+        )
+        results = search_conversation_memory("conv_123", "query")
+        assert results == []
+
+    def test_search_memory_client_error(self, sample_embedding):
+        mock_body = MagicMock()
+        mock_body.read.return_value = json.dumps({"embedding": sample_embedding}).encode()
+        mock_bedrock_client.invoke_model.return_value = {"body": mock_body}
+        mock_s3vectors_client.query_vectors.side_effect = ClientError(
+            {"Error": {"Code": "500", "Message": "Error"}}, "QueryVectors"
+        )
+
+        results = search_conversation_memory("conv_123", "query")
+        assert results == []
+
+    def test_search_memory_respects_top_k(self, sample_embedding):
+        mock_body = MagicMock()
+        mock_body.read.return_value = json.dumps({"embedding": sample_embedding}).encode()
+        mock_bedrock_client.invoke_model.return_value = {"body": mock_body}
+        # Return more results than top_k
+        mock_s3vectors_client.query_vectors.return_value = {
+            "vectors": [
+                {"key": f"memory#conv_123#{i:04d}", "distance": 0.9 - i * 0.01,
+                 "metadata": {"content": f"Chunk {i}", "chunk_number": i}}
+                for i in range(5)
+            ]
+        }
+
+        results = search_conversation_memory("conv_123", "query", top_k=2)
+        assert len(results) == 2
+
+
+class TestDeleteConversationMemory:
+    """Test deleting conversation memory chunks."""
+
+    def test_delete_memory_success(self):
+        mock_s3vectors_client.list_vectors.return_value = {
+            "vectors": [
+                {"key": "memory#conv_123#0001"},
+                {"key": "memory#conv_123#0002"},
+                {"key": "other#doc"},  # Should be skipped
+            ]
+        }
+
+        result = delete_conversation_memory("conv_123")
+        assert result is True
+        mock_s3vectors_client.delete_vectors.assert_called_once()
+        call_args = mock_s3vectors_client.delete_vectors.call_args[1]
+        assert len(call_args["keys"]) == 2
+        assert "memory#conv_123#0001" in call_args["keys"]
+        assert "memory#conv_123#0002" in call_args["keys"]
+
+    def test_delete_memory_no_chunks(self):
+        mock_s3vectors_client.list_vectors.return_value = {"vectors": []}
+
+        result = delete_conversation_memory("conv_123")
+        assert result is True
+        mock_s3vectors_client.delete_vectors.assert_not_called()
+
+    def test_delete_memory_client_error(self):
+        mock_s3vectors_client.list_vectors.side_effect = ClientError(
+            {"Error": {"Code": "500", "Message": "Error"}}, "ListVectors"
+        )
+
+        result = delete_conversation_memory("conv_123")
+        assert result is False
+
+
+class TestFormatMemoryContext:
+    """Test formatting memory chunks for the prompt."""
+
+    def test_format_memory_context_basic(self):
+        memory_results = [
+            {"content": "User asked about modules...", "chunk_number": 1},
+            {"content": "User asked about testing...", "chunk_number": 2},
+        ]
+        result = format_memory_context(memory_results)
+        assert "CONVERSATION HISTORY SUMMARY:" in result
+        assert "User asked about modules..." in result
+        assert "User asked about testing..." in result
+
+    def test_format_memory_context_sorts_by_chunk_number(self):
+        memory_results = [
+            {"content": "Second chunk", "chunk_number": 2},
+            {"content": "First chunk", "chunk_number": 1},
+        ]
+        result = format_memory_context(memory_results)
+        # First chunk should appear before second chunk
+        assert result.index("First chunk") < result.index("Second chunk")
+
+    def test_format_memory_context_empty(self):
+        result = format_memory_context([])
+        assert result == ""
+
+    def test_format_memory_context_empty_content(self):
+        memory_results = [{"content": "", "chunk_number": 1}]
+        result = format_memory_context(memory_results)
+        assert result == ""
+
+
+class TestUpdateMemoryChunkCount:
+    """Test updating memory chunk count in conversation metadata."""
+
+    def test_update_memory_chunk_count_success(self, mock_table):
+        update_memory_chunk_count("conv_123", 3)
+        mock_table.update_item.assert_called_once()
+        call_args = mock_table.update_item.call_args[1]
+        assert call_args["ExpressionAttributeValues"][":mcc"] == 3
+
+    def test_update_memory_chunk_count_error(self, mock_table):
+        mock_table.update_item.side_effect = ClientError(
+            {"Error": {"Code": "500", "Message": "Error"}}, "UpdateItem"
+        )
+        # Should not raise
+        update_memory_chunk_count("conv_123", 3)
+
+
+# ============================================================================
+# Answer Generation
+# ============================================================================
+
+class TestGenerateAnswerStream:
+    """Test streaming answer generation from Bedrock."""
+
+    def test_generate_answer_stream_collects_text(self):
+        mock_bedrock_client.converse_stream.return_value = {
+            "stream": [
+                {"contentBlockDelta": {"delta": {"text": "Hello "}}},
+                {"contentBlockDelta": {"delta": {"text": "world"}}},
+                {"metadata": {"usage": {"inputTokens": 100, "outputTokens": 20}}},
+            ]
+        }
+
+        chunks = list(generate_answer_stream("question", "context", []))
+        text_chunks = [c for c in chunks if isinstance(c, str)]
+        usage_chunks = [c for c in chunks if isinstance(c, dict)]
+        assert text_chunks == ["Hello ", "world"]
+        assert usage_chunks[0]["usage"]["inputTokens"] == 100
+        assert usage_chunks[0]["usage"]["outputTokens"] == 20
+
+    def test_generate_answer_stream_haiku_model(self):
+        mock_bedrock_client.converse_stream.return_value = {"stream": []}
+        list(generate_answer_stream("q", "c", [], advanced=False))
+        call_args = mock_bedrock_client.converse_stream.call_args[1]
+        assert "haiku" in call_args["modelId"]
+
+    def test_generate_answer_stream_sonnet_model(self):
+        mock_bedrock_client.converse_stream.return_value = {"stream": []}
+        list(generate_answer_stream("q", "c", [], advanced=True))
+        call_args = mock_bedrock_client.converse_stream.call_args[1]
+        assert "sonnet" in call_args["modelId"]
+
+    def test_generate_answer_stream_includes_history(self):
+        mock_bedrock_client.converse_stream.return_value = {"stream": []}
+        history = [
+            {"role": "user", "content": "First question"},
+            {"role": "assistant", "content": "First answer"},
+        ]
+        list(generate_answer_stream("New question", "context", history))
+        call_args = mock_bedrock_client.converse_stream.call_args[1]
+        messages = call_args["messages"]
+        # History messages + current question
+        assert len(messages) == 3
+        assert messages[0]["role"] == "user"
+        assert messages[0]["content"][0]["text"] == "First question"
+        assert messages[1]["role"] == "assistant"
+
+    def test_generate_answer_stream_includes_memory_context(self):
+        mock_bedrock_client.converse_stream.return_value = {"stream": []}
+        list(generate_answer_stream(
+            "question", "context", [],
+            memory_context="CONVERSATION HISTORY SUMMARY:\nPrevious discussion..."
+        ))
+        call_args = mock_bedrock_client.converse_stream.call_args[1]
+        user_msg = call_args["messages"][-1]["content"][0]["text"]
+        assert "CONVERSATION HISTORY SUMMARY:" in user_msg
+
+    def test_generate_answer_stream_client_error(self):
+        mock_bedrock_client.converse_stream.side_effect = ClientError(
+            {"Error": {"Code": "500", "Message": "Model error"}}, "ConverseStream"
+        )
+        with pytest.raises(ClientError):
+            list(generate_answer_stream("q", "c", []))
+
+    def test_generate_answer_stream_limits_history_to_10(self):
+        mock_bedrock_client.converse_stream.return_value = {"stream": []}
+        history = [
+            {"role": "user" if i % 2 == 0 else "assistant", "content": f"Message {i}"}
+            for i in range(20)
+        ]
+        list(generate_answer_stream("question", "context", history))
+        call_args = mock_bedrock_client.converse_stream.call_args[1]
+        messages = call_args["messages"]
+        # 10 history messages + 1 current question
+        assert len(messages) == 11
+
+    def test_generate_answer_stream_skips_empty_history_content(self):
+        mock_bedrock_client.converse_stream.return_value = {"stream": []}
+        history = [
+            {"role": "user", "content": ""},
+            {"role": "assistant", "content": "Answer"},
+        ]
+        list(generate_answer_stream("question", "context", history))
+        call_args = mock_bedrock_client.converse_stream.call_args[1]
+        messages = call_args["messages"]
+        # Empty content message is skipped, only assistant + current question
+        assert len(messages) == 2
+
+
+# ============================================================================
+# handle_chat_stream (Main Orchestration)
+# ============================================================================
+
+class TestHandleChatStream:
+    """Test the main chat stream orchestration."""
+
+    def _setup_mocks(self, mock_table, sample_embedding, conversation=None):
+        """Common setup for handle_chat_stream tests."""
+        # Mock DynamoDB table
+        mock_dynamodb_resource.Table.return_value = mock_table
+
+        # Mock embedding generation
+        mock_body = MagicMock()
+        mock_body.read.return_value = json.dumps({"embedding": sample_embedding}).encode()
+        mock_bedrock_client.invoke_model.return_value = {"body": mock_body}
+
+        # Mock S3 Vectors search returning minimal results
+        mock_s3vectors_client.query_vectors.return_value = {
+            "vectors": [
+                {
+                    "key": "doc-001",
+                    "distance": 0.9,
+                    "metadata": {
+                        "content": "Some KB content",
+                        "repo": "my-repo",
+                        "type": "adr",
+                        "file_path": "docs/ADR-001.md",
+                        "workspace_id": "ws_test",
+                    },
+                }
+            ]
+        }
+
+        # Mock Bedrock streaming response
+        mock_bedrock_client.converse_stream.return_value = {
+            "stream": [
+                {"contentBlockDelta": {"delta": {"text": "The answer is 42."}}},
+                {"metadata": {"usage": {"inputTokens": 500, "outputTokens": 50}}},
+            ]
+        }
+
+        if conversation:
+            mock_table.get_item.return_value = {"Item": conversation}
+        else:
+            mock_table.get_item.return_value = {}
+
+        # Mock query for conversation messages (empty for new conversations)
+        mock_table.query.return_value = {"Items": []}
+
+    def test_new_conversation_flow(self, mock_table, sample_embedding):
+        """Test full flow for a new conversation."""
+        self._setup_mocks(mock_table, sample_embedding)
+
+        event = {
+            "body": json.dumps({
+                "message": "What are our Lambda standards?",
+                "workspace_id": "ws_test",
+                "user": {"email": "user@example.com"},
+            })
+        }
+
+        chunks = list(handle_chat_stream(event))
+
+        # Parse NDJSON chunks
+        parsed = [json.loads(c.strip()) for c in chunks]
+        types = [p["type"] for p in parsed]
+
+        # Should have metadata, at least one token, and done
+        assert "metadata" in types
+        assert "token" in types
+        assert "done" in types
+
+        # Metadata should include sources and conversation_id
+        metadata = next(p for p in parsed if p["type"] == "metadata")
+        assert "conversation_id" in metadata
+        assert "sources" in metadata
+        assert metadata["sources"][0]["repo"] == "my-repo"
+
+        # Done should include message_id
+        done = next(p for p in parsed if p["type"] == "done")
+        assert "message_id" in done
+
+    def test_existing_conversation_flow(self, mock_table, sample_embedding, sample_conversation):
+        """Test flow for an existing conversation."""
+        self._setup_mocks(mock_table, sample_embedding, conversation=sample_conversation)
+
+        event = {
+            "body": json.dumps({
+                "message": "Tell me more about testing",
+                "conversation_id": "conv_test123",
+            })
+        }
+
+        chunks = list(handle_chat_stream(event))
+        parsed = [json.loads(c.strip()) for c in chunks]
+        metadata = next(p for p in parsed if p["type"] == "metadata")
+        assert metadata["conversation_id"] == "conv_test123"
+
+    def test_conversation_not_found(self, mock_table, sample_embedding):
+        """Test error when conversation ID does not exist."""
+        self._setup_mocks(mock_table, sample_embedding)
+        mock_table.get_item.return_value = {}  # Not found
+
+        event = {
+            "body": json.dumps({
+                "message": "Hello",
+                "conversation_id": "nonexistent",
+            })
+        }
+
+        chunks = list(handle_chat_stream(event))
+        parsed = [json.loads(c.strip()) for c in chunks]
+        assert parsed[0]["type"] == "error"
+        assert "not found" in parsed[0]["error"].lower()
+
+    def test_invalid_request_body(self):
+        """Test error on invalid JSON body."""
+        event = {"body": "not json"}
+        chunks = list(handle_chat_stream(event))
+        parsed = [json.loads(c.strip()) for c in chunks]
+        assert parsed[0]["type"] == "error"
+
+    def test_missing_message(self):
+        """Test error on missing message field."""
+        event = {"body": json.dumps({})}
+        chunks = list(handle_chat_stream(event))
+        parsed = [json.loads(c.strip()) for c in chunks]
+        assert parsed[0]["type"] == "error"
+
+    def test_show_cost_included(self, mock_table, sample_embedding):
+        """Test that cost info is included when show_cost=True."""
+        self._setup_mocks(mock_table, sample_embedding)
+
+        event = {
+            "body": json.dumps({
+                "message": "What are our standards?",
+                "show_cost": True,
+            })
+        }
+
+        chunks = list(handle_chat_stream(event))
+        parsed = [json.loads(c.strip()) for c in chunks]
+        done = next(p for p in parsed if p["type"] == "done")
+        assert "cost" in done
+        assert "input_tokens" in done["cost"]
+        assert "output_tokens" in done["cost"]
+        assert "cost" in done["cost"]
+
+    def test_show_cost_not_included_by_default(self, mock_table, sample_embedding):
+        """Test that cost info is not included by default."""
+        self._setup_mocks(mock_table, sample_embedding)
+
+        event = {
+            "body": json.dumps({"message": "Hello"})
+        }
+
+        chunks = list(handle_chat_stream(event))
+        parsed = [json.loads(c.strip()) for c in chunks]
+        done = next(p for p in parsed if p["type"] == "done")
+        assert "cost" not in done
+
+    def test_qa_test_refusal_trigger(self, mock_table, sample_embedding):
+        """Test the QA refusal test trigger (message '1234567890')."""
+        self._setup_mocks(mock_table, sample_embedding)
+
+        event = {
+            "body": json.dumps({
+                "message": "1234567890",
+                "user": {"email": "qa@example.com"},
+            })
+        }
+
+        with patch.object(handler_module, "log_audit_entry") as mock_audit:
+            chunks = list(handle_chat_stream(event))
+
+        parsed = [json.loads(c.strip()) for c in chunks]
+        types = [p["type"] for p in parsed]
+
+        assert "metadata" in types
+        assert "token" in types
+        assert "done" in types
+
+        token = next(p for p in parsed if p["type"] == "token")
+        assert "TEST_REFUSAL" in token["text"]
+
+        # Bedrock should NOT be called for the refusal
+        mock_bedrock_client.converse_stream.assert_not_called()
+
+    def test_bedrock_error_during_streaming(self, mock_table, sample_embedding):
+        """Test error handling when Bedrock fails during streaming."""
+        self._setup_mocks(mock_table, sample_embedding)
+        mock_bedrock_client.converse_stream.side_effect = ClientError(
+            {"Error": {"Code": "500", "Message": "Internal error"}}, "ConverseStream"
+        )
+
+        event = {
+            "body": json.dumps({"message": "Hello"})
+        }
+
+        chunks = list(handle_chat_stream(event))
+        parsed = [json.loads(c.strip()) for c in chunks]
+        types = [p["type"] for p in parsed]
+
+        # Should have metadata first, then error
+        assert "metadata" in types
+        assert "error" in types
+
+    def test_workspace_id_passed_to_search(self, mock_table, sample_embedding):
+        """Test that workspace_id is passed through to KB search."""
+        self._setup_mocks(mock_table, sample_embedding)
+
+        event = {
+            "body": json.dumps({
+                "message": "Hello",
+                "workspace_ids": ["ws_a", "ws_b"],
+            })
+        }
+
+        chunks = list(handle_chat_stream(event))
+
+        # Verify S3 Vectors query used workspace filter
+        query_calls = mock_s3vectors_client.query_vectors.call_args_list
+        # First call is the KB search (memory search might also happen)
+        kb_call = query_calls[0][1]
+        assert kb_call["filter"] == {"workspace_id": {"$in": ["ws_a", "ws_b"]}}
+
+    def test_uses_workspace_from_existing_conversation(
+        self, mock_table, sample_embedding, sample_conversation
+    ):
+        """Test that workspace is loaded from existing conversation when not in request."""
+        self._setup_mocks(mock_table, sample_embedding, conversation=sample_conversation)
+
+        event = {
+            "body": json.dumps({
+                "message": "Follow-up question",
+                "conversation_id": "conv_test123",
+                # No workspace_id or workspace_ids in request
+            })
+        }
+
+        chunks = list(handle_chat_stream(event))
+        # Should use workspace_id from conversation ("ws_test")
+        kb_call = mock_s3vectors_client.query_vectors.call_args_list[0][1]
+        assert kb_call["filter"] == {"workspace_id": {"$eq": "ws_test"}}
+
+    @patch.object(handler_module, "log_audit_entry")
+    def test_audit_log_called(self, mock_audit, mock_table, sample_embedding):
+        """Test that audit logging is called after answer generation."""
+        self._setup_mocks(mock_table, sample_embedding)
+
+        event = {
+            "body": json.dumps({
+                "message": "What are our standards?",
+                "user": {"email": "user@example.com"},
+                "workspace_id": "ws_test",
+            })
+        }
+
+        chunks = list(handle_chat_stream(event))
+
+        mock_audit.assert_called_once()
+        call_kwargs = mock_audit.call_args[1]
+        assert call_kwargs["lambda_name"] == "chat"
+        assert call_kwargs["user_email"] == "user@example.com"
+        assert call_kwargs["workspace_id"] == "ws_test"
+        assert call_kwargs["input_text"] == "What are our standards?"
+
+    def test_sources_deduplicated(self, mock_table, sample_embedding):
+        """Test that duplicate sources are removed."""
+        self._setup_mocks(mock_table, sample_embedding)
+        # Return duplicate results with same file_path
+        mock_s3vectors_client.query_vectors.return_value = {
+            "vectors": [
+                {
+                    "key": "doc-001",
+                    "distance": 0.9,
+                    "metadata": {
+                        "content": "Content 1",
+                        "repo": "repo",
+                        "type": "adr",
+                        "file_path": "docs/ADR-001.md",
+                    },
+                },
+                {
+                    "key": "doc-002",
+                    "distance": 0.85,
+                    "metadata": {
+                        "content": "Content 2",
+                        "repo": "repo",
+                        "type": "adr",
+                        "file_path": "docs/ADR-001.md",  # Same path
+                    },
+                },
+            ]
+        }
+
+        event = {"body": json.dumps({"message": "test"})}
+        chunks = list(handle_chat_stream(event))
+        parsed = [json.loads(c.strip()) for c in chunks]
+        metadata = next(p for p in parsed if p["type"] == "metadata")
+        assert len(metadata["sources"]) == 1
+
+
+# ============================================================================
+# Lambda Handler (REST API)
+# ============================================================================
+
+class TestLambdaHandler:
+    """Test REST API lambda_handler routing."""
+
+    def test_list_conversations(self, mock_table):
+        mock_table.scan.return_value = {
+            "Items": [
+                {
+                    "conversation_id": "conv_1",
+                    "title": "Test",
+                    "updated_at": "2025-01-15T10:00:00+00:00",
+                    "SK": "METADATA",
+                }
+            ]
+        }
+
+        event = {
+            "httpMethod": "GET",
+            "path": "/conversations",
+            "headers": {"x-user-email": "user@example.com"},
+        }
+
+        result = lambda_handler(event, None)
+        assert result["statusCode"] == 200
+        body = json.loads(result["body"])
+        assert "conversations" in body
+
+    def test_list_conversations_filters_by_user(self, mock_table):
+        mock_table.scan.return_value = {"Items": []}
+
+        event = {
+            "httpMethod": "GET",
+            "path": "/conversations",
+            "headers": {"x-user-email": "user@example.com"},
+        }
+
+        lambda_handler(event, None)
+        call_args = mock_table.scan.call_args[1]
+        assert ":uid" in call_args["ExpressionAttributeValues"]
+        assert call_args["ExpressionAttributeValues"][":uid"] == "user@example.com"
+
+    def test_list_conversations_no_user(self, mock_table):
+        mock_table.scan.return_value = {"Items": []}
+
+        event = {
+            "httpMethod": "GET",
+            "path": "/conversations",
+            "headers": {},
+        }
+
+        lambda_handler(event, None)
+        call_args = mock_table.scan.call_args[1]
+        assert ":uid" not in call_args.get("ExpressionAttributeValues", {})
+
+    def test_list_conversations_dynamodb_error(self, mock_table):
+        mock_table.scan.side_effect = ClientError(
+            {"Error": {"Code": "500", "Message": "Error"}}, "Scan"
+        )
+
+        event = {
+            "httpMethod": "GET",
+            "path": "/conversations",
+            "headers": {},
+        }
+
+        result = lambda_handler(event, None)
+        assert result["statusCode"] == 500
+
+    def test_get_conversation_with_messages(self, mock_table, sample_conversation, sample_messages):
+        mock_table.get_item.return_value = {"Item": sample_conversation}
+        mock_table.query.return_value = {"Items": sample_messages}
+
+        event = {
+            "httpMethod": "GET",
+            "path": "/conversations/conv_test123",
+            "headers": {},
+        }
+
+        result = lambda_handler(event, None)
+        assert result["statusCode"] == 200
+        body = json.loads(result["body"])
+        assert "conversation" in body
+        assert "messages" in body
+
+    def test_get_conversation_not_found(self, mock_table):
+        mock_table.get_item.return_value = {}
+
+        event = {
+            "httpMethod": "GET",
+            "path": "/conversations/nonexistent",
+            "headers": {},
+        }
+
+        result = lambda_handler(event, None)
+        assert result["statusCode"] == 404
+
+    def test_delete_conversation(self, mock_table):
+        mock_s3vectors_client.list_vectors.return_value = {"vectors": []}
+        mock_table.query.return_value = {
+            "Items": [
+                {"PK": "CONV#conv_123", "SK": "METADATA"},
+                {"PK": "CONV#conv_123", "SK": "MSG#2025-01-15T10:00:00#msg_001"},
+            ]
+        }
+        batch_writer = MagicMock()
+        mock_table.batch_writer.return_value.__enter__ = MagicMock(return_value=batch_writer)
+        mock_table.batch_writer.return_value.__exit__ = MagicMock(return_value=False)
+
+        event = {
+            "httpMethod": "DELETE",
+            "path": "/conversations/conv_123",
+            "headers": {},
+        }
+
+        result = lambda_handler(event, None)
+        assert result["statusCode"] == 200
+        body = json.loads(result["body"])
+        assert body["deleted"] == "conv_123"
+
+    def test_delete_conversation_dynamodb_error(self, mock_table):
+        mock_s3vectors_client.list_vectors.return_value = {"vectors": []}
+        mock_table.query.side_effect = ClientError(
+            {"Error": {"Code": "500", "Message": "Error"}}, "Query"
+        )
+
+        event = {
+            "httpMethod": "DELETE",
+            "path": "/conversations/conv_123",
+            "headers": {},
+        }
+
+        result = lambda_handler(event, None)
+        assert result["statusCode"] == 500
+
+    def test_unknown_route_returns_404(self):
+        event = {
+            "httpMethod": "POST",
+            "path": "/unknown",
+            "headers": {},
+        }
+
+        result = lambda_handler(event, None)
+        assert result["statusCode"] == 404
+
+    def test_route_extraction_from_request_context(self, mock_table):
+        """Test that routes can be extracted from requestContext (API Gateway v2)."""
+        mock_table.scan.return_value = {"Items": []}
+
+        event = {
+            "requestContext": {
+                "http": {"method": "GET", "path": "/conversations"}
+            },
+            "headers": {},
+        }
+
+        result = lambda_handler(event, None)
+        assert result["statusCode"] == 200
+
+
+# ============================================================================
+# Streaming Handler
+# ============================================================================
+
+class TestStreamingHandler:
+    """Test the SDK streaming handler entry point."""
+
+    @patch.object(handler_module, "handle_chat_stream")
+    def test_streaming_handler_encodes_chunks(self, mock_chat_stream):
+        """Test that streaming_handler encodes string chunks to bytes."""
+        mock_chat_stream.return_value = iter([
+            '{"type":"metadata","conversation_id":"c1"}\n',
+            '{"type":"token","text":"Hello"}\n',
+            '{"type":"done","message_id":"m1"}\n',
+        ])
+
+        chunks = list(streaming_handler({"body": "{}"}, None))
+        assert all(isinstance(c, bytes) for c in chunks)
+        assert b"metadata" in chunks[0]
+
+    @patch.object(handler_module, "handle_chat_stream")
+    def test_streaming_handler_handles_exception(self, mock_chat_stream):
+        """Test that streaming_handler catches exceptions and yields error."""
+        mock_chat_stream.side_effect = Exception("Unexpected error")
+
+        chunks = list(streaming_handler({"body": "{}"}, None))
+        assert len(chunks) >= 1
+        # Last chunks should contain error
+        all_output = b"".join(chunks)
+        assert b"error" in all_output
+
+
+# ============================================================================
+# Memory Chunk Creation Trigger
+# ============================================================================
+
+class TestMemoryChunkCreation:
+    """Test memory chunk creation trigger during chat flow."""
+
+    def _setup_for_memory_test(self, mock_table, sample_embedding, message_count):
+        """Setup mocks for memory chunk trigger test.
+
+        The handler calls get_conversation_messages twice:
+        1. history = get_conversation_messages(conversation_id, limit=10) -- before saving
+        2. chunk_messages = get_conversation_messages(conversation_id, limit=MEMORY_CHUNK_SIZE + 1)
+           -- only when threshold is reached; needs to return >= MEMORY_CHUNK_SIZE + 1 items
+           so that after removing the last (just-saved) message, >= MEMORY_CHUNK_SIZE remain.
+        """
+        mock_dynamodb_resource.Table.return_value = mock_table
+
+        # Conversation with enough messages to trigger memory chunk creation
+        conversation = {
+            "PK": "CONV#conv_mem",
+            "SK": "METADATA",
+            "conversation_id": "conv_mem",
+            "title": "Memory test",
+            "message_count": message_count,
+            "memory_chunk_count": 0,
+            "created_at": "2025-01-15T10:00:00+00:00",
+            "updated_at": "2025-01-15T10:05:00+00:00",
+        }
+        mock_table.get_item.return_value = {"Item": conversation}
+
+        # Build enough messages for the second query call.
+        # The handler fetches with limit=MEMORY_CHUNK_SIZE+1 (11), then drops the last one.
+        # We need at least MEMORY_CHUNK_SIZE items remaining after the drop.
+        chunk_messages = [
+            {"role": "user" if i % 2 == 0 else "assistant",
+             "content": f"Message {i}",
+             "PK": "CONV#conv_mem",
+             "SK": f"MSG#2025-01-15T10:{i:02d}:00+00:00#msg_{i:03d}"}
+            for i in range(handler_module.MEMORY_CHUNK_SIZE + 1)
+        ]
+
+        # First call (history): return last few messages; second call (chunking): return full set
+        history_messages = chunk_messages[-10:]
+        mock_table.query.side_effect = [
+            {"Items": list(reversed(history_messages))},  # ScanIndexForward=False
+            {"Items": list(reversed(chunk_messages))},  # ScanIndexForward=False
+        ]
+
+        # Embedding mock
+        mock_body = MagicMock()
+        mock_body.read.return_value = json.dumps({"embedding": sample_embedding}).encode()
+        mock_bedrock_client.invoke_model.return_value = {"body": mock_body}
+
+        # S3 Vectors search (KB results)
+        mock_s3vectors_client.query_vectors.return_value = {"vectors": []}
+
+        # Bedrock streaming
+        mock_bedrock_client.converse_stream.return_value = {
+            "stream": [
+                {"contentBlockDelta": {"delta": {"text": "Answer"}}},
+                {"metadata": {"usage": {"inputTokens": 50, "outputTokens": 10}}},
+            ]
+        }
+
+    @patch.object(handler_module, "log_audit_entry")
+    @patch.object(handler_module, "create_conversation_memory_chunk")
+    def test_memory_chunk_created_at_threshold(
+        self, mock_create_chunk, mock_audit, mock_table, sample_embedding
+    ):
+        """Test memory chunk is created when message_count reaches MEMORY_CHUNK_SIZE."""
+        # message_count = 9 (MEMORY_CHUNK_SIZE - 1), adding one more makes 10
+        self._setup_for_memory_test(mock_table, sample_embedding, message_count=9)
+        mock_create_chunk.return_value = True
+
+        event = {
+            "body": json.dumps({
+                "message": "Another question",
+                "conversation_id": "conv_mem",
+            })
+        }
+
+        chunks = list(handle_chat_stream(event))
+        mock_create_chunk.assert_called_once()
+
+    @patch.object(handler_module, "log_audit_entry")
+    @patch.object(handler_module, "create_conversation_memory_chunk")
+    def test_no_memory_chunk_below_threshold(
+        self, mock_create_chunk, mock_audit, mock_table, sample_embedding
+    ):
+        """Test no memory chunk created when below threshold."""
+        mock_dynamodb_resource.Table.return_value = mock_table
+
+        # message_count = 3, well below MEMORY_CHUNK_SIZE (10)
+        conversation = {
+            "PK": "CONV#conv_mem",
+            "SK": "METADATA",
+            "conversation_id": "conv_mem",
+            "title": "Memory test",
+            "message_count": 3,
+            "memory_chunk_count": 0,
+            "created_at": "2025-01-15T10:00:00+00:00",
+            "updated_at": "2025-01-15T10:05:00+00:00",
+        }
+        mock_table.get_item.return_value = {"Item": conversation}
+        # Only one query call (history), no chunking query
+        mock_table.query.return_value = {"Items": []}
+
+        mock_body = MagicMock()
+        mock_body.read.return_value = json.dumps({"embedding": [0.1] * 1024}).encode()
+        mock_bedrock_client.invoke_model.return_value = {"body": mock_body}
+        mock_s3vectors_client.query_vectors.return_value = {"vectors": []}
+        mock_bedrock_client.converse_stream.return_value = {
+            "stream": [
+                {"contentBlockDelta": {"delta": {"text": "Answer"}}},
+                {"metadata": {"usage": {"inputTokens": 50, "outputTokens": 10}}},
+            ]
+        }
+
+        event = {
+            "body": json.dumps({
+                "message": "Question",
+                "conversation_id": "conv_mem",
+            })
+        }
+
+        chunks = list(handle_chat_stream(event))
+        mock_create_chunk.assert_not_called()
+
+
+# ============================================================================
+# Edge Cases and Integration Scenarios
+# ============================================================================
+
+class TestEdgeCases:
+    """Test edge cases and boundary conditions."""
+
+    def test_empty_body_in_event(self):
+        """Test handling of empty body."""
+        event = {"body": None}
+        chunks = list(handle_chat_stream(event))
+        parsed = [json.loads(c.strip()) for c in chunks]
+        assert parsed[0]["type"] == "error"
+
+    def test_message_at_max_length(self):
+        """Test that a message at max length is accepted."""
+        req = ChatMessageRequest(message="x" * 10000)
+        assert len(req.message) == 10000
+
+    def test_message_exceeds_max_length(self):
+        """Test that a message exceeding max length is rejected."""
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            ChatMessageRequest(message="x" * 10001)
+
+    def test_deprecated_workspace_id_still_works(self, mock_table, sample_embedding):
+        """Test that the deprecated workspace_id field still works."""
+        mock_dynamodb_resource.Table.return_value = mock_table
+
+        mock_body = MagicMock()
+        mock_body.read.return_value = json.dumps({"embedding": sample_embedding}).encode()
+        mock_bedrock_client.invoke_model.return_value = {"body": mock_body}
+        mock_s3vectors_client.query_vectors.return_value = {"vectors": []}
+        mock_bedrock_client.converse_stream.return_value = {
+            "stream": [
+                {"contentBlockDelta": {"delta": {"text": "OK"}}},
+                {"metadata": {"usage": {"inputTokens": 10, "outputTokens": 5}}},
+            ]
+        }
+        mock_table.query.return_value = {"Items": []}
+
+        event = {
+            "body": json.dumps({
+                "message": "Hello",
+                "workspace_id": "ws_deprecated",  # Old field
+            })
+        }
+
+        with patch.object(handler_module, "log_audit_entry"):
+            chunks = list(handle_chat_stream(event))
+
+        # Should use workspace_id for filtering
+        kb_call = mock_s3vectors_client.query_vectors.call_args[1]
+        assert kb_call["filter"] == {"workspace_id": {"$eq": "ws_deprecated"}}
+
+    def test_list_conversations_sorted_by_updated_at(self, mock_table):
+        """Test conversations are sorted newest first."""
+        mock_table.scan.return_value = {
+            "Items": [
+                {"conversation_id": "old", "updated_at": "2025-01-01T00:00:00", "SK": "METADATA"},
+                {"conversation_id": "new", "updated_at": "2025-01-15T00:00:00", "SK": "METADATA"},
+            ]
+        }
+
+        result = list_conversations()
+        body = json.loads(result["body"])
+        assert body["conversations"][0]["conversation_id"] == "new"
+        assert body["conversations"][1]["conversation_id"] == "old"
+
+    def test_delete_conversation_also_deletes_memory(self, mock_table):
+        """Test that deleting a conversation also deletes memory chunks."""
+        mock_s3vectors_client.list_vectors.return_value = {
+            "vectors": [
+                {"key": "memory#conv_del#0001"},
+            ]
+        }
+        mock_table.query.return_value = {
+            "Items": [{"PK": "CONV#conv_del", "SK": "METADATA"}]
+        }
+        batch_writer = MagicMock()
+        mock_table.batch_writer.return_value.__enter__ = MagicMock(return_value=batch_writer)
+        mock_table.batch_writer.return_value.__exit__ = MagicMock(return_value=False)
+
+        delete_conversation("conv_del")
+
+        # Verify memory deletion was called
+        mock_s3vectors_client.list_vectors.assert_called_once()
+        mock_s3vectors_client.delete_vectors.assert_called_once()
+        delete_call = mock_s3vectors_client.delete_vectors.call_args[1]
+        assert "memory#conv_del#0001" in delete_call["keys"]

@@ -463,6 +463,13 @@ module "ui_ecs" {
               "lambda:InvokeFunctionUrl"
             ]
             resources = [module.github_integration_lambda[0].lambda_function_arn]
+          },
+          {
+            effect = "Allow"
+            actions = [
+              "lambda:InvokeFunctionUrl"
+            ]
+            resources = [module.outlook_integration_lambda[0].lambda_function_arn]
           }
         ] : []
       )
