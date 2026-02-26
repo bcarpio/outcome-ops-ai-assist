@@ -1746,8 +1746,8 @@ class TestHandleDeleteRepo:
         assert result["statusCode"] == 200
         body = json.loads(result["body"])
         assert body["message"] == "Repo removed"
-        # Should use short name for deletion (just "my-repo")
-        mock_queue_del.assert_called_once_with("ws_test", "my-repo")
+        # Should use full name (owner/repo) matching how github-sync stores files
+        mock_queue_del.assert_called_once_with("ws_test", "test-org/my-repo")
         mock_del_repo.assert_called_once_with("ws_test", "test-org/my-repo")
 
     @patch.object(handler_module, 'delete_repo')

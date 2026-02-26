@@ -797,10 +797,9 @@ def handle_delete_repo(event: Dict) -> Dict:
     if not repo:
         return _error(404, "Repo not found")
 
-    # Queue deletion of documents
-    # Storage uses short repo name (e.g., "my-repo") not full name ("owner/my-repo")
-    repo_short = repo_name.split("/")[-1] if "/" in repo_name else repo_name
-    queue_delete_job(workspace_id, repo_short)
+    # Queue deletion of documents using full repo name (owner/repo)
+    # which matches how github-sync stores files in S3
+    queue_delete_job(workspace_id, repo_name)
 
     # Delete repo record
     delete_repo(workspace_id, repo_name)
