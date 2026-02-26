@@ -928,3 +928,243 @@ class TestClientCaching:
 
         assert result1 is result2
         mock_boto3.client.assert_called_once_with("ssm")
+
+
+# ============================================================================
+# Jira-Sync copy (identical file, needs separate coverage)
+# ============================================================================
+
+def _load_sync_token_module():
+    """Load the token_manager module from jira-sync."""
+    mod_name = "jira_sync_token_manager"
+    if mod_name in sys.modules:
+        del sys.modules[mod_name]
+
+    token_path = os.path.join(
+        os.path.dirname(__file__),
+        '../../jira-sync/token_manager.py',
+    )
+    spec = importlib.util.spec_from_file_location(mod_name, token_path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[mod_name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+sync_module = _load_sync_token_module()
+
+
+class TestSyncEncryptDecrypt:
+    """Smoke tests for jira-sync/token_manager.py encrypt/decrypt."""
+
+    @patch.object(sync_module, '_get_kms')
+    def test_encrypt_token(self, mock_kms_fn):
+        mock_kms = MagicMock()
+        mock_kms.encrypt.return_value = {"CiphertextBlob": b"encrypted"}
+        mock_kms_fn.return_value = mock_kms
+        result = sync_module._encrypt_token("secret")
+        assert isinstance(result, str)
+
+    @patch.object(sync_module, '_get_kms')
+    def test_decrypt_token(self, mock_kms_fn):
+        mock_kms = MagicMock()
+        mock_kms.decrypt.return_value = {"Plaintext": b"decrypted"}
+        mock_kms_fn.return_value = mock_kms
+        encrypted = base64.b64encode(b"data").decode("utf-8")
+        result = sync_module._decrypt_token(encrypted)
+        assert result == "decrypted"
+
+
+class TestSyncSaveTokens:
+    """Smoke tests for jira-sync/token_manager.py save_tokens."""
+
+    def setup_method(self):
+        sync_module._dynamodb = None
+        sync_module._kms = None
+
+    @patch.object(sync_module, '_encrypt_token')
+    @patch.object(sync_module, '_get_dynamodb')
+    def test_save_tokens_success(self, mock_db_fn, mock_encrypt):
+        mock_table = MagicMock()
+        mock_db = MagicMock()
+        mock_db.Table.return_value = mock_table
+        mock_db_fn.return_value = mock_db
+        mock_encrypt.return_value = "encrypted"
+        result = sync_module.save_tokens("conn", "access", "refresh", 3600)
+        assert result is True
+
+    @patch.object(sync_module, '_encrypt_token')
+    @patch.object(sync_module, '_get_dynamodb')
+    def test_save_tokens_error(self, mock_db_fn, mock_encrypt):
+        mock_table = MagicMock()
+        mock_db = MagicMock()
+        mock_db.Table.return_value = mock_table
+        mock_db_fn.return_value = mock_db
+        mock_encrypt.return_value = "encrypted"
+        mock_table.put_item.side_effect = ClientError(
+            {"Error": {"Code": "500", "Message": "err"}}, "PutItem"
+        )
+        result = sync_module.save_tokens("conn", "access", "refresh")
+        assert result is False
+
+
+class TestSyncGetRefreshToken:
+    """Smoke tests for jira-sync/token_manager.py get_refresh_token."""
+
+    def setup_method(self):
+        sync_module._dynamodb = None
+        sync_module._kms = None
+
+    @patch.object(sync_module, '_decrypt_token')
+    @patch.object(sync_module, '_get_dynamodb')
+    def test_get_refresh_token_success(self, mock_db_fn, mock_decrypt):
+        mock_table = MagicMock()
+        mock_db = MagicMock()
+        mock_db.Table.return_value = mock_table
+        mock_db_fn.return_value = mock_db
+        mock_table.get_item.return_value = {"Item": {"encrypted_refresh_token": "enc"}}
+        mock_decrypt.return_value = "plain"
+        result = sync_module.get_refresh_token("conn")
+        assert result == "plain"
+
+    @patch.object(sync_module, '_get_dynamodb')
+    def test_get_refresh_token_not_found(self, mock_db_fn):
+        mock_table = MagicMock()
+        mock_db = MagicMock()
+        mock_db.Table.return_value = mock_table
+        mock_db_fn.return_value = mock_db
+        mock_table.get_item.return_value = {}
+        result = sync_module.get_refresh_token("nonexistent")
+        assert result is None
+
+
+class TestSyncRefreshAccessToken:
+    """Smoke tests for jira-sync/token_manager.py refresh_access_token."""
+
+    def setup_method(self):
+        sync_module._dynamodb = None
+        sync_module._kms = None
+        sync_module._ssm = None
+        sync_module._oauth_config = None
+
+    @patch.object(sync_module, 'save_tokens')
+    @patch('jira_sync_token_manager.urllib.request.urlopen')
+    @patch.object(sync_module, 'get_oauth_config')
+    @patch.object(sync_module, 'get_refresh_token')
+    def test_refresh_success(self, mock_get_refresh, mock_get_config, mock_urlopen, mock_save):
+        mock_get_refresh.return_value = "old_refresh"
+        mock_get_config.return_value = {
+            "client_id": "cid", "client_secret": "csecret", "callback_url": "url",
+        }
+        mock_response = MagicMock()
+        mock_response.read.return_value = json.dumps({
+            "access_token": "new_at", "refresh_token": "new_rt", "expires_in": 3600,
+        }).encode("utf-8")
+        mock_response.__enter__ = MagicMock(return_value=mock_response)
+        mock_response.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_response
+        result = sync_module.refresh_access_token("conn")
+        assert result == "new_at"
+
+    @patch.object(sync_module, 'get_refresh_token')
+    def test_refresh_no_stored_token(self, mock_get_refresh):
+        mock_get_refresh.return_value = None
+        result = sync_module.refresh_access_token("conn")
+        assert result is None
+
+
+class TestSyncDeleteTokens:
+    """Smoke tests for jira-sync/token_manager.py delete_tokens."""
+
+    def setup_method(self):
+        sync_module._dynamodb = None
+        sync_module._kms = None
+
+    @patch.object(sync_module, '_get_dynamodb')
+    def test_delete_success(self, mock_db_fn):
+        mock_table = MagicMock()
+        mock_db = MagicMock()
+        mock_db.Table.return_value = mock_table
+        mock_db_fn.return_value = mock_db
+        result = sync_module.delete_tokens("conn")
+        assert result is True
+
+    @patch.object(sync_module, '_get_dynamodb')
+    def test_delete_error(self, mock_db_fn):
+        mock_table = MagicMock()
+        mock_db = MagicMock()
+        mock_db.Table.return_value = mock_table
+        mock_db_fn.return_value = mock_db
+        mock_table.delete_item.side_effect = ClientError(
+            {"Error": {"Code": "500", "Message": "err"}}, "DeleteItem"
+        )
+        result = sync_module.delete_tokens("conn")
+        assert result is False
+
+
+class TestSyncExchangeCode:
+    """Smoke tests for jira-sync/token_manager.py exchange_code_for_tokens."""
+
+    def setup_method(self):
+        sync_module._oauth_config = None
+
+    @patch('jira_sync_token_manager.urllib.request.urlopen')
+    @patch.object(sync_module, 'get_oauth_config')
+    def test_exchange_success(self, mock_get_config, mock_urlopen):
+        mock_get_config.return_value = {
+            "client_id": "cid", "client_secret": "csecret", "callback_url": "url",
+        }
+        mock_response = MagicMock()
+        mock_response.read.return_value = json.dumps({
+            "access_token": "at", "refresh_token": "rt", "expires_in": 3600,
+        }).encode("utf-8")
+        mock_response.__enter__ = MagicMock(return_value=mock_response)
+        mock_response.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_response
+        access, refresh, expires = sync_module.exchange_code_for_tokens(
+            "code", "https://example.com/cb"
+        )
+        assert access == "at"
+        assert refresh == "rt"
+
+    @patch('jira_sync_token_manager.urllib.request.urlopen')
+    @patch.object(sync_module, 'get_oauth_config')
+    def test_exchange_error(self, mock_get_config, mock_urlopen):
+        mock_get_config.return_value = {
+            "client_id": "cid", "client_secret": "csecret", "callback_url": "url",
+        }
+        mock_urlopen.side_effect = urllib.error.HTTPError(
+            url="https://auth.atlassian.com/oauth/token",
+            code=400, msg="Bad", hdrs={},
+            fp=MagicMock(read=MagicMock(return_value=b'{"error": "bad"}')),
+        )
+        access, refresh, expires = sync_module.exchange_code_for_tokens(
+            "code", "https://example.com/cb"
+        )
+        assert access is None
+
+
+class TestSyncLoadOAuthConfig:
+    """Smoke tests for jira-sync/token_manager.py _load_oauth_config."""
+
+    def setup_method(self):
+        sync_module._ssm = None
+        sync_module._oauth_config = None
+
+    @patch.object(sync_module, '_get_ssm')
+    def test_load_config_success(self, mock_ssm_fn):
+        mock_ssm = MagicMock()
+        mock_ssm.get_parameter.return_value = {"Parameter": {"Value": "val"}}
+        mock_ssm_fn.return_value = mock_ssm
+        config = sync_module._load_oauth_config()
+        assert config["client_id"] == "val"
+        assert config["client_secret"] == "val"
+
+    @patch.object(sync_module, '_get_ssm')
+    def test_load_config_caches(self, mock_ssm_fn):
+        mock_ssm = MagicMock()
+        mock_ssm.get_parameter.return_value = {"Parameter": {"Value": "val"}}
+        mock_ssm_fn.return_value = mock_ssm
+        config1 = sync_module._load_oauth_config()
+        config2 = sync_module._load_oauth_config()
+        assert config1 is config2
