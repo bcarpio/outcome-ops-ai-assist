@@ -1224,7 +1224,49 @@ class TestStoreVectors:
         assert vector_key == "ws_abc#github#my-repo#src#main#handler.py_chunk_0"
 
     def test_store_vectors_github_repo_metadata(self, vector_config):
-        """Test repo field is set for GitHub sources."""
+        """Test repo field is set from github_repo_name S3 metadata."""
+        chunks = ["text"]
+        embeddings = [[0.1] * 1024]
+
+        store_vectors(
+            workspace_id="ws_abc",
+            source="github",
+            folder_path="my-repo/src",
+            filename="app.py",
+            s3_key="workspaces/ws_abc/github/my-repo/src/app.py",
+            chunks=chunks,
+            embeddings=embeddings,
+            doc_type="unknown",
+            metadata={"github_repo_name": "my-repo"},
+        )
+
+        call_args = mock_s3vectors_client.put_vectors.call_args[1]
+        meta = call_args["vectors"][0]["metadata"]
+        assert meta["repo"] == "my-repo"
+
+    def test_store_vectors_github_repo_owner_format(self, vector_config):
+        """Test repo field uses github_repo_name for owner/repo format."""
+        chunks = ["text"]
+        embeddings = [[0.1] * 1024]
+
+        store_vectors(
+            workspace_id="ws_abc",
+            source="github",
+            folder_path="bcarpio/outcomeops-analytics-platform/ui",
+            filename="package.json",
+            s3_key="workspaces/ws_abc/github/bcarpio/outcomeops-analytics-platform/ui/package.json",
+            chunks=chunks,
+            embeddings=embeddings,
+            doc_type="unknown",
+            metadata={"github_repo_name": "bcarpio/outcomeops-analytics-platform"},
+        )
+
+        call_args = mock_s3vectors_client.put_vectors.call_args[1]
+        meta = call_args["vectors"][0]["metadata"]
+        assert meta["repo"] == "bcarpio/outcomeops-analytics-platform"
+
+    def test_store_vectors_github_repo_fallback_no_metadata(self, vector_config):
+        """Test repo field falls back to first folder_path component when no S3 metadata."""
         chunks = ["text"]
         embeddings = [[0.1] * 1024]
 

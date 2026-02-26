@@ -593,8 +593,13 @@ def store_vectors(
         else:
             vector_key = f"{workspace_id}#{source}#{filename}_chunk_{i}"
 
-        # For GitHub sources, folder_path is the repo name (or starts with it)
-        repo = folder_path.split("/")[0] if source == "github" and folder_path else ""
+        # For GitHub sources, prefer explicit repo name from S3 object metadata
+        # (set by github-sync), fall back to first folder_path component
+        repo = ""
+        if source == "github":
+            repo = metadata.get("github_repo_name", "")
+            if not repo and folder_path:
+                repo = folder_path.split("/")[0]
 
         vector_metadata = {
             "workspace_id": workspace_id,
