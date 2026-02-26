@@ -493,7 +493,7 @@ def handle_list_connections(event: Dict) -> Dict:
     return _response(200, {
         "connections": [
             {
-                "connection_id": c["connection_id"],
+                "connection_id": c.get("connection_id") or c.get("SK", "").replace("JIRA_CONNECTION#", ""),
                 "cloud_id": c.get("cloud_id"),
                 "site_name": c.get("site_name", ""),
                 "site_url": c.get("site_url", ""),

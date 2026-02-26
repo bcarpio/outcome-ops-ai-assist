@@ -450,7 +450,7 @@ export default function WorkspaceSettings() {
     try {
       const { spaces } = await listConfluenceSpaces(workspaceId, connection.connection_id)
       setAvailableSpaces(spaces)
-      const selected = new Set(connection.selected_spaces.map(s => s.id))
+      const selected = new Set((connection.selected_spaces || []).map(s => s.id))
       setSelectedSpaces(selected)
       setIncludeAttachments(connection.include_attachments)
     } catch (err) {
@@ -547,7 +547,7 @@ export default function WorkspaceSettings() {
     try {
       const { projects } = await listJiraProjects(workspaceId, connection.connection_id)
       setAvailableProjects(projects)
-      const selected = new Set(connection.selected_projects.map(p => p.key))
+      const selected = new Set((connection.selected_projects || []).map(p => p.key))
       setSelectedProjects(selected)
       setJiraIncludeAttachments(connection.include_attachments)
       setJiraIncludeComments(connection.include_comments)
@@ -645,7 +645,7 @@ export default function WorkspaceSettings() {
     try {
       const { folders } = await listOutlookFolders(workspaceId, connection.connection_id)
       setAvailableFolders(folders)
-      const selected = new Set(connection.selected_folders.map(f => f.id))
+      const selected = new Set((connection.selected_folders || []).map(f => f.id))
       setSelectedFolders(selected)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load folders')
@@ -1304,7 +1304,7 @@ export default function WorkspaceSettings() {
                             </a>
                           </div>
                           <p className="text-sm text-gray-500 mt-1">
-                            {conn.selected_spaces.length === 0 ? (
+                            {(conn.selected_spaces || []).length === 0 ? (
                               <span className="text-amber-600">No spaces selected - click Configure</span>
                             ) : (
                               <>
@@ -1338,7 +1338,7 @@ export default function WorkspaceSettings() {
                             </button>
                             <button
                               onClick={() => handleTriggerSync(conn.connection_id)}
-                              disabled={syncing === conn.connection_id || conn.selected_spaces.length === 0}
+                              disabled={syncing === conn.connection_id || (conn.selected_spaces || []).length === 0}
                               className="p-1.5 text-gray-500 hover:bg-gray-100 rounded transition-colors disabled:opacity-50"
                               title="Sync now"
                             >
@@ -1417,7 +1417,7 @@ export default function WorkspaceSettings() {
                             </a>
                           </div>
                           <p className="text-sm text-gray-500 mt-1">
-                            {conn.selected_projects.length === 0 ? (
+                            {(conn.selected_projects || []).length === 0 ? (
                               <span className="text-amber-600">No projects selected - click Configure</span>
                             ) : (
                               <>
@@ -1454,7 +1454,7 @@ export default function WorkspaceSettings() {
                             </button>
                             <button
                               onClick={() => handleTriggerJiraSync(conn.connection_id)}
-                              disabled={syncingJira === conn.connection_id || conn.selected_projects.length === 0}
+                              disabled={syncingJira === conn.connection_id || (conn.selected_projects || []).length === 0}
                               className="p-1.5 text-gray-500 hover:bg-gray-100 rounded transition-colors disabled:opacity-50"
                               title="Sync now"
                             >
@@ -1526,7 +1526,7 @@ export default function WorkspaceSettings() {
                           </div>
                           <p className="text-sm text-gray-500 mt-0.5">{conn.user_email}</p>
                           <p className="text-sm text-gray-500 mt-1">
-                            {conn.selected_folders.length === 0 ? (
+                            {(conn.selected_folders || []).length === 0 ? (
                               <span className="text-amber-600">No folders selected - click Configure</span>
                             ) : (
                               <>
@@ -1563,7 +1563,7 @@ export default function WorkspaceSettings() {
                             </button>
                             <button
                               onClick={() => handleTriggerOutlookSync(conn.connection_id)}
-                              disabled={syncingOutlook === conn.connection_id || conn.selected_folders.length === 0}
+                              disabled={syncingOutlook === conn.connection_id || (conn.selected_folders || []).length === 0}
                               className="p-1.5 text-gray-500 hover:bg-gray-100 rounded transition-colors disabled:opacity-50"
                               title="Sync now"
                             >

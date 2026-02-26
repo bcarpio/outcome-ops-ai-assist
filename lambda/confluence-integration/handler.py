@@ -358,10 +358,15 @@ def list_connections(user_email: str, workspace_id: str) -> Dict:
         )
         connections = response.get("Items", [])
 
-        # Remove internal fields
+        # Remove internal fields, backfill connection_id from SK if missing
         for conn in connections:
+            sk = conn.pop("SK", None)
             conn.pop("PK", None)
-            conn.pop("SK", None)
+            if not conn.get("connection_id") and sk:
+                conn["connection_id"] = sk.replace("CONFLUENCE_CONNECTION#", "")
+            # Ensure selected_spaces is always a list
+            if conn.get("selected_spaces") is None:
+                conn["selected_spaces"] = []
 
         return _response(200, {"connections": connections})
     except ClientError as e:
