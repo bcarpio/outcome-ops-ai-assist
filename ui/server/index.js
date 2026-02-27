@@ -65,8 +65,14 @@ app.get("/health", (req, res) => {
 
 /**
  * Extract user identity from ALB OIDC headers.
- * When OIDC is enabled, ALB sets x-amzn-oidc-data (JWT) and x-amzn-oidc-identity.
- * The JWT payload contains email, name, and sub claims.
+ * When OIDC is enabled, ALB sets:
+ *   - x-amzn-oidc-data: JWT with claims from UserInfo endpoint
+ *   - x-amzn-oidc-accesstoken: Raw Azure AD access token
+ *   - x-amzn-oidc-identity: The sub claim
+ *
+ * Azure AD's UserInfo endpoint may not return 'email' for cloud-only
+ * accounts (@onmicrosoft.com). In that case, we decode the access token
+ * to get 'upn' (User Principal Name) as fallback.
  */
 function extractUser(req) {
   const oidcData = req.headers["x-amzn-oidc-data"];
@@ -79,9 +85,31 @@ function extractUser(req) {
     const payload = JSON.parse(
       Buffer.from(oidcData.split(".")[1], "base64url").toString()
     );
+
+    let email = payload.email || payload.preferred_username || null;
+
+    // Azure AD cloud-only accounts may not have email in UserInfo.
+    // Fall back to decoding the access token for upn/preferred_username.
+    if (!email) {
+      const accessToken = req.headers["x-amzn-oidc-accesstoken"];
+      if (accessToken) {
+        try {
+          const tokenPayload = JSON.parse(
+            Buffer.from(accessToken.split(".")[1], "base64url").toString()
+          );
+          email = tokenPayload.upn || tokenPayload.preferred_username || tokenPayload.unique_name || null;
+          if (email) {
+            console.log(`[auth] Resolved email from access token: ${email}`);
+          }
+        } catch {
+          // Access token may not be a decodable JWT (opaque tokens)
+        }
+      }
+    }
+
     return {
-      email: payload.email || payload.sub || "unknown",
-      name: payload.name || payload.email || "unknown",
+      email: (email || payload.sub || "unknown").toLowerCase(),
+      name: payload.name || email || "unknown",
     };
   } catch {
     return { email: "unknown", name: "unknown" };
@@ -542,6 +570,19 @@ app.delete("/api/org/members/:email", (req, res) => proxyWorkspaceRequest(req, r
 
 // Chat searchable workspaces
 app.get("/api/chat/searchable-workspaces", (req, res) => proxyWorkspaceRequest(req, res, "GET", "/chat/searchable-workspaces"));
+
+// Debug: Show current authenticated user identity
+app.get("/api/me", (req, res) => {
+  const user = extractUser(req);
+  const oidcData = req.headers["x-amzn-oidc-data"];
+  let claims = {};
+  if (oidcData) {
+    try {
+      claims = JSON.parse(Buffer.from(oidcData.split(".")[1], "base64url").toString());
+    } catch { /* ignore */ }
+  }
+  res.json({ user, claims });
+});
 
 // ============================================================================
 // Confluence Integration API (proxied to Confluence Lambda with SigV4)

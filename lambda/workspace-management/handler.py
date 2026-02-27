@@ -385,13 +385,10 @@ def list_workspaces(user_email: str) -> Dict:
         is_org_admin = _is_org_admin(table, user_email)
 
         if is_org_admin:
-            # Org admins see all workspaces - scan for METADATA items
-            response = table.scan(
-                FilterExpression="SK = :sk",
-                ExpressionAttributeValues={":sk": "METADATA"},
-            )
+            # Org admins see all workspaces
+            all_ws = _scan_all_workspaces(table)
             workspaces = []
-            for ws in response.get("Items", []):
+            for ws in all_ws:
                 ws["role"] = "org_admin"
                 workspaces.append(ws)
         else:
@@ -636,6 +633,9 @@ def add_member(
         existing = _get_membership(table, request.email, workspace_id)
         if existing:
             return _error(409, "User is already a member of this workspace")
+
+        # Ensure user has org membership record
+        _ensure_org_member(table, request.email)
 
         now = datetime.now(timezone.utc).isoformat()
 
@@ -1010,14 +1010,11 @@ def list_all_workspaces_for_sharing(user_email: str, workspace_id: str) -> Dict:
         if not _is_workspace_admin(table, user_email, workspace_id):
             return _error(403, "Only workspace admins can view sharing options")
 
-        # Scan for all workspace metadata
-        response = table.scan(
-            FilterExpression="SK = :sk",
-            ExpressionAttributeValues={":sk": "METADATA"},
-        )
+        # Get all workspace metadata (paginated)
+        all_ws = _scan_all_workspaces(table)
 
         workspaces = []
-        for ws in response.get("Items", []):
+        for ws in all_ws:
             ws_id = ws.get("workspace_id")
             # Exclude the current workspace
             if ws_id and ws_id != workspace_id:
@@ -1203,6 +1200,22 @@ def remove_org_member(user_email: str, member_email: str) -> Dict:
 # ============================================================================
 
 
+def _scan_all_workspaces(table) -> List[Dict]:
+    """Scan all workspace METADATA items with pagination."""
+    items = []
+    scan_kwargs = {
+        "FilterExpression": "SK = :sk",
+        "ExpressionAttributeValues": {":sk": "METADATA"},
+    }
+    while True:
+        response = table.scan(**scan_kwargs)
+        items.extend(response.get("Items", []))
+        if "LastEvaluatedKey" not in response:
+            break
+        scan_kwargs["ExclusiveStartKey"] = response["LastEvaluatedKey"]
+    return items
+
+
 def get_searchable_workspaces(user_email: str) -> Dict:
     """
     Get all workspaces a user can query in chat.
@@ -1217,21 +1230,20 @@ def get_searchable_workspaces(user_email: str) -> Dict:
 
     try:
         is_admin = _is_org_admin(table, user_email)
+        logger.info(f"Searchable workspaces for {user_email}: is_org_admin={is_admin}")
 
         if is_admin:
             # Org admins can search all workspaces
-            response = table.scan(
-                FilterExpression="SK = :sk",
-                ExpressionAttributeValues={":sk": "METADATA"},
-            )
+            all_ws = _scan_all_workspaces(table)
             workspaces = [
                 {
                     "workspace_id": ws.get("workspace_id"),
                     "name": ws.get("name"),
                     "access_type": "org_admin",
                 }
-                for ws in response.get("Items", [])
+                for ws in all_ws
             ]
+            logger.info(f"Org admin {user_email}: returning {len(workspaces)} workspaces")
         else:
             workspaces = []
             seen_ids = set()
@@ -1262,31 +1274,37 @@ def get_searchable_workspaces(user_email: str) -> Dict:
                         })
                         seen_ids.add(ws_id)
 
-            # Find workspaces that share with user's workspaces
-            # Scan all workspaces and check search_allowed_workspaces
-            all_ws_response = table.scan(
-                FilterExpression="SK = :sk",
-                ExpressionAttributeValues={":sk": "METADATA"},
+            logger.info(
+                f"User {user_email}: {len(user_workspace_ids)} direct memberships, "
+                f"{len(workspaces)} member workspaces"
             )
 
-            for ws in all_ws_response.get("Items", []):
-                ws_id = ws.get("workspace_id")
-                if ws_id in seen_ids:
-                    continue
+            # Find workspaces that share with user's workspaces
+            if user_workspace_ids:
+                all_ws = _scan_all_workspaces(table)
+                cross_count = 0
+                for ws in all_ws:
+                    ws_id = ws.get("workspace_id")
+                    if ws_id in seen_ids:
+                        continue
 
-                allowed = ws.get("search_allowed_workspaces", [])
-                # If any of user's workspaces are in the allowed list
-                if any(user_ws in allowed for user_ws in user_workspace_ids):
-                    workspaces.append({
-                        "workspace_id": ws_id,
-                        "name": ws.get("name"),
-                        "access_type": "shared",
-                    })
-                    seen_ids.add(ws_id)
+                    allowed = ws.get("search_allowed_workspaces", [])
+                    if allowed and any(user_ws in allowed for user_ws in user_workspace_ids):
+                        workspaces.append({
+                            "workspace_id": ws_id,
+                            "name": ws.get("name"),
+                            "access_type": "shared",
+                        })
+                        seen_ids.add(ws_id)
+                        cross_count += 1
+
+                if cross_count > 0:
+                    logger.info(f"User {user_email}: {cross_count} cross-workspace shared")
 
         # Sort by name
         workspaces.sort(key=lambda x: x.get("name", "").lower())
 
+        logger.info(f"Returning {len(workspaces)} searchable workspaces for {user_email}")
         return _response(200, {"workspaces": workspaces})
     except ClientError as e:
         logger.error(f"Error getting searchable workspaces: {e}")
