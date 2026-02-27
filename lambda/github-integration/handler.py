@@ -347,11 +347,15 @@ def update_repo_sync_status(
     if remove_parts:
         update_expr += " REMOVE " + ", ".join(remove_parts)
 
-    table.update_item(
-        Key={"PK": f"WS#{workspace_id}", "SK": f"GITHUB_REPO#{repo_name}"},
-        UpdateExpression=update_expr,
-        ExpressionAttributeValues=expr_values,
-    )
+    try:
+        table.update_item(
+            Key={"PK": f"WS#{workspace_id}", "SK": f"GITHUB_REPO#{repo_name}"},
+            UpdateExpression=update_expr,
+            ExpressionAttributeValues=expr_values,
+            ConditionExpression="attribute_exists(repo_name)",
+        )
+    except table.meta.client.exceptions.ConditionalCheckFailedException:
+        logger.warning(f"Skipping sync status update for deleted repo {repo_name} in workspace {workspace_id}")
 
 
 def delete_repo(workspace_id: str, repo_name: str) -> None:
@@ -701,7 +705,7 @@ def handle_list_repos(event: Dict) -> Dict:
     return _response(200, {
         "repos": [
             {
-                "repo_name": r["repo_name"],
+                "repo_name": r.get("repo_name", ""),
                 "installation_id": r.get("installation_id", ""),
                 "enabled": r.get("enabled", True),
                 "include_code_maps": r.get("include_code_maps", True),
@@ -713,6 +717,7 @@ def handle_list_repos(event: Dict) -> Dict:
                 "added_by": r.get("added_by"),
             }
             for r in repos
+            if r.get("repo_name")
         ]
     })
 

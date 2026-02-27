@@ -141,6 +141,7 @@ async function signedFetch(lambdaUrl, method, path, { body, extraHeaders } = {})
     method,
     headers: signedRequest.headers,
     body: body || undefined,
+    redirect: "manual",
   });
 }
 
