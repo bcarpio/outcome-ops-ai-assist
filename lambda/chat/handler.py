@@ -743,7 +743,7 @@ Provide a helpful, accurate answer based on the context above. If the context do
             messages=messages,
             system=[{"text": SYSTEM_PROMPT}],
             inferenceConfig={
-                "maxTokens": 4096,
+                "maxTokens": 16384,
                 "temperature": 0.3,
             },
         )
