@@ -418,7 +418,9 @@ def handle_delete_prefix(message: Dict) -> Dict[str, Any]:
     # like {workspace_id}#github#{repo}#code-map#... and
     # {workspace_id}#github#{repo}#handler-group-summary#...)
     if workspace_id and source and prefix:
-        vector_key_prefix = f"{workspace_id}#{source}#{prefix}#"
+        # Vector keys use # as separator, not /
+        safe_prefix = prefix.replace("/", "#")
+        vector_key_prefix = f"{workspace_id}#{source}#{safe_prefix}#"
         vectors_deleted += delete_vectors_by_key_prefix(vector_key_prefix)
 
     # Delete S3 objects
