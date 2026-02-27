@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import {
   Send,
   Plus,
@@ -510,7 +511,7 @@ export default function Chat() {
                     {msg.role === 'assistant' ? (
                       <div className="prose prose-sm max-w-none">
                         {msg.content ? (
-                          <ReactMarkdown>{msg.content}</ReactMarkdown>
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
                         ) : msg.isStreaming ? (
                           <div className="flex items-center gap-2 text-gray-500">
                             <Loader2 size={16} className="animate-spin" />
