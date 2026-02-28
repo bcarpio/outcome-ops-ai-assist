@@ -73,23 +73,35 @@ def _calculate_cost(model_id: str, input_tokens: int, output_tokens: int) -> flo
 # Refusal Detection
 # ============================================================================
 
-# Patterns that indicate Claude refused to answer
+# Broad patterns that indicate Claude refused to answer.
+# Combined with a length threshold to distinguish ToS refusals (short, blunt)
+# from "no KB context" responses (long, with suggestions and explanations).
 REFUSAL_PATTERNS = [
     r"I (?:cannot|can't|won't|will not|am unable to|'m unable to) (?:help|assist|provide|generate|create|write|do that)",
     r"I'm not able to (?:help|assist|provide|generate|create|write)",
     r"I (?:must|have to) (?:decline|refuse)",
     r"(?:This|That|I) (?:goes|would go|is) (?:against|beyond) my",
-    r"I don't (?:think I should|feel comfortable)",
+    r"I (?:don't|do not) (?:think I should|feel comfortable)",
     r"(?:violates?|against) (?:my|the) (?:guidelines|policies|ethical|principles)",
     r"I (?:apologize|'m sorry),? but I (?:cannot|can't|won't) (?:help|assist|provide|generate|create|write|do that|comply|fulfill)",
 ]
 
 _compiled_refusal_patterns = [re.compile(p, re.IGNORECASE) for p in REFUSAL_PATTERNS]
 
+# ToS refusals are short and blunt. "No context" responses are long with
+# explanations, suggestions, and alternatives. If output exceeds this
+# threshold, it's Claude being helpful about missing data, not a ToS refusal.
+REFUSAL_MAX_LENGTH = 250
+
 
 def detect_refusal(output_text: str) -> Optional[str]:
     """
-    Detect if Claude's response is a refusal.
+    Detect if Claude's response is a ToS/safety refusal.
+
+    Uses two signals:
+    1. Pattern match: output starts with a refusal phrase
+    2. Length check: ToS refusals are short (<250 chars). Longer responses
+       that match patterns are "I don't have data" responses, not abuse.
 
     Args:
         output_text: The model's response text
@@ -98,6 +110,11 @@ def detect_refusal(output_text: str) -> Optional[str]:
         The matched refusal reason string, or None if not a refusal
     """
     if not output_text:
+        return None
+
+    # Long responses are not ToS refusals - Claude is being helpful
+    # about missing context, not refusing due to policy
+    if len(output_text) > REFUSAL_MAX_LENGTH:
         return None
 
     # Only check the first 500 chars - refusals appear at the start

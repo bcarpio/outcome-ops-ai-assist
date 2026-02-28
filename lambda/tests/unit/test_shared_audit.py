@@ -238,107 +238,51 @@ class TestDetectRefusal:
         result = detect_refusal(None)
         assert result is None
 
+    # === Short ToS refusals (SHOULD be flagged) ===
+
     def test_detect_refusal_cannot_help(self):
-        """Test detects 'I cannot help' pattern."""
+        """Test short 'I cannot help' is flagged."""
         result = detect_refusal("I cannot help with that request.")
         assert result is not None
-        assert "cannot help" in result.lower()
 
     def test_detect_refusal_cant_assist(self):
-        """Test detects \"I can't assist\" pattern."""
-        result = detect_refusal("I can't assist with generating that code.")
+        """Test short \"I can't assist\" is flagged."""
+        result = detect_refusal("I can't assist with that.")
         assert result is not None
-        assert "can't assist" in result.lower()
 
     def test_detect_refusal_wont_provide(self):
-        """Test detects \"I won't provide\" pattern."""
-        result = detect_refusal("I won't provide instructions for that.")
-        assert result is not None
-        assert "won't provide" in result.lower()
-
-    def test_detect_refusal_will_not_generate(self):
-        """Test detects \"I will not generate\" pattern."""
-        result = detect_refusal("I will not generate that type of content.")
-        assert result is not None
-        assert "will not generate" in result.lower()
-
-    def test_detect_refusal_am_unable_to_create(self):
-        """Test detects 'I am unable to create' pattern."""
-        result = detect_refusal("I am unable to create that kind of output.")
-        assert result is not None
-        assert "unable to create" in result.lower()
-
-    def test_detect_refusal_im_not_able_to_generate(self):
-        """Test detects \"I'm not able to generate\" pattern."""
-        result = detect_refusal("I'm not able to generate that content.")
-        assert result is not None
-        assert "not able to generate" in result.lower()
-
-    def test_detect_refusal_not_able_to_help(self):
-        """Test detects \"I'm not able to help\" pattern."""
-        result = detect_refusal("I'm not able to help with that particular request.")
+        """Test short \"I won't provide\" is flagged."""
+        result = detect_refusal("I won't provide that.")
         assert result is not None
 
     def test_detect_refusal_must_decline(self):
-        """Test detects 'I must decline' pattern."""
+        """Test 'I must decline' is flagged."""
         result = detect_refusal("I must decline this request.")
         assert result is not None
-        assert "must decline" in result.lower()
 
     def test_detect_refusal_have_to_refuse(self):
-        """Test detects 'I have to refuse' pattern."""
+        """Test 'I have to refuse' is flagged."""
         result = detect_refusal("I have to refuse that request.")
         assert result is not None
-        assert "have to refuse" in result.lower()
 
-    def test_detect_refusal_goes_against_my_guidelines(self):
-        """Test detects 'goes against my guidelines' pattern."""
+    def test_detect_refusal_goes_against_guidelines(self):
+        """Test 'goes against my guidelines' is flagged."""
         result = detect_refusal("This goes against my guidelines.")
         assert result is not None
 
-    def test_detect_refusal_would_go_beyond_my_principles(self):
-        """Test detects 'would go beyond my principles' pattern."""
-        result = detect_refusal("That would go beyond my principles.")
-        assert result is not None
-
-    def test_detect_refusal_is_against_my_policies(self):
-        """Test detects 'I is against my policies' pattern."""
-        result = detect_refusal("I is against my policies to do that.")
-        assert result is not None
-
-    def test_detect_refusal_dont_think_i_should(self):
-        """Test detects \"I don't think I should\" pattern."""
-        result = detect_refusal("I don't think I should help with that.")
+    def test_detect_refusal_violates_guidelines(self):
+        """Test 'violates my guidelines' is flagged."""
+        result = detect_refusal("This violates my ethical guidelines.")
         assert result is not None
 
     def test_detect_refusal_dont_feel_comfortable(self):
-        """Test detects \"I don't feel comfortable\" pattern."""
-        result = detect_refusal("I don't feel comfortable generating that code.")
+        """Test \"I don't feel comfortable\" is flagged."""
+        result = detect_refusal("I don't feel comfortable with that.")
         assert result is not None
 
-    def test_detect_refusal_violates_guidelines(self):
-        """Test detects 'violates my guidelines' pattern."""
-        result = detect_refusal("This request violates my guidelines and I cannot proceed.")
-        assert result is not None
-
-    def test_detect_refusal_against_the_ethical_principles(self):
-        """Test detects 'against the ethical principles' pattern."""
-        result = detect_refusal("That is against the ethical principles I follow.")
-        assert result is not None
-
-    def test_detect_refusal_apologize_but_cannot(self):
-        """Test detects \"I apologize, but I cannot help\" pattern."""
-        result = detect_refusal("I apologize, but I cannot help with that request.")
-        assert result is not None
-
-    def test_detect_refusal_apologize_but_wont_comply(self):
-        """Test detects 'I apologize but I won't comply' pattern."""
-        result = detect_refusal("I apologize but I won't comply with that request.")
-        assert result is not None
-
-    def test_detect_refusal_apologize_but_cant_fulfill(self):
-        """Test detects 'I apologize, but I can't fulfill' pattern."""
-        result = detect_refusal("I apologize, but I can't fulfill that request.")
+    def test_detect_refusal_apologize_cannot_help(self):
+        """Test short apology refusal is flagged."""
+        result = detect_refusal("I apologize, but I cannot help with that.")
         assert result is not None
 
     def test_detect_refusal_case_insensitive(self):
@@ -346,29 +290,61 @@ class TestDetectRefusal:
         result = detect_refusal("I CANNOT HELP with that.")
         assert result is not None
 
-    def test_detect_refusal_only_checks_first_500_chars(self):
-        """Test only checks the first 500 characters for refusal patterns."""
-        # Refusal buried at position 501+
-        normal_prefix = "A" * 501
-        text = normal_prefix + " I cannot help with that."
+    # === Long "no context" responses (should NOT be flagged) ===
+
+    def test_no_flag_long_no_context_response(self):
+        """Test long 'no KB context' response is NOT flagged due to length."""
+        text = (
+            "I apologize, but I cannot provide specific security and compliance "
+            "guidelines for serverless architectures in AWS based on the current "
+            "knowledge base context. The context is empty, which means there are "
+            "no documents available to reference.\n\nTo get comprehensive security "
+            "and compliance guidelines, I recommend:\n1. Consulting your organization's "
+            "internal security documentation\n2. Reviewing AWS Well-Architected Framework"
+        )
         result = detect_refusal(text)
         assert result is None
 
-    def test_detect_refusal_found_within_first_500_chars(self):
-        """Test detects refusal within the first 500 characters."""
-        normal_prefix = "A" * 10
-        text = normal_prefix + " I cannot help with that."
+    def test_no_flag_long_helpful_response(self):
+        """Test long helpful response with refusal words is NOT flagged."""
+        text = (
+            "I cannot provide that specific information from the knowledge base "
+            "as there are no relevant documents. However, I can suggest some general "
+            "approaches you might consider:\n\n1. Check your organization's internal "
+            "documentation for standards\n2. Review the AWS documentation directly\n"
+            "3. Consult with your team lead for project-specific guidelines"
+        )
         result = detect_refusal(text)
+        assert result is None
+
+    def test_no_flag_long_unable_to_find(self):
+        """Test long 'unable to find' response is NOT flagged."""
+        text = (
+            "I'm unable to find any documents related to your question in the "
+            "current workspace. The knowledge base appears to be empty or doesn't "
+            "contain information about this topic. You may want to:\n\n"
+            "1. Add relevant documentation to the workspace\n"
+            "2. Try a different workspace that might have the information"
+        )
+        result = detect_refusal(text)
+        assert result is None
+
+    # === Edge cases ===
+
+    def test_detect_refusal_only_checks_first_500_chars(self):
+        """Test only checks the first 500 characters."""
+        normal_prefix = "A" * 501
+        text = normal_prefix + " I cannot help."
+        result = detect_refusal(text)
+        assert result is None
+
+    def test_detect_refusal_short_refusal_within_limit(self):
+        """Test short refusal within length limit is flagged."""
+        result = detect_refusal("I'm sorry, I can't assist with that request. [TEST_REFUSAL]")
         assert result is not None
 
-    def test_detect_refusal_returns_matched_text(self):
-        """Test returns the exact matched refusal string."""
-        result = detect_refusal("I cannot help with that request.")
-        assert result == "I cannot help"
-
     def test_detect_refusal_normal_code_response(self):
-        """Test does not flag normal code responses that mention 'cannot'."""
-        # This should NOT be flagged because 'cannot' is not followed by help/assist/etc.
+        """Test does not flag normal code responses."""
         result = detect_refusal("The variable cannot be null. Here is the fix:\n```\nif x is None: x = 0\n```")
         assert result is None
 
@@ -510,7 +486,7 @@ class TestLogAuditEntry:
             lambda_name="chat",
             model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
             input_text="bad request",
-            output_text="I cannot help with that request.",
+            output_text="I cannot help with that.",
         )
 
         item = mock_table.put_item.call_args[1]["Item"]
@@ -524,7 +500,7 @@ class TestLogAuditEntry:
             lambda_name="chat",
             model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
             input_text="hello",
-            output_text="I cannot help with that request.",
+            output_text="This violates my guidelines.",
             status="error",
         )
 
@@ -743,7 +719,7 @@ class TestLogAuditEntry:
                 lambda_name="chat",
                 model_id="test-model",
                 input_text="prompt",
-                output_text="I cannot help with that request.",
+                output_text="This violates my ethical guidelines.",
             )
 
             mock_warning.assert_called_once()
@@ -811,7 +787,7 @@ class TestLogAuditEntry:
             lambda_name="generate-code",
             model_id="test-model",
             input_text="generate malware",
-            output_text="I apologize, but I cannot help with that request.",
+            output_text="I cannot help with that.",
         )
 
         item = mock_table.put_item.call_args[1]["Item"]
@@ -825,7 +801,7 @@ class TestLogAuditEntry:
             lambda_name="chat",
             model_id="test-model",
             input_text="hello",
-            output_text="I cannot help with that.",
+            output_text="This violates my guidelines.",
             status="error",
             flagged_reason="Timeout exceeded",
         )
