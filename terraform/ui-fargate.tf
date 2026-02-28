@@ -291,6 +291,8 @@ resource "aws_lb_listener_rule" "oauth_callback_bypass" {
         "/api/github/callback",
         "/api/confluence/callback",
         "/api/jira/callback",
+        "/api/teams/callback",
+        "/api/sharepoint/callback",
       ]
     }
   }
@@ -399,6 +401,14 @@ module "ui_ecs" {
               {
                 name  = "OUTLOOK_LAMBDA_URL"
                 value = aws_lambda_function_url.outlook_integration[0].function_url
+              },
+              {
+                name  = "TEAMS_LAMBDA_URL"
+                value = aws_lambda_function_url.teams_integration[0].function_url
+              },
+              {
+                name  = "SHAREPOINT_LAMBDA_URL"
+                value = aws_lambda_function_url.sharepoint_integration[0].function_url
               }
             ] : []
           )
@@ -470,6 +480,20 @@ module "ui_ecs" {
               "lambda:InvokeFunctionUrl"
             ]
             resources = [module.outlook_integration_lambda[0].lambda_function_arn]
+          },
+          {
+            effect = "Allow"
+            actions = [
+              "lambda:InvokeFunctionUrl"
+            ]
+            resources = [module.teams_integration_lambda[0].lambda_function_arn]
+          },
+          {
+            effect = "Allow"
+            actions = [
+              "lambda:InvokeFunctionUrl"
+            ]
+            resources = [module.sharepoint_integration_lambda[0].lambda_function_arn]
           }
         ] : []
       )

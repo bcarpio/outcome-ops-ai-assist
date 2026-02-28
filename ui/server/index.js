@@ -26,6 +26,8 @@ const CONFLUENCE_LAMBDA_URL = process.env.CONFLUENCE_LAMBDA_URL;
 const JIRA_LAMBDA_URL = process.env.JIRA_LAMBDA_URL;
 const GITHUB_LAMBDA_URL = process.env.GITHUB_LAMBDA_URL;
 const OUTLOOK_LAMBDA_URL = process.env.OUTLOOK_LAMBDA_URL;
+const TEAMS_LAMBDA_URL = process.env.TEAMS_LAMBDA_URL;
+const SHAREPOINT_LAMBDA_URL = process.env.SHAREPOINT_LAMBDA_URL;
 const AWS_REGION = process.env.AWS_REGION || "us-west-2";
 const STATIC_DIR = process.env.STATIC_DIR || "/app/static";
 const LOCAL_DEV_MODE = process.env.LOCAL_DEV_MODE === "true";
@@ -213,6 +215,20 @@ async function signedGitHubFetch(method, path, options = {}) {
  */
 async function signedOutlookFetch(method, path, options = {}) {
   return signedFetch(OUTLOOK_LAMBDA_URL, method, path, options);
+}
+
+/**
+ * Sign and send a request to the Teams Lambda Function URL.
+ */
+async function signedTeamsFetch(method, path, options = {}) {
+  return signedFetch(TEAMS_LAMBDA_URL, method, path, options);
+}
+
+/**
+ * Sign and send a request to the SharePoint Lambda Function URL.
+ */
+async function signedSharePointFetch(method, path, options = {}) {
+  return signedFetch(SHAREPOINT_LAMBDA_URL, method, path, options);
 }
 
 // Streaming chat proxy endpoint with SigV4 auth
@@ -1274,6 +1290,268 @@ app.delete("/api/workspaces/:id/outlook/connections/:connId", (req, res) => {
 });
 
 // ============================================================================
+// Teams Integration Routes
+// ============================================================================
+
+// Helper to proxy Teams requests
+async function proxyTeamsRequest(req, res, method, path) {
+  if (!TEAMS_LAMBDA_URL) {
+    console.log("[proxy] TEAMS_LAMBDA_URL not configured - Teams integration disabled");
+    res.status(404).json({ error: "Teams integration not enabled. Set TEAMS_LAMBDA_URL." });
+    return;
+  }
+
+  const user = extractUser(req);
+  console.log(`[proxy] Teams ${method} ${path} for: ${user.email}`);
+
+  try {
+    const options = {
+      extraHeaders: { "x-user-email": user.email },
+    };
+    if (req.body && Object.keys(req.body).length > 0) {
+      options.body = JSON.stringify(req.body);
+    }
+
+    const response = await signedTeamsFetch(method, path, options);
+
+    if (response.status === 302) {
+      const location = response.headers.get("location");
+      return res.redirect(location);
+    }
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`[proxy] Teams Lambda error: ${response.status} - ${errorText}`);
+      res.status(response.status).json({ error: errorText || "Teams request failed" });
+      return;
+    }
+
+    const text = await response.text();
+    if (!text) {
+      console.error("[proxy] Empty response from Teams Lambda");
+      res.status(500).json({ error: "Empty response from Teams service" });
+      return;
+    }
+
+    try {
+      const data = JSON.parse(text);
+      res.status(response.status).json(data);
+    } catch (parseError) {
+      console.error(`[proxy] Failed to parse Teams response: ${text}`);
+      res.status(500).json({ error: "Invalid response from Teams service" });
+    }
+  } catch (error) {
+    console.error(`[proxy] Teams error: ${error.message}`);
+    if (error.message.includes("credentials") || error.message.includes("Credential")) {
+      res.status(500).json({ error: "AWS credentials not configured." });
+    } else {
+      res.status(500).json({ error: `Failed to process Teams request: ${error.message}` });
+    }
+  }
+}
+
+// Teams OAuth routes
+app.get("/api/teams/authorize", (req, res) => {
+  const workspaceId = req.query.workspace_id;
+  proxyTeamsRequest(req, res, "GET", `/teams/authorize?workspace_id=${encodeURIComponent(workspaceId)}`);
+});
+app.get("/api/teams/callback", async (req, res) => {
+  const { code, state, error } = req.query;
+
+  if (error) {
+    return res.redirect(`/?error=${encodeURIComponent(error)}`);
+  }
+
+  if (!TEAMS_LAMBDA_URL) {
+    return res.redirect(`/?error=teams_not_configured`);
+  }
+
+  try {
+    const response = await signedTeamsFetch("POST", "/teams/callback", {
+      body: JSON.stringify({ code, state }),
+    });
+
+    if (response.status === 302) {
+      const location = response.headers.get("location");
+      return res.redirect(location);
+    }
+
+    const text = await response.text();
+    try {
+      const data = JSON.parse(text);
+      if (data.redirect) {
+        return res.redirect(data.redirect);
+      }
+      res.status(response.status).json(data);
+    } catch {
+      res.status(response.status).send(text);
+    }
+  } catch (error) {
+    console.error(`[proxy] Teams callback error: ${error.message}`);
+    res.redirect(`/?error=teams_callback_failed`);
+  }
+});
+
+// Teams connections
+app.get("/api/workspaces/:id/teams/connections", (req, res) => {
+  proxyTeamsRequest(req, res, "GET", `/workspaces/${req.params.id}/teams/connections`);
+});
+
+// Teams - list teams
+app.get("/api/workspaces/:id/teams/connections/:connId/teams", (req, res) => {
+  proxyTeamsRequest(req, res, "GET", `/workspaces/${req.params.id}/teams/connections/${req.params.connId}/teams`);
+});
+
+// Teams - list channels
+app.get("/api/workspaces/:id/teams/connections/:connId/channels", (req, res) => {
+  const teamId = req.query.team_id;
+  proxyTeamsRequest(req, res, "GET", `/workspaces/${req.params.id}/teams/connections/${req.params.connId}/channels?team_id=${encodeURIComponent(teamId)}`);
+});
+
+// Teams - save config
+app.put("/api/workspaces/:id/teams/connections/:connId/config", (req, res) => {
+  proxyTeamsRequest(req, res, "PUT", `/workspaces/${req.params.id}/teams/connections/${req.params.connId}/config`);
+});
+
+// Teams sync
+app.post("/api/workspaces/:id/teams/connections/:connId/sync", (req, res) => {
+  proxyTeamsRequest(req, res, "POST", `/workspaces/${req.params.id}/teams/connections/${req.params.connId}/sync`);
+});
+
+// Delete Teams connection
+app.delete("/api/workspaces/:id/teams/connections/:connId", (req, res) => {
+  proxyTeamsRequest(req, res, "DELETE", `/workspaces/${req.params.id}/teams/connections/${req.params.connId}`);
+});
+
+// ============================================================================
+// SharePoint Integration Routes
+// ============================================================================
+
+// Helper to proxy SharePoint requests
+async function proxySharePointRequest(req, res, method, path) {
+  if (!SHAREPOINT_LAMBDA_URL) {
+    console.log("[proxy] SHAREPOINT_LAMBDA_URL not configured - SharePoint integration disabled");
+    res.status(404).json({ error: "SharePoint integration not enabled. Set SHAREPOINT_LAMBDA_URL." });
+    return;
+  }
+
+  const user = extractUser(req);
+  console.log(`[proxy] SharePoint ${method} ${path} for: ${user.email}`);
+
+  try {
+    const options = {
+      extraHeaders: { "x-user-email": user.email },
+    };
+    if (req.body && Object.keys(req.body).length > 0) {
+      options.body = JSON.stringify(req.body);
+    }
+
+    const response = await signedSharePointFetch(method, path, options);
+
+    if (response.status === 302) {
+      const location = response.headers.get("location");
+      return res.redirect(location);
+    }
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`[proxy] SharePoint Lambda error: ${response.status} - ${errorText}`);
+      res.status(response.status).json({ error: errorText || "SharePoint request failed" });
+      return;
+    }
+
+    const text = await response.text();
+    if (!text) {
+      console.error("[proxy] Empty response from SharePoint Lambda");
+      res.status(500).json({ error: "Empty response from SharePoint service" });
+      return;
+    }
+
+    try {
+      const data = JSON.parse(text);
+      res.status(response.status).json(data);
+    } catch (parseError) {
+      console.error(`[proxy] Failed to parse SharePoint response: ${text}`);
+      res.status(500).json({ error: "Invalid response from SharePoint service" });
+    }
+  } catch (error) {
+    console.error(`[proxy] SharePoint error: ${error.message}`);
+    if (error.message.includes("credentials") || error.message.includes("Credential")) {
+      res.status(500).json({ error: "AWS credentials not configured." });
+    } else {
+      res.status(500).json({ error: `Failed to process SharePoint request: ${error.message}` });
+    }
+  }
+}
+
+// SharePoint OAuth routes
+app.get("/api/sharepoint/authorize", (req, res) => {
+  const workspaceId = req.query.workspace_id;
+  proxySharePointRequest(req, res, "GET", `/sharepoint/authorize?workspace_id=${encodeURIComponent(workspaceId)}`);
+});
+app.get("/api/sharepoint/callback", async (req, res) => {
+  const { code, state, error } = req.query;
+
+  if (error) {
+    return res.redirect(`/?error=${encodeURIComponent(error)}`);
+  }
+
+  if (!SHAREPOINT_LAMBDA_URL) {
+    return res.redirect(`/?error=sharepoint_not_configured`);
+  }
+
+  try {
+    const response = await signedSharePointFetch("POST", "/sharepoint/callback", {
+      body: JSON.stringify({ code, state }),
+    });
+
+    if (response.status === 302) {
+      const location = response.headers.get("location");
+      return res.redirect(location);
+    }
+
+    const text = await response.text();
+    try {
+      const data = JSON.parse(text);
+      if (data.redirect) {
+        return res.redirect(data.redirect);
+      }
+      res.status(response.status).json(data);
+    } catch {
+      res.status(response.status).send(text);
+    }
+  } catch (error) {
+    console.error(`[proxy] SharePoint callback error: ${error.message}`);
+    res.redirect(`/?error=sharepoint_callback_failed`);
+  }
+});
+
+// SharePoint connections
+app.get("/api/workspaces/:id/sharepoint/connections", (req, res) => {
+  proxySharePointRequest(req, res, "GET", `/workspaces/${req.params.id}/sharepoint/connections`);
+});
+
+// SharePoint - list sites
+app.get("/api/workspaces/:id/sharepoint/connections/:connId/sites", (req, res) => {
+  proxySharePointRequest(req, res, "GET", `/workspaces/${req.params.id}/sharepoint/connections/${req.params.connId}/sites`);
+});
+
+// SharePoint - update sites
+app.put("/api/workspaces/:id/sharepoint/connections/:connId/sites", (req, res) => {
+  proxySharePointRequest(req, res, "PUT", `/workspaces/${req.params.id}/sharepoint/connections/${req.params.connId}/sites`);
+});
+
+// SharePoint sync
+app.post("/api/workspaces/:id/sharepoint/connections/:connId/sync", (req, res) => {
+  proxySharePointRequest(req, res, "POST", `/workspaces/${req.params.id}/sharepoint/connections/${req.params.connId}/sync`);
+});
+
+// Delete SharePoint connection
+app.delete("/api/workspaces/:id/sharepoint/connections/:connId", (req, res) => {
+  proxySharePointRequest(req, res, "DELETE", `/workspaces/${req.params.id}/sharepoint/connections/${req.params.connId}`);
+});
+
+// ============================================================================
 // Logout (clear ALB OIDC session cookies)
 // ============================================================================
 
@@ -1334,6 +1612,8 @@ app.listen(PORT, () => {
   console.log(`[server] Jira Lambda URL: ${JIRA_LAMBDA_URL ? "configured" : "disabled"}`);
   console.log(`[server] GitHub Lambda URL: ${GITHUB_LAMBDA_URL ? "configured" : "disabled"}`);
   console.log(`[server] Outlook Lambda URL: ${OUTLOOK_LAMBDA_URL ? "configured" : "disabled"}`);
+  console.log(`[server] Teams Lambda URL: ${TEAMS_LAMBDA_URL ? "configured" : "disabled"}`);
+  console.log(`[server] SharePoint Lambda URL: ${SHAREPOINT_LAMBDA_URL ? "configured" : "disabled"}`);
   console.log(`[server] Local dev mode: ${LOCAL_DEV_MODE ? "ENABLED (using mock data)" : "disabled"}`);
   console.log(`[server] AWS Region: ${AWS_REGION}`);
 });

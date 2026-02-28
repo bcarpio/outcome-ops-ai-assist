@@ -58,6 +58,19 @@ import {
   updateOutlookFolders,
   triggerOutlookSync,
   deleteOutlookConnection,
+  listTeamsConnections,
+  getTeamsAuthUrl,
+  listTeamsTeams,
+  listTeamsChannels,
+  saveTeamsConfig,
+  triggerTeamsSync,
+  deleteTeamsConnection,
+  listSharePointConnections,
+  getSharePointAuthUrl,
+  listSharePointSites,
+  updateSharePointSites,
+  triggerSharePointSync,
+  deleteSharePointConnection,
   getGitHubInstallUrl,
   listGitHubInstallations,
   listGitHubInstallationRepos,
@@ -80,6 +93,13 @@ import {
   type GitHubRepoType,
   type OutlookConnection,
   type OutlookFolder,
+  type TeamsConnection,
+  type TeamsTeam,
+  type TeamsChannel,
+  type TeamsChannelConfig,
+  type SharePointConnection,
+  type SharePointSite,
+  type SharePointSiteConfig,
 } from '../lib/api'
 
 type Tab = 'general' | 'members' | 'integrations' | 'sharing' | 'documents'
@@ -150,6 +170,32 @@ export default function WorkspaceSettings() {
   const [selectedFolders, setSelectedFolders] = useState<Set<string>>(new Set())
   const [savingFolders, setSavingFolders] = useState(false)
   const [syncingOutlook, setSyncingOutlook] = useState<string | null>(null)
+
+  // Teams integration state
+  const [teamsConnections, setTeamsConnections] = useState<TeamsConnection[]>([])
+  const [connectingTeams, setConnectingTeams] = useState(false)
+  const [syncingTeams, setSyncingTeams] = useState<string | null>(null)
+  const [configuringTeamsConnection, setConfiguringTeamsConnection] = useState<TeamsConnection | null>(null)
+  const [availableTeams, setAvailableTeams] = useState<TeamsTeam[]>([])
+  const [loadingTeams, setLoadingTeams] = useState(false)
+  const [selectedTeamId, setSelectedTeamId] = useState<string>('')
+  const [availableChannels, setAvailableChannels] = useState<TeamsChannel[]>([])
+  const [loadingChannels, setLoadingChannels] = useState(false)
+  const [selectedChannels, setSelectedChannels] = useState<TeamsChannelConfig[]>([])
+  const [teamsDaysBack, setTeamsDaysBack] = useState(30)
+  const [teamsSyncFiles, setTeamsSyncFiles] = useState(true)
+  const [savingTeamsConfig, setSavingTeamsConfig] = useState(false)
+
+  // SharePoint integration state
+  const [sharePointConnections, setSharePointConnections] = useState<SharePointConnection[]>([])
+  const [connectingSharePoint, setConnectingSharePoint] = useState(false)
+  const [syncingSharePoint, setSyncingSharePoint] = useState<string | null>(null)
+  const [configuringSharePointConnection, setConfiguringSharePointConnection] = useState<SharePointConnection | null>(null)
+  const [availableSPSites, setAvailableSPSites] = useState<SharePointSite[]>([])
+  const [loadingSPSites, setLoadingSPSites] = useState(false)
+  const [selectedSPSites, setSelectedSPSites] = useState<Set<string>>(new Set())
+  const [spIncludePages, setSpIncludePages] = useState(true)
+  const [savingSPSites, setSavingSPSites] = useState(false)
 
   // Legacy repo state removed - now using GitHub App integration
 
@@ -248,14 +294,18 @@ export default function WorkspaceSettings() {
     if (!workspaceId) return
     setLoadingConnections(true)
     try {
-      const [confluenceData, jiraData, outlookData] = await Promise.all([
+      const [confluenceData, jiraData, outlookData, teamsData, sharePointData] = await Promise.all([
         listConfluenceConnections(workspaceId),
         listJiraConnections(workspaceId),
         listOutlookConnections(workspaceId).catch(() => []),
+        listTeamsConnections(workspaceId).catch(() => []),
+        listSharePointConnections(workspaceId).catch(() => []),
       ])
       setConfluenceConnections(confluenceData)
       setJiraConnections(jiraData)
       setOutlookConnections(outlookData)
+      setTeamsConnections(teamsData)
+      setSharePointConnections(sharePointData)
     } catch (err) {
       console.error('Failed to load connections:', err)
     } finally {
@@ -713,6 +763,228 @@ export default function WorkspaceSettings() {
         next.delete(folderId)
       } else {
         next.add(folderId)
+      }
+      return next
+    })
+  }
+
+  // Teams handlers
+  async function handleConnectTeams() {
+    if (!workspaceId) return
+    setConnectingTeams(true)
+    setError(null)
+    try {
+      const authUrl = await getTeamsAuthUrl(workspaceId)
+      window.location.href = authUrl
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to start Teams connection')
+      setConnectingTeams(false)
+    }
+  }
+
+  async function openTeamsConfiguration(connection: TeamsConnection) {
+    if (!workspaceId) return
+    setConfiguringTeamsConnection(connection)
+    setLoadingTeams(true)
+    setError(null)
+    try {
+      const teams = await listTeamsTeams(workspaceId, connection.connection_id)
+      setAvailableTeams(teams)
+      // Restore existing config
+      const existingChannels = connection.config?.include_channels || []
+      setSelectedChannels(existingChannels)
+      setTeamsDaysBack(connection.config?.days_back || 30)
+      setTeamsSyncFiles(connection.config?.sync_files !== false)
+      setSelectedTeamId('')
+      setAvailableChannels([])
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load teams')
+      setConfiguringTeamsConnection(null)
+    } finally {
+      setLoadingTeams(false)
+    }
+  }
+
+  async function handleTeamSelect(teamId: string) {
+    if (!workspaceId || !configuringTeamsConnection) return
+    setSelectedTeamId(teamId)
+    if (!teamId) {
+      setAvailableChannels([])
+      return
+    }
+    setLoadingChannels(true)
+    try {
+      const channels = await listTeamsChannels(
+        workspaceId,
+        configuringTeamsConnection.connection_id,
+        teamId
+      )
+      setAvailableChannels(channels)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load channels')
+    } finally {
+      setLoadingChannels(false)
+    }
+  }
+
+  function toggleTeamsChannel(teamId: string, teamName: string, channelId: string, channelName: string) {
+    setSelectedChannels(prev => {
+      const exists = prev.find(c => c.team_id === teamId && c.channel_id === channelId)
+      if (exists) {
+        return prev.filter(c => !(c.team_id === teamId && c.channel_id === channelId))
+      }
+      return [...prev, { team_id: teamId, team_name: teamName, channel_id: channelId, channel_name: channelName }]
+    })
+  }
+
+  async function handleSaveTeamsConfig() {
+    if (!workspaceId || !configuringTeamsConnection) return
+    setSavingTeamsConfig(true)
+    setError(null)
+    try {
+      await saveTeamsConfig(
+        workspaceId,
+        configuringTeamsConnection.connection_id,
+        {
+          days_back: teamsDaysBack,
+          include_channels: selectedChannels,
+          sync_files: teamsSyncFiles,
+        }
+      )
+      setConfiguringTeamsConnection(null)
+      setSuccess('Teams configuration saved and sync queued')
+      loadConnections()
+      setTimeout(() => setSuccess(null), 3000)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save configuration')
+    } finally {
+      setSavingTeamsConfig(false)
+    }
+  }
+
+  async function handleTriggerTeamsSync(connectionId: string) {
+    if (!workspaceId) return
+    setSyncingTeams(connectionId)
+    setError(null)
+    try {
+      await triggerTeamsSync(workspaceId, connectionId)
+      setSuccess('Teams sync queued')
+      loadConnections()
+      setTimeout(() => setSuccess(null), 3000)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to trigger sync')
+    } finally {
+      setSyncingTeams(null)
+    }
+  }
+
+  async function handleDeleteTeamsConnection(connectionId: string) {
+    if (!workspaceId) return
+    setError(null)
+    try {
+      await deleteTeamsConnection(workspaceId, connectionId)
+      setTeamsConnections(prev => prev.filter(c => c.connection_id !== connectionId))
+      setSuccess('Teams connection deleted')
+      setTimeout(() => setSuccess(null), 3000)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to delete connection')
+    }
+  }
+
+  // SharePoint handlers
+  async function handleConnectSharePoint() {
+    if (!workspaceId) return
+    setConnectingSharePoint(true)
+    setError(null)
+    try {
+      const authUrl = await getSharePointAuthUrl(workspaceId)
+      window.location.href = authUrl
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to start SharePoint connection')
+      setConnectingSharePoint(false)
+    }
+  }
+
+  async function openSharePointConfiguration(connection: SharePointConnection) {
+    if (!workspaceId) return
+    setConfiguringSharePointConnection(connection)
+    setLoadingSPSites(true)
+    setError(null)
+    try {
+      const sites = await listSharePointSites(workspaceId, connection.connection_id)
+      setAvailableSPSites(sites)
+      const selected = new Set((connection.selected_sites || []).map(s => s.site_id))
+      setSelectedSPSites(selected)
+      setSpIncludePages(connection.include_pages !== false)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load sites')
+      setConfiguringSharePointConnection(null)
+    } finally {
+      setLoadingSPSites(false)
+    }
+  }
+
+  async function handleSaveSPSites() {
+    if (!workspaceId || !configuringSharePointConnection) return
+    setSavingSPSites(true)
+    setError(null)
+    try {
+      const sitesToSave: SharePointSiteConfig[] = availableSPSites
+        .filter(s => selectedSPSites.has(s.id))
+        .map(s => ({ site_id: s.id, site_name: s.friendly_name || s.displayName, drives: s.drives || [] }))
+      await updateSharePointSites(
+        workspaceId,
+        configuringSharePointConnection.connection_id,
+        sitesToSave,
+        spIncludePages
+      )
+      setConfiguringSharePointConnection(null)
+      setSuccess('Sites updated and sync queued')
+      loadConnections()
+      setTimeout(() => setSuccess(null), 3000)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save sites')
+    } finally {
+      setSavingSPSites(false)
+    }
+  }
+
+  async function handleTriggerSharePointSync(connectionId: string) {
+    if (!workspaceId) return
+    setSyncingSharePoint(connectionId)
+    setError(null)
+    try {
+      await triggerSharePointSync(workspaceId, connectionId)
+      setSuccess('SharePoint sync queued')
+      loadConnections()
+      setTimeout(() => setSuccess(null), 3000)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to trigger sync')
+    } finally {
+      setSyncingSharePoint(null)
+    }
+  }
+
+  async function handleDeleteSharePointConnection(connectionId: string) {
+    if (!workspaceId) return
+    setError(null)
+    try {
+      await deleteSharePointConnection(workspaceId, connectionId)
+      setSharePointConnections(prev => prev.filter(c => c.connection_id !== connectionId))
+      setSuccess('SharePoint connection deleted')
+      setTimeout(() => setSuccess(null), 3000)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to delete connection')
+    }
+  }
+
+  function toggleSPSite(siteId: string) {
+    setSelectedSPSites(prev => {
+      const next = new Set(prev)
+      if (next.has(siteId)) {
+        next.delete(siteId)
+      } else {
+        next.add(siteId)
       }
       return next
     })
@@ -1588,6 +1860,226 @@ export default function WorkspaceSettings() {
                 </ul>
               )}
             </div>
+
+            {/* Teams Section */}
+            <div className="bg-white rounded-lg border shadow-sm">
+              <div className="p-4 border-b flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <svg className="w-6 h-6 text-purple-600" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M19.27 7.73a3 3 0 0 0-1.54.43A3.5 3.5 0 1 0 14 10.5v8A1.5 1.5 0 0 0 15.5 20h4a1.5 1.5 0 0 0 1.5-1.5V10a3 3 0 0 0-1.73-2.27zM20 11a1 1 0 1 1-2 0 1 1 0 0 1 2 0zM9 8a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7zm-4 4.5A1.5 1.5 0 0 1 6.5 11h5a1.5 1.5 0 0 1 1.5 1.5V20H5v-7.5z"/>
+                  </svg>
+                  <div>
+                    <h3 className="font-medium">Microsoft Teams</h3>
+                    <p className="text-sm text-gray-500">Sync channel messages and files from Teams</p>
+                  </div>
+                </div>
+                {isAdmin && teamsConnections.length === 0 && (
+                  <button
+                    onClick={handleConnectTeams}
+                    disabled={connectingTeams}
+                    className="flex items-center gap-2 px-3 py-1.5 text-sm bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 transition-colors"
+                  >
+                    {connectingTeams ? (
+                      <Loader2 size={16} className="animate-spin" />
+                    ) : (
+                      <Plus size={16} />
+                    )}
+                    Connect
+                  </button>
+                )}
+              </div>
+              {loadingConnections ? (
+                <div className="p-8 flex items-center justify-center">
+                  <Loader2 className="animate-spin text-gray-400" size={24} />
+                </div>
+              ) : teamsConnections.length === 0 ? (
+                <div className="p-8 text-center text-gray-500">
+                  No Teams connections yet
+                </div>
+              ) : (
+                <ul className="divide-y">
+                  {teamsConnections.map(conn => (
+                    <li key={conn.connection_id} className="p-4">
+                      <div className="flex items-start justify-between">
+                        <div className="flex-1">
+                          <div className="flex items-center gap-2">
+                            <p className="font-medium text-gray-900">{conn.display_name}</p>
+                          </div>
+                          <p className="text-sm text-gray-500 mt-0.5">{conn.user_email}</p>
+                          <p className="text-sm text-gray-500 mt-1">
+                            {(conn.config?.include_channels || []).length === 0 ? (
+                              <span className="text-amber-600">No channels selected - click Configure</span>
+                            ) : (
+                              <>
+                                {conn.config.include_channels.length} channel{conn.config.include_channels.length !== 1 ? 's' : ''} selected
+                                {' | '}
+                                {conn.message_count || 0} messages synced
+                                {conn.config.sync_files && <> | Files enabled</>}
+                              </>
+                            )}
+                          </p>
+                          <p className="text-xs text-gray-400 mt-1">
+                            Status: <span className={
+                              conn.last_sync_status === 'completed' ? 'text-green-600' :
+                              conn.last_sync_status === 'failed' || conn.last_sync_status === 'auth_error' ? 'text-red-600' :
+                              conn.last_sync_status === 'syncing' || conn.last_sync_status === 'queued' ? 'text-blue-600' :
+                              'text-gray-500'
+                            }>
+                              {conn.last_sync_status || 'pending'}
+                            </span>
+                            {conn.last_sync_at && (
+                              <> | Last sync: {new Date(conn.last_sync_at).toLocaleDateString()}</>
+                            )}
+                            {conn.last_sync_error && (
+                              <span className="text-red-500"> | {conn.last_sync_error}</span>
+                            )}
+                          </p>
+                        </div>
+                        {isAdmin && (
+                          <div className="flex items-center gap-2 ml-4">
+                            <button
+                              onClick={() => openTeamsConfiguration(conn)}
+                              className="px-3 py-1.5 text-sm text-purple-600 hover:bg-purple-50 rounded transition-colors"
+                            >
+                              Configure
+                            </button>
+                            <button
+                              onClick={() => handleTriggerTeamsSync(conn.connection_id)}
+                              disabled={syncingTeams === conn.connection_id || (conn.config?.include_channels || []).length === 0}
+                              className="p-1.5 text-gray-500 hover:bg-gray-100 rounded transition-colors disabled:opacity-50"
+                              title="Sync now"
+                            >
+                              {syncingTeams === conn.connection_id ? (
+                                <Loader2 size={16} className="animate-spin" />
+                              ) : (
+                                <RefreshCw size={16} />
+                              )}
+                            </button>
+                            <button
+                              onClick={() => handleDeleteTeamsConnection(conn.connection_id)}
+                              className="p-1.5 text-red-500 hover:bg-red-50 rounded transition-colors"
+                              title="Disconnect"
+                            >
+                              <Trash2 size={16} />
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            {/* SharePoint Section */}
+            <div className="bg-white rounded-lg border shadow-sm">
+              <div className="p-4 border-b flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <svg className="w-6 h-6 text-teal-600" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/>
+                  </svg>
+                  <div>
+                    <h3 className="font-medium">SharePoint</h3>
+                    <p className="text-sm text-gray-500">Sync documents and pages from SharePoint sites</p>
+                  </div>
+                </div>
+                {isAdmin && sharePointConnections.length === 0 && (
+                  <button
+                    onClick={handleConnectSharePoint}
+                    disabled={connectingSharePoint}
+                    className="flex items-center gap-2 px-3 py-1.5 text-sm bg-teal-600 text-white rounded-lg hover:bg-teal-700 disabled:opacity-50 transition-colors"
+                  >
+                    {connectingSharePoint ? (
+                      <Loader2 size={16} className="animate-spin" />
+                    ) : (
+                      <Plus size={16} />
+                    )}
+                    Connect
+                  </button>
+                )}
+              </div>
+              {loadingConnections ? (
+                <div className="p-8 flex items-center justify-center">
+                  <Loader2 className="animate-spin text-gray-400" size={24} />
+                </div>
+              ) : sharePointConnections.length === 0 ? (
+                <div className="p-8 text-center text-gray-500">
+                  No SharePoint connections yet
+                </div>
+              ) : (
+                <ul className="divide-y">
+                  {sharePointConnections.map(conn => (
+                    <li key={conn.connection_id} className="p-4">
+                      <div className="flex items-start justify-between">
+                        <div className="flex-1">
+                          <div className="flex items-center gap-2">
+                            <p className="font-medium text-gray-900">{conn.display_name}</p>
+                          </div>
+                          <p className="text-sm text-gray-500 mt-0.5">{conn.user_email}</p>
+                          <p className="text-sm text-gray-500 mt-1">
+                            {(conn.selected_sites || []).length === 0 ? (
+                              <span className="text-amber-600">No sites selected - click Configure</span>
+                            ) : (
+                              <>
+                                {conn.selected_sites.length} site{conn.selected_sites.length !== 1 ? 's' : ''} selected
+                                {' | '}
+                                {conn.file_count || 0} files
+                                {conn.include_pages && <> | {conn.page_count || 0} pages</>}
+                              </>
+                            )}
+                          </p>
+                          <p className="text-xs text-gray-400 mt-1">
+                            Status: <span className={
+                              conn.last_sync_status === 'completed' ? 'text-green-600' :
+                              conn.last_sync_status === 'failed' || conn.last_sync_status === 'auth_error' ? 'text-red-600' :
+                              conn.last_sync_status === 'syncing' || conn.last_sync_status === 'queued' ? 'text-blue-600' :
+                              'text-gray-500'
+                            }>
+                              {conn.last_sync_status || 'pending'}
+                            </span>
+                            {conn.last_sync_at && (
+                              <> | Last sync: {new Date(conn.last_sync_at).toLocaleDateString()}</>
+                            )}
+                            {conn.last_sync_error && (
+                              <span className="text-red-500"> | {conn.last_sync_error}</span>
+                            )}
+                          </p>
+                        </div>
+                        {isAdmin && (
+                          <div className="flex items-center gap-2 ml-4">
+                            <button
+                              onClick={() => openSharePointConfiguration(conn)}
+                              className="px-3 py-1.5 text-sm text-teal-600 hover:bg-teal-50 rounded transition-colors"
+                            >
+                              Configure
+                            </button>
+                            <button
+                              onClick={() => handleTriggerSharePointSync(conn.connection_id)}
+                              disabled={syncingSharePoint === conn.connection_id || (conn.selected_sites || []).length === 0}
+                              className="p-1.5 text-gray-500 hover:bg-gray-100 rounded transition-colors disabled:opacity-50"
+                              title="Sync now"
+                            >
+                              {syncingSharePoint === conn.connection_id ? (
+                                <Loader2 size={16} className="animate-spin" />
+                              ) : (
+                                <RefreshCw size={16} />
+                              )}
+                            </button>
+                            <button
+                              onClick={() => handleDeleteSharePointConnection(conn.connection_id)}
+                              className="p-1.5 text-red-500 hover:bg-red-50 rounded transition-colors"
+                              title="Disconnect"
+                            >
+                              <Trash2 size={16} />
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           </div>
         )}
 
@@ -2088,6 +2580,240 @@ export default function WorkspaceSettings() {
                   className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors flex items-center gap-2"
                 >
                   {savingFolders && <Loader2 size={16} className="animate-spin" />}
+                  Save & Sync
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Teams Channel Configuration Modal */}
+      {configuringTeamsConnection && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-lg mx-4 max-h-[80vh] flex flex-col">
+            <div className="p-6 border-b">
+              <h2 className="text-lg font-semibold">Configure Teams Channels</h2>
+              <p className="text-sm text-gray-500 mt-1">
+                Select teams and channels to sync from {configuringTeamsConnection.user_email}
+              </p>
+            </div>
+            <div className="flex-1 overflow-y-auto p-6">
+              {loadingTeams ? (
+                <div className="py-8 flex items-center justify-center">
+                  <Loader2 className="animate-spin text-gray-400" size={24} />
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {/* Team selector */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Select a Team</label>
+                    <select
+                      value={selectedTeamId}
+                      onChange={(e) => handleTeamSelect(e.target.value)}
+                      className="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
+                    >
+                      <option value="">Choose a team...</option>
+                      {availableTeams.map(team => (
+                        <option key={team.id} value={team.id}>{team.displayName}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Channel list for selected team */}
+                  {selectedTeamId && (
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">Channels</label>
+                      {loadingChannels ? (
+                        <div className="py-4 flex items-center justify-center">
+                          <Loader2 className="animate-spin text-gray-400" size={20} />
+                        </div>
+                      ) : availableChannels.length === 0 ? (
+                        <p className="text-sm text-gray-500">No channels found</p>
+                      ) : (
+                        <div className="space-y-2 max-h-48 overflow-y-auto">
+                          {availableChannels.map(channel => {
+                            const team = availableTeams.find(t => t.id === selectedTeamId)
+                            const isSelected = selectedChannels.some(
+                              c => c.team_id === selectedTeamId && c.channel_id === channel.id
+                            )
+                            return (
+                              <label
+                                key={channel.id}
+                                className="flex items-center gap-3 p-3 rounded-lg border cursor-pointer hover:bg-gray-50 transition-colors"
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={isSelected}
+                                  onChange={() => toggleTeamsChannel(
+                                    selectedTeamId,
+                                    team?.displayName || '',
+                                    channel.id,
+                                    channel.displayName
+                                  )}
+                                  className="w-4 h-4 text-purple-600 rounded focus:ring-purple-500"
+                                />
+                                <div className="flex-1">
+                                  <p className="font-medium text-gray-900">{channel.displayName}</p>
+                                  {channel.description && (
+                                    <p className="text-sm text-gray-500">{channel.description}</p>
+                                  )}
+                                </div>
+                              </label>
+                            )
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Selected channels summary */}
+                  {selectedChannels.length > 0 && (
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        Selected Channels ({selectedChannels.length})
+                      </label>
+                      <div className="space-y-1">
+                        {selectedChannels.map(ch => (
+                          <div key={`${ch.team_id}-${ch.channel_id}`} className="flex items-center justify-between p-2 bg-purple-50 rounded text-sm">
+                            <span>{ch.team_name} / {ch.channel_name}</span>
+                            <button
+                              onClick={() => toggleTeamsChannel(ch.team_id, ch.team_name, ch.channel_id, ch.channel_name)}
+                              className="text-red-500 hover:text-red-700"
+                            >
+                              <X size={14} />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Options */}
+                  <div className="space-y-3 pt-2 border-t">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        Days of history to sync
+                      </label>
+                      <input
+                        type="number"
+                        value={teamsDaysBack}
+                        onChange={(e) => setTeamsDaysBack(Math.max(1, parseInt(e.target.value) || 30))}
+                        min={1}
+                        max={365}
+                        className="w-24 px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
+                      />
+                    </div>
+                    <label className="flex items-center gap-3 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={teamsSyncFiles}
+                        onChange={(e) => setTeamsSyncFiles(e.target.checked)}
+                        className="w-4 h-4 text-purple-600 rounded focus:ring-purple-500"
+                      />
+                      <span className="text-sm text-gray-700">Sync shared files from channels</span>
+                    </label>
+                  </div>
+                </div>
+              )}
+            </div>
+            <div className="px-6 py-4 bg-gray-50 rounded-b-lg flex items-center justify-between border-t">
+              <p className="text-sm text-gray-500">
+                {selectedChannels.length} channel{selectedChannels.length !== 1 ? 's' : ''} selected
+              </p>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setConfiguringTeamsConnection(null)}
+                  className="px-4 py-2 text-gray-700 hover:bg-gray-200 rounded-lg transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleSaveTeamsConfig}
+                  disabled={savingTeamsConfig || selectedChannels.length === 0}
+                  className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 transition-colors flex items-center gap-2"
+                >
+                  {savingTeamsConfig && <Loader2 size={16} className="animate-spin" />}
+                  Save & Sync
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* SharePoint Site Configuration Modal */}
+      {configuringSharePointConnection && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-lg mx-4 max-h-[80vh] flex flex-col">
+            <div className="p-6 border-b">
+              <h2 className="text-lg font-semibold">Configure SharePoint Sites</h2>
+              <p className="text-sm text-gray-500 mt-1">
+                Select which sites to sync from {configuringSharePointConnection.user_email}
+              </p>
+            </div>
+            <div className="flex-1 overflow-y-auto p-6">
+              {loadingSPSites ? (
+                <div className="py-8 flex items-center justify-center">
+                  <Loader2 className="animate-spin text-gray-400" size={24} />
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <div className="space-y-2">
+                    {availableSPSites.map(site => (
+                      <label
+                        key={site.id}
+                        className="flex items-center gap-3 p-3 rounded-lg border cursor-pointer hover:bg-gray-50 transition-colors"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={selectedSPSites.has(site.id)}
+                          onChange={() => toggleSPSite(site.id)}
+                          className="w-4 h-4 text-teal-600 rounded focus:ring-teal-500"
+                        />
+                        <div className="flex-1">
+                          <p className="font-medium text-gray-900">{site.friendly_name || site.displayName}</p>
+                          {site.webUrl && (
+                            <p className="text-sm text-gray-500 truncate">{site.webUrl}</p>
+                          )}
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+                  {availableSPSites.length === 0 && (
+                    <p className="text-center text-gray-500 py-4">No SharePoint sites found</p>
+                  )}
+                  <div className="pt-2 border-t">
+                    <label className="flex items-center gap-3 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={spIncludePages}
+                        onChange={(e) => setSpIncludePages(e.target.checked)}
+                        className="w-4 h-4 text-teal-600 rounded focus:ring-teal-500"
+                      />
+                      <span className="text-sm text-gray-700">Include SharePoint pages (in addition to document library files)</span>
+                    </label>
+                  </div>
+                </div>
+              )}
+            </div>
+            <div className="px-6 py-4 bg-gray-50 rounded-b-lg flex items-center justify-between border-t">
+              <p className="text-sm text-gray-500">
+                {selectedSPSites.size} site{selectedSPSites.size !== 1 ? 's' : ''} selected
+              </p>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setConfiguringSharePointConnection(null)}
+                  className="px-4 py-2 text-gray-700 hover:bg-gray-200 rounded-lg transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleSaveSPSites}
+                  disabled={savingSPSites || selectedSPSites.size === 0}
+                  className="px-4 py-2 bg-teal-600 text-white rounded-lg hover:bg-teal-700 disabled:opacity-50 transition-colors flex items-center gap-2"
+                >
+                  {savingSPSites && <Loader2 size={16} className="animate-spin" />}
                   Save & Sync
                 </button>
               </div>

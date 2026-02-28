@@ -849,6 +849,289 @@ def process_outlook_attachment(
 
 
 # ============================================================================
+# Teams Handlers
+# ============================================================================
+
+
+def process_teams_message(
+    workspace_id: str,
+    connection_id: str,
+    file_info: Dict[str, Any],
+    sync_id: Optional[str] = None,
+) -> Optional[str]:
+    """
+    Process a Teams message and upload to S3.
+
+    The message HTML body is already in file_info (built by teams-sync).
+    """
+    message_id = file_info.get("message_id", "")
+    channel_name = file_info.get("channel_name", "General")
+    body_content = file_info.get("body_content", "")
+    created_at = file_info.get("created_at", "")
+
+    logger.info(f"Processing Teams message: {channel_name}/{message_id[:20]}...")
+
+    if not body_content:
+        logger.warning(f"Empty body for Teams message {message_id}")
+        body_content = "<html><body><p><em>No content</em></p></body></html>"
+
+    try:
+        safe_channel = sanitize_filename(channel_name)
+        short_id = message_id[-12:] if len(message_id) > 12 else message_id
+        filename = f"{short_id}.html"
+        s3_key = f"workspaces/{workspace_id}/teams/{safe_channel}/{filename}"
+
+        metadata = {
+            "source": "teams",
+            "workspace_id": workspace_id,
+            "connection_id": connection_id,
+            "teams_message_id": message_id[:128],
+            "teams_channel": channel_name,
+        }
+
+        if sync_id:
+            metadata["sync_id"] = sync_id
+
+        s3_client.put_object(
+            Bucket=KB_BUCKET,
+            Key=s3_key,
+            Body=body_content.encode("utf-8"),
+            ContentType="text/html",
+            Metadata=metadata,
+        )
+
+        logger.info(f"Uploaded Teams message to s3://{KB_BUCKET}/{s3_key}")
+        return s3_key
+
+    except ClientError as e:
+        logger.error(f"S3 error uploading Teams message {message_id}: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"Error processing Teams message {message_id}: {e}")
+        return None
+
+
+def process_teams_file(
+    workspace_id: str,
+    connection_id: str,
+    file_info: Dict[str, Any],
+    sync_id: Optional[str] = None,
+) -> Optional[str]:
+    """
+    Process a Teams channel file and upload to S3.
+
+    Downloads from pre-authenticated URL provided in file_info.
+    """
+    import urllib.error
+    import urllib.request
+
+    channel_name = file_info.get("channel_name", "General")
+    filename = file_info.get("filename", "")
+    download_url = file_info.get("download_url", "")
+    mime_type = file_info.get("mime_type", "application/octet-stream")
+    item_id = file_info.get("item_id", "")
+
+    logger.info(f"Processing Teams file: {channel_name}/{filename}")
+
+    if not download_url:
+        logger.error(f"No download URL for Teams file {filename}")
+        return None
+
+    try:
+        request = urllib.request.Request(download_url)
+        with urllib.request.urlopen(request, timeout=300) as response:
+            content = response.read()
+
+        safe_channel = sanitize_filename(channel_name)
+        safe_filename = sanitize_filename(filename)
+        s3_key = f"workspaces/{workspace_id}/teams/{safe_channel}/files/{safe_filename}"
+
+        metadata = {
+            "source": "teams_file",
+            "workspace_id": workspace_id,
+            "connection_id": connection_id,
+            "teams_channel": channel_name,
+            "teams_item_id": item_id[:128] if item_id else "",
+        }
+
+        if sync_id:
+            metadata["sync_id"] = sync_id
+
+        s3_client.put_object(
+            Bucket=KB_BUCKET,
+            Key=s3_key,
+            Body=content,
+            ContentType=mime_type,
+            Metadata=metadata,
+        )
+
+        logger.info(f"Uploaded Teams file to s3://{KB_BUCKET}/{s3_key}")
+        return s3_key
+
+    except urllib.error.HTTPError as e:
+        logger.error(f"Download error for Teams file {filename}: {e.code}")
+        return None
+    except ClientError as e:
+        logger.error(f"S3 error uploading Teams file {filename}: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"Error processing Teams file {filename}: {e}")
+        return None
+
+
+# ============================================================================
+# SharePoint Handlers
+# ============================================================================
+
+
+def process_sharepoint_file(
+    workspace_id: str,
+    connection_id: str,
+    file_info: Dict[str, Any],
+    sync_id: Optional[str] = None,
+) -> Optional[str]:
+    """
+    Process a SharePoint file and upload to S3.
+
+    Downloads from pre-authenticated @microsoft.graph.downloadUrl.
+    """
+    import urllib.error
+    import urllib.request
+
+    site_name = file_info.get("site_name", "Unknown")
+    filename = file_info.get("filename", "")
+    download_url = file_info.get("download_url", "")
+    mime_type = file_info.get("mime_type", "application/octet-stream")
+    item_id = file_info.get("item_id", "")
+
+    logger.info(f"Processing SharePoint file: {site_name}/{filename}")
+
+    if not download_url:
+        logger.error(f"No download URL for SharePoint file {filename}")
+        return None
+
+    try:
+        request = urllib.request.Request(download_url)
+        with urllib.request.urlopen(request, timeout=300) as response:
+            content = response.read()
+
+        safe_site = sanitize_filename(site_name)
+        safe_filename = sanitize_filename(filename)
+        s3_key = f"workspaces/{workspace_id}/sharepoint/{safe_site}/{safe_filename}"
+
+        metadata = {
+            "source": "sharepoint",
+            "workspace_id": workspace_id,
+            "connection_id": connection_id,
+            "sharepoint_site": site_name,
+            "sharepoint_item_id": item_id[:128] if item_id else "",
+        }
+
+        if sync_id:
+            metadata["sync_id"] = sync_id
+
+        s3_client.put_object(
+            Bucket=KB_BUCKET,
+            Key=s3_key,
+            Body=content,
+            ContentType=mime_type,
+            Metadata=metadata,
+        )
+
+        logger.info(f"Uploaded SharePoint file to s3://{KB_BUCKET}/{s3_key}")
+        return s3_key
+
+    except urllib.error.HTTPError as e:
+        logger.error(f"Download error for SharePoint file {filename}: {e.code}")
+        return None
+    except ClientError as e:
+        logger.error(f"S3 error uploading SharePoint file {filename}: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"Error processing SharePoint file {filename}: {e}")
+        return None
+
+
+def process_sharepoint_page(
+    workspace_id: str,
+    connection_id: str,
+    file_info: Dict[str, Any],
+    sync_id: Optional[str] = None,
+) -> Optional[str]:
+    """
+    Process a SharePoint page and upload to S3.
+
+    Page text content is already extracted and in file_info.
+    """
+    site_name = file_info.get("site_name", "Unknown")
+    title = file_info.get("title", "Untitled")
+    content = file_info.get("content", "")
+    page_id = file_info.get("page_id", "")
+    web_url = file_info.get("web_url", "")
+
+    logger.info(f"Processing SharePoint page: {site_name}/{title}")
+
+    if not content:
+        logger.warning(f"Empty content for SharePoint page {title}")
+        return None
+
+    try:
+        # Wrap in HTML
+        full_html = f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>{html.escape(title)}</title>
+</head>
+<body>
+<h1>{html.escape(title)}</h1>
+<div class="page-meta">
+<ul>
+<li><strong>Site:</strong> {html.escape(site_name)}</li>
+<li><strong>URL:</strong> {html.escape(web_url)}</li>
+</ul>
+</div>
+<div class="page-content">
+{html.escape(content)}
+</div>
+</body>
+</html>"""
+
+        safe_site = sanitize_filename(site_name)
+        safe_title = sanitize_filename(title)
+        s3_key = f"workspaces/{workspace_id}/sharepoint/{safe_site}/pages/{safe_title}.html"
+
+        metadata = {
+            "source": "sharepoint_page",
+            "workspace_id": workspace_id,
+            "connection_id": connection_id,
+            "sharepoint_site": site_name,
+            "sharepoint_page_id": page_id[:128] if page_id else "",
+        }
+
+        if sync_id:
+            metadata["sync_id"] = sync_id
+
+        s3_client.put_object(
+            Bucket=KB_BUCKET,
+            Key=s3_key,
+            Body=full_html.encode("utf-8"),
+            ContentType="text/html",
+            Metadata=metadata,
+        )
+
+        logger.info(f"Uploaded SharePoint page to s3://{KB_BUCKET}/{s3_key}")
+        return s3_key
+
+    except ClientError as e:
+        logger.error(f"S3 error uploading SharePoint page {title}: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"Error processing SharePoint page {title}: {e}")
+        return None
+
+
+# ============================================================================
 # Main Handler
 # ============================================================================
 
@@ -937,6 +1220,34 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
                 )
             elif source == "outlook_attachment":
                 s3_key = process_outlook_attachment(
+                    workspace_id=workspace_id,
+                    connection_id=connection_id,
+                    file_info=file_info,
+                    sync_id=sync_id,
+                )
+            elif source == "teams":
+                s3_key = process_teams_message(
+                    workspace_id=workspace_id,
+                    connection_id=connection_id,
+                    file_info=file_info,
+                    sync_id=sync_id,
+                )
+            elif source == "teams_file":
+                s3_key = process_teams_file(
+                    workspace_id=workspace_id,
+                    connection_id=connection_id,
+                    file_info=file_info,
+                    sync_id=sync_id,
+                )
+            elif source == "sharepoint":
+                s3_key = process_sharepoint_file(
+                    workspace_id=workspace_id,
+                    connection_id=connection_id,
+                    file_info=file_info,
+                    sync_id=sync_id,
+                )
+            elif source == "sharepoint_page":
+                s3_key = process_sharepoint_page(
                     workspace_id=workspace_id,
                     connection_id=connection_id,
                     file_info=file_info,

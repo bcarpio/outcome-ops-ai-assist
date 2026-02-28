@@ -1080,6 +1080,241 @@ export async function deleteOutlookConnection(workspaceId: string, connectionId:
 }
 
 // ============================================================================
+// Teams Integration Types and API
+// ============================================================================
+
+export interface TeamsConnection {
+  connection_id: string
+  workspace_id: string
+  user_email: string
+  display_name: string
+  config: {
+    days_back: number
+    include_channels: TeamsChannelConfig[]
+    sync_files: boolean
+  }
+  last_sync_at: string | null
+  last_sync_status: 'needs_configuration' | 'queued' | 'syncing' | 'completed' | 'failed' | 'auth_error'
+  last_sync_error?: string | null
+  message_count: number
+  file_count: number
+  created_at: string
+  updated_at: string
+}
+
+export interface TeamsChannelConfig {
+  team_id: string
+  team_name: string
+  channel_id: string
+  channel_name: string
+}
+
+export interface TeamsTeam {
+  id: string
+  displayName: string
+  description?: string
+}
+
+export interface TeamsChannel {
+  id: string
+  displayName: string
+  description?: string
+  membershipType?: string
+}
+
+export async function getTeamsAuthUrl(workspaceId: string): Promise<string> {
+  const response = await fetch(`${API_BASE}/teams/authorize?workspace_id=${encodeURIComponent(workspaceId)}`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to get auth URL: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return data?.auth_url as string
+}
+
+export async function listTeamsConnections(workspaceId: string): Promise<TeamsConnection[]> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/teams/connections`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to list Teams connections: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return (data?.connections as TeamsConnection[]) || []
+}
+
+export async function listTeamsTeams(
+  workspaceId: string,
+  connectionId: string
+): Promise<TeamsTeam[]> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/teams/connections/${connectionId}/teams`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to list teams: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return (data?.teams as TeamsTeam[]) || []
+}
+
+export async function listTeamsChannels(
+  workspaceId: string,
+  connectionId: string,
+  teamId: string
+): Promise<TeamsChannel[]> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/teams/connections/${connectionId}/channels?team_id=${encodeURIComponent(teamId)}`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to list channels: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return (data?.channels as TeamsChannel[]) || []
+}
+
+export async function saveTeamsConfig(
+  workspaceId: string,
+  connectionId: string,
+  config: { days_back: number; include_channels: TeamsChannelConfig[]; sync_files: boolean }
+): Promise<void> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/teams/connections/${connectionId}/config`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(config),
+  })
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to save config: ${response.status}`)
+  }
+}
+
+export async function triggerTeamsSync(workspaceId: string, connectionId: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/teams/connections/${connectionId}/sync`, {
+    method: 'POST',
+  })
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to trigger sync: ${response.status}`)
+  }
+}
+
+export async function deleteTeamsConnection(workspaceId: string, connectionId: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/teams/connections/${connectionId}`, {
+    method: 'DELETE',
+  })
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to delete connection: ${response.status}`)
+  }
+}
+
+// ============================================================================
+// SharePoint Integration Types and API
+// ============================================================================
+
+export interface SharePointConnection {
+  connection_id: string
+  workspace_id: string
+  user_email: string
+  display_name: string
+  selected_sites: SharePointSiteConfig[]
+  include_pages: boolean
+  last_sync_at: string | null
+  last_sync_status: 'needs_configuration' | 'queued' | 'syncing' | 'completed' | 'failed' | 'auth_error'
+  last_sync_error?: string | null
+  file_count: number
+  page_count: number
+  created_at: string
+  updated_at: string
+}
+
+export interface SharePointSiteConfig {
+  site_id: string
+  site_name: string
+  drives: { id: string; name: string }[]
+}
+
+export interface SharePointSite {
+  id: string
+  displayName: string
+  name: string
+  webUrl: string
+  friendly_name: string
+  drives: { id: string; name: string }[]
+  selected?: boolean
+}
+
+export async function getSharePointAuthUrl(workspaceId: string): Promise<string> {
+  const response = await fetch(`${API_BASE}/sharepoint/authorize?workspace_id=${encodeURIComponent(workspaceId)}`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to get auth URL: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return data?.auth_url as string
+}
+
+export async function listSharePointConnections(workspaceId: string): Promise<SharePointConnection[]> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/sharepoint/connections`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to list SharePoint connections: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return (data?.connections as SharePointConnection[]) || []
+}
+
+export async function listSharePointSites(
+  workspaceId: string,
+  connectionId: string
+): Promise<SharePointSite[]> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/sharepoint/connections/${connectionId}/sites`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to list sites: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return (data?.sites as SharePointSite[]) || []
+}
+
+export async function updateSharePointSites(
+  workspaceId: string,
+  connectionId: string,
+  selectedSites: SharePointSiteConfig[],
+  includePages: boolean
+): Promise<void> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/sharepoint/connections/${connectionId}/sites`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      selected_sites: selectedSites,
+      include_pages: includePages,
+    }),
+  })
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to update sites: ${response.status}`)
+  }
+}
+
+export async function triggerSharePointSync(workspaceId: string, connectionId: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/sharepoint/connections/${connectionId}/sync`, {
+    method: 'POST',
+  })
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to trigger sync: ${response.status}`)
+  }
+}
+
+export async function deleteSharePointConnection(workspaceId: string, connectionId: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/sharepoint/connections/${connectionId}`, {
+    method: 'DELETE',
+  })
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to delete connection: ${response.status}`)
+  }
+}
+
+// ============================================================================
 // GitHub Integration Types and API
 // ============================================================================
 
