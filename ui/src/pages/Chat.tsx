@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -15,6 +15,8 @@ import {
   Search,
   LogOut,
   Folder,
+  Copy,
+  Check,
 } from 'lucide-react'
 import {
   sendChatMessage,
@@ -53,6 +55,43 @@ export default function Chat() {
   const [showCost, setShowCost] = useState(false)
   const [lastCost, setLastCost] = useState<{ input_tokens: number; output_tokens: number; cost: number } | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null)
+
+  const handleCopyMessage = useCallback(async (content: string, messageId: string) => {
+    try {
+      // Render markdown to HTML for rich text clipboard
+      const tempDiv = document.createElement('div')
+      tempDiv.className = 'prose prose-sm'
+      // Find the rendered message content from the DOM
+      const msgEl = document.querySelector(`[data-message-id="${messageId}"]`)
+      const html = msgEl ? msgEl.innerHTML : content
+
+      const blob = new Blob([html], { type: 'text/html' })
+      const textBlob = new Blob([content], { type: 'text/plain' })
+      await navigator.clipboard.write([
+        new ClipboardItem({
+          'text/html': blob,
+          'text/plain': textBlob,
+        }),
+      ])
+      setCopiedMessageId(messageId)
+      setTimeout(() => setCopiedMessageId(null), 2000)
+    } catch {
+      // Fallback: plain text copy
+      try {
+        await navigator.clipboard.writeText(content)
+      } catch {
+        const textarea = document.createElement('textarea')
+        textarea.value = content
+        document.body.appendChild(textarea)
+        textarea.select()
+        document.execCommand('copy')
+        document.body.removeChild(textarea)
+      }
+      setCopiedMessageId(messageId)
+      setTimeout(() => setCopiedMessageId(null), 2000)
+    }
+  }, [])
 
   // Workspace selector state
   const [searchableWorkspaces, setSearchableWorkspaces] = useState<SearchableWorkspace[]>([])
@@ -499,31 +538,54 @@ export default function Chat() {
               {messages.map((msg, i) => (
                 <div
                   key={msg.message_id || i}
-                  className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+                  className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'} group/msg`}
                 >
-                  <div
-                    className={`max-w-[85%] rounded-lg px-4 py-3 ${
-                      msg.role === 'user'
-                        ? 'bg-blue-600 text-white'
-                        : 'bg-white border shadow-sm'
-                    }`}
-                  >
-                    {msg.role === 'assistant' ? (
-                      <div className="prose prose-sm max-w-none">
-                        {msg.content ? (
-                          <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
-                        ) : msg.isStreaming ? (
-                          <div className="flex items-center gap-2 text-gray-500">
-                            <Loader2 size={16} className="animate-spin" />
-                            <span>Generating response...</span>
-                          </div>
-                        ) : null}
-                        {msg.isStreaming && msg.content && (
-                          <span className="inline-block w-2 h-4 bg-blue-500 animate-pulse ml-1" />
-                        )}
+                  <div className={`max-w-[85%] ${msg.role === 'assistant' ? 'relative' : ''}`}>
+                    <div
+                      className={`rounded-lg px-4 py-3 ${
+                        msg.role === 'user'
+                          ? 'bg-blue-600 text-white'
+                          : 'bg-white border shadow-sm'
+                      }`}
+                    >
+                      {msg.role === 'assistant' ? (
+                        <div className="prose prose-sm max-w-none" data-message-id={msg.message_id || String(i)}>
+                          {msg.content ? (
+                            <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+                          ) : msg.isStreaming ? (
+                            <div className="flex items-center gap-2 text-gray-500">
+                              <Loader2 size={16} className="animate-spin" />
+                              <span>Generating response...</span>
+                            </div>
+                          ) : null}
+                          {msg.isStreaming && msg.content && (
+                            <span className="inline-block w-2 h-4 bg-blue-500 animate-pulse ml-1" />
+                          )}
+                        </div>
+                      ) : (
+                        <p className="whitespace-pre-wrap">{msg.content}</p>
+                      )}
+                    </div>
+                    {msg.role === 'assistant' && msg.content && !msg.isStreaming && (
+                      <div className="mt-1 flex justify-start opacity-0 group-hover/msg:opacity-100 transition-opacity">
+                        <button
+                          onClick={() => handleCopyMessage(msg.content, msg.message_id || String(i))}
+                          className="flex items-center gap-1 px-2 py-1 text-xs text-gray-400 hover:text-gray-600 rounded hover:bg-gray-100 transition-colors"
+                          title="Copy to clipboard"
+                        >
+                          {copiedMessageId === (msg.message_id || String(i)) ? (
+                            <>
+                              <Check size={14} className="text-green-500" />
+                              <span className="text-green-500">Copied</span>
+                            </>
+                          ) : (
+                            <>
+                              <Copy size={14} />
+                              <span>Copy</span>
+                            </>
+                          )}
+                        </button>
                       </div>
-                    ) : (
-                      <p className="whitespace-pre-wrap">{msg.content}</p>
                     )}
                   </div>
                 </div>
