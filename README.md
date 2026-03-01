@@ -17,7 +17,7 @@ AI generates generic code. You need code that matches **YOUR** standards.
 
 **The proof:**
 - 16-hour tasks → 15 minutes
-- $0.68 per feature
+- $2-$4 per feature
 - 100-200x ROI
 - Production-tested at Fortune 500
 

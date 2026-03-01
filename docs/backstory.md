@@ -119,7 +119,7 @@ Just like ADRs made best practices automatic at Comcast.
 Using OutcomeOps on my own generative AI platform:
 
 - **16-hour tasks → 15 minutes**
-- **$0.68 per feature** (Bedrock API costs)
+- **$2-$4 per feature** (Bedrock API costs)
 - **100-200x ROI** on engineering time
 - **45+ API endpoints** generated following consistent patterns
 - **Closed beta in 25 days** - Would have taken months without OutcomeOps
