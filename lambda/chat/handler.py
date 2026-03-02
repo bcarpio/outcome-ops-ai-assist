@@ -59,6 +59,17 @@ bedrock_config = Config(
     retries={"max_attempts": 3}
 )
 
+# Bedrock model IDs (configurable via environment variables)
+ADVANCED_MODEL_ID = os.environ.get(
+    "BEDROCK_ADVANCED_MODEL_ID", "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+)
+BASIC_MODEL_ID = os.environ.get(
+    "BEDROCK_BASIC_MODEL_ID", "us.anthropic.claude-3-5-haiku-20241022-v1:0"
+)
+EMBEDDING_MODEL_ID = os.environ.get(
+    "BEDROCK_EMBEDDING_MODEL_ID", "amazon.titan-embed-text-v2:0"
+)
+
 # Conversation memory config
 MEMORY_CHUNK_SIZE = 10  # Number of messages before creating a memory chunk (5 pairs)
 MEMORY_TOP_K = 3  # Number of memory chunks to retrieve
@@ -296,7 +307,7 @@ def generate_embedding(text: str) -> List[float]:
         }
 
         response = bedrock.invoke_model(
-            modelId="amazon.titan-embed-text-v2:0",
+            modelId=EMBEDDING_MODEL_ID,
             contentType="application/json",
             accept="application/json",
             body=json.dumps(payload),
@@ -731,11 +742,7 @@ Provide a helpful, accurate answer based on the context above. If the context do
     messages.append({"role": "user", "content": [{"text": user_prompt}]})
 
     # Select model
-    model_id = (
-        "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
-        if advanced
-        else "us.anthropic.claude-3-5-haiku-20241022-v1:0"
-    )
+    model_id = ADVANCED_MODEL_ID if advanced else BASIC_MODEL_ID
 
     try:
         response = bedrock.converse_stream(
@@ -944,11 +951,7 @@ def handle_chat_stream(event: Dict) -> Generator[str, None, None]:
     answer = "".join(answer_chunks)
 
     # Audit log the Bedrock call
-    audit_model = (
-        "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
-        if request.advanced
-        else "us.anthropic.claude-3-5-haiku-20241022-v1:0"
-    )
+    audit_model = ADVANCED_MODEL_ID if request.advanced else BASIC_MODEL_ID
     audit_input_tokens = usage.get("inputTokens", 0) if usage else 0
     audit_output_tokens = usage.get("outputTokens", 0) if usage else 0
     log_audit_entry(

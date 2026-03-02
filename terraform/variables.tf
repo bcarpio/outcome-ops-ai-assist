@@ -125,6 +125,28 @@ variable "enable_bedrock_cooldown" {
 }
 
 # ============================================================================
+# Bedrock Model Configuration
+# ============================================================================
+
+variable "bedrock_advanced_model_id" {
+  type        = string
+  description = "Bedrock model ID for advanced/primary inference (e.g., Claude Sonnet)"
+  default     = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+}
+
+variable "bedrock_basic_model_id" {
+  type        = string
+  description = "Bedrock model ID for fast/default inference (e.g., Claude Haiku)"
+  default     = "us.anthropic.claude-3-5-haiku-20241022-v1:0"
+}
+
+variable "bedrock_embedding_model_id" {
+  type        = string
+  description = "Bedrock model ID for text embedding"
+  default     = "amazon.titan-embed-text-v2:0"
+}
+
+# ============================================================================
 # Resource Tags
 # ============================================================================
 

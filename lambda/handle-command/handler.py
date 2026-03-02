@@ -49,6 +49,9 @@ bedrock_client = boto3.client("bedrock-runtime")
 # Load environment variables
 ENVIRONMENT = os.environ.get("ENV", "dev")
 APP_NAME = os.environ.get("APP_NAME", "outcome-ops-ai-assist")
+BASIC_MODEL_ID = os.environ.get(
+    "BEDROCK_BASIC_MODEL_ID", "us.anthropic.claude-3-5-haiku-20241022-v1:0"
+)
 
 
 class CommandType(str, Enum):
@@ -258,7 +261,7 @@ Format your response as markdown with clear headers for each failure type. Be co
 
     try:
         response = bedrock_client.invoke_model(
-            modelId="us.anthropic.claude-3-5-haiku-20241022-v1:0",
+            modelId=BASIC_MODEL_ID,
             contentType="application/json",
             accept="application/json",
             body=json.dumps({
@@ -277,7 +280,7 @@ Format your response as markdown with clear headers for each failure type. Be co
         log_audit_entry(
             audit_table_name=os.environ.get("AUDIT_TABLE", ""),
             lambda_name="handle-command",
-            model_id="us.anthropic.claude-3-5-haiku-20241022-v1:0",
+            model_id=BASIC_MODEL_ID,
             input_text=prompt,
             output_text=analysis,
             input_tokens=usage.get("input_tokens", 0),

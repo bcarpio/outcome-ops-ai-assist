@@ -37,11 +37,13 @@ module "process_batch_summary_lambda" {
 
   # Environment variables
   environment_variables = {
-    ENV                     = var.environment
-    APP_NAME                = var.app_name
-    EVENT_BUS_NAME          = aws_cloudwatch_event_bus.automation.name
-    ENABLE_BEDROCK_COOLDOWN = tostring(var.enable_bedrock_cooldown)
-    AUDIT_TABLE             = module.audit_logs_table.dynamodb_table_id
+    ENV                        = var.environment
+    APP_NAME                   = var.app_name
+    EVENT_BUS_NAME             = aws_cloudwatch_event_bus.automation.name
+    ENABLE_BEDROCK_COOLDOWN    = tostring(var.enable_bedrock_cooldown)
+    AUDIT_TABLE                = module.audit_logs_table.dynamodb_table_id
+    BEDROCK_ADVANCED_MODEL_ID  = var.bedrock_advanced_model_id
+    BEDROCK_EMBEDDING_MODEL_ID = var.bedrock_embedding_model_id
   }
 
   # IAM permissions
@@ -83,32 +85,19 @@ module "process_batch_summary_lambda" {
       ]
     }
 
-    # Bedrock embeddings (Titan Embeddings v2)
-    bedrock_titan = {
+    # Bedrock models (all foundation models and inference profiles for model portability)
+    bedrock = {
       effect = "Allow"
       actions = [
         "bedrock:InvokeModel"
       ]
       resources = [
-        "arn:aws:bedrock:${var.aws_region}::foundation-model/amazon.titan-embed-text-v2:0"
+        "arn:aws:bedrock:*::foundation-model/*",
+        "arn:aws:bedrock:*:${data.aws_caller_identity.current.account_id}:inference-profile/*"
       ]
     }
 
-    # Bedrock Claude (for batch summaries)
-    # Cross-region inference profiles route to available regions (us-east-1, us-west-2, etc)
-    bedrock_claude = {
-      effect = "Allow"
-      actions = [
-        "bedrock:InvokeModel"
-      ]
-      resources = [
-        "arn:aws:bedrock:*::foundation-model/anthropic.claude-sonnet-4-5-20250929-v1:0",
-        "arn:aws:bedrock:*::foundation-model/us.anthropic.claude-sonnet-4-5-20250929-v1:0",
-        "arn:aws:bedrock:*:${data.aws_caller_identity.current.account_id}:inference-profile/us.anthropic.claude-sonnet-4-5-20250929-v1:0"
-      ]
-    }
-
-    # AWS Marketplace permissions for Anthropic Claude models
+    # AWS Marketplace permissions for Bedrock models
     aws_marketplace = {
       effect = "Allow"
       actions = [
@@ -229,9 +218,11 @@ module "process_repo_summary_lambda" {
 
   # Environment variables
   environment_variables = {
-    ENV         = var.environment
-    APP_NAME    = var.app_name
-    AUDIT_TABLE = module.audit_logs_table.dynamodb_table_id
+    ENV                        = var.environment
+    APP_NAME                   = var.app_name
+    AUDIT_TABLE                = module.audit_logs_table.dynamodb_table_id
+    BEDROCK_ADVANCED_MODEL_ID  = var.bedrock_advanced_model_id
+    BEDROCK_EMBEDDING_MODEL_ID = var.bedrock_embedding_model_id
   }
 
   # IAM permissions
@@ -298,32 +289,19 @@ module "process_repo_summary_lambda" {
       ]
     }
 
-    # Bedrock embeddings (Titan Embeddings v2)
-    bedrock_titan = {
+    # Bedrock models (all foundation models and inference profiles for model portability)
+    bedrock = {
       effect = "Allow"
       actions = [
         "bedrock:InvokeModel"
       ]
       resources = [
-        "arn:aws:bedrock:${var.aws_region}::foundation-model/amazon.titan-embed-text-v2:0"
+        "arn:aws:bedrock:*::foundation-model/*",
+        "arn:aws:bedrock:*:${data.aws_caller_identity.current.account_id}:inference-profile/*"
       ]
     }
 
-    # Bedrock Claude (for architectural summaries)
-    # Cross-region inference profiles route to available regions
-    bedrock_claude = {
-      effect = "Allow"
-      actions = [
-        "bedrock:InvokeModel"
-      ]
-      resources = [
-        "arn:aws:bedrock:*::foundation-model/anthropic.claude-sonnet-4-5-20250929-v1:0",
-        "arn:aws:bedrock:*::foundation-model/us.anthropic.claude-sonnet-4-5-20250929-v1:0",
-        "arn:aws:bedrock:*:${data.aws_caller_identity.current.account_id}:inference-profile/us.anthropic.claude-sonnet-4-5-20250929-v1:0"
-      ]
-    }
-
-    # AWS Marketplace permissions for Anthropic Claude models
+    # AWS Marketplace permissions for Bedrock models
     aws_marketplace = {
       effect = "Allow"
       actions = [

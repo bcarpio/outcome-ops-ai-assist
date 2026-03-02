@@ -37,11 +37,15 @@ bedrock_client = boto3.client("bedrock-runtime")
 ENVIRONMENT = os.environ.get("ENV", "dev")
 APP_NAME = os.environ.get("APP_NAME", "outcome-ops-ai-assist")
 
-# Claude model IDs
-# Haiku: Cost-effective for simple RAG synthesis (default)
-# Sonnet: Advanced reasoning for complex architecture/integration questions
-HAIKU_MODEL_ID = "us.anthropic.claude-3-5-haiku-20241022-v1:0"
-SONNET_MODEL_ID = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+# Claude model IDs (configurable via environment variables)
+# Basic: Cost-effective for simple RAG synthesis (default)
+# Advanced: Advanced reasoning for complex architecture/integration questions
+BASIC_MODEL_ID = os.environ.get(
+    "BEDROCK_BASIC_MODEL_ID", "us.anthropic.claude-3-5-haiku-20241022-v1:0"
+)
+ADVANCED_MODEL_ID = os.environ.get(
+    "BEDROCK_ADVANCED_MODEL_ID", "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+)
 
 # Pricing (as of 2025)
 HAIKU_PRICE_PER_MILLION_INPUT_TOKENS = 0.80
@@ -124,7 +128,7 @@ def invoke_claude_with_retry(prompt: str, model: str = "haiku", max_retries: int
     Raises:
         ClientError: If all retries fail
     """
-    model_id = SONNET_MODEL_ID if model == "sonnet" else HAIKU_MODEL_ID
+    model_id = ADVANCED_MODEL_ID if model == "sonnet" else BASIC_MODEL_ID
     max_tokens = 4000 if model == "sonnet" else 2000  # More tokens for complex reasoning
 
     logger.info(f"[ask-claude] Using model: {model} ({model_id})")
@@ -297,7 +301,7 @@ def handler(event, context):
         logger.info(f"[ask-claude] Successfully generated answer ({len(answer)} chars) with {len(sources)} sources")
 
         # Audit log the Bedrock call
-        ask_model_id = SONNET_MODEL_ID if model == "sonnet" else HAIKU_MODEL_ID
+        ask_model_id = ADVANCED_MODEL_ID if model == "sonnet" else BASIC_MODEL_ID
         log_audit_entry(
             audit_table_name=os.environ.get("AUDIT_TABLE", ""),
             lambda_name="ask-claude",

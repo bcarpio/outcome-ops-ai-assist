@@ -279,10 +279,11 @@ module "process_documents_lambda" {
   quiet_archive_local_exec = true
 
   environment_variables = {
-    ENV         = var.environment
-    APP_NAME    = var.app_name
-    KB_BUCKET   = module.knowledge_base_bucket.s3_bucket_id
-    AUDIT_TABLE = module.audit_logs_table.dynamodb_table_id
+    ENV                        = var.environment
+    APP_NAME                   = var.app_name
+    KB_BUCKET                  = module.knowledge_base_bucket.s3_bucket_id
+    AUDIT_TABLE                = module.audit_logs_table.dynamodb_table_id
+    BEDROCK_EMBEDDING_MODEL_ID = var.bedrock_embedding_model_id
   }
 
   # IAM permissions
@@ -311,14 +312,14 @@ module "process_documents_lambda" {
       ]
     }
 
-    # Bedrock for embeddings
+    # Bedrock for embeddings (all foundation models for model portability)
     bedrock = {
       effect = "Allow"
       actions = [
         "bedrock:InvokeModel"
       ]
       resources = [
-        "arn:aws:bedrock:${var.aws_region}::foundation-model/amazon.titan-embed-text-v2:0"
+        "arn:aws:bedrock:*::foundation-model/*"
       ]
     }
 

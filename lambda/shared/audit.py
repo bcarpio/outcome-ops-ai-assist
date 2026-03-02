@@ -10,7 +10,7 @@ Usage:
     log_audit_entry(
         audit_table_name=os.environ.get("AUDIT_TABLE", ""),
         lambda_name="chat",
-        model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        model_id=ADVANCED_MODEL_ID,
         input_text=user_prompt,
         output_text=answer,
         input_tokens=usage.get("inputTokens", 0),
@@ -44,19 +44,33 @@ def _get_dynamodb_table(table_name: str):
 
 
 # ============================================================================
-# Model Pricing (per 1M tokens, USD)
+# Model Configuration (configurable via environment variables)
 # ============================================================================
 
+ADVANCED_MODEL_ID = os.environ.get(
+    "BEDROCK_ADVANCED_MODEL_ID", "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+)
+BASIC_MODEL_ID = os.environ.get(
+    "BEDROCK_BASIC_MODEL_ID", "us.anthropic.claude-3-5-haiku-20241022-v1:0"
+)
+EMBEDDING_MODEL_ID = os.environ.get(
+    "BEDROCK_EMBEDDING_MODEL_ID", "amazon.titan-embed-text-v2:0"
+)
+
+# Pricing per 1M tokens (USD) — tied to model family, not exact version
+ADVANCED_PRICING = {"input": 3.00, "output": 15.00}
+BASIC_PRICING = {"input": 0.80, "output": 4.00}
+EMBEDDING_PRICING = {"input": 0.02, "output": 0.0}
+
 MODEL_PRICING = {
-    # Claude Sonnet 4.5
-    "us.anthropic.claude-sonnet-4-5-20250929-v1:0": {"input": 3.00, "output": 15.00},
-    "anthropic.claude-sonnet-4-5-20250929-v1:0": {"input": 3.00, "output": 15.00},
-    # Claude Haiku 3.5
-    "us.anthropic.claude-3-5-haiku-20241022-v1:0": {"input": 0.80, "output": 4.00},
-    "anthropic.claude-3-5-haiku-20241022-v1:0": {"input": 0.80, "output": 4.00},
-    # Titan Embeddings v2
-    "amazon.titan-embed-text-v2:0": {"input": 0.02, "output": 0.0},
+    ADVANCED_MODEL_ID: ADVANCED_PRICING,
+    BASIC_MODEL_ID: BASIC_PRICING,
+    EMBEDDING_MODEL_ID: EMBEDDING_PRICING,
 }
+# Auto-register non-prefixed variants for audit compatibility
+for _id, _pricing in list(MODEL_PRICING.items()):
+    if _id.startswith("us."):
+        MODEL_PRICING[_id.replace("us.", "", 1)] = _pricing
 
 
 def _calculate_cost(model_id: str, input_tokens: int, output_tokens: int) -> float:

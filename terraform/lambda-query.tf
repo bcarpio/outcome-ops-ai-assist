@@ -37,9 +37,11 @@ module "ask_claude_lambda" {
 
   # Environment variables
   environment_variables = {
-    ENV         = var.environment
-    APP_NAME    = var.app_name
-    AUDIT_TABLE = module.audit_logs_table.dynamodb_table_id
+    ENV                       = var.environment
+    APP_NAME                  = var.app_name
+    AUDIT_TABLE               = module.audit_logs_table.dynamodb_table_id
+    BEDROCK_ADVANCED_MODEL_ID = var.bedrock_advanced_model_id
+    BEDROCK_BASIC_MODEL_ID    = var.bedrock_basic_model_id
   }
 
   # IAM permissions
@@ -56,27 +58,19 @@ module "ask_claude_lambda" {
       ]
     }
 
-    # Bedrock Claude models
-    # Haiku: fast, cheap RAG synthesis (default)
-    # Sonnet: advanced reasoning for complex queries (--advanced flag)
-    # Cross-region inference profiles route to available regions
+    # Bedrock models (all foundation models and inference profiles for model portability)
     bedrock_claude = {
       effect = "Allow"
       actions = [
         "bedrock:InvokeModel"
       ]
       resources = [
-        # Haiku 3.5
-        "arn:aws:bedrock:*::foundation-model/anthropic.claude-3-5-haiku-20241022-v1:0",
-        "arn:aws:bedrock:*:${data.aws_caller_identity.current.account_id}:inference-profile/us.anthropic.claude-3-5-haiku-20241022-v1:0",
-        # Sonnet 4.5 (for --advanced mode)
-        "arn:aws:bedrock:*::foundation-model/anthropic.claude-sonnet-4-5-20250929-v1:0",
-        "arn:aws:bedrock:*::foundation-model/us.anthropic.claude-sonnet-4-5-20250929-v1:0",
-        "arn:aws:bedrock:*:${data.aws_caller_identity.current.account_id}:inference-profile/us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+        "arn:aws:bedrock:*::foundation-model/*",
+        "arn:aws:bedrock:*:${data.aws_caller_identity.current.account_id}:inference-profile/*"
       ]
     }
 
-    # AWS Marketplace permissions for Anthropic Claude models
+    # AWS Marketplace permissions for Bedrock models
     aws_marketplace = {
       effect = "Allow"
       actions = [
@@ -148,9 +142,10 @@ module "query_kb_lambda" {
 
   # Environment variables
   environment_variables = {
-    ENV         = var.environment
-    APP_NAME    = var.app_name
-    AUDIT_TABLE = module.audit_logs_table.dynamodb_table_id
+    ENV                        = var.environment
+    APP_NAME                   = var.app_name
+    AUDIT_TABLE                = module.audit_logs_table.dynamodb_table_id
+    BEDROCK_EMBEDDING_MODEL_ID = var.bedrock_embedding_model_id
   }
 
   # IAM permissions
@@ -213,14 +208,14 @@ module "query_kb_lambda" {
       ]
     }
 
-    # Bedrock embeddings (Titan Embeddings v2) for query embedding generation
+    # Bedrock models for embedding generation
     bedrock_titan = {
       effect = "Allow"
       actions = [
         "bedrock:InvokeModel"
       ]
       resources = [
-        "arn:aws:bedrock:${var.aws_region}::foundation-model/amazon.titan-embed-text-v2:0"
+        "arn:aws:bedrock:*::foundation-model/*"
       ]
     }
   }

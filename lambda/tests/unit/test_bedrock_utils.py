@@ -93,7 +93,7 @@ class TestBedrockUsage:
         usage = BedrockUsage(model_id=SONNET_MODEL_ID)
 
         # Act & Assert
-        assert usage.model_name == "Claude Sonnet 4.5"
+        assert usage.model_name == "Advanced Model"
 
     def test_model_name_haiku(self):
         """Test: model_name property returns display name for Haiku"""
@@ -101,7 +101,7 @@ class TestBedrockUsage:
         usage = BedrockUsage(model_id=HAIKU_MODEL_ID)
 
         # Act & Assert
-        assert usage.model_name == "Claude 3.5 Haiku"
+        assert usage.model_name == "Basic Model"
 
     def test_model_name_unknown(self):
         """Test: unknown model returns model_id as name"""
@@ -249,7 +249,7 @@ class TestUsageTracker:
         tracker.add(BedrockUsage(model_id=SONNET_MODEL_ID, input_tokens=1000, output_tokens=500))
 
         # Act & Assert
-        assert tracker.primary_model == "Claude Sonnet 4.5"
+        assert tracker.primary_model == "Advanced Model"
 
     def test_primary_model_multiple_models(self):
         """Test: primary_model returns model with most tokens"""
@@ -259,7 +259,7 @@ class TestUsageTracker:
         tracker.add(BedrockUsage(model_id=HAIKU_MODEL_ID, input_tokens=1000, output_tokens=500))  # 1500 total
 
         # Act & Assert
-        assert tracker.primary_model == "Claude 3.5 Haiku"
+        assert tracker.primary_model == "Basic Model"
 
     def test_format_usage_block_empty(self):
         """Test: format_usage_block returns empty string for empty tracker"""
@@ -280,7 +280,7 @@ class TestUsageTracker:
 
         # Assert
         assert "**Usage:**" in result
-        assert "Model: Claude Sonnet 4.5" in result
+        assert "Model: Advanced Model" in result
         assert "1,000 input" in result
         assert "500 output" in result
         assert "1,500 total" in result

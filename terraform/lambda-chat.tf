@@ -56,6 +56,9 @@ module "chat_streaming_lambda" {
     AWS_LWA_READINESS_CHECK_PATH = "/health"
     PORT                         = "8000"
     AUDIT_TABLE                  = module.audit_logs_table.dynamodb_table_id
+    BEDROCK_ADVANCED_MODEL_ID    = var.bedrock_advanced_model_id
+    BEDROCK_BASIC_MODEL_ID       = var.bedrock_basic_model_id
+    BEDROCK_EMBEDDING_MODEL_ID   = var.bedrock_embedding_model_id
   }
 
   # IAM permissions
@@ -110,15 +113,8 @@ module "chat_streaming_lambda" {
         "bedrock:ConverseStream"
       ]
       resources = [
-        # Titan Embeddings v2 for query/memory embeddings
-        "arn:aws:bedrock:${var.aws_region}::foundation-model/amazon.titan-embed-text-v2:0",
-        # Claude Haiku 3.5 (standard - fast)
-        "arn:aws:bedrock:*::foundation-model/anthropic.claude-3-5-haiku-20241022-v1:0",
-        "arn:aws:bedrock:*:${data.aws_caller_identity.current.account_id}:inference-profile/us.anthropic.claude-3-5-haiku-20241022-v1:0",
-        # Claude Sonnet 4.5 (advanced - better quality)
-        "arn:aws:bedrock:*::foundation-model/anthropic.claude-sonnet-4-5-20250929-v1:0",
-        "arn:aws:bedrock:*::foundation-model/us.anthropic.claude-sonnet-4-5-20250929-v1:0",
-        "arn:aws:bedrock:*:${data.aws_caller_identity.current.account_id}:inference-profile/us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+        "arn:aws:bedrock:*::foundation-model/*",
+        "arn:aws:bedrock:*:${data.aws_caller_identity.current.account_id}:inference-profile/*"
       ]
     }
 

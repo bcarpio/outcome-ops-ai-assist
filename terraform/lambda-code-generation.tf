@@ -54,11 +54,12 @@ module "generate_code_lambda" {
   # Environment variables
   environment_variables = merge(
     {
-      ENV                     = var.environment
-      APP_NAME                = var.app_name
-      EVENT_BUS_NAME          = aws_cloudwatch_event_bus.automation.name
-      ENABLE_BEDROCK_COOLDOWN = tostring(var.enable_bedrock_cooldown)
-      AUDIT_TABLE             = module.audit_logs_table.dynamodb_table_id
+      ENV                       = var.environment
+      APP_NAME                  = var.app_name
+      EVENT_BUS_NAME            = aws_cloudwatch_event_bus.automation.name
+      ENABLE_BEDROCK_COOLDOWN   = tostring(var.enable_bedrock_cooldown)
+      AUDIT_TABLE               = module.audit_logs_table.dynamodb_table_id
+      BEDROCK_ADVANCED_MODEL_ID = var.bedrock_advanced_model_id
       # Include /opt/bin in PATH for git from runtime_tools_layer
       PATH = "/opt/bin:/var/lang/bin:/usr/local/bin:/usr/bin:/bin"
       # Tell git where to find helper programs like git-remote-https
@@ -152,7 +153,7 @@ module "generate_code_lambda" {
         "bedrock:InvokeModel"
       ]
       resources = [
-        "arn:aws:bedrock:*::foundation-model/anthropic.claude-*",
+        "arn:aws:bedrock:*::foundation-model/*",
         "arn:aws:bedrock:*:*:inference-profile/*"
       ]
     }
@@ -466,7 +467,7 @@ locals {
         "bedrock:InvokeModel"
       ]
       resources = [
-        "arn:aws:bedrock:*::foundation-model/anthropic.claude-*",
+        "arn:aws:bedrock:*::foundation-model/*",
         "arn:aws:bedrock:*:*:inference-profile/*"
       ]
     }
@@ -534,12 +535,13 @@ module "run_tests_lambda" {
   architectures          = ["x86_64"]
 
   environment_variables = {
-    ENV                 = var.environment
-    APP_NAME            = var.app_name
-    TEST_RESULTS_BUCKET = module.knowledge_base_bucket.s3_bucket_id
-    TEST_RESULTS_PREFIX = "test-results"
-    EVENT_BUS_NAME      = aws_cloudwatch_event_bus.automation.name
-    AUDIT_TABLE         = module.audit_logs_table.dynamodb_table_id
+    ENV                       = var.environment
+    APP_NAME                  = var.app_name
+    TEST_RESULTS_BUCKET       = module.knowledge_base_bucket.s3_bucket_id
+    TEST_RESULTS_PREFIX       = "test-results"
+    EVENT_BUS_NAME            = aws_cloudwatch_event_bus.automation.name
+    AUDIT_TABLE               = module.audit_logs_table.dynamodb_table_id
+    BEDROCK_ADVANCED_MODEL_ID = var.bedrock_advanced_model_id
     # Git runtime configuration (must match Dockerfile ENV vars)
     PATH            = "/opt/git/bin:/usr/lib/jvm/java-21-amazon-corretto/bin:/usr/local/bin:/var/lang/bin:/usr/local/bin:/usr/bin/:/bin:/opt/bin"
     GIT_EXEC_PATH   = "/opt/git/libexec/git-core"
@@ -633,9 +635,10 @@ module "handle_command_lambda" {
   # Environment variables
   environment_variables = merge(
     {
-      ENV         = var.environment
-      APP_NAME    = var.app_name
-      AUDIT_TABLE = module.audit_logs_table.dynamodb_table_id
+      ENV                    = var.environment
+      APP_NAME               = var.app_name
+      AUDIT_TABLE            = module.audit_logs_table.dynamodb_table_id
+      BEDROCK_BASIC_MODEL_ID = var.bedrock_basic_model_id
     },
     var.outcomeops_license_layer_arn != "" ? {
       OUTCOMEOPS_LICENSE_PARAM      = var.outcomeops_license_ssm_param
@@ -690,7 +693,7 @@ module "handle_command_lambda" {
         "bedrock:InvokeModel"
       ]
       resources = [
-        "arn:aws:bedrock:*::foundation-model/anthropic.claude-*",
+        "arn:aws:bedrock:*::foundation-model/*",
         "arn:aws:bedrock:*:*:inference-profile/*"
       ]
     }

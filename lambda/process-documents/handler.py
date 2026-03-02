@@ -40,6 +40,11 @@ from botocore.exceptions import ClientError
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared.audit import log_audit_entry
 
+# Bedrock model configuration
+EMBEDDING_MODEL_ID = os.environ.get(
+    "BEDROCK_EMBEDDING_MODEL_ID", "amazon.titan-embed-text-v2:0"
+)
+
 # Configure logging
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -502,7 +507,7 @@ def generate_embedding(text: str) -> List[float]:
     """
     try:
         response = bedrock_client.invoke_model(
-            modelId="amazon.titan-embed-text-v2:0",
+            modelId=EMBEDDING_MODEL_ID,
             contentType="application/json",
             accept="application/json",
             body=json.dumps({
@@ -522,7 +527,7 @@ def generate_embedding(text: str) -> List[float]:
         log_audit_entry(
             audit_table_name=os.environ.get("AUDIT_TABLE", ""),
             lambda_name="process-documents",
-            model_id="amazon.titan-embed-text-v2:0",
+            model_id=EMBEDDING_MODEL_ID,
             input_text=text,
             output_text=f"embedding[{len(embedding)}]",
         )

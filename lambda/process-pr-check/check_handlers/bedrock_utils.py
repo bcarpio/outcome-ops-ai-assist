@@ -32,21 +32,25 @@ bedrock_config = Config(
 # Bedrock client (initialized once per container)
 bedrock_client = boto3.client("bedrock-runtime", region_name="us-east-1", config=bedrock_config)
 
-# Model IDs
-SONNET_MODEL_ID = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
-HAIKU_MODEL_ID = "us.anthropic.claude-3-5-haiku-20241022-v1:0"
+# Model IDs (configurable via environment variables)
+SONNET_MODEL_ID = os.environ.get(
+    "BEDROCK_ADVANCED_MODEL_ID", "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+)
+HAIKU_MODEL_ID = os.environ.get(
+    "BEDROCK_BASIC_MODEL_ID", "us.anthropic.claude-3-5-haiku-20241022-v1:0"
+)
 
 # Pricing per 1M tokens (USD)
 MODEL_PRICING = {
     SONNET_MODEL_ID: {
-        "input": 3.00,   # $3.00 per 1M input tokens
-        "output": 15.00,  # $15.00 per 1M output tokens
-        "display_name": "Claude Sonnet 4.5"
+        "input": 3.00,
+        "output": 15.00,
+        "display_name": "Advanced Model"
     },
     HAIKU_MODEL_ID: {
-        "input": 0.80,   # $0.80 per 1M input tokens
-        "output": 4.00,  # $4.00 per 1M output tokens
-        "display_name": "Claude 3.5 Haiku"
+        "input": 0.80,
+        "output": 4.00,
+        "display_name": "Basic Model"
     }
 }
 

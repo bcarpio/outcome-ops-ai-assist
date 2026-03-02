@@ -35,6 +35,14 @@ from shared.audit import log_audit_entry
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
+# Bedrock model IDs (configurable via environment variables)
+ADVANCED_MODEL_ID = os.environ.get(
+    "BEDROCK_ADVANCED_MODEL_ID", "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+)
+EMBEDDING_MODEL_ID = os.environ.get(
+    "BEDROCK_EMBEDDING_MODEL_ID", "amazon.titan-embed-text-v2:0"
+)
+
 # AWS clients (region inferred from environment)
 
 # Configure boto3 with longer timeouts for Bedrock (Claude can take 2-3 minutes for large responses)
@@ -714,7 +722,7 @@ For each test file:
 
     def call_claude():
         payload = {
-            "modelId": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            "modelId": ADVANCED_MODEL_ID,
             "messages": [
                 {
                     "role": "user",
@@ -743,7 +751,7 @@ For each test file:
     log_audit_entry(
         audit_table_name=os.environ.get("AUDIT_TABLE", ""),
         lambda_name="process-batch-summary",
-        model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        model_id=ADVANCED_MODEL_ID,
         input_text=prompt,
         output_text=summary,
         input_tokens=usage.get("inputTokens", 0),
@@ -771,7 +779,7 @@ def generate_embedding(text: str) -> List[float]:
         }
 
         response = bedrock_client.invoke_model(
-            modelId="amazon.titan-embed-text-v2:0",
+            modelId=EMBEDDING_MODEL_ID,
             contentType="application/json",
             accept="application/json",
             body=json.dumps(payload),
