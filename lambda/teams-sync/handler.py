@@ -311,7 +311,7 @@ def process_sync_request(message: Dict) -> Dict[str, Any]:
 
     config = connection.get("config", {})
     include_channels = config.get("include_channels", [])
-    days_back = config.get("days_back", 30)
+    days_back = int(config.get("days_back", 30))
     sync_files = config.get("sync_files", True)
     delta_links = connection.get("delta_links", {}) or {}
 
