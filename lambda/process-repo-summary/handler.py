@@ -423,7 +423,9 @@ Keep the summary concise but detailed enough for developers to understand the sy
         return content[0]["text"], response.get("usage", {})
 
     try:
+        bedrock_start = time.time()
         summary, usage = retry_bedrock_call(call_claude)
+        bedrock_duration_ms = int((time.time() - bedrock_start) * 1000)
         logger.info(f"Generated architectural summary for {repo} ({len(summary)} chars)")
 
         log_audit_entry(
@@ -434,6 +436,7 @@ Keep the summary concise but detailed enough for developers to understand the sy
             output_text=summary,
             input_tokens=usage.get("inputTokens", 0),
             output_tokens=usage.get("outputTokens", 0),
+            duration_ms=bedrock_duration_ms,
         )
 
         return summary

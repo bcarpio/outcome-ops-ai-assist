@@ -268,7 +268,9 @@ def handler(event, context):
         prompt = build_prompt(query, context_docs)
 
         # Invoke Claude with selected model
+        bedrock_start = time.time()
         response = invoke_claude_with_retry(prompt, model=model)
+        bedrock_duration_ms = int((time.time() - bedrock_start) * 1000)
 
         # Extract answer from response
         output = response.get("output", {})
@@ -311,6 +313,7 @@ def handler(event, context):
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             cost_usd=cost_usd,
+            duration_ms=bedrock_duration_ms,
         )
 
         return {

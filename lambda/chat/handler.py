@@ -22,6 +22,7 @@ import logging
 import os
 import secrets
 import sys
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Generator, List, Optional
 
@@ -928,6 +929,7 @@ def handle_chat_stream(event: Dict) -> Generator[str, None, None]:
     # Stream the answer
     answer_chunks = []
     usage = None
+    bedrock_start = time.time()
     try:
         for chunk in generate_answer_stream(
             request.message,
@@ -947,6 +949,7 @@ def handle_chat_stream(event: Dict) -> Generator[str, None, None]:
         logger.error(f"Failed to generate answer: {e}")
         yield _stream_error("Failed to generate response", 500) + "\n"
         return
+    bedrock_duration_ms = int((time.time() - bedrock_start) * 1000)
 
     answer = "".join(answer_chunks)
 
@@ -962,6 +965,7 @@ def handle_chat_stream(event: Dict) -> Generator[str, None, None]:
         output_text=answer,
         input_tokens=audit_input_tokens,
         output_tokens=audit_output_tokens,
+        duration_ms=bedrock_duration_ms,
         user_email=user_id or "",
         workspace_id=primary_workspace_id or "",
     )

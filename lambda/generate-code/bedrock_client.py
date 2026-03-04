@@ -96,7 +96,9 @@ def invoke_claude(
     # Retry logic with exponential backoff
     for attempt in range(MAX_RETRIES):
         try:
+            bedrock_start = time.time()
             response = bedrock_client.converse(**request_params)
+            bedrock_duration_ms = int((time.time() - bedrock_start) * 1000)
 
             # Extract response text
             output_message = response.get("output", {}).get("message", {})
@@ -132,6 +134,7 @@ def invoke_claude(
                 output_text=response_text,
                 input_tokens=bedrock_usage.inputTokens,
                 output_tokens=bedrock_usage.outputTokens,
+                duration_ms=bedrock_duration_ms,
             )
 
             return ClaudeResponse(

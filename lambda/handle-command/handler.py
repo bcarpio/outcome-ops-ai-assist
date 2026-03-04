@@ -24,6 +24,7 @@ import logging
 import os
 import re
 import sys
+import time
 from enum import Enum
 from typing import Any, Dict, Optional
 from uuid import uuid4
@@ -260,6 +261,7 @@ Test Output:
 Format your response as markdown with clear headers for each failure type. Be concise but thorough."""
 
     try:
+        bedrock_start = time.time()
         response = bedrock_client.invoke_model(
             modelId=BASIC_MODEL_ID,
             contentType="application/json",
@@ -272,6 +274,7 @@ Format your response as markdown with clear headers for each failure type. Be co
                 ]
             })
         )
+        bedrock_duration_ms = int((time.time() - bedrock_start) * 1000)
 
         response_body = json.loads(response["body"].read())
         analysis = response_body["content"][0]["text"]
@@ -285,6 +288,7 @@ Format your response as markdown with clear headers for each failure type. Be co
             output_text=analysis,
             input_tokens=usage.get("input_tokens", 0),
             output_tokens=usage.get("output_tokens", 0),
+            duration_ms=bedrock_duration_ms,
         )
 
         return analysis

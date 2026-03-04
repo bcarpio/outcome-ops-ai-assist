@@ -25,6 +25,7 @@ import json
 import logging
 import os
 import sys
+import time
 from typing import Any, Dict, List, Optional
 
 import boto3
@@ -103,12 +104,14 @@ def generate_embedding(text: str) -> List[float]:
             "normalize": True,
         }
 
+        bedrock_start = time.time()
         response = bedrock_client.invoke_model(
             modelId=EMBEDDING_MODEL_ID,
             contentType="application/json",
             accept="application/json",
             body=json.dumps(payload),
         )
+        bedrock_duration_ms = int((time.time() - bedrock_start) * 1000)
 
         response_body = json.loads(response["body"].read())
         embedding = response_body.get("embedding", [])
@@ -125,6 +128,7 @@ def generate_embedding(text: str) -> List[float]:
             model_id=EMBEDDING_MODEL_ID,
             input_text=text,
             output_text=f"embedding[{len(embedding)}]",
+            duration_ms=bedrock_duration_ms,
         )
 
         return embedding

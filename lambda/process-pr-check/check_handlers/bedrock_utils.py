@@ -8,6 +8,7 @@ and calculate costs for inclusion in PR comments.
 import logging
 import os
 import sys
+import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -168,6 +169,7 @@ def call_bedrock(
     """
     logger.info(f"Calling Bedrock model {model_id}...")
 
+    bedrock_start = time.time()
     response = bedrock_client.converse(
         modelId=model_id,
         messages=[
@@ -181,6 +183,7 @@ def call_bedrock(
             "temperature": temperature
         }
     )
+    bedrock_duration_ms = int((time.time() - bedrock_start) * 1000)
 
     # Extract response text
     output_message = response.get("output", {}).get("message", {})
@@ -213,6 +216,7 @@ def call_bedrock(
         input_tokens=usage.input_tokens,
         output_tokens=usage.output_tokens,
         cost_usd=usage.cost,
+        duration_ms=bedrock_duration_ms,
     )
 
     return response_text, usage

@@ -29,6 +29,7 @@ import logging
 import os
 import re
 import sys
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import unquote_plus
@@ -506,6 +507,7 @@ def generate_embedding(text: str) -> List[float]:
         1024-dimensional embedding vector, or empty list on failure
     """
     try:
+        bedrock_start = time.time()
         response = bedrock_client.invoke_model(
             modelId=EMBEDDING_MODEL_ID,
             contentType="application/json",
@@ -516,6 +518,7 @@ def generate_embedding(text: str) -> List[float]:
                 "normalize": True,
             }),
         )
+        bedrock_duration_ms = int((time.time() - bedrock_start) * 1000)
 
         response_body = json.loads(response["body"].read())
         embedding = response_body.get("embedding", [])
@@ -530,6 +533,7 @@ def generate_embedding(text: str) -> List[float]:
             model_id=EMBEDDING_MODEL_ID,
             input_text=text,
             output_text=f"embedding[{len(embedding)}]",
+            duration_ms=bedrock_duration_ms,
         )
 
         return embedding

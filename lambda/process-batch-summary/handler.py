@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import sys
+import time
 from datetime import datetime
 from typing import Any, Dict, List
 from urllib.request import Request, urlopen
@@ -745,7 +746,9 @@ For each test file:
 
         return content[0]["text"], response.get("usage", {})
 
+    bedrock_start = time.time()
     summary, usage = retry_bedrock_call(call_claude)
+    bedrock_duration_ms = int((time.time() - bedrock_start) * 1000)
     logger.info(f"Generated batch summary for {group_name} ({len(summary)} chars)")
 
     log_audit_entry(
@@ -756,6 +759,7 @@ For each test file:
         output_text=summary,
         input_tokens=usage.get("inputTokens", 0),
         output_tokens=usage.get("outputTokens", 0),
+        duration_ms=bedrock_duration_ms,
     )
 
     return summary
