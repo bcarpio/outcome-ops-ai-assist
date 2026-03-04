@@ -143,7 +143,7 @@ Source checklist: `.scratch/Customer-Deployed Foundational Technical Review Self
 
 ### CST-003: Licensing
 - **Status:** Met
-- **Evidence:** `docs/deployment-guide.md` - License Management section documents OutcomeOps usage-based licensing via license.example.com
+- **Evidence:** `docs/deployment-guide.md` - License Management section documents JWT-based tiered licensing with Lambda layer validation, tier table, customer setup, and renewal process
 - **Gap:** None (addressed in deployment-guide.md)
 
 ---
@@ -238,7 +238,7 @@ Source checklist: `.scratch/Customer-Deployed Foundational Technical Review Self
 
 ### RM-003: License Management
 - **Status:** Met
-- **Evidence:** `docs/deployment-guide.md` - License Management section documents OutcomeOps license renewal process
+- **Evidence:** `docs/deployment-guide.md` - License Management section documents JWT renewal via new key from OutcomeOps, SSM parameter update, layer version updates, and expiration alerting
 - **Gap:** None (addressed in deployment-guide.md)
 
 ### RM-004: Service Limits

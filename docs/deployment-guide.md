@@ -164,7 +164,7 @@ All infrastructure runs in the customer's AWS account. Costs are usage-based wit
 | **Amazon SNS** | Audit alert notifications | Per-message |
 | **Amazon ECR** | 2 container repositories | Per-GB stored |
 
-### Optional Services (Chat UI Deployment)
+### Chat UI Deployment Services
 
 | Service | Usage | Pricing Model |
 |---------|-------|---------------|
@@ -242,33 +242,77 @@ Estimated monthly costs for typical deployments. Actual costs depend on usage pa
 
 ### Licensing
 
-OutcomeOps AI Assist requires a per-repo or enterprise unlimited license. See [License Management](#license-management) below.
+OutcomeOps AI Assist requires a license. See [License Management](#license-management) below.
 
 ---
 
 ## License Management
 
-OutcomeOps AI Assist uses per-repo or enterprise unlimited licensing managed through [license.example.com](https://license.example.com).
+OutcomeOps AI Assist uses JWT-based licensing with tiered plans (Pilot, Team, Division, Enterprise). Licenses are issued by OutcomeOps and enforced via a Lambda layer deployed to the customer's AWS account.
 
-### License Validation
+### How It Works
 
-- The platform validates its license at deployment and periodically at runtime
-- License keys are stored in SSM Parameter Store
-- License status is checked during Bedrock API calls
+1. **OutcomeOps issues a JWT license key** signed with RS256 for your organization
+2. **You store the key** in SSM Parameter Store in your AWS account
+3. **OutcomeOps publishes a Lambda layer** to your account with the license validator module
+4. **Your Lambda functions** include the layer, which validates the license locally (JWT signature) and phones home to `license.example.com` for limit enforcement and usage tracking
 
-### Renewal Process
+### License Tiers
 
-1. Log in to [license.example.com](https://license.example.com)
-2. Review usage metrics and billing
-3. Renew or upgrade license tier as needed
-4. Update the license key in SSM if it changes:
+| Tier | Repos | PRs/Month | Duration | Enforcement |
+|------|-------|-----------|----------|-------------|
+| **Dev** | 2 | 10 | 30 days | Hard |
+| **PoC** | 20 | Unlimited | 14 days | Hard |
+| **Pilot** | 10 | 100 | 90 days | Hard |
+| **Team** | 50 | 300 | 1 year | Soft |
+| **Division** | 150 | 1,000 | 1 year | Soft |
+| **Enterprise** | Unlimited | Unlimited | 1 year | Soft |
+
+**Hard enforcement:** Operations are blocked when limits are reached. Fails closed on network errors. **Soft enforcement:** Operations are allowed but alerts are sent at 80% and 100% thresholds. Fails open on network errors.
+
+**Enterprise air-gap option:** Enterprise customers with contractual agreements can run without phone-home connectivity for deployments in isolated VPCs with no outbound internet access. OutcomeOps configures the air-gap option during onboarding. License validation still works offline via the embedded RSA public key in the Lambda layer (JWT signature and expiration verified locally).
+
+### Customer Setup
+
+The license key and Lambda layer ARN are provided by OutcomeOps during onboarding:
+
+```bash
+# Store the JWT license key in SSM
+aws ssm put-parameter \
+  --name "/${ENV}/outcomeops/license/key" \
+  --value "${JWT_LICENSE_KEY}" \
+  --type SecureString \
+  --overwrite
+```
+
+The layer ARN is configured in Terraform via the `outcomeops_license_layer_arn` variable:
+
+```hcl
+outcomeops_license_layer_arn  = "arn:aws:lambda:us-west-2:123456789012:layer:prd-outcomeops-license-validator-v1-5-0:1"
+outcomeops_license_ssm_param  = "/prd/outcomeops/license/key"
+outcomeops_license_server_url = "https://license.example.com"
+```
+
+### License Renewal
+
+License renewals are handled by OutcomeOps. When a new license is issued:
+
+1. OutcomeOps provides a new JWT license key
+2. Update the SSM parameter:
    ```bash
    aws ssm put-parameter \
-     --name "/${ENV}/${APP_NAME}/license/key" \
-     --value "new-license-key" \
+     --name "/${ENV}/outcomeops/license/key" \
+     --value "${NEW_JWT_LICENSE_KEY}" \
      --type SecureString \
      --overwrite
    ```
+3. If a new layer version is required, update the `outcomeops_license_layer_arn` in your tfvars and redeploy
+
+License validation results are cached for 1 hour in Lambda memory, so the new key takes effect within an hour or on the next cold start.
+
+### Expiration Alerts
+
+OutcomeOps monitors license expiration and sends alerts at 30, 14, 7, and 1 day before expiration. Contact your OutcomeOps account representative to renew before expiration.
 
 ---
 
@@ -318,7 +362,7 @@ The `audit-alert` Lambda monitors the DynamoDB `audit-logs` table via Streams. I
 | **DynamoDB tables** | Point-in-Time Recovery (PITR) | Seconds | Minutes |
 | **S3 Knowledge Base** | Versioning enabled | Zero (all versions retained) | Minutes |
 | **S3 Vectors** | Rebuilt from S3 Knowledge Base | N/A (derived data) | 30-60 min (re-ingest) |
-| **Terraform state** | S3 backend with versioning | Zero | Minutes |
+| **Terraform state** | S3 backend with versioning (see [Getting Started](getting-started.md#step-3-create-terraform-state-bucket)) | Zero | Minutes |
 | **SSM Parameters** | Manual backup recommended | Manual | Manual |
 | **ECR Images** | Immutable tags (run-tests) | Zero | Minutes |
 

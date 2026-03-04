@@ -72,7 +72,54 @@ This runs:
 - Installs all Lambda handler dependencies
 - Ready for testing and development
 
-### Step 3: Configure Terraform
+### Step 3: Create Terraform State Bucket
+
+Terraform requires an S3 bucket to store its state file. This bucket must be created manually before running any Terraform commands.
+
+```bash
+# Set your variables
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+REGION="us-west-2"
+ENV="prd"
+BUCKET_NAME="terraform-state-${ACCOUNT_ID}-${REGION}-${ENV}"
+
+# Create the bucket
+aws s3api create-bucket \
+  --bucket "${BUCKET_NAME}" \
+  --region "${REGION}" \
+  --create-bucket-configuration LocationConstraint="${REGION}"
+
+# Enable versioning (required for state recovery)
+aws s3api put-bucket-versioning \
+  --bucket "${BUCKET_NAME}" \
+  --versioning-configuration Status=Enabled
+
+# Block all public access
+aws s3api put-public-access-block \
+  --bucket "${BUCKET_NAME}" \
+  --public-access-block-configuration \
+    BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+
+# Enable server-side encryption
+aws s3api put-bucket-encryption \
+  --bucket "${BUCKET_NAME}" \
+  --server-side-encryption-configuration \
+    '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
+```
+
+Then update `terraform/backend.tf` to match your bucket name:
+
+```hcl
+terraform {
+  backend "s3" {
+    bucket = "terraform-state-ACCOUNT_ID-us-west-2-prd"  # Replace with your bucket name
+    key    = "outcome-ops-ai-assist.tfstate"
+    region = "us-west-2"                                  # Replace with your region
+  }
+}
+```
+
+### Step 4: Configure Terraform
 
 Create your local Terraform variables file (not committed to git):
 
@@ -85,7 +132,7 @@ cp terraform/.tfvars.example terraform/prd.tfvars
 # - repos_to_ingest (which repos to ingest into knowledge base)
 ```
 
-Store your GitHub token (created in Prerequisites step 3) securely in AWS SSM Parameter Store:
+Store your GitHub token (created in Prerequisites) securely in AWS SSM Parameter Store:
 
 ```bash
 # Replace YOUR_GITHUB_TOKEN with the PAT you created earlier
@@ -106,7 +153,7 @@ curl -H "Authorization: token $(aws ssm get-parameter --name /prd/outcome-ops-ai
   https://api.github.com/user
 ```
 
-### Step 4: Build Run-Tests Docker Image
+### Step 5: Build Run-Tests Docker Image
 
 The run-tests Lambda requires a Docker image for executing test suites. This must be built and pushed to ECR before deploying the full infrastructure.
 
@@ -122,7 +169,7 @@ The Makefile target handles everything:
 3. Builds the Docker image
 4. Pushes to ECR
 
-### Step 5: Deploy Infrastructure
+### Step 6: Deploy Infrastructure
 
 ```bash
 cd terraform
@@ -148,7 +195,7 @@ After deployment, note the API Gateway URL from the Terraform output:
 api_gateway_url = "https://xxxxxx.execute-api.us-west-2.amazonaws.com"
 ```
 
-### Step 6: Configure Code Generation Trigger
+### Step 7: Configure Code Generation Trigger
 
 OutcomeOps AI Assist can be triggered from either **GitHub Issues** or **Jira**. Choose the option that fits your workflow:
 
@@ -217,7 +264,7 @@ See the **[Jira Integration Setup Guide](jira-integration-setup.md)** for comple
 
 ---
 
-### Step 7: Verify Installation
+### Step 8: Verify Installation
 
 Run tests to confirm everything works:
 
