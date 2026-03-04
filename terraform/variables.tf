@@ -187,7 +187,13 @@ variable "ui_container_image" {
 variable "ui_alb_internal" {
   description = "Make the ALB internal (VPC-only access). Set to false for public ALB secured by OIDC."
   type        = bool
-  default     = true
+  default     = false
+}
+
+variable "ui_fargate_assign_public_ip" {
+  description = "Assign public IP to Fargate tasks. Set to true for public subnets without NAT. Set to false for private subnets with outbound via NAT, Transit Gateway, or Direct Connect."
+  type        = bool
+  default     = false
 }
 
 # ============================================================================

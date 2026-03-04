@@ -501,7 +501,7 @@ module "ui_ecs" {
       # Network configuration
       subnet_ids         = var.ui_private_subnet_ids
       security_group_ids = var.deploy_ui ? [module.ui_fargate_sg.security_group_id] : []
-      assign_public_ip   = true # Required for public subnets without NAT Gateway
+      assign_public_ip   = var.ui_fargate_assign_public_ip
 
       # Load balancer attachment
       load_balancer = {
