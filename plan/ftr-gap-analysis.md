@@ -17,7 +17,7 @@ Source checklist: `.scratch/Customer-Deployed Foundational Technical Review Self
 
 ### INT-002: Target Customer Profile
 - **Status:** Met
-- **Evidence:** `CLAUDE.md` describes Fortune 500 companies with hundreds or thousands of repositories as target customers
+- **Evidence:** `docs/architecture.md` describes Fortune 500 companies with hundreds or thousands of repositories as target customers
 - **Gap:** None
 
 ### INT-003: Deployment Options

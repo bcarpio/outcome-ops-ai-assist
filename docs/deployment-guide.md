@@ -242,13 +242,13 @@ Estimated monthly costs for typical deployments. Actual costs depend on usage pa
 
 ### Licensing
 
-OutcomeOps AI Assist requires a usage-based license. See [License Management](#license-management) below.
+OutcomeOps AI Assist requires a per-repo or enterprise unlimited license. See [License Management](#license-management) below.
 
 ---
 
 ## License Management
 
-OutcomeOps AI Assist uses usage-based licensing managed through [license.example.com](https://license.example.com).
+OutcomeOps AI Assist uses per-repo or enterprise unlimited licensing managed through [license.example.com](https://license.example.com).
 
 ### License Validation
 
@@ -673,7 +673,7 @@ To rebuild the entire environment from scratch:
 | Channel | Contact | Use For |
 |---------|---------|---------|
 | **Email** | support@outcomeops.ai | General inquiries, bug reports |
-| **Support Portal** | [support.outcomeops.ai](https://support.outcomeops.ai) | Ticket management, status updates |
+| **Support Portal** | [OutcomeOps Service Desk](https://outcomeops.atlassian.net/servicedesk/customer/portals) | Ticket management, status updates |
 | **Emergency** | emergency@outcomeops.ai | Production outages (Premium tier) |
 
 ### Support Tiers
