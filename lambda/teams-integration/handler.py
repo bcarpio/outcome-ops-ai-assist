@@ -426,7 +426,7 @@ def save_config(
         return _error(404, "Connection not found")
 
     config_data = {
-        "days_back": body.get("days_back", 30),
+        "days_back": int(body.get("days_back", 30)),
         "include_channels": body.get("include_channels", []),
         "sync_files": body.get("sync_files", True),
     }

@@ -210,6 +210,14 @@ MAX_FILE_SIZE = 50000  # 50K chars - files larger than this get chunked
 CHUNK_SIZE = 40000     # 40K chars per chunk (leaves room for overlap)
 CHUNK_OVERLAP = 2000   # 2K char overlap between chunks for context
 
+# Token limit - leave room for output tokens and template overhead
+MAX_PROMPT_TOKENS = 150_000  # Bedrock limit is 200K; reserve 50K for output + safety
+
+
+def estimate_tokens(text: str) -> int:
+    """Estimate token count. Code averages ~3.5 chars/token; use 3 for safety margin."""
+    return len(text) // 3
+
 
 def chunk_large_content(content: str, file_path: str) -> List[Dict[str, Any]]:
     """
@@ -273,56 +281,23 @@ def chunk_large_content(content: str, file_path: str) -> List[Dict[str, Any]]:
     return chunks
 
 
-def generate_batch_summary(batch: Dict[str, Any]) -> str:
-    """
-    Generate batch summary using Claude via Bedrock.
+def _format_file_content(fc: Dict[str, Any]) -> str:
+    """Format a file content entry for the prompt."""
+    if fc.get("is_chunked"):
+        chunk_info = f" [Chunk {fc['chunk_index'] + 1}/{fc['total_chunks']}]"
+        char_range = f" (chars {fc.get('start_char', 0)}-{fc.get('end_char', 0)})"
+    else:
+        chunk_info = ""
+        char_range = ""
 
-    Args:
-        batch: Batch message containing repo, batch_type, group_name, file_paths
+    truncated = "... (truncated)\n" if len(fc['content']) == 10000 else ""
+    return f"File: {fc['path']}{chunk_info}{char_range}\n```\n{fc['content']}\n{truncated}```\n"
 
-    Returns:
-        Generated summary text
-    """
-    repo = batch["repo"]
-    repo_project = batch["repo_project"]
-    batch_type = batch["batch_type"]
-    group_name = batch["group_name"]
-    file_paths = batch["file_paths"]
 
-    # Fetch all file contents
-    file_contents = []
-
-    for file_path in file_paths:
-        try:
-            content = fetch_file_content(repo_project, file_path)
-
-            # Chunk large files instead of skipping them
-            chunks = chunk_large_content(content, file_path)
-            file_contents.extend(chunks)
-
-        except Exception as e:
-            logger.error(f"Error fetching file {file_path}: {e}")
-            # Continue with other files
-
-    if not file_contents:
-        return "No files available for analysis"
-
-    # Build files section for prompt, indicating chunks for large files
-    def format_file_content(fc: Dict[str, Any]) -> str:
-        """Format a file content entry for the prompt."""
-        if fc.get("is_chunked"):
-            chunk_info = f" [Chunk {fc['chunk_index'] + 1}/{fc['total_chunks']}]"
-            char_range = f" (chars {fc.get('start_char', 0)}-{fc.get('end_char', 0)})"
-        else:
-            chunk_info = ""
-            char_range = ""
-
-        truncated = "... (truncated)\n" if len(fc['content']) == 10000 else ""
-        return f"File: {fc['path']}{chunk_info}{char_range}\n```\n{fc['content']}\n{truncated}```\n"
-
-    files_section = "\n".join([format_file_content(fc) for fc in file_contents])
-
-    # Build prompt based on batch type
+def _build_batch_prompt(
+    batch_type: str, repo: str, group_name: str, files_section: str
+) -> str:
+    """Build prompt based on batch type with the given files section."""
     prompt_templates = {
         "infrastructure": f"Summarize the infrastructure for {repo} based on these Terraform files. Describe what resources are created, how they're organized, and the overall architecture.\n\n{files_section}",
         "handler-group": f"""Analyze the {group_name} Lambda handler for {repo} and provide detailed implementation documentation for debugging.
@@ -716,11 +691,14 @@ For each test file:
         "docs": f"Summarize the documentation for {repo}. Describe what topics are covered and how the documentation is organized.\n\n{files_section}",
     }
 
-    prompt = prompt_templates.get(
+    return prompt_templates.get(
         batch_type,
         f"Summarize these {group_name} files for {repo}.\n\n{files_section}"
     )
 
+
+def _call_bedrock_and_audit(prompt: str, group_name: str) -> str:
+    """Call Bedrock with the given prompt and log audit entry. Returns summary text."""
     def call_claude():
         payload = {
             "modelId": ADVANCED_MODEL_ID,
@@ -731,7 +709,7 @@ For each test file:
                 }
             ],
             "inferenceConfig": {
-                "maxTokens": 8192,  # Increased for larger summaries
+                "maxTokens": 8192,
                 "temperature": 0.3,
             },
         }
@@ -763,6 +741,106 @@ For each test file:
     )
 
     return summary
+
+
+def generate_batch_summary(batch: Dict[str, Any]) -> str:
+    """
+    Generate batch summary using Claude via Bedrock.
+
+    If the assembled prompt exceeds MAX_PROMPT_TOKENS, the file contents are
+    split into sub-batches. Each sub-batch is summarized independently, then
+    the sub-summaries are merged into a single coherent summary.
+
+    Args:
+        batch: Batch message containing repo, batch_type, group_name, file_paths
+
+    Returns:
+        Generated summary text
+    """
+    repo = batch["repo"]
+    repo_project = batch["repo_project"]
+    batch_type = batch["batch_type"]
+    group_name = batch["group_name"]
+    file_paths = batch["file_paths"]
+
+    # Fetch all file contents
+    file_contents = []
+
+    for file_path in file_paths:
+        try:
+            content = fetch_file_content(repo_project, file_path)
+
+            # Chunk large files instead of skipping them
+            chunks = chunk_large_content(content, file_path)
+            file_contents.extend(chunks)
+
+        except Exception as e:
+            logger.error(f"Error fetching file {file_path}: {e}")
+            # Continue with other files
+
+    if not file_contents:
+        return "No files available for analysis"
+
+    # Build full prompt and check token estimate
+    files_section = "\n".join([_format_file_content(fc) for fc in file_contents])
+    prompt = _build_batch_prompt(batch_type, repo, group_name, files_section)
+    estimated_tokens = estimate_tokens(prompt)
+
+    if estimated_tokens <= MAX_PROMPT_TOKENS:
+        return _call_bedrock_and_audit(prompt, group_name)
+
+    # Batch too large - split file_contents into sub-batches
+    # Calculate token budget for file content by subtracting template overhead
+    template_token_overhead = estimated_tokens - estimate_tokens(files_section)
+    file_token_budget = MAX_PROMPT_TOKENS - template_token_overhead
+
+    sub_batches = []
+    current_sub = []
+    current_tokens = 0
+
+    for fc in file_contents:
+        fc_text = _format_file_content(fc)
+        fc_tokens = estimate_tokens(fc_text)
+        if current_sub and current_tokens + fc_tokens > file_token_budget:
+            sub_batches.append(current_sub)
+            current_sub = []
+            current_tokens = 0
+        current_sub.append(fc)
+        current_tokens += fc_tokens
+
+    if current_sub:
+        sub_batches.append(current_sub)
+
+    logger.info(
+        f"Batch too large ({estimated_tokens} estimated tokens), "
+        f"splitting into {len(sub_batches)} sub-batches"
+    )
+
+    # Summarize each sub-batch
+    sub_summaries = []
+    for i, sub_fc_list in enumerate(sub_batches, 1):
+        logger.info(f"Processing sub-batch {i}/{len(sub_batches)} ({len(sub_fc_list)} file chunks)")
+        sub_files_section = "\n".join([_format_file_content(fc) for fc in sub_fc_list])
+        sub_prompt = _build_batch_prompt(batch_type, repo, group_name, sub_files_section)
+        sub_summary = _call_bedrock_and_audit(
+            sub_prompt, f"{group_name} (sub-batch {i}/{len(sub_batches)})"
+        )
+        sub_summaries.append(sub_summary)
+
+    # Merge sub-summaries into a single coherent summary
+    numbered_summaries = "\n\n".join(
+        f"--- Sub-summary {i}/{len(sub_summaries)} ---\n{ss}"
+        for i, ss in enumerate(sub_summaries, 1)
+    )
+    merge_prompt = (
+        f"You are merging {len(sub_summaries)} partial summaries of the "
+        f"{group_name} ({batch_type}) for {repo} into a single coherent summary. "
+        f"Combine all information, remove redundancy, and produce a unified document "
+        f"that reads as if it was written from a single analysis pass.\n\n"
+        f"{numbered_summaries}"
+    )
+
+    return _call_bedrock_and_audit(merge_prompt, f"{group_name} (merge)")
 
 
 def generate_embedding(text: str) -> List[float]:
