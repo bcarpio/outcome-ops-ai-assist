@@ -59,6 +59,8 @@ module "chat_streaming_lambda" {
     BEDROCK_ADVANCED_MODEL_ID    = var.bedrock_advanced_model_id
     BEDROCK_BASIC_MODEL_ID       = var.bedrock_basic_model_id
     BEDROCK_EMBEDDING_MODEL_ID   = var.bedrock_embedding_model_id
+    WORKSPACES_TABLE             = module.workspaces_table[0].dynamodb_table_id
+    OAUTH_KMS_KEY_ARN            = aws_kms_key.oauth_token_key[0].arn
   }
 
   # IAM permissions
@@ -126,6 +128,30 @@ module "chat_streaming_lambda" {
       ]
       resources = [
         module.audit_logs_table.dynamodb_table_arn
+      ]
+    }
+
+    # DynamoDB read on workspaces table (for MCP configs)
+    workspaces_table_read = {
+      effect = "Allow"
+      actions = [
+        "dynamodb:GetItem",
+        "dynamodb:Query"
+      ]
+      resources = [
+        module.workspaces_table[0].dynamodb_table_arn,
+        "${module.workspaces_table[0].dynamodb_table_arn}/index/*"
+      ]
+    }
+
+    # KMS decrypt for OAuth key (MCP credential decryption)
+    oauth_kms_decrypt = {
+      effect = "Allow"
+      actions = [
+        "kms:Decrypt"
+      ]
+      resources = [
+        aws_kms_key.oauth_token_key[0].arn
       ]
     }
 

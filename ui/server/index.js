@@ -587,6 +587,24 @@ app.delete("/api/org/members/:email", (req, res) => proxyWorkspaceRequest(req, r
 // Chat searchable workspaces
 app.get("/api/chat/searchable-workspaces", (req, res) => proxyWorkspaceRequest(req, res, "GET", "/chat/searchable-workspaces"));
 
+// ============================================================================
+// MCP Server Management (org admin)
+// ============================================================================
+app.post("/api/mcp/servers", (req, res) => proxyWorkspaceRequest(req, res, "POST", "/mcp/servers"));
+app.get("/api/mcp/servers", (req, res) => proxyWorkspaceRequest(req, res, "GET", "/mcp/servers"));
+app.get("/api/mcp/servers/:id", (req, res) => proxyWorkspaceRequest(req, res, "GET", `/mcp/servers/${req.params.id}`));
+app.patch("/api/mcp/servers/:id", (req, res) => proxyWorkspaceRequest(req, res, "PATCH", `/mcp/servers/${req.params.id}`));
+app.delete("/api/mcp/servers/:id", (req, res) => proxyWorkspaceRequest(req, res, "DELETE", `/mcp/servers/${req.params.id}`));
+app.post("/api/mcp/servers/:id/refresh", (req, res) => proxyWorkspaceRequest(req, res, "POST", `/mcp/servers/${req.params.id}/refresh`));
+
+// MCP workspace assignments
+app.post("/api/workspaces/:id/mcp-servers", (req, res) => proxyWorkspaceRequest(req, res, "POST", `/workspaces/${req.params.id}/mcp-servers`));
+app.get("/api/workspaces/:id/mcp-servers", (req, res) => proxyWorkspaceRequest(req, res, "GET", `/workspaces/${req.params.id}/mcp-servers`));
+app.delete("/api/workspaces/:id/mcp-servers/:mcpId", (req, res) => proxyWorkspaceRequest(req, res, "DELETE", `/workspaces/${req.params.id}/mcp-servers/${req.params.mcpId}`));
+
+// Chat MCP servers
+app.get("/api/chat/mcp-servers", (req, res) => proxyWorkspaceRequest(req, res, "GET", "/chat/mcp-servers"));
+
 // Debug: Show current authenticated user identity
 app.get("/api/me", (req, res) => {
   const user = extractUser(req);

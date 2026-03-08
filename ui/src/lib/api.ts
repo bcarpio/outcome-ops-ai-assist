@@ -41,7 +41,13 @@ export interface StreamError {
   status_code?: number
 }
 
-export type StreamEvent = StreamMetadata | StreamToken | StreamDone | StreamError
+export type StreamEvent = StreamMetadata | StreamToken | StreamDone | StreamError | StreamToolUse
+
+export interface StreamToolUse {
+  type: 'tool_use'
+  tool: string
+  status: string
+}
 
 export interface ChatRequest {
   conversation_id?: string
@@ -50,6 +56,7 @@ export interface ChatRequest {
   advanced?: boolean
   show_cost?: boolean
   workspace_ids?: string[]
+  mcp_server_ids?: string[]
 }
 
 export interface Conversation {
@@ -1476,4 +1483,162 @@ export async function triggerGitHubSync(workspaceId: string, repoName?: string):
     const data = await safeJson(response)
     throw new Error((data?.error as string) || `Failed to trigger GitHub sync: ${response.status}`)
   }
+}
+
+// ============================================================================
+// MCP Server Management
+// ============================================================================
+
+export interface McpServer {
+  mcp_id: string
+  name: string
+  url: string
+  auth_type: 'none' | 'api_key' | 'bearer'
+  has_credentials: boolean
+  is_global: boolean
+  refresh_interval_days: number
+  status: 'active' | 'error'
+  tool_count: number
+  last_refreshed_at: string | null
+  created_by: string
+  created_at: string
+  updated_at: string
+}
+
+export interface CreateMcpServerRequest {
+  name: string
+  url: string
+  auth_type: 'none' | 'api_key' | 'bearer'
+  credentials?: string
+  is_global: boolean
+  refresh_interval_days: number
+}
+
+export interface UpdateMcpServerRequest {
+  name?: string
+  url?: string
+  auth_type?: 'none' | 'api_key' | 'bearer'
+  credentials?: string
+  is_global?: boolean
+  refresh_interval_days?: number
+}
+
+export interface ChatMcpServer {
+  mcp_id: string
+  name: string
+  status: 'active' | 'error'
+  tool_count: number
+  is_global: boolean
+}
+
+export async function listMcpServers(): Promise<McpServer[]> {
+  const response = await fetch(`${API_BASE}/mcp/servers`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to list MCP servers: ${response.status}`)
+  }
+  const data = await response.json()
+  return data.mcp_servers || []
+}
+
+export async function createMcpServer(request: CreateMcpServerRequest): Promise<McpServer> {
+  const response = await fetch(`${API_BASE}/mcp/servers`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  })
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to create MCP server: ${response.status}`)
+  }
+  const data = await response.json()
+  return data.mcp_server
+}
+
+export async function getMcpServer(id: string): Promise<McpServer> {
+  const response = await fetch(`${API_BASE}/mcp/servers/${id}`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to get MCP server: ${response.status}`)
+  }
+  const data = await response.json()
+  return data.mcp_server
+}
+
+export async function updateMcpServer(id: string, request: UpdateMcpServerRequest): Promise<McpServer> {
+  const response = await fetch(`${API_BASE}/mcp/servers/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  })
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to update MCP server: ${response.status}`)
+  }
+  const data = await response.json()
+  return data.mcp_server
+}
+
+export async function deleteMcpServer(id: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/mcp/servers/${id}`, {
+    method: 'DELETE',
+  })
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to delete MCP server: ${response.status}`)
+  }
+}
+
+export async function refreshMcpTools(id: string): Promise<McpServer> {
+  const response = await fetch(`${API_BASE}/mcp/servers/${id}/refresh`, {
+    method: 'POST',
+  })
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to refresh MCP tools: ${response.status}`)
+  }
+  const data = await response.json()
+  return data.mcp_server
+}
+
+export async function assignMcpToWorkspace(workspaceId: string, mcpId: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/mcp-servers`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mcp_id: mcpId }),
+  })
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to assign MCP server: ${response.status}`)
+  }
+}
+
+export async function removeMcpFromWorkspace(workspaceId: string, mcpId: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/mcp-servers/${mcpId}`, {
+    method: 'DELETE',
+  })
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to remove MCP server: ${response.status}`)
+  }
+}
+
+export async function listWorkspaceMcpServers(workspaceId: string): Promise<McpServer[]> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/mcp-servers`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to list workspace MCP servers: ${response.status}`)
+  }
+  const data = await response.json()
+  return data.mcp_servers || []
+}
+
+export async function getChatMcpServers(): Promise<ChatMcpServer[]> {
+  const response = await fetch(`${API_BASE}/chat/mcp-servers`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to fetch MCP servers: ${response.status}`)
+  }
+  const data = await response.json()
+  return data.mcp_servers || []
 }

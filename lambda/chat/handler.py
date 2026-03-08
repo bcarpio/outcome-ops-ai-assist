@@ -52,6 +52,8 @@ _bedrock_client = None
 _chat_table = None
 _vector_bucket = None
 _vector_index = None
+_workspaces_table = None
+_kms_client = None
 
 # Bedrock config with longer timeout for streaming
 bedrock_config = Config(
@@ -131,6 +133,180 @@ def _get_vector_index():
     return _vector_index
 
 
+def _get_workspaces_table():
+    """Get workspaces table name from env var."""
+    global _workspaces_table
+    if _workspaces_table is None:
+        table_name = os.environ.get("WORKSPACES_TABLE")
+        if not table_name:
+            raise ValueError("WORKSPACES_TABLE environment variable not set")
+        _workspaces_table = table_name
+    return _workspaces_table
+
+
+def _get_kms_client():
+    """Get cached KMS client."""
+    global _kms_client
+    if _kms_client is None:
+        _kms_client = boto3.client("kms")
+    return _kms_client
+
+
+def _decrypt_mcp_credentials(encrypted: str) -> str:
+    """Decrypt MCP server credentials using KMS."""
+    import base64
+    kms = _get_kms_client()
+    try:
+        response = kms.decrypt(
+            CiphertextBlob=base64.b64decode(encrypted),
+            KeyId=os.environ.get("OAUTH_KMS_KEY_ARN", ""),
+        )
+        return response["Plaintext"].decode()
+    except ClientError as e:
+        logger.error(f"[chat_handler] KMS decrypt failed: {e}", exc_info=True)
+        raise
+
+
+def _load_mcp_configs(mcp_server_ids: List[str]) -> List[Dict]:
+    """Load MCP server configs and tool manifests from DynamoDB."""
+    dynamodb = _get_dynamodb()
+    table = dynamodb.Table(_get_workspaces_table())
+
+    configs = []
+    for mcp_id in mcp_server_ids:
+        try:
+            # Get metadata
+            meta_resp = table.get_item(Key={"PK": f"MCP#{mcp_id}", "SK": "METADATA"})
+            if "Item" not in meta_resp:
+                logger.warning(f"[chat_handler] MCP server {mcp_id} not found")
+                continue
+
+            metadata = meta_resp["Item"]
+            if metadata.get("status") == "error":
+                logger.warning(f"[chat_handler] MCP server {mcp_id} has error status, skipping")
+                continue
+
+            # Get tools
+            tools_resp = table.get_item(Key={"PK": f"MCP#{mcp_id}", "SK": "TOOLS"})
+            if "Item" not in tools_resp:
+                logger.warning(f"[chat_handler] MCP server {mcp_id} has no cached tools, skipping")
+                continue
+
+            tools = tools_resp["Item"].get("tools", [])
+            if not tools:
+                continue
+
+            configs.append({
+                "mcp_id": mcp_id,
+                "name": metadata.get("name", ""),
+                "url": metadata.get("url", ""),
+                "auth_type": metadata.get("auth_type", "none"),
+                "encrypted_credentials": metadata.get("encrypted_credentials"),
+                "tools": tools,
+            })
+        except ClientError as e:
+            logger.error(f"[chat_handler] Error loading MCP config for {mcp_id}: {e}", exc_info=True)
+            continue
+
+    return configs
+
+
+def _build_bedrock_tool_config(mcp_configs: List[Dict]):
+    """Convert MCP tool manifests to Bedrock toolConfig format.
+
+    Returns (tool_config, tool_mapping) where:
+    - tool_config is the Bedrock toolConfig dict
+    - tool_mapping maps prefixed tool names to MCP server info
+    """
+    tools = []
+    tool_mapping = {}
+
+    for config in mcp_configs:
+        mcp_id = config["mcp_id"]
+        for tool in config["tools"]:
+            # Prefix tool name with mcp_id to avoid collisions
+            prefixed_name = f"{mcp_id}___{tool['name']}"
+            # Bedrock tool names must be alphanumeric + underscores, max 64 chars
+            prefixed_name = prefixed_name[:64]
+
+            tool_spec = {
+                "toolSpec": {
+                    "name": prefixed_name,
+                    "description": tool.get("description", "No description"),
+                    "inputSchema": {
+                        "json": tool.get("inputSchema", {"type": "object", "properties": {}})
+                    },
+                }
+            }
+            tools.append(tool_spec)
+
+            tool_mapping[prefixed_name] = {
+                "mcp_id": mcp_id,
+                "original_tool_name": tool["name"],
+                "server_config": {
+                    "url": config["url"],
+                    "auth_type": config["auth_type"],
+                    "encrypted_credentials": config.get("encrypted_credentials"),
+                },
+            }
+
+    tool_config = {"tools": tools} if tools else None
+    return tool_config, tool_mapping
+
+
+def _execute_mcp_tool_call(tool_mapping_entry: Dict, tool_input: Dict) -> str:
+    """Execute a tool call against an MCP server via JSON-RPC 2.0."""
+    import urllib.request
+    import urllib.error
+
+    server = tool_mapping_entry["server_config"]
+    original_name = tool_mapping_entry["original_tool_name"]
+
+    headers = {"Content-Type": "application/json"}
+
+    if server["auth_type"] == "bearer" and server.get("encrypted_credentials"):
+        token = _decrypt_mcp_credentials(server["encrypted_credentials"])
+        headers["Authorization"] = f"Bearer {token}"
+    elif server["auth_type"] == "api_key" and server.get("encrypted_credentials"):
+        key = _decrypt_mcp_credentials(server["encrypted_credentials"])
+        headers["X-API-Key"] = key
+
+    payload = json.dumps({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": original_name,
+            "arguments": tool_input,
+        },
+    }).encode()
+
+    try:
+        req = urllib.request.Request(server["url"], data=payload, headers=headers, method="POST")
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode())
+            if "error" in data:
+                return f"Tool error: {data['error'].get('message', 'Unknown error')}"
+            # Extract content from result
+            result = data.get("result", {})
+            content = result.get("content", [])
+            # Serialize content items to text
+            text_parts = []
+            for item in content:
+                if isinstance(item, dict):
+                    if item.get("type") == "text":
+                        text_parts.append(item.get("text", ""))
+                    else:
+                        text_parts.append(json.dumps(item))
+                else:
+                    text_parts.append(str(item))
+            return "\n".join(text_parts) if text_parts else json.dumps(result)
+    except urllib.error.URLError as e:
+        raise Exception(f"Failed to connect to MCP server: {e}")
+    except json.JSONDecodeError as e:
+        raise Exception(f"Invalid JSON response from MCP server: {e}")
+
+
 # ============================================================================
 # Request/Response Models
 # ============================================================================
@@ -145,6 +321,7 @@ class ChatMessageRequest(BaseModel):
     user: Optional[Dict] = None  # User identity from OIDC (email, name)
     workspace_id: Optional[str] = None  # Single workspace (deprecated, use workspace_ids)
     workspace_ids: Optional[List[str]] = None  # Multiple workspaces for cross-workspace search
+    mcp_server_ids: Optional[List[str]] = None  # MCP servers for tool use
 
     @field_validator("message")
     @classmethod
@@ -702,17 +879,18 @@ def generate_answer_stream(
     history: List[Dict],
     memory_context: str = "",
     advanced: bool = False,
-) -> Generator[str, None, None]:
+    tool_config: Dict = None,
+    tool_mapping: Dict = None,
+) -> Generator:
     """
     Stream answer from Bedrock using ConverseStream.
-    Yields text chunks and final usage dict.
+    Yields text chunks, tool_use dicts, and final usage dict.
+    When tool_config is provided, implements a tool use loop.
     """
     bedrock = _get_bedrock_client()
 
     # Build message history
     messages = []
-
-    # Add conversation history (last 10 messages)
     for msg in history[-10:]:
         role = msg.get("role", "user")
         content = msg.get("content", "")
@@ -722,14 +900,8 @@ def generate_answer_stream(
     # Build the prompt with optional memory context
     memory_section = ""
     if memory_context:
-        memory_section = f"""
-{memory_context}
+        memory_section = f"\n{memory_context}\n\n---\n\n"
 
----
-
-"""
-
-    # Add current question with context
     user_prompt = f"""Based on the following knowledge base context, answer the user's question.
 {memory_section}
 KNOWLEDGE BASE CONTEXT:
@@ -742,36 +914,129 @@ Provide a helpful, accurate answer based on the context above. If the context do
 
     messages.append({"role": "user", "content": [{"text": user_prompt}]})
 
-    # Select model
     model_id = ADVANCED_MODEL_ID if advanced else BASIC_MODEL_ID
+    max_iterations = 10
+    total_input_tokens = 0
+    total_output_tokens = 0
 
     try:
-        response = bedrock.converse_stream(
-            modelId=model_id,
-            messages=messages,
-            system=[{"text": SYSTEM_PROMPT}],
-            inferenceConfig={
-                "maxTokens": 8192,
-                "temperature": 0.3,
-            },
-        )
+        for iteration in range(max_iterations):
+            params = {
+                "modelId": model_id,
+                "messages": messages,
+                "system": [{"text": SYSTEM_PROMPT}],
+                "inferenceConfig": {
+                    "maxTokens": 8192,
+                    "temperature": 0.3,
+                },
+            }
+            if tool_config:
+                params["toolConfig"] = tool_config
 
-        # Stream tokens
-        usage = {"inputTokens": 0, "outputTokens": 0}
+            response = bedrock.converse_stream(**params)
 
-        for event in response.get("stream", []):
-            if "contentBlockDelta" in event:
-                delta = event["contentBlockDelta"].get("delta", {})
-                if "text" in delta:
-                    yield delta["text"]
+            # Process stream
+            assistant_text_parts = []
+            current_tool_use = None
+            tool_use_blocks = []
 
-            elif "metadata" in event:
-                usage_data = event["metadata"].get("usage", {})
-                usage["inputTokens"] = usage_data.get("inputTokens", 0)
-                usage["outputTokens"] = usage_data.get("outputTokens", 0)
+            for event in response.get("stream", []):
+                if "contentBlockStart" in event:
+                    start = event["contentBlockStart"].get("start", {})
+                    if "toolUse" in start:
+                        current_tool_use = {
+                            "toolUseId": start["toolUse"]["toolUseId"],
+                            "name": start["toolUse"]["name"],
+                            "input_parts": [],
+                        }
+                        # Yield progress event
+                        if tool_mapping and start["toolUse"]["name"] in tool_mapping:
+                            original_name = tool_mapping[start["toolUse"]["name"]]["original_tool_name"]
+                            yield {"type": "tool_use", "tool": original_name, "status": "calling"}
 
-        # Yield usage as final item
-        yield {"usage": usage}
+                elif "contentBlockDelta" in event:
+                    delta = event["contentBlockDelta"].get("delta", {})
+                    if "text" in delta:
+                        yield delta["text"]
+                        assistant_text_parts.append(delta["text"])
+                    elif "toolUse" in delta:
+                        if current_tool_use:
+                            current_tool_use["input_parts"].append(delta["toolUse"]["input"])
+
+                elif "contentBlockStop" in event:
+                    if current_tool_use:
+                        full_input = "".join(current_tool_use["input_parts"])
+                        try:
+                            tool_input = json.loads(full_input) if full_input else {}
+                        except json.JSONDecodeError:
+                            tool_input = {}
+                        tool_use_blocks.append({
+                            "toolUseId": current_tool_use["toolUseId"],
+                            "name": current_tool_use["name"],
+                            "input": tool_input,
+                        })
+                        current_tool_use = None
+
+                elif "metadata" in event:
+                    usage_data = event["metadata"].get("usage", {})
+                    total_input_tokens += usage_data.get("inputTokens", 0)
+                    total_output_tokens += usage_data.get("outputTokens", 0)
+
+            # If no tool uses, we're done
+            if not tool_use_blocks:
+                break
+
+            # Build assistant message content
+            assistant_content = []
+            if assistant_text_parts:
+                assistant_content.append({"text": "".join(assistant_text_parts)})
+            for tu in tool_use_blocks:
+                assistant_content.append({
+                    "toolUse": {
+                        "toolUseId": tu["toolUseId"],
+                        "name": tu["name"],
+                        "input": tu["input"],
+                    }
+                })
+
+            messages.append({"role": "assistant", "content": assistant_content})
+
+            # Execute tool calls
+            tool_results = []
+            for tu in tool_use_blocks:
+                mapping_entry = tool_mapping.get(tu["name"]) if tool_mapping else None
+                if mapping_entry:
+                    try:
+                        result = _execute_mcp_tool_call(mapping_entry, tu["input"])
+                        tool_results.append({
+                            "toolResult": {
+                                "toolUseId": tu["toolUseId"],
+                                "content": [{"text": result}],
+                            }
+                        })
+                    except Exception as e:
+                        logger.error(f"[chat_handler] MCP tool execution error: {e}", exc_info=True)
+                        tool_results.append({
+                            "toolResult": {
+                                "toolUseId": tu["toolUseId"],
+                                "content": [{"text": f"Error: {str(e)}"}],
+                                "status": "error",
+                            }
+                        })
+                else:
+                    tool_results.append({
+                        "toolResult": {
+                            "toolUseId": tu["toolUseId"],
+                            "content": [{"text": "Error: Unknown tool"}],
+                            "status": "error",
+                        }
+                    })
+
+            messages.append({"role": "user", "content": tool_results})
+            # Loop continues for next Bedrock call
+
+        # Yield final usage
+        yield {"usage": {"inputTokens": total_input_tokens, "outputTokens": total_output_tokens}}
 
     except ClientError as e:
         logger.error(f"Error generating answer: {e}")
@@ -806,6 +1071,7 @@ def handle_chat_stream(event: Dict) -> Generator[str, None, None]:
     workspace_ids = request.workspace_ids or ([request.workspace_id] if request.workspace_id else None)
     # For conversation storage, use first workspace_id
     primary_workspace_id = workspace_ids[0] if workspace_ids else None
+    mcp_server_ids = request.mcp_server_ids
 
     if request.conversation_id:
         conversation = get_conversation(request.conversation_id)
@@ -863,6 +1129,18 @@ def handle_chat_stream(event: Dict) -> Generator[str, None, None]:
         if memory_context:
             logger.info(f"Found {len(memory_results)} relevant memory chunks")
 
+    # Load MCP tool configs if requested
+    tool_config = None
+    tool_mapping = None
+    if mcp_server_ids:
+        try:
+            mcp_configs = _load_mcp_configs(mcp_server_ids)
+            if mcp_configs:
+                tool_config, tool_mapping = _build_bedrock_tool_config(mcp_configs)
+                logger.info(f"[chat_handler] Loaded {len(mcp_configs)} MCP servers with {len(tool_mapping or {})} tools")
+        except Exception as e:
+            logger.error(f"[chat_handler] Failed to load MCP configs: {e}", exc_info=True)
+
     # QA test trigger: input "1234567890" forces a refusal without calling Bedrock
     if request.message.strip() == "1234567890":
         test_answer = "I'm sorry, I can't assist with that request. [TEST_REFUSAL]"
@@ -895,8 +1173,11 @@ def handle_chat_stream(event: Dict) -> Generator[str, None, None]:
     # Build contextual search query
     search_query = build_contextual_search_query(request.message, history)
 
-    # Search KB (filter by workspace_ids if provided)
-    search_results = search_kb(search_query, top_k=request.top_k, workspace_ids=workspace_ids)
+    # Search KB (skip only in MCP-only mode when no workspaces selected)
+    if mcp_server_ids and not workspace_ids:
+        search_results = []
+    else:
+        search_results = search_kb(search_query, top_k=request.top_k, workspace_ids=workspace_ids)
 
     # Format context
     context = format_context(search_results)
@@ -937,11 +1218,15 @@ def handle_chat_stream(event: Dict) -> Generator[str, None, None]:
             history,
             memory_context,
             request.advanced,
+            tool_config=tool_config,
+            tool_mapping=tool_mapping,
         ):
-            if isinstance(chunk, dict) and "usage" in chunk:
-                # Final usage dict - capture it
-                usage = chunk["usage"]
-                logger.info(f"Token usage: {usage}")
+            if isinstance(chunk, dict):
+                if chunk.get("type") == "tool_use":
+                    yield json.dumps(chunk) + "\n"
+                elif "usage" in chunk:
+                    usage = chunk["usage"]
+                    logger.info(f"Token usage: {usage}")
             else:
                 answer_chunks.append(chunk)
                 yield json.dumps({"type": "token", "text": chunk}) + "\n"

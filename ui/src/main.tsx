@@ -4,6 +4,7 @@ import Chat from './pages/Chat'
 import Workspaces from './pages/Workspaces'
 import WorkspaceSettings from './pages/WorkspaceSettings'
 import OrgSettings from './pages/OrgSettings'
+import McpServers from './pages/McpServers'
 import './index.css'
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
@@ -18,6 +19,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
       <Route path="/workspaces/:workspaceId" element={<WorkspaceSettings />} />
       <Route path="/workspaces/:workspaceId/settings" element={<WorkspaceSettings />} />
       <Route path="/org/settings" element={<OrgSettings />} />
+      <Route path="/org/mcp-servers" element={<McpServers />} />
     </Routes>
   </BrowserRouter>,
 )

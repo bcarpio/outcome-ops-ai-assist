@@ -17,6 +17,7 @@ import {
   Folder,
   Copy,
   Check,
+  Server,
 } from 'lucide-react'
 import {
   sendChatMessage,
@@ -24,18 +25,20 @@ import {
   getConversation,
   deleteConversation,
   getSearchableWorkspaces,
+  getChatMcpServers,
   type Conversation,
   type Message,
   type Source,
   type StreamEvent,
   type SearchableWorkspace,
+  type ChatMcpServer,
 } from '../lib/api'
 
 interface DisplayMessage extends Message {
   isStreaming?: boolean
 }
 
-type Status = 'idle' | 'thinking' | 'searching' | 'typing'
+type Status = 'idle' | 'thinking' | 'searching' | 'typing' | 'tool_use'
 
 export default function Chat() {
   const { conversationId } = useParams()
@@ -99,6 +102,13 @@ export default function Chat() {
   const [showWorkspaceDropdown, setShowWorkspaceDropdown] = useState(false)
   const [loadingWorkspaces, setLoadingWorkspaces] = useState(true)
 
+  // MCP server selector state
+  const [mcpServers, setMcpServers] = useState<ChatMcpServer[]>([])
+  const [selectedMcpServerIds, setSelectedMcpServerIds] = useState<Set<string>>(new Set())
+  const [showMcpDropdown, setShowMcpDropdown] = useState(false)
+  const [loadingMcpServers, setLoadingMcpServers] = useState(true)
+  const [activeToolCall, setActiveToolCall] = useState<string | null>(null)
+
   // Legacy workspace context (stored in localStorage when workspaces feature is enabled)
   const [workspaceName, setWorkspaceName] = useState<string | null>(null)
 
@@ -119,6 +129,21 @@ export default function Chat() {
       }
     }
     loadWorkspaces()
+  }, [])
+
+  // Load MCP servers on mount
+  useEffect(() => {
+    async function loadMcpServers() {
+      try {
+        const servers = await getChatMcpServers()
+        setMcpServers(servers.filter(s => s.status === 'active'))
+      } catch (err) {
+        console.error('Failed to load MCP servers:', err)
+      } finally {
+        setLoadingMcpServers(false)
+      }
+    }
+    loadMcpServers()
   }, [])
 
   // Check for legacy workspace context on mount
@@ -241,6 +266,7 @@ export default function Chat() {
           advanced,
           show_cost: showCost,
           workspace_ids: selectedWorkspaceIds.size > 0 ? Array.from(selectedWorkspaceIds) : undefined,
+          mcp_server_ids: selectedMcpServerIds.size > 0 ? Array.from(selectedMcpServerIds) : undefined,
         },
         (event: StreamEvent) => {
           switch (event.type) {
@@ -305,8 +331,14 @@ export default function Chat() {
                 setLastCost(event.cost)
               }
               setStatus('idle')
+              setActiveToolCall(null)
               // Refresh conversation list from server (updates message counts, timestamps)
               loadConversations()
+              break
+
+            case 'tool_use':
+              setActiveToolCall(event.tool)
+              setStatus('tool_use')
               break
 
             case 'error':
@@ -320,6 +352,7 @@ export default function Chat() {
                 return updated
               })
               setStatus('idle')
+              setActiveToolCall(null)
               break
           }
         }
@@ -353,12 +386,28 @@ export default function Chat() {
     setSelectedWorkspaceIds(prev => {
       const next = new Set(prev)
       if (next.has(workspaceId)) {
-        // Don't allow deselecting the last workspace
-        if (next.size > 1) {
+        // Allow deselecting all workspaces if MCP servers are selected
+        if (next.size > 1 || selectedMcpServerIds.size > 0) {
           next.delete(workspaceId)
         }
       } else {
         next.add(workspaceId)
+      }
+      return next
+    })
+  }
+
+  // Toggle MCP server selection
+  function toggleMcpServer(mcpId: string) {
+    setSelectedMcpServerIds(prev => {
+      const next = new Set(prev)
+      if (next.has(mcpId)) {
+        // Allow deselecting all MCP if workspaces are selected
+        if (next.size > 1 || selectedWorkspaceIds.size > 0) {
+          next.delete(mcpId)
+        }
+      } else {
+        next.add(mcpId)
       }
       return next
     })
@@ -373,12 +422,25 @@ export default function Chat() {
   function getWorkspaceSelectorText(): string {
     if (loadingWorkspaces) return 'Loading...'
     if (searchableWorkspaces.length === 0) return 'No workspaces'
+    if (selectedWorkspaceIds.size === 0) return 'No workspaces'
     if (selectedWorkspaceIds.size === searchableWorkspaces.length) return 'All workspaces'
     if (selectedWorkspaceIds.size === 1) {
       const ws = searchableWorkspaces.find(w => selectedWorkspaceIds.has(w.workspace_id))
       return ws?.name || 'Unknown'
     }
     return `${selectedWorkspaceIds.size} workspaces`
+  }
+
+  // Get MCP selector display text
+  function getMcpSelectorText(): string {
+    if (loadingMcpServers) return 'Loading...'
+    if (mcpServers.length === 0) return 'No MCP'
+    if (selectedMcpServerIds.size === 0) return 'No MCP'
+    if (selectedMcpServerIds.size === 1) {
+      const s = mcpServers.find(s => selectedMcpServerIds.has(s.mcp_id))
+      return s?.name || 'Unknown'
+    }
+    return `${selectedMcpServerIds.size} MCP servers`
   }
 
   return (
@@ -468,61 +530,126 @@ export default function Chat() {
             <h1 className="font-medium">{currentTitle}</h1>
           </div>
 
-          {/* Workspace Selector */}
-          {searchableWorkspaces.length > 0 && (
-            <div className="relative">
-              <button
-                onClick={() => setShowWorkspaceDropdown(!showWorkspaceDropdown)}
-                className="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
-              >
-                <Folder size={14} className="text-sky-500" />
-                <span>{getWorkspaceSelectorText()}</span>
-                <ChevronDown size={14} className={`transition-transform ${showWorkspaceDropdown ? 'rotate-180' : ''}`} />
-              </button>
+          <div className="flex items-center gap-2">
+            {/* Workspace Selector */}
+            {searchableWorkspaces.length > 0 && (
+              <div className="relative">
+                <button
+                  onClick={() => { setShowWorkspaceDropdown(!showWorkspaceDropdown); setShowMcpDropdown(false) }}
+                  className="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
+                >
+                  <Folder size={14} className="text-sky-500" />
+                  <span>{getWorkspaceSelectorText()}</span>
+                  <ChevronDown size={14} className={`transition-transform ${showWorkspaceDropdown ? 'rotate-180' : ''}`} />
+                </button>
 
-              {showWorkspaceDropdown && (
-                <>
-                  {/* Backdrop to close dropdown */}
-                  <div
-                    className="fixed inset-0 z-10"
-                    onClick={() => setShowWorkspaceDropdown(false)}
-                  />
-
-                  {/* Dropdown menu */}
-                  <div className="absolute right-0 mt-2 w-64 bg-white rounded-lg shadow-lg border z-20 py-2 max-h-80 overflow-y-auto">
-                    <div className="px-3 py-2 border-b">
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs font-medium text-gray-500 uppercase">Search in</span>
-                        <button
-                          onClick={selectAllWorkspaces}
-                          className="text-xs text-blue-600 hover:text-blue-700"
-                        >
-                          Select all
-                        </button>
-                      </div>
-                    </div>
-                    {searchableWorkspaces.map(ws => (
-                      <label
-                        key={ws.workspace_id}
-                        className="flex items-center gap-3 px-3 py-2 hover:bg-gray-50 cursor-pointer"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={selectedWorkspaceIds.has(ws.workspace_id)}
-                          onChange={() => toggleWorkspace(ws.workspace_id)}
-                          className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
-                        />
-                        <div className="flex-1 min-w-0">
-                          <p className="text-sm font-medium text-gray-900 truncate">{ws.name}</p>
-                          <p className="text-xs text-gray-500 capitalize">{ws.access_type}</p>
+                {showWorkspaceDropdown && (
+                  <>
+                    <div
+                      className="fixed inset-0 z-10"
+                      onClick={() => setShowWorkspaceDropdown(false)}
+                    />
+                    <div className="absolute right-0 mt-2 w-64 bg-white rounded-lg shadow-lg border z-20 py-2 max-h-80 overflow-y-auto">
+                      <div className="px-3 py-2 border-b">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-medium text-gray-500 uppercase">Search in</span>
+                          <button
+                            onClick={selectAllWorkspaces}
+                            className="text-xs text-blue-600 hover:text-blue-700"
+                          >
+                            Select all
+                          </button>
                         </div>
-                      </label>
-                    ))}
-                  </div>
-                </>
-              )}
-            </div>
-          )}
+                      </div>
+                      {searchableWorkspaces.map(ws => (
+                        <label
+                          key={ws.workspace_id}
+                          className="flex items-center gap-3 px-3 py-2 hover:bg-gray-50 cursor-pointer"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={selectedWorkspaceIds.has(ws.workspace_id)}
+                            onChange={() => toggleWorkspace(ws.workspace_id)}
+                            className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
+                          />
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-medium text-gray-900 truncate">{ws.name}</p>
+                            <p className="text-xs text-gray-500 capitalize">{ws.access_type}</p>
+                          </div>
+                        </label>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+
+            {/* MCP Server Selector */}
+            {mcpServers.length > 0 && (
+              <div className="relative">
+                <button
+                  onClick={() => { setShowMcpDropdown(!showMcpDropdown); setShowWorkspaceDropdown(false) }}
+                  className={`flex items-center gap-2 px-3 py-1.5 text-sm rounded-lg transition-colors ${
+                    selectedMcpServerIds.size > 0
+                      ? 'text-purple-700 bg-purple-50 hover:bg-purple-100 border border-purple-200'
+                      : 'text-gray-700 bg-gray-100 hover:bg-gray-200'
+                  }`}
+                >
+                  <Server size={14} className={selectedMcpServerIds.size > 0 ? 'text-purple-500' : 'text-gray-400'} />
+                  <span>{getMcpSelectorText()}</span>
+                  <ChevronDown size={14} className={`transition-transform ${showMcpDropdown ? 'rotate-180' : ''}`} />
+                </button>
+
+                {showMcpDropdown && (
+                  <>
+                    <div
+                      className="fixed inset-0 z-10"
+                      onClick={() => setShowMcpDropdown(false)}
+                    />
+                    <div className="absolute right-0 mt-2 w-72 bg-white rounded-lg shadow-lg border z-20 py-2 max-h-80 overflow-y-auto">
+                      <div className="px-3 py-2 border-b">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-medium text-gray-500 uppercase">MCP Tools</span>
+                          {selectedMcpServerIds.size > 0 && (
+                            <button
+                              onClick={() => {
+                                if (selectedWorkspaceIds.size > 0) {
+                                  setSelectedMcpServerIds(new Set())
+                                }
+                              }}
+                              className="text-xs text-gray-500 hover:text-gray-700"
+                            >
+                              Clear all
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                      {mcpServers.map(server => (
+                        <label
+                          key={server.mcp_id}
+                          className="flex items-center gap-3 px-3 py-2 hover:bg-gray-50 cursor-pointer"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={selectedMcpServerIds.has(server.mcp_id)}
+                            onChange={() => toggleMcpServer(server.mcp_id)}
+                            className="w-4 h-4 text-purple-600 rounded focus:ring-purple-500"
+                          />
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-medium text-gray-900 truncate">{server.name}</p>
+                            <p className="text-xs text-gray-500">
+                              {server.tool_count} tool{server.tool_count !== 1 ? 's' : ''}
+                              {server.is_global && <span className="ml-1 text-purple-500">(global)</span>}
+                            </p>
+                          </div>
+                        </label>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Messages */}
@@ -698,7 +825,7 @@ export default function Chat() {
             {/* Send button */}
             <button
               onClick={handleSend}
-              disabled={!input.trim() || status !== 'idle'}
+              disabled={!input.trim() || status !== 'idle' || (selectedWorkspaceIds.size === 0 && selectedMcpServerIds.size === 0)}
               className="p-3 bg-blue-600 text-white rounded-xl hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
               {status !== 'idle' ? (
@@ -713,6 +840,7 @@ export default function Chat() {
             <div className="text-gray-400">
               {status === 'thinking' && 'Searching knowledge base...'}
               {status === 'typing' && 'Generating response...'}
+              {status === 'tool_use' && activeToolCall && `Calling ${activeToolCall}...`}
               {status === 'idle' && 'Enter to send, Shift+Enter for new line'}
             </div>
             <div className="flex items-center gap-3">

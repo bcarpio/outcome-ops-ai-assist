@@ -54,6 +54,7 @@ module "workspace_management_lambda" {
     PORT                         = "8000"
     KB_BUCKET                    = module.knowledge_base_bucket.s3_bucket_id
     DELETE_QUEUE_URL             = aws_sqs_queue.delete_queue[0].url
+    OAUTH_KMS_KEY_ARN            = aws_kms_key.oauth_token_key[0].arn
   }
 
   # IAM permissions
@@ -112,6 +113,19 @@ module "workspace_management_lambda" {
       resources = [
         module.knowledge_base_bucket.s3_bucket_arn,
         "${module.knowledge_base_bucket.s3_bucket_arn}/workspaces/*"
+      ]
+    }
+
+    # KMS for MCP credential encryption
+    oauth_kms = {
+      effect = "Allow"
+      actions = [
+        "kms:Encrypt",
+        "kms:Decrypt",
+        "kms:GenerateDataKey"
+      ]
+      resources = [
+        aws_kms_key.oauth_token_key[0].arn
       ]
     }
 

@@ -351,3 +351,120 @@ async def delete_document(workspace_id: str, document_path: str, request: Reques
     )
     result = lambda_handler(event, None)
     return _parse_response(result)
+
+
+# ============================================================================
+# MCP Server Management Routes
+# ============================================================================
+
+
+@app.post("/mcp/servers")
+async def create_mcp_server_route(request: Request):
+    """Create an MCP server."""
+    from handler import lambda_handler
+
+    body = await request.body()
+    event = _build_event(request, "POST", "/mcp/servers", body.decode("utf-8"))
+    result = lambda_handler(event, None)
+    return _parse_response(result)
+
+
+@app.get("/mcp/servers")
+async def list_mcp_servers_route(request: Request):
+    """List all MCP servers."""
+    from handler import lambda_handler
+
+    event = _build_event(request, "GET", "/mcp/servers")
+    result = lambda_handler(event, None)
+    return _parse_response(result)
+
+
+@app.get("/mcp/servers/{mcp_id}")
+async def get_mcp_server_route(mcp_id: str, request: Request):
+    """Get MCP server details."""
+    from handler import lambda_handler
+
+    event = _build_event(request, "GET", f"/mcp/servers/{mcp_id}")
+    result = lambda_handler(event, None)
+    return _parse_response(result)
+
+
+@app.patch("/mcp/servers/{mcp_id}")
+async def update_mcp_server_route(mcp_id: str, request: Request):
+    """Update an MCP server."""
+    from handler import lambda_handler
+
+    body = await request.body()
+    event = _build_event(request, "PATCH", f"/mcp/servers/{mcp_id}", body.decode("utf-8"))
+    result = lambda_handler(event, None)
+    return _parse_response(result)
+
+
+@app.delete("/mcp/servers/{mcp_id}")
+async def delete_mcp_server_route(mcp_id: str, request: Request):
+    """Delete an MCP server."""
+    from handler import lambda_handler
+
+    event = _build_event(request, "DELETE", f"/mcp/servers/{mcp_id}")
+    result = lambda_handler(event, None)
+    return _parse_response(result)
+
+
+@app.post("/mcp/servers/{mcp_id}/refresh")
+async def refresh_mcp_tools_route(mcp_id: str, request: Request):
+    """Refresh MCP server tools."""
+    from handler import lambda_handler
+
+    event = _build_event(request, "POST", f"/mcp/servers/{mcp_id}/refresh")
+    result = lambda_handler(event, None)
+    return _parse_response(result)
+
+
+# ============================================================================
+# MCP Workspace Assignment Routes
+# ============================================================================
+
+
+@app.post("/workspaces/{workspace_id}/mcp-servers")
+async def assign_mcp_to_workspace_route(workspace_id: str, request: Request):
+    """Assign MCP server to workspace."""
+    from handler import lambda_handler
+
+    body = await request.body()
+    event = _build_event(
+        request, "POST", f"/workspaces/{workspace_id}/mcp-servers", body.decode("utf-8")
+    )
+    result = lambda_handler(event, None)
+    return _parse_response(result)
+
+
+@app.get("/workspaces/{workspace_id}/mcp-servers")
+async def list_workspace_mcp_servers_route(workspace_id: str, request: Request):
+    """List MCP servers assigned to workspace."""
+    from handler import lambda_handler
+
+    event = _build_event(request, "GET", f"/workspaces/{workspace_id}/mcp-servers")
+    result = lambda_handler(event, None)
+    return _parse_response(result)
+
+
+@app.delete("/workspaces/{workspace_id}/mcp-servers/{mcp_id}")
+async def remove_mcp_from_workspace_route(workspace_id: str, mcp_id: str, request: Request):
+    """Remove MCP server from workspace."""
+    from handler import lambda_handler
+
+    event = _build_event(
+        request, "DELETE", f"/workspaces/{workspace_id}/mcp-servers/{mcp_id}"
+    )
+    result = lambda_handler(event, None)
+    return _parse_response(result)
+
+
+@app.get("/chat/mcp-servers")
+async def get_chat_mcp_servers_route(request: Request):
+    """Get MCP servers available for chat."""
+    from handler import lambda_handler
+
+    event = _build_event(request, "GET", "/chat/mcp-servers")
+    result = lambda_handler(event, None)
+    return _parse_response(result)

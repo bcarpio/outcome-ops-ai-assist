@@ -43,14 +43,31 @@ API Endpoints:
 
     Chat:
         GET    /chat/searchable-workspaces        - List workspaces user can query
+        GET    /chat/mcp-servers                  - List MCP servers available for chat
+
+    MCP Server Management (org_admin only):
+        POST   /mcp/servers                       - Create MCP server
+        GET    /mcp/servers                       - List all MCP servers
+        GET    /mcp/servers/{id}                  - Get MCP server details
+        PATCH  /mcp/servers/{id}                  - Update MCP server
+        DELETE /mcp/servers/{id}                  - Delete MCP server
+        POST   /mcp/servers/{id}/refresh          - Refresh tool manifest
+
+    MCP Workspace Assignments:
+        POST   /workspaces/{id}/mcp-servers       - Assign MCP server to workspace
+        GET    /workspaces/{id}/mcp-servers       - List workspace MCP servers
+        DELETE /workspaces/{id}/mcp-servers/{mid}  - Remove MCP server from workspace
 
 Security: Invoked via IAM-authenticated Lambda Function URL from Fargate.
 """
 
+import base64
 import json
 import logging
 import os
 import secrets
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import unquote
@@ -281,6 +298,38 @@ class DocumentUploadRequest(BaseModel):
         return v
 
 
+class CreateMcpServerRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    url: str = Field(..., min_length=1, max_length=2048)
+    auth_type: str = Field(default="none")
+    credentials: Optional[str] = None
+    is_global: bool = Field(default=False)
+    refresh_interval_days: int = Field(default=7, ge=1, le=90)
+
+    @field_validator("auth_type")
+    @classmethod
+    def validate_auth_type(cls, v: str) -> str:
+        if v not in ("none", "api_key", "bearer"):
+            raise ValueError("auth_type must be 'none', 'api_key', or 'bearer'")
+        return v
+
+
+class UpdateMcpServerRequest(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=100)
+    url: Optional[str] = Field(default=None, min_length=1, max_length=2048)
+    auth_type: Optional[str] = None
+    credentials: Optional[str] = None
+    is_global: Optional[bool] = None
+    refresh_interval_days: Optional[int] = Field(default=None, ge=1, le=90)
+
+    @field_validator("auth_type")
+    @classmethod
+    def validate_auth_type(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v not in ("none", "api_key", "bearer"):
+            raise ValueError("auth_type must be 'none', 'api_key', or 'bearer'")
+        return v
+
+
 # ============================================================================
 # Helper Functions
 # ============================================================================
@@ -320,6 +369,36 @@ def _parse_path(path: str) -> Tuple[str, ...]:
     """Parse path into components."""
     parts = [p for p in path.strip("/").split("/") if p]
     return tuple(parts)
+
+
+# ============================================================================
+# KMS Helpers (for MCP credential encryption)
+# ============================================================================
+
+_kms_client = None
+
+
+def _get_kms_client():
+    global _kms_client
+    if _kms_client is None:
+        _kms_client = boto3.client("kms")
+    return _kms_client
+
+
+def _get_kms_key_arn():
+    return os.environ.get("OAUTH_KMS_KEY_ARN", "")
+
+
+def _encrypt_credentials(plaintext: str) -> str:
+    kms = _get_kms_client()
+    response = kms.encrypt(KeyId=_get_kms_key_arn(), Plaintext=plaintext.encode())
+    return base64.b64encode(response["CiphertextBlob"]).decode()
+
+
+def _decrypt_credentials(encrypted: str) -> str:
+    kms = _get_kms_client()
+    response = kms.decrypt(CiphertextBlob=base64.b64decode(encrypted))
+    return response["Plaintext"].decode()
 
 
 # ============================================================================
@@ -1471,6 +1550,535 @@ def delete_document(user_email: str, workspace_id: str, document_path: str) -> D
 
 
 # ============================================================================
+# MCP Server Operations (Chunks 02-04)
+# ============================================================================
+
+
+def _call_mcp_list_tools(url: str, auth_type: str, encrypted_credentials: Optional[str] = None) -> list:
+    """Call MCP server's tools/list method via JSON-RPC 2.0."""
+    headers = {"Content-Type": "application/json"}
+
+    if auth_type == "bearer" and encrypted_credentials:
+        token = _decrypt_credentials(encrypted_credentials)
+        headers["Authorization"] = f"Bearer {token}"
+    elif auth_type == "api_key" and encrypted_credentials:
+        key = _decrypt_credentials(encrypted_credentials)
+        headers["X-API-Key"] = key
+
+    payload = json.dumps({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/list",
+    }).encode()
+
+    try:
+        req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode())
+            if "error" in data:
+                raise Exception(f"MCP error: {data['error'].get('message', 'Unknown error')}")
+            return data.get("result", {}).get("tools", [])
+    except urllib.error.URLError as e:
+        raise Exception(f"Failed to connect to MCP server: {e}")
+    except Exception as e:
+        if "MCP error" in str(e) or "Failed to connect" in str(e):
+            raise
+        raise Exception(f"Failed to call MCP server: {e}")
+
+
+def _cache_tool_manifest(table, mcp_id: str, tools: list) -> None:
+    """Cache tool manifest in DynamoDB."""
+    now = datetime.now(timezone.utc).isoformat()
+
+    # Write TOOLS item
+    table.put_item(Item={
+        "PK": f"MCP#{mcp_id}",
+        "SK": "TOOLS",
+        "tools": tools,
+        "tool_count": len(tools),
+        "fetched_at": now,
+    })
+
+    # Update METADATA with tool count and refresh time
+    table.update_item(
+        Key={"PK": f"MCP#{mcp_id}", "SK": "METADATA"},
+        UpdateExpression="SET last_refreshed_at = :lr, tool_count = :tc, #s = :s",
+        ExpressionAttributeNames={"#s": "status"},
+        ExpressionAttributeValues={
+            ":lr": now,
+            ":tc": len(tools),
+            ":s": "active",
+        },
+    )
+
+
+def _is_manifest_stale(mcp_metadata: Dict) -> bool:
+    """Check if tool manifest needs refreshing."""
+    last_refreshed = mcp_metadata.get("last_refreshed_at")
+    if not last_refreshed:
+        return True
+
+    refresh_days = int(mcp_metadata.get("refresh_interval_days", 7))
+    last_dt = datetime.fromisoformat(last_refreshed.replace("Z", "+00:00"))
+    now = datetime.now(timezone.utc)
+    return (now - last_dt).days >= refresh_days
+
+
+def create_mcp_server(user_email: str, body: Dict) -> Dict:
+    """Create a new MCP server configuration."""
+    dynamodb = _get_dynamodb()
+    table = dynamodb.Table(_get_workspaces_table())
+
+    if not _is_org_admin(table, user_email):
+        return _error(403, "Only org admins can manage MCP servers")
+
+    try:
+        request = CreateMcpServerRequest(**body)
+    except ValidationError as e:
+        return _error(400, f"Invalid request: {e}")
+
+    mcp_id = secrets.token_urlsafe(16)
+    now = datetime.now(timezone.utc).isoformat()
+
+    # Encrypt credentials if provided
+    encrypted_credentials = None
+    if request.credentials and request.auth_type != "none":
+        encrypted_credentials = _encrypt_credentials(request.credentials)
+
+    item = {
+        "PK": f"MCP#{mcp_id}",
+        "SK": "METADATA",
+        "GSI1PK": "ORG#default",
+        "GSI1SK": f"MCP#{mcp_id}",
+        "mcp_id": mcp_id,
+        "name": request.name,
+        "url": request.url,
+        "auth_type": request.auth_type,
+        "is_global": request.is_global,
+        "refresh_interval_days": request.refresh_interval_days,
+        "status": "active",
+        "tool_count": 0,
+        "last_refreshed_at": None,
+        "created_by": user_email,
+        "created_at": now,
+        "updated_at": now,
+    }
+    if encrypted_credentials:
+        item["encrypted_credentials"] = encrypted_credentials
+
+    table.put_item(Item=item)
+    logger.info(f"[workspace_handler] Created MCP server: {mcp_id} ({request.name})")
+
+    # Try to fetch tools (non-blocking - server is created regardless)
+    try:
+        tools = _call_mcp_list_tools(request.url, request.auth_type, encrypted_credentials)
+        _cache_tool_manifest(table, mcp_id, tools)
+        item["tool_count"] = len(tools)
+        item["status"] = "active"
+    except Exception as e:
+        logger.warning(f"[workspace_handler] Failed to fetch tools for MCP server {mcp_id}: {e}")
+        table.update_item(
+            Key={"PK": f"MCP#{mcp_id}", "SK": "METADATA"},
+            UpdateExpression="SET #s = :s",
+            ExpressionAttributeNames={"#s": "status"},
+            ExpressionAttributeValues={":s": "error"},
+        )
+        item["status"] = "error"
+
+    # Redact credentials before returning
+    item.pop("encrypted_credentials", None)
+    item["has_credentials"] = encrypted_credentials is not None
+
+    return _response(201, {"mcp_server": item})
+
+
+def list_mcp_servers(user_email: str) -> Dict:
+    """List all MCP servers (org admin only)."""
+    dynamodb = _get_dynamodb()
+    table = dynamodb.Table(_get_workspaces_table())
+
+    if not _is_org_admin(table, user_email):
+        return _error(403, "Only org admins can manage MCP servers")
+
+    try:
+        response = table.query(
+            IndexName="GSI1",
+            KeyConditionExpression="GSI1PK = :pk AND begins_with(GSI1SK, :sk)",
+            ExpressionAttributeValues={
+                ":pk": "ORG#default",
+                ":sk": "MCP#",
+            },
+        )
+
+        servers = []
+        for item in response.get("Items", []):
+            item.pop("encrypted_credentials", None)
+            item["has_credentials"] = "encrypted_credentials" in item or item.get("auth_type", "none") != "none"
+            servers.append(item)
+
+        servers.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+        return _response(200, {"mcp_servers": servers})
+    except ClientError as e:
+        logger.error(f"[workspace_handler] Error listing MCP servers: {e}", exc_info=True)
+        return _error(500, "Failed to list MCP servers")
+
+
+def get_mcp_server(user_email: str, mcp_id: str) -> Dict:
+    """Get MCP server details (org admin only)."""
+    dynamodb = _get_dynamodb()
+    table = dynamodb.Table(_get_workspaces_table())
+
+    if not _is_org_admin(table, user_email):
+        return _error(403, "Only org admins can manage MCP servers")
+
+    try:
+        response = table.get_item(Key={"PK": f"MCP#{mcp_id}", "SK": "METADATA"})
+        if "Item" not in response:
+            return _error(404, "MCP server not found")
+
+        item = response["Item"]
+        has_creds = "encrypted_credentials" in item
+        item.pop("encrypted_credentials", None)
+        item["has_credentials"] = has_creds
+        return _response(200, {"mcp_server": item})
+    except ClientError as e:
+        logger.error(f"[workspace_handler] Error getting MCP server: {e}", exc_info=True)
+        return _error(500, "Failed to get MCP server")
+
+
+def update_mcp_server(user_email: str, mcp_id: str, body: Dict) -> Dict:
+    """Update an MCP server configuration."""
+    dynamodb = _get_dynamodb()
+    table = dynamodb.Table(_get_workspaces_table())
+
+    if not _is_org_admin(table, user_email):
+        return _error(403, "Only org admins can manage MCP servers")
+
+    try:
+        request = UpdateMcpServerRequest(**body)
+    except ValidationError as e:
+        return _error(400, f"Invalid request: {e}")
+
+    try:
+        # Get existing
+        response = table.get_item(Key={"PK": f"MCP#{mcp_id}", "SK": "METADATA"})
+        if "Item" not in response:
+            return _error(404, "MCP server not found")
+
+        existing = response["Item"]
+        now = datetime.now(timezone.utc).isoformat()
+
+        update_parts = ["updated_at = :ua"]
+        expr_values = {":ua": now}
+        expr_names = {}
+
+        if request.name is not None:
+            update_parts.append("#n = :name")
+            expr_values[":name"] = request.name
+            expr_names["#n"] = "name"
+        if request.url is not None:
+            update_parts.append("#u = :url")
+            expr_values[":url"] = request.url
+            expr_names["#u"] = "url"
+        if request.auth_type is not None:
+            update_parts.append("auth_type = :at")
+            expr_values[":at"] = request.auth_type
+            if request.auth_type == "none":
+                update_parts.append("encrypted_credentials = :ec")
+                expr_values[":ec"] = None
+        if request.credentials is not None:
+            auth = request.auth_type or existing.get("auth_type", "none")
+            if auth != "none":
+                encrypted = _encrypt_credentials(request.credentials)
+                update_parts.append("encrypted_credentials = :ec")
+                expr_values[":ec"] = encrypted
+        if request.is_global is not None:
+            update_parts.append("is_global = :ig")
+            expr_values[":ig"] = request.is_global
+        if request.refresh_interval_days is not None:
+            update_parts.append("refresh_interval_days = :rid")
+            expr_values[":rid"] = request.refresh_interval_days
+
+        update_kwargs = {
+            "Key": {"PK": f"MCP#{mcp_id}", "SK": "METADATA"},
+            "UpdateExpression": "SET " + ", ".join(update_parts),
+            "ExpressionAttributeValues": expr_values,
+        }
+        if expr_names:
+            update_kwargs["ExpressionAttributeNames"] = expr_names
+
+        table.update_item(**update_kwargs)
+        logger.info(f"[workspace_handler] Updated MCP server: {mcp_id}")
+        return get_mcp_server(user_email, mcp_id)
+    except ClientError as e:
+        logger.error(f"[workspace_handler] Error updating MCP server: {e}", exc_info=True)
+        return _error(500, "Failed to update MCP server")
+
+
+def delete_mcp_server(user_email: str, mcp_id: str) -> Dict:
+    """Delete an MCP server and all its assignments."""
+    dynamodb = _get_dynamodb()
+    table = dynamodb.Table(_get_workspaces_table())
+
+    if not _is_org_admin(table, user_email):
+        return _error(403, "Only org admins can manage MCP servers")
+
+    # Verify it exists
+    response = table.get_item(Key={"PK": f"MCP#{mcp_id}", "SK": "METADATA"})
+    if "Item" not in response:
+        return _error(404, "MCP server not found")
+
+    try:
+        # Delete METADATA and TOOLS items
+        with table.batch_writer() as batch:
+            batch.delete_item(Key={"PK": f"MCP#{mcp_id}", "SK": "METADATA"})
+            batch.delete_item(Key={"PK": f"MCP#{mcp_id}", "SK": "TOOLS"})
+
+        # Find and delete all workspace assignments via GSI
+        assignments = table.query(
+            IndexName="GSI1",
+            KeyConditionExpression="GSI1PK = :pk",
+            ExpressionAttributeValues={":pk": f"MCP#{mcp_id}"},
+        ).get("Items", [])
+
+        if assignments:
+            with table.batch_writer() as batch:
+                for item in assignments:
+                    batch.delete_item(Key={"PK": item["PK"], "SK": item["SK"]})
+
+        logger.info(f"[workspace_handler] Deleted MCP server: {mcp_id} (and {len(assignments)} assignments)")
+        return _response(200, {"deleted": mcp_id})
+    except ClientError as e:
+        logger.error(f"[workspace_handler] Error deleting MCP server: {e}", exc_info=True)
+        return _error(500, "Failed to delete MCP server")
+
+
+def refresh_mcp_tools(user_email: str, mcp_id: str) -> Dict:
+    """Refresh tool manifest for an MCP server."""
+    dynamodb = _get_dynamodb()
+    table = dynamodb.Table(_get_workspaces_table())
+
+    if not _is_org_admin(table, user_email):
+        return _error(403, "Only org admins can manage MCP servers")
+
+    try:
+        response = table.get_item(Key={"PK": f"MCP#{mcp_id}", "SK": "METADATA"})
+    except ClientError as e:
+        logger.error(f"[workspace_handler] Error fetching MCP server metadata: {e}", exc_info=True)
+        return _error(500, "Failed to fetch MCP server metadata")
+
+    if "Item" not in response:
+        return _error(404, "MCP server not found")
+
+    metadata = response["Item"]
+
+    try:
+        tools = _call_mcp_list_tools(
+            metadata["url"],
+            metadata.get("auth_type", "none"),
+            metadata.get("encrypted_credentials"),
+        )
+        _cache_tool_manifest(table, mcp_id, tools)
+        logger.info(f"[workspace_handler] Refreshed MCP tools for {mcp_id}: {len(tools)} tools")
+        return get_mcp_server(user_email, mcp_id)
+    except Exception as e:
+        logger.warning(f"[workspace_handler] Failed to refresh tools for MCP server {mcp_id}: {e}")
+        table.update_item(
+            Key={"PK": f"MCP#{mcp_id}", "SK": "METADATA"},
+            UpdateExpression="SET #s = :s",
+            ExpressionAttributeNames={"#s": "status"},
+            ExpressionAttributeValues={":s": "error"},
+        )
+        return _error(502, f"Failed to fetch tools from MCP server: {e}")
+
+
+# ============================================================================
+# MCP Workspace Assignment Operations (Chunk 04)
+# ============================================================================
+
+
+def assign_mcp_to_workspace(user_email: str, workspace_id: str, body: Dict) -> Dict:
+    """Assign an MCP server to a workspace."""
+    dynamodb = _get_dynamodb()
+    table = dynamodb.Table(_get_workspaces_table())
+
+    if not _is_workspace_admin(table, user_email, workspace_id):
+        return _error(403, "Only workspace admins can manage MCP assignments")
+
+    mcp_id = body.get("mcp_id")
+    if not mcp_id:
+        return _error(400, "mcp_id is required")
+
+    try:
+        # Verify MCP server exists
+        mcp_resp = table.get_item(Key={"PK": f"MCP#{mcp_id}", "SK": "METADATA"})
+        if "Item" not in mcp_resp:
+            return _error(404, "MCP server not found")
+
+        # Verify workspace exists
+        ws_resp = table.get_item(Key={"PK": f"WS#{workspace_id}", "SK": "METADATA"})
+        if "Item" not in ws_resp:
+            return _error(404, "Workspace not found")
+
+        # Check not already assigned
+        existing = table.get_item(
+            Key={"PK": f"WS#{workspace_id}", "SK": f"MCP_SERVER#{mcp_id}"}
+        )
+        if "Item" in existing:
+            return _error(409, "MCP server already assigned to this workspace")
+
+        now = datetime.now(timezone.utc).isoformat()
+        item = {
+            "PK": f"WS#{workspace_id}",
+            "SK": f"MCP_SERVER#{mcp_id}",
+            "GSI1PK": f"MCP#{mcp_id}",
+            "GSI1SK": f"WS#{workspace_id}",
+            "mcp_id": mcp_id,
+            "workspace_id": workspace_id,
+            "assigned_at": now,
+            "assigned_by": user_email,
+        }
+
+        table.put_item(Item=item)
+        logger.info(f"[workspace_handler] Assigned MCP {mcp_id} to workspace {workspace_id}")
+        return _response(201, {"assignment": item})
+    except ClientError as e:
+        logger.error(f"[workspace_handler] Error assigning MCP to workspace: {e}", exc_info=True)
+        return _error(500, "Failed to assign MCP server")
+
+
+def remove_mcp_from_workspace(user_email: str, workspace_id: str, mcp_id: str) -> Dict:
+    """Remove an MCP server assignment from a workspace."""
+    dynamodb = _get_dynamodb()
+    table = dynamodb.Table(_get_workspaces_table())
+
+    if not _is_workspace_admin(table, user_email, workspace_id):
+        return _error(403, "Only workspace admins can manage MCP assignments")
+
+    try:
+        table.delete_item(Key={"PK": f"WS#{workspace_id}", "SK": f"MCP_SERVER#{mcp_id}"})
+        logger.info(f"[workspace_handler] Removed MCP {mcp_id} from workspace {workspace_id}")
+        return _response(200, {"removed": mcp_id})
+    except ClientError as e:
+        logger.error(f"[workspace_handler] Error removing MCP from workspace: {e}", exc_info=True)
+        return _error(500, "Failed to remove MCP server")
+
+
+def list_workspace_mcp_servers(user_email: str, workspace_id: str) -> Dict:
+    """List MCP servers assigned to a workspace."""
+    dynamodb = _get_dynamodb()
+    table = dynamodb.Table(_get_workspaces_table())
+
+    if not _can_access_workspace(table, user_email, workspace_id):
+        return _error(403, "Not a member of this workspace")
+
+    try:
+        # Get assignments
+        response = table.query(
+            KeyConditionExpression="PK = :pk AND begins_with(SK, :sk)",
+            ExpressionAttributeValues={
+                ":pk": f"WS#{workspace_id}",
+                ":sk": "MCP_SERVER#",
+            },
+        )
+
+        # Fetch metadata for each assigned server
+        servers = []
+        for assignment in response.get("Items", []):
+            mcp_id = assignment.get("mcp_id")
+            meta_resp = table.get_item(Key={"PK": f"MCP#{mcp_id}", "SK": "METADATA"})
+            if "Item" in meta_resp:
+                server = meta_resp["Item"]
+                server.pop("encrypted_credentials", None)
+                server["has_credentials"] = server.get("auth_type", "none") != "none"
+                servers.append(server)
+
+        return _response(200, {"mcp_servers": servers})
+    except ClientError as e:
+        logger.error(f"[workspace_handler] Error listing workspace MCP servers: {e}", exc_info=True)
+        return _error(500, "Failed to list workspace MCP servers")
+
+
+def get_chat_available_mcp_servers(user_email: str) -> Dict:
+    """List MCP servers available to user in chat (from workspaces + global)."""
+    dynamodb = _get_dynamodb()
+    table = dynamodb.Table(_get_workspaces_table())
+
+    try:
+        seen_mcp_ids = set()
+        servers = []
+
+        # Get user's workspace memberships
+        is_admin = _is_org_admin(table, user_email)
+
+        if is_admin:
+            # Org admins get all workspaces
+            all_ws = _scan_all_workspaces(table)
+            workspace_ids = [ws["workspace_id"] for ws in all_ws]
+        else:
+            memberships = table.query(
+                KeyConditionExpression="PK = :pk AND begins_with(SK, :sk)",
+                ExpressionAttributeValues={
+                    ":pk": f"USER#{user_email}",
+                    ":sk": "WS_MEMBER#",
+                },
+            ).get("Items", [])
+            workspace_ids = [m["workspace_id"] for m in memberships]
+
+        # Get MCP servers from each workspace
+        for ws_id in workspace_ids:
+            assignments = table.query(
+                KeyConditionExpression="PK = :pk AND begins_with(SK, :sk)",
+                ExpressionAttributeValues={
+                    ":pk": f"WS#{ws_id}",
+                    ":sk": "MCP_SERVER#",
+                },
+            ).get("Items", [])
+
+            for assignment in assignments:
+                mcp_id = assignment.get("mcp_id")
+                if mcp_id in seen_mcp_ids:
+                    continue
+                seen_mcp_ids.add(mcp_id)
+
+                meta_resp = table.get_item(Key={"PK": f"MCP#{mcp_id}", "SK": "METADATA"})
+                if "Item" in meta_resp:
+                    server = meta_resp["Item"]
+                    servers.append({
+                        "mcp_id": server.get("mcp_id"),
+                        "name": server.get("name"),
+                        "status": server.get("status", "active"),
+                        "tool_count": int(server.get("tool_count", 0)),
+                        "is_global": server.get("is_global", False),
+                    })
+
+        # Also include global servers (deduplicated)
+        global_resp = table.query(
+            IndexName="GSI1",
+            KeyConditionExpression="GSI1PK = :pk AND begins_with(GSI1SK, :sk)",
+            ExpressionAttributeValues={
+                ":pk": "ORG#default",
+                ":sk": "MCP#",
+            },
+        )
+        for item in global_resp.get("Items", []):
+            if item.get("is_global") and item.get("mcp_id") not in seen_mcp_ids:
+                seen_mcp_ids.add(item["mcp_id"])
+                servers.append({
+                    "mcp_id": item.get("mcp_id"),
+                    "name": item.get("name"),
+                    "status": item.get("status", "active"),
+                    "tool_count": int(item.get("tool_count", 0)),
+                    "is_global": True,
+                })
+
+        return _response(200, {"mcp_servers": servers})
+    except ClientError as e:
+        logger.error(f"[workspace_handler] Error getting chat MCP servers: {e}", exc_info=True)
+        return _error(500, "Failed to get available MCP servers")
+
+
+# ============================================================================
 # Main Handler
 # ============================================================================
 
@@ -1719,6 +2327,90 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         # Route: GET /chat/searchable-workspaces
         if parts == ("chat", "searchable-workspaces") and http_method == "GET":
             return get_searchable_workspaces(user_email)
+
+        # ====================================================================
+        # MCP Server Management Routes
+        # ====================================================================
+
+        # Route: POST /mcp/servers
+        if parts == ("mcp", "servers") and http_method == "POST":
+            return create_mcp_server(user_email, body)
+
+        # Route: GET /mcp/servers
+        if parts == ("mcp", "servers") and http_method == "GET":
+            return list_mcp_servers(user_email)
+
+        # Route: GET /mcp/servers/{id}
+        if (
+            len(parts) == 3
+            and parts[0] == "mcp"
+            and parts[1] == "servers"
+            and http_method == "GET"
+        ):
+            return get_mcp_server(user_email, parts[2])
+
+        # Route: PATCH /mcp/servers/{id}
+        if (
+            len(parts) == 3
+            and parts[0] == "mcp"
+            and parts[1] == "servers"
+            and http_method == "PATCH"
+        ):
+            return update_mcp_server(user_email, parts[2], body)
+
+        # Route: DELETE /mcp/servers/{id}
+        if (
+            len(parts) == 3
+            and parts[0] == "mcp"
+            and parts[1] == "servers"
+            and http_method == "DELETE"
+        ):
+            return delete_mcp_server(user_email, parts[2])
+
+        # Route: POST /mcp/servers/{id}/refresh
+        if (
+            len(parts) == 4
+            and parts[0] == "mcp"
+            and parts[1] == "servers"
+            and parts[3] == "refresh"
+            and http_method == "POST"
+        ):
+            return refresh_mcp_tools(user_email, parts[2])
+
+        # ====================================================================
+        # MCP Workspace Assignment Routes
+        # ====================================================================
+
+        # Route: POST /workspaces/{id}/mcp-servers
+        if (
+            len(parts) == 3
+            and parts[0] == "workspaces"
+            and parts[2] == "mcp-servers"
+            and http_method == "POST"
+        ):
+            return assign_mcp_to_workspace(user_email, parts[1], body)
+
+        # Route: GET /workspaces/{id}/mcp-servers
+        if (
+            len(parts) == 3
+            and parts[0] == "workspaces"
+            and parts[2] == "mcp-servers"
+            and http_method == "GET"
+        ):
+            return list_workspace_mcp_servers(user_email, parts[1])
+
+        # Route: DELETE /workspaces/{id}/mcp-servers/{mcp_id}
+        if (
+            len(parts) == 4
+            and parts[0] == "workspaces"
+            and parts[2] == "mcp-servers"
+            and http_method == "DELETE"
+        ):
+            return remove_mcp_from_workspace(user_email, parts[1], parts[3])
+
+        # Route: GET /chat/mcp-servers
+        if parts == ("chat", "mcp-servers") and http_method == "GET":
+            return get_chat_available_mcp_servers(user_email)
 
         return _error(404, "Not found")
 
