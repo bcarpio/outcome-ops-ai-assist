@@ -60,7 +60,7 @@ module "chat_streaming_lambda" {
     BEDROCK_BASIC_MODEL_ID       = var.bedrock_basic_model_id
     BEDROCK_EMBEDDING_MODEL_ID   = var.bedrock_embedding_model_id
     WORKSPACES_TABLE             = module.workspaces_table[0].dynamodb_table_id
-    OAUTH_KMS_KEY_ARN            = aws_kms_key.oauth_token_key[0].arn
+    OAUTH_KMS_KEY_ARN            = aws_kms_key.oauth_tokens[0].arn
   }
 
   # IAM permissions
@@ -151,7 +151,7 @@ module "chat_streaming_lambda" {
         "kms:Decrypt"
       ]
       resources = [
-        aws_kms_key.oauth_token_key[0].arn
+        aws_kms_key.oauth_tokens[0].arn
       ]
     }
 
