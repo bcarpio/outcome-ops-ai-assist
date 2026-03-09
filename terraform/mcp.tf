@@ -6,6 +6,10 @@
 
 locals {
   any_mcp_enabled = var.mcp_sonarqube_enabled
+
+  # SSM paths follow convention: /{env}/{app}/mcp/{server}-token
+  mcp_sonarqube_token_ssm_path = "/${var.environment}/${var.app_name}/mcp/sonarqube-token"
+  mcp_sonarqube_token_ssm_arn  = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${local.mcp_sonarqube_token_ssm_path}"
 }
 
 # -----------------------------------------------------------------------------
@@ -78,9 +82,9 @@ module "mcp_sonarqube" {
     var.mcp_sonarqube_org != "" ? { SONARQUBE_ORG = var.mcp_sonarqube_org } : {},
   )
 
-  secrets = var.mcp_sonarqube_token_ssm_arn != "" ? {
-    SONARQUBE_TOKEN = var.mcp_sonarqube_token_ssm_arn
-  } : {}
+  secrets = {
+    SONARQUBE_TOKEN = local.mcp_sonarqube_token_ssm_arn
+  }
 
   ecs_cluster_arn = module.ui_ecs.cluster_arn
   vpc_id          = var.ui_vpc_id

@@ -258,11 +258,6 @@ variable "mcp_sonarqube_org" {
   default     = ""
 }
 
-variable "mcp_sonarqube_token_ssm_arn" {
-  description = "ARN of SSM SecureString parameter containing the SonarQube API token"
-  type        = string
-  default     = ""
-}
 
 # ============================================================================
 # Audit & Compliance
