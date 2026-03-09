@@ -1554,34 +1554,81 @@ def delete_document(user_email: str, workspace_id: str, document_path: str) -> D
 # ============================================================================
 
 
-def _call_mcp_list_tools(url: str, auth_type: str, encrypted_credentials: Optional[str] = None) -> list:
-    """Call MCP server's tools/list method via JSON-RPC 2.0."""
+def _build_mcp_auth_headers(auth_type: str, encrypted_credentials: Optional[str] = None) -> Dict[str, str]:
+    """Build auth headers for MCP server requests."""
     headers = {"Content-Type": "application/json"}
-
     if auth_type == "bearer" and encrypted_credentials:
         token = _decrypt_credentials(encrypted_credentials)
         headers["Authorization"] = f"Bearer {token}"
     elif auth_type == "api_key" and encrypted_credentials:
         key = _decrypt_credentials(encrypted_credentials)
         headers["X-API-Key"] = key
+    return headers
 
-    payload = json.dumps({
+
+def _mcp_request(url: str, headers: Dict[str, str], method: str, params: Optional[Dict] = None,
+                 request_id: int = 1) -> Dict:
+    """Send a JSON-RPC 2.0 request to an MCP server and return the parsed response."""
+    payload: Dict[str, Any] = {
         "jsonrpc": "2.0",
-        "id": 1,
-        "method": "tools/list",
-    }).encode()
+        "id": request_id,
+        "method": method,
+    }
+    if params:
+        payload["params"] = params
+
+    req = urllib.request.Request(
+        url, data=json.dumps(payload).encode(), headers=headers, method="POST"
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        # Capture session ID if returned
+        session_id = resp.headers.get("Mcp-Session-Id")
+        data = json.loads(resp.read().decode())
+        if session_id:
+            data["_session_id"] = session_id
+        return data
+
+
+def _mcp_initialize(url: str, headers: Dict[str, str]) -> str:
+    """Perform MCP protocol initialize handshake, return session ID."""
+    init_params = {
+        "protocolVersion": "2025-03-26",
+        "capabilities": {},
+        "clientInfo": {"name": "outcome-ops-ai-assist", "version": "1.0"},
+    }
+    data = _mcp_request(url, headers, "initialize", params=init_params, request_id=0)
+    if "error" in data:
+        raise Exception(f"MCP initialize error: {data['error'].get('message', 'Unknown error')}")
+    return data.get("_session_id", "")
+
+
+def _call_mcp_list_tools(url: str, auth_type: str, encrypted_credentials: Optional[str] = None) -> list:
+    """Call MCP server's tools/list method via JSON-RPC 2.0 with proper initialization."""
+    headers = _build_mcp_auth_headers(auth_type, encrypted_credentials)
 
     try:
-        req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            data = json.loads(resp.read().decode())
-            if "error" in data:
-                raise Exception(f"MCP error: {data['error'].get('message', 'Unknown error')}")
-            return data.get("result", {}).get("tools", [])
+        # Step 1: Initialize session
+        session_id = _mcp_initialize(url, headers)
+        if session_id:
+            headers["Mcp-Session-Id"] = session_id
+
+        # Step 2: Send initialized notification (no id = notification)
+        notif_payload = json.dumps({
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized",
+        }).encode()
+        notif_req = urllib.request.Request(url, data=notif_payload, headers=headers, method="POST")
+        urllib.request.urlopen(notif_req, timeout=10).read()
+
+        # Step 3: List tools
+        data = _mcp_request(url, headers, "tools/list", request_id=1)
+        if "error" in data:
+            raise Exception(f"MCP error: {data['error'].get('message', 'Unknown error')}")
+        return data.get("result", {}).get("tools", [])
     except urllib.error.URLError as e:
         raise Exception(f"Failed to connect to MCP server: {e}")
     except Exception as e:
-        if "MCP error" in str(e) or "Failed to connect" in str(e):
+        if "MCP" in str(e) or "Failed to connect" in str(e):
             raise
         raise Exception(f"Failed to call MCP server: {e}")
 

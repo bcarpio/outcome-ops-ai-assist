@@ -254,8 +254,61 @@ def _build_bedrock_tool_config(mcp_configs: List[Dict]):
     return tool_config, tool_mapping
 
 
+def _mcp_request(url: str, headers: Dict[str, str], method: str, params: Optional[Dict] = None,
+                 request_id: int = 1) -> Dict:
+    """Send a JSON-RPC 2.0 request to an MCP server and return the parsed response."""
+    import urllib.request
+
+    payload: Dict[str, Any] = {
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "method": method,
+    }
+    if params:
+        payload["params"] = params
+
+    req = urllib.request.Request(
+        url, data=json.dumps(payload).encode(), headers=headers, method="POST"
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        session_id = resp.headers.get("Mcp-Session-Id")
+        data = json.loads(resp.read().decode())
+        if session_id:
+            data["_session_id"] = session_id
+        return data
+
+
+def _mcp_initialize(url: str, headers: Dict[str, str]) -> str:
+    """Perform MCP protocol initialize handshake, return session ID."""
+    import urllib.request
+
+    init_params = {
+        "protocolVersion": "2025-03-26",
+        "capabilities": {},
+        "clientInfo": {"name": "outcome-ops-ai-assist", "version": "1.0"},
+    }
+    data = _mcp_request(url, headers, "initialize", params=init_params, request_id=0)
+    if "error" in data:
+        raise Exception(f"MCP initialize error: {data['error'].get('message', 'Unknown error')}")
+
+    session_id = data.get("_session_id", "")
+
+    # Send initialized notification
+    notif_payload = json.dumps({
+        "jsonrpc": "2.0",
+        "method": "notifications/initialized",
+    }).encode()
+    notif_headers = dict(headers)
+    if session_id:
+        notif_headers["Mcp-Session-Id"] = session_id
+    notif_req = urllib.request.Request(url, data=notif_payload, headers=notif_headers, method="POST")
+    urllib.request.urlopen(notif_req, timeout=10).read()
+
+    return session_id
+
+
 def _execute_mcp_tool_call(tool_mapping_entry: Dict, tool_input: Dict) -> str:
-    """Execute a tool call against an MCP server via JSON-RPC 2.0."""
+    """Execute a tool call against an MCP server via JSON-RPC 2.0 with proper initialization."""
     import urllib.request
     import urllib.error
 
@@ -271,36 +324,33 @@ def _execute_mcp_tool_call(tool_mapping_entry: Dict, tool_input: Dict) -> str:
         key = _decrypt_mcp_credentials(server["encrypted_credentials"])
         headers["X-API-Key"] = key
 
-    payload = json.dumps({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "tools/call",
-        "params": {
+    try:
+        # Step 1: Initialize session
+        session_id = _mcp_initialize(server["url"], headers)
+        if session_id:
+            headers["Mcp-Session-Id"] = session_id
+
+        # Step 2: Call tool
+        data = _mcp_request(server["url"], headers, "tools/call", params={
             "name": original_name,
             "arguments": tool_input,
-        },
-    }).encode()
+        }, request_id=1)
 
-    try:
-        req = urllib.request.Request(server["url"], data=payload, headers=headers, method="POST")
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            data = json.loads(resp.read().decode())
-            if "error" in data:
-                return f"Tool error: {data['error'].get('message', 'Unknown error')}"
-            # Extract content from result
-            result = data.get("result", {})
-            content = result.get("content", [])
-            # Serialize content items to text
-            text_parts = []
-            for item in content:
-                if isinstance(item, dict):
-                    if item.get("type") == "text":
-                        text_parts.append(item.get("text", ""))
-                    else:
-                        text_parts.append(json.dumps(item))
+        if "error" in data:
+            return f"Tool error: {data['error'].get('message', 'Unknown error')}"
+        # Extract content from result
+        result = data.get("result", {})
+        content = result.get("content", [])
+        text_parts = []
+        for item in content:
+            if isinstance(item, dict):
+                if item.get("type") == "text":
+                    text_parts.append(item.get("text", ""))
                 else:
-                    text_parts.append(str(item))
-            return "\n".join(text_parts) if text_parts else json.dumps(result)
+                    text_parts.append(json.dumps(item))
+            else:
+                text_parts.append(str(item))
+        return "\n".join(text_parts) if text_parts else json.dumps(result)
     except urllib.error.URLError as e:
         raise Exception(f"Failed to connect to MCP server: {e}")
     except json.JSONDecodeError as e:

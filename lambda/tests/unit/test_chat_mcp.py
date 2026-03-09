@@ -59,6 +59,31 @@ handle_chat_stream = handler_module.handle_chat_stream
 ChatMessageRequest = handler_module.ChatMessageRequest
 
 
+def _make_mock_response(body_dict):
+    """Create a mock HTTP response with the given JSON body."""
+    resp = MagicMock()
+    resp.read.return_value = json.dumps(body_dict).encode()
+    resp.headers = MagicMock()
+    resp.headers.get.return_value = None
+    resp.__enter__ = MagicMock(return_value=resp)
+    resp.__exit__ = MagicMock(return_value=False)
+    return resp
+
+
+# Standard init success response for MCP protocol handshake
+_INIT_RESPONSE = {"jsonrpc": "2.0", "id": 0, "result": {"protocolVersion": "2025-03-26", "capabilities": {}}}
+# Notification response (empty is fine)
+_NOTIF_RESPONSE = {"jsonrpc": "2.0"}
+
+
+def _mock_urlopen_with_init(*tool_responses):
+    """Return a side_effect list: init response, notification response, then tool responses."""
+    responses = [_make_mock_response(_INIT_RESPONSE), _make_mock_response(_NOTIF_RESPONSE)]
+    for r in tool_responses:
+        responses.append(_make_mock_response(r) if isinstance(r, dict) else r)
+    return responses
+
+
 class TestMcpToolManifestLoading:
     """Test loading MCP configs from DynamoDB."""
 
@@ -176,15 +201,10 @@ class TestMcpToolExecution:
             },
         }
 
-        mock_response = MagicMock()
-        mock_response.read.return_value = json.dumps({
-            "jsonrpc": "2.0", "id": 1,
-            "result": {"content": [{"type": "text", "text": "Result data"}]}
-        }).encode()
-        mock_response.__enter__ = MagicMock(return_value=mock_response)
-        mock_response.__exit__ = MagicMock(return_value=False)
+        tool_resp = {"jsonrpc": "2.0", "id": 1, "result": {"content": [{"type": "text", "text": "Result data"}]}}
+        responses = _mock_urlopen_with_init(tool_resp)
 
-        with patch('urllib.request.urlopen', return_value=mock_response):
+        with patch('urllib.request.urlopen', side_effect=responses):
             result = _execute_mcp_tool_call(mapping_entry, {"id": "123"})
 
         assert "Result data" in result
@@ -204,7 +224,6 @@ class TestMcpToolExecution:
     def test_execute_tool_call_bearer_auth(self):
         """Test tool call with bearer auth."""
         import base64
-        # Use valid base64 for encrypted_credentials since _decrypt_mcp_credentials base64-decodes it
         fake_encrypted = base64.b64encode(b"encrypted-token").decode()
         mapping_entry = {
             "original_tool_name": "get_data",
@@ -217,18 +236,14 @@ class TestMcpToolExecution:
 
         mock_kms_client.decrypt.return_value = {"Plaintext": b"my-secret-token"}
 
-        mock_response = MagicMock()
-        mock_response.read.return_value = json.dumps({
-            "jsonrpc": "2.0", "id": 1,
-            "result": {"content": [{"type": "text", "text": "OK"}]}
-        }).encode()
-        mock_response.__enter__ = MagicMock(return_value=mock_response)
-        mock_response.__exit__ = MagicMock(return_value=False)
+        tool_resp = {"jsonrpc": "2.0", "id": 1, "result": {"content": [{"type": "text", "text": "OK"}]}}
+        responses = _mock_urlopen_with_init(tool_resp)
 
-        with patch('urllib.request.urlopen', return_value=mock_response) as mock_urlopen:
+        with patch('urllib.request.urlopen', side_effect=responses) as mock_urlopen:
             result = _execute_mcp_tool_call(mapping_entry, {})
 
-        call_args = mock_urlopen.call_args
+        # The last call (3rd) is the tool call - check its auth header
+        call_args = mock_urlopen.call_args_list[-1]
         request_obj = call_args[0][0]
         assert request_obj.get_header("Authorization") == "Bearer my-secret-token"
 
@@ -461,18 +476,14 @@ class TestMcpEdgeCases:
             },
         }
 
-        mock_response = MagicMock()
-        mock_response.read.return_value = json.dumps({
-            "jsonrpc": "2.0", "id": 1,
-            "result": {"content": [{"type": "text", "text": "OK"}]}
-        }).encode()
-        mock_response.__enter__ = MagicMock(return_value=mock_response)
-        mock_response.__exit__ = MagicMock(return_value=False)
+        tool_resp = {"jsonrpc": "2.0", "id": 1, "result": {"content": [{"type": "text", "text": "OK"}]}}
+        responses = _mock_urlopen_with_init(tool_resp)
 
-        with patch('urllib.request.urlopen', return_value=mock_response) as mock_urlopen:
+        with patch('urllib.request.urlopen', side_effect=responses) as mock_urlopen:
             _execute_mcp_tool_call(mapping_entry, {})
 
-        request_obj = mock_urlopen.call_args[0][0]
+        # Check the tool call request (last call)
+        request_obj = mock_urlopen.call_args_list[-1][0][0]
         assert request_obj.get_header("Authorization") is None
         assert request_obj.get_header("X-api-key") is None
 
@@ -492,18 +503,14 @@ class TestMcpEdgeCases:
 
         mock_kms_client.decrypt.return_value = {"Plaintext": b"my-api-key-123"}
 
-        mock_response = MagicMock()
-        mock_response.read.return_value = json.dumps({
-            "jsonrpc": "2.0", "id": 1,
-            "result": {"content": [{"type": "text", "text": "OK"}]}
-        }).encode()
-        mock_response.__enter__ = MagicMock(return_value=mock_response)
-        mock_response.__exit__ = MagicMock(return_value=False)
+        tool_resp = {"jsonrpc": "2.0", "id": 1, "result": {"content": [{"type": "text", "text": "OK"}]}}
+        responses = _mock_urlopen_with_init(tool_resp)
 
-        with patch('urllib.request.urlopen', return_value=mock_response) as mock_urlopen:
+        with patch('urllib.request.urlopen', side_effect=responses) as mock_urlopen:
             _execute_mcp_tool_call(mapping_entry, {})
 
-        request_obj = mock_urlopen.call_args[0][0]
+        # Check the tool call request (last call)
+        request_obj = mock_urlopen.call_args_list[-1][0][0]
         assert request_obj.get_header("X-api-key") == "my-api-key-123"
 
     def test_execute_tool_call_malformed_json_response(self):
@@ -517,12 +524,16 @@ class TestMcpEdgeCases:
             },
         }
 
-        mock_response = MagicMock()
-        mock_response.read.return_value = b"not valid json at all"
-        mock_response.__enter__ = MagicMock(return_value=mock_response)
-        mock_response.__exit__ = MagicMock(return_value=False)
+        # Init and notif succeed, tool call returns bad JSON
+        bad_resp = MagicMock()
+        bad_resp.read.return_value = b"not valid json at all"
+        bad_resp.headers = MagicMock()
+        bad_resp.headers.get.return_value = None
+        bad_resp.__enter__ = MagicMock(return_value=bad_resp)
+        bad_resp.__exit__ = MagicMock(return_value=False)
+        responses = _mock_urlopen_with_init(bad_resp)
 
-        with patch('urllib.request.urlopen', return_value=mock_response):
+        with patch('urllib.request.urlopen', side_effect=responses):
             with pytest.raises(Exception, match="Invalid JSON response"):
                 _execute_mcp_tool_call(mapping_entry, {})
 
@@ -537,15 +548,10 @@ class TestMcpEdgeCases:
             },
         }
 
-        mock_response = MagicMock()
-        mock_response.read.return_value = json.dumps({
-            "jsonrpc": "2.0", "id": 1,
-            "error": {"code": -1, "message": "bad"}
-        }).encode()
-        mock_response.__enter__ = MagicMock(return_value=mock_response)
-        mock_response.__exit__ = MagicMock(return_value=False)
+        error_resp = {"jsonrpc": "2.0", "id": 1, "error": {"code": -1, "message": "bad"}}
+        responses = _mock_urlopen_with_init(error_resp)
 
-        with patch('urllib.request.urlopen', return_value=mock_response):
+        with patch('urllib.request.urlopen', side_effect=responses):
             result = _execute_mcp_tool_call(mapping_entry, {})
 
         assert "bad" in result

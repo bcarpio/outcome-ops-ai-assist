@@ -42,6 +42,29 @@ _decrypt_credentials = handler_module._decrypt_credentials
 lambda_handler = handler_module.lambda_handler
 
 
+def _make_mock_response(body_dict):
+    """Create a mock HTTP response with the given JSON body."""
+    resp = MagicMock()
+    resp.read.return_value = json.dumps(body_dict).encode()
+    resp.headers = MagicMock()
+    resp.headers.get.return_value = None
+    resp.__enter__ = MagicMock(return_value=resp)
+    resp.__exit__ = MagicMock(return_value=False)
+    return resp
+
+
+_INIT_RESPONSE = {"jsonrpc": "2.0", "id": 0, "result": {"protocolVersion": "2025-03-26", "capabilities": {}}}
+_NOTIF_RESPONSE = {"jsonrpc": "2.0"}
+
+
+def _mock_urlopen_with_init(*tool_responses):
+    """Return a side_effect list: init response, notification response, then tool responses."""
+    responses = [_make_mock_response(_INIT_RESPONSE), _make_mock_response(_NOTIF_RESPONSE)]
+    for r in tool_responses:
+        responses.append(_make_mock_response(r) if isinstance(r, dict) else r)
+    return responses
+
+
 @pytest.fixture
 def mock_table():
     """Create a mock DynamoDB table."""
@@ -186,18 +209,13 @@ class TestMcpToolRefresh:
 
     def test_call_mcp_list_tools_success(self, mock_kms):
         """Test successfully calling list_tools on an MCP server."""
-        mock_response = MagicMock()
-        mock_response.read.return_value = json.dumps({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "result": {
-                "tools": [{"name": "get_issue", "description": "Get issue", "inputSchema": {"type": "object"}}]
-            }
-        }).encode()
-        mock_response.__enter__ = MagicMock(return_value=mock_response)
-        mock_response.__exit__ = MagicMock(return_value=False)
+        tools_resp = {
+            "jsonrpc": "2.0", "id": 1,
+            "result": {"tools": [{"name": "get_issue", "description": "Get issue", "inputSchema": {"type": "object"}}]}
+        }
+        responses = _mock_urlopen_with_init(tools_resp)
 
-        with patch('urllib.request.urlopen', return_value=mock_response):
+        with patch('urllib.request.urlopen', side_effect=responses):
             tools = _call_mcp_list_tools("https://mcp.example.com", "none")
 
         assert len(tools) == 1
@@ -205,20 +223,15 @@ class TestMcpToolRefresh:
 
     def test_call_mcp_list_tools_with_bearer_auth(self, mock_kms):
         """Test that bearer auth adds Authorization header."""
-        mock_response = MagicMock()
-        mock_response.read.return_value = json.dumps({
-            "jsonrpc": "2.0", "id": 1, "result": {"tools": []}
-        }).encode()
-        mock_response.__enter__ = MagicMock(return_value=mock_response)
-        mock_response.__exit__ = MagicMock(return_value=False)
+        tools_resp = {"jsonrpc": "2.0", "id": 1, "result": {"tools": []}}
+        responses = _mock_urlopen_with_init(tools_resp)
 
-        with patch('urllib.request.urlopen', return_value=mock_response) as mock_urlopen:
-            # Need to encrypt first to get a valid encrypted string
+        with patch('urllib.request.urlopen', side_effect=responses) as mock_urlopen:
             with patch.object(handler_module, '_decrypt_credentials', return_value="my-token"):
                 tools = _call_mcp_list_tools("https://mcp.example.com", "bearer", "encrypted-creds")
 
-        # Verify the request was made with auth header
-        call_args = mock_urlopen.call_args
+        # Check the tools/list request (last call) has auth header
+        call_args = mock_urlopen.call_args_list[-1]
         request_obj = call_args[0][0]
         assert request_obj.get_header("Authorization") == "Bearer my-token"
 
