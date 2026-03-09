@@ -171,6 +171,12 @@ module "chat_streaming_lambda" {
     }
   }
 
+  # VPC configuration (conditional - only when MCP servers are deployed)
+  # Allows chat Lambda to reach internal MCP server containers via Cloud Map DNS
+  vpc_subnet_ids         = local.any_mcp_enabled ? var.ui_private_subnet_ids : null
+  vpc_security_group_ids = local.any_mcp_enabled ? [aws_security_group.chat_lambda_mcp[0].id] : null
+  attach_network_policy  = local.any_mcp_enabled
+
   tags = {
     Purpose = "chat-streaming"
   }

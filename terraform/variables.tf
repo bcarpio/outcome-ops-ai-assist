@@ -237,6 +237,34 @@ variable "oidc_tenant_id" {
 }
 
 # ============================================================================
+# MCP Server Catalog
+# ============================================================================
+
+variable "mcp_sonarqube_enabled" {
+  description = "Deploy SonarQube MCP server as a Fargate Spot task"
+  type        = bool
+  default     = false
+}
+
+variable "mcp_sonarqube_url" {
+  description = "SonarQube server URL (e.g., https://sonarcloud.io or https://your-sonarqube.internal)"
+  type        = string
+  default     = ""
+}
+
+variable "mcp_sonarqube_org" {
+  description = "SonarQube organization key (required for SonarCloud)"
+  type        = string
+  default     = ""
+}
+
+variable "mcp_sonarqube_token_ssm_arn" {
+  description = "ARN of SSM SecureString parameter containing the SonarQube API token"
+  type        = string
+  default     = ""
+}
+
+# ============================================================================
 # Audit & Compliance
 # ============================================================================
 

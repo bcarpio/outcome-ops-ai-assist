@@ -91,3 +91,17 @@ enable_jira_integration = false
 #   aws ssm put-parameter --name "/dev/outcome-ops-ai-assist/oidc/client-secret" \
 #     --type SecureString --value "your-client-secret"
 # See docs/azure-ad-setup.md for full setup instructions
+
+# ============================================================================
+# MCP Server Catalog
+# ============================================================================
+
+# SonarQube MCP Server (code quality + security analysis)
+# Deploys as a Fargate Spot task in the same VPC as the UI.
+# Before enabling, store SonarQube token in SSM:
+#   aws ssm put-parameter --name "/dev/outcome-ops-ai-assist/mcp/sonarqube-token" \
+#     --type SecureString --value "your-sonarqube-token"
+# mcp_sonarqube_enabled       = true
+# mcp_sonarqube_url           = "https://sonarcloud.io"
+# mcp_sonarqube_org           = "my-org"
+# mcp_sonarqube_token_ssm_arn = "arn:aws:ssm:us-west-2:123456789012:parameter/dev/outcome-ops-ai-assist/mcp/sonarqube-token"
