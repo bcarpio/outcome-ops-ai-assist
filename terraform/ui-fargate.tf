@@ -173,6 +173,9 @@ module "ui_alb" {
 
   security_groups = var.deploy_ui ? [module.ui_alb_sg.security_group_id] : []
 
+  # Allow headers with underscores (e.g., SONARQUBE_TOKEN for MCP servers)
+  drop_invalid_header_fields = false
+
   # Disable access logs to save costs
   enable_deletion_protection = false
 

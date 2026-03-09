@@ -174,6 +174,16 @@ All infrastructure runs in the customer's AWS account. Costs are usage-based wit
 | **Amazon ACM** | TLS certificate | Free |
 | **Amazon Route 53** | DNS hosted zone + alias record | Per-hosted zone + queries |
 
+### MCP Server Catalog Services
+
+| Service | Usage | Pricing Model |
+|---------|-------|---------------|
+| **Amazon ECS Fargate Spot** | 1 task per MCP server (0.5 vCPU, 1GB) | Per-vCPU-hour + per-GB-hour (up to 70% discount) |
+| **AWS Cloud Map** | Service discovery for internal DNS | Per-namespace + per-instance |
+| **CloudWatch Logs** | MCP server container logs | Per-GB ingested |
+
+See [SonarQube MCP Server Setup](sonarqube-mcp.md) for configuration details.
+
 ### Optional Services (Integrations)
 
 | Service | Trigger | Pricing Model |
@@ -495,6 +505,7 @@ This is the OAuth client secret for the GitHub App (used for user-level OAuth fl
 | OIDC Client Secret | `/{env}/{app}/oidc/client-secret` | Per Azure AD policy (1-2 years) | ALB authentication - coordinate with identity team |
 | Microsoft OAuth Secret | `/{env}/{app}/oauth/microsoft/client-secret` | Per Azure AD policy (1-2 years) | Outlook, Teams, SharePoint integrations |
 | Atlassian OAuth Secret | `/{env}/{app}/oauth/atlassian/client-secret` | Annually | Confluence, Jira integrations |
+| SonarQube MCP Token | `/{env}/{app}/mcp/sonarqube-token` | Per SonarQube policy | Force new ECS deployment after rotation |
 | KMS Keys | N/A | Automatic (annual) | Managed by AWS |
 
 ---

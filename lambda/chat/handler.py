@@ -202,6 +202,8 @@ def _load_mcp_configs(mcp_server_ids: List[str]) -> List[Dict]:
                 "url": metadata.get("url", ""),
                 "auth_type": metadata.get("auth_type", "none"),
                 "encrypted_credentials": metadata.get("encrypted_credentials"),
+                "ssm_token_path": metadata.get("ssm_token_path"),
+                "ssm_token_header": metadata.get("ssm_token_header"),
                 "tools": tools,
             })
         except ClientError as e:
@@ -247,6 +249,8 @@ def _build_bedrock_tool_config(mcp_configs: List[Dict]):
                     "url": config["url"],
                     "auth_type": config["auth_type"],
                     "encrypted_credentials": config.get("encrypted_credentials"),
+                    "ssm_token_path": config.get("ssm_token_path"),
+                    "ssm_token_header": config.get("ssm_token_header"),
                 },
             }
 
@@ -315,7 +319,10 @@ def _execute_mcp_tool_call(tool_mapping_entry: Dict, tool_input: Dict) -> str:
     server = tool_mapping_entry["server_config"]
     original_name = tool_mapping_entry["original_tool_name"]
 
-    headers = {"Content-Type": "application/json"}
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+    }
 
     if server["auth_type"] == "bearer" and server.get("encrypted_credentials"):
         token = _decrypt_mcp_credentials(server["encrypted_credentials"])
@@ -323,6 +330,17 @@ def _execute_mcp_tool_call(tool_mapping_entry: Dict, tool_input: Dict) -> str:
     elif server["auth_type"] == "api_key" and server.get("encrypted_credentials"):
         key = _decrypt_mcp_credentials(server["encrypted_credentials"])
         headers["X-API-Key"] = key
+
+    # Catalog servers: read token from SSM and send as custom header
+    ssm_token_path = server.get("ssm_token_path")
+    ssm_token_header = server.get("ssm_token_header")
+    if ssm_token_path and ssm_token_header:
+        try:
+            ssm = boto3.client("ssm")
+            param = ssm.get_parameter(Name=ssm_token_path, WithDecryption=True)
+            headers[ssm_token_header] = param["Parameter"]["Value"]
+        except Exception as e:
+            logger.warning(f"[chat_handler] Failed to read SSM token {ssm_token_path}: {e}")
 
     try:
         # Step 1: Initialize session

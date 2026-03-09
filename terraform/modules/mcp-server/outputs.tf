@@ -12,6 +12,11 @@ output "service_url" {
   value       = "http://${aws_service_discovery_service.mcp.name}.${var.service_discovery_namespace_name}:${var.container_port}/mcp"
 }
 
+output "alb_url" {
+  description = "ALB-routed URL for the MCP server (empty if ALB not configured)"
+  value       = local.use_alb ? "${var.mcp_path_pattern}" : ""
+}
+
 output "security_group_id" {
   description = "Security group ID of this MCP server"
   value       = aws_security_group.mcp.id
@@ -20,4 +25,9 @@ output "security_group_id" {
 output "service_name" {
   description = "ECS service name"
   value       = aws_ecs_service.mcp.name
+}
+
+output "target_group_arn" {
+  description = "ALB target group ARN (empty if ALB not configured)"
+  value       = local.use_alb ? aws_lb_target_group.mcp[0].arn : ""
 }

@@ -1,6 +1,7 @@
 # ============================================================================
 # MCP Server Catalog
-# Deploys MCP server containers (Fargate Spot) with Cloud Map service discovery.
+# Deploys MCP server containers (Fargate Spot) with ALB routing.
+# Lambda calls MCP servers through the ALB (no VPC required for Lambda).
 # Terraform deploys the infrastructure; org admins control access via the UI.
 # ============================================================================
 
@@ -10,11 +11,19 @@ locals {
   # SSM paths follow convention: /{env}/{app}/mcp/{server}-token
   mcp_sonarqube_token_ssm_path = "/${var.environment}/${var.app_name}/mcp/sonarqube-token"
   mcp_sonarqube_token_ssm_arn  = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${local.mcp_sonarqube_token_ssm_path}"
+
+  # ALB listener ARN - use HTTPS when OIDC is enabled, HTTP when not
+  mcp_alb_listener_arn = var.deploy_ui ? (
+    local.use_oidc ? aws_lb_listener.https[0].arn : module.ui_alb.listeners["http"].arn
+  ) : ""
+
+  # MCP server URL as seen by Lambda (through ALB)
+  mcp_base_url = local.use_oidc ? "https://${local.fqdn}" : (var.deploy_ui ? "http://${module.ui_alb.dns_name}" : "")
 }
 
 # -----------------------------------------------------------------------------
 # Cloud Map Private DNS Namespace
-# Shared by all MCP servers. Only created when any MCP server is enabled.
+# Shared by all MCP servers. Kept for internal service discovery.
 # -----------------------------------------------------------------------------
 
 resource "aws_service_discovery_private_dns_namespace" "mcp" {
@@ -25,32 +34,6 @@ resource "aws_service_discovery_private_dns_namespace" "mcp" {
 
   tags = {
     Purpose = "mcp-service-discovery"
-  }
-}
-
-# -----------------------------------------------------------------------------
-# Chat Lambda Security Group (for VPC access to MCP servers)
-# Created when any MCP server is enabled. Passed to MCP modules as allowed caller.
-# -----------------------------------------------------------------------------
-
-resource "aws_security_group" "chat_lambda_mcp" {
-  count = local.any_mcp_enabled ? 1 : 0
-
-  name        = "${var.environment}-${var.app_name}-chat-lambda-mcp"
-  description = "Chat Lambda - outbound to MCP servers and AWS services"
-  vpc_id      = var.ui_vpc_id
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-    description = "Allow all outbound (Bedrock, DynamoDB, S3, KMS, MCP)"
-  }
-
-  tags = {
-    Name    = "${var.environment}-${var.app_name}-chat-lambda-mcp"
-    Purpose = "chat-lambda-mcp"
   }
 }
 
@@ -76,7 +59,9 @@ module "mcp_sonarqube" {
 
   environment_variables = merge(
     {
-      STORAGE_PATH = "/tmp/sonarqube-mcp"
+      SONARQUBE_TRANSPORT = "http"
+      SONARQUBE_HTTP_HOST = "0.0.0.0"
+      SONARQUBE_HTTP_PORT = "8080"
     },
     var.mcp_sonarqube_url != "" ? { SONARQUBE_URL = var.mcp_sonarqube_url } : {},
     var.mcp_sonarqube_org != "" ? { SONARQUBE_ORG = var.mcp_sonarqube_org } : {},
@@ -86,21 +71,27 @@ module "mcp_sonarqube" {
     SONARQUBE_TOKEN = local.mcp_sonarqube_token_ssm_arn
   }
 
-  ecs_cluster_arn = module.ui_ecs.cluster_arn
-  vpc_id          = var.ui_vpc_id
+  ecs_cluster_arn    = module.ui_ecs.cluster_arn
+  vpc_id             = var.ui_vpc_id
   private_subnet_ids = var.ui_private_subnet_ids
   assign_public_ip   = var.ui_fargate_assign_public_ip
 
   service_discovery_namespace_id   = aws_service_discovery_private_dns_namespace.mcp[0].id
   service_discovery_namespace_name = aws_service_discovery_private_dns_namespace.mcp[0].name
 
-  allowed_security_group_ids = [aws_security_group.chat_lambda_mcp[0].id]
+  # ALB routing - Lambda calls MCP through ALB, bypassing OIDC
+  alb_listener_arn           = local.mcp_alb_listener_arn
+  alb_listener_rule_priority = 5
+  mcp_path_pattern           = "/mcp"
+
+  # Allow ALB to reach the MCP container
+  allowed_security_group_ids = [module.ui_alb_sg.security_group_id]
 }
 
 # -----------------------------------------------------------------------------
 # Auto-Register MCP Servers in DynamoDB
 # Creates catalog records so servers appear in the MCP management UI.
-# NOT auto-global — org admins assign to workspaces via the UI.
+# NOT auto-global -- org admins assign to workspaces via the UI.
 # -----------------------------------------------------------------------------
 
 resource "aws_dynamodb_table_item" "mcp_sonarqube" {
@@ -117,8 +108,10 @@ resource "aws_dynamodb_table_item" "mcp_sonarqube" {
     GSI1SK                = { S = "MCP#catalog-sonarqube" }
     mcp_id                = { S = "catalog-sonarqube" }
     name                  = { S = "SonarQube" }
-    url                   = { S = module.mcp_sonarqube[0].service_url }
+    url                   = { S = "${local.mcp_base_url}/mcp" }
     auth_type             = { S = "none" }
+    ssm_token_path        = { S = local.mcp_sonarqube_token_ssm_path }
+    ssm_token_header      = { S = "SONARQUBE_TOKEN" }
     is_global             = { BOOL = false }
     is_catalog            = { BOOL = true }
     refresh_interval_days = { N = "7" }
@@ -141,6 +134,6 @@ resource "aws_dynamodb_table_item" "mcp_sonarqube" {
 # -----------------------------------------------------------------------------
 
 output "mcp_sonarqube_url" {
-  description = "Internal URL of the SonarQube MCP server"
-  value       = var.mcp_sonarqube_enabled ? module.mcp_sonarqube[0].service_url : null
+  description = "URL of the SonarQube MCP server (through ALB)"
+  value       = var.mcp_sonarqube_enabled ? "${local.mcp_base_url}/mcp" : null
 }

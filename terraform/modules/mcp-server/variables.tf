@@ -1,6 +1,6 @@
 # ============================================================================
 # MCP Server Base Module - Variables
-# Deploys a single MCP server as a Fargate Spot task with Cloud Map discovery
+# Deploys a single MCP server as a Fargate Spot task with ALB routing
 # ============================================================================
 
 variable "environment" {
@@ -90,6 +90,31 @@ variable "service_discovery_namespace_id" {
 variable "service_discovery_namespace_name" {
   type        = string
   description = "Cloud Map namespace DNS name (e.g., mcp.local)"
+}
+
+# ALB Integration
+variable "alb_listener_arn" {
+  type        = string
+  description = "ARN of the ALB listener for MCP routing (bypasses OIDC)"
+  default     = ""
+}
+
+variable "alb_listener_rule_priority" {
+  type        = number
+  description = "Priority for the ALB listener rule"
+  default     = 100
+}
+
+variable "mcp_path_pattern" {
+  type        = string
+  description = "ALB path pattern for routing to this MCP server"
+  default     = "/mcp"
+}
+
+variable "health_check_matcher" {
+  type        = string
+  description = "HTTP response codes for ALB health check (MCP servers may return non-200 on GET)"
+  default     = "200-499"
 }
 
 # Security

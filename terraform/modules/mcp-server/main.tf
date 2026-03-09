@@ -1,11 +1,13 @@
 # ============================================================================
 # MCP Server Base Module
-# Deploys a single MCP server as a Fargate Spot task with Cloud Map discovery
+# Deploys a single MCP server as a Fargate Spot task with ALB routing
+# and Cloud Map service discovery
 # ============================================================================
 
 locals {
   name_prefix = "${var.environment}-${var.app_name}"
   server_full = "${local.name_prefix}-mcp-${var.server_name}"
+  use_alb     = var.alb_listener_arn != ""
 }
 
 # -----------------------------------------------------------------------------
@@ -135,8 +137,51 @@ resource "aws_service_discovery_service" "mcp" {
 
     routing_policy = "MULTIVALUE"
   }
+}
 
-  health_check_custom_config {}
+# -----------------------------------------------------------------------------
+# ALB Target Group and Listener Rule
+# Routes traffic from ALB to MCP container, bypassing OIDC authentication.
+# -----------------------------------------------------------------------------
+
+resource "aws_lb_target_group" "mcp" {
+  count = local.use_alb ? 1 : 0
+
+  name        = "${var.environment}-mcp-${var.server_name}"
+  port        = var.container_port
+  protocol    = "HTTP"
+  vpc_id      = var.vpc_id
+  target_type = "ip"
+
+  health_check {
+    path                = "/"
+    interval            = 30
+    healthy_threshold   = 2
+    unhealthy_threshold = 3
+    matcher             = var.health_check_matcher
+  }
+
+  tags = {
+    Purpose = "mcp-${var.server_name}"
+  }
+}
+
+resource "aws_lb_listener_rule" "mcp" {
+  count = local.use_alb ? 1 : 0
+
+  listener_arn = var.alb_listener_arn
+  priority     = var.alb_listener_rule_priority
+
+  action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.mcp[0].arn
+  }
+
+  condition {
+    path_pattern {
+      values = [var.mcp_path_pattern, "${var.mcp_path_pattern}/*"]
+    }
+  }
 }
 
 # -----------------------------------------------------------------------------
@@ -225,6 +270,16 @@ resource "aws_ecs_service" "mcp" {
 
   service_registries {
     registry_arn = aws_service_discovery_service.mcp.arn
+  }
+
+  # ALB registration (when ALB is configured)
+  dynamic "load_balancer" {
+    for_each = local.use_alb ? [1] : []
+    content {
+      target_group_arn = aws_lb_target_group.mcp[0].arn
+      container_name   = var.server_name
+      container_port   = var.container_port
+    }
   }
 
   # Ignore desired_count changes from auto-scaling

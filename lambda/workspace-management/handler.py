@@ -1554,15 +1554,28 @@ def delete_document(user_email: str, workspace_id: str, document_path: str) -> D
 # ============================================================================
 
 
-def _build_mcp_auth_headers(auth_type: str, encrypted_credentials: Optional[str] = None) -> Dict[str, str]:
+def _build_mcp_auth_headers(auth_type: str, encrypted_credentials: Optional[str] = None,
+                            ssm_token_path: Optional[str] = None,
+                            ssm_token_header: Optional[str] = None) -> Dict[str, str]:
     """Build auth headers for MCP server requests."""
-    headers = {"Content-Type": "application/json"}
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+    }
     if auth_type == "bearer" and encrypted_credentials:
         token = _decrypt_credentials(encrypted_credentials)
         headers["Authorization"] = f"Bearer {token}"
     elif auth_type == "api_key" and encrypted_credentials:
         key = _decrypt_credentials(encrypted_credentials)
         headers["X-API-Key"] = key
+    # Catalog servers: read token from SSM and send as custom header
+    if ssm_token_path and ssm_token_header:
+        try:
+            ssm = boto3.client("ssm")
+            param = ssm.get_parameter(Name=ssm_token_path, WithDecryption=True)
+            headers[ssm_token_header] = param["Parameter"]["Value"]
+        except Exception as e:
+            logger.warning(f"[workspace_handler] Failed to read SSM token {ssm_token_path}: {e}")
     return headers
 
 
@@ -1602,9 +1615,12 @@ def _mcp_initialize(url: str, headers: Dict[str, str]) -> str:
     return data.get("_session_id", "")
 
 
-def _call_mcp_list_tools(url: str, auth_type: str, encrypted_credentials: Optional[str] = None) -> list:
+def _call_mcp_list_tools(url: str, auth_type: str, encrypted_credentials: Optional[str] = None,
+                         ssm_token_path: Optional[str] = None,
+                         ssm_token_header: Optional[str] = None) -> list:
     """Call MCP server's tools/list method via JSON-RPC 2.0 with proper initialization."""
-    headers = _build_mcp_auth_headers(auth_type, encrypted_credentials)
+    headers = _build_mcp_auth_headers(auth_type, encrypted_credentials,
+                                      ssm_token_path, ssm_token_header)
 
     try:
         # Step 1: Initialize session
@@ -1924,6 +1940,8 @@ def refresh_mcp_tools(user_email: str, mcp_id: str) -> Dict:
             metadata["url"],
             metadata.get("auth_type", "none"),
             metadata.get("encrypted_credentials"),
+            ssm_token_path=metadata.get("ssm_token_path"),
+            ssm_token_header=metadata.get("ssm_token_header"),
         )
         _cache_tool_manifest(table, mcp_id, tools)
         logger.info(f"[workspace_handler] Refreshed MCP tools for {mcp_id}: {len(tools)} tools")
