@@ -253,7 +253,7 @@ variable "mcp_sonarqube_url" {
 }
 
 variable "mcp_sonarqube_org" {
-  description = "SonarQube organization key (required for SonarCloud)"
+  description = "SonarQube organization key from Organization Settings > Edit organization key (required for SonarCloud, not needed for self-hosted)"
   type        = string
   default     = ""
 }
