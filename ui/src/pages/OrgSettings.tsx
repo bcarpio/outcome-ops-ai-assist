@@ -12,6 +12,7 @@ import {
   X,
   Check,
   Plus,
+  Server,
 } from 'lucide-react'
 import {
   listOrgMembers,
@@ -131,13 +132,22 @@ export default function OrgSettings() {
                 <p className="text-sm text-gray-500">Manage org admins and members</p>
               </div>
             </div>
-            <button
-              onClick={() => setShowAddModal(true)}
-              className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-            >
-              <Plus size={18} />
-              Add Member
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => navigate('/org/mcp-servers')}
+                className="flex items-center gap-2 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors"
+              >
+                <Server size={18} />
+                MCP Servers
+              </button>
+              <button
+                onClick={() => setShowAddModal(true)}
+                className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+              >
+                <Plus size={18} />
+                Add Member
+              </button>
+            </div>
           </div>
         </div>
       </header>
