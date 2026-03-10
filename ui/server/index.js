@@ -596,6 +596,7 @@ app.get("/api/mcp/servers/:id", (req, res) => proxyWorkspaceRequest(req, res, "G
 app.patch("/api/mcp/servers/:id", (req, res) => proxyWorkspaceRequest(req, res, "PATCH", `/mcp/servers/${req.params.id}`));
 app.delete("/api/mcp/servers/:id", (req, res) => proxyWorkspaceRequest(req, res, "DELETE", `/mcp/servers/${req.params.id}`));
 app.post("/api/mcp/servers/:id/refresh", (req, res) => proxyWorkspaceRequest(req, res, "POST", `/mcp/servers/${req.params.id}/refresh`));
+app.get("/api/mcp/servers/:id/workspaces", (req, res) => proxyWorkspaceRequest(req, res, "GET", `/mcp/servers/${req.params.id}/workspaces`));
 
 // MCP workspace assignments
 app.post("/api/workspaces/:id/mcp-servers", (req, res) => proxyWorkspaceRequest(req, res, "POST", `/workspaces/${req.params.id}/mcp-servers`));

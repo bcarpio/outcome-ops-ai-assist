@@ -11,8 +11,7 @@ import {
   Server,
   X,
   Check,
-  ChevronDown,
-  ChevronRight,
+  Search,
 } from 'lucide-react'
 import {
   listMcpServers,
@@ -21,9 +20,9 @@ import {
   deleteMcpServer,
   refreshMcpTools,
   listWorkspaces,
+  getMcpServerWorkspaces,
   assignMcpToWorkspace,
   removeMcpFromWorkspace,
-  listWorkspaceMcpServers,
   type McpServer,
   type Workspace,
   type CreateMcpServerRequest,
@@ -61,13 +60,14 @@ export default function McpServers() {
   const [form, setForm] = useState<FormState>(emptyForm)
   const [saving, setSaving] = useState(false)
 
+  // Workspace assignment state (inside modal)
+  const [assignedWorkspaceIds, setAssignedWorkspaceIds] = useState<Set<string>>(new Set())
+  const [loadingAssignments, setLoadingAssignments] = useState(false)
+  const [togglingWorkspace, setTogglingWorkspace] = useState<string | null>(null)
+  const [workspaceFilter, setWorkspaceFilter] = useState('')
+
   // Refresh state
   const [refreshingId, setRefreshingId] = useState<string | null>(null)
-
-  // Workspace assignment state
-  const [expandedServerId, setExpandedServerId] = useState<string | null>(null)
-  const [workspaceAssignments, setWorkspaceAssignments] = useState<Record<string, string[]>>({})
-  const [assignmentLoading, setAssignmentLoading] = useState<string | null>(null)
 
   useEffect(() => {
     loadData()
@@ -90,63 +90,15 @@ export default function McpServers() {
     }
   }
 
-  async function loadWorkspaceAssignments(mcpId: string) {
-    const assignments: string[] = []
-    for (const ws of workspaces) {
-      try {
-        const wsServers = await listWorkspaceMcpServers(ws.workspace_id)
-        if (wsServers.some((s) => s.mcp_id === mcpId)) {
-          assignments.push(ws.workspace_id)
-        }
-      } catch {
-        // skip workspaces we can't access
-      }
-    }
-    setWorkspaceAssignments((prev) => ({ ...prev, [mcpId]: assignments }))
-  }
-
-  function handleExpand(mcpId: string) {
-    if (expandedServerId === mcpId) {
-      setExpandedServerId(null)
-    } else {
-      setExpandedServerId(mcpId)
-      if (!workspaceAssignments[mcpId]) {
-        loadWorkspaceAssignments(mcpId)
-      }
-    }
-  }
-
-  async function handleToggleWorkspace(mcpId: string, workspaceId: string, assigned: boolean) {
-    setAssignmentLoading(`${mcpId}:${workspaceId}`)
-    setError(null)
-    try {
-      if (assigned) {
-        await removeMcpFromWorkspace(workspaceId, mcpId)
-        setWorkspaceAssignments((prev) => ({
-          ...prev,
-          [mcpId]: (prev[mcpId] || []).filter((id) => id !== workspaceId),
-        }))
-      } else {
-        await assignMcpToWorkspace(workspaceId, mcpId)
-        setWorkspaceAssignments((prev) => ({
-          ...prev,
-          [mcpId]: [...(prev[mcpId] || []), workspaceId],
-        }))
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update workspace assignment')
-    } finally {
-      setAssignmentLoading(null)
-    }
-  }
-
   function openCreateModal() {
     setEditingServer(null)
     setForm(emptyForm)
+    setAssignedWorkspaceIds(new Set())
+    setWorkspaceFilter('')
     setShowModal(true)
   }
 
-  function openEditModal(server: McpServer) {
+  async function openEditModal(server: McpServer) {
     setEditingServer(server)
     setForm({
       name: server.name,
@@ -156,13 +108,31 @@ export default function McpServers() {
       is_global: server.is_global,
       refresh_interval_days: server.refresh_interval_days,
     })
+    setWorkspaceFilter('')
     setShowModal(true)
+
+    // Load workspace assignments in one call
+    if (!server.is_global) {
+      setLoadingAssignments(true)
+      try {
+        const wsIds = await getMcpServerWorkspaces(server.mcp_id)
+        setAssignedWorkspaceIds(new Set(wsIds))
+      } catch {
+        setAssignedWorkspaceIds(new Set())
+      } finally {
+        setLoadingAssignments(false)
+      }
+    } else {
+      setAssignedWorkspaceIds(new Set())
+    }
   }
 
   function closeModal() {
     setShowModal(false)
     setEditingServer(null)
     setForm(emptyForm)
+    setAssignedWorkspaceIds(new Set())
+    setWorkspaceFilter('')
     setError(null)
   }
 
@@ -234,6 +204,30 @@ export default function McpServers() {
     }
   }
 
+  async function handleToggleWorkspace(workspaceId: string) {
+    if (!editingServer) return
+    const mcpId = editingServer.mcp_id
+    const isAssigned = assignedWorkspaceIds.has(workspaceId)
+    setTogglingWorkspace(workspaceId)
+    try {
+      if (isAssigned) {
+        await removeMcpFromWorkspace(workspaceId, mcpId)
+        setAssignedWorkspaceIds((prev) => {
+          const next = new Set(prev)
+          next.delete(workspaceId)
+          return next
+        })
+      } else {
+        await assignMcpToWorkspace(workspaceId, mcpId)
+        setAssignedWorkspaceIds((prev) => new Set([...prev, workspaceId]))
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update workspace assignment')
+    } finally {
+      setTogglingWorkspace(null)
+    }
+  }
+
   function truncateUrl(url: string, maxLen = 40): string {
     return url.length > maxLen ? url.slice(0, maxLen) + '...' : url
   }
@@ -248,6 +242,13 @@ export default function McpServers() {
       minute: '2-digit',
     })
   }
+
+  // Filter workspaces for the modal search
+  const filteredWorkspaces = workspaces.filter((ws) =>
+    ws.name.toLowerCase().includes(workspaceFilter.toLowerCase())
+  )
+  const assignedFiltered = filteredWorkspaces.filter((ws) => assignedWorkspaceIds.has(ws.workspace_id))
+  const availableFiltered = filteredWorkspaces.filter((ws) => !assignedWorkspaceIds.has(ws.workspace_id))
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -280,7 +281,7 @@ export default function McpServers() {
 
       {/* Main Content */}
       <main className="max-w-4xl mx-auto px-4 py-8">
-        {error && (
+        {error && !showModal && (
           <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg text-red-600 flex items-center justify-between">
             {error}
             <button onClick={() => setError(null)} className="text-red-400 hover:text-red-600">
@@ -334,131 +335,74 @@ export default function McpServers() {
             </div>
           ) : (
             <div className="divide-y">
-              {servers.map((server) => {
-                const isExpanded = expandedServerId === server.mcp_id
-                const assignments = workspaceAssignments[server.mcp_id]
-                return (
-                  <div key={server.mcp_id}>
-                    <div className="flex items-center justify-between p-4 hover:bg-gray-50">
-                      <div className="flex items-center gap-4 min-w-0 flex-1">
-                        <div className="w-10 h-10 bg-gray-100 rounded-full flex items-center justify-center flex-shrink-0">
-                          {server.is_global ? (
-                            <Globe className="w-5 h-5 text-blue-500" />
-                          ) : (
-                            <Server className="w-5 h-5 text-gray-500" />
-                          )}
-                        </div>
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-2">
-                            <p className="font-medium text-gray-900">{server.name}</p>
-                            <span
-                              className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
-                                server.status === 'active'
-                                  ? 'bg-green-100 text-green-700'
-                                  : 'bg-red-100 text-red-700'
-                              }`}
-                            >
-                              {server.status === 'active' ? 'Active' : 'Error'}
-                            </span>
-                            {server.is_global && (
-                              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-700">
-                                Global
-                              </span>
-                            )}
-                          </div>
-                          <p className="text-sm text-gray-500 truncate" title={server.url}>
-                            {truncateUrl(server.url)}
-                          </p>
-                          <p className="text-xs text-gray-400 mt-0.5">
-                            {server.tool_count} tool{server.tool_count !== 1 ? 's' : ''}
-                            {' -- '}
-                            Last refreshed: {formatDate(server.last_refreshed_at)}
-                          </p>
-                        </div>
-                      </div>
-
-                      <div className="flex items-center gap-2 flex-shrink-0 ml-4">
-                        <button
-                          onClick={() => handleRefresh(server)}
-                          disabled={refreshingId === server.mcp_id}
-                          className="p-2 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors disabled:opacity-50"
-                          title="Refresh tools"
+              {servers.map((server) => (
+                <div key={server.mcp_id} className="flex items-center justify-between p-4 hover:bg-gray-50">
+                  <div className="flex items-center gap-4 min-w-0 flex-1">
+                    <div className="w-10 h-10 bg-gray-100 rounded-full flex items-center justify-center flex-shrink-0">
+                      {server.is_global ? (
+                        <Globe className="w-5 h-5 text-blue-500" />
+                      ) : (
+                        <Server className="w-5 h-5 text-gray-500" />
+                      )}
+                    </div>
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <p className="font-medium text-gray-900">{server.name}</p>
+                        <span
+                          className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
+                            server.status === 'active'
+                              ? 'bg-green-100 text-green-700'
+                              : 'bg-red-100 text-red-700'
+                          }`}
                         >
-                          <RefreshCw
-                            size={16}
-                            className={refreshingId === server.mcp_id ? 'animate-spin' : ''}
-                          />
-                        </button>
-                        <button
-                          onClick={() => openEditModal(server)}
-                          className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
-                          title="Edit server"
-                        >
-                          <Settings size={16} />
-                        </button>
-                        <button
-                          onClick={() => handleDelete(server)}
-                          className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-                          title="Delete server"
-                        >
-                          <Trash2 size={16} />
-                        </button>
-                        {!server.is_global && (
-                          <button
-                            onClick={() => handleExpand(server.mcp_id)}
-                            className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
-                            title="Workspace assignments"
-                          >
-                            {isExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
-                          </button>
+                          {server.status === 'active' ? 'Active' : 'Error'}
+                        </span>
+                        {server.is_global && (
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-700">
+                            Global
+                          </span>
                         )}
                       </div>
+                      <p className="text-sm text-gray-500 truncate" title={server.url}>
+                        {truncateUrl(server.url)}
+                      </p>
+                      <p className="text-xs text-gray-400 mt-0.5">
+                        {server.tool_count} tool{server.tool_count !== 1 ? 's' : ''}
+                        {' -- '}
+                        Last refreshed: {formatDate(server.last_refreshed_at)}
+                      </p>
                     </div>
-
-                    {/* Workspace Assignments (expandable) */}
-                    {isExpanded && !server.is_global && (
-                      <div className="px-4 pb-4 pl-18">
-                        <div className="ml-14 p-3 bg-gray-50 rounded-lg border">
-                          <h4 className="text-sm font-medium text-gray-700 mb-2">Workspace Assignments</h4>
-                          {!assignments ? (
-                            <div className="flex items-center gap-2 text-sm text-gray-500">
-                              <Loader2 size={14} className="animate-spin" />
-                              Loading workspaces...
-                            </div>
-                          ) : workspaces.length === 0 ? (
-                            <p className="text-sm text-gray-500">No workspaces available.</p>
-                          ) : (
-                            <div className="space-y-1">
-                              {workspaces.map((ws) => {
-                                const isAssigned = assignments.includes(ws.workspace_id)
-                                const isToggling = assignmentLoading === `${server.mcp_id}:${ws.workspace_id}`
-                                return (
-                                  <label
-                                    key={ws.workspace_id}
-                                    className="flex items-center gap-2 py-1 px-2 rounded hover:bg-gray-100 cursor-pointer text-sm"
-                                  >
-                                    {isToggling ? (
-                                      <Loader2 size={14} className="animate-spin text-blue-600" />
-                                    ) : (
-                                      <input
-                                        type="checkbox"
-                                        checked={isAssigned}
-                                        onChange={() => handleToggleWorkspace(server.mcp_id, ws.workspace_id, isAssigned)}
-                                        className="rounded text-blue-600"
-                                      />
-                                    )}
-                                    <span className="text-gray-700">{ws.name}</span>
-                                  </label>
-                                )
-                              })}
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    )}
                   </div>
-                )
-              })}
+
+                  <div className="flex items-center gap-2 flex-shrink-0 ml-4">
+                    <button
+                      onClick={() => handleRefresh(server)}
+                      disabled={refreshingId === server.mcp_id}
+                      className="p-2 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors disabled:opacity-50"
+                      title="Refresh tools"
+                    >
+                      <RefreshCw
+                        size={16}
+                        className={refreshingId === server.mcp_id ? 'animate-spin' : ''}
+                      />
+                    </button>
+                    <button
+                      onClick={() => openEditModal(server)}
+                      className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+                      title="Configure server"
+                    >
+                      <Settings size={16} />
+                    </button>
+                    <button
+                      onClick={() => handleDelete(server)}
+                      className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                      title="Delete server"
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
+                </div>
+              ))}
             </div>
           )}
         </div>
@@ -467,10 +411,10 @@ export default function McpServers() {
       {/* Create/Edit Modal */}
       {showModal && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg shadow-xl w-full max-w-md mx-4">
-            <div className="p-6">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-lg mx-4 max-h-[90vh] flex flex-col">
+            <div className="p-6 overflow-y-auto flex-1">
               <h2 className="text-lg font-semibold mb-4">
-                {editingServer ? 'Edit MCP Server' : 'Add MCP Server'}
+                {editingServer ? 'Configure MCP Server' : 'Add MCP Server'}
               </h2>
               {error && (
                 <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-red-600 text-sm">
@@ -537,19 +481,6 @@ export default function McpServers() {
                     />
                   </div>
                 )}
-                <div className="flex items-center gap-2">
-                  <input
-                    id="mcp-global"
-                    type="checkbox"
-                    checked={form.is_global}
-                    onChange={(e) => setForm({ ...form, is_global: e.target.checked })}
-                    className="rounded text-blue-600"
-                  />
-                  <label htmlFor="mcp-global" className="text-sm text-gray-700 flex items-center gap-1">
-                    <Globe size={14} className="text-blue-500" />
-                    Available to all workspaces
-                  </label>
-                </div>
                 <div>
                   <label htmlFor="mcp-refresh" className="block text-sm font-medium text-gray-700 mb-1">
                     Refresh Interval (days)
@@ -563,9 +494,121 @@ export default function McpServers() {
                     className="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
                 </div>
+
+                {/* Access Section */}
+                <div className="border-t pt-4">
+                  <h3 className="text-sm font-medium text-gray-900 mb-3">Access</h3>
+                  <div className="flex items-center gap-2 mb-3">
+                    <input
+                      id="mcp-global"
+                      type="checkbox"
+                      checked={form.is_global}
+                      onChange={(e) => setForm({ ...form, is_global: e.target.checked })}
+                      className="rounded text-blue-600"
+                    />
+                    <label htmlFor="mcp-global" className="text-sm text-gray-700 flex items-center gap-1">
+                      <Globe size={14} className="text-blue-500" />
+                      Available to all workspaces
+                    </label>
+                  </div>
+
+                  {/* Workspace assignment (only when not global and editing) */}
+                  {!form.is_global && editingServer && (
+                    <div className="mt-3 border rounded-lg">
+                      <div className="px-3 py-2 bg-gray-50 border-b rounded-t-lg">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-xs font-medium text-gray-500 uppercase">
+                            Workspace Assignments ({assignedWorkspaceIds.size})
+                          </span>
+                        </div>
+                        {workspaces.length > 5 && (
+                          <div className="relative">
+                            <Search size={14} className="absolute left-2.5 top-2.5 text-gray-400" />
+                            <input
+                              type="text"
+                              value={workspaceFilter}
+                              onChange={(e) => setWorkspaceFilter(e.target.value)}
+                              placeholder="Filter workspaces..."
+                              className="w-full pl-8 pr-3 py-1.5 text-sm border rounded-md focus:outline-none focus:ring-1 focus:ring-blue-500"
+                            />
+                          </div>
+                        )}
+                      </div>
+
+                      {loadingAssignments ? (
+                        <div className="flex items-center justify-center py-6">
+                          <Loader2 size={16} className="animate-spin text-blue-600" />
+                          <span className="ml-2 text-sm text-gray-500">Loading assignments...</span>
+                        </div>
+                      ) : workspaces.length === 0 ? (
+                        <div className="px-3 py-4 text-sm text-gray-500 text-center">
+                          No workspaces available.
+                        </div>
+                      ) : (
+                        <div className="max-h-48 overflow-y-auto divide-y">
+                          {/* Assigned workspaces first */}
+                          {assignedFiltered.map((ws) => {
+                            const isToggling = togglingWorkspace === ws.workspace_id
+                            return (
+                              <label
+                                key={ws.workspace_id}
+                                className="flex items-center gap-2 px-3 py-2 hover:bg-gray-50 cursor-pointer"
+                              >
+                                {isToggling ? (
+                                  <Loader2 size={14} className="animate-spin text-blue-600 flex-shrink-0" />
+                                ) : (
+                                  <input
+                                    type="checkbox"
+                                    checked={true}
+                                    onChange={() => handleToggleWorkspace(ws.workspace_id)}
+                                    className="rounded text-blue-600 flex-shrink-0"
+                                  />
+                                )}
+                                <span className="text-sm text-gray-900 truncate">{ws.name}</span>
+                              </label>
+                            )
+                          })}
+                          {/* Available workspaces */}
+                          {availableFiltered.map((ws) => {
+                            const isToggling = togglingWorkspace === ws.workspace_id
+                            return (
+                              <label
+                                key={ws.workspace_id}
+                                className="flex items-center gap-2 px-3 py-2 hover:bg-gray-50 cursor-pointer"
+                              >
+                                {isToggling ? (
+                                  <Loader2 size={14} className="animate-spin text-blue-600 flex-shrink-0" />
+                                ) : (
+                                  <input
+                                    type="checkbox"
+                                    checked={false}
+                                    onChange={() => handleToggleWorkspace(ws.workspace_id)}
+                                    className="rounded text-blue-600 flex-shrink-0"
+                                  />
+                                )}
+                                <span className="text-sm text-gray-700 truncate">{ws.name}</span>
+                              </label>
+                            )
+                          })}
+                          {filteredWorkspaces.length === 0 && (
+                            <div className="px-3 py-3 text-sm text-gray-400 text-center">
+                              No workspaces match "{workspaceFilter}"
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {!form.is_global && !editingServer && (
+                    <p className="text-xs text-gray-500 mt-1">
+                      Save the server first, then configure workspace assignments.
+                    </p>
+                  )}
+                </div>
               </div>
             </div>
-            <div className="px-6 py-4 bg-gray-50 rounded-b-lg flex justify-end gap-3">
+            <div className="px-6 py-4 bg-gray-50 rounded-b-lg flex justify-end gap-3 border-t">
               <button
                 onClick={closeModal}
                 className="px-4 py-2 text-gray-700 hover:bg-gray-200 rounded-lg transition-colors"

@@ -1601,6 +1601,16 @@ export async function refreshMcpTools(id: string): Promise<McpServer> {
   return data.mcp_server
 }
 
+export async function getMcpServerWorkspaces(mcpId: string): Promise<string[]> {
+  const response = await fetch(`${API_BASE}/mcp/servers/${mcpId}/workspaces`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to get MCP server workspaces: ${response.status}`)
+  }
+  const data = await response.json()
+  return data.workspace_ids || []
+}
+
 export async function assignMcpToWorkspace(workspaceId: string, mcpId: string): Promise<void> {
   const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/mcp-servers`, {
     method: 'POST',

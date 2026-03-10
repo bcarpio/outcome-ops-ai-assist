@@ -1283,8 +1283,8 @@ def _scan_all_workspaces(table) -> List[Dict]:
     """Scan all workspace METADATA items with pagination."""
     items = []
     scan_kwargs = {
-        "FilterExpression": "SK = :sk",
-        "ExpressionAttributeValues": {":sk": "METADATA"},
+        "FilterExpression": "SK = :sk AND begins_with(PK, :pk_prefix)",
+        "ExpressionAttributeValues": {":sk": "METADATA", ":pk_prefix": "WS#"},
     }
     while True:
         response = table.scan(**scan_kwargs)
@@ -2029,6 +2029,36 @@ def remove_mcp_from_workspace(user_email: str, workspace_id: str, mcp_id: str) -
         return _error(500, "Failed to remove MCP server")
 
 
+def get_mcp_server_workspaces(user_email: str, mcp_id: str) -> Dict:
+    """List workspaces assigned to an MCP server (single query via GSI1)."""
+    dynamodb = _get_dynamodb()
+    table = dynamodb.Table(_get_workspaces_table())
+
+    if not _is_org_admin(table, user_email):
+        return _error(403, "Only org admins can view MCP server assignments")
+
+    try:
+        # GSI1 reverse lookup: GSI1PK=MCP#{id}, GSI1SK=WS#{ws_id}
+        response = table.query(
+            IndexName="GSI1",
+            KeyConditionExpression="GSI1PK = :pk AND begins_with(GSI1SK, :sk)",
+            ExpressionAttributeValues={
+                ":pk": f"MCP#{mcp_id}",
+                ":sk": "WS#",
+            },
+        )
+
+        workspace_ids = [
+            item.get("workspace_id") for item in response.get("Items", [])
+            if item.get("workspace_id")
+        ]
+
+        return _response(200, {"workspace_ids": workspace_ids})
+    except ClientError as e:
+        logger.error(f"[workspace_handler] Error getting MCP server workspaces: {e}", exc_info=True)
+        return _error(500, "Failed to get MCP server workspaces")
+
+
 def list_workspace_mcp_servers(user_email: str, workspace_id: str) -> Dict:
     """List MCP servers assigned to a workspace."""
     dynamodb = _get_dynamodb()
@@ -2442,6 +2472,16 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         ):
             return refresh_mcp_tools(user_email, parts[2])
 
+        # Route: GET /mcp/servers/{id}/workspaces
+        if (
+            len(parts) == 4
+            and parts[0] == "mcp"
+            and parts[1] == "servers"
+            and parts[3] == "workspaces"
+            and http_method == "GET"
+        ):
+            return get_mcp_server_workspaces(user_email, parts[2])
+
         # ====================================================================
         # MCP Workspace Assignment Routes
         # ====================================================================
@@ -2481,3 +2521,6 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
 
     except ValidationError as e:
         return _error(400, f"Invalid request: {e}")
+    except Exception as e:
+        logger.error(f"Unhandled error: {http_method} {path}: {e}", exc_info=True)
+        return _error(500, f"Internal server error: {type(e).__name__}: {e}")

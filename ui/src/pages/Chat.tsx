@@ -386,10 +386,7 @@ export default function Chat() {
     setSelectedWorkspaceIds(prev => {
       const next = new Set(prev)
       if (next.has(workspaceId)) {
-        // Allow deselecting all workspaces if MCP servers are selected
-        if (next.size > 1 || selectedMcpServerIds.size > 0) {
-          next.delete(workspaceId)
-        }
+        next.delete(workspaceId)
       } else {
         next.add(workspaceId)
       }
@@ -402,10 +399,7 @@ export default function Chat() {
     setSelectedMcpServerIds(prev => {
       const next = new Set(prev)
       if (next.has(mcpId)) {
-        // Allow deselecting all MCP if workspaces are selected
-        if (next.size > 1 || selectedWorkspaceIds.size > 0) {
-          next.delete(mcpId)
-        }
+        next.delete(mcpId)
       } else {
         next.add(mcpId)
       }
@@ -421,12 +415,11 @@ export default function Chat() {
   // Get workspace selector display text
   function getWorkspaceSelectorText(): string {
     if (loadingWorkspaces) return 'Loading...'
-    if (searchableWorkspaces.length === 0) return 'No workspaces'
-    if (selectedWorkspaceIds.size === 0) return 'No workspaces'
+    if (selectedWorkspaceIds.size === 0) return 'Workspaces (0)'
     if (selectedWorkspaceIds.size === searchableWorkspaces.length) return 'All workspaces'
     if (selectedWorkspaceIds.size === 1) {
       const ws = searchableWorkspaces.find(w => selectedWorkspaceIds.has(w.workspace_id))
-      return ws?.name || 'Unknown'
+      return ws?.name || 'Workspaces (1)'
     }
     return `${selectedWorkspaceIds.size} workspaces`
   }
@@ -434,11 +427,10 @@ export default function Chat() {
   // Get MCP selector display text
   function getMcpSelectorText(): string {
     if (loadingMcpServers) return 'Loading...'
-    if (mcpServers.length === 0) return 'No MCP'
-    if (selectedMcpServerIds.size === 0) return 'No MCP'
+    if (selectedMcpServerIds.size === 0) return `MCP (0)`
     if (selectedMcpServerIds.size === 1) {
       const s = mcpServers.find(s => selectedMcpServerIds.has(s.mcp_id))
-      return s?.name || 'Unknown'
+      return s?.name || `MCP (1)`
     }
     return `${selectedMcpServerIds.size} MCP servers`
   }
@@ -553,12 +545,22 @@ export default function Chat() {
                       <div className="px-3 py-2 border-b">
                         <div className="flex items-center justify-between">
                           <span className="text-xs font-medium text-gray-500 uppercase">Search in</span>
-                          <button
-                            onClick={selectAllWorkspaces}
-                            className="text-xs text-blue-600 hover:text-blue-700"
-                          >
-                            Select all
-                          </button>
+                          <div className="flex gap-2">
+                            {selectedWorkspaceIds.size > 0 && (
+                              <button
+                                onClick={() => setSelectedWorkspaceIds(new Set())}
+                                className="text-xs text-gray-500 hover:text-gray-700"
+                              >
+                                Clear all
+                              </button>
+                            )}
+                            <button
+                              onClick={selectAllWorkspaces}
+                              className="text-xs text-blue-600 hover:text-blue-700"
+                            >
+                              Select all
+                            </button>
+                          </div>
                         </div>
                       </div>
                       {searchableWorkspaces.map(ws => (
@@ -612,11 +614,7 @@ export default function Chat() {
                           <span className="text-xs font-medium text-gray-500 uppercase">MCP Tools</span>
                           {selectedMcpServerIds.size > 0 && (
                             <button
-                              onClick={() => {
-                                if (selectedWorkspaceIds.size > 0) {
-                                  setSelectedMcpServerIds(new Set())
-                                }
-                              }}
+                              onClick={() => setSelectedMcpServerIds(new Set())}
                               className="text-xs text-gray-500 hover:text-gray-700"
                             >
                               Clear all
@@ -825,7 +823,7 @@ export default function Chat() {
             {/* Send button */}
             <button
               onClick={handleSend}
-              disabled={!input.trim() || status !== 'idle' || (selectedWorkspaceIds.size === 0 && selectedMcpServerIds.size === 0)}
+              disabled={!input.trim() || status !== 'idle'}
               className="p-3 bg-blue-600 text-white rounded-xl hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
               {status !== 'idle' ? (

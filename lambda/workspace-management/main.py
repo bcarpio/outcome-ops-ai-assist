@@ -420,6 +420,16 @@ async def refresh_mcp_tools_route(mcp_id: str, request: Request):
     return _parse_response(result)
 
 
+@app.get("/mcp/servers/{mcp_id}/workspaces")
+async def get_mcp_server_workspaces_route(mcp_id: str, request: Request):
+    """Get workspaces assigned to an MCP server."""
+    from handler import lambda_handler
+
+    event = _build_event(request, "GET", f"/mcp/servers/{mcp_id}/workspaces")
+    result = lambda_handler(event, None)
+    return _parse_response(result)
+
+
 # ============================================================================
 # MCP Workspace Assignment Routes
 # ============================================================================
