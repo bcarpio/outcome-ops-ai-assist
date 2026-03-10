@@ -6,7 +6,7 @@
 # ============================================================================
 
 locals {
-  any_mcp_enabled = var.mcp_sonarqube_enabled
+  any_mcp_enabled = var.mcp_sonarqube_enabled || var.mcp_outcomeops_enabled
 
   # SSM paths follow convention: /{env}/{app}/mcp/{server}-token
   mcp_sonarqube_token_ssm_path = "/${var.environment}/${var.app_name}/mcp/sonarqube-token"

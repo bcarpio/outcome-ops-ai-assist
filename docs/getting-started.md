@@ -543,11 +543,78 @@ Before deploying to production (`prd.tfvars`):
 - [ ] Verify production data appears in DynamoDB/S3
 - [ ] Set up CloudWatch alarms
 
+## Optional: Enable MCP Server Integration
+
+OutcomeOps supports [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) servers
+for integrating external tools and connecting developer environments.
+
+### OutcomeOps MCP Server (Connect Claude Code, VS Code, etc.)
+
+The OutcomeOps MCP server lets developers query the knowledge base directly from
+MCP-compatible tools like Claude Code, VS Code, and Cursor.
+
+1. Add to your `prd.tfvars`:
+   ```hcl
+   mcp_outcomeops_enabled = true
+   ```
+
+2. Deploy infrastructure, build and push the container image, then deploy again:
+   ```bash
+   ENVIRONMENT=prd make build-mcp-outcomeops-image
+   ```
+
+3. Generate an API key in the web UI: **Settings > API Keys**
+
+4. Configure your MCP client (e.g., Claude Code):
+   ```json
+   {
+     "mcpServers": {
+       "outcomeops": {
+         "type": "streamableHttp",
+         "url": "https://your-outcomeops-domain.com/mcp/v1",
+         "headers": {
+           "Authorization": "Bearer ooa_your_key_here"
+         }
+       }
+     }
+   }
+   ```
+
+See the full guide: **[OutcomeOps MCP Server](mcp-server.md)**
+
+### SonarQube MCP Server (Code Quality Tools in Chat)
+
+The SonarQube MCP server gives the chat AI access to code quality and security data.
+
+To enable SonarQube MCP:
+
+1. Store your SonarQube API token in SSM:
+   ```bash
+   aws ssm put-parameter \
+     --name "/prd/outcome-ops-ai-assist/mcp/sonarqube-token" \
+     --type SecureString \
+     --value "your-sonarqube-token"
+   ```
+
+2. Add to your `prd.tfvars`:
+   ```hcl
+   mcp_sonarqube_enabled = true
+   mcp_sonarqube_url     = "https://sonarcloud.io"
+   mcp_sonarqube_org     = "your-org-key"  # SonarCloud only
+   ```
+
+3. Deploy and activate in the UI
+
+See the full guide: **[SonarQube MCP Server Setup](sonarqube-mcp.md)**
+
+Org admins can also register custom MCP servers through the UI without Terraform changes.
+
 ## Next Steps
 
 1. **Read the Documentation**
    - [Architecture Overview](architecture.md) - System design and data flows
    - [Lambda: Ingest Docs](lambda-ingest-docs.md) - Knowledge base ingestion
+   - [SonarQube MCP Server](sonarqube-mcp.md) - Enable code quality tools in chat
 
 2. **Review Standards**
    - [ADR-001: Creating ADRs](../fatacyai-adrs/docs/adr/ADR-001-create-adrs.md) - How to write architectural decisions

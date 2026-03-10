@@ -67,13 +67,14 @@ The KB contains: ADRs, READMEs, code maps, infrastructure patterns, handler patt
 make test-unit
 
 # 2. Run UI tests (if any ui/ files changed)
-cd ui && npm test
+make test-ui
 # Note: Requires Node 20+. If local Node is older, tests will run in CI.
 # When adding new API functions or modifying component props, update the
 # vi.mock() blocks in the corresponding test files to include new exports.
 
 # 3. Format and validate Terraform (if any .tf files changed)
-cd terraform && terraform fmt -recursive && terraform validate
+make fmt
+make validate-tf
 
 # 4. Check Python formatting (if any .py files changed)
 cd lambda && find . -name "*.py" -path "*/lambda/*" | head -20 | xargs -I {} python -m py_compile {}

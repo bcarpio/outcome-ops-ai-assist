@@ -606,6 +606,11 @@ app.delete("/api/workspaces/:id/mcp-servers/:mcpId", (req, res) => proxyWorkspac
 // Chat MCP servers
 app.get("/api/chat/mcp-servers", (req, res) => proxyWorkspaceRequest(req, res, "GET", "/chat/mcp-servers"));
 
+// API Key management
+app.post("/api/api-keys", (req, res) => proxyWorkspaceRequest(req, res, "POST", "/api-keys"));
+app.get("/api/api-keys", (req, res) => proxyWorkspaceRequest(req, res, "GET", "/api-keys"));
+app.delete("/api/api-keys/:keyId", (req, res) => proxyWorkspaceRequest(req, res, "DELETE", `/api-keys/${req.params.keyId}`));
+
 // Debug: Show current authenticated user identity
 app.get("/api/me", (req, res) => {
   const user = extractUser(req);

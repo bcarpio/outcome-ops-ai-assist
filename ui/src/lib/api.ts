@@ -1652,3 +1652,62 @@ export async function getChatMcpServers(): Promise<ChatMcpServer[]> {
   const data = await response.json()
   return data.mcp_servers || []
 }
+
+// ============================================================================
+// API Key Management
+// ============================================================================
+
+export interface ApiKey {
+  key_id: string
+  key_prefix: string
+  name: string
+  created_at: string
+  expires_at?: string
+  last_used_at?: string
+  status: 'active' | 'revoked'
+}
+
+export interface CreateApiKeyRequest {
+  name: string
+  expires_in_days?: number
+}
+
+export interface CreateApiKeyResponse {
+  key_id: string
+  key: string
+  key_prefix: string
+  name: string
+  created_at: string
+  expires_at?: string
+}
+
+export async function createApiKey(request: CreateApiKeyRequest): Promise<CreateApiKeyResponse> {
+  const response = await fetch(`${API_BASE}/api-keys`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  })
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to create API key: ${response.status}`)
+  }
+  return response.json()
+}
+
+export async function listApiKeys(): Promise<ApiKey[]> {
+  const response = await fetch(`${API_BASE}/api-keys`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to list API keys: ${response.status}`)
+  }
+  const data = await response.json()
+  return data.api_keys || []
+}
+
+export async function revokeApiKey(keyId: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/api-keys/${keyId}`, { method: 'DELETE' })
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to revoke API key: ${response.status}`)
+  }
+}

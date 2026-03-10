@@ -258,6 +258,12 @@ variable "mcp_sonarqube_org" {
   default     = ""
 }
 
+variable "mcp_outcomeops_enabled" {
+  description = "Deploy the OutcomeOps MCP server for external MCP client access (Claude Code, VS Code)"
+  type        = bool
+  default     = false
+}
+
 
 # ============================================================================
 # Audit & Compliance

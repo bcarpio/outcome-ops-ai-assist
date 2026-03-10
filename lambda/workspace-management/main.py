@@ -478,3 +478,39 @@ async def get_chat_mcp_servers_route(request: Request):
     event = _build_event(request, "GET", "/chat/mcp-servers")
     result = lambda_handler(event, None)
     return _parse_response(result)
+
+
+# ============================================================================
+# API Key Management Routes
+# ============================================================================
+
+
+@app.post("/api-keys")
+async def create_api_key_route(request: Request):
+    """Create a personal API key."""
+    from handler import lambda_handler
+
+    body = await request.body()
+    event = _build_event(request, "POST", "/api-keys", body.decode("utf-8"))
+    result = lambda_handler(event, None)
+    return _parse_response(result)
+
+
+@app.get("/api-keys")
+async def list_api_keys_route(request: Request):
+    """List user's API keys."""
+    from handler import lambda_handler
+
+    event = _build_event(request, "GET", "/api-keys")
+    result = lambda_handler(event, None)
+    return _parse_response(result)
+
+
+@app.delete("/api-keys/{key_id}")
+async def revoke_api_key_route(key_id: str, request: Request):
+    """Revoke an API key."""
+    from handler import lambda_handler
+
+    event = _build_event(request, "DELETE", f"/api-keys/{key_id}")
+    result = lambda_handler(event, None)
+    return _parse_response(result)

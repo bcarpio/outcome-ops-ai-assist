@@ -140,6 +140,10 @@ OutcomeOps applies the same playbook to AI-assisted development:
 - [CLI Usage Guide](docs/cli-usage.md) - Using the outcome-ops-assist CLI
 - [Deployment Guide](docs/deployment.md) - Operations and troubleshooting
 
+**Integrations**
+- [OutcomeOps MCP Server](docs/mcp-server.md) - Connect Claude Code, VS Code, and other MCP clients
+- [SonarQube MCP Server](docs/sonarqube-mcp.md) - Code quality and security tools via MCP
+
 **Lambda Documentation**
 - [Lambda: Ingest Docs](docs/lambda-ingest-docs.md) - Knowledge base ingestion
 - [Lambda: Generate Code Maps](docs/lambda-generate-code-maps.md) - Code analysis

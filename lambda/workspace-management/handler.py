@@ -58,17 +58,23 @@ API Endpoints:
         GET    /workspaces/{id}/mcp-servers       - List workspace MCP servers
         DELETE /workspaces/{id}/mcp-servers/{mid}  - Remove MCP server from workspace
 
+    API Keys (any authenticated user):
+        POST   /api-keys                          - Create personal API key
+        GET    /api-keys                          - List user's API keys
+        DELETE /api-keys/{key_id}                 - Revoke API key
+
 Security: Invoked via IAM-authenticated Lambda Function URL from Fargate.
 """
 
 import base64
+import hashlib
 import json
 import logging
 import os
 import secrets
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import unquote
 
@@ -296,6 +302,18 @@ class DocumentUploadRequest(BaseModel):
         if f".{ext}" not in allowed_extensions:
             raise ValueError(f"File type .{ext} not supported. Allowed: {', '.join(allowed_extensions)}")
         return v
+
+
+class CreateApiKeyRequest(BaseModel):
+    """Request model for creating a personal API key."""
+
+    name: str = Field(..., min_length=1, max_length=100)
+    expires_in_days: Optional[int] = Field(default=None, ge=1, le=365)
+
+    @field_validator("name")
+    @classmethod
+    def strip_name(cls, v: str) -> str:
+        return v.strip()
 
 
 class CreateMcpServerRequest(BaseModel):
@@ -2174,6 +2192,183 @@ def get_chat_available_mcp_servers(user_email: str) -> Dict:
 
 
 # ============================================================================
+# API Key Management Operations
+# ============================================================================
+
+
+def create_api_key(user_email: str, body: Dict) -> Dict:
+    """Create a personal API key for MCP client authentication."""
+    try:
+        request = CreateApiKeyRequest(**body)
+    except ValidationError as e:
+        return _error(400, f"Invalid request: {e}")
+
+    dynamodb = _get_dynamodb()
+    table = dynamodb.Table(_get_workspaces_table())
+
+    try:
+        key_id = str(secrets.token_urlsafe(16))
+        raw_key = "ooa_" + secrets.token_hex(20)
+        key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
+        key_prefix = raw_key[:12]
+
+        now = datetime.now(timezone.utc).isoformat()
+
+        item = {
+            "PK": f"USER#{user_email}",
+            "SK": f"API_KEY#{key_id}",
+            "GSI1PK": f"API_KEY#{key_hash}",
+            "GSI1SK": f"API_KEY#{key_id}",
+            "key_id": key_id,
+            "key_hash": key_hash,
+            "key_prefix": key_prefix,
+            "name": request.name,
+            "created_at": now,
+            "status": "active",
+        }
+
+        if request.expires_in_days:
+            expires_at = (
+                datetime.now(timezone.utc) + timedelta(days=request.expires_in_days)
+            ).isoformat()
+            item["expires_at"] = expires_at
+
+        table.put_item(Item=item)
+        logger.info(f"[workspace_handler] Created API key {key_id} for {user_email}")
+
+        response_body = {
+            "key_id": key_id,
+            "key": raw_key,
+            "key_prefix": key_prefix,
+            "name": request.name,
+            "created_at": now,
+        }
+        if "expires_at" in item:
+            response_body["expires_at"] = item["expires_at"]
+
+        return _response(201, response_body)
+    except ClientError as e:
+        logger.error(f"[workspace_handler] Error creating API key: {e}", exc_info=True)
+        return _error(500, "Failed to create API key")
+
+
+def list_api_keys(user_email: str) -> Dict:
+    """List API keys for the authenticated user."""
+    dynamodb = _get_dynamodb()
+    table = dynamodb.Table(_get_workspaces_table())
+
+    try:
+        response = table.query(
+            KeyConditionExpression="PK = :pk AND begins_with(SK, :sk)",
+            ExpressionAttributeValues={
+                ":pk": f"USER#{user_email}",
+                ":sk": "API_KEY#",
+            },
+        )
+
+        keys = []
+        for item in response.get("Items", []):
+            keys.append({
+                "key_id": item.get("key_id"),
+                "key_prefix": item.get("key_prefix"),
+                "name": item.get("name"),
+                "created_at": item.get("created_at"),
+                "expires_at": item.get("expires_at"),
+                "last_used_at": item.get("last_used_at"),
+                "status": item.get("status"),
+            })
+
+        return _response(200, {"api_keys": keys})
+    except ClientError as e:
+        logger.error(f"[workspace_handler] Error listing API keys: {e}", exc_info=True)
+        return _error(500, "Failed to list API keys")
+
+
+def revoke_api_key(user_email: str, key_id: str) -> Dict:
+    """Revoke an API key (users can only revoke their own keys)."""
+    dynamodb = _get_dynamodb()
+    table = dynamodb.Table(_get_workspaces_table())
+
+    try:
+        now = datetime.now(timezone.utc).isoformat()
+        table.update_item(
+            Key={"PK": f"USER#{user_email}", "SK": f"API_KEY#{key_id}"},
+            UpdateExpression="SET #status = :status, revoked_at = :revoked_at",
+            ExpressionAttributeNames={"#status": "status"},
+            ExpressionAttributeValues={
+                ":status": "revoked",
+                ":revoked_at": now,
+            },
+            ConditionExpression="attribute_exists(PK)",
+        )
+        logger.info(f"[workspace_handler] Revoked API key {key_id} for {user_email}")
+        return _response(200, {"message": "API key revoked"})
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return _error(404, "API key not found")
+        logger.error(f"[workspace_handler] Error revoking API key: {e}", exc_info=True)
+        return _error(500, "Failed to revoke API key")
+
+
+def validate_api_key(api_key: str) -> Optional[Dict]:
+    """Validate an API key and return the user info, or None if invalid.
+
+    This is an internal helper used by the MCP server, not an HTTP endpoint.
+    """
+    dynamodb = _get_dynamodb()
+    table = dynamodb.Table(_get_workspaces_table())
+
+    try:
+        key_hash = hashlib.sha256(api_key.encode()).hexdigest()
+        response = table.query(
+            IndexName="GSI1",
+            KeyConditionExpression="GSI1PK = :pk",
+            ExpressionAttributeValues={
+                ":pk": f"API_KEY#{key_hash}",
+            },
+        )
+
+        items = response.get("Items", [])
+        if not items:
+            return None
+
+        item = items[0]
+
+        # Check status
+        if item.get("status") != "active":
+            return None
+
+        # Check expiration
+        expires_at = item.get("expires_at")
+        if expires_at:
+            if datetime.fromisoformat(expires_at) < datetime.now(timezone.utc):
+                return None
+
+        # Extract email from PK (USER#{email})
+        pk = item.get("PK", "")
+        email = pk.replace("USER#", "") if pk.startswith("USER#") else None
+        if not email:
+            return None
+
+        # Update last_used_at (best-effort)
+        try:
+            table.update_item(
+                Key={"PK": item["PK"], "SK": item["SK"]},
+                UpdateExpression="SET last_used_at = :now",
+                ExpressionAttributeValues={
+                    ":now": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+        except Exception:
+            pass  # Non-blocking
+
+        return {"email": email, "key_id": item.get("key_id")}
+    except ClientError as e:
+        logger.error(f"[workspace_handler] Error validating API key: {e}", exc_info=True)
+        return None
+
+
+# ============================================================================
 # Main Handler
 # ============================================================================
 
@@ -2516,6 +2711,26 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         # Route: GET /chat/mcp-servers
         if parts == ("chat", "mcp-servers") and http_method == "GET":
             return get_chat_available_mcp_servers(user_email)
+
+        # ====================================================================
+        # API Key Management Routes
+        # ====================================================================
+
+        # Route: POST /api-keys
+        if parts == ("api-keys",) and http_method == "POST":
+            return create_api_key(user_email, body)
+
+        # Route: GET /api-keys
+        if parts == ("api-keys",) and http_method == "GET":
+            return list_api_keys(user_email)
+
+        # Route: DELETE /api-keys/{key_id}
+        if (
+            len(parts) == 2
+            and parts[0] == "api-keys"
+            and http_method == "DELETE"
+        ):
+            return revoke_api_key(user_email, parts[1])
 
         return _error(404, "Not found")
 

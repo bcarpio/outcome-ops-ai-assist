@@ -31,3 +31,13 @@ output "target_group_arn" {
   description = "ALB target group ARN (empty if ALB not configured)"
   value       = local.use_alb ? aws_lb_target_group.mcp[0].arn : ""
 }
+
+output "task_role_name" {
+  description = "Name of the ECS task IAM role"
+  value       = aws_iam_role.task.name
+}
+
+output "task_role_arn" {
+  description = "ARN of the ECS task IAM role"
+  value       = aws_iam_role.task.arn
+}

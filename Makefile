@@ -1,4 +1,4 @@
-.PHONY: help setup install fmt lint validate test test-unit test-integration test-coverage build-run-tests-image build-ui-image clean all
+.PHONY: help setup install fmt lint validate test test-unit test-integration test-coverage test-ui build-run-tests-image build-ui-image build-mcp-outcomeops-image clean all
 
 APP_NAME ?= outcome-ops-ai-assist
 AWS_REGION ?= us-west-2
@@ -23,10 +23,12 @@ help:
 	@echo "  make test-unit        Run only unit tests"
 	@echo "  make test-integration Run only integration tests"
 	@echo "  make test-coverage    Run tests with coverage report"
+	@echo "  make test-ui          Run UI tests (React/Vitest)"
 	@echo ""
 	@echo "Container Images:"
-	@echo "  make build-run-tests-image Build run-tests container (auto-creates ECR, ENVIRONMENT=dev|prd)"
-	@echo "  make build-ui-image        Build chat UI container (auto-creates ECR, ENVIRONMENT=dev|prd)"
+	@echo "  make build-run-tests-image      Build run-tests container (auto-creates ECR, ENVIRONMENT=dev|prd)"
+	@echo "  make build-ui-image             Build chat UI container (auto-creates ECR, ENVIRONMENT=dev|prd)"
+	@echo "  make build-mcp-outcomeops-image Build OutcomeOps MCP server container (ENVIRONMENT=dev|prd)"
 	@echo ""
 	@echo "Combined:"
 	@echo "  make all              Run fmt, validate, and all tests"
@@ -153,6 +155,10 @@ test-coverage:
 	@echo "Running tests with coverage report..."
 	$(MAKE) -C lambda/tests test-coverage
 
+test-ui:
+	@echo "Running UI tests..."
+	cd ui && npm test
+
 # ============================================================================
 # Container Images
 # Build before 'terraform apply' for container-based Lambdas
@@ -196,6 +202,29 @@ build-ui-image:
 	@echo ""
 	@echo "Building chat UI container image for environment: $$ENVIRONMENT"
 	./scripts/build-ui-image.sh --env $$ENVIRONMENT
+
+# Build OutcomeOps MCP server container image
+# Usage: ENVIRONMENT=dev make build-mcp-outcomeops-image
+#        ENVIRONMENT=prd make build-mcp-outcomeops-image
+build-mcp-outcomeops-image:
+	@if [ -z "$$ENVIRONMENT" ]; then \
+		echo "Error: ENVIRONMENT variable not set."; \
+		echo "Usage: ENVIRONMENT=dev make build-mcp-outcomeops-image"; \
+		echo "       ENVIRONMENT=prd make build-mcp-outcomeops-image"; \
+		exit 1; \
+	fi
+	@echo "Ensuring ECR repository exists for environment: $$ENVIRONMENT"
+	@cd terraform && \
+		terraform init -input=false > /dev/null 2>&1 && \
+		(terraform workspace select $$ENVIRONMENT 2>/dev/null || terraform workspace new $$ENVIRONMENT) && \
+		terraform apply -var-file=$$ENVIRONMENT.tfvars -target=aws_ecr_repository.mcp_outcomeops -auto-approve
+	@echo ""
+	@echo "Building OutcomeOps MCP server container image for environment: $$ENVIRONMENT"
+	$(eval ECR_REPO := $(shell cd terraform && terraform output -raw mcp_outcomeops_ecr_url 2>/dev/null))
+	$(eval AWS_ACCOUNT := $(shell aws sts get-caller-identity --query Account --output text))
+	aws ecr get-login-password --region $(AWS_REGION) | docker login --username AWS --password-stdin $(AWS_ACCOUNT).dkr.ecr.$(AWS_REGION).amazonaws.com
+	docker build -t $(ECR_REPO):latest lambda/mcp-server/
+	docker push $(ECR_REPO):latest
 
 # ============================================================================
 # Utilities: Clean up build artifacts
