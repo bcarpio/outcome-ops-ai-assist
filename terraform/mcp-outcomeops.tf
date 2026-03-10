@@ -9,7 +9,7 @@
 # -----------------------------------------------------------------------------
 
 resource "aws_ecr_repository" "mcp_outcomeops" {
-  count = var.mcp_outcomeops_enabled ? 1 : 0
+  count = var.mcp_server_enabled ? 1 : 0
 
   name                 = "${var.environment}-${var.app_name}-mcp-outcomeops"
   image_tag_mutability = "MUTABLE"
@@ -34,7 +34,7 @@ resource "aws_ecr_repository" "mcp_outcomeops" {
 
 module "mcp_outcomeops" {
   source = "./modules/mcp-server"
-  count  = var.mcp_outcomeops_enabled ? 1 : 0
+  count  = var.mcp_server_enabled ? 1 : 0
 
   environment = var.environment
   app_name    = var.app_name
@@ -78,7 +78,7 @@ module "mcp_outcomeops" {
 # -----------------------------------------------------------------------------
 
 resource "aws_iam_role_policy" "mcp_outcomeops" {
-  count = var.mcp_outcomeops_enabled ? 1 : 0
+  count = var.mcp_server_enabled ? 1 : 0
 
   name = "${var.environment}-${var.app_name}-mcp-outcomeops"
   role = module.mcp_outcomeops[0].task_role_name
@@ -142,12 +142,12 @@ resource "aws_iam_role_policy" "mcp_outcomeops" {
 # Outputs
 # -----------------------------------------------------------------------------
 
-output "mcp_outcomeops_ecr_url" {
+output "mcp_server_ecr_url" {
   description = "ECR repository URL for the OutcomeOps MCP server image"
-  value       = var.mcp_outcomeops_enabled ? aws_ecr_repository.mcp_outcomeops[0].repository_url : null
+  value       = var.mcp_server_enabled ? aws_ecr_repository.mcp_outcomeops[0].repository_url : null
 }
 
-output "mcp_outcomeops_url" {
+output "mcp_server_url" {
   description = "URL of the OutcomeOps MCP server (for MCP client configuration)"
-  value       = var.mcp_outcomeops_enabled ? "${local.mcp_base_url}/mcp/v1" : null
+  value       = var.mcp_server_enabled ? "${local.mcp_base_url}/mcp/v1" : null
 }

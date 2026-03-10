@@ -102,6 +102,13 @@ enable_jira_integration = false
 #   aws ssm put-parameter --name "/dev/outcome-ops-ai-assist/mcp/sonarqube-token" \
 #     --type SecureString --value "your-sonarqube-token"
 # See docs/sonarqube-mcp.md for full setup instructions.
+# SonarQube MCP Server (code quality + security analysis)
 # mcp_sonarqube_enabled = true
 # mcp_sonarqube_url     = "https://sonarcloud.io"
 # mcp_sonarqube_org     = "my-org"
+
+# OutcomeOps MCP Server (knowledge base access for Claude Code, VS Code, Cursor)
+# Requires: deploy_ui = true, Docker for building the container image.
+# First-time deploy: ENVIRONMENT=dev make build-mcp-server-image
+# See docs/mcp-server.md for full setup instructions.
+# mcp_server_enabled = true

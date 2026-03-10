@@ -167,7 +167,7 @@ Revoked keys are immediately invalidated. Any MCP client using the key will rece
 Add to your `.tfvars`:
 
 ```hcl
-mcp_outcomeops_enabled = true
+mcp_server_enabled = true
 ```
 
 ### First-Time Deployment Sequence
@@ -175,11 +175,11 @@ mcp_outcomeops_enabled = true
 ```bash
 # 1. Create ECR repository
 cd terraform
-terraform plan -var-file=prd.tfvars -target=aws_ecr_repository.mcp_outcomeops -out=terraform.prd.out
+terraform plan -var-file=prd.tfvars -target=aws_ecr_repository.mcp_server -out=terraform.prd.out
 terraform apply terraform.prd.out
 
 # 2. Build and push the Docker image
-ENVIRONMENT=prd make build-mcp-outcomeops-image
+ENVIRONMENT=prd make build-mcp-server-image
 
 # 3. Deploy full infrastructure
 terraform plan -var-file=prd.tfvars -out=terraform.prd.out
@@ -189,7 +189,7 @@ terraform apply terraform.prd.out
 ### Subsequent Image Updates
 
 ```bash
-ENVIRONMENT=prd make build-mcp-outcomeops-image
+ENVIRONMENT=prd make build-mcp-server-image
 # Then force a new ECS deployment if needed
 ```
 

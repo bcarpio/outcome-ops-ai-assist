@@ -555,12 +555,12 @@ MCP-compatible tools like Claude Code, VS Code, and Cursor.
 
 1. Add to your `prd.tfvars`:
    ```hcl
-   mcp_outcomeops_enabled = true
+   mcp_server_enabled = true
    ```
 
 2. Deploy infrastructure, build and push the container image, then deploy again:
    ```bash
-   ENVIRONMENT=prd make build-mcp-outcomeops-image
+   ENVIRONMENT=prd make build-mcp-server-image
    ```
 
 3. Generate an API key in the web UI: **Settings > API Keys**

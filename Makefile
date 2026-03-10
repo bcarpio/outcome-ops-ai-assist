@@ -1,4 +1,4 @@
-.PHONY: help setup install fmt lint validate test test-unit test-integration test-coverage test-ui build-run-tests-image build-ui-image build-mcp-outcomeops-image clean all
+.PHONY: help setup install fmt lint validate test test-unit test-integration test-coverage test-ui build-run-tests-image build-ui-image build-mcp-server-image clean all
 
 APP_NAME ?= outcome-ops-ai-assist
 AWS_REGION ?= us-west-2
@@ -28,7 +28,7 @@ help:
 	@echo "Container Images:"
 	@echo "  make build-run-tests-image      Build run-tests container (auto-creates ECR, ENVIRONMENT=dev|prd)"
 	@echo "  make build-ui-image             Build chat UI container (auto-creates ECR, ENVIRONMENT=dev|prd)"
-	@echo "  make build-mcp-outcomeops-image Build OutcomeOps MCP server container (ENVIRONMENT=dev|prd)"
+	@echo "  make build-mcp-server-image Build OutcomeOps MCP server container (ENVIRONMENT=dev|prd)"
 	@echo ""
 	@echo "Combined:"
 	@echo "  make all              Run fmt, validate, and all tests"
@@ -204,13 +204,13 @@ build-ui-image:
 	./scripts/build-ui-image.sh --env $$ENVIRONMENT
 
 # Build OutcomeOps MCP server container image
-# Usage: ENVIRONMENT=dev make build-mcp-outcomeops-image
-#        ENVIRONMENT=prd make build-mcp-outcomeops-image
-build-mcp-outcomeops-image:
+# Usage: ENVIRONMENT=dev make build-mcp-server-image
+#        ENVIRONMENT=prd make build-mcp-server-image
+build-mcp-server-image:
 	@if [ -z "$$ENVIRONMENT" ]; then \
 		echo "Error: ENVIRONMENT variable not set."; \
-		echo "Usage: ENVIRONMENT=dev make build-mcp-outcomeops-image"; \
-		echo "       ENVIRONMENT=prd make build-mcp-outcomeops-image"; \
+		echo "Usage: ENVIRONMENT=dev make build-mcp-server-image"; \
+		echo "       ENVIRONMENT=prd make build-mcp-server-image"; \
 		exit 1; \
 	fi
 	@echo "Ensuring ECR repository exists for environment: $$ENVIRONMENT"
@@ -220,7 +220,7 @@ build-mcp-outcomeops-image:
 		terraform apply -var-file=$$ENVIRONMENT.tfvars -target=aws_ecr_repository.mcp_outcomeops -auto-approve
 	@echo ""
 	@echo "Building OutcomeOps MCP server container image for environment: $$ENVIRONMENT"
-	$(eval ECR_REPO := $(shell cd terraform && terraform output -raw mcp_outcomeops_ecr_url 2>/dev/null))
+	$(eval ECR_REPO := $(shell cd terraform && terraform output -raw mcp_server_ecr_url 2>/dev/null))
 	$(eval AWS_ACCOUNT := $(shell aws sts get-caller-identity --query Account --output text))
 	aws ecr get-login-password --region $(AWS_REGION) | docker login --username AWS --password-stdin $(AWS_ACCOUNT).dkr.ecr.$(AWS_REGION).amazonaws.com
 	docker build -t $(ECR_REPO):latest lambda/mcp-server/
