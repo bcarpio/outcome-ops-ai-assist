@@ -8,7 +8,7 @@ import {
   LogOut,
   Shield,
   MessageSquare,
-  Key,
+  Settings,
 } from 'lucide-react'
 import {
   listWorkspaces,
@@ -91,11 +91,11 @@ export default function Workspaces() {
               <MessageSquare size={20} />
             </button>
             <button
-              onClick={() => navigate('/settings/api-keys')}
-              title="API Keys"
+              onClick={() => navigate('/settings')}
+              title="Settings"
               className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
             >
-              <Key size={20} />
+              <Settings size={20} />
             </button>
             <button
               onClick={() => navigate('/org/settings')}

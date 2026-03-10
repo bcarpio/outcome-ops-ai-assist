@@ -157,7 +157,14 @@ test-coverage:
 
 test-ui:
 	@echo "Running UI tests..."
-	cd ui && npm test
+	@NODE_MAJOR=$$(node -v | sed 's/v\([0-9]*\).*/\1/'); \
+	if [ "$$NODE_MAJOR" -ge 20 ] 2>/dev/null; then \
+		echo "Node $$NODE_MAJOR detected, running with coverage..."; \
+		cd ui && npm run test:coverage; \
+	else \
+		echo "Node $$NODE_MAJOR detected (<20), running without coverage (coverage requires Node 20+)..."; \
+		cd ui && npm test; \
+	fi
 
 # ============================================================================
 # Container Images

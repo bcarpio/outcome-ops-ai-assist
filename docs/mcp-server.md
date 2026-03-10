@@ -25,7 +25,7 @@ Developer's Machine                     AWS (OutcomeOps)
 ### Step 1: Generate an API Key
 
 1. Log into the OutcomeOps web UI
-2. Navigate to the Workspaces page and click the **Key** icon (or go to `/settings/api-keys`)
+2. Navigate to the Workspaces page and click the **Settings** (gear) icon, or go to `/settings`
 3. Click **Create API Key**
 4. Give it a name (e.g., "Claude Code - Laptop")
 5. Optionally set an expiration
@@ -133,7 +133,7 @@ Convenience wrapper that formulates queries optimized for retrieving coding stan
 
 ### Creating Keys
 
-1. Go to `/settings/api-keys` in the OutcomeOps web UI
+1. Go to **Settings** (gear icon on the Workspaces page, or `/settings`)
 2. Click **Create API Key**
 3. Enter a descriptive name (e.g., "Claude Code - Work Laptop")
 4. Choose an expiration (recommended: 90 days for shared environments)
@@ -141,7 +141,7 @@ Convenience wrapper that formulates queries optimized for retrieving coding stan
 
 ### Revoking Keys
 
-1. Go to `/settings/api-keys`
+1. Go to **Settings** (gear icon on the Workspaces page)
 2. Click the trash icon next to the key
 3. Confirm revocation
 

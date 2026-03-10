@@ -1654,6 +1654,28 @@ export async function getChatMcpServers(): Promise<ChatMcpServer[]> {
 }
 
 // ============================================================================
+// User Profile
+// ============================================================================
+
+export interface UserProfile {
+  email: string
+  name?: string
+}
+
+export async function getCurrentUser(): Promise<UserProfile> {
+  const response = await fetch(`${API_BASE}/me`)
+  if (!response.ok) {
+    throw new Error(`Failed to get user profile: ${response.status}`)
+  }
+  const data = await response.json()
+  const user = data.user || {}
+  return {
+    email: user.email || '',
+    name: data.claims?.name || '',
+  }
+}
+
+// ============================================================================
 // API Key Management
 // ============================================================================
 
