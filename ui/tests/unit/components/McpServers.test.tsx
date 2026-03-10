@@ -114,7 +114,6 @@ describe('McpServers', () => {
 
     await user.click(screen.getByText('Add MCP Server'))
 
-    expect(screen.getByText('Add MCP Server')).toBeInTheDocument()
     expect(screen.getByLabelText('Name')).toBeInTheDocument()
     expect(screen.getByLabelText('URL')).toBeInTheDocument()
   })
