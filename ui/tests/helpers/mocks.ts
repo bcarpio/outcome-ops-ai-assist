@@ -14,6 +14,7 @@ import type {
   GitHubRepo,
   GitHubAvailableRepo,
   DocumentUploadUrlResponse,
+  McpServer,
 } from '../../src/lib/api'
 
 export function createWorkspace(overrides?: Partial<Workspace>): Workspace {
@@ -200,6 +201,25 @@ export function createDocumentUploadUrlResponse(overrides?: Partial<DocumentUplo
     s3_key: 'workspaces/ws-1/docs/file.pdf',
     bucket: 'test-bucket',
     expires_in: 3600,
+    ...overrides,
+  }
+}
+
+export function createMcpServer(overrides?: Partial<McpServer>): McpServer {
+  return {
+    mcp_id: 'mcp-1',
+    name: 'Test MCP Server',
+    url: 'https://mcp.example.com/mcp',
+    auth_type: 'none',
+    has_credentials: false,
+    is_global: true,
+    refresh_interval_days: 7,
+    status: 'active',
+    tool_count: 5,
+    last_refreshed_at: '2024-01-01T00:00:00Z',
+    created_by: 'admin@example.com',
+    created_at: '2024-01-01T00:00:00Z',
+    updated_at: '2024-01-01T00:00:00Z',
     ...overrides,
   }
 }

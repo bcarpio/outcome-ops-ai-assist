@@ -11,6 +11,7 @@ vi.mock('../../../src/lib/api', () => ({
   getConversation: vi.fn(),
   deleteConversation: vi.fn(),
   getSearchableWorkspaces: vi.fn(),
+  getChatMcpServers: vi.fn(),
 }))
 
 vi.mock('react-markdown', () => ({
@@ -23,6 +24,7 @@ import {
   getConversation,
   deleteConversation,
   getSearchableWorkspaces,
+  getChatMcpServers,
 } from '../../../src/lib/api'
 
 const mockSendChatMessage = vi.mocked(sendChatMessage)
@@ -30,11 +32,13 @@ const mockListConversations = vi.mocked(listConversations)
 const mockGetConversation = vi.mocked(getConversation)
 const mockDeleteConversation = vi.mocked(deleteConversation)
 const mockGetSearchableWorkspaces = vi.mocked(getSearchableWorkspaces)
+const mockGetChatMcpServers = vi.mocked(getChatMcpServers)
 
 beforeEach(() => {
   vi.clearAllMocks()
   mockListConversations.mockResolvedValue([])
   mockGetSearchableWorkspaces.mockResolvedValue([])
+  mockGetChatMcpServers.mockResolvedValue([])
 })
 
 function renderChat(conversationId?: string) {
@@ -163,5 +167,28 @@ describe('Chat', () => {
       expect(screen.getByText('Ops')).toBeInTheDocument()
       expect(screen.getByText('AI Assist')).toBeInTheDocument()
     })
+  })
+
+  it('shows MCP selector when MCP servers exist', async () => {
+    mockGetChatMcpServers.mockResolvedValue([
+      { mcp_id: 'mcp-1', name: 'SonarQube', status: 'active', tool_count: 18, is_global: true },
+    ])
+
+    renderChat()
+
+    await waitFor(() => {
+      expect(screen.getByText('MCP (0)')).toBeInTheDocument()
+    })
+  })
+
+  it('does not show MCP selector when no servers', async () => {
+    mockGetChatMcpServers.mockResolvedValue([])
+
+    renderChat()
+
+    await waitFor(() => {
+      expect(mockGetChatMcpServers).toHaveBeenCalled()
+    })
+    expect(screen.queryByText('MCP (0)')).not.toBeInTheDocument()
   })
 })
