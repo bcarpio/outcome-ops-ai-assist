@@ -379,8 +379,7 @@ export default function Settings() {
 }`}</pre>
                   <h4 className="font-medium text-sm mb-2">VS Code / Cursor</h4>
                   <p className="text-sm text-gray-600">
-                    Add the same configuration to your editor's MCP settings file. See the{' '}
-                    <a href="/docs/mcp-server.md" className="text-blue-600 hover:underline">full documentation</a> for details.
+                    Add the same configuration to your editor's MCP settings file (e.g., <code className="text-xs bg-gray-100 px-1 py-0.5 rounded">.vscode/mcp.json</code> or Cursor MCP settings).
                   </p>
                 </div>
               )}
