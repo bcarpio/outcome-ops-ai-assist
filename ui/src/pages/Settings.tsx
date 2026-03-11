@@ -364,6 +364,8 @@ export default function Settings() {
                 <div className="px-4 pb-4 border-t pt-4">
                   <p className="text-sm text-gray-600 mb-4">
                     Add this to your MCP client configuration. Replace the key with your API key above.
+                    This single connection gives you access to all tools -- the OutcomeOps knowledge base
+                    plus any MCP servers assigned to your workspaces (e.g., SonarQube).
                   </p>
                   <h4 className="font-medium text-sm mb-2">Claude Code</h4>
                   <pre className="bg-gray-900 text-gray-100 text-sm p-4 rounded-lg overflow-x-auto mb-4">{`{

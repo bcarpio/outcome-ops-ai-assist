@@ -6,18 +6,26 @@ patterns directly in your development environment.
 
 ## How It Works
 
-The OutcomeOps MCP server implements the [Model Context Protocol](https://modelcontextprotocol.io/)
-Streamable HTTP transport. MCP clients connect via HTTPS, authenticate with a
-personal API key, and call tools that query the knowledge base using RAG
-(Retrieval-Augmented Generation).
+The OutcomeOps MCP server acts as a **gateway**. When you connect your MCP
+client, it automatically discovers all MCP servers available to your workspaces
+and exposes their tools alongside the native knowledge base tools. One
+connection, one API key, all tools.
 
 ```
-Developer's Machine                     AWS (OutcomeOps)
-+---------------------+                 +----------------------------+
-| Claude Code / VSCode|  Streamable HTTP | ALB -> Fargate (MCP Server)|
-| MCP Client          | --------------> | Auth: API Key              |
-|   url: /mcp/v1      |  Bearer token   | Tools: KB Query, Standards |
-+---------------------+                 +----------------------------+
+Developer's Machine                OutcomeOps MCP Gateway (Fargate)
++-------------------+             +-------------------------------------+
+| Claude Code       |  HTTPS      | handler.py                          |
+| MCP Client        | ---------> | 1. Auth (API key)                   |
+| url: /mcp/v1      |  Bearer     | 2. tools/list -> native + proxied   |
+| One connection    |  token      | 3. tools/call -> route to correct   |
++-------------------+             |    server via internal ALB           |
+                                  +--------+----------------------------+
+                                           |
+                      +--------------------+--------------------+
+                      |                    |                    |
+                      v                    v                    v
+               Native Tools         SonarQube MCP        Future MCP
+               (KB query, etc.)     (ALB /mcp)           (ALB /mcp/X)
 ```
 
 ## Quick Start
@@ -98,6 +106,11 @@ your organization's ADRs and documentation.
 
 ## Available Tools
 
+### Native Tools (always available)
+
+These tools are built into the OutcomeOps MCP server and always available to
+authenticated users.
+
 ### query_knowledge_base
 
 Search the knowledge base for organizational standards, ADRs, code patterns, and documentation.
@@ -128,6 +141,22 @@ Convenience wrapper that formulates queries optimized for retrieving coding stan
 **Parameters:**
 - `topic` (required): The topic (e.g., "Lambda handlers", "Terraform modules", "testing")
 - `workspace_id` (optional): Scope the search to a specific workspace
+
+### Proxied Tools (based on workspace access)
+
+Tools from MCP servers assigned to your workspaces are automatically available.
+They appear with a server prefix (e.g., `sonarqube__search_issues`).
+
+Which proxied tools you see depends on:
+- Which workspaces you are a member of
+- Which MCP servers are assigned to those workspaces
+- Whether any MCP servers are marked as global (available to all users)
+- Workspaces shared with yours (via cross-workspace sharing)
+
+Proxied tools are namespaced with the server name to avoid collisions. For
+example, a SonarQube server exposes `sonarqube__search_issues` and
+`sonarqube__get_metrics`. The tool list refreshes automatically as MCP servers
+are added or removed from your workspaces.
 
 ## API Key Management
 
@@ -204,7 +233,7 @@ ENVIRONMENT=prd make build-mcp-server-image
 | ALB Listener Rule | Priority 3, path `/mcp/v1` |
 | Cloud Map | `outcomeops-mcp.mcp.local` |
 | CloudWatch Logs | `/ecs/{env}-outcome-ops-ai-assist-mcp-outcomeops` |
-| IAM Task Role | DynamoDB, S3 Vectors, Bedrock, S3 KB read |
+| IAM Task Role | DynamoDB, S3 Vectors, Bedrock, S3 KB read, SSM (MCP tokens) |
 
 ### Security
 

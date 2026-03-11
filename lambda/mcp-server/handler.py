@@ -8,6 +8,7 @@ Authentication: API keys (Bearer token), validated against DynamoDB.
 Transport: JSON-RPC 2.0 over HTTP POST.
 """
 
+import base64
 import hashlib
 import json
 import logging
@@ -15,6 +16,7 @@ import os
 import secrets
 import threading
 import time
+import urllib.request
 from datetime import datetime, timezone
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
@@ -36,18 +38,26 @@ S3_VECTORS_BUCKET = os.environ.get("S3_VECTORS_BUCKET", "")
 S3_VECTORS_INDEX = os.environ.get("S3_VECTORS_INDEX", "")
 KB_BUCKET = os.environ.get("KB_BUCKET", "")
 ENVIRONMENT = os.environ.get("ENVIRONMENT", "prd")
+MCP_BASE_URL = os.environ.get("MCP_BASE_URL", "")
 EMBEDDING_MODEL_ID = os.environ.get(
     "BEDROCK_EMBEDDING_MODEL_ID", "amazon.titan-embed-text-v2:0"
 )
 
 # Session storage (in-memory, single instance)
-_sessions = {}  # session_id -> {"email": str, "last_active": float}
+_sessions = {}  # session_id -> {"email": str, "last_active": float, "tool_routing": dict}
 SESSION_TIMEOUT = 3600  # 1 hour
+
+# MCP proxy/fanout caches
+_mcp_server_cache = {}  # mcp_id -> {"tools": [...], "config": {...}, "fetched_at": float}
+MCP_CACHE_TTL = 300  # 5 minutes
+_mcp_sessions = {}  # mcp_id -> {"session_id": str, "created_at": float}
+MCP_SESSION_TTL = 1800  # 30 minutes
 
 # Cached AWS clients
 _dynamodb = None
 _s3vectors_client = None
 _bedrock_client = None
+_ssm_client = None
 
 
 def _get_dynamodb():
@@ -69,6 +79,13 @@ def _get_bedrock_client():
     if _bedrock_client is None:
         _bedrock_client = boto3.client("bedrock-runtime", region_name=AWS_REGION)
     return _bedrock_client
+
+
+def _get_ssm_client():
+    global _ssm_client
+    if _ssm_client is None:
+        _ssm_client = boto3.client("ssm", region_name=AWS_REGION)
+    return _ssm_client
 
 
 # ============================================================================
@@ -311,7 +328,7 @@ def format_results(results):
 
 
 def get_user_workspace_ids(email):
-    """Get workspace IDs the user has access to."""
+    """Get workspace IDs the user has access to, including shared workspaces."""
     dynamodb = _get_dynamodb()
     table = dynamodb.Table(DYNAMODB_TABLE)
 
@@ -333,22 +350,285 @@ def get_user_workspace_ids(email):
                 if pk.startswith("WS#"):
                     workspace_ids.append(pk.replace("WS#", ""))
             return workspace_ids
-        else:
-            response = table.query(
-                KeyConditionExpression="PK = :pk AND begins_with(SK, :sk)",
-                ExpressionAttributeValues={
-                    ":pk": f"USER#{email}",
-                    ":sk": "WS_MEMBER#",
-                },
-            )
-            return [
-                item.get("workspace_id")
-                for item in response.get("Items", [])
-                if item.get("workspace_id")
-            ]
+
+        # Regular user: direct memberships
+        response = table.query(
+            KeyConditionExpression="PK = :pk AND begins_with(SK, :sk)",
+            ExpressionAttributeValues={
+                ":pk": f"USER#{email}",
+                ":sk": "WS_MEMBER#",
+            },
+        )
+        direct_ids = [
+            item.get("workspace_id")
+            for item in response.get("Items", [])
+            if item.get("workspace_id")
+        ]
+
+        if not direct_ids:
+            return []
+
+        # Find workspaces that share with the user's workspaces
+        # Uses search_allowed_workspaces list on workspace METADATA
+        all_ids = set(direct_ids)
+        ws_scan = table.scan(
+            FilterExpression="begins_with(SK, :sk)",
+            ExpressionAttributeValues={":sk": "METADATA"},
+            ProjectionExpression="PK, search_allowed_workspaces",
+        )
+        for item in ws_scan.get("Items", []):
+            pk = item.get("PK", "")
+            if not pk.startswith("WS#"):
+                continue
+            ws_id = pk.replace("WS#", "")
+            if ws_id in all_ids:
+                continue
+            allowed = item.get("search_allowed_workspaces", [])
+            if allowed:
+                for direct_id in direct_ids:
+                    if direct_id in allowed:
+                        all_ids.add(ws_id)
+                        break
+
+        return list(all_ids)
     except ClientError as e:
         logger.error(f"Error getting user workspaces: {e}")
         return []
+
+
+# ============================================================================
+# MCP Proxy/Fanout - Server Discovery and Tool Proxying
+# ============================================================================
+
+
+def discover_mcp_servers(user_workspace_ids):
+    """Discover MCP servers available to the user's workspaces.
+
+    Returns list of server configs with their tools:
+    [{"mcp_id": str, "config": {...}, "tools": [...], "fetched_at": float}]
+    """
+    dynamodb = _get_dynamodb()
+    table = dynamodb.Table(DYNAMODB_TABLE)
+
+    # 1. Find MCP servers assigned to user's workspaces
+    mcp_ids = set()
+    for ws_id in user_workspace_ids:
+        response = table.query(
+            KeyConditionExpression="PK = :pk AND begins_with(SK, :sk)",
+            ExpressionAttributeValues={
+                ":pk": f"WS#{ws_id}",
+                ":sk": "MCP_SERVER#",
+            },
+        )
+        for item in response.get("Items", []):
+            mcp_id = item.get("mcp_id")
+            if mcp_id:
+                mcp_ids.add(mcp_id)
+
+    # 2. Also find global MCP servers
+    response = table.query(
+        IndexName="GSI1",
+        KeyConditionExpression="GSI1PK = :pk AND begins_with(GSI1SK, :sk)",
+        ExpressionAttributeValues={
+            ":pk": "ORG#default",
+            ":sk": "MCP#",
+        },
+    )
+    for item in response.get("Items", []):
+        if item.get("is_global") is True:
+            mcp_id = item.get("mcp_id")
+            if mcp_id:
+                mcp_ids.add(mcp_id)
+
+    # 3. Load config and tools for each server
+    servers = []
+    for mcp_id in mcp_ids:
+        server = _load_mcp_server(table, mcp_id)
+        if server:
+            servers.append(server)
+
+    return servers
+
+
+def _load_mcp_server(table, mcp_id):
+    """Load MCP server config and tools, with in-memory caching."""
+    now = time.time()
+
+    # Check cache
+    cached = _mcp_server_cache.get(mcp_id)
+    if cached and (now - cached["fetched_at"]) < MCP_CACHE_TTL:
+        return cached
+
+    # Load metadata from DynamoDB
+    meta_resp = table.get_item(Key={"PK": f"MCP#{mcp_id}", "SK": "METADATA"})
+    meta = meta_resp.get("Item")
+    if not meta or meta.get("status") == "error":
+        return None
+
+    config = {
+        "mcp_id": mcp_id,
+        "name": meta.get("name", mcp_id),
+        "url": meta.get("url", ""),
+        "auth_type": meta.get("auth_type", "none"),
+        "ssm_token_path": meta.get("ssm_token_path", ""),
+        "ssm_token_header": meta.get("ssm_token_header", ""),
+        "encrypted_credentials": meta.get("encrypted_credentials", ""),
+    }
+
+    # Load cached tool manifest from DynamoDB
+    tools_resp = table.get_item(Key={"PK": f"MCP#{mcp_id}", "SK": "TOOLS"})
+    tools_item = tools_resp.get("Item")
+    tools = tools_item.get("tools", []) if tools_item else []
+
+    # If no cached tools, try fetching live
+    if not tools and config["url"]:
+        try:
+            tools = _fetch_tools_live(config)
+        except Exception as e:
+            logger.warning(f"Failed to fetch tools live from {mcp_id}: {e}")
+
+    result = {"tools": tools, "config": config, "fetched_at": now}
+    _mcp_server_cache[mcp_id] = result
+    return result
+
+
+def _fetch_tools_live(config):
+    """Fetch tools from an MCP server via JSON-RPC 2.0. Fallback if TOOLS cache empty."""
+    url = config["url"]
+    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+
+    # Add auth
+    _add_mcp_auth_headers(headers, config)
+
+    # Initialize session
+    init_payload = json.dumps({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-03-26",
+            "capabilities": {},
+            "clientInfo": {"name": "outcomeops-gateway", "version": "1.0.0"},
+        },
+    }).encode()
+
+    req = urllib.request.Request(url, data=init_payload, headers=headers)
+    resp = urllib.request.urlopen(req, timeout=10)
+    session_id = resp.headers.get("Mcp-Session-Id", "")
+    json.loads(resp.read())  # consume response
+
+    # Fetch tools
+    if session_id:
+        headers["Mcp-Session-Id"] = session_id
+
+    list_payload = json.dumps({
+        "jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {},
+    }).encode()
+
+    req = urllib.request.Request(url, data=list_payload, headers=headers)
+    resp = urllib.request.urlopen(req, timeout=10)
+    body = json.loads(resp.read())
+
+    return body.get("result", {}).get("tools", [])
+
+
+def _add_mcp_auth_headers(headers, config):
+    """Add authentication headers for calling an internal MCP server."""
+    auth_type = config.get("auth_type", "none")
+
+    # Catalog servers: token from SSM
+    ssm_path = config.get("ssm_token_path")
+    ssm_header = config.get("ssm_token_header")
+    if ssm_path and ssm_header:
+        ssm = _get_ssm_client()
+        param = ssm.get_parameter(Name=ssm_path, WithDecryption=True)
+        headers[ssm_header] = param["Parameter"]["Value"]
+
+    # User-added servers: KMS-encrypted credentials
+    encrypted = config.get("encrypted_credentials")
+    if encrypted and auth_type == "bearer":
+        kms = boto3.client("kms", region_name=AWS_REGION)
+        resp = kms.decrypt(CiphertextBlob=base64.b64decode(encrypted))
+        token = resp["Plaintext"].decode()
+        headers["Authorization"] = f"Bearer {token}"
+    elif encrypted and auth_type == "api_key":
+        kms = boto3.client("kms", region_name=AWS_REGION)
+        resp = kms.decrypt(CiphertextBlob=base64.b64decode(encrypted))
+        key = resp["Plaintext"].decode()
+        headers["X-API-Key"] = key
+
+
+def _proxy_tool_call(config, original_tool_name, arguments):
+    """Proxy a tools/call request to an internal MCP server.
+
+    Returns the MCP result dict (content array) directly.
+    """
+    url = config["url"]
+    mcp_id = config["mcp_id"]
+    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+
+    # Add auth headers
+    _add_mcp_auth_headers(headers, config)
+
+    # Get or create MCP session with the target server
+    now = time.time()
+    cached_session = _mcp_sessions.get(mcp_id)
+    if cached_session and (now - cached_session["created_at"]) < MCP_SESSION_TTL:
+        headers["Mcp-Session-Id"] = cached_session["session_id"]
+    else:
+        # Initialize new session
+        session_id = _mcp_initialize_session(url, headers)
+        if session_id:
+            _mcp_sessions[mcp_id] = {"session_id": session_id, "created_at": now}
+            headers["Mcp-Session-Id"] = session_id
+
+    # Send tools/call
+    payload = json.dumps({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {"name": original_tool_name, "arguments": arguments},
+    }).encode()
+
+    req = urllib.request.Request(url, data=payload, headers=headers)
+    resp = urllib.request.urlopen(req, timeout=30)
+    body = json.loads(resp.read())
+
+    if "error" in body:
+        return {
+            "content": [{"type": "text", "text": f"Error from {config['name']}: "
+                        f"{body['error'].get('message', 'Unknown error')}"}],
+            "isError": True,
+        }
+
+    return body.get("result", {"content": [{"type": "text", "text": "No result"}]})
+
+
+def _mcp_initialize_session(url, headers):
+    """Initialize an MCP session with an internal server. Returns session_id."""
+    init_payload = json.dumps({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-03-26",
+            "capabilities": {},
+            "clientInfo": {"name": "outcomeops-gateway", "version": "1.0.0"},
+        },
+    }).encode()
+
+    req = urllib.request.Request(url, data=init_payload, headers=headers.copy())
+    resp = urllib.request.urlopen(req, timeout=10)
+    json.loads(resp.read())  # consume response
+    session_id = resp.headers.get("Mcp-Session-Id", "")
+
+    # Send initialized notification
+    if session_id:
+        notif_headers = headers.copy()
+        notif_headers["Mcp-Session-Id"] = session_id
+        notif_payload = json.dumps({
+            "jsonrpc": "2.0", "method": "notifications/initialized",
+        }).encode()
+        req = urllib.request.Request(url, data=notif_payload, headers=notif_headers)
+        urllib.request.urlopen(req, timeout=5)
+
+    return session_id
 
 
 # ============================================================================
@@ -637,7 +917,7 @@ class McpHandler(BaseHTTPRequestHandler):
         result = {
             "protocolVersion": "2025-03-26",
             "capabilities": {
-                "tools": {"listChanged": False},
+                "tools": {"listChanged": True},
             },
             "serverInfo": {
                 "name": "OutcomeOps",
@@ -648,17 +928,85 @@ class McpHandler(BaseHTTPRequestHandler):
         self._send_json(200, jsonrpc_response(request_id, result), session_id=session_id)
 
     def _handle_tools_list(self, request_id, session_id):
-        """Handle tools/list request."""
-        result = {"tools": MCP_TOOLS}
+        """Handle tools/list request. Returns native + proxied tools."""
+        email = _sessions.get(session_id, {}).get("email")
+        workspace_ids = get_user_workspace_ids(email) if email else []
+
+        # Start with native OutcomeOps tools
+        all_tools = list(MCP_TOOLS)
+
+        # Build proxy tool mapping for this session
+        tool_routing = {}  # namespaced_tool_name -> {"config": ..., "original_name": ...}
+
+        # Discover and add proxied tools
+        try:
+            servers = discover_mcp_servers(workspace_ids)
+            for server in servers:
+                server_name = server["config"]["name"].lower().replace(" ", "_").replace("-", "_")
+                for tool in server.get("tools", []):
+                    namespaced_name = f"{server_name}__{tool['name']}"
+
+                    proxied_tool = {
+                        "name": namespaced_name,
+                        "description": f"[{server['config']['name']}] {tool.get('description', '')}",
+                        "inputSchema": tool.get("inputSchema", {"type": "object", "properties": {}}),
+                    }
+                    all_tools.append(proxied_tool)
+
+                    tool_routing[namespaced_name] = {
+                        "config": server["config"],
+                        "original_name": tool["name"],
+                    }
+        except Exception as e:
+            logger.error(f"Error discovering MCP servers: {e}", exc_info=True)
+
+        # Store routing in session for use by tools/call
+        if session_id and session_id in _sessions:
+            _sessions[session_id]["tool_routing"] = tool_routing
+
+        result = {"tools": all_tools}
         self._send_json(200, jsonrpc_response(request_id, result), session_id=session_id)
 
     def _handle_tools_call(self, request_id, params, email, session_id):
-        """Handle tools/call request."""
+        """Handle tools/call request. Routes to native handler or proxied server."""
         tool_name = params.get("name", "")
         tool_args = params.get("arguments", {})
 
+        # Check native tools first
         handler = TOOL_HANDLERS.get(tool_name)
-        if not handler:
+        if handler:
+            logger.info(f"Tool call: {tool_name} (user: {email})")
+            try:
+                result = handler(tool_args, email)
+
+                if "error" in result:
+                    content = [{"type": "text", "text": f"Error: {result['error']}"}]
+                    is_error = True
+                else:
+                    content = [{"type": "text", "text": result["text"]}]
+                    is_error = False
+
+                response_result = {"content": content, "isError": is_error}
+                self._send_json(
+                    200,
+                    jsonrpc_response(request_id, response_result),
+                    session_id=session_id,
+                )
+            except Exception as e:
+                logger.error(f"Error executing tool {tool_name}: {e}", exc_info=True)
+                self._send_json(
+                    200,
+                    jsonrpc_error(request_id, -32603, f"Internal error: {type(e).__name__}"),
+                    session_id=session_id,
+                )
+            return
+
+        # Check proxied tools
+        session = _sessions.get(session_id, {})
+        tool_routing = session.get("tool_routing", {})
+        route = tool_routing.get(tool_name)
+
+        if not route:
             self._send_json(
                 200,
                 jsonrpc_error(request_id, -32602, f"Unknown tool: {tool_name}"),
@@ -666,29 +1014,24 @@ class McpHandler(BaseHTTPRequestHandler):
             )
             return
 
-        logger.info(f"Tool call: {tool_name} (user: {email})")
+        # Proxy the call to the internal MCP server
+        logger.info(
+            f"Proxying tool call: {tool_name} -> {route['config']['name']}/"
+            f"{route['original_name']} (user: {email})"
+        )
 
         try:
-            result = handler(tool_args, email)
-
-            if "error" in result:
-                content = [{"type": "text", "text": f"Error: {result['error']}"}]
-                is_error = True
-            else:
-                content = [{"type": "text", "text": result["text"]}]
-                is_error = False
-
-            response_result = {"content": content, "isError": is_error}
+            result = _proxy_tool_call(route["config"], route["original_name"], tool_args)
             self._send_json(
                 200,
-                jsonrpc_response(request_id, response_result),
+                jsonrpc_response(request_id, result),
                 session_id=session_id,
             )
         except Exception as e:
-            logger.error(f"Error executing tool {tool_name}: {e}", exc_info=True)
+            logger.error(f"Error proxying tool {tool_name}: {e}", exc_info=True)
             self._send_json(
                 200,
-                jsonrpc_error(request_id, -32603, f"Internal error: {type(e).__name__}"),
+                jsonrpc_error(request_id, -32603, f"Proxy error: {type(e).__name__}"),
                 session_id=session_id,
             )
 

@@ -54,6 +54,7 @@ module "mcp_outcomeops" {
     S3_VECTORS_INDEX   = aws_s3vectors_index.knowledge_base.index_name
     KB_BUCKET          = module.knowledge_base_bucket.s3_bucket_id
     ENVIRONMENT        = var.environment
+    MCP_BASE_URL       = local.mcp_base_url
   }
 
   ecs_cluster_arn    = module.ui_ecs.cluster_arn
@@ -132,6 +133,16 @@ resource "aws_iam_role_policy" "mcp_outcomeops" {
         ]
         Resource = [
           "arn:aws:bedrock:*::foundation-model/*"
+        ]
+      },
+      {
+        Sid    = "SSMReadMcpTokens"
+        Effect = "Allow"
+        Action = [
+          "ssm:GetParameter"
+        ]
+        Resource = [
+          "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/mcp/*"
         ]
       }
     ]
