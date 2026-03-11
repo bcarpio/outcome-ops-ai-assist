@@ -363,14 +363,14 @@ export default function Settings() {
               {showGuide && (
                 <div className="px-4 pb-4 border-t pt-4">
                   <p className="text-sm text-gray-600 mb-4">
-                    Configure your MCP client with the following settings. Replace the URL with your OutcomeOps domain and the key with your API key.
+                    Add this to your MCP client configuration. Replace the key with your API key above.
                   </p>
                   <h4 className="font-medium text-sm mb-2">Claude Code</h4>
                   <pre className="bg-gray-900 text-gray-100 text-sm p-4 rounded-lg overflow-x-auto mb-4">{`{
   "mcpServers": {
     "outcomeops": {
       "type": "streamableHttp",
-      "url": "https://your-outcomeops-domain.com/mcp/v1",
+      "url": "${window.location.origin}/mcp/v1",
       "headers": {
         "Authorization": "Bearer ooa_your_key_here"
       }
