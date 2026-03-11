@@ -28,16 +28,29 @@ OutcomeOps AI Assist is a **generic platform** for AI-powered code generation de
 
 ## How to Get Standards
 
-Query the knowledge base before implementing anything:
+Query the knowledge base via MCP before implementing anything. The OutcomeOps MCP server
+is configured in `~/.claude/mcp.json` and provides these tools automatically:
 
-```bash
-# ALWAYS use --env prd for production knowledge base
-./scripts/outcome-ops-assist --env prd "What are our Lambda handler standards?"
-./scripts/outcome-ops-assist --env prd "What are our Terraform module standards?"
-./scripts/outcome-ops-assist --env prd "How should tests be structured?"
-```
+- `query_knowledge_base` - Search for standards, ADRs, patterns, and documentation
+- `get_coding_standards` - Retrieve coding standards for a specific topic
+- `list_workspaces` - List available workspaces
+- `list_workspace_documents` - List documents in a workspace
+
+**Use these MCP tools proactively** when building features, fixing bugs, or making
+architectural decisions. Always query the KB before implementing anything to ensure
+code matches organizational standards.
+
+Example queries to make via MCP tools:
+- "What are our Lambda handler standards?"
+- "What are our Terraform module standards?"
+- "How should tests be structured?"
 
 The KB contains: ADRs, READMEs, code maps, infrastructure patterns, handler patterns, testing practices.
+
+**Fallback (CLI):** If MCP tools are unavailable, use the CLI:
+```bash
+./scripts/outcome-ops-assist --env prd "What are our Lambda handler standards?"
+```
 
 ## Essential Workflow Rules
 
@@ -84,7 +97,7 @@ cd lambda && find . -name "*.py" -path "*/lambda/*" | head -20 | xargs -I {} pyt
 
 ### Local Development
 - Never run `terraform apply` locally - CI/CD only
-- Use `./scripts/outcome-ops-assist --env prd` to query the knowledge base
+- Use MCP tools (`query_knowledge_base`, `get_coding_standards`) to query the knowledge base
 
 ## When Investigating Issues
 
