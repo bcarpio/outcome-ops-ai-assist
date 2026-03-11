@@ -363,11 +363,24 @@ export default function Settings() {
               {showGuide && (
                 <div className="px-4 pb-4 border-t pt-4">
                   <p className="text-sm text-gray-600 mb-4">
-                    Add this to your MCP client configuration. Replace the key with your API key above.
-                    This single connection gives you access to all tools -- the OutcomeOps knowledge base
-                    plus any MCP servers assigned to your workspaces (e.g., SonarQube).
+                    Connect your AI coding tools to OutcomeOps. This single connection gives you access
+                    to all tools -- the knowledge base plus any MCP servers assigned to your workspaces
+                    (e.g., SonarQube). Replace <code className="text-xs bg-gray-100 px-1 py-0.5 rounded">ooa_your_key_here</code> with your API key above.
                   </p>
-                  <h4 className="font-medium text-sm mb-2">Claude Code</h4>
+
+                  {/* Claude Code */}
+                  <h4 className="font-medium text-sm mb-2">Claude Code (CLI)</h4>
+                  <p className="text-sm text-gray-600 mb-2">
+                    <strong>Option A:</strong> Run this command in your terminal:
+                  </p>
+                  <pre className="bg-gray-900 text-gray-100 text-xs p-3 rounded-lg overflow-x-auto mb-3">{`claude mcp add outcomeops \\
+  --transport streamable-http \\
+  --url ${window.location.origin}/mcp/v1 \\
+  --header "Authorization: Bearer ooa_your_key_here"`}</pre>
+                  <p className="text-sm text-gray-600 mb-2">
+                    <strong>Option B:</strong> Add this JSON to <code className="text-xs bg-gray-100 px-1 py-0.5 rounded">~/.claude/mcp.json</code> (global)
+                    or <code className="text-xs bg-gray-100 px-1 py-0.5 rounded">.mcp.json</code> in your project root (per-project):
+                  </p>
                   <pre className="bg-gray-900 text-gray-100 text-sm p-4 rounded-lg overflow-x-auto mb-4">{`{
   "mcpServers": {
     "outcomeops": {
@@ -379,9 +392,37 @@ export default function Settings() {
     }
   }
 }`}</pre>
-                  <h4 className="font-medium text-sm mb-2">VS Code / Cursor</h4>
+
+                  {/* VS Code */}
+                  <h4 className="font-medium text-sm mb-2">VS Code (GitHub Copilot)</h4>
+                  <p className="text-sm text-gray-600 mb-2">
+                    MCP tools are available in Copilot Chat&apos;s Agent mode. Create a <code className="text-xs bg-gray-100 px-1 py-0.5 rounded">.vscode/mcp.json</code> file in your project root:
+                  </p>
+                  <pre className="bg-gray-900 text-gray-100 text-sm p-4 rounded-lg overflow-x-auto mb-4">{`{
+  "servers": {
+    "outcomeops": {
+      "type": "streamableHttp",
+      "url": "${window.location.origin}/mcp/v1",
+      "headers": {
+        "Authorization": "Bearer ooa_your_key_here"
+      }
+    }
+  }
+}`}</pre>
+
+                  {/* Cursor */}
+                  <h4 className="font-medium text-sm mb-2">Cursor</h4>
+                  <p className="text-sm text-gray-600 mb-2">
+                    Go to <strong>Cursor Settings &gt; MCP Servers &gt; Add Server</strong>, then set:
+                  </p>
+                  <ul className="text-sm text-gray-600 mb-2 ml-4 list-disc">
+                    <li><strong>Name:</strong> OutcomeOps</li>
+                    <li><strong>Transport:</strong> Streamable HTTP</li>
+                    <li><strong>URL:</strong> <code className="text-xs bg-gray-100 px-1 py-0.5 rounded">{window.location.origin}/mcp/v1</code></li>
+                    <li><strong>Headers:</strong> <code className="text-xs bg-gray-100 px-1 py-0.5 rounded">Authorization: Bearer ooa_your_key_here</code></li>
+                  </ul>
                   <p className="text-sm text-gray-600">
-                    Add the same configuration to your editor's MCP settings file (e.g., <code className="text-xs bg-gray-100 px-1 py-0.5 rounded">.vscode/mcp.json</code> or Cursor MCP settings).
+                    Or add a <code className="text-xs bg-gray-100 px-1 py-0.5 rounded">.cursor/mcp.json</code> file in your project root using the same format as the VS Code config above.
                   </p>
                 </div>
               )}

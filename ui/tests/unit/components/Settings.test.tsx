@@ -176,8 +176,9 @@ describe('Settings', () => {
     const user = userEvent.setup()
     await user.click(screen.getByText('Connection Guide'))
 
-    expect(screen.getByText('Claude Code')).toBeInTheDocument()
-    expect(screen.getByText('VS Code / Cursor')).toBeInTheDocument()
+    expect(screen.getByText('Claude Code (CLI)')).toBeInTheDocument()
+    expect(screen.getByText('VS Code (GitHub Copilot)')).toBeInTheDocument()
+    expect(screen.getByText('Cursor')).toBeInTheDocument()
   })
 
   it('shows error state', async () => {
