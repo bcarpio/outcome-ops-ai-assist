@@ -40,7 +40,7 @@ export default function AiDisclosureModal() {
           <ul className="list-disc pl-5 space-y-1.5">
             <li>AI-generated content may contain errors and should be reviewed before use</li>
             <li>Do not share sensitive personal information beyond what is required for your task</li>
-            <li>Interactions may be logged and used to improve the service</li>
+            <li>Interactions are logged for audit and security purposes</li>
             <li>AI outputs do not constitute professional advice</li>
           </ul>
         </div>

@@ -11,7 +11,7 @@ On first visit, a modal appears informing the user that:
 - They are interacting with an AI system, not a human
 - AI-generated content may contain errors and should be reviewed
 - They should not share sensitive personal information beyond what is required
-- Interactions may be logged
+- Interactions are logged for audit and security purposes
 - AI outputs do not constitute professional advice
 
 The user must click "I Understand" to proceed. Acceptance is stored in
