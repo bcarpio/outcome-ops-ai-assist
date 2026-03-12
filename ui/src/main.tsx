@@ -6,12 +6,14 @@ import WorkspaceSettings from './pages/WorkspaceSettings'
 import OrgSettings from './pages/OrgSettings'
 import McpServers from './pages/McpServers'
 import Settings from './pages/Settings'
+import AiDisclosureModal from './components/AiDisclosureModal'
 import './index.css'
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   // StrictMode disabled - causes double API calls in dev mode
   // Re-enable for debugging lifecycle issues if needed
   <BrowserRouter>
+    <AiDisclosureModal />
     <Routes>
       <Route path="/" element={<Chat />} />
       <Route path="/chat" element={<Chat />} />
