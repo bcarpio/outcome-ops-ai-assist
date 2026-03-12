@@ -28,8 +28,8 @@ OutcomeOps AI Assist is a **generic platform** for AI-powered code generation de
 
 ## How to Get Standards
 
-Query the knowledge base via MCP before implementing anything. The OutcomeOps MCP server
-is configured in `~/.claude/mcp.json` and provides these tools automatically:
+Query the knowledge base via MCP before implementing anything. The following tools
+are available:
 
 - `query_knowledge_base` - Search for standards, ADRs, patterns, and documentation
 - `get_coding_standards` - Retrieve coding standards for a specific topic
