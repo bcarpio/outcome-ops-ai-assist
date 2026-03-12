@@ -599,7 +599,7 @@ To enable SonarQube MCP:
 
 See the full guide: **[SonarQube MCP Server Setup](sonarqube-mcp.md)**
 
-Org admins can also register custom MCP servers through the UI without Terraform changes.
+Org admins assign MCP servers to workspaces via the UI after the infrastructure is deployed.
 
 ## Next Steps
 

@@ -172,15 +172,20 @@ Fargate Spot pricing applies. Typical cost for a single MCP server running 24/7:
 
 ## Adding Custom MCP Servers
 
-The SonarQube MCP server is deployed via Terraform as a "catalog" server, but org admins can also register custom MCP servers through the UI without any Terraform changes:
+Every MCP server requires Terraform infrastructure (ECS task, ALB routing, Cloud Map, DynamoDB catalog entry) before it appears in the UI. The pattern is the same as SonarQube:
 
-1. Navigate to **Org Settings > MCP Servers**
-2. Click **Add MCP Server**
-3. Enter the server name, URL, and authentication details (none, API key, or bearer token)
-4. Click **Refresh Tools** to verify connectivity and fetch the tool manifest
-5. Assign to workspaces
+1. **Add Terraform config** -- use the `mcp-server` module in `terraform/mcp.tf`:
+   - Container image (from Docker Hub or a custom ECR build)
+   - Environment variables and secrets (SSM)
+   - ALB listener rule priority and path pattern
+   - Cloud Map service discovery registration
+   - DynamoDB catalog entry (`is_catalog = true`)
 
-Custom servers must be reachable from the chat Lambda (via ALB or public endpoint).
+2. **Deploy infrastructure** -- `terraform plan` / `terraform apply`
+
+3. **Assign to workspaces via the UI** -- the server appears in **Org Settings > MCP Servers** after deploy. Org admins assign it to workspaces and click **Refresh Tools** to fetch the tool manifest.
+
+See `terraform/mcp.tf` for the SonarQube example to follow as a template.
 
 ## Troubleshooting
 
