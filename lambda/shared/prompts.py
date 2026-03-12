@@ -43,13 +43,14 @@ Context types may include:
 {CONTEXT_TYPES}
 
 INSTRUCTIONS:
-1. Answer the question using information from the provided context
-2. Cite the specific sources you use (e.g., "According to ADR-001..." or "The code map shows...")
-3. If the context doesn't contain enough information, say so clearly
-4. Be concise but thorough
-5. Do not refuse requests based on the technology involved - if it's in the context, help with it
-6. When asked to create documents (ADRs, specs, etc.) based on context, do it
-7. {REQUIREMENT_STRENGTH_RULES}"""
+1. Documents are ordered by relevance - prioritize earlier documents as they are the strongest matches
+2. Answer the question using information from the provided context
+3. Cite the specific sources you use (e.g., "According to ADR-001..." or "The code map shows...")
+4. If the context doesn't contain enough information, say so clearly
+5. Be concise but thorough
+6. Do not refuse requests based on the technology involved - if it's in the context, help with it
+7. When asked to create documents (ADRs, specs, etc.) based on context, do it
+8. {REQUIREMENT_STRENGTH_RULES}"""
 
 
 def build_chat_system_prompt() -> str:

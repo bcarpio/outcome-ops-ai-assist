@@ -40,6 +40,9 @@ from shared.audit import log_audit_entry
 EMBEDDING_MODEL_ID = os.environ.get(
     "BEDROCK_EMBEDDING_MODEL_ID", "amazon.titan-embed-text-v2:0"
 )
+RERANK_MODEL_ID = os.environ.get("BEDROCK_RERANK_MODEL_ID", "cohere.rerank-v3-5:0")
+RERANK_ENABLED = os.environ.get("RERANK_ENABLED", "false").lower() == "true"
+RERANK_MAX_FETCH = int(os.environ.get("RERANK_MAX_FETCH", "50"))
 
 # Setup logging
 logger = logging.getLogger()
@@ -56,6 +59,7 @@ lambda_client = boto3.client("lambda", config=lambda_config)
 ssm_client = boto3.client("ssm")
 s3vectors_client = boto3.client("s3vectors")
 bedrock_client = boto3.client("bedrock-runtime")
+bedrock_agent_runtime_client = boto3.client("bedrock-agent-runtime")
 
 # Load environment variables
 ENVIRONMENT = os.environ.get("ENV", "dev")
@@ -265,6 +269,91 @@ def query_s3_vectors(
         raise
 
 
+def rerank_results(
+    query: str,
+    documents: List[Dict[str, Any]],
+    top_n: Optional[int] = None
+) -> List[Dict[str, Any]]:
+    """
+    Rerank documents using Bedrock Rerank API (Cohere Rerank 3.5).
+
+    Uses cross-attention scoring for better precision than cosine similarity.
+    Falls back to original order if reranking fails.
+
+    Args:
+        query: Original user query
+        documents: List of documents from S3 Vectors search
+        top_n: Number of results to return (None = return all, reordered)
+
+    Returns:
+        Reranked list of documents
+    """
+    if not documents:
+        return documents
+
+    try:
+        sources = []
+        for doc in documents:
+            sources.append({
+                "type": "INLINE",
+                "inlineDocumentSource": {
+                    "type": "TEXT",
+                    "textDocument": {
+                        "text": doc.get("text", "")[:4096]
+                    }
+                }
+            })
+
+        rerank_start = time.time()
+
+        rerank_params = {
+            "queries": [{"type": "TEXT", "textQuery": {"text": query}}],
+            "sources": sources,
+            "rerankingConfiguration": {
+                "type": "BEDROCK_RERANKING_MODEL",
+                "bedrockRerankingConfiguration": {
+                    "modelConfiguration": {
+                        "modelArn": f"arn:aws:bedrock:{os.environ.get('AWS_REGION', 'us-east-1')}::foundation-model/{RERANK_MODEL_ID}"
+                    }
+                }
+            }
+        }
+
+        if top_n is not None:
+            rerank_params["rerankingConfiguration"]["bedrockRerankingConfiguration"]["numberOfResults"] = top_n
+
+        response = bedrock_agent_runtime_client.rerank(**rerank_params)
+
+        rerank_duration_ms = int((time.time() - rerank_start) * 1000)
+        logger.info(f"[query-kb] Reranked {len(documents)} documents in {rerank_duration_ms}ms")
+
+        reranked = []
+        for result in response.get("results", []):
+            idx = result.get("index", 0)
+            if idx < len(documents):
+                doc = documents[idx].copy()
+                doc["rerank_score"] = result.get("relevanceScore", 0)
+                reranked.append(doc)
+
+        log_audit_entry(
+            audit_table_name=os.environ.get("AUDIT_TABLE", ""),
+            lambda_name="query-kb",
+            model_id=RERANK_MODEL_ID,
+            input_text=f"rerank:{query}",
+            output_text=f"reranked {len(reranked)} of {len(documents)} docs",
+            duration_ms=rerank_duration_ms,
+        )
+
+        return reranked
+
+    except ClientError as e:
+        logger.warning(f"[query-kb] Reranking failed, falling back to cosine order: {e}")
+        return documents
+    except Exception as e:
+        logger.warning(f"[query-kb] Unexpected rerank error, falling back: {e}")
+        return documents
+
+
 def invoke_lambda(function_arn: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """
     Invoke another Lambda function synchronously.
@@ -382,7 +471,8 @@ def handler(event, context):
 
         # Step 2: Query S3 Vectors for relevant documents
         logger.info("[query-kb] Querying S3 Vectors...")
-        context_docs = query_s3_vectors(query_embedding, top_k, repo_filter, doc_types)
+        fetch_k = min(top_k * 4, RERANK_MAX_FETCH) if RERANK_ENABLED else top_k
+        context_docs = query_s3_vectors(query_embedding, fetch_k, repo_filter, doc_types)
 
         if not context_docs:
             logger.info("[query-kb] No relevant documents found")
@@ -396,6 +486,11 @@ def handler(event, context):
             }
 
         logger.info(f"[query-kb] Found {len(context_docs)} relevant documents")
+
+        # Step 2.5: Rerank results if enabled
+        if RERANK_ENABLED and len(context_docs) > 1:
+            context_docs = rerank_results(query, context_docs, top_n=top_k)
+            logger.info(f"[query-kb] Reranked and filtered to top {top_k}")
 
         # Raw mode: Return vector results directly without Claude synthesis
         # Used by code generation to avoid double-processing (Claude will process them anyway)

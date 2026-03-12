@@ -146,6 +146,18 @@ variable "bedrock_embedding_model_id" {
   default     = "amazon.titan-embed-text-v2:0"
 }
 
+variable "bedrock_rerank_model_id" {
+  type        = string
+  description = "Bedrock model ID for reranking search results"
+  default     = "cohere.rerank-v3-5:0"
+}
+
+variable "rerank_max_fetch" {
+  type        = number
+  description = "Maximum number of documents to over-fetch for reranking (caps topK * 4)"
+  default     = 90
+}
+
 # ============================================================================
 # Resource Tags
 # ============================================================================

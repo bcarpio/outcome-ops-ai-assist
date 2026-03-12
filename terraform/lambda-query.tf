@@ -146,6 +146,9 @@ module "query_kb_lambda" {
     APP_NAME                   = var.app_name
     AUDIT_TABLE                = module.audit_logs_table.dynamodb_table_id
     BEDROCK_EMBEDDING_MODEL_ID = var.bedrock_embedding_model_id
+    BEDROCK_RERANK_MODEL_ID    = var.bedrock_rerank_model_id
+    RERANK_ENABLED             = "true"
+    RERANK_MAX_FETCH           = tostring(var.rerank_max_fetch)
   }
 
   # IAM permissions
@@ -217,6 +220,15 @@ module "query_kb_lambda" {
       resources = [
         "arn:aws:bedrock:*::foundation-model/*"
       ]
+    }
+
+    # Bedrock Rerank API for post-retrieval reranking
+    bedrock_rerank = {
+      effect = "Allow"
+      actions = [
+        "bedrock:Rerank"
+      ]
+      resources = ["*"]
     }
   }
 

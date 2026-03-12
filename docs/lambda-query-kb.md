@@ -25,16 +25,21 @@ User Query
 1. Generate query embedding (Bedrock Titan v2)
     ↓
 2. Query S3 Vectors for similar documents (<100ms)
-    → Find top K relevant documents
+    → Over-fetch candidates (topK * 4, capped at RERANK_MAX_FETCH)
     ↓
-3. Check if results found
+3. Rerank results using Cohere Rerank 3.5 via Bedrock
+    → Cross-attention scoring for precision ranking
+    → Filter to top K most relevant documents
+    → Falls back to cosine order if reranking fails
+    ↓
+4. Check if results found
     → If empty: Return "not found" message
-    → If found: Continue to step 4
+    → If found: Continue to step 5
     ↓
-4. Invoke ask-claude Lambda
-    → Generate answer from context
+5. Invoke ask-claude Lambda
+    → Generate answer from reranked context
     ↓
-5. Return answer + sources
+6. Return answer + sources
 ```
 
 ## Input
@@ -110,6 +115,9 @@ Raw mode is used by code generation to avoid double-processing - the results wil
 **Environment Variables** (set in Terraform):
 - `ENV` - Environment name (dev, prd)
 - `APP_NAME` - Application name (outcome-ops-ai-assist)
+- `BEDROCK_RERANK_MODEL_ID` - Rerank model ID (default: `cohere.rerank-v3-5:0`)
+- `RERANK_ENABLED` - Enable/disable reranking (`"true"` or `"false"`)
+- `RERANK_MAX_FETCH` - Max documents to over-fetch for reranking (default: 50)
 
 ## IAM Permissions Required
 
@@ -117,6 +125,7 @@ Raw mode is used by code generation to avoid double-processing - the results wil
 - `kms:Decrypt` - Decrypt SSM parameters
 - `s3vectors:QueryVectors` - Search the vector index
 - `bedrock:InvokeModel` - Generate query embeddings (Titan v2)
+- `bedrock:Rerank` - Rerank search results (Cohere Rerank 3.5)
 - `lambda:InvokeFunction` - Invoke ask-claude Lambda
 
 ## Pipeline Stages
@@ -158,7 +167,23 @@ response = s3vectors_client.query_vectors(
 ]
 ```
 
-### Stage 2: Answer Generation
+### Stage 2: Reranking (Cohere Rerank 3.5)
+
+**API**: `bedrock-agent-runtime:Rerank`
+
+**Why**: Cosine similarity is good for recall (finding candidates) but not precision (ranking them). When documents from multiple sources (ADRs, Confluence, Jira, code maps) score similarly, cosine distance alone can't distinguish which document best answers the query. Reranking uses cross-attention scoring to determine true relevance.
+
+**Processing**:
+1. Takes over-fetched candidates from Stage 1 (up to `RERANK_MAX_FETCH` documents)
+2. Sends query + all document texts to Cohere Rerank 3.5 via Bedrock
+3. Receives cross-attention relevance scores for each document
+4. Returns the top K documents ordered by rerank score
+
+**Graceful degradation**: If the rerank API fails (throttling, model unavailable), falls back to the original cosine-ranked results. No user impact.
+
+**Feature flag**: Set `RERANK_ENABLED=false` in the Lambda environment to disable without a code deploy. When disabled, the handler fetches the original `topK` (no over-fetch) and skips reranking entirely.
+
+### Stage 3: Answer Generation
 
 **Invokes**: ask-claude Lambda
 
@@ -167,13 +192,14 @@ response = s3vectors_client.query_vectors(
 {
   "query": "How should API Gateway routes be defined?",
   "context": [
-    { "score": 0.93, "text": "...", "source": "ADR: api-gateway-standards" }
+    { "score": 0.93, "rerank_score": 0.98, "text": "...", "source": "ADR: api-gateway-standards" }
   ]
 }
 ```
 
 **Processing**:
-- Builds RAG prompt with context from S3 Vectors results
+- Builds RAG prompt with reranked context (documents ordered by relevance)
+- Claude is instructed to prioritize earlier documents as strongest matches
 - Calls Claude 3.5 Haiku (cost-effective for RAG synthesis)
 - Extracts answer and sources
 
@@ -230,8 +256,10 @@ aws logs tail /aws/lambda/prd-outcome-ops-ai-assist-query-kb --follow
 - `[query-kb] Processing query: '...' (top X results)` - Started
 - `[query-kb] Querying S3 Vectors...` - Stage 1 start
 - `[query-kb] Found X relevant documents` - Stage 1 complete
+- `[query-kb] Reranked X documents in Yms` - Stage 2 complete
+- `[query-kb] Reranked and filtered to top X` - Post-rerank filtering
 - `[query-kb] No relevant documents found` - Empty results
-- `[query-kb] Invoking ask-claude Lambda...` - Stage 2 start
+- `[query-kb] Invoking ask-claude Lambda...` - Stage 3 start
 - `[query-kb] Successfully generated answer with X sources` - Complete
 
 **End-to-end metrics**:
@@ -251,6 +279,7 @@ aws cloudwatch get-metric-statistics \
 **Typical latency breakdown**:
 - Embedding generation: 100-200ms
 - S3 Vectors search: <100ms
+- Reranking: 100-300ms
 - Answer generation: 5-15 seconds
 - **Total**: 5-16 seconds
 

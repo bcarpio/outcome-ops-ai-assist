@@ -157,9 +157,10 @@ outcome-ops-assist "Show me examples of DynamoDB patterns"
 
 **How it works:**
 1. Generates query embedding via Bedrock Titan v2
-2. Vector searches S3 Vectors for similar patterns (<100ms)
-3. Passes top results to Claude Sonnet 4.5
-4. Returns grounded answer with source citations
+2. Vector searches S3 Vectors for candidate documents (<100ms)
+3. Reranks candidates with Cohere Rerank 3.5 for precision ranking
+4. Passes top reranked results to Claude Sonnet 4.5
+5. Returns grounded answer with source citations
 
 **See:** [CLI Usage Guide](cli-usage.md) for installation, options, examples, and troubleshooting
 

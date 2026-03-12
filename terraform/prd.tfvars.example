@@ -36,6 +36,14 @@ enable_jira_integration = false
 #   - componentKey     → {{issue.components.name}}
 
 # ============================================================================
+# Bedrock Reranking
+# ============================================================================
+
+# Model for post-retrieval reranking (improves search precision)
+# bedrock_rerank_model_id = "cohere.rerank-v3-5:0"
+# rerank_max_fetch        = 50  # Max documents to over-fetch for reranking
+
+# ============================================================================
 # Audit & Compliance
 # ============================================================================
 

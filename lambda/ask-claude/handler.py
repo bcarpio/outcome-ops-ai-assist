@@ -94,7 +94,7 @@ def build_prompt(query: str, context: List[Dict[str, Any]]) -> str:
     for i, doc in enumerate(context, 1):
         source = doc.get("source", "Unknown")
         text = doc.get("text", "")
-        score = doc.get("score", 0.0)
+        score = doc.get("rerank_score", doc.get("score", 0.0))
 
         context_text += f"\n[Document {i}] (Relevance: {score:.2f}) - Source: {source}\n"
         context_text += f"{text}\n"

@@ -133,8 +133,8 @@ Retrieval Augmented Generation pipeline for intelligent queries.
 **Components:**
 - Query embedding: Convert natural language to vector via Bedrock Titan v2
 - Vector search: S3 Vectors native query_vectors API (<100ms)
-- Result ranking: Top K most relevant documents by cosine similarity
-- Context assembly: Pass top results to Claude
+- Reranking: Cohere Rerank 3.5 via Bedrock for precision ranking
+- Context assembly: Pass top reranked results to Claude
 
 **Example flow:**
 ```
@@ -142,9 +142,11 @@ User query: "How should Lambda error handling work?"
          ↓
 Generate embedding (Titan v2)
          ↓
-Query S3 Vectors for similar embeddings
+Query S3 Vectors for candidate documents (over-fetch)
          ↓
-Return top 5 documents (ADRs, code examples)
+Rerank candidates with Cohere Rerank 3.5 (cross-attention scoring)
+         ↓
+Return top K documents by rerank relevance
          ↓
 Pass to Claude Sonnet 4.5 with context
          ↓

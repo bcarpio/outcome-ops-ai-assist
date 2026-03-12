@@ -91,11 +91,12 @@ API Gateway routes are defined inline in infra/apigw.tf...
 All routes must use inline integrations per ADR-APIGW-V5...
 
 INSTRUCTIONS:
-1. Answer the question using ONLY information from the provided context
-2. Cite the specific sources you use (e.g., "According to ADR-001...")
-3. If the context doesn't contain enough information, say so clearly
-4. Be concise but thorough
-5. Do not make assumptions or add information not in the context
+1. Documents are ordered by relevance - prioritize earlier documents as they are the strongest matches
+2. Answer the question using ONLY information from the provided context
+3. Cite the specific sources you use (e.g., "According to ADR-001...")
+4. If the context doesn't contain enough information, say so clearly
+5. Be concise but thorough
+6. Do not make assumptions or add information not in the context
 
 QUESTION: How should API Gateway routes be defined?
 

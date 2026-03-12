@@ -30,6 +30,7 @@ with mock_aws():
 # Import functions from the loaded module
 handler = handler_module.handler
 invoke_lambda = handler_module.invoke_lambda
+rerank_results = handler_module.rerank_results
 
 
 class TestInvokeLambda:
@@ -345,3 +346,199 @@ class TestHandler:
         body = json.loads(response["body"])
         assert "results" in body
         assert len(body["results"]) == 1
+
+
+class TestReranking:
+    """Test Bedrock Rerank API integration."""
+
+    @patch('query_kb_handler.bedrock_agent_runtime_client')
+    @patch('query_kb_handler.RERANK_MODEL_ID', 'cohere.rerank-v3-5:0')
+    def test_rerank_results_success(self, mock_bedrock_agent):
+        """Test successful reranking reorders documents by relevance."""
+        query = "How should Lambda handlers be structured?"
+        documents = [
+            {"score": 0.85, "text": "Jira ticket about Lambda", "source": "Jira", "type": "doc", "repo": "test", "file_path": "jira/123.md"},
+            {"score": 0.90, "text": "ADR for Lambda handler patterns", "source": "ADR: ADR-010", "type": "adr", "repo": "test", "file_path": "docs/adr/ADR-010.md"},
+            {"score": 0.87, "text": "Confluence page about handlers", "source": "Confluence", "type": "doc", "repo": "test", "file_path": "confluence/handlers.md"},
+        ]
+
+        mock_bedrock_agent.rerank.return_value = {
+            "results": [
+                {"index": 1, "relevanceScore": 0.98},
+                {"index": 2, "relevanceScore": 0.72},
+                {"index": 0, "relevanceScore": 0.45},
+            ]
+        }
+
+        reranked = rerank_results(query, documents)
+
+        assert len(reranked) == 3
+        assert reranked[0]["source"] == "ADR: ADR-010"
+        assert reranked[0]["rerank_score"] == 0.98
+        mock_bedrock_agent.rerank.assert_called_once()
+
+    @patch('query_kb_handler.bedrock_agent_runtime_client')
+    @patch('query_kb_handler.RERANK_MODEL_ID', 'cohere.rerank-v3-5:0')
+    def test_rerank_results_with_top_n(self, mock_bedrock_agent):
+        """Test reranking with top_n filters to N results."""
+        documents = [
+            {"score": 0.80, "text": f"Document {i}", "source": f"source-{i}", "type": "doc", "repo": "test", "file_path": f"doc-{i}.md"}
+            for i in range(10)
+        ]
+
+        mock_bedrock_agent.rerank.return_value = {
+            "results": [
+                {"index": 5, "relevanceScore": 0.95},
+                {"index": 2, "relevanceScore": 0.90},
+                {"index": 8, "relevanceScore": 0.85},
+            ]
+        }
+
+        reranked = rerank_results("test query", documents, top_n=3)
+
+        assert len(reranked) == 3
+        call_kwargs = mock_bedrock_agent.rerank.call_args[1]
+        config = call_kwargs["rerankingConfiguration"]["bedrockRerankingConfiguration"]
+        assert config["numberOfResults"] == 3
+
+    @patch('query_kb_handler.bedrock_agent_runtime_client')
+    def test_rerank_graceful_degradation_on_client_error(self, mock_bedrock_agent):
+        """Test reranking falls back to original order on API error."""
+        documents = [
+            {"score": 0.90, "text": "Doc A", "source": "a", "type": "doc", "repo": "test", "file_path": "a.md"},
+            {"score": 0.85, "text": "Doc B", "source": "b", "type": "doc", "repo": "test", "file_path": "b.md"},
+        ]
+        mock_bedrock_agent.rerank.side_effect = ClientError(
+            {"Error": {"Code": "ThrottlingException"}}, "rerank"
+        )
+
+        result = rerank_results("test query", documents)
+
+        assert len(result) == 2
+        assert result[0]["source"] == "a"
+        assert result[1]["source"] == "b"
+
+    def test_rerank_empty_documents(self):
+        """Test reranking with empty document list returns empty."""
+        result = rerank_results("test query", [])
+        assert result == []
+
+    @patch('query_kb_handler.bedrock_agent_runtime_client')
+    def test_rerank_single_document_still_calls_api(self, mock_bedrock_agent):
+        """Test that a single document is returned with reranking."""
+        documents = [{"score": 0.90, "text": "Only doc", "source": "a", "type": "doc", "repo": "test", "file_path": "a.md"}]
+
+        mock_bedrock_agent.rerank.return_value = {
+            "results": [{"index": 0, "relevanceScore": 0.95}]
+        }
+
+        result = rerank_results("query", documents)
+        assert len(result) == 1
+        assert result[0]["rerank_score"] == 0.95
+
+
+class TestHandlerWithReranking:
+    """Test handler with reranking enabled."""
+
+    @patch('query_kb_handler.RERANK_ENABLED', True)
+    @patch('query_kb_handler.VECTOR_BUCKET', 'test-bucket')
+    @patch('query_kb_handler.VECTOR_INDEX', 'test-index')
+    @patch('query_kb_handler.ASK_CLAUDE_LAMBDA_ARN', 'arn:aws:lambda:us-east-1:123:function:ask-claude')
+    @patch('query_kb_handler.rerank_results')
+    @patch('query_kb_handler.query_s3_vectors')
+    @patch('query_kb_handler.generate_embedding')
+    @patch('query_kb_handler.invoke_lambda')
+    def test_handler_raw_mode_reranks_and_filters(self, mock_invoke, mock_embedding, mock_query, mock_rerank):
+        """Raw mode: rerank filters to topK results."""
+        event = {"query": "test", "raw": True, "topK": 5}
+
+        mock_embedding.return_value = [0.1] * 1024
+        mock_query.return_value = [{"score": 0.8, "text": f"doc{i}", "source": f"s{i}", "type": "doc", "repo": "r", "file_path": f"f{i}.md"} for i in range(20)]
+        mock_rerank.return_value = [{"score": 0.8, "text": "doc0", "source": "s0", "type": "doc", "repo": "r", "file_path": "f0.md", "rerank_score": 0.99}]
+
+        response = handler(event, None)
+
+        assert response["statusCode"] == 200
+        call_args = mock_query.call_args
+        assert call_args[0][1] == 20  # topK * 4
+        mock_rerank.assert_called_once()
+        rerank_call = mock_rerank.call_args
+        assert rerank_call[1].get("top_n") == 5 or rerank_call[0][2] == 5
+
+    @patch('query_kb_handler.RERANK_ENABLED', True)
+    @patch('query_kb_handler.VECTOR_BUCKET', 'test-bucket')
+    @patch('query_kb_handler.VECTOR_INDEX', 'test-index')
+    @patch('query_kb_handler.ASK_CLAUDE_LAMBDA_ARN', 'arn:aws:lambda:us-east-1:123:function:ask-claude')
+    @patch('query_kb_handler.rerank_results')
+    @patch('query_kb_handler.query_s3_vectors')
+    @patch('query_kb_handler.generate_embedding')
+    @patch('query_kb_handler.invoke_lambda')
+    def test_handler_synthesis_mode_reranks_and_filters(self, mock_invoke, mock_embedding, mock_query, mock_rerank):
+        """Synthesis mode: rerank filters to topK before sending to ask-claude."""
+        event = {"query": "test", "topK": 5}
+
+        mock_embedding.return_value = [0.1] * 1024
+        docs = [{"score": 0.8, "text": f"doc{i}", "source": f"s{i}", "type": "doc", "repo": "r", "file_path": f"f{i}.md"} for i in range(20)]
+        mock_query.return_value = docs
+        top_5 = docs[:5]
+        mock_rerank.return_value = top_5
+
+        mock_invoke.return_value = {
+            "statusCode": 200,
+            "body": json.dumps({"answer": "test", "sources": ["s0"]})
+        }
+
+        response = handler(event, None)
+
+        assert response["statusCode"] == 200
+        mock_rerank.assert_called_once()
+        rerank_call = mock_rerank.call_args
+        assert rerank_call[1].get("top_n") == 5 or rerank_call[0][2] == 5
+
+    @patch('query_kb_handler.RERANK_ENABLED', True)
+    @patch('query_kb_handler.RERANK_MAX_FETCH', 50)
+    @patch('query_kb_handler.VECTOR_BUCKET', 'test-bucket')
+    @patch('query_kb_handler.VECTOR_INDEX', 'test-index')
+    @patch('query_kb_handler.ASK_CLAUDE_LAMBDA_ARN', 'arn:aws:lambda:us-east-1:123:function:ask-claude')
+    @patch('query_kb_handler.rerank_results')
+    @patch('query_kb_handler.query_s3_vectors')
+    @patch('query_kb_handler.generate_embedding')
+    @patch('query_kb_handler.invoke_lambda')
+    def test_handler_rerank_caps_overfetch(self, mock_invoke, mock_embedding, mock_query, mock_rerank):
+        """When topK * 4 exceeds RERANK_MAX_FETCH, cap at RERANK_MAX_FETCH."""
+        event = {"query": "test", "raw": True, "topK": 30}
+
+        mock_embedding.return_value = [0.1] * 1024
+        mock_query.return_value = [{"score": 0.8, "text": f"doc{i}", "source": f"s{i}", "type": "doc", "repo": "r", "file_path": f"f{i}.md"} for i in range(50)]
+        mock_rerank.return_value = [{"score": 0.8, "text": "doc0", "source": "s0", "type": "doc", "repo": "r", "file_path": "f0.md", "rerank_score": 0.99}]
+
+        response = handler(event, None)
+
+        assert response["statusCode"] == 200
+        # topK=30 * 4 = 120, but capped at 50
+        call_args = mock_query.call_args
+        assert call_args[0][1] == 50
+
+    @patch('query_kb_handler.RERANK_ENABLED', False)
+    @patch('query_kb_handler.VECTOR_BUCKET', 'test-bucket')
+    @patch('query_kb_handler.VECTOR_INDEX', 'test-index')
+    @patch('query_kb_handler.ASK_CLAUDE_LAMBDA_ARN', 'arn:aws:lambda:us-east-1:123:function:ask-claude')
+    @patch('query_kb_handler.query_s3_vectors')
+    @patch('query_kb_handler.generate_embedding')
+    @patch('query_kb_handler.invoke_lambda')
+    def test_handler_rerank_disabled_skips_reranking(self, mock_invoke, mock_embedding, mock_query):
+        """When RERANK_ENABLED=false, handler skips reranking entirely."""
+        event = {"query": "test", "topK": 5}
+
+        mock_embedding.return_value = [0.1] * 1024
+        mock_query.return_value = [{"score": 0.95, "text": "content", "source": "source", "type": "adr", "repo": "test", "file_path": "adr.md"}]
+        mock_invoke.return_value = {
+            "statusCode": 200,
+            "body": json.dumps({"answer": "test", "sources": ["source"]})
+        }
+
+        response = handler(event, None)
+
+        assert response["statusCode"] == 200
+        call_args = mock_query.call_args
+        assert call_args[0][1] == 5
