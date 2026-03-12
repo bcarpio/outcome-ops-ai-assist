@@ -371,27 +371,11 @@ export default function Settings() {
                   {/* Claude Code */}
                   <h4 className="font-medium text-sm mb-2">Claude Code (CLI)</h4>
                   <p className="text-sm text-gray-600 mb-2">
-                    <strong>Option A:</strong> Run this command in your terminal:
+                    Run this command in your terminal:
                   </p>
-                  <pre className="bg-gray-900 text-gray-100 text-xs p-3 rounded-lg overflow-x-auto mb-3">{`claude mcp add outcomeops \\
-  --transport streamable-http \\
-  --url ${window.location.origin}/mcp/v1 \\
+                  <pre className="bg-gray-900 text-gray-100 text-xs p-3 rounded-lg overflow-x-auto mb-4">{`claude mcp add --transport http outcomeops \\
+  ${window.location.origin}/mcp/v1 \\
   --header "Authorization: Bearer ooa_your_key_here"`}</pre>
-                  <p className="text-sm text-gray-600 mb-2">
-                    <strong>Option B:</strong> Add this JSON to <code className="text-xs bg-gray-100 px-1 py-0.5 rounded">~/.claude/mcp.json</code> (global)
-                    or <code className="text-xs bg-gray-100 px-1 py-0.5 rounded">.mcp.json</code> in your project root (per-project):
-                  </p>
-                  <pre className="bg-gray-900 text-gray-100 text-sm p-4 rounded-lg overflow-x-auto mb-4">{`{
-  "mcpServers": {
-    "outcomeops": {
-      "type": "streamableHttp",
-      "url": "${window.location.origin}/mcp/v1",
-      "headers": {
-        "Authorization": "Bearer ooa_your_key_here"
-      }
-    }
-  }
-}`}</pre>
 
                   {/* VS Code */}
                   <h4 className="font-medium text-sm mb-2">VS Code (GitHub Copilot)</h4>

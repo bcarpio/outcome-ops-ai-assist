@@ -566,18 +566,10 @@ MCP-compatible tools like Claude Code, VS Code, and Cursor.
 3. Generate an API key in the web UI: **Settings > API Keys**
 
 4. Configure your MCP client (e.g., Claude Code):
-   ```json
-   {
-     "mcpServers": {
-       "outcomeops": {
-         "type": "streamableHttp",
-         "url": "https://your-outcomeops-domain.com/mcp/v1",
-         "headers": {
-           "Authorization": "Bearer ooa_your_key_here"
-         }
-       }
-     }
-   }
+   ```bash
+   claude mcp add --transport http outcomeops \
+     https://your-outcomeops-domain.com/mcp/v1 \
+     --header "Authorization: Bearer ooa_your_key_here"
    ```
 
 See the full guide: **[OutcomeOps MCP Server](mcp-server.md)**

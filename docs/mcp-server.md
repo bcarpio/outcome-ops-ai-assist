@@ -43,20 +43,12 @@ Developer's Machine                OutcomeOps MCP Gateway (Fargate)
 
 #### Claude Code
 
-Add to your Claude Code MCP configuration (`~/.claude/mcp.json` or project `.mcp.json`):
+Run this command in your terminal:
 
-```json
-{
-  "mcpServers": {
-    "outcomeops": {
-      "type": "streamableHttp",
-      "url": "https://your-outcomeops-domain.com/mcp/v1",
-      "headers": {
-        "Authorization": "Bearer ooa_your_key_here"
-      }
-    }
-  }
-}
+```bash
+claude mcp add --transport http outcomeops \
+  https://your-outcomeops-domain.com/mcp/v1 \
+  --header "Authorization: Bearer ooa_your_key_here"
 ```
 
 #### VS Code (Copilot / GitHub MCP)
