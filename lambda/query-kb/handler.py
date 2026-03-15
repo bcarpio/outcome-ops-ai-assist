@@ -314,7 +314,7 @@ def rerank_results(
                 "type": "BEDROCK_RERANKING_MODEL",
                 "bedrockRerankingConfiguration": {
                     "modelConfiguration": {
-                        "modelArn": f"arn:aws:bedrock:{os.environ.get('AWS_REGION', 'us-east-1')}::foundation-model/{RERANK_MODEL_ID}"
+                        "modelArn": f"arn:aws:bedrock:{os.environ.get('RERANK_REGION', os.environ.get('AWS_DEFAULT_REGION', 'us-west-2'))}::foundation-model/{RERANK_MODEL_ID}"
                     }
                 }
             }
@@ -492,7 +492,9 @@ def handler(event, context):
         if RERANK_ENABLED and len(context_docs) > 1:
             context_docs = rerank_results(query, context_docs, top_n=top_k)
             # Filter out low-relevance results if min score threshold is set
-            if RERANK_MIN_SCORE > 0:
+            # Only apply if results actually have rerank_score (not fallback)
+            has_rerank_scores = any("rerank_score" in d for d in context_docs)
+            if RERANK_MIN_SCORE > 0 and has_rerank_scores:
                 before_count = len(context_docs)
                 context_docs = [d for d in context_docs if d.get("rerank_score", 0) >= RERANK_MIN_SCORE]
                 logger.info(f"[query-kb] Min score filter ({RERANK_MIN_SCORE}): {before_count} -> {len(context_docs)} docs")

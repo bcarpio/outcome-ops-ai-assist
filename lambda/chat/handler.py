@@ -743,7 +743,7 @@ def rerank_results(
                 "type": "BEDROCK_RERANKING_MODEL",
                 "bedrockRerankingConfiguration": {
                     "modelConfiguration": {
-                        "modelArn": f"arn:aws:bedrock:{os.environ.get('AWS_REGION', 'us-east-1')}::foundation-model/{RERANK_MODEL_ID}"
+                        "modelArn": f"arn:aws:bedrock:{os.environ.get('RERANK_REGION', os.environ.get('AWS_DEFAULT_REGION', 'us-west-2'))}::foundation-model/{RERANK_MODEL_ID}"
                     }
                 }
             }
@@ -1342,7 +1342,9 @@ def handle_chat_stream(event: Dict) -> Generator[str, None, None]:
         if RERANK_ENABLED and len(search_results) > 1:
             search_results = rerank_results(search_query, search_results, top_n=request.top_k)
             # Filter out low-relevance results if min score threshold is set
-            if RERANK_MIN_SCORE > 0:
+            # Only apply if results actually have rerank_score (not fallback)
+            has_rerank_scores = any("rerank_score" in r for r in search_results)
+            if RERANK_MIN_SCORE > 0 and has_rerank_scores:
                 before_count = len(search_results)
                 search_results = [r for r in search_results if r.get("rerank_score", 0) >= RERANK_MIN_SCORE]
                 logger.info(f"Min score filter ({RERANK_MIN_SCORE}): {before_count} -> {len(search_results)} docs")
