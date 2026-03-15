@@ -292,9 +292,16 @@ def search_knowledge_base(query, workspace_ids=None, top_k=10):
         for vector in response.get("vectors", []):
             metadata = vector.get("metadata", {})
             repo = metadata.get("repo", "")
-            if not repo and metadata.get("source") == "github":
+            if not repo:
+                source_type = metadata.get("source", "")
                 folder_path = metadata.get("folder_path", "")
-                repo = folder_path.split("/")[0] if folder_path else ""
+                if source_type == "github":
+                    repo = folder_path.split("/")[0] if folder_path else ""
+                elif source_type and folder_path:
+                    space = folder_path.split("/")[-1] if "/" in folder_path else folder_path
+                    repo = f"{source_type.capitalize()}/{space}"
+                elif source_type:
+                    repo = source_type.capitalize()
 
             results.append({
                 "key": vector.get("key", ""),

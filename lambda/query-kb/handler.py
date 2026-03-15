@@ -242,11 +242,18 @@ def query_s3_vectors(
             distance = vector.get("distance", 0)
             similarity = 1 - distance  # For cosine, similarity = 1 - distance
 
-            # Extract repo: prefer explicit field, fall back to folder_path for GitHub sources
+            # Extract repo: prefer explicit field, fall back to source-specific logic
             repo = metadata.get("repo", "")
-            if not repo and metadata.get("source") == "github":
+            if not repo:
+                source_type = metadata.get("source", "")
                 folder_path = metadata.get("folder_path", "")
-                repo = folder_path.split("/")[0] if folder_path else ""
+                if source_type == "github":
+                    repo = folder_path.split("/")[0] if folder_path else ""
+                elif source_type and folder_path:
+                    space = folder_path.split("/")[-1] if "/" in folder_path else folder_path
+                    repo = f"{source_type.capitalize()}/{space}"
+                elif source_type:
+                    repo = source_type.capitalize()
 
             result = {
                 "score": round(similarity, 4),
