@@ -190,6 +190,8 @@ This creates:
 - SSM parameters for configuration
 - API Gateway endpoint for webhooks
 
+**Enable Bedrock Model Access:** After deployment, ensure all required Bedrock models have their marketplace agreements accepted. Third-party models like Cohere Rerank 3.5 require this step or reranking will fail silently. See [Deployment Guide - Bedrock Model Access](deployment-guide.md#bedrock-model-access-and-marketplace-agreements) for CLI and Console instructions.
+
 After deployment, note the API Gateway URL from the Terraform output:
 ```
 api_gateway_url = "https://xxxxxx.execute-api.us-west-2.amazonaws.com"

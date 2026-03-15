@@ -117,7 +117,8 @@ Raw mode is used by code generation to avoid double-processing - the results wil
 - `APP_NAME` - Application name (outcome-ops-ai-assist)
 - `BEDROCK_RERANK_MODEL_ID` - Rerank model ID (default: `cohere.rerank-v3-5:0`)
 - `RERANK_ENABLED` - Enable/disable reranking (`"true"` or `"false"`)
-- `RERANK_MAX_FETCH` - Max documents to over-fetch for reranking (default: 50)
+- `RERANK_MAX_FETCH` - Max documents to over-fetch for reranking (default: 90)
+- `RERANK_MIN_SCORE` - Minimum rerank relevance score (0-1) to include in results (default: 0, no filtering)
 
 ## IAM Permissions Required
 
@@ -126,7 +127,10 @@ Raw mode is used by code generation to avoid double-processing - the results wil
 - `s3vectors:QueryVectors` - Search the vector index
 - `bedrock:InvokeModel` - Generate query embeddings (Titan v2)
 - `bedrock:Rerank` - Rerank search results (Cohere Rerank 3.5)
+- `aws-marketplace:ViewSubscriptions`, `aws-marketplace:Subscribe` - Required for Cohere marketplace model access
 - `lambda:InvokeFunction` - Invoke ask-claude Lambda
+
+**Prerequisite:** The Cohere Rerank 3.5 marketplace agreement must be accepted in the AWS account before reranking will work. See [Deployment Guide - Bedrock Model Access](deployment-guide.md#bedrock-model-access-and-marketplace-agreements).
 
 ## Pipeline Stages
 
@@ -362,6 +366,11 @@ print(f"Sources: {', '.join(body['sources'])}")
 **4. "Failed to generate answer"**
 - Cause: ask-claude Lambda error
 - Fix: Check ask-claude logs, verify Bedrock permissions
+
+**5. Reranking fails silently (results returned in cosine order, not reranked)**
+- Cause: Cohere Rerank 3.5 marketplace agreement not accepted
+- Symptom: CloudWatch logs show `Reranking failed, falling back to cosine order: ValidationException: Model access is denied due to IAM user or service role is not authorized to perform the required AWS Marketplace actions`
+- Fix: Accept the marketplace agreement via CLI or Bedrock Console. See [Deployment Guide - Bedrock Model Access](deployment-guide.md#bedrock-model-access-and-marketplace-agreements)
 
 ## Related
 

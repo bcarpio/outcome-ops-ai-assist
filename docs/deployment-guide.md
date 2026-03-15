@@ -33,7 +33,7 @@ Deploying and operating OutcomeOps AI Assist requires familiarity with:
 - **Terraform** - All infrastructure is managed as IaC
 - **AWS IAM** - Role and policy management
 - **AWS Lambda** - Serverless function configuration
-- **Amazon Bedrock** - Model access and quotas
+- **Amazon Bedrock** - Model access, marketplace agreements, and quotas
 - **Amazon S3** - Bucket management and access policies
 - **Amazon DynamoDB** - Table configuration and PITR
 - **Amazon ECS / Fargate** - Container orchestration (if deploying Chat UI)
@@ -128,6 +128,42 @@ OutcomeOps AI Assist requires the following AWS services to be available in the 
 
 **Note:** Bedrock model availability varies by region. Verify that the specific model IDs configured in `bedrock_advanced_model_id`, `bedrock_basic_model_id`, and `bedrock_embedding_model_id` are available in your chosen region. Cross-region inference profiles (e.g., `us.anthropic.claude-*`) route automatically.
 
+### Bedrock Model Access and Marketplace Agreements
+
+Some Bedrock models (including third-party models like Cohere Rerank 3.5) require accepting an **AWS Marketplace agreement** before they can be invoked. This is separate from IAM permissions -- even if your Lambda roles have `bedrock:Rerank` and `aws-marketplace:*` permissions, calls will fail with `ValidationException: Model access is denied` until the agreement is accepted.
+
+**Required marketplace agreements:**
+
+| Model | Model ID | Used By | How to Enable |
+|-------|----------|---------|---------------|
+| Cohere Rerank 3.5 | `cohere.rerank-v3-5:0` | query-kb, chat-streaming | CLI or Bedrock Console |
+| Anthropic Claude (Sonnet/Haiku) | `anthropic.claude-*` | All Lambda functions | Bedrock Console (Model Access) |
+| Amazon Titan Embeddings v2 | `amazon.titan-embed-text-v2:0` | query-kb, chat-streaming, process-documents | Auto-enabled (first-party) |
+
+**Enable via CLI:**
+
+```bash
+# 1. Get the offer token for the model
+OFFER_TOKEN=$(aws bedrock list-foundation-model-agreement-offers \
+  --model-id "cohere.rerank-v3-5:0" \
+  --query 'offers[0].offerToken' --output text)
+
+# 2. Accept the marketplace agreement
+aws bedrock create-foundation-model-agreement \
+  --model-id "cohere.rerank-v3-5:0" \
+  --offer-token "$OFFER_TOKEN"
+```
+
+**Enable via Console:**
+
+1. Go to **Amazon Bedrock** > **Model access** in the AWS Console
+2. Click **Modify model access**
+3. Check the models you need (Cohere Rerank 3.5, Anthropic Claude, etc.)
+4. Review and accept the End User License Agreement (EULA)
+5. Click **Submit**
+
+**Troubleshooting:** If Lambda logs show `ValidationException: Model access is denied due to IAM user or service role is not authorized to perform the required AWS Marketplace actions`, the marketplace agreement has not been accepted for that model. Run the CLI commands above or enable via the console. Changes take effect within 2 minutes.
+
 ---
 
 ## Root User Warning
@@ -152,7 +188,7 @@ All infrastructure runs in the customer's AWS account. Costs are usage-based wit
 | Service | Usage | Pricing Model |
 |---------|-------|---------------|
 | **AWS Lambda** | 36 functions, various memory configs | Per-invocation + duration |
-| **Amazon Bedrock** | Claude Sonnet/Haiku + Titan Embeddings | Per-token (input/output) |
+| **Amazon Bedrock** | Claude Sonnet/Haiku + Titan Embeddings + Cohere Rerank 3.5 | Per-token (input/output), per-search unit (rerank) |
 | **Amazon S3** | Knowledge base document storage | Per-GB stored + requests |
 | **Amazon S3 Vectors** | Vector embeddings (1024-dim) | Per-GB stored + queries |
 | **Amazon DynamoDB** | 4 tables, on-demand billing | Per-read/write unit |
