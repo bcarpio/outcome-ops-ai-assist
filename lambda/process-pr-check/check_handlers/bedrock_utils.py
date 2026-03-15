@@ -31,7 +31,7 @@ bedrock_config = Config(
 )
 
 # Bedrock client (initialized once per container)
-bedrock_client = boto3.client("bedrock-runtime", region_name="us-east-1", config=bedrock_config)
+bedrock_client = boto3.client("bedrock-runtime", config=bedrock_config)
 
 # Model IDs (configurable via environment variables)
 SONNET_MODEL_ID = os.environ.get(

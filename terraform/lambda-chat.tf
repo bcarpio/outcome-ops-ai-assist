@@ -63,7 +63,6 @@ module "chat_streaming_lambda" {
     RERANK_ENABLED               = "true"
     RERANK_MAX_FETCH             = tostring(var.rerank_max_fetch)
     RERANK_MIN_SCORE             = tostring(var.rerank_min_score)
-    RERANK_REGION                = var.aws_region
     WORKSPACES_TABLE             = module.workspaces_table[0].dynamodb_table_id
     OAUTH_KMS_KEY_ARN            = aws_kms_key.oauth_tokens[0].arn
   }

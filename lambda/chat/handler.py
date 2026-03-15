@@ -743,7 +743,7 @@ def rerank_results(
                 "type": "BEDROCK_RERANKING_MODEL",
                 "bedrockRerankingConfiguration": {
                     "modelConfiguration": {
-                        "modelArn": f"arn:aws:bedrock:{os.environ.get('RERANK_REGION', os.environ.get('AWS_DEFAULT_REGION', 'us-west-2'))}::foundation-model/{RERANK_MODEL_ID}"
+                        "modelArn": f"arn:aws:bedrock:{client.meta.region_name}::foundation-model/{RERANK_MODEL_ID}"
                     }
                 }
             }

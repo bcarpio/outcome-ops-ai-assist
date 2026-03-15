@@ -150,7 +150,6 @@ module "query_kb_lambda" {
     RERANK_ENABLED             = "true"
     RERANK_MAX_FETCH           = tostring(var.rerank_max_fetch)
     RERANK_MIN_SCORE           = tostring(var.rerank_min_score)
-    RERANK_REGION              = var.aws_region
   }
 
   # IAM permissions
