@@ -80,7 +80,7 @@ from urllib.parse import unquote
 
 import boto3
 from botocore.exceptions import ClientError
-from pydantic import BaseModel, EmailStr, Field, ValidationError, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 # Configure logging
 logger = logging.getLogger()
@@ -207,13 +207,16 @@ class UpdateWorkspaceRequest(BaseModel):
 class AddMemberRequest(BaseModel):
     """Request model for adding a member to a workspace."""
 
-    email: EmailStr
+    email: str
     role: str = Field(default="member")
 
     @field_validator("email")
     @classmethod
     def normalize_email(cls, v: str) -> str:
-        return v.lower()
+        v = v.strip().lower()
+        if "@" not in v or "." not in v.split("@")[-1]:
+            raise ValueError("Invalid email address")
+        return v
 
     @field_validator("role")
     @classmethod
@@ -256,13 +259,16 @@ class UpdateSharingRequest(BaseModel):
 class AddOrgMemberRequest(BaseModel):
     """Request model for adding an org member."""
 
-    email: EmailStr
+    email: str
     org_role: str = Field(default="member")
 
     @field_validator("email")
     @classmethod
     def normalize_email(cls, v: str) -> str:
-        return v.lower()
+        v = v.strip().lower()
+        if "@" not in v or "." not in v.split("@")[-1]:
+            raise ValueError("Invalid email address")
+        return v
 
     @field_validator("org_role")
     @classmethod
