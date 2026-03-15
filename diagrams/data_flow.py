@@ -95,6 +95,7 @@ with Diagram(
         chat_lambda = Lambda("chat-streaming")
         titan_query = Sagemaker("Titan\nEmbeddings v2")
         s3_vec_query = S3("S3 Vectors\n(Search)")
+        cohere_rerank = Sagemaker("Cohere\nRerank 3.5")
         claude_llm = Sagemaker("Claude\nSonnet/Haiku")
         ddb_chat = Dynamodb("DynamoDB\nchat table")
         ddb_audit = Dynamodb("DynamoDB\naudit-logs")
@@ -105,8 +106,9 @@ with Diagram(
     fargate >> Edge(label="SigV4") >> chat_lambda
     chat_lambda >> Edge(label="1. Embed\nquery") >> titan_query
     titan_query >> Edge(label="2. Vector\nsearch") >> s3_vec_query
-    s3_vec_query >> Edge(label="3. Top-K\nresults") >> claude_llm
-    claude_llm >> Edge(label="4. Synthesized\nresponse") >> chat_lambda
+    s3_vec_query >> Edge(label="3. Over-fetch\ncandidates") >> cohere_rerank
+    cohere_rerank >> Edge(label="4. Reranked\nTop-K") >> claude_llm
+    claude_llm >> Edge(label="5. Synthesized\nresponse") >> chat_lambda
     chat_lambda >> ddb_chat
     chat_lambda >> ddb_audit
 

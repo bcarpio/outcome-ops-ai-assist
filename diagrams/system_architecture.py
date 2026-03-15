@@ -113,6 +113,7 @@ with Diagram(
         with Cluster("Amazon Bedrock"):
             bedrock_claude = Sagemaker("Claude Sonnet/Haiku")
             bedrock_titan = Sagemaker("Titan Embeddings v2")
+            bedrock_rerank = Sagemaker("Cohere Rerank 3.5")
 
         # --- Security ---
         with Cluster("Security & Config"):
@@ -137,12 +138,14 @@ with Diagram(
     # Chat flow
     chat >> bedrock_claude
     chat >> bedrock_titan
+    chat >> bedrock_rerank
     chat >> s3_vectors
     chat >> ddb_chat
     chat >> ddb_audit
 
     # Query flow
     query_kb >> bedrock_titan
+    query_kb >> bedrock_rerank
     query_kb >> s3_vectors
     ask_claude >> bedrock_claude
 
