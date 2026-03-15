@@ -498,9 +498,12 @@ def handler(event, context):
         # Step 2.5: Rerank results if enabled
         if RERANK_ENABLED and len(context_docs) > 1:
             context_docs = rerank_results(query, context_docs, top_n=top_k)
-            # Filter out low-relevance results if min score threshold is set
-            # Only apply if results actually have rerank_score (not fallback)
+            # Log score distribution for threshold tuning
             has_rerank_scores = any("rerank_score" in d for d in context_docs)
+            if has_rerank_scores:
+                scores = sorted([d.get("rerank_score", 0) for d in context_docs], reverse=True)
+                logger.info(f"[query-kb] Rerank scores: max={scores[0]:.3f} min={scores[-1]:.3f} median={scores[len(scores)//2]:.3f} ({len(scores)} docs)")
+            # Filter out low-relevance results if min score threshold is set
             if RERANK_MIN_SCORE > 0 and has_rerank_scores:
                 before_count = len(context_docs)
                 context_docs = [d for d in context_docs if d.get("rerank_score", 0) >= RERANK_MIN_SCORE]
