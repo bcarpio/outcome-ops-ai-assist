@@ -161,7 +161,7 @@ variable "rerank_max_fetch" {
 variable "rerank_min_score" {
   type        = number
   description = "Minimum rerank relevance score (0-1) to include in results. 0 = no filtering."
-  default     = 0
+  default     = 0.15
 }
 
 # ============================================================================

@@ -118,7 +118,7 @@ Raw mode is used by code generation to avoid double-processing - the results wil
 - `BEDROCK_RERANK_MODEL_ID` - Rerank model ID (default: `cohere.rerank-v3-5:0`)
 - `RERANK_ENABLED` - Enable/disable reranking (`"true"` or `"false"`)
 - `RERANK_MAX_FETCH` - Max documents to over-fetch for reranking (default: 90)
-- `RERANK_MIN_SCORE` - Minimum rerank relevance score (0-1) to include in results (default: 0, no filtering)
+- `RERANK_MIN_SCORE` - Minimum rerank relevance score (0-1) to include in results (default: 0.15)
 
 ## IAM Permissions Required
 
