@@ -6,13 +6,17 @@ locals {
   fqdn = var.domain != "" ? (var.environment == "prd" ? "${var.ui_subdomain}.${var.domain}" : "${var.ui_subdomain}-${var.environment}.${var.domain}") : ""
 }
 
-# Validate that workspace matches environment to prevent deploying wrong config
-check "workspace_matches_environment" {
-  assert {
-    condition = (
-      (terraform.workspace == "dev" && var.environment == "dev") ||
-      (terraform.workspace == "prd" && var.environment == "prd")
-    )
-    error_message = "Terraform workspace '${terraform.workspace}' does not match environment variable '${var.environment}'. Run 'terraform workspace select ${var.environment}' to fix."
+# Hard-fail if workspace does not match environment variable.
+# check blocks only warn; a precondition on a resource causes a real error
+# that blocks both plan and apply.
+resource "terraform_data" "workspace_environment_guard" {
+  lifecycle {
+    precondition {
+      condition = (
+        (terraform.workspace == "dev" && var.environment == "dev") ||
+        (terraform.workspace == "prd" && var.environment == "prd")
+      )
+      error_message = "BLOCKED: Terraform workspace '${terraform.workspace}' does not match environment '${var.environment}'. Run 'terraform workspace select ${var.environment}' to fix."
+    }
   }
 }
