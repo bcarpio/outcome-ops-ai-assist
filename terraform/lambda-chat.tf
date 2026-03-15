@@ -168,6 +168,16 @@ module "chat_streaming_lambda" {
       resources = ["*"]
     }
 
+    # AWS Marketplace permissions for Bedrock models (required for Cohere Rerank)
+    aws_marketplace = {
+      effect = "Allow"
+      actions = [
+        "aws-marketplace:ViewSubscriptions",
+        "aws-marketplace:Subscribe"
+      ]
+      resources = ["*"]
+    }
+
     # S3 Vectors for KB search and conversation memory
     s3_vectors = {
       effect = "Allow"

@@ -231,6 +231,16 @@ module "query_kb_lambda" {
       ]
       resources = ["*"]
     }
+
+    # AWS Marketplace permissions for Bedrock models (required for Cohere Rerank)
+    aws_marketplace = {
+      effect = "Allow"
+      actions = [
+        "aws-marketplace:ViewSubscriptions",
+        "aws-marketplace:Subscribe"
+      ]
+      resources = ["*"]
+    }
   }
 
   tags = {
