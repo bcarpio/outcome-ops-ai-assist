@@ -76,6 +76,7 @@ EMBEDDING_MODEL_ID = os.environ.get(
 RERANK_MODEL_ID = os.environ.get("BEDROCK_RERANK_MODEL_ID", "cohere.rerank-v3-5:0")
 RERANK_ENABLED = os.environ.get("RERANK_ENABLED", "false").lower() == "true"
 RERANK_MAX_FETCH = int(os.environ.get("RERANK_MAX_FETCH", "50"))
+RERANK_MIN_SCORE = float(os.environ.get("RERANK_MIN_SCORE", "0"))
 
 # Conversation memory config
 MEMORY_CHUNK_SIZE = 10  # Number of messages before creating a memory chunk (5 pairs)
@@ -777,10 +778,10 @@ def rerank_results(
 
     except ClientError as e:
         logger.warning(f"Reranking failed, falling back to cosine order: {e}")
-        return documents
+        return documents[:top_n] if top_n else documents
     except Exception as e:
         logger.warning(f"Unexpected rerank error, falling back: {e}")
-        return documents
+        return documents[:top_n] if top_n else documents
 
 
 def format_context(results: List[Dict]) -> str:
@@ -1340,7 +1341,12 @@ def handle_chat_stream(event: Dict) -> Generator[str, None, None]:
         # Rerank results if enabled
         if RERANK_ENABLED and len(search_results) > 1:
             search_results = rerank_results(search_query, search_results, top_n=request.top_k)
-            logger.info(f"Reranked and filtered to top {request.top_k}")
+            # Filter out low-relevance results if min score threshold is set
+            if RERANK_MIN_SCORE > 0:
+                before_count = len(search_results)
+                search_results = [r for r in search_results if r.get("rerank_score", 0) >= RERANK_MIN_SCORE]
+                logger.info(f"Min score filter ({RERANK_MIN_SCORE}): {before_count} -> {len(search_results)} docs")
+            logger.info(f"Reranked and filtered to {len(search_results)} docs (requested {request.top_k})")
 
     # Format context
     context = format_context(search_results)

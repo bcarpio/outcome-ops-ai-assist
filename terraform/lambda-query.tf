@@ -149,6 +149,7 @@ module "query_kb_lambda" {
     BEDROCK_RERANK_MODEL_ID    = var.bedrock_rerank_model_id
     RERANK_ENABLED             = "true"
     RERANK_MAX_FETCH           = tostring(var.rerank_max_fetch)
+    RERANK_MIN_SCORE           = tostring(var.rerank_min_score)
   }
 
   # IAM permissions

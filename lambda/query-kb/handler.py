@@ -43,6 +43,7 @@ EMBEDDING_MODEL_ID = os.environ.get(
 RERANK_MODEL_ID = os.environ.get("BEDROCK_RERANK_MODEL_ID", "cohere.rerank-v3-5:0")
 RERANK_ENABLED = os.environ.get("RERANK_ENABLED", "false").lower() == "true"
 RERANK_MAX_FETCH = int(os.environ.get("RERANK_MAX_FETCH", "50"))
+RERANK_MIN_SCORE = float(os.environ.get("RERANK_MIN_SCORE", "0"))
 
 # Setup logging
 logger = logging.getLogger()
@@ -348,10 +349,10 @@ def rerank_results(
 
     except ClientError as e:
         logger.warning(f"[query-kb] Reranking failed, falling back to cosine order: {e}")
-        return documents
+        return documents[:top_n] if top_n else documents
     except Exception as e:
         logger.warning(f"[query-kb] Unexpected rerank error, falling back: {e}")
-        return documents
+        return documents[:top_n] if top_n else documents
 
 
 def invoke_lambda(function_arn: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -490,7 +491,12 @@ def handler(event, context):
         # Step 2.5: Rerank results if enabled
         if RERANK_ENABLED and len(context_docs) > 1:
             context_docs = rerank_results(query, context_docs, top_n=top_k)
-            logger.info(f"[query-kb] Reranked and filtered to top {top_k}")
+            # Filter out low-relevance results if min score threshold is set
+            if RERANK_MIN_SCORE > 0:
+                before_count = len(context_docs)
+                context_docs = [d for d in context_docs if d.get("rerank_score", 0) >= RERANK_MIN_SCORE]
+                logger.info(f"[query-kb] Min score filter ({RERANK_MIN_SCORE}): {before_count} -> {len(context_docs)} docs")
+            logger.info(f"[query-kb] Reranked and filtered to {len(context_docs)} docs (requested {top_k})")
 
         # Raw mode: Return vector results directly without Claude synthesis
         # Used by code generation to avoid double-processing (Claude will process them anyway)

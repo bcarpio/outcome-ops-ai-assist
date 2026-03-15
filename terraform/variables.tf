@@ -158,6 +158,12 @@ variable "rerank_max_fetch" {
   default     = 90
 }
 
+variable "rerank_min_score" {
+  type        = number
+  description = "Minimum rerank relevance score (0-1) to include in results. 0 = no filtering."
+  default     = 0
+}
+
 # ============================================================================
 # Resource Tags
 # ============================================================================
