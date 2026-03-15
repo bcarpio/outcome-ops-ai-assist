@@ -12,9 +12,12 @@
  */
 
 import express from "express";
+import cookieParser from "cookie-parser";
+import jwt from "jsonwebtoken";
 import { SignatureV4 } from "@aws-sdk/signature-v4";
 import { Sha256 } from "@aws-crypto/sha256-js";
 import { defaultProvider } from "@aws-sdk/credential-provider-node";
+import { SSMClient, GetParameterCommand } from "@aws-sdk/client-ssm";
 import { readFileSync, existsSync } from "fs";
 import { join, extname } from "path";
 
@@ -31,6 +34,24 @@ const SHAREPOINT_LAMBDA_URL = process.env.SHAREPOINT_LAMBDA_URL;
 const AWS_REGION = process.env.AWS_REGION || "us-west-2";
 const STATIC_DIR = process.env.STATIC_DIR || "/app/static";
 const LOCAL_DEV_MODE = process.env.LOCAL_DEV_MODE === "true";
+const SCANNER_JWT_SECRET_SSM = process.env.SCANNER_JWT_SECRET_SSM || "";
+
+// Scanner JWT secret loaded from SSM at startup (null = scanner auth disabled)
+let scannerJwtSecret = null;
+
+async function loadScannerSecret() {
+  if (!SCANNER_JWT_SECRET_SSM) return;
+  try {
+    const ssm = new SSMClient({});
+    const result = await ssm.send(
+      new GetParameterCommand({ Name: SCANNER_JWT_SECRET_SSM, WithDecryption: true })
+    );
+    scannerJwtSecret = result.Parameter.Value;
+    console.log("[scanner] JWT secret loaded");
+  } catch (err) {
+    console.log("[scanner] No scanner JWT secret configured, scanner auth disabled");
+  }
+}
 
 // MIME types for static file serving
 const MIME_TYPES = {
@@ -57,8 +78,9 @@ const signer = new SignatureV4({
   sha256: Sha256,
 });
 
-// Parse JSON bodies
+// Parse JSON bodies and cookies
 app.use(express.json({ limit: "1mb" }));
+app.use(cookieParser());
 
 // Health check endpoint
 app.get("/health", (req, res) => {
@@ -77,45 +99,62 @@ app.get("/health", (req, res) => {
  * to get 'upn' (User Principal Name) as fallback.
  */
 function extractUser(req) {
+  // Path 1: OIDC headers from ALB (primary auth)
   const oidcData = req.headers["x-amzn-oidc-data"];
-  if (!oidcData) {
-    return { email: "anonymous", name: "anonymous" };
-  }
+  if (oidcData) {
+    try {
+      // ALB OIDC JWT is base64url-encoded; payload is the second segment
+      const payload = JSON.parse(
+        Buffer.from(oidcData.split(".")[1], "base64url").toString()
+      );
 
-  try {
-    // ALB OIDC JWT is base64url-encoded; payload is the second segment
-    const payload = JSON.parse(
-      Buffer.from(oidcData.split(".")[1], "base64url").toString()
-    );
+      let email = payload.email || payload.preferred_username || null;
 
-    let email = payload.email || payload.preferred_username || null;
-
-    // Azure AD cloud-only accounts may not have email in UserInfo.
-    // Fall back to decoding the access token for upn/preferred_username.
-    if (!email) {
-      const accessToken = req.headers["x-amzn-oidc-accesstoken"];
-      if (accessToken) {
-        try {
-          const tokenPayload = JSON.parse(
-            Buffer.from(accessToken.split(".")[1], "base64url").toString()
-          );
-          email = tokenPayload.upn || tokenPayload.preferred_username || tokenPayload.unique_name || null;
-          if (email) {
-            console.log(`[auth] Resolved email from access token: ${email}`);
+      // Azure AD cloud-only accounts may not have email in UserInfo.
+      // Fall back to decoding the access token for upn/preferred_username.
+      if (!email) {
+        const accessToken = req.headers["x-amzn-oidc-accesstoken"];
+        if (accessToken) {
+          try {
+            const tokenPayload = JSON.parse(
+              Buffer.from(accessToken.split(".")[1], "base64url").toString()
+            );
+            email = tokenPayload.upn || tokenPayload.preferred_username || tokenPayload.unique_name || null;
+            if (email) {
+              console.log(`[auth] Resolved email from access token: ${email}`);
+            }
+          } catch {
+            // Access token may not be a decodable JWT (opaque tokens)
           }
-        } catch {
-          // Access token may not be a decodable JWT (opaque tokens)
         }
       }
-    }
 
-    return {
-      email: (email || payload.sub || "unknown").toLowerCase(),
-      name: payload.name || email || "unknown",
-    };
-  } catch {
-    return { email: "unknown", name: "unknown" };
+      return {
+        email: (email || payload.sub || "unknown").toLowerCase(),
+        name: payload.name || email || "unknown",
+      };
+    } catch {
+      return { email: "unknown", name: "unknown" };
+    }
   }
+
+  // Path 2: Scanner session cookie (for AWS Security Agent)
+  const scannerToken = req.cookies?.oo_scanner_session;
+  if (scannerToken && scannerJwtSecret) {
+    try {
+      const decoded = jwt.verify(scannerToken, scannerJwtSecret);
+      if (decoded.auth_type === "scanner") {
+        return {
+          email: decoded.email,
+          name: decoded.name || "Security Scanner",
+        };
+      }
+    } catch {
+      // Invalid or expired token -- fall through to anonymous
+    }
+  }
+
+  return { email: "anonymous", name: "anonymous" };
 }
 
 /**
@@ -1626,18 +1665,21 @@ app.use((req, res) => {
   }
 });
 
-// Start server
-app.listen(PORT, () => {
-  console.log(`[server] OutcomeOps UI server listening on port ${PORT}`);
-  console.log(`[server] Static files: ${STATIC_DIR}`);
-  console.log(`[server] Chat Lambda URL: ${LAMBDA_FUNCTION_URL ? "configured" : "NOT CONFIGURED"}`);
-  console.log(`[server] Workspace Lambda URL: ${WORKSPACE_LAMBDA_URL ? "configured" : "disabled"}`);
-  console.log(`[server] Confluence Lambda URL: ${CONFLUENCE_LAMBDA_URL ? "configured" : "disabled"}`);
-  console.log(`[server] Jira Lambda URL: ${JIRA_LAMBDA_URL ? "configured" : "disabled"}`);
-  console.log(`[server] GitHub Lambda URL: ${GITHUB_LAMBDA_URL ? "configured" : "disabled"}`);
-  console.log(`[server] Outlook Lambda URL: ${OUTLOOK_LAMBDA_URL ? "configured" : "disabled"}`);
-  console.log(`[server] Teams Lambda URL: ${TEAMS_LAMBDA_URL ? "configured" : "disabled"}`);
-  console.log(`[server] SharePoint Lambda URL: ${SHAREPOINT_LAMBDA_URL ? "configured" : "disabled"}`);
-  console.log(`[server] Local dev mode: ${LOCAL_DEV_MODE ? "ENABLED (using mock data)" : "disabled"}`);
-  console.log(`[server] AWS Region: ${AWS_REGION}`);
+// Load scanner secret then start server
+loadScannerSecret().then(() => {
+  app.listen(PORT, () => {
+    console.log(`[server] OutcomeOps UI server listening on port ${PORT}`);
+    console.log(`[server] Static files: ${STATIC_DIR}`);
+    console.log(`[server] Chat Lambda URL: ${LAMBDA_FUNCTION_URL ? "configured" : "NOT CONFIGURED"}`);
+    console.log(`[server] Workspace Lambda URL: ${WORKSPACE_LAMBDA_URL ? "configured" : "disabled"}`);
+    console.log(`[server] Confluence Lambda URL: ${CONFLUENCE_LAMBDA_URL ? "configured" : "disabled"}`);
+    console.log(`[server] Jira Lambda URL: ${JIRA_LAMBDA_URL ? "configured" : "disabled"}`);
+    console.log(`[server] GitHub Lambda URL: ${GITHUB_LAMBDA_URL ? "configured" : "disabled"}`);
+    console.log(`[server] Outlook Lambda URL: ${OUTLOOK_LAMBDA_URL ? "configured" : "disabled"}`);
+    console.log(`[server] Teams Lambda URL: ${TEAMS_LAMBDA_URL ? "configured" : "disabled"}`);
+    console.log(`[server] SharePoint Lambda URL: ${SHAREPOINT_LAMBDA_URL ? "configured" : "disabled"}`);
+    console.log(`[server] Scanner auth: ${scannerJwtSecret ? "enabled" : "disabled"}`);
+    console.log(`[server] Local dev mode: ${LOCAL_DEV_MODE ? "ENABLED (using mock data)" : "disabled"}`);
+    console.log(`[server] AWS Region: ${AWS_REGION}`);
+  });
 });

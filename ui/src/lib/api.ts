@@ -568,11 +568,18 @@ export async function deleteConfluenceConnection(workspaceId: string, connection
 // Org Management Types and API
 // ============================================================================
 
+export interface OrgMemberWorkspace {
+  workspace_id: string
+  role: string
+}
+
 export interface OrgMember {
   user_email: string
   org_role: 'org_admin' | 'member'
   joined_at: string
   invited_by?: string
+  is_service_account?: boolean
+  workspaces?: OrgMemberWorkspace[]
 }
 
 /**

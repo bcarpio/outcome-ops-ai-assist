@@ -240,10 +240,18 @@ export default function OrgSettings() {
                       )}
                     </div>
                     <div>
-                      <p className="font-medium text-gray-900">{member.user_email}</p>
+                      <p className="font-medium text-gray-900">
+                        {member.user_email}
+                        {member.is_service_account && (
+                          <span className="ml-2 text-xs bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded">Service Account</span>
+                        )}
+                      </p>
                       <p className="text-sm text-gray-500">
                         Joined {new Date(member.joined_at).toLocaleDateString()}
                         {member.invited_by && ` · Invited by ${member.invited_by}`}
+                        {member.workspaces && member.workspaces.length > 0 && (
+                          <span> · {member.workspaces.length} workspace{member.workspaces.length !== 1 ? 's' : ''}</span>
+                        )}
                       </p>
                     </div>
                   </div>

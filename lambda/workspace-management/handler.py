@@ -429,9 +429,6 @@ def create_workspace(user_email: str, request: CreateWorkspaceRequest) -> Dict:
     dynamodb = _get_dynamodb()
     table = dynamodb.Table(_get_workspaces_table())
 
-    # Ensure user has org membership record
-    _ensure_org_member(table, user_email)
-
     workspace_id = generate_id()
     now = datetime.now(timezone.utc).isoformat()
 
@@ -685,28 +682,6 @@ def _can_access_workspace(table, user_email: str, workspace_id: str) -> bool:
     return _get_membership(table, user_email, workspace_id) is not None
 
 
-def _ensure_org_member(table, user_email: str) -> None:
-    """Ensure user has an org membership record. Creates one if missing."""
-    existing = _get_org_membership(table, user_email)
-    if existing:
-        return
-
-    # Create org membership as regular member
-    now = datetime.now(timezone.utc).isoformat()
-    table.put_item(
-        Item={
-            "PK": f"USER#{user_email}",
-            "SK": "ORG_MEMBER",
-            "GSI1PK": "ORG#default",
-            "GSI1SK": f"USER#{user_email}",
-            "user_email": user_email,
-            "org_role": "member",
-            "joined_at": now,
-        }
-    )
-    logger.info(f"Created org membership for {user_email}")
-
-
 def add_member(
     user_email: str, workspace_id: str, request: AddMemberRequest
 ) -> Dict:
@@ -730,9 +705,6 @@ def add_member(
         existing = _get_membership(table, request.email, workspace_id)
         if existing:
             return _error(409, "User is already a member of this workspace")
-
-        # Ensure user has org membership record
-        _ensure_org_member(table, request.email)
 
         now = datetime.now(timezone.utc).isoformat()
 
@@ -1133,7 +1105,15 @@ def list_all_workspaces_for_sharing(user_email: str, workspace_id: str) -> Dict:
 
 
 def list_org_members(user_email: str) -> Dict:
-    """List all org members (org admin only)."""
+    """List all org members (org admin only).
+
+    Derives the member list from two sources:
+      1. ORG_MEMBER records (org admins and explicitly added members)
+      2. WS_MEMBER records (anyone added to any workspace)
+
+    This avoids sync issues where a user is in a workspace but missing
+    from the org listing.
+    """
     dynamodb = _get_dynamodb()
     table = dynamodb.Table(_get_workspaces_table())
 
@@ -1142,14 +1122,58 @@ def list_org_members(user_email: str) -> Dict:
         if not _is_org_admin(table, user_email):
             return _error(403, "Only org admins can list org members")
 
-        # Query using GSI1 for ORG#default
-        response = table.query(
+        # Source 1: Explicit org membership records
+        org_response = table.query(
             IndexName="GSI1",
-            KeyConditionExpression="GSI1PK = :gsi1pk",
-            ExpressionAttributeValues={":gsi1pk": "ORG#default"},
+            KeyConditionExpression="GSI1PK = :gsi1pk AND begins_with(GSI1SK, :user_prefix)",
+            ExpressionAttributeValues={
+                ":gsi1pk": "ORG#default",
+                ":user_prefix": "USER#",
+            },
         )
 
-        members = response.get("Items", [])
+        # Build lookup by email from org records
+        members_by_email = {}
+        for item in org_response.get("Items", []):
+            email = item.get("user_email", "")
+            if email:
+                members_by_email[email] = {
+                    "user_email": email,
+                    "org_role": item.get("org_role", "member"),
+                    "joined_at": item.get("joined_at", ""),
+                    "is_service_account": item.get("is_service_account", False),
+                    "workspaces": [],
+                }
+
+        # Source 2: All workspace membership records
+        scan_kwargs = {
+            "FilterExpression": "begins_with(SK, :sk)",
+            "ExpressionAttributeValues": {":sk": "WS_MEMBER#"},
+        }
+        while True:
+            ws_response = table.scan(**scan_kwargs)
+            for item in ws_response.get("Items", []):
+                email = item.get("user_email", "")
+                if not email:
+                    continue
+                ws_id = item.get("workspace_id", "")
+                ws_role = item.get("role", "member")
+                if email not in members_by_email:
+                    members_by_email[email] = {
+                        "user_email": email,
+                        "org_role": "member",
+                        "joined_at": item.get("joined_at", ""),
+                        "workspaces": [],
+                    }
+                members_by_email[email]["workspaces"].append({
+                    "workspace_id": ws_id,
+                    "role": ws_role,
+                })
+            if "LastEvaluatedKey" not in ws_response:
+                break
+            scan_kwargs["ExclusiveStartKey"] = ws_response["LastEvaluatedKey"]
+
+        members = list(members_by_email.values())
 
         # Sort: org_admins first, then by email
         members.sort(key=lambda x: (x.get("org_role") != "org_admin", x.get("user_email", "")))
@@ -1266,15 +1290,12 @@ def remove_org_member(user_email: str, member_email: str) -> Dict:
             if admin_count <= 1:
                 return _error(400, "Cannot remove the last org admin")
 
-        # Check member exists
+        # Remove org membership record if it exists (org admins have one)
         existing = _get_org_membership(table, member_email)
-        if not existing:
-            return _error(404, "Org member not found")
+        if existing:
+            table.delete_item(Key={"PK": f"USER#{member_email}", "SK": "ORG_MEMBER"})
 
-        # Remove org membership
-        table.delete_item(Key={"PK": f"USER#{member_email}", "SK": "ORG_MEMBER"})
-
-        # Also remove all workspace memberships for this user
+        # Remove all workspace memberships for this user
         ws_response = table.query(
             KeyConditionExpression="PK = :pk AND begins_with(SK, :sk)",
             ExpressionAttributeValues={

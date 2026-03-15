@@ -413,6 +413,13 @@ module "ui_ecs" {
                 name  = "SHAREPOINT_LAMBDA_URL"
                 value = aws_lambda_function_url.sharepoint_integration[0].function_url
               }
+            ] : [],
+            # Add scanner JWT secret SSM path when security scanner is enabled
+            local.scanner_enabled ? [
+              {
+                name  = "SCANNER_JWT_SECRET_SSM"
+                value = aws_ssm_parameter.scanner_jwt_secret[0].name
+              }
             ] : []
           )
 
@@ -497,6 +504,23 @@ module "ui_ecs" {
               "lambda:InvokeFunctionUrl"
             ]
             resources = [module.sharepoint_integration_lambda[0].lambda_function_arn]
+          }
+        ] : [],
+        # SSM read for scanner JWT secret when security scanner is enabled
+        local.scanner_enabled ? [
+          {
+            effect = "Allow"
+            actions = [
+              "ssm:GetParameter"
+            ]
+            resources = [aws_ssm_parameter.scanner_jwt_secret[0].arn]
+          },
+          {
+            effect = "Allow"
+            actions = [
+              "kms:Decrypt"
+            ]
+            resources = ["arn:aws:kms:${var.aws_region}:${data.aws_caller_identity.current.account_id}:alias/aws/ssm"]
           }
         ] : []
       )

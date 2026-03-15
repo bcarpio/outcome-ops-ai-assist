@@ -292,3 +292,19 @@ variable "audit_alert_email" {
   type        = string
   default     = ""
 }
+
+# ============================================================================
+# Security Scanner (AWS Security Agent)
+# ============================================================================
+
+variable "security_scanner_enabled" {
+  type        = bool
+  description = "Enable security scanner auth endpoint for AWS Security Agent"
+  default     = false
+}
+
+variable "security_scanner_email" {
+  type        = string
+  description = "Email address for the security scanner service account"
+  default     = "security-scanner@outcomeops.local"
+}

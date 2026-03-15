@@ -366,13 +366,12 @@ class TestAddMember:
         mock_get_table.return_value = "test-workspaces"
 
         # Mock get_item calls: org_admin check, workspace_admin membership check, workspace exists,
-        # target user not already member, _ensure_org_member check (no existing org record)
+        # target user not already member
         mock_table.get_item.side_effect = [
             {},  # org_admin check - not an org admin
             {"Item": {"role": "workspace_admin"}},  # Admin membership check
             {"Item": {"workspace_id": "ws1"}},  # Workspace exists
             {},  # Target user not already member
-            {},  # _ensure_org_member: no existing ORG_MEMBER record
         ]
 
         request = AddMemberRequest(email="newuser@example.com", role="member")
@@ -382,8 +381,8 @@ class TestAddMember:
 
         # Assert
         assert result["statusCode"] == 201
-        # Two put_item calls: _ensure_org_member + WS_MEMBER
-        assert mock_table.put_item.call_count == 2
+        # One put_item call: WS_MEMBER only (no ORG_MEMBER for regular members)
+        assert mock_table.put_item.call_count == 1
 
     @patch("workspace_management_handler._get_workspaces_table")
     @patch("workspace_management_handler._get_dynamodb")
