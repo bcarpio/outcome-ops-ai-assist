@@ -53,10 +53,11 @@ This is Context Engineering. This is OutcomeOps.
 - Existing code examples
 - Standards documentation
 
-**2. Vector Search + Context Retrieval**
+**2. Vector Search + Reranking**
 - When a feature is requested (Jira story, GitHub issue)
-- OutcomeOps queries your knowledge base
-- Finds relevant patterns, decisions, examples
+- OutcomeOps queries your knowledge base via semantic vector search
+- Reranks results using Cohere Rerank 3.5 for precision ordering
+- Finds the most relevant patterns, decisions, and examples
 
 **3. AI Generation with Context**
 - Claude generates code using YOUR context
@@ -148,6 +149,8 @@ OutcomeOps applies the same playbook to AI-assisted development:
 - [AI Disclosure Modal](docs/ai-disclosure-modal.md) - Pre-use AI transparency notice for regulatory compliance
 
 **Lambda Documentation**
+- [Lambda: Query KB](docs/lambda-query-kb.md) - RAG orchestrator (vector search + reranking + answer generation)
+- [Lambda: Ask Claude](docs/lambda-ask-claude.md) - RAG answer generation
 - [Lambda: Ingest Docs](docs/lambda-ingest-docs.md) - Knowledge base ingestion
 - [Lambda: Generate Code Maps](docs/lambda-generate-code-maps.md) - Code analysis
 - [Lambda: Generate Code](docs/lambda-generate-code.md) - AI-powered code generation from issues
