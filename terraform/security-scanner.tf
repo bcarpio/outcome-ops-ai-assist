@@ -32,6 +32,12 @@ resource "random_password" "scanner_jwt_secret" {
   special = false
 }
 
+resource "random_password" "scanner_header_key" {
+  count   = local.scanner_enabled ? 1 : 0
+  length  = 32
+  special = false
+}
+
 # -----------------------------------------------------------------------------
 # SSM Parameters
 # -----------------------------------------------------------------------------
@@ -229,13 +235,14 @@ resource "aws_lb_listener_rule" "scanner" {
 }
 
 # -----------------------------------------------------------------------------
-# Scanner Cookie Bypass - skip OIDC for scanner-authenticated requests
-# Requests with the oo_scanner_session cookie go directly to the UI
-# target group. The Express proxy validates the JWT in the cookie.
-# Priority 3 - after scanner auth (2), before OAuth callbacks (10).
+# Scanner Header Bypass - skip OIDC for requests with the scanner header
+# The AWS Security Agent sends this custom header on every request
+# (validation, login, and scanning). This bypasses OIDC so the agent
+# can reach the app without going through Microsoft login.
+# Priority 4 - after scanner auth (2), MCP (3/5), before OAuth callbacks (10).
 # -----------------------------------------------------------------------------
 
-resource "aws_lb_listener_rule" "scanner_cookie_bypass" {
+resource "aws_lb_listener_rule" "scanner_header_bypass" {
   count        = local.scanner_enabled ? 1 : 0
   listener_arn = local.mcp_alb_listener_arn
   priority     = 4
@@ -247,8 +254,8 @@ resource "aws_lb_listener_rule" "scanner_cookie_bypass" {
 
   condition {
     http_header {
-      http_header_name = "cookie"
-      values           = ["*oo_scanner_session=*"]
+      http_header_name = "x-scanner-key"
+      values           = [random_password.scanner_header_key[0].result]
     }
   }
 }
@@ -271,5 +278,11 @@ output "security_scanner_email" {
 output "security_scanner_password" {
   description = "Service account password for AWS Security Agent"
   value       = local.scanner_enabled ? random_password.scanner_password[0].result : null
+  sensitive   = true
+}
+
+output "security_scanner_header_key" {
+  description = "Custom header value (X-Scanner-Key) for ALB OIDC bypass"
+  value       = local.scanner_enabled ? random_password.scanner_header_key[0].result : null
   sensitive   = true
 }
