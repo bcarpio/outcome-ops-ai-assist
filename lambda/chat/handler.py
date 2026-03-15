@@ -1349,17 +1349,18 @@ def handle_chat_stream(event: Dict) -> Generator[str, None, None]:
         # Rerank results if enabled
         if RERANK_ENABLED and len(search_results) > 1:
             search_results = rerank_results(search_query, search_results, top_n=request.top_k)
-            # Log score distribution for threshold tuning
+            # Log score distribution for threshold tuning (print for LWA/CloudWatch visibility)
             has_rerank_scores = any("rerank_score" in r for r in search_results)
             if has_rerank_scores:
                 scores = sorted([r.get("rerank_score", 0) for r in search_results], reverse=True)
-                logger.info(f"Rerank scores: max={scores[0]:.3f} min={scores[-1]:.3f} median={scores[len(scores)//2]:.3f} ({len(scores)} docs)")
+                print(f"[RERANK] Scores: max={scores[0]:.3f} min={scores[-1]:.3f} median={scores[len(scores)//2]:.3f} ({len(scores)} docs)")
+                print(f"[RERANK] All scores: {[round(s, 3) for s in scores]}")
             # Filter out low-relevance results if min score threshold is set
             if RERANK_MIN_SCORE > 0 and has_rerank_scores:
                 before_count = len(search_results)
                 search_results = [r for r in search_results if r.get("rerank_score", 0) >= RERANK_MIN_SCORE]
-                logger.info(f"Min score filter ({RERANK_MIN_SCORE}): {before_count} -> {len(search_results)} docs")
-            logger.info(f"Reranked and filtered to {len(search_results)} docs (requested {request.top_k})")
+                print(f"[RERANK] Min score filter ({RERANK_MIN_SCORE}): {before_count} -> {len(search_results)} docs")
+            print(f"[RERANK] Final: {len(search_results)} docs (requested {request.top_k})")
 
     # Format context
     context = format_context(search_results)
