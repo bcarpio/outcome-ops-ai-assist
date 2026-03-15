@@ -229,6 +229,31 @@ resource "aws_lb_listener_rule" "scanner" {
 }
 
 # -----------------------------------------------------------------------------
+# Scanner Cookie Bypass - skip OIDC for scanner-authenticated requests
+# Requests with the oo_scanner_session cookie go directly to the UI
+# target group. The Express proxy validates the JWT in the cookie.
+# Priority 3 - after scanner auth (2), before OAuth callbacks (10).
+# -----------------------------------------------------------------------------
+
+resource "aws_lb_listener_rule" "scanner_cookie_bypass" {
+  count        = local.scanner_enabled ? 1 : 0
+  listener_arn = local.mcp_alb_listener_arn
+  priority     = 4
+
+  action {
+    type             = "forward"
+    target_group_arn = module.ui_alb.target_groups["ui"].arn
+  }
+
+  condition {
+    http_header {
+      http_header_name = "cookie"
+      values           = ["*oo_scanner_session=*"]
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------
 # Outputs
 # -----------------------------------------------------------------------------
 
