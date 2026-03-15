@@ -59,6 +59,9 @@ module "chat_streaming_lambda" {
     BEDROCK_ADVANCED_MODEL_ID    = var.bedrock_advanced_model_id
     BEDROCK_BASIC_MODEL_ID       = var.bedrock_basic_model_id
     BEDROCK_EMBEDDING_MODEL_ID   = var.bedrock_embedding_model_id
+    BEDROCK_RERANK_MODEL_ID      = var.bedrock_rerank_model_id
+    RERANK_ENABLED               = "true"
+    RERANK_MAX_FETCH             = tostring(var.rerank_max_fetch)
     WORKSPACES_TABLE             = module.workspaces_table[0].dynamodb_table_id
     OAUTH_KMS_KEY_ARN            = aws_kms_key.oauth_tokens[0].arn
   }
@@ -153,6 +156,15 @@ module "chat_streaming_lambda" {
       resources = [
         aws_kms_key.oauth_tokens[0].arn
       ]
+    }
+
+    # Bedrock Rerank API for post-retrieval reranking
+    bedrock_rerank = {
+      effect = "Allow"
+      actions = [
+        "bedrock:Rerank"
+      ]
+      resources = ["*"]
     }
 
     # S3 Vectors for KB search and conversation memory

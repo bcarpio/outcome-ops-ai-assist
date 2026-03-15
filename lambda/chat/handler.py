@@ -54,6 +54,7 @@ _vector_bucket = None
 _vector_index = None
 _workspaces_table = None
 _kms_client = None
+_bedrock_agent_runtime_client = None
 
 # Bedrock config with longer timeout for streaming
 bedrock_config = Config(
@@ -72,6 +73,9 @@ BASIC_MODEL_ID = os.environ.get(
 EMBEDDING_MODEL_ID = os.environ.get(
     "BEDROCK_EMBEDDING_MODEL_ID", "amazon.titan-embed-text-v2:0"
 )
+RERANK_MODEL_ID = os.environ.get("BEDROCK_RERANK_MODEL_ID", "cohere.rerank-v3-5:0")
+RERANK_ENABLED = os.environ.get("RERANK_ENABLED", "false").lower() == "true"
+RERANK_MAX_FETCH = int(os.environ.get("RERANK_MAX_FETCH", "50"))
 
 # Conversation memory config
 MEMORY_CHUNK_SIZE = 10  # Number of messages before creating a memory chunk (5 pairs)
@@ -104,6 +108,13 @@ def _get_bedrock_client():
     if _bedrock_client is None:
         _bedrock_client = boto3.client("bedrock-runtime", config=bedrock_config)
     return _bedrock_client
+
+
+def _get_bedrock_agent_runtime_client():
+    global _bedrock_agent_runtime_client
+    if _bedrock_agent_runtime_client is None:
+        _bedrock_agent_runtime_client = boto3.client("bedrock-agent-runtime")
+    return _bedrock_agent_runtime_client
 
 
 def _get_chat_table():
@@ -694,6 +705,84 @@ def search_kb(
         return []
 
 
+def rerank_results(
+    query: str,
+    documents: List[Dict],
+    top_n: Optional[int] = None
+) -> List[Dict]:
+    """Rerank documents using Bedrock Rerank API (Cohere Rerank 3.5).
+
+    Falls back to original order if reranking fails.
+    """
+    if not documents:
+        return documents
+
+    try:
+        client = _get_bedrock_agent_runtime_client()
+
+        sources = []
+        for doc in documents:
+            text = doc.get("content", "") or doc.get("text", "")
+            sources.append({
+                "type": "INLINE",
+                "inlineDocumentSource": {
+                    "type": "TEXT",
+                    "textDocument": {
+                        "text": text[:4096]
+                    }
+                }
+            })
+
+        rerank_start = time.time()
+
+        rerank_params = {
+            "queries": [{"type": "TEXT", "textQuery": {"text": query}}],
+            "sources": sources,
+            "rerankingConfiguration": {
+                "type": "BEDROCK_RERANKING_MODEL",
+                "bedrockRerankingConfiguration": {
+                    "modelConfiguration": {
+                        "modelArn": f"arn:aws:bedrock:{os.environ.get('AWS_REGION', 'us-east-1')}::foundation-model/{RERANK_MODEL_ID}"
+                    }
+                }
+            }
+        }
+
+        if top_n is not None:
+            rerank_params["rerankingConfiguration"]["bedrockRerankingConfiguration"]["numberOfResults"] = top_n
+
+        response = client.rerank(**rerank_params)
+
+        rerank_duration_ms = int((time.time() - rerank_start) * 1000)
+        logger.info(f"Reranked {len(documents)} documents in {rerank_duration_ms}ms")
+
+        reranked = []
+        for result in response.get("results", []):
+            idx = result.get("index", 0)
+            if idx < len(documents):
+                doc = documents[idx].copy()
+                doc["rerank_score"] = result.get("relevanceScore", 0)
+                reranked.append(doc)
+
+        log_audit_entry(
+            audit_table_name=os.environ.get("AUDIT_TABLE", ""),
+            lambda_name="chat",
+            model_id=RERANK_MODEL_ID,
+            input_text=f"rerank:{query}",
+            output_text=f"reranked {len(reranked)} of {len(documents)} docs",
+            duration_ms=rerank_duration_ms,
+        )
+
+        return reranked
+
+    except ClientError as e:
+        logger.warning(f"Reranking failed, falling back to cosine order: {e}")
+        return documents
+    except Exception as e:
+        logger.warning(f"Unexpected rerank error, falling back: {e}")
+        return documents
+
+
 def format_context(results: List[Dict]) -> str:
     """Format search results as context for the prompt."""
     if not results:
@@ -1245,7 +1334,13 @@ def handle_chat_stream(event: Dict) -> Generator[str, None, None]:
     if mcp_server_ids and not workspace_ids:
         search_results = []
     else:
-        search_results = search_kb(search_query, top_k=request.top_k, workspace_ids=workspace_ids)
+        fetch_k = min(request.top_k * 4, RERANK_MAX_FETCH) if RERANK_ENABLED else request.top_k
+        search_results = search_kb(search_query, top_k=fetch_k, workspace_ids=workspace_ids)
+
+        # Rerank results if enabled
+        if RERANK_ENABLED and len(search_results) > 1:
+            search_results = rerank_results(search_query, search_results, top_n=request.top_k)
+            logger.info(f"Reranked and filtered to top {request.top_k}")
 
     # Format context
     context = format_context(search_results)
