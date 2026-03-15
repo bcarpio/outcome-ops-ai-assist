@@ -1100,6 +1100,63 @@ def list_all_workspaces_for_sharing(user_email: str, workspace_id: str) -> Dict:
 
 
 # ============================================================================
+# User Search Operations
+# ============================================================================
+
+
+def search_users(user_email: str, query: str) -> Dict:
+    """Search for existing users by email prefix.
+
+    Collects unique users from PROFILE, ORG_MEMBER, and WS_MEMBER records,
+    then filters by the search query. Used by the Add Member UI to find
+    existing users to add to workspaces.
+    """
+    dynamodb = _get_dynamodb()
+    table = dynamodb.Table(_get_workspaces_table())
+
+    try:
+        query_lower = query.lower().strip()
+        if len(query_lower) < 2:
+            return _response(200, {"users": []})
+
+        users_by_email = {}
+
+        # Scan for records that have a user_email attribute
+        scan_kwargs = {
+            "FilterExpression": "attribute_exists(user_email)",
+            "ProjectionExpression": "user_email, #n, SK, is_service_account",
+            "ExpressionAttributeNames": {"#n": "name"},
+        }
+        while True:
+            response = table.scan(**scan_kwargs)
+            for item in response.get("Items", []):
+                email = item.get("user_email", "")
+                if not email or query_lower not in email.lower():
+                    continue
+                if email not in users_by_email:
+                    users_by_email[email] = {
+                        "user_email": email,
+                        "name": item.get("name", ""),
+                        "is_service_account": item.get("is_service_account", False),
+                    }
+                # Prefer name from PROFILE record
+                if item.get("SK") == "PROFILE" and item.get("name"):
+                    users_by_email[email]["name"] = item["name"]
+                    users_by_email[email]["is_service_account"] = item.get(
+                        "is_service_account", False
+                    )
+            if "LastEvaluatedKey" not in response:
+                break
+            scan_kwargs["ExclusiveStartKey"] = response["LastEvaluatedKey"]
+
+        users = sorted(users_by_email.values(), key=lambda u: u["user_email"])
+        return _response(200, {"users": users[:20]})
+    except ClientError as e:
+        logger.error(f"Error searching users: {e}")
+        return _error(500, "Failed to search users")
+
+
+# ============================================================================
 # Org Management Operations
 # ============================================================================
 
@@ -2596,6 +2653,16 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             and http_method == "GET"
         ):
             return list_all_workspaces_for_sharing(user_email, parts[1])
+
+        # ====================================================================
+        # User Search Routes
+        # ====================================================================
+
+        # Route: GET /users/search?q=...
+        if parts == ("users", "search") and http_method == "GET":
+            query_string = event.get("queryStringParameters") or {}
+            q = query_string.get("q", "")
+            return search_users(user_email, q)
 
         # ====================================================================
         # Org Management Routes

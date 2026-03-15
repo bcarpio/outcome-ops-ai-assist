@@ -59,6 +59,7 @@ vi.mock('../../../src/lib/api', () => ({
   updateSharePointSites: vi.fn(),
   triggerSharePointSync: vi.fn(),
   deleteSharePointConnection: vi.fn(),
+  searchUsers: vi.fn(),
 }))
 
 import { getWorkspace, listMembers, listConfluenceConnections, listJiraConnections, getSearchAccess, listSharingOptions, listDocuments, listOutlookConnections, listGitHubInstallations, listGitHubRepos, listTeamsConnections, listSharePointConnections, getTeamsAuthUrl, deleteTeamsConnection, triggerTeamsSync, getSharePointAuthUrl, deleteSharePointConnection, triggerSharePointSync, listTeamsTeams, listTeamsChannels, saveTeamsConfig, listSharePointSites, updateSharePointSites } from '../../../src/lib/api'

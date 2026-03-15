@@ -100,6 +100,8 @@ import {
   type SharePointConnection,
   type SharePointSite,
   type SharePointSiteConfig,
+  searchUsers,
+  type SearchUser,
 } from '../lib/api'
 
 type Tab = 'general' | 'members' | 'integrations' | 'sharing' | 'documents'
@@ -130,6 +132,9 @@ export default function WorkspaceSettings() {
   const [newMemberEmail, setNewMemberEmail] = useState('')
   const [newMemberRole, setNewMemberRole] = useState<'member' | 'workspace_admin'>('member')
   const [addingMember, setAddingMember] = useState(false)
+  const [userSearchQuery, setUserSearchQuery] = useState('')
+  const [userSearchResults, setUserSearchResults] = useState<SearchUser[]>([])
+  const [searchingUsers, setSearchingUsers] = useState(false)
 
   // Integrations tab state
   const [confluenceConnections, setConfluenceConnections] = useState<ConfluenceConnection[]>([])
@@ -1133,10 +1138,30 @@ export default function WorkspaceSettings() {
       setShowAddMember(false)
       setNewMemberEmail('')
       setNewMemberRole('member')
+      setUserSearchQuery('')
+      setUserSearchResults([])
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to add member')
     } finally {
       setAddingMember(false)
+    }
+  }
+
+  async function handleUserSearch(query: string) {
+    setUserSearchQuery(query)
+    if (query.length < 2) {
+      setUserSearchResults([])
+      return
+    }
+    setSearchingUsers(true)
+    try {
+      const results = await searchUsers(query)
+      const memberEmails = new Set(members.map(m => m.user_email))
+      setUserSearchResults(results.filter(u => !memberEmails.has(u.user_email)))
+    } catch {
+      setUserSearchResults([])
+    } finally {
+      setSearchingUsers(false)
     }
   }
 
@@ -2288,20 +2313,81 @@ export default function WorkspaceSettings() {
             <div className="p-6">
               <h2 className="text-lg font-semibold mb-4">Add Member</h2>
               <div className="space-y-4">
-                <div>
-                  <label htmlFor="member-email" className="block text-sm font-medium text-gray-700 mb-1">
-                    Email
+                <div className="relative">
+                  <label htmlFor="member-search" className="block text-sm font-medium text-gray-700 mb-1">
+                    Search users
                   </label>
-                  <input
-                    id="member-email"
-                    type="email"
-                    value={newMemberEmail}
-                    onChange={(e) => setNewMemberEmail(e.target.value)}
-                    placeholder="user@example.com"
-                    className="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    autoFocus
-                  />
+                  <div className="relative">
+                    <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                    <input
+                      id="member-search"
+                      type="text"
+                      value={newMemberEmail || userSearchQuery}
+                      onChange={(e) => {
+                        if (newMemberEmail) {
+                          setNewMemberEmail('')
+                        }
+                        handleUserSearch(e.target.value)
+                      }}
+                      placeholder="Search by email..."
+                      className="w-full pl-9 pr-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      autoFocus
+                    />
+                    {searchingUsers && <Loader2 size={16} className="absolute right-3 top-1/2 -translate-y-1/2 animate-spin text-gray-400" />}
+                  </div>
+                  {userSearchResults.length > 0 && !newMemberEmail && (
+                    <div className="absolute z-10 w-full mt-1 bg-white border rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                      {userSearchResults.map(user => (
+                        <button
+                          key={user.user_email}
+                          onClick={() => {
+                            setNewMemberEmail(user.user_email)
+                            setUserSearchQuery('')
+                            setUserSearchResults([])
+                          }}
+                          className="w-full px-3 py-2 text-left hover:bg-gray-50 flex items-center gap-2 text-sm"
+                        >
+                          <User size={14} className="text-gray-400 shrink-0" />
+                          <div className="min-w-0">
+                            <div className="truncate">{user.user_email}</div>
+                            {user.name && <div className="text-xs text-gray-500 truncate">{user.name}{user.is_service_account ? ' (service account)' : ''}</div>}
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  {userSearchQuery.length >= 2 && userSearchResults.length === 0 && !searchingUsers && (
+                    <p className="mt-1 text-xs text-gray-500">No matching users found. You can still type a full email to invite.</p>
+                  )}
                 </div>
+                {!newMemberEmail && userSearchQuery.length >= 2 && (
+                  <div>
+                    <label htmlFor="member-email-manual" className="block text-sm font-medium text-gray-700 mb-1">
+                      Or enter email directly
+                    </label>
+                    <input
+                      id="member-email-manual"
+                      type="email"
+                      value=""
+                      onChange={(e) => {
+                        setNewMemberEmail(e.target.value)
+                        setUserSearchQuery('')
+                        setUserSearchResults([])
+                      }}
+                      placeholder="user@example.com"
+                      className="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+                )}
+                {newMemberEmail && (
+                  <div className="flex items-center gap-2 px-3 py-2 bg-blue-50 border border-blue-200 rounded-lg text-sm">
+                    <User size={14} className="text-blue-600 shrink-0" />
+                    <span className="truncate">{newMemberEmail}</span>
+                    <button onClick={() => { setNewMemberEmail(''); setUserSearchQuery('') }} className="ml-auto text-blue-600 hover:text-blue-800">
+                      <X size={14} />
+                    </button>
+                  </div>
+                )}
                 <div>
                   <label htmlFor="member-role" className="block text-sm font-medium text-gray-700 mb-1">
                     Role
@@ -2324,6 +2410,8 @@ export default function WorkspaceSettings() {
                   setShowAddMember(false)
                   setNewMemberEmail('')
                   setNewMemberRole('member')
+                  setUserSearchQuery('')
+                  setUserSearchResults([])
                 }}
                 className="px-4 py-2 text-gray-700 hover:bg-gray-200 rounded-lg transition-colors"
               >

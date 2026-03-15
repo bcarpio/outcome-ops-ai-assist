@@ -617,6 +617,9 @@ app.delete("/api/workspaces/:id/documents/*", (req, res) => {
 // Org Management API (proxied to Workspace Lambda with SigV4)
 // ============================================================================
 
+// User search
+app.get("/api/users/search", (req, res) => proxyWorkspaceRequest(req, res, "GET", `/users/search?q=${encodeURIComponent(req.query.q || "")}`));
+
 // Org members
 app.get("/api/org/members", (req, res) => proxyWorkspaceRequest(req, res, "GET", "/org/members"));
 app.post("/api/org/members", (req, res) => proxyWorkspaceRequest(req, res, "POST", "/org/members"));

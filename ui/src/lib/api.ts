@@ -565,6 +565,26 @@ export async function deleteConfluenceConnection(workspaceId: string, connection
 }
 
 // ============================================================================
+// User Search API
+// ============================================================================
+
+export interface SearchUser {
+  user_email: string
+  name: string
+  is_service_account: boolean
+}
+
+export async function searchUsers(query: string): Promise<SearchUser[]> {
+  const response = await fetch(`${API_BASE}/users/search?q=${encodeURIComponent(query)}`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to search users: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return (data?.users as SearchUser[]) || []
+}
+
+// ============================================================================
 // Org Management Types and API
 // ============================================================================
 

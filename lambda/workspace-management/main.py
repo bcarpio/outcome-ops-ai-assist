@@ -244,6 +244,22 @@ async def list_sharing_available(workspace_id: str, request: Request):
 
 
 # ============================================================================
+# User Search Routes
+# ============================================================================
+
+
+@app.get("/users/search")
+async def search_users_route(request: Request):
+    """Search for existing users by email."""
+    from handler import lambda_handler
+
+    event = _build_event(request, "GET", "/users/search")
+    event["queryStringParameters"] = dict(request.query_params)
+    result = lambda_handler(event, None)
+    return _parse_response(result)
+
+
+# ============================================================================
 # Org Management Routes
 # ============================================================================
 
