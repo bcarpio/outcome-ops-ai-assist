@@ -91,6 +91,9 @@ make validate-tf
 
 # 4. Check Python formatting (if any .py files changed)
 cd lambda && find . -name "*.py" -path "*/lambda/*" | head -20 | xargs -I {} python -m py_compile {}
+
+# 5. Run npm audit (if any ui/ files changed)
+make audit
 ```
 
 **CI will fail if you skip these steps.** Run them every time before committing.

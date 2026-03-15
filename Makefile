@@ -1,4 +1,4 @@
-.PHONY: help setup install fmt lint validate test test-unit test-integration test-coverage test-ui build-run-tests-image build-ui-image build-mcp-server-image clean all
+.PHONY: help setup install fmt lint validate test test-unit test-integration test-coverage test-ui audit build-run-tests-image build-ui-image build-mcp-server-image clean all
 
 APP_NAME ?= outcome-ops-ai-assist
 AWS_REGION ?= us-west-2
@@ -24,6 +24,9 @@ help:
 	@echo "  make test-integration Run only integration tests"
 	@echo "  make test-coverage    Run tests with coverage report"
 	@echo "  make test-ui          Run UI tests (React/Vitest)"
+	@echo ""
+	@echo "Security:"
+	@echo "  make audit            Run npm audit on UI dependencies"
 	@echo ""
 	@echo "Container Images:"
 	@echo "  make build-run-tests-image      Build run-tests container (auto-creates ECR, ENVIRONMENT=dev|prd)"
@@ -165,6 +168,14 @@ test-ui:
 		echo "Node $$NODE_MAJOR detected (<20), running without coverage (coverage requires Node 20+)..."; \
 		cd ui && npm test; \
 	fi
+
+# ============================================================================
+# Security: Dependency Auditing
+# ============================================================================
+
+audit:
+	@echo "Running npm audit on UI dependencies..."
+	cd ui && npm audit --audit-level=high
 
 # ============================================================================
 # Container Images

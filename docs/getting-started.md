@@ -327,6 +327,7 @@ make validate              # Validate Terraform configuration
 make test                  # Run all tests
 make test-unit             # Run only unit tests
 make test-coverage         # Run tests with coverage report
+make audit                 # Run npm audit on UI dependencies
 make build-run-tests-image # Build and push run-tests Docker image to ECR
 make clean                 # Clean build artifacts
 make all                   # Run fmt, validate, and test
