@@ -82,6 +82,16 @@ const signer = new SignatureV4({
 app.use(express.json({ limit: "1mb" }));
 app.use(cookieParser());
 
+// Require authentication for all API routes
+app.use("/api", (req, res, next) => {
+  const user = extractUser(req);
+  if (user.email === "anonymous") {
+    return res.status(401).json({ error: "Authentication required" });
+  }
+  req.user = user;
+  next();
+});
+
 // Health check endpoint
 app.get("/health", (req, res) => {
   res.json({ status: "healthy" });

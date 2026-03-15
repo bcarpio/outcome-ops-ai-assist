@@ -170,9 +170,10 @@ class TestRequestModels:
 class TestCreateWorkspace:
     """Test workspace creation."""
 
+    @patch("workspace_management_handler._is_org_admin", return_value=True)
     @patch("workspace_management_handler._get_workspaces_table")
     @patch("workspace_management_handler._get_dynamodb")
-    def test_create_workspace_success(self, mock_dynamodb, mock_get_table):
+    def test_create_workspace_success(self, mock_dynamodb, mock_get_table, mock_is_admin):
         """Test successful workspace creation."""
         # Arrange
         mock_table = MagicMock()
@@ -195,9 +196,10 @@ class TestCreateWorkspace:
         assert body["workspace"]["name"] == "My Workspace"
         assert body["workspace"]["created_by"] == "admin@example.com"
 
+    @patch("workspace_management_handler._is_org_admin", return_value=True)
     @patch("workspace_management_handler._get_workspaces_table")
     @patch("workspace_management_handler._get_dynamodb")
-    def test_create_workspace_error_handling(self, mock_dynamodb, mock_get_table):
+    def test_create_workspace_error_handling(self, mock_dynamodb, mock_get_table, mock_is_admin):
         """Test error handling during workspace creation."""
         # Arrange
         mock_table = MagicMock()
@@ -730,9 +732,10 @@ class TestLambdaHandler:
         # Assert
         assert result["statusCode"] == 200
 
+    @patch("workspace_management_handler._is_org_admin", return_value=True)
     @patch("workspace_management_handler._get_workspaces_table")
     @patch("workspace_management_handler._get_dynamodb")
-    def test_handler_routes_create_workspace(self, mock_dynamodb, mock_get_table):
+    def test_handler_routes_create_workspace(self, mock_dynamodb, mock_get_table, mock_is_admin):
         """Test handler routes POST /workspaces correctly."""
         # Arrange
         mock_table = MagicMock()

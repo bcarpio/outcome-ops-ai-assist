@@ -24,7 +24,7 @@ import re
 import secrets
 import time
 from datetime import datetime, timezone
-from typing import Optional
+from typing import List, Optional
 
 import boto3
 from botocore.exceptions import ClientError
@@ -161,6 +161,7 @@ def log_audit_entry(
     flagged_reason: str = "",
     user_email: str = "",
     workspace_id: str = "",
+    workspace_ids: Optional[List[str]] = None,
 ) -> None:
     """
     Log a Bedrock invocation to the audit table.
@@ -228,6 +229,7 @@ def log_audit_entry(
             "flagged_reason": flagged_reason,
             "user_email": user_email,
             "workspace_id": workspace_id,
+            "workspace_ids": workspace_ids or ([workspace_id] if workspace_id else []),
             "timestamp": timestamp,
             "ttl": ttl,
         }

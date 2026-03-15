@@ -1436,6 +1436,7 @@ def handle_chat_stream(event: Dict) -> Generator[str, None, None]:
         duration_ms=bedrock_duration_ms,
         user_email=user_id or "",
         workspace_id=primary_workspace_id or "",
+        workspace_ids=workspace_ids,
     )
 
     # Save assistant message
@@ -1489,10 +1490,10 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         return list_conversations(user_id=user_id)
     elif path.startswith("/conversations/") and http_method == "GET":
         conv_id = path.split("/")[-1]
-        return get_conversation_with_messages(conv_id)
+        return get_conversation_with_messages(conv_id, user_id=user_id)
     elif path.startswith("/conversations/") and http_method == "DELETE":
         conv_id = path.split("/")[-1]
-        return delete_conversation(conv_id)
+        return delete_conversation(conv_id, user_id=user_id)
     else:
         return {
             "statusCode": 404,
@@ -1537,13 +1538,19 @@ def list_conversations(user_id: str = None) -> Dict:
         }
 
 
-def get_conversation_with_messages(conversation_id: str) -> Dict:
-    """Get conversation with all messages."""
+def get_conversation_with_messages(conversation_id: str, user_id: str = None) -> Dict:
+    """Get conversation with all messages (verifies ownership)."""
     conversation = get_conversation(conversation_id)
     if not conversation:
         return {
             "statusCode": 404,
             "body": json.dumps({"error": "Conversation not found"}),
+        }
+
+    if user_id and conversation.get("user_id") != user_id:
+        return {
+            "statusCode": 403,
+            "body": json.dumps({"error": "Access denied"}),
         }
 
     messages = get_conversation_messages(conversation_id, limit=30)
@@ -1558,12 +1565,26 @@ def get_conversation_with_messages(conversation_id: str) -> Dict:
     }
 
 
-def delete_conversation(conversation_id: str) -> Dict:
-    """Delete a conversation, all its messages, and memory chunks."""
+def delete_conversation(conversation_id: str, user_id: str = None) -> Dict:
+    """Delete a conversation, all its messages, and memory chunks (verifies ownership)."""
     dynamodb = _get_dynamodb()
     table = dynamodb.Table(_get_chat_table())
 
     try:
+        # Verify ownership before deleting
+        if user_id:
+            conversation = get_conversation(conversation_id)
+            if not conversation:
+                return {
+                    "statusCode": 404,
+                    "body": json.dumps({"error": "Conversation not found"}),
+                }
+            if conversation.get("user_id") != user_id:
+                return {
+                    "statusCode": 403,
+                    "body": json.dumps({"error": "Access denied"}),
+                }
+
         # Delete memory chunks from S3 Vectors first
         delete_conversation_memory(conversation_id)
 

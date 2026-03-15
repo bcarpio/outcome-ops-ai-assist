@@ -431,9 +431,13 @@ def _decrypt_credentials(encrypted: str) -> str:
 
 
 def create_workspace(user_email: str, request: CreateWorkspaceRequest) -> Dict:
-    """Create a new workspace and add creator as admin."""
+    """Create a new workspace and add creator as admin (org admin only)."""
     dynamodb = _get_dynamodb()
     table = dynamodb.Table(_get_workspaces_table())
+
+    # Only org admins can create workspaces
+    if not _is_org_admin(table, user_email):
+        return _error(403, "Only org admins can create workspaces")
 
     workspace_id = generate_id()
     now = datetime.now(timezone.utc).isoformat()
