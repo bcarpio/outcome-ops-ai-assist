@@ -1636,9 +1636,7 @@ app.delete("/api/workspaces/:id/sharepoint/connections/:connId", (req, res) => {
 // Logout (clear ALB OIDC session cookies)
 // ============================================================================
 
-app.get("/api/logout", (req, res) => {
-  console.log("[logout] Clearing ALB OIDC session cookies");
-
+function clearSessionCookies(res) {
   // ALB OIDC sets HttpOnly session cookies - clear them by setting to expired
   // ALB may use multiple cookie segments (AWSELBAuthSessionCookie-0, -1, etc.)
   for (let i = 0; i < 5; i++) {
@@ -1650,8 +1648,27 @@ app.get("/api/logout", (req, res) => {
     });
   }
 
+  // Clear scanner session cookie (JWT used by security scanner / service accounts)
+  res.cookie("oo_scanner_session", "", {
+    expires: new Date(0),
+    path: "/",
+    httpOnly: true,
+    secure: true,
+    sameSite: "Lax",
+  });
+}
+
+app.get("/api/logout", (req, res) => {
+  console.log("[logout] Clearing session cookies");
+  clearSessionCookies(res);
   // Redirect to root - ALB will force re-authentication
   res.redirect("/");
+});
+
+app.post("/api/logout", (req, res) => {
+  console.log("[logout] Clearing session cookies (POST)");
+  clearSessionCookies(res);
+  res.status(200).json({ message: "Logged out" });
 });
 
 // Serve static files with SPA fallback

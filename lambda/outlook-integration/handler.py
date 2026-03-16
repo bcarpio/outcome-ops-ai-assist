@@ -188,18 +188,29 @@ def _get_membership(table, user_email: str, workspace_id: str) -> Optional[Dict]
         return None
 
 
-def _is_workspace_admin(table, user_email: str, workspace_id: str) -> bool:
-    """Check if user is a workspace admin or org admin."""
-    membership = _get_membership(table, user_email, workspace_id)
-    if membership and membership.get("role") == "workspace_admin":
-        return True
-    # Check org admin
+def _is_org_admin(table, user_email: str) -> bool:
+    """Check if user is an org admin."""
     try:
         resp = table.get_item(Key={"PK": f"USER#{user_email}", "SK": "ORG_MEMBER"})
         item = resp.get("Item")
         return item is not None and item.get("org_role") == "org_admin"
     except ClientError:
         return False
+
+
+def _can_access_workspace(table, user_email: str, workspace_id: str) -> bool:
+    """Check if user is a member of the workspace or an org admin."""
+    if _get_membership(table, user_email, workspace_id):
+        return True
+    return _is_org_admin(table, user_email)
+
+
+def _is_workspace_admin(table, user_email: str, workspace_id: str) -> bool:
+    """Check if user is a workspace admin or org admin."""
+    membership = _get_membership(table, user_email, workspace_id)
+    if membership and membership.get("role") == "workspace_admin":
+        return True
+    return _is_org_admin(table, user_email)
 
 
 # ============================================================================
@@ -485,7 +496,9 @@ def trigger_sync(user_email: str, workspace_id: str, connection_id: str) -> Dict
     dynamodb = _get_dynamodb()
     table = dynamodb.Table(WORKSPACES_TABLE)
 
-    # Admin only
+    # Check membership first, then admin role
+    if not _can_access_workspace(table, user_email, workspace_id):
+        return _error(403, "Not a member of this workspace")
     if not _is_workspace_admin(table, user_email, workspace_id):
         return _error(403, "Only workspace admins can trigger sync")
 
@@ -522,7 +535,9 @@ def delete_connection(user_email: str, workspace_id: str, connection_id: str) ->
     dynamodb = _get_dynamodb()
     table = dynamodb.Table(WORKSPACES_TABLE)
 
-    # Admin only
+    # Check membership first, then admin role
+    if not _can_access_workspace(table, user_email, workspace_id):
+        return _error(403, "Not a member of this workspace")
     if not _is_workspace_admin(table, user_email, workspace_id):
         return _error(403, "Only workspace admins can delete connections")
 
