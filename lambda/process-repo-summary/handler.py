@@ -636,6 +636,10 @@ def handler(event, context):
             installation_id = message_body.get("installation_id")
             should_discover = message_body.get("discover_code_units", False)
 
+            # Read commit SHAs for incremental processing
+            last_commit_sha = message_body.get("last_commit_sha")
+            current_commit_sha = message_body.get("current_commit_sha")
+
             if should_discover and installation_id:
                 # Workspace repo: Get installation token and discover code units
                 logger.info(f"Workspace repo {repo_project}: discovering code units")
@@ -643,6 +647,39 @@ def handler(event, context):
                     token = get_installation_token(installation_id)
                     code_units = discover_code_units(token, repo_project, repo, all_files)
                     logger.info(f"Discovered {len(code_units)} code units for {repo_project}")
+
+                    # Incremental filtering: only process code units with changed files
+                    if last_commit_sha and current_commit_sha and code_units:
+                        try:
+                            backend = get_backend_for_repo(
+                                fetch_repo_config(token, repo_project), token
+                            )
+                            if backend:
+                                change_result = backend.detect_changes(
+                                    repo, repo_project,
+                                    {"commit_sha": last_commit_sha}
+                                )
+                                if change_result.changed_files:
+                                    changed_set = set(change_result.changed_files)
+                                    total_units = len(code_units)
+                                    code_units = [
+                                        u for u in code_units
+                                        if any(f in changed_set for f in u["file_paths"])
+                                    ]
+                                    logger.info(
+                                        f"Incremental: {len(code_units)} of {total_units} "
+                                        f"code units changed ({len(changed_set)} files changed)"
+                                    )
+                                else:
+                                    logger.info(
+                                        f"Full regeneration: no changed_files returned "
+                                        f"(first sync or force full)"
+                                    )
+                        except Exception as e:
+                            logger.warning(
+                                f"Failed to detect changes for {repo_project}, "
+                                f"processing all code units: {e}"
+                            )
                 except Exception as e:
                     logger.warning(f"Failed to discover code units for {repo_project}: {e}")
                     code_units = []

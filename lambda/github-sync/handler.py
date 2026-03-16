@@ -552,6 +552,8 @@ def queue_repo_for_code_maps(
     repo_type: str,
     installation_id: str,
     all_files: List[Dict],
+    last_commit_sha: Optional[str] = None,
+    current_commit_sha: Optional[str] = None,
 ) -> bool:
     """
     Queue repository to repo-summaries queue for code-map generation.
@@ -565,6 +567,8 @@ def queue_repo_for_code_maps(
         repo_type: Repository type
         installation_id: GitHub App installation ID for token generation
         all_files: List of file dicts from GitHub API
+        last_commit_sha: Previous commit SHA for incremental processing
+        current_commit_sha: Current commit SHA being synced
 
     Returns:
         True if successful, False otherwise
@@ -590,6 +594,12 @@ def queue_repo_for_code_maps(
             # code_units will be discovered by process-repo-summary Lambda
             "discover_code_units": True,
         }
+
+        # Include commit SHAs for incremental code map regeneration
+        if last_commit_sha:
+            message_body["last_commit_sha"] = last_commit_sha
+        if current_commit_sha:
+            message_body["current_commit_sha"] = current_commit_sha
 
         sqs = _get_sqs()
         sqs.send_message(
@@ -700,6 +710,7 @@ def process_sync_request(message: Dict) -> Dict:
                 default_branch=default_branch,
                 tree=tree,
                 current_sha=current_sha,
+                last_commit_sha=last_sha,
             )
 
     except Exception as e:
@@ -778,6 +789,7 @@ def _process_application_repo(
     default_branch: str,
     tree: List[Dict],
     current_sha: str,
+    last_commit_sha: Optional[str] = None,
 ) -> Dict:
     """
     Process an application repo by uploading doc files to S3 for indexing
@@ -827,6 +839,8 @@ def _process_application_repo(
         repo_type=repo_type,
         installation_id=installation_id,
         all_files=tree,
+        last_commit_sha=last_commit_sha,
+        current_commit_sha=current_sha,
     ):
         update_sync_status(workspace_id, repo_name, "success", commit_sha=current_sha)
         logger.info(f"Application sync complete: queued {repo_name} for code-map generation, {docs_uploaded} docs uploaded")
