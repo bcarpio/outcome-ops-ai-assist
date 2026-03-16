@@ -82,11 +82,16 @@ const signer = new SignatureV4({
 app.use(express.json({ limit: "1mb" }));
 app.use(cookieParser());
 
-// Require authentication for all API routes
+// Require authentication and JSON content type for all API routes
 app.use("/api", (req, res, next) => {
   const user = extractUser(req);
   if (user.email === "anonymous") {
     return res.status(401).json({ error: "Authentication required" });
+  }
+  // Reject non-JSON content types on requests with bodies
+  const ct = req.headers["content-type"] || "";
+  if (req.method !== "GET" && req.method !== "DELETE" && ct && !ct.includes("application/json")) {
+    return res.status(415).json({ error: "Unsupported Media Type. Use application/json" });
   }
   req.user = user;
   next();
