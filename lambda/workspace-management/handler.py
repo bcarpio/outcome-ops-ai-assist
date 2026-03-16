@@ -71,6 +71,7 @@ import hashlib
 import json
 import logging
 import os
+import posixpath
 import secrets
 import urllib.error
 import urllib.request
@@ -302,11 +303,25 @@ class DocumentUploadRequest(BaseModel):
     @classmethod
     def validate_filename(cls, v: str) -> str:
         v = v.strip()
+        # Reject path traversal sequences
+        if ".." in v or "/" in v or "\\" in v:
+            raise ValueError("Filename must not contain path separators or '..' sequences")
         # Validate extension
         allowed_extensions = {".md", ".txt", ".pdf", ".docx", ".xlsx", ".pptx", ".csv", ".html"}
         ext = v.lower().rsplit(".", 1)[-1] if "." in v else ""
         if f".{ext}" not in allowed_extensions:
             raise ValueError(f"File type .{ext} not supported. Allowed: {', '.join(allowed_extensions)}")
+        return v
+
+    @field_validator("folder_path")
+    @classmethod
+    def validate_folder_path(cls, v: Optional[str]) -> Optional[str]:
+        if not v:
+            return v
+        v = v.strip()
+        # Reject path traversal sequences
+        if ".." in v or "\\" in v:
+            raise ValueError("Folder path must not contain '..' sequences or backslashes")
         return v
 
 
@@ -781,8 +796,19 @@ def update_member(
         if not _is_workspace_admin(table, user_email, workspace_id):
             return _error(403, "Only workspace admins can update member roles")
 
+        # Check member exists
+        existing = _get_membership(table, member_email, workspace_id)
+        if not existing:
+            return _error(404, "Member not found")
+
+        # Prevent privilege escalation: only org admins can demote workspace admins
+        target_is_admin = existing.get("role") == "workspace_admin"
+        demoting = request.role != "workspace_admin"
+        if target_is_admin and demoting and not _is_org_admin(table, user_email):
+            return _error(403, "Only org admins can demote workspace admins")
+
         # Can't change own role if last admin
-        if member_email == user_email and request.role != "workspace_admin":
+        if member_email == user_email and demoting:
             # Count admins
             members_response = table.query(
                 IndexName="GSI1",
@@ -795,11 +821,6 @@ def update_member(
             )
             if admin_count <= 1:
                 return _error(400, "Cannot remove last admin from workspace")
-
-        # Check member exists
-        existing = _get_membership(table, member_email, workspace_id)
-        if not existing:
-            return _error(404, "Member not found")
 
         table.update_item(
             Key={"PK": f"USER#{member_email}", "SK": f"WS_MEMBER#{workspace_id}"},
@@ -1521,6 +1542,12 @@ def get_document_upload_url(
         else:
             s3_key = f"workspaces/{workspace_id}/uploads/{request.filename}"
 
+        # Defense-in-depth: verify resolved key stays within workspace prefix
+        expected_prefix = f"workspaces/{workspace_id}/uploads/"
+        normalized = posixpath.normpath(s3_key)
+        if not normalized.startswith(expected_prefix.rstrip("/")):
+            return _error(400, "Invalid file path")
+
         # Get KB bucket
         bucket = _get_kb_bucket()
         s3_client = _get_s3_client()
@@ -1557,6 +1584,10 @@ def list_documents(user_email: str, workspace_id: str, prefix: str = "") -> Dict
         # Check access (member or org admin)
         if not _can_access_workspace(table, user_email, workspace_id):
             return _error(403, "Not a member of this workspace")
+
+        # Sanitize prefix - reject traversal attempts
+        if prefix and (".." in prefix or "\\" in prefix):
+            return _error(400, "Invalid prefix")
 
         bucket = _get_kb_bucket()
         s3_client = _get_s3_client()
@@ -1611,6 +1642,10 @@ def delete_document(user_email: str, workspace_id: str, document_path: str) -> D
         # Check admin membership (only admins can delete)
         if not _is_workspace_admin(table, user_email, workspace_id):
             return _error(403, "Only workspace admins can delete documents")
+
+        # Sanitize document path - reject traversal attempts
+        if ".." in document_path or "\\" in document_path:
+            return _error(400, "Invalid document path")
 
         # Build S3 key from document path
         s3_key = f"workspaces/{workspace_id}/uploads/{document_path}"
