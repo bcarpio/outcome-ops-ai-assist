@@ -179,6 +179,43 @@ def _decrypt_mcp_credentials(encrypted: str) -> str:
         raise
 
 
+def _validate_workspace_access(user_email: str, workspace_ids: List[str]) -> List[str]:
+    """Validate user has access to the requested workspaces.
+
+    Returns list of workspace_ids the user is authorized to access.
+    Checks for direct membership or org_admin status.
+    """
+    if not user_email or not workspace_ids:
+        return []
+
+    dynamodb = _get_dynamodb()
+    table = dynamodb.Table(_get_workspaces_table())
+
+    # Check if user is org admin (can access all workspaces)
+    try:
+        org_resp = table.get_item(
+            Key={"PK": f"USER#{user_email}", "SK": "ORG_MEMBER"}
+        )
+        if org_resp.get("Item", {}).get("org_role") == "org_admin":
+            return workspace_ids
+    except ClientError:
+        pass
+
+    # Check membership for each workspace
+    authorized = []
+    for ws_id in workspace_ids:
+        try:
+            resp = table.get_item(
+                Key={"PK": f"USER#{user_email}", "SK": f"WS_MEMBER#{ws_id}"}
+            )
+            if "Item" in resp:
+                authorized.append(ws_id)
+        except ClientError:
+            continue
+
+    return authorized
+
+
 def _load_mcp_configs(mcp_server_ids: List[str]) -> List[Dict]:
     """Load MCP server configs and tool manifests from DynamoDB."""
     dynamodb = _get_dynamodb()
@@ -1235,6 +1272,15 @@ def handle_chat_stream(event: Dict) -> Generator[str, None, None]:
     conversation = None
     # Support both workspace_ids (new) and workspace_id (deprecated)
     workspace_ids = request.workspace_ids or ([request.workspace_id] if request.workspace_id else None)
+
+    # Validate workspace access - only allow workspaces the user is a member of
+    if workspace_ids and user_id:
+        authorized_ws = _validate_workspace_access(user_id, workspace_ids)
+        if not authorized_ws:
+            yield _stream_error("You do not have access to the requested workspace(s)", 403) + "\n"
+            return
+        workspace_ids = authorized_ws
+
     # For conversation storage, use first workspace_id
     primary_workspace_id = workspace_ids[0] if workspace_ids else None
     mcp_server_ids = request.mcp_server_ids

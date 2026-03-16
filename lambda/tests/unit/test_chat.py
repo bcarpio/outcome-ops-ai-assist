@@ -60,6 +60,8 @@ def _load_handler_module():
     handler_module._chat_table = "test-chat-table"
     handler_module._vector_bucket = "test-vector-bucket"
     handler_module._vector_index = "test-vector-index"
+    # Bypass workspace access validation in tests
+    handler_module._validate_workspace_access = lambda user_email, workspace_ids: workspace_ids
 
     return handler_module
 
