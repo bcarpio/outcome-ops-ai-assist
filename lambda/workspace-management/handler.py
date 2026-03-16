@@ -303,6 +303,9 @@ class DocumentUploadRequest(BaseModel):
     @classmethod
     def validate_filename(cls, v: str) -> str:
         v = v.strip()
+        # Reject null bytes and control characters
+        if "\x00" in v or any(ord(c) < 32 for c in v):
+            raise ValueError("Filename must not contain null bytes or control characters")
         # Reject path traversal sequences
         if ".." in v or "/" in v or "\\" in v:
             raise ValueError("Filename must not contain path separators or '..' sequences")
