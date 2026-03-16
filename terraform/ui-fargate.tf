@@ -282,30 +282,6 @@ resource "aws_lb_listener" "https" {
 # own state parameter, not the ALB session.
 # -----------------------------------------------------------------------------
 
-resource "aws_lb_listener_rule" "oauth_callback_bypass" {
-  count = local.use_oidc ? 1 : 0
-
-  listener_arn = aws_lb_listener.https[0].arn
-  priority     = 10
-
-  condition {
-    path_pattern {
-      values = [
-        "/api/github/callback",
-        "/api/confluence/callback",
-        "/api/jira/callback",
-        "/api/teams/callback",
-        "/api/sharepoint/callback",
-      ]
-    }
-  }
-
-  action {
-    type             = "forward"
-    target_group_arn = module.ui_alb.target_groups["ui"].arn
-  }
-}
-
 # -----------------------------------------------------------------------------
 # ECS Cluster + Service (Fargate Spot)
 # -----------------------------------------------------------------------------
