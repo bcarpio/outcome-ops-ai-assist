@@ -178,9 +178,17 @@ def _get_membership(table, user_email: str, workspace_id: str) -> Optional[Dict]
 
 
 def _is_workspace_admin(table, user_email: str, workspace_id: str) -> bool:
-    """Check if user is a workspace admin."""
+    """Check if user is a workspace admin or org admin."""
     membership = _get_membership(table, user_email, workspace_id)
-    return membership is not None and membership.get("role") == "workspace_admin"
+    if membership and membership.get("role") == "workspace_admin":
+        return True
+    # Check org admin
+    try:
+        resp = table.get_item(Key={"PK": f"USER#{user_email}", "SK": "ORG_MEMBER"})
+        item = resp.get("Item")
+        return item is not None and item.get("org_role") == "org_admin"
+    except ClientError:
+        return False
 
 
 # ============================================================================
@@ -571,10 +579,17 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
 
     # OAuth routes
     if parts == ("sharepoint", "authorize") and http_method == "GET":
+        user_email = _get_user_from_request(event)
+        if not user_email:
+            return _error(401, "User email not provided")
         query_params = event.get("queryStringParameters") or {}
         workspace_id = query_params.get("workspace_id")
         if not workspace_id:
             return _error(400, "workspace_id required")
+        dynamodb = _get_dynamodb()
+        table = dynamodb.Table(os.environ.get("WORKSPACES_TABLE", ""))
+        if not _is_workspace_admin(table, user_email, workspace_id):
+            return _error(403, "Only workspace admins can configure integrations")
         return get_authorize_url(workspace_id)
 
     if parts == ("sharepoint", "callback") and http_method in ("GET", "POST"):

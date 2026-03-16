@@ -1409,13 +1409,15 @@ class TestLoadOAuthConfig:
 class TestLambdaHandlerRouting:
     """Test main handler routes requests correctly."""
 
+    @patch.object(handler_module, '_is_workspace_admin', return_value=True)
     @patch.object(handler_module, 'get_authorize_url')
-    def test_routes_authorize(self, mock_fn):
+    def test_routes_authorize(self, mock_fn, mock_admin):
         """Test routing GET /confluence/authorize."""
         mock_fn.return_value = _response(200, {"auth_url": "https://..."})
 
         event = {
             "requestContext": {"http": {"method": "GET", "path": "/confluence/authorize"}},
+            "headers": {"x-user-email": "admin@example.com"},
             "queryStringParameters": {"workspace_id": "ws_test"},
         }
 
@@ -1423,22 +1425,22 @@ class TestLambdaHandlerRouting:
         mock_fn.assert_called_once_with("ws_test")
 
     def test_authorize_missing_workspace_id(self):
-        """Test authorize returns 400 without workspace_id."""
+        """Test authorize returns 401 without user email."""
         event = {
             "requestContext": {"http": {"method": "GET", "path": "/confluence/authorize"}},
             "queryStringParameters": {},
         }
         result = lambda_handler(event, None)
-        assert result["statusCode"] == 400
+        assert result["statusCode"] == 401
 
     def test_authorize_none_query_params(self):
-        """Test authorize returns 400 when queryStringParameters is None."""
+        """Test authorize returns 401 without user email."""
         event = {
             "requestContext": {"http": {"method": "GET", "path": "/confluence/authorize"}},
             "queryStringParameters": None,
         }
         result = lambda_handler(event, None)
-        assert result["statusCode"] == 400
+        assert result["statusCode"] == 401
 
     @patch.object(handler_module, 'handle_callback')
     def test_routes_callback_get(self, mock_fn):
