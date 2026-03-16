@@ -232,8 +232,6 @@ def handler(event, context):
         }
     }
     """
-    logger.info(f"[ask-claude] Handler invoked: {json.dumps(event)}")
-
     try:
         # Extract query, context, and model from event
         query = event.get("query")

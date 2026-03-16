@@ -3,21 +3,26 @@
 View code maps stored in S3 Vectors.
 
 Usage:
-  ./scripts/view-code-maps.py                              # List all code maps
-  ./scripts/view-code-maps.py <repo>                       # List code units for a repo
-  ./scripts/view-code-maps.py <repo> <code-unit>           # View specific code unit content
+  ./scripts/view-code-maps.py                                    # List all repos/workspaces
+  ./scripts/view-code-maps.py -w <workspace_id> <repo>           # List code units for a workspace repo
+  ./scripts/view-code-maps.py -w <workspace_id> <repo> <unit>    # View specific code unit
+  ./scripts/view-code-maps.py <repo>                             # List code units (legacy, no workspace)
+  ./scripts/view-code-maps.py <repo> <code-unit>                 # View code unit (legacy)
+
+Key formats:
+  Workspace repos: {workspace_id}#github#{repo}#{type}#{name}
+  Legacy repos:    {repo}#{type}#{name}
 
 Examples:
   ./scripts/view-code-maps.py
-  ./scripts/view-code-maps.py outcome-ops-ai-assist
+  ./scripts/view-code-maps.py -w m2hMZPfwpFg_tF1J-9XnxQ spring-petclinic-private
+  ./scripts/view-code-maps.py -w m2hMZPfwpFg_tF1J-9XnxQ spring-petclinic-private handler-group-summary
   ./scripts/view-code-maps.py outcome-ops-ai-assist ingest-docs
-  ./scripts/view-code-maps.py my-repo generate-code-maps
 
 Environment:
   ENVIRONMENT - dev or prd (default: prd)
 """
 import argparse
-import json
 import os
 import sys
 from collections import defaultdict
@@ -27,6 +32,22 @@ from botocore.exceptions import ClientError
 
 ENVIRONMENT = os.environ.get("ENVIRONMENT", "prd")
 APP_NAME = os.environ.get("APP_NAME", "outcome-ops-ai-assist")
+
+# Summary types used in code map keys
+SUMMARY_TYPES = [
+    "handler-group-summary",
+    "infrastructure-summary",
+    "source-module-summary",
+    "api-routes-summary",
+    "frontend-summary",
+    "schemas-summary",
+    "shared-summary",
+    "tests-summary",
+    "build-summary",
+    "config-summary",
+    "docs-summary",
+    "architectural-summary",
+]
 
 
 def get_s3_vectors_config() -> dict:
@@ -50,168 +71,227 @@ def get_s3_vectors_config() -> dict:
     return config
 
 
+def _list_all_vectors(s3vectors, config: dict) -> list:
+    """Paginate through all vectors and return their keys."""
+    keys = []
+    next_token = None
+
+    while True:
+        params = {
+            "vectorBucketName": config["bucket"],
+            "indexName": config["index"],
+            "maxResults": 100,
+        }
+        if next_token:
+            params["nextToken"] = next_token
+
+        response = s3vectors.list_vectors(**params)
+
+        for vector in response.get("vectors", []):
+            keys.append(vector.get("key", ""))
+
+        next_token = response.get("nextToken")
+        if not next_token:
+            break
+
+    return keys
+
+
+def _parse_key(key: str) -> dict:
+    """Parse a vector key into its components.
+
+    Workspace keys: {workspace_id}#github#{repo}#{type}#{name}
+    Legacy keys:    {repo}#{type}#{name}
+    """
+    parts = key.split("#")
+
+    # Workspace key: at least 5 parts with 'github' as second
+    if len(parts) >= 5 and parts[1] == "github":
+        return {
+            "workspace_id": parts[0],
+            "source": parts[1],
+            "repo": parts[2],
+            "type": parts[3],
+            "name": "#".join(parts[4:]),  # name may contain #
+            "key": key,
+        }
+
+    # Legacy key: {repo}#{type}#{name}
+    if len(parts) >= 3:
+        return {
+            "workspace_id": None,
+            "source": None,
+            "repo": parts[0],
+            "type": parts[1],
+            "name": "#".join(parts[2:]),
+            "key": key,
+        }
+
+    # Minimal key
+    if len(parts) == 2:
+        return {
+            "workspace_id": None,
+            "source": None,
+            "repo": parts[0],
+            "type": parts[1],
+            "name": "(root)",
+            "key": key,
+        }
+
+    return {
+        "workspace_id": None,
+        "source": None,
+        "repo": key,
+        "type": "unknown",
+        "name": key,
+        "key": key,
+    }
+
+
 def list_all_code_maps(config: dict) -> None:
-    """List all code maps grouped by repository."""
+    """List all code maps grouped by workspace/repository."""
     s3vectors = boto3.client("s3vectors")
 
     print(f"Listing code maps from S3 Vectors...")
     print(f"Bucket: {config['bucket']}, Index: {config['index']}\n")
 
-    repos = defaultdict(list)
-    next_token = None
-
     try:
-        while True:
-            params = {
-                "vectorBucketName": config["bucket"],
-                "indexName": config["index"],
-                "maxResults": 100,
-            }
-            if next_token:
-                params["nextToken"] = next_token
-
-            response = s3vectors.list_vectors(**params)
-
-            for vector in response.get("vectors", []):
-                key = vector.get("key", "")
-                # Key format: {repo}#{type}#{name}
-                parts = key.split("#")
-                if len(parts) >= 2:
-                    repo = parts[0]
-                    repos[repo].append(key)
-
-            next_token = response.get("nextToken")
-            if not next_token:
-                break
-
+        keys = _list_all_vectors(s3vectors, config)
     except ClientError as e:
         print(f"Error listing vectors: {e}", file=sys.stderr)
         sys.exit(1)
 
-    if not repos:
+    if not keys:
         print("No code maps found in S3 Vectors.")
         return
 
-    print(f"Repositories with code maps ({len(repos)}):\n")
-    for repo in sorted(repos.keys()):
-        count = len(repos[repo])
-        print(f"  {repo:<45} ({count} code units)")
+    # Group by (workspace_id, repo)
+    groups = defaultdict(list)
+    for key in keys:
+        parsed = _parse_key(key)
+        group_key = (parsed["workspace_id"], parsed["repo"])
+        groups[group_key].append(parsed)
 
-    print(f"\nUse: ./scripts/view-code-maps.py <repo> to list code units")
+    # Display workspace repos
+    ws_groups = {k: v for k, v in groups.items() if k[0] is not None}
+    legacy_groups = {k: v for k, v in groups.items() if k[0] is None}
+
+    if ws_groups:
+        print(f"Workspace repositories ({len(ws_groups)}):\n")
+        print(f"  {'Workspace ID':<30} {'Repository':<35} {'Units'}")
+        print(f"  {'-' * 30} {'-' * 35} {'-' * 5}")
+        for (ws_id, repo), entries in sorted(ws_groups.items()):
+            print(f"  {ws_id:<30} {repo:<35} {len(entries)}")
+        print(f"\n  Use: ./scripts/view-code-maps.py -w <workspace_id> <repo>")
+
+    if legacy_groups:
+        if ws_groups:
+            print()
+        print(f"Legacy repositories ({len(legacy_groups)}):\n")
+        for (_, repo), entries in sorted(legacy_groups.items()):
+            print(f"  {repo:<45} ({len(entries)} code units)")
+        print(f"\n  Use: ./scripts/view-code-maps.py <repo>")
 
 
-def list_repo_code_units(config: dict, repo: str) -> None:
+def list_repo_code_units(config: dict, repo: str, workspace_id: str = None) -> None:
     """List all code units for a specific repository."""
     s3vectors = boto3.client("s3vectors")
 
-    print(f"Code units for repository: {repo}\n")
-
-    code_units = []
-    next_token = None
+    if workspace_id:
+        prefix = f"{workspace_id}#github#{repo}#"
+        print(f"Code units for workspace {workspace_id}, repo: {repo}\n")
+    else:
+        prefix = f"{repo}#"
+        print(f"Code units for repository: {repo}\n")
 
     try:
-        while True:
-            params = {
-                "vectorBucketName": config["bucket"],
-                "indexName": config["index"],
-                "maxResults": 100,
-            }
-            if next_token:
-                params["nextToken"] = next_token
-
-            response = s3vectors.list_vectors(**params)
-
-            for vector in response.get("vectors", []):
-                key = vector.get("key", "")
-                # Key format: {repo}#{type}#{name}
-                if key.startswith(f"{repo}#"):
-                    code_units.append(key)
-
-            next_token = response.get("nextToken")
-            if not next_token:
-                break
-
+        keys = _list_all_vectors(s3vectors, config)
     except ClientError as e:
         print(f"Error listing vectors: {e}", file=sys.stderr)
         sys.exit(1)
 
-    if not code_units:
-        print(f"No code units found for repository: {repo}")
+    matching = [k for k in keys if k.startswith(prefix)]
+
+    # For workspace repos, filter out keys that match a different format
+    # (e.g., legacy keys that happen to start with the same repo name)
+    if workspace_id:
+        matching = [k for k in matching if _parse_key(k)["workspace_id"] == workspace_id]
+
+    if not matching:
+        print(f"No code units found.")
+        if not workspace_id:
+            print(f"\nIf this is a workspace repo, use: ./scripts/view-code-maps.py -w <workspace_id> {repo}")
         return
 
-    print(f"{'Code Unit':<50} {'Type'}")
-    print("-" * 70)
+    print(f"  {'Name':<48} {'Type'}")
+    print(f"  {'-' * 48} {'-' * 30}")
 
-    for key in sorted(code_units):
-        # Parse key: {repo}#{type}#{name}
-        parts = key.split("#")
-        if len(parts) >= 3:
-            unit_type = parts[1]
-            unit_name = parts[2]
-        elif len(parts) == 2:
-            unit_type = parts[1]
-            unit_name = "(root)"
-        else:
-            unit_type = "unknown"
-            unit_name = key
+    for key in sorted(matching):
+        parsed = _parse_key(key)
+        print(f"  {parsed['name']:<48} {parsed['type']}")
 
-        print(f"  {unit_name:<48} {unit_type}")
+    print(f"\nTotal: {len(matching)} code units")
 
-    print(f"\nTotal: {len(code_units)} code units")
-    print(f"\nUse: ./scripts/view-code-maps.py {repo} <code-unit> to view content")
+    if workspace_id:
+        print(f"\nUse: ./scripts/view-code-maps.py -w {workspace_id} {repo} <code-unit>")
+    else:
+        print(f"\nUse: ./scripts/view-code-maps.py {repo} <code-unit>")
 
 
-def view_code_unit(config: dict, repo: str, code_unit: str) -> None:
+def view_code_unit(config: dict, repo: str, code_unit: str, workspace_id: str = None) -> None:
     """View content of a specific code unit."""
     s3vectors = boto3.client("s3vectors")
 
-    # Try different key patterns
-    # Pattern: {repo}#handler-group-summary#{name}
-    # Pattern: {repo}#infrastructure-summary#{name}
-    # Pattern: {repo}#source-module-summary#{name}
-    possible_keys = [
-        f"{repo}#handler-group-summary#{code_unit}",
-        f"{repo}#infrastructure-summary#{code_unit}",
-        f"{repo}#source-module-summary#{code_unit}",
-        f"{repo}#api-routes-summary#{code_unit}",
-        f"{repo}#frontend-summary#{code_unit}",
-        f"{repo}#schemas-summary#{code_unit}",
-        f"{repo}#shared-summary#{code_unit}",
-        f"{repo}#tests-summary#{code_unit}",
-        f"{repo}#build-summary#{code_unit}",
-        f"{repo}#config-summary#{code_unit}",
-        f"{repo}#docs-summary#{code_unit}",
-        f"{repo}#architectural-summary#METADATA",
-    ]
+    # Find the matching key by listing vectors and matching by parsed name
+    if workspace_id:
+        prefix = f"{workspace_id}#github#{repo}#"
+    else:
+        prefix = f"{repo}#"
 
-    vector_data = None
+    try:
+        all_keys = _list_all_vectors(s3vectors, config)
+    except ClientError as e:
+        print(f"Error listing vectors: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    matching = [k for k in all_keys if k.startswith(prefix)]
+
+    # Find the key whose parsed name matches the code_unit
     matched_key = None
+    for key in matching:
+        parsed = _parse_key(key)
+        if parsed["name"] == code_unit:
+            matched_key = key
+            break
 
-    for key in possible_keys:
-        try:
-            response = s3vectors.get_vectors(
-                vectorBucketName=config["bucket"],
-                indexName=config["index"],
-                keys=[key],
-                returnMetadata=True,
-            )
+    if not matched_key:
+        print(f"Code unit '{code_unit}' not found for repo '{repo}'.", file=sys.stderr)
+        available = sorted(set(_parse_key(k)["name"] for k in matching))
+        if available:
+            print(f"\nAvailable code units:")
+            for name in available:
+                print(f"  - {name}")
+        if workspace_id:
+            print(f"\nUse: ./scripts/view-code-maps.py -w {workspace_id} {repo} to list all")
+        else:
+            print(f"\nUse: ./scripts/view-code-maps.py {repo} to list all")
+        sys.exit(1)
 
-            vectors = response.get("vectors", [])
-            if vectors:
-                vector_data = vectors[0]
-                matched_key = key
-                break
-
-        except ClientError:
-            continue
-
-    if not vector_data:
-        print(f"Code unit '{code_unit}' not found for repository '{repo}'.", file=sys.stderr)
-        print(f"\nTried these keys:")
-        for key in possible_keys[:5]:
-            print(f"  - {key}")
-        print(f"  ... and {len(possible_keys) - 5} more")
-        print(f"\nUse: ./scripts/view-code-maps.py {repo} to list available code units")
+    # Fetch the full vector with metadata
+    try:
+        response = s3vectors.get_vectors(
+            vectorBucketName=config["bucket"],
+            indexName=config["index"],
+            keys=[matched_key],
+            returnMetadata=True,
+        )
+        vectors = response.get("vectors", [])
+        if not vectors:
+            print(f"Error: Key found but vector data empty: {matched_key}", file=sys.stderr)
+            sys.exit(1)
+        vector_data = vectors[0]
+    except ClientError as e:
+        print(f"Error fetching vector: {e}", file=sys.stderr)
         sys.exit(1)
 
     # Extract metadata
@@ -225,6 +305,8 @@ def view_code_unit(config: dict, repo: str, code_unit: str) -> None:
 
     print(f"Code Unit: {code_unit}")
     print(f"Repository: {repo}")
+    if workspace_id:
+        print(f"Workspace: {workspace_id}")
     print(f"Type: {doc_type or batch_type}")
     print(f"Group: {group_name}")
     print(f"File Count: {file_count}")
@@ -246,6 +328,10 @@ def main():
     parser.add_argument("repo", nargs="?", help="Repository name")
     parser.add_argument("code_unit", nargs="?", help="Code unit name (e.g., ingest-docs)")
     parser.add_argument(
+        "-w", "--workspace",
+        help="Workspace ID (required for workspace-scoped repos)",
+    )
+    parser.add_argument(
         "--env",
         default=os.environ.get("ENVIRONMENT", "prd"),
         help="Environment (default: prd or ENVIRONMENT env var)",
@@ -262,9 +348,9 @@ def main():
     if not args.repo:
         list_all_code_maps(config)
     elif args.code_unit:
-        view_code_unit(config, args.repo, args.code_unit)
+        view_code_unit(config, args.repo, args.code_unit, workspace_id=args.workspace)
     else:
-        list_repo_code_units(config, args.repo)
+        list_repo_code_units(config, args.repo, workspace_id=args.workspace)
 
 
 if __name__ == "__main__":
