@@ -29,7 +29,6 @@ async def chat_stream(request: Request):
 
     body = await request.body()
     body_str = body.decode("utf-8")
-    print(f"[STREAM] Received: {body_str[:200]}...")
 
     event = {
         "body": body_str,
@@ -40,7 +39,6 @@ async def chat_stream(request: Request):
     def generate():
         try:
             for chunk in handle_chat_stream(event):
-                print(f"[STREAM] Chunk: {chunk[:80]}...")
                 yield chunk
         except Exception as e:
             print(f"[STREAM] Error: {e}")
