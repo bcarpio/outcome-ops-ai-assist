@@ -37,7 +37,7 @@ describe('Workspaces', () => {
     expect(screen.getByText('Backend services')).toBeInTheDocument()
   })
 
-  it('shows empty state when no workspaces', async () => {
+  it('shows empty state when no workspaces (non-admin)', async () => {
     mockListWorkspaces.mockResolvedValue([])
 
     renderWithRouter(<Workspaces />)
@@ -45,7 +45,8 @@ describe('Workspaces', () => {
     await waitFor(() => {
       expect(screen.getByText('No workspaces yet')).toBeInTheDocument()
     })
-    expect(screen.getByText('Create Your First Workspace')).toBeInTheDocument()
+    expect(screen.getByText('Ask an org admin to add you to a workspace')).toBeInTheDocument()
+    expect(screen.queryByText('Create Your First Workspace')).not.toBeInTheDocument()
   })
 
   it('shows loading state', () => {
@@ -56,8 +57,20 @@ describe('Workspaces', () => {
     expect(screen.getByText('Workspaces')).toBeInTheDocument()
   })
 
+  it('hides create button for non-org-admins', async () => {
+    mockListWorkspaces.mockResolvedValue([
+      createWorkspace({ workspace_id: 'ws-1', name: 'Test', role: 'member' }),
+    ])
+
+    renderWithRouter(<Workspaces />)
+    await waitFor(() => expect(screen.getByText('Test')).toBeInTheDocument())
+    expect(screen.queryByRole('button', { name: /new workspace/i })).not.toBeInTheDocument()
+  })
+
   it('opens create modal', async () => {
-    mockListWorkspaces.mockResolvedValue([])
+    mockListWorkspaces.mockResolvedValue([
+      createWorkspace({ role: 'org_admin' }),
+    ])
 
     renderWithRouter(<Workspaces />)
     await waitFor(() => expect(mockListWorkspaces).toHaveBeenCalled())
@@ -70,7 +83,9 @@ describe('Workspaces', () => {
   })
 
   it('creates a workspace through the modal', async () => {
-    mockListWorkspaces.mockResolvedValue([])
+    mockListWorkspaces.mockResolvedValue([
+      createWorkspace({ role: 'org_admin' }),
+    ])
     const newWs = createWorkspace({ workspace_id: 'ws-new', name: 'My WS' })
     mockCreateWorkspace.mockResolvedValue(newWs)
 
@@ -93,7 +108,9 @@ describe('Workspaces', () => {
   })
 
   it('closes create modal on cancel', async () => {
-    mockListWorkspaces.mockResolvedValue([])
+    mockListWorkspaces.mockResolvedValue([
+      createWorkspace({ role: 'org_admin' }),
+    ])
 
     renderWithRouter(<Workspaces />)
     await waitFor(() => expect(mockListWorkspaces).toHaveBeenCalled())
@@ -118,7 +135,9 @@ describe('Workspaces', () => {
   })
 
   it('shows create error', async () => {
-    mockListWorkspaces.mockResolvedValue([])
+    mockListWorkspaces.mockResolvedValue([
+      createWorkspace({ role: 'org_admin' }),
+    ])
     mockCreateWorkspace.mockRejectedValue(new Error('Duplicate name'))
 
     renderWithRouter(<Workspaces />)

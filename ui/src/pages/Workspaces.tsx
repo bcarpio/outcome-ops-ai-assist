@@ -25,6 +25,7 @@ export default function Workspaces() {
   const [newName, setNewName] = useState('')
   const [newDescription, setNewDescription] = useState('')
   const [error, setError] = useState<string | null>(null)
+  const [isOrgAdmin, setIsOrgAdmin] = useState(false)
 
   useEffect(() => {
     loadWorkspaces()
@@ -35,6 +36,7 @@ export default function Workspaces() {
     try {
       const data = await listWorkspaces()
       setWorkspaces(data)
+      setIsOrgAdmin(data.some(w => w.role === 'org_admin'))
     } catch (err) {
       console.error('Failed to load workspaces:', err)
     } finally {
@@ -76,6 +78,7 @@ export default function Workspaces() {
             <h1 className="text-xl font-semibold">Workspaces</h1>
           </div>
           <div className="flex items-center gap-3">
+            {isOrgAdmin && (
             <button
               onClick={() => setShowCreateModal(true)}
               className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
@@ -83,6 +86,7 @@ export default function Workspaces() {
               <Plus size={18} />
               New Workspace
             </button>
+            )}
             <button
               onClick={() => navigate('/')}
               title="Go to Chat"
@@ -125,14 +129,20 @@ export default function Workspaces() {
           <div className="text-center py-16">
             <Folder className="mx-auto text-gray-300" size={64} />
             <h2 className="mt-4 text-xl font-medium text-gray-600">No workspaces yet</h2>
-            <p className="mt-2 text-gray-500">Create a workspace to organize your repos and integrations</p>
-            <button
-              onClick={() => setShowCreateModal(true)}
-              className="mt-6 inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-            >
-              <Plus size={18} />
-              Create Your First Workspace
-            </button>
+            {isOrgAdmin ? (
+              <>
+                <p className="mt-2 text-gray-500">Create a workspace to organize your repos and integrations</p>
+                <button
+                  onClick={() => setShowCreateModal(true)}
+                  className="mt-6 inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                >
+                  <Plus size={18} />
+                  Create Your First Workspace
+                </button>
+              </>
+            ) : (
+              <p className="mt-2 text-gray-500">Ask an org admin to add you to a workspace</p>
+            )}
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
