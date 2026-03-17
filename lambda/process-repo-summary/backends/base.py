@@ -406,6 +406,33 @@ class CodeMapBackend(ABC):
         """
         return dir_name.lower() in self.get_boundary_patterns()
 
+    def _match_source_root(self, dir_path: str, source_roots: List[str]) -> Optional[str]:
+        """
+        Find the source root that matches this directory path.
+
+        Handles both simple projects (src/main/java/...) and multi-module
+        projects (module-name/src/main/java/...) by checking if any source
+        root appears as a path segment boundary within the directory path.
+
+        Args:
+            dir_path: Full directory path
+            source_roots: List of source root paths
+
+        Returns:
+            The matched prefix up to and including the source root, or None
+        """
+        for root in source_roots:
+            if dir_path.startswith(root + "/") or dir_path == root:
+                return root
+            # Multi-module: root appears after a module prefix
+            marker = "/" + root
+            idx = dir_path.find(marker + "/")
+            if idx == -1 and dir_path.endswith(marker):
+                idx = dir_path.find(marker)
+            if idx != -1:
+                return dir_path[:idx + len(marker)]
+        return None
+
     def is_namespace_container(self, dir_path: str, file_count: int, source_roots: List[str]) -> bool:
         """
         Check if a directory is a pure namespace container (should be traversed through).
@@ -434,10 +461,9 @@ class CodeMapBackend(ABC):
 
         # Calculate depth relative to source root
         relative_path = dir_path
-        for root in source_roots:
-            if dir_path.startswith(root):
-                relative_path = dir_path[len(root):].lstrip("/")
-                break
+        matched_root = self._match_source_root(dir_path, source_roots)
+        if matched_root:
+            relative_path = dir_path[len(matched_root):].lstrip("/")
 
         path_parts = relative_path.split("/") if relative_path else []
         depth = len(path_parts)
@@ -527,12 +553,12 @@ class CodeMapBackend(ABC):
             files_by_dir[dir_path].append(path)
 
         # Find all directories under source roots
+        # Supports both simple (src/main/java/...) and multi-module
+        # (module-name/src/main/java/...) project layouts
         dirs_to_check = set()
         for dir_path in files_by_dir.keys():
-            for root in roots:
-                if dir_path.startswith(root):
-                    dirs_to_check.add(dir_path)
-                    break
+            if self._match_source_root(dir_path, roots) is not None:
+                dirs_to_check.add(dir_path)
 
         # Sort by depth (deepest first) so we can mark parent dirs as traversed
         sorted_dirs = sorted(dirs_to_check, key=lambda d: d.count("/"), reverse=True)
@@ -624,12 +650,11 @@ class CodeMapBackend(ABC):
         Returns:
             Human-readable unit name (e.g., "common-notification-email")
         """
-        # Strip source root prefix
+        # Strip source root prefix (supports multi-module layouts)
         relative_path = dir_path
-        for root in source_roots:
-            if dir_path.startswith(root):
-                relative_path = dir_path[len(root):].lstrip("/")
-                break
+        matched_root = self._match_source_root(dir_path, source_roots)
+        if matched_root:
+            relative_path = dir_path[len(matched_root):].lstrip("/")
 
         # For Java-style paths, strip the package prefix (com/company/project)
         # We keep the meaningful part after common prefixes
