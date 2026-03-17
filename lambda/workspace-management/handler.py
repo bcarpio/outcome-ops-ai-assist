@@ -810,9 +810,8 @@ def update_member(
         if target_is_admin and demoting and not _is_org_admin(table, user_email):
             return _error(403, "Only org admins can demote workspace admins")
 
-        # Can't change own role if last admin
-        if member_email == user_email and demoting:
-            # Count admins
+        # Can't demote the last admin
+        if target_is_admin and demoting:
             members_response = table.query(
                 IndexName="GSI1",
                 KeyConditionExpression="GSI1PK = :gsi1pk",
@@ -823,7 +822,7 @@ def update_member(
                 if m.get("role") == "workspace_admin"
             )
             if admin_count <= 1:
-                return _error(400, "Cannot remove last admin from workspace")
+                return _error(400, "Cannot demote the last admin of a workspace")
 
         table.update_item(
             Key={"PK": f"USER#{member_email}", "SK": f"WS_MEMBER#{workspace_id}"},
@@ -851,8 +850,13 @@ def remove_member(user_email: str, workspace_id: str, member_email: str) -> Dict
         if not is_admin and not is_self:
             return _error(403, "Only workspace admins can remove other members")
 
-        # Can't remove last admin
-        if is_self and is_admin:
+        # Check member exists
+        existing = _get_membership(table, member_email, workspace_id)
+        if not existing:
+            return _error(404, "Member not found")
+
+        # Can't remove the last admin from a workspace
+        if existing.get("role") == "workspace_admin":
             members_response = table.query(
                 IndexName="GSI1",
                 KeyConditionExpression="GSI1PK = :gsi1pk",
@@ -863,12 +867,7 @@ def remove_member(user_email: str, workspace_id: str, member_email: str) -> Dict
                 if m.get("role") == "workspace_admin"
             )
             if admin_count <= 1:
-                return _error(400, "Cannot remove last admin from workspace")
-
-        # Check member exists
-        existing = _get_membership(table, member_email, workspace_id)
-        if not existing:
-            return _error(404, "Member not found")
+                return _error(400, "Cannot remove the last admin from a workspace")
 
         table.delete_item(
             Key={"PK": f"USER#{member_email}", "SK": f"WS_MEMBER#{workspace_id}"}

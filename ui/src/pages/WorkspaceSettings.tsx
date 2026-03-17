@@ -1360,7 +1360,10 @@ export default function WorkspaceSettings() {
               </div>
             ) : (
               <ul className="divide-y">
-                {members.map(member => (
+                {members.map(member => {
+                  const adminCount = members.filter(m => m.role === 'workspace_admin').length
+                  const isLastAdmin = member.role === 'workspace_admin' && adminCount <= 1
+                  return (
                   <li key={member.user_email} className="p-4 flex items-center justify-between">
                     <div className="flex items-center gap-3">
                       {member.role === 'workspace_admin' ? (
@@ -1379,21 +1382,25 @@ export default function WorkspaceSettings() {
                           value={member.role}
                           onChange={(e) => handleUpdateMemberRole(member.user_email, e.target.value as 'member' | 'workspace_admin')}
                           className="text-sm border rounded px-2 py-1"
+                          disabled={isLastAdmin}
+                          title={isLastAdmin ? 'Cannot demote the last admin' : undefined}
                         >
                           <option value="member">Member</option>
                           <option value="workspace_admin">Admin</option>
                         </select>
                         <button
                           onClick={() => handleRemoveMember(member.user_email)}
-                          className="p-1.5 text-red-500 hover:bg-red-50 rounded transition-colors"
-                          title="Remove member"
+                          className={`p-1.5 rounded transition-colors ${isLastAdmin ? 'text-gray-300 cursor-not-allowed' : 'text-red-500 hover:bg-red-50'}`}
+                          title={isLastAdmin ? 'Cannot remove the last admin' : 'Remove member'}
+                          disabled={isLastAdmin}
                         >
                           <UserMinus size={18} />
                         </button>
                       </div>
                     )}
                   </li>
-                ))}
+                  )
+                })}
               </ul>
             )}
           </div>
