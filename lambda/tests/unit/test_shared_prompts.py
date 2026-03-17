@@ -65,7 +65,7 @@ class TestContextTypes:
     def test_context_types_includes_code_maps(self):
         """Test CONTEXT_TYPES includes code maps."""
         assert "Code maps" in CONTEXT_TYPES
-        assert "code structure" in CONTEXT_TYPES
+        assert "source code" in CONTEXT_TYPES
 
     def test_context_types_includes_infrastructure_patterns(self):
         """Test CONTEXT_TYPES includes infrastructure patterns."""
@@ -193,9 +193,9 @@ class TestBuildRagSystemPrompt:
         assert "Cite the specific sources" in prompt
 
     def test_includes_insufficient_context_guidance(self):
-        """Test RAG prompt instructs to say when context is insufficient."""
+        """Test RAG prompt instructs to say when context is genuinely missing."""
         prompt = build_rag_system_prompt()
-        assert "doesn't contain enough information" in prompt
+        assert "genuinely not present" in prompt
 
     def test_includes_requirement_strength_rules(self):
         """Test RAG prompt embeds REQUIREMENT_STRENGTH_RULES."""

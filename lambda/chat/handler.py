@@ -446,10 +446,16 @@ class ChatMessageRequest(BaseModel):
         return v.strip()
 
 
-# Pricing per 1K tokens (as of Jan 2025)
+# Pricing per 1K tokens (configurable via env vars, values in USD per million tokens)
 PRICING = {
-    "haiku": {"input": 0.001, "output": 0.005},  # Haiku 3.5
-    "sonnet": {"input": 0.003, "output": 0.015},  # Sonnet 4.5
+    "haiku": {
+        "input": float(os.environ.get("BEDROCK_BASIC_INPUT_PRICE", "0.80")) / 1000,
+        "output": float(os.environ.get("BEDROCK_BASIC_OUTPUT_PRICE", "4.0")) / 1000,
+    },
+    "sonnet": {
+        "input": float(os.environ.get("BEDROCK_ADVANCED_INPUT_PRICE", "3.0")) / 1000,
+        "output": float(os.environ.get("BEDROCK_ADVANCED_OUTPUT_PRICE", "15.0")) / 1000,
+    },
 }
 
 
@@ -1113,7 +1119,7 @@ KNOWLEDGE BASE CONTEXT:
 USER QUESTION:
 {question}
 
-Provide a helpful, accurate answer based on the context above. If the context doesn't contain enough information to fully answer the question, acknowledge this and provide what information you can."""
+Answer definitively based on the context above. State what the code does, not what it "likely" or "probably" does."""
 
     messages.append({"role": "user", "content": [{"text": user_prompt}]})
 

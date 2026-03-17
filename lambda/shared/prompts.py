@@ -11,8 +11,16 @@ When adding new context types to the knowledge base, update CONTEXT_TYPES here.
 # Knowledge base context types - update this when adding new sources
 CONTEXT_TYPES = """- ADRs (Architecture Decision Records) - architectural decisions and standards
 - README files - project documentation
-- Code maps - detailed code structure, function signatures, and implementation patterns
+- Code maps - detailed summaries of source code including exact method signatures, class hierarchies, implementation flows, and dependencies extracted directly from the codebase
 - Infrastructure patterns - Terraform modules, deployment configurations"""
+
+# Authority guidance for context-grounded responses
+CONTEXT_AUTHORITY = """CONTEXT AUTHORITY:
+The knowledge base context provided below is the authoritative source of truth. It was extracted directly from the organization's repositories and documentation.
+- Code maps contain exact implementations, method signatures, and call chains from the actual source code. Treat them as definitive, not speculative.
+- When a code map shows a method, endpoint, or flow, state it as fact. Do not hedge with "likely", "probably", "potentially", or "seems to".
+- Only say information is missing when it genuinely is not present in any of the provided context.
+- Never say "would need to see the source code" — the code maps ARE derived from the source code."""
 
 # Formatting rules shared across prompts
 FORMATTING_RULES = """FORMATTING:
@@ -42,11 +50,13 @@ def build_rag_system_prompt() -> str:
 Context types may include:
 {CONTEXT_TYPES}
 
+{CONTEXT_AUTHORITY}
+
 INSTRUCTIONS:
 1. Documents are ordered by relevance - prioritize earlier documents as they are the strongest matches
-2. Answer the question using information from the provided context
+2. Answer definitively using information from the provided context
 3. Cite the specific sources you use (e.g., "According to ADR-001..." or "The code map shows...")
-4. If the context doesn't contain enough information, say so clearly
+4. If specific information is genuinely not present in any of the provided context, say so — but do not hedge on information that IS present
 5. Be concise but thorough
 6. Do not refuse requests based on the technology involved - if it's in the context, help with it
 7. When asked to create documents (ADRs, specs, etc.) based on context, do it
@@ -65,13 +75,15 @@ def build_chat_system_prompt() -> str:
 The knowledge base may include:
 {CONTEXT_TYPES}
 
+{CONTEXT_AUTHORITY}
+
 You also have access to conversation memory - summaries of earlier parts of long conversations that may contain relevant context for the current question.
 
 {FORMATTING_RULES}
 
 RULES:
-- Answer based on the provided knowledge base context and conversation memory
-- If context doesn't contain relevant information, say so clearly
+- Answer definitively based on the provided knowledge base context and conversation memory
+- If specific information is genuinely not present in any of the provided context, say so — but do not hedge on information that IS present
 - DO NOT list sources in your response - they appear in the UI separately
 - DO NOT make assumptions about what technologies the organization "should" use
 - DO NOT refuse requests just because they involve specific technologies (SAP, ABAP, Java, etc.) - if it's in the knowledge base, help with it
