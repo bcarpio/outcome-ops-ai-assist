@@ -45,6 +45,16 @@ enable_jira_integration = false
 # rerank_min_score        = 0.3  # Min relevance score (0-1) to include in results
 
 # ============================================================================
+# Bedrock Model Pricing (USD per million tokens)
+# ============================================================================
+
+# Update these when changing models to ensure accurate cost tracking
+# bedrock_advanced_input_price  = 3.0   # Sonnet input
+# bedrock_advanced_output_price = 15.0  # Sonnet output
+# bedrock_basic_input_price     = 0.80  # Haiku input
+# bedrock_basic_output_price    = 4.0   # Haiku output
+
+# ============================================================================
 # Audit & Compliance
 # ============================================================================
 

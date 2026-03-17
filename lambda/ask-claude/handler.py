@@ -47,11 +47,11 @@ ADVANCED_MODEL_ID = os.environ.get(
     "BEDROCK_ADVANCED_MODEL_ID", "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
 )
 
-# Pricing (as of 2025)
-HAIKU_PRICE_PER_MILLION_INPUT_TOKENS = 0.80
-HAIKU_PRICE_PER_MILLION_OUTPUT_TOKENS = 4.0
-SONNET_PRICE_PER_MILLION_INPUT_TOKENS = 3.0
-SONNET_PRICE_PER_MILLION_OUTPUT_TOKENS = 15.0
+# Pricing (USD per million tokens, configurable via env vars)
+HAIKU_PRICE_PER_MILLION_INPUT_TOKENS = float(os.environ.get("BEDROCK_BASIC_INPUT_PRICE", "0.80"))
+HAIKU_PRICE_PER_MILLION_OUTPUT_TOKENS = float(os.environ.get("BEDROCK_BASIC_OUTPUT_PRICE", "4.0"))
+SONNET_PRICE_PER_MILLION_INPUT_TOKENS = float(os.environ.get("BEDROCK_ADVANCED_INPUT_PRICE", "3.0"))
+SONNET_PRICE_PER_MILLION_OUTPUT_TOKENS = float(os.environ.get("BEDROCK_ADVANCED_OUTPUT_PRICE", "15.0"))
 
 
 def calculate_cost(input_tokens: int, output_tokens: int, model: str = "haiku") -> float:

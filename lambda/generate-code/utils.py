@@ -7,6 +7,7 @@ Helper functions for cost calculation, text formatting, etc.
 import hashlib
 import hmac
 import logging
+import os
 import re
 from typing import Optional
 
@@ -19,15 +20,13 @@ logger = logging.getLogger()
 # Cost Calculation
 # ============================================================================
 
-# Claude Sonnet 4.5 pricing (as of 2025)
-SONNET_PRICE_PER_MILLION_INPUT_TOKENS = 3.0
-SONNET_PRICE_PER_MILLION_OUTPUT_TOKENS = 15.0
+# Pricing (USD per million tokens, configurable via env vars)
+SONNET_PRICE_PER_MILLION_INPUT_TOKENS = float(os.environ.get("BEDROCK_ADVANCED_INPUT_PRICE", "3.0"))
+SONNET_PRICE_PER_MILLION_OUTPUT_TOKENS = float(os.environ.get("BEDROCK_ADVANCED_OUTPUT_PRICE", "15.0"))
+HAIKU_PRICE_PER_MILLION_INPUT_TOKENS = float(os.environ.get("BEDROCK_BASIC_INPUT_PRICE", "0.80"))
+HAIKU_PRICE_PER_MILLION_OUTPUT_TOKENS = float(os.environ.get("BEDROCK_BASIC_OUTPUT_PRICE", "4.0"))
 
-# Claude Haiku 3.5 pricing (as of 2025)
-HAIKU_PRICE_PER_MILLION_INPUT_TOKENS = 0.80
-HAIKU_PRICE_PER_MILLION_OUTPUT_TOKENS = 4.0
-
-# Legacy alias for backwards compatibility
+# Legacy alias
 PRICE_PER_MILLION_INPUT_TOKENS = SONNET_PRICE_PER_MILLION_INPUT_TOKENS
 PRICE_PER_MILLION_OUTPUT_TOKENS = SONNET_PRICE_PER_MILLION_OUTPUT_TOKENS
 

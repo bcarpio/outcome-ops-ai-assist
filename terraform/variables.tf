@@ -164,6 +164,31 @@ variable "rerank_min_score" {
   default     = 0.15
 }
 
+# Bedrock model pricing (USD per million tokens)
+variable "bedrock_advanced_input_price" {
+  type        = number
+  description = "Price per million input tokens for the advanced model"
+  default     = 3.0
+}
+
+variable "bedrock_advanced_output_price" {
+  type        = number
+  description = "Price per million output tokens for the advanced model"
+  default     = 15.0
+}
+
+variable "bedrock_basic_input_price" {
+  type        = number
+  description = "Price per million input tokens for the basic model"
+  default     = 0.80
+}
+
+variable "bedrock_basic_output_price" {
+  type        = number
+  description = "Price per million output tokens for the basic model"
+  default     = 4.0
+}
+
 # ============================================================================
 # Resource Tags
 # ============================================================================
