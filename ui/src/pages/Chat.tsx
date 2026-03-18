@@ -203,7 +203,7 @@ export default function Chat() {
   }, [messages])
 
   async function loadConversations() {
-    const result = await listConversations(20)
+    const result = await listConversations(15)
     setConversations(result.conversations)
     setHasMoreConversations(result.has_more)
   }
