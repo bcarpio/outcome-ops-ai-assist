@@ -54,10 +54,12 @@ The tool manifest is cached in DynamoDB and refreshed on demand (configurable in
 ### Prerequisites
 
 - OutcomeOps UI deployed (`deploy_ui = true` with VPC configured)
-- A Snyk account with API access
+- A **paid Snyk plan** (Team or Enterprise) -- the free tier does not include REST API access
 - A Snyk API token
 - Docker installed (for building the container image)
 - At least one project monitored in Snyk (the tools query existing scan results)
+
+> **Important:** Snyk's free tier blocks REST API access at the organization level. A valid API token alone is not sufficient -- the organization must be on a paid plan that includes API entitlements. If you see `"not entitled for api access"` errors, this is a plan limitation, not a token or configuration issue.
 
 ### Step 1: Create a Snyk API Token
 
