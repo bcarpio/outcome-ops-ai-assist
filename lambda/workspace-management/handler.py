@@ -1733,13 +1733,27 @@ def _mcp_request(url: str, headers: Dict[str, str], method: str, params: Optiona
     if params:
         payload["params"] = params
 
+    merged_headers = dict(headers)
+    merged_headers.setdefault("Content-Type", "application/json")
+    merged_headers.setdefault("Accept", "application/json, text/event-stream")
+
     req = urllib.request.Request(
-        url, data=json.dumps(payload).encode(), headers=headers, method="POST"
+        url, data=json.dumps(payload).encode(), headers=merged_headers, method="POST"
     )
     with urllib.request.urlopen(req, timeout=30) as resp:
         # Capture session ID if returned
         session_id = resp.headers.get("Mcp-Session-Id")
-        data = json.loads(resp.read().decode())
+        raw = resp.read().decode()
+        content_type = resp.headers.get("Content-Type") or ""
+
+        # Handle SSE responses (Streamable HTTP servers may return text/event-stream)
+        if "text/event-stream" in content_type:
+            for line in raw.splitlines():
+                if line.startswith("data: "):
+                    raw = line[6:]
+                    break
+
+        data = json.loads(raw)
         if session_id:
             data["_session_id"] = session_id
         return data
