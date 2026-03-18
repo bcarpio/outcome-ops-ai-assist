@@ -1,4 +1,4 @@
-.PHONY: help setup install fmt lint validate test test-unit test-integration test-coverage test-ui audit build-run-tests-image build-ui-image build-mcp-server-image clean all
+.PHONY: help setup install fmt lint validate test test-unit test-integration test-coverage test-ui audit build-run-tests-image build-ui-image build-mcp-server-image build-snyk-image clean all
 
 APP_NAME ?= outcome-ops-ai-assist
 AWS_REGION ?= us-west-2
@@ -32,6 +32,7 @@ help:
 	@echo "  make build-run-tests-image      Build run-tests container (auto-creates ECR, ENVIRONMENT=dev|prd)"
 	@echo "  make build-ui-image             Build chat UI container (auto-creates ECR, ENVIRONMENT=dev|prd)"
 	@echo "  make build-mcp-server-image Build OutcomeOps MCP server container (ENVIRONMENT=dev|prd)"
+	@echo "  make build-snyk-image       Build Snyk MCP server container (ENVIRONMENT=dev|prd)"
 	@echo ""
 	@echo "Combined:"
 	@echo "  make all              Run fmt, validate, and all tests"
@@ -242,6 +243,29 @@ build-mcp-server-image:
 	$(eval AWS_ACCOUNT := $(shell aws sts get-caller-identity --query Account --output text))
 	aws ecr get-login-password --region $(AWS_REGION) | docker login --username AWS --password-stdin $(AWS_ACCOUNT).dkr.ecr.$(AWS_REGION).amazonaws.com
 	docker build -t $(ECR_REPO):latest lambda/mcp-server/
+	docker push $(ECR_REPO):latest
+
+# Build Snyk MCP server container image
+# Usage: ENVIRONMENT=dev make build-snyk-image
+#        ENVIRONMENT=prd make build-snyk-image
+build-snyk-image:
+	@if [ -z "$$ENVIRONMENT" ]; then \
+		echo "Error: ENVIRONMENT variable not set."; \
+		echo "Usage: ENVIRONMENT=dev make build-snyk-image"; \
+		echo "       ENVIRONMENT=prd make build-snyk-image"; \
+		exit 1; \
+	fi
+	@echo "Ensuring ECR repository exists for environment: $$ENVIRONMENT"
+	@cd terraform && \
+		terraform init -input=false > /dev/null 2>&1 && \
+		(terraform workspace select $$ENVIRONMENT 2>/dev/null || terraform workspace new $$ENVIRONMENT) && \
+		terraform apply -var-file=$$ENVIRONMENT.tfvars -target=aws_ecr_repository.mcp_snyk -auto-approve
+	@echo ""
+	@echo "Building Snyk MCP server container image for environment: $$ENVIRONMENT"
+	$(eval ECR_REPO := $(shell cd terraform && terraform output -raw mcp_snyk_ecr_url 2>/dev/null))
+	$(eval AWS_ACCOUNT := $(shell aws sts get-caller-identity --query Account --output text))
+	aws ecr get-login-password --region $(AWS_REGION) | docker login --username AWS --password-stdin $(AWS_ACCOUNT).dkr.ecr.$(AWS_REGION).amazonaws.com
+	docker build -t $(ECR_REPO):latest containers/mcp-snyk/
 	docker push $(ECR_REPO):latest
 
 # ============================================================================

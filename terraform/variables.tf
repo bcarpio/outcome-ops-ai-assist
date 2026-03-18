@@ -307,6 +307,18 @@ variable "mcp_sonarqube_org" {
   default     = ""
 }
 
+variable "mcp_snyk_enabled" {
+  description = "Deploy Snyk MCP server as a Fargate Spot task"
+  type        = bool
+  default     = false
+}
+
+variable "mcp_snyk_org" {
+  description = "Snyk organization ID (for multi-org accounts)"
+  type        = string
+  default     = ""
+}
+
 variable "mcp_server_enabled" {
   description = "Deploy the MCP server for external MCP client access (Claude Code, VS Code, Cursor)"
   type        = bool
