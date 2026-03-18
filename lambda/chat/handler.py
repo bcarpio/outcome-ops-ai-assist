@@ -1540,7 +1540,9 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         DELETE /conversations/{id} - Delete conversation
     """
     http_method = event.get("httpMethod") or event.get("requestContext", {}).get("http", {}).get("method", "GET")
-    path = event.get("path") or event.get("requestContext", {}).get("http", {}).get("path", "/")
+    raw_path = event.get("path") or event.get("requestContext", {}).get("http", {}).get("path", "/")
+    # Strip query string from path (Function URL may include it)
+    path = raw_path.split("?")[0]
 
     # Extract user identity from header (set by Fargate proxy)
     headers = event.get("headers") or {}
@@ -1578,18 +1580,9 @@ def list_conversations(user_id: str = None, limit: int = 20, cursor: str = None)
 
     try:
         if user_id:
-            # Use GSI2 for efficient user-scoped queries sorted by recency
-            query_params = {
-                "IndexName": "GSI2",
-                "KeyConditionExpression": "GSI2PK = :pk",
-                "ExpressionAttributeValues": {":pk": f"USER#{user_id}"},
-                "ScanIndexForward": False,
-                "Limit": limit,
-            }
-
             if cursor:
                 try:
-                    query_params["ExclusiveStartKey"] = json.loads(
+                    exclusive_start_key = json.loads(
                         base64.b64decode(cursor).decode()
                     )
                 except Exception:
@@ -1598,7 +1591,36 @@ def list_conversations(user_id: str = None, limit: int = 20, cursor: str = None)
                         "body": json.dumps({"error": "Invalid cursor"}),
                     }
 
-            response = table.query(**query_params)
+            # Try GSI2 query first, fall back to scan if index doesn't exist yet
+            try:
+                query_params = {
+                    "IndexName": "GSI2",
+                    "KeyConditionExpression": "GSI2PK = :pk",
+                    "ExpressionAttributeValues": {":pk": f"USER#{user_id}"},
+                    "ScanIndexForward": False,
+                    "Limit": limit,
+                }
+                if cursor:
+                    query_params["ExclusiveStartKey"] = exclusive_start_key
+
+                response = table.query(**query_params)
+            except ClientError as gsi_err:
+                error_code = gsi_err.response.get("Error", {}).get("Code", "")
+                if error_code == "ValidationException":
+                    # GSI2 doesn't exist yet — fall back to scan
+                    logger.warning("GSI2 not available, falling back to scan")
+                    response = table.scan(
+                        FilterExpression="SK = :sk AND user_id = :uid",
+                        ExpressionAttributeValues={":sk": "METADATA", ":uid": user_id},
+                    )
+                    # Sort in Python since scan doesn't guarantee order
+                    response["Items"] = sorted(
+                        response.get("Items", []),
+                        key=lambda x: x.get("updated_at", ""),
+                        reverse=True,
+                    )[:limit]
+                else:
+                    raise
         else:
             # Fallback to scan when no user_id (admin use case)
             response = table.scan(
