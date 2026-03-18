@@ -1,52 +1,51 @@
 # Snyk MCP Server
 
-OutcomeOps integrates with [Snyk](https://snyk.io/) via the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/), giving the AI assistant direct access to security scanning capabilities during chat conversations.
+OutcomeOps integrates with [Snyk](https://snyk.io/) via the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/), giving the AI assistant direct access to security vulnerability data during chat conversations.
 
-The integration wraps the [Snyk CLI MCP server](https://docs.snyk.io/snyk-cli/snyk-mcp-experimental) using [supergateway](https://github.com/supercorp-ai/supergateway) to bridge stdio transport to HTTP, deployed as a Fargate Spot container in your VPC.
+The integration uses a custom MCP server that calls the [Snyk REST API](https://docs.snyk.io/snyk-api) to query existing scan results from Snyk's cloud. Unlike Snyk's official CLI-based MCP server (which requires local project files), this server queries data from projects already monitored in Snyk.
 
 ## What This Enables
 
 With the Snyk MCP server connected, users can ask the AI assistant questions like:
 
-- "Scan this code for security vulnerabilities"
-- "Check our dependencies for known CVEs"
-- "Are there any infrastructure-as-code misconfigurations?"
-- "Scan the container image for vulnerabilities"
-- "Generate an SBOM for this project"
+- "What are the critical vulnerabilities in our payment service?"
+- "List all projects being monitored in Snyk"
+- "Show me the dependency graph for the API project"
+- "Are there known vulnerabilities in express@4.17.1?"
+- "What's our overall security posture across all projects?"
+- "Generate an SBOM for the frontend project"
 
-The AI assistant calls Snyk tools in real-time during the conversation, retrieves the results, and provides analysis and remediation recommendations.
+The AI assistant calls Snyk tools in real-time during the conversation, retrieves the results, and provides analysis and remediation recommendations based on actual scan data.
 
 ## How It Works
 
 ```
-User (Chat) --> Bedrock (Claude) --> Tool Call --> Lambda --> ALB --> MCP Container --> Snyk API
+User (Chat) --> Bedrock (Claude) --> Tool Call --> Lambda --> ALB --> MCP Container --> Snyk REST API
                                                                          |
                                                               snyk-mcp.mcp.local:8080
                                                                          |
-                                                          supergateway (stdio -> HTTP)
+                                                              server.py (JSON-RPC 2.0)
                                                                          |
-                                                            snyk mcp -t stdio
+                                                          api.snyk.io / snyk.io/api/v1
 ```
 
 1. User asks a question in chat and selects the Snyk MCP server from the toolbar
 2. Claude identifies which Snyk tools to call based on the question
 3. The chat Lambda executes the tool call via JSON-RPC 2.0 to the MCP container
-4. supergateway proxies the request to the Snyk CLI running in stdio mode
-5. The Snyk CLI calls the Snyk API using the configured token
-6. Results are returned to Claude, which synthesizes a response for the user
+4. The container calls the Snyk REST API using the configured token
+5. Results are returned to Claude, which synthesizes a response for the user
 
 ## Available Tools
 
-The Snyk MCP server exposes these tools (fetched dynamically via **Refresh Tools** in the UI):
-
 | Tool | Description |
 |------|-------------|
-| `snyk_code_scan` | Static application security testing (SAST) for proprietary code |
-| `snyk_sca_scan` | Open source dependency vulnerability scanning |
-| `snyk_iac_scan` | Infrastructure as Code configuration scanning |
-| `snyk_container_scan` | Container image vulnerability scanning |
-| `snyk_sbom_scan` | Software Bill of Materials analysis |
-| `snyk_aibom` | AI Bill of Materials generation |
+| `list_organizations` | List all Snyk organizations the user belongs to |
+| `list_projects` | List all monitored projects in an organization |
+| `get_project_issues` | Get aggregated vulnerabilities for a project (with severity/type filters) |
+| `get_project_dependencies` | Get the dependency graph for a project |
+| `search_issues_by_package` | Search for vulnerabilities in a specific package by purl |
+| `get_org_issues` | List all issues across an organization (with severity/scan type filters) |
+| `get_project_sbom` | Export SBOM in CycloneDX or SPDX format |
 
 The tool manifest is cached in DynamoDB and refreshed on demand (configurable interval, default 7 days).
 
@@ -58,6 +57,7 @@ The tool manifest is cached in DynamoDB and refreshed on demand (configurable in
 - A Snyk account with API access
 - A Snyk API token
 - Docker installed (for building the container image)
+- At least one project monitored in Snyk (the tools query existing scan results)
 
 ### Step 1: Create a Snyk API Token
 
@@ -87,17 +87,15 @@ Add to your `prd.tfvars` (or `dev.tfvars`):
 
 ```hcl
 mcp_snyk_enabled = true
-mcp_snyk_org     = "your-snyk-org-id"
+mcp_snyk_org     = "your-snyk-org-slug"
 ```
 
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `mcp_snyk_enabled` | Yes | Set to `true` to deploy the server |
-| `mcp_snyk_org` | No | Snyk organization ID (for multi-org accounts) |
+| `mcp_snyk_org` | No | Snyk organization slug or ID (for multi-org accounts). If omitted, uses the first org. |
 
 ### Step 4: Build and Push the Container Image
-
-The Snyk MCP server uses a custom container image that wraps the Snyk CLI with supergateway. Build and push it to ECR:
 
 ```bash
 ENVIRONMENT=prd make build-snyk-image
@@ -105,7 +103,7 @@ ENVIRONMENT=prd make build-snyk-image
 
 This will:
 - Create the ECR repository (if it doesn't exist)
-- Build the Docker image from `containers/mcp-snyk/Dockerfile`
+- Build the Docker image from `containers/mcp-snyk/`
 - Push to ECR
 
 ### Step 5: Deploy Infrastructure
@@ -133,17 +131,17 @@ After deployment, the Snyk MCP server appears in **Org Settings > MCP Servers** 
 
 ## Container Architecture
 
-The Snyk CLI MCP server only supports `stdio` and `sse` transports. SSE binds to a random port and is documented as local-only. To run it in a container behind an ALB, we use supergateway to bridge stdio to a fixed HTTP port:
+The container is a lightweight Python HTTP server that implements the MCP Streamable HTTP transport (JSON-RPC 2.0 over HTTP POST). It calls the Snyk REST API directly -- no Snyk CLI required.
 
 ```
-ALB (:443/mcp/snyk) --> Container (:8080) --> supergateway --> snyk mcp -t stdio
+ALB (:443/mcp/snyk) --> Container (:8080) --> server.py --> Snyk REST API
 ```
 
-The container is built from `containers/mcp-snyk/Dockerfile`:
-- Base image: `node:22-slim`
-- Installs `snyk` CLI and `supergateway` globally via npm
-- Runs supergateway on port 8080, proxying to `snyk mcp -t stdio`
+Built from `containers/mcp-snyk/`:
+- Base image: `python:3.12-slim`
+- No external dependencies (uses stdlib `urllib`, `http.server`)
 - `SNYK_TOKEN` injected as a secret from SSM at task startup
+- `SNYK_CFG_ORG` set as an environment variable for org scoping
 
 ## Infrastructure Details
 
@@ -153,7 +151,7 @@ The container is built from `containers/mcp-snyk/Dockerfile`:
 |----------|---------|
 | ECR Repository | `{env}-outcome-ops-ai-assist-mcp-snyk` |
 | ECS Task | Fargate Spot, 0.5 vCPU, 1 GB RAM (auto-restarts on Spot interruption) |
-| Container | Custom image from ECR (node:22-slim + snyk CLI + supergateway) |
+| Container | Custom image from ECR (python:3.12-slim + server.py) |
 | Network | Internal only, same VPC as UI. ALB routes `/mcp/snyk/*` at priority 6 |
 | Service Discovery | Cloud Map DNS: `snyk-mcp.mcp.local` |
 | Logs | CloudWatch: `/ecs/{env}-outcome-ops-ai-assist-mcp-snyk` |
@@ -161,9 +159,10 @@ The container is built from `containers/mcp-snyk/Dockerfile`:
 
 ### Security
 
-- The MCP container runs in private subnets with no direct internet access (except via NAT gateway)
+- The MCP container runs in private subnets
 - The Snyk API token is stored in SSM Parameter Store as a `SecureString` and injected as an environment variable at task startup
 - ALB listener rules for MCP traffic bypass OIDC authentication (Lambda authenticates requests internally)
+- The container makes outbound HTTPS calls to `api.snyk.io` and `snyk.io` (requires NAT gateway or public subnet)
 
 ### Cost
 
@@ -180,29 +179,28 @@ Fargate Spot pricing applies. Typical cost for a single MCP server running 24/7:
 ## Troubleshooting
 
 ### MCP server shows "error" status after refresh
-- Check CloudWatch logs for the container:
+- Check CloudWatch logs:
   ```bash
   aws logs tail /ecs/prd-outcome-ops-ai-assist-mcp-snyk --follow
   ```
-- Verify the Snyk token is valid: `SNYK_TOKEN=xxx snyk auth check`
-- Verify `mcp_snyk_org` is correct (if using multi-org)
+- Verify the Snyk token is valid
+- Verify the org slug matches your Snyk account
 
 ### Container fails to start
-- Check ECS task stopped reason:
-  ```bash
-  aws ecs list-tasks --cluster prd-outcome-ops-ai-assist-ui --service-name snyk-mcp
-  ```
+- Check ECS task stopped reason
 - Verify the ECR image exists and was pushed successfully
-- Ensure NAT gateway is configured for npm package downloads during container startup
+- Ensure NAT gateway is configured (the container calls `api.snyk.io`)
+
+### "No Snyk organizations found"
+- Verify `SNYK_TOKEN` has access to at least one org
+- Set `mcp_snyk_org` explicitly in tfvars
 
 ### Tools not appearing in chat dropdown
 - Confirm the MCP server status is `active` (not `pending` or `error`)
 - Confirm the server is assigned to the user's workspace (or marked as Global)
-- Try clicking **Refresh Tools** again in the MCP Servers admin page
+- Try clicking **Refresh Tools** again
 
 ### Token rotation
-
-To rotate the Snyk token:
 
 ```bash
 aws ssm put-parameter \
@@ -212,7 +210,7 @@ aws ssm put-parameter \
   --overwrite
 ```
 
-Then force a new ECS deployment to pick up the new value:
+Then force a new ECS deployment:
 
 ```bash
 aws ecs update-service \
@@ -221,17 +219,12 @@ aws ecs update-service \
   --force-new-deployment
 ```
 
-### Updating the Snyk CLI version
+### Updating the server
 
-To update the Snyk CLI to the latest version, rebuild and push the container:
+Rebuild and push:
 
 ```bash
 ENVIRONMENT=prd make build-snyk-image
-```
-
-Then force a new ECS deployment:
-
-```bash
 aws ecs update-service \
   --cluster prd-outcome-ops-ai-assist-ui \
   --service snyk-mcp \
