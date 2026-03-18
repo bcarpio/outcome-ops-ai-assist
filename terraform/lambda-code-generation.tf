@@ -54,12 +54,12 @@ module "generate_code_lambda" {
   # Environment variables
   environment_variables = merge(
     {
-      ENV                       = var.environment
-      APP_NAME                  = var.app_name
-      EVENT_BUS_NAME            = aws_cloudwatch_event_bus.automation.name
-      ENABLE_BEDROCK_COOLDOWN   = tostring(var.enable_bedrock_cooldown)
-      AUDIT_TABLE               = module.audit_logs_table.dynamodb_table_id
-      BEDROCK_ADVANCED_MODEL_ID    = var.bedrock_advanced_model_id
+      ENV                           = var.environment
+      APP_NAME                      = var.app_name
+      EVENT_BUS_NAME                = aws_cloudwatch_event_bus.automation.name
+      ENABLE_BEDROCK_COOLDOWN       = tostring(var.enable_bedrock_cooldown)
+      AUDIT_TABLE                   = module.audit_logs_table.dynamodb_table_id
+      BEDROCK_ADVANCED_MODEL_ID     = var.bedrock_advanced_model_id
       BEDROCK_ADVANCED_INPUT_PRICE  = tostring(var.bedrock_advanced_input_price)
       BEDROCK_ADVANCED_OUTPUT_PRICE = tostring(var.bedrock_advanced_output_price)
       BEDROCK_BASIC_INPUT_PRICE     = tostring(var.bedrock_basic_input_price)
@@ -539,13 +539,13 @@ module "run_tests_lambda" {
   architectures          = ["x86_64"]
 
   environment_variables = {
-    ENV                       = var.environment
-    APP_NAME                  = var.app_name
-    TEST_RESULTS_BUCKET       = module.knowledge_base_bucket.s3_bucket_id
-    TEST_RESULTS_PREFIX       = "test-results"
-    EVENT_BUS_NAME            = aws_cloudwatch_event_bus.automation.name
-    AUDIT_TABLE               = module.audit_logs_table.dynamodb_table_id
-    BEDROCK_ADVANCED_MODEL_ID    = var.bedrock_advanced_model_id
+    ENV                           = var.environment
+    APP_NAME                      = var.app_name
+    TEST_RESULTS_BUCKET           = module.knowledge_base_bucket.s3_bucket_id
+    TEST_RESULTS_PREFIX           = "test-results"
+    EVENT_BUS_NAME                = aws_cloudwatch_event_bus.automation.name
+    AUDIT_TABLE                   = module.audit_logs_table.dynamodb_table_id
+    BEDROCK_ADVANCED_MODEL_ID     = var.bedrock_advanced_model_id
     BEDROCK_ADVANCED_INPUT_PRICE  = tostring(var.bedrock_advanced_input_price)
     BEDROCK_ADVANCED_OUTPUT_PRICE = tostring(var.bedrock_advanced_output_price)
     BEDROCK_BASIC_INPUT_PRICE     = tostring(var.bedrock_basic_input_price)
@@ -643,12 +643,12 @@ module "handle_command_lambda" {
   # Environment variables
   environment_variables = merge(
     {
-      ENV                    = var.environment
-      APP_NAME               = var.app_name
-      AUDIT_TABLE            = module.audit_logs_table.dynamodb_table_id
-      BEDROCK_BASIC_MODEL_ID       = var.bedrock_basic_model_id
-      BEDROCK_BASIC_INPUT_PRICE     = tostring(var.bedrock_basic_input_price)
-      BEDROCK_BASIC_OUTPUT_PRICE    = tostring(var.bedrock_basic_output_price)
+      ENV                        = var.environment
+      APP_NAME                   = var.app_name
+      AUDIT_TABLE                = module.audit_logs_table.dynamodb_table_id
+      BEDROCK_BASIC_MODEL_ID     = var.bedrock_basic_model_id
+      BEDROCK_BASIC_INPUT_PRICE  = tostring(var.bedrock_basic_input_price)
+      BEDROCK_BASIC_OUTPUT_PRICE = tostring(var.bedrock_basic_output_price)
     },
     var.outcomeops_license_layer_arn != "" ? {
       OUTCOMEOPS_LICENSE_PARAM      = var.outcomeops_license_ssm_param

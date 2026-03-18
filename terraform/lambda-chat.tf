@@ -49,27 +49,27 @@ module "chat_streaming_lambda" {
 
   # Environment variables for LWA
   environment_variables = {
-    ENV                          = var.environment
-    APP_NAME                     = var.app_name
-    AWS_LAMBDA_EXEC_WRAPPER      = "/opt/bootstrap"
-    AWS_LWA_INVOKE_MODE          = "RESPONSE_STREAM"
-    AWS_LWA_READINESS_CHECK_PATH = "/health"
-    PORT                         = "8000"
-    AUDIT_TABLE                  = module.audit_logs_table.dynamodb_table_id
-    BEDROCK_ADVANCED_MODEL_ID    = var.bedrock_advanced_model_id
-    BEDROCK_BASIC_MODEL_ID       = var.bedrock_basic_model_id
+    ENV                           = var.environment
+    APP_NAME                      = var.app_name
+    AWS_LAMBDA_EXEC_WRAPPER       = "/opt/bootstrap"
+    AWS_LWA_INVOKE_MODE           = "RESPONSE_STREAM"
+    AWS_LWA_READINESS_CHECK_PATH  = "/health"
+    PORT                          = "8000"
+    AUDIT_TABLE                   = module.audit_logs_table.dynamodb_table_id
+    BEDROCK_ADVANCED_MODEL_ID     = var.bedrock_advanced_model_id
+    BEDROCK_BASIC_MODEL_ID        = var.bedrock_basic_model_id
     BEDROCK_ADVANCED_INPUT_PRICE  = tostring(var.bedrock_advanced_input_price)
     BEDROCK_ADVANCED_OUTPUT_PRICE = tostring(var.bedrock_advanced_output_price)
     BEDROCK_BASIC_INPUT_PRICE     = tostring(var.bedrock_basic_input_price)
     BEDROCK_BASIC_OUTPUT_PRICE    = tostring(var.bedrock_basic_output_price)
-    BEDROCK_EMBEDDING_MODEL_ID   = var.bedrock_embedding_model_id
-    BEDROCK_RERANK_MODEL_ID      = var.bedrock_rerank_model_id
-    RERANK_ENABLED               = "true"
-    RERANK_MAX_FETCH             = tostring(var.rerank_max_fetch)
-    RERANK_MIN_SCORE             = tostring(var.rerank_min_score)
-    RAG_MAX_DOC_CHARS            = tostring(var.rag_max_doc_chars)
-    WORKSPACES_TABLE             = module.workspaces_table[0].dynamodb_table_id
-    OAUTH_KMS_KEY_ARN            = aws_kms_key.oauth_tokens[0].arn
+    BEDROCK_EMBEDDING_MODEL_ID    = var.bedrock_embedding_model_id
+    BEDROCK_RERANK_MODEL_ID       = var.bedrock_rerank_model_id
+    RERANK_ENABLED                = "true"
+    RERANK_MAX_FETCH              = tostring(var.rerank_max_fetch)
+    RERANK_MIN_SCORE              = tostring(var.rerank_min_score)
+    RAG_MAX_DOC_CHARS             = tostring(var.rag_max_doc_chars)
+    WORKSPACES_TABLE              = module.workspaces_table[0].dynamodb_table_id
+    OAUTH_KMS_KEY_ARN             = aws_kms_key.oauth_tokens[0].arn
   }
 
   # IAM permissions
