@@ -135,27 +135,43 @@ export async function sendChatMessage(
   }
 }
 
+export interface ConversationListResponse {
+  conversations: Conversation[]
+  next_cursor?: string
+  has_more: boolean
+}
+
 /**
- * List all conversations from server
+ * List conversations from server with pagination support
  */
-export async function listConversations(): Promise<Conversation[]> {
+export async function listConversations(
+  limit: number = 20,
+  cursor?: string
+): Promise<ConversationListResponse> {
   try {
-    const response = await fetch(`${API_BASE}/conversations`)
+    const params = new URLSearchParams({ limit: String(limit) })
+    if (cursor) params.set('cursor', cursor)
+
+    const response = await fetch(`${API_BASE}/conversations?${params}`)
     if (!response.ok) {
       console.error('Failed to list conversations:', response.status)
-      return []
+      return { conversations: [], has_more: false }
     }
     const data = await response.json()
-    return (data.conversations || []).map((c: Record<string, unknown>) => ({
-      conversation_id: c.conversation_id as string,
-      title: (c.title as string) || 'Untitled',
-      message_count: (c.message_count as number) || 0,
-      created_at: c.created_at as string,
-      updated_at: c.updated_at as string,
-    }))
+    return {
+      conversations: (data.conversations || []).map((c: Record<string, unknown>) => ({
+        conversation_id: c.conversation_id as string,
+        title: (c.title as string) || 'Untitled',
+        message_count: (c.message_count as number) || 0,
+        created_at: c.created_at as string,
+        updated_at: c.updated_at as string,
+      })),
+      next_cursor: data.next_cursor,
+      has_more: data.has_more ?? false,
+    }
   } catch (error) {
     console.error('Error listing conversations:', error)
-    return []
+    return { conversations: [], has_more: false }
   }
 }
 

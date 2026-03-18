@@ -376,6 +376,14 @@ class TestCreateConversation:
         assert "user_id" not in result
         assert "workspace_id" not in result
 
+    def test_create_conversation_populates_gsi2(self, mock_table):
+        """Verify GSI2PK and GSI2SK are set on new conversations."""
+        create_conversation("Test Title", user_id="user@example.com")
+        put_call = mock_table.put_item.call_args[1]
+        item = put_call["Item"]
+        assert item["GSI2PK"] == "USER#user@example.com"
+        assert item["GSI2SK"].startswith("CONV#")
+
 
 class TestUpdateConversation:
     """Test updating conversation metadata."""
@@ -393,6 +401,13 @@ class TestUpdateConversation:
         )
         # Should not raise
         update_conversation("conv_test123", 5)
+
+    def test_update_conversation_updates_gsi2sk(self, mock_table):
+        """Verify GSI2SK is updated when conversation is updated."""
+        update_conversation("conv_123", 5)
+        update_call = mock_table.update_item.call_args[1]
+        assert "GSI2SK = :gsi2sk" in update_call["UpdateExpression"]
+        assert update_call["ExpressionAttributeValues"][":gsi2sk"].startswith("CONV#")
 
 
 class TestGetConversationMessages:
@@ -1297,7 +1312,7 @@ class TestLambdaHandler:
     """Test REST API lambda_handler routing."""
 
     def test_list_conversations(self, mock_table):
-        mock_table.scan.return_value = {
+        mock_table.query.return_value = {
             "Items": [
                 {
                     "conversation_id": "conv_1",
@@ -1318,9 +1333,10 @@ class TestLambdaHandler:
         assert result["statusCode"] == 200
         body = json.loads(result["body"])
         assert "conversations" in body
+        assert "has_more" in body
 
     def test_list_conversations_filters_by_user(self, mock_table):
-        mock_table.scan.return_value = {"Items": []}
+        mock_table.query.return_value = {"Items": []}
 
         event = {
             "httpMethod": "GET",
@@ -1329,9 +1345,9 @@ class TestLambdaHandler:
         }
 
         lambda_handler(event, None)
-        call_args = mock_table.scan.call_args[1]
-        assert ":uid" in call_args["ExpressionAttributeValues"]
-        assert call_args["ExpressionAttributeValues"][":uid"] == "user@example.com"
+        call_args = mock_table.query.call_args[1]
+        assert call_args["IndexName"] == "GSI2"
+        assert call_args["ExpressionAttributeValues"][":pk"] == "USER#user@example.com"
 
     def test_list_conversations_no_user(self, mock_table):
         mock_table.scan.return_value = {"Items": []}
@@ -1342,9 +1358,10 @@ class TestLambdaHandler:
             "headers": {},
         }
 
-        lambda_handler(event, None)
-        call_args = mock_table.scan.call_args[1]
-        assert ":uid" not in call_args.get("ExpressionAttributeValues", {})
+        result = lambda_handler(event, None)
+        mock_table.scan.assert_called_once()
+        body = json.loads(result["body"])
+        assert "has_more" in body
 
     def test_list_conversations_dynamodb_error(self, mock_table):
         mock_table.scan.side_effect = ClientError(
@@ -1669,7 +1686,7 @@ class TestEdgeCases:
         assert kb_call["filter"] == {"workspace_id": {"$eq": "ws_deprecated"}}
 
     def test_list_conversations_sorted_by_updated_at(self, mock_table):
-        """Test conversations are sorted newest first."""
+        """Test conversations are returned from scan (sorting handled by GSI2 for user queries)."""
         mock_table.scan.return_value = {
             "Items": [
                 {"conversation_id": "old", "updated_at": "2025-01-01T00:00:00", "SK": "METADATA"},
@@ -1679,8 +1696,73 @@ class TestEdgeCases:
 
         result = list_conversations()
         body = json.loads(result["body"])
-        assert body["conversations"][0]["conversation_id"] == "new"
-        assert body["conversations"][1]["conversation_id"] == "old"
+        assert len(body["conversations"]) == 2
+        assert body["has_more"] is False
+
+    def test_list_conversations_pagination_with_cursor(self, mock_table):
+        """Test cursor-based pagination passes ExclusiveStartKey."""
+        import base64
+        mock_table.query.return_value = {
+            "Items": [{"conversation_id": "c1", "title": "Test"}],
+            "LastEvaluatedKey": {"PK": "CONV#c1", "SK": "METADATA", "GSI2PK": "USER#u", "GSI2SK": "CONV#ts"},
+        }
+
+        cursor_key = {"PK": "CONV#c0", "SK": "METADATA", "GSI2PK": "USER#u", "GSI2SK": "CONV#ts0"}
+        cursor = base64.b64encode(json.dumps(cursor_key).encode()).decode()
+
+        event = {
+            "httpMethod": "GET",
+            "path": "/conversations",
+            "headers": {"x-user-email": "user@example.com"},
+            "queryStringParameters": {"limit": "10", "cursor": cursor},
+        }
+
+        result = lambda_handler(event, None)
+        assert result["statusCode"] == 200
+        body = json.loads(result["body"])
+        assert body["has_more"] is True
+        assert "next_cursor" in body
+        # Verify ExclusiveStartKey was passed
+        call_args = mock_table.query.call_args[1]
+        assert call_args["ExclusiveStartKey"] == cursor_key
+
+    def test_list_conversations_invalid_cursor(self, mock_table):
+        """Test invalid cursor returns 400."""
+        event = {
+            "httpMethod": "GET",
+            "path": "/conversations",
+            "headers": {"x-user-email": "user@example.com"},
+            "queryStringParameters": {"cursor": "not-valid-base64!!!"},
+        }
+
+        result = lambda_handler(event, None)
+        assert result["statusCode"] == 400
+
+    def test_list_conversations_limit_capped(self, mock_table):
+        """Test limit is capped at 100."""
+        mock_table.query.return_value = {"Items": []}
+
+        event = {
+            "httpMethod": "GET",
+            "path": "/conversations",
+            "headers": {"x-user-email": "user@example.com"},
+            "queryStringParameters": {"limit": "500"},
+        }
+
+        lambda_handler(event, None)
+        call_args = mock_table.query.call_args[1]
+        assert call_args["Limit"] == 100
+
+    def test_list_conversations_has_more_false_when_no_last_key(self, mock_table):
+        """Test has_more is False when no LastEvaluatedKey."""
+        mock_table.query.return_value = {
+            "Items": [{"conversation_id": "c1"}],
+        }
+
+        result = list_conversations(user_id="user@example.com", limit=20)
+        body = json.loads(result["body"])
+        assert body["has_more"] is False
+        assert "next_cursor" not in body
 
     def test_delete_conversation_also_deletes_memory(self, mock_table):
         """Test that deleting a conversation also deletes memory chunks."""

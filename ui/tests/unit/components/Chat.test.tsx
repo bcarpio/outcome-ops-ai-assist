@@ -14,6 +14,10 @@ vi.mock('../../../src/lib/api', () => ({
   getChatMcpServers: vi.fn(),
 }))
 
+vi.mock('../../../src/components/AllChatsModal', () => ({
+  default: () => <div data-testid="all-chats-modal">All Chats Modal</div>,
+}))
+
 vi.mock('react-markdown', () => ({
   default: ({ children }: { children: string }) => <div data-testid="markdown">{children}</div>,
 }))
@@ -36,7 +40,7 @@ const mockGetChatMcpServers = vi.mocked(getChatMcpServers)
 
 beforeEach(() => {
   vi.clearAllMocks()
-  mockListConversations.mockResolvedValue([])
+  mockListConversations.mockResolvedValue({ conversations: [], has_more: false })
   mockGetSearchableWorkspaces.mockResolvedValue([])
   mockGetChatMcpServers.mockResolvedValue([])
 })
@@ -64,7 +68,7 @@ describe('Chat', () => {
       createConversation({ conversation_id: 'c1', title: 'First Chat' }),
       createConversation({ conversation_id: 'c2', title: 'Second Chat' }),
     ]
-    mockListConversations.mockResolvedValue(convs)
+    mockListConversations.mockResolvedValue({ conversations: convs, has_more: false })
 
     renderChat()
 
@@ -127,7 +131,7 @@ describe('Chat', () => {
 
   it('loads conversation from URL params', async () => {
     const conv = createConversation({ conversation_id: 'c1', title: 'Loaded Chat' })
-    mockListConversations.mockResolvedValue([conv])
+    mockListConversations.mockResolvedValue({ conversations: [conv], has_more: false })
     mockGetConversation.mockResolvedValue({
       conversation: conv,
       messages: [
@@ -190,5 +194,38 @@ describe('Chat', () => {
       expect(mockGetChatMcpServers).toHaveBeenCalled()
     })
     expect(screen.queryByText('MCP (0)')).not.toBeInTheDocument()
+  })
+
+  it('shows "All Chats" button when has_more is true', async () => {
+    const convs = [
+      createConversation({ conversation_id: 'c1', title: 'Chat 1' }),
+    ]
+    mockListConversations.mockResolvedValue({
+      conversations: convs,
+      has_more: true,
+    })
+
+    renderChat()
+
+    await waitFor(() => {
+      expect(screen.getByText('All Chats')).toBeInTheDocument()
+    })
+  })
+
+  it('hides "All Chats" button when has_more is false', async () => {
+    const convs = [
+      createConversation({ conversation_id: 'c1', title: 'Chat 1' }),
+    ]
+    mockListConversations.mockResolvedValue({
+      conversations: convs,
+      has_more: false,
+    })
+
+    renderChat()
+
+    await waitFor(() => {
+      expect(screen.getByText('Chat 1')).toBeInTheDocument()
+    })
+    expect(screen.queryByText('All Chats')).not.toBeInTheDocument()
   })
 })

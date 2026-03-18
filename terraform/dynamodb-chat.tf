@@ -22,13 +22,28 @@ module "chat_table" {
     {
       name = "SK"
       type = "S"
+    },
+    {
+      name = "GSI2PK"
+      type = "S"
+    },
+    {
+      name = "GSI2SK"
+      type = "S"
     }
   ]
 
-  # No GSIs needed - direct key lookups only
-  # PK: CONV#{conversation_id}
-  # SK: METADATA | MSG#{timestamp}#{message_id}
-  global_secondary_indexes = []
+  # GSI2: User conversations sorted by recency
+  # GSI2PK: USER#{user_id}
+  # GSI2SK: CONV#{updated_at} (ISO 8601, sorts lexicographically)
+  global_secondary_indexes = [
+    {
+      name            = "GSI2"
+      hash_key        = "GSI2PK"
+      range_key       = "GSI2SK"
+      projection_type = "ALL"
+    }
+  ]
 
   # On-demand billing for variable traffic patterns
   billing_mode = "PAY_PER_REQUEST"

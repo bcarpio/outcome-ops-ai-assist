@@ -70,11 +70,14 @@ def _parse_lambda_response(result: dict) -> JSONResponse:
 
 
 @app.get("/conversations")
-async def list_conversations(request: Request):
-    """List conversations for the authenticated user."""
+async def list_conversations(request: Request, limit: int = 20, cursor: str = None):
+    """List conversations for the authenticated user, with pagination."""
     from handler import lambda_handler
 
     event = _build_rest_event(request, "GET", "/conversations")
+    event["queryStringParameters"] = {"limit": str(limit)}
+    if cursor:
+        event["queryStringParameters"]["cursor"] = cursor
     result = lambda_handler(event, None)
     return _parse_lambda_response(result)
 

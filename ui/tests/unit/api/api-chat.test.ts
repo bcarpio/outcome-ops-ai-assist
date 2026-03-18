@@ -82,37 +82,37 @@ describe('listConversations', () => {
     const mockConv = createConversation()
     global.fetch = vi.fn().mockResolvedValue({
       ok: true,
-      json: () => Promise.resolve({ conversations: [mockConv] }),
+      json: () => Promise.resolve({ conversations: [mockConv], has_more: false }),
     })
 
     const result = await listConversations()
-    expect(fetch).toHaveBeenCalledWith('/api/conversations')
-    expect(result).toHaveLength(1)
-    expect(result[0].conversation_id).toBe('conv-1')
+    expect(fetch).toHaveBeenCalledWith('/api/conversations?limit=20')
+    expect(result.conversations).toHaveLength(1)
+    expect(result.conversations[0].conversation_id).toBe('conv-1')
   })
 
-  it('returns empty array on error', async () => {
+  it('returns empty response on error', async () => {
     global.fetch = vi.fn().mockResolvedValue({ ok: false, status: 500 })
     const result = await listConversations()
-    expect(result).toEqual([])
+    expect(result).toEqual({ conversations: [], has_more: false })
   })
 
-  it('returns empty array on network error', async () => {
+  it('returns empty response on network error', async () => {
     global.fetch = vi.fn().mockRejectedValue(new Error('Network error'))
     const result = await listConversations()
-    expect(result).toEqual([])
+    expect(result).toEqual({ conversations: [], has_more: false })
   })
 
   it('defaults title to Untitled when missing', async () => {
     global.fetch = vi.fn().mockResolvedValue({
       ok: true,
       json: () => Promise.resolve({
-        conversations: [{ conversation_id: 'c1', message_count: 0, created_at: '2024-01-01', updated_at: '2024-01-01' }],
+        conversations: [{ conversation_id: 'c1', message_count: 0, created_at: '2024-01-01', updated_at: '2024-01-01' }], has_more: false,
       }),
     })
 
     const result = await listConversations()
-    expect(result[0].title).toBe('Untitled')
+    expect(result.conversations[0].title).toBe('Untitled')
   })
 })
 

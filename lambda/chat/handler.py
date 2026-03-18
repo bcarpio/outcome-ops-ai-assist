@@ -520,6 +520,8 @@ def create_conversation(title: str, user_id: str = None, workspace_id: str = Non
     }
     if user_id:
         item["user_id"] = user_id
+        item["GSI2PK"] = f"USER#{user_id}"
+        item["GSI2SK"] = f"CONV#{now}"
     if workspace_id:
         item["workspace_id"] = workspace_id
 
@@ -538,8 +540,12 @@ def update_conversation(conversation_id: str, message_count: int):
     try:
         table.update_item(
             Key={"PK": f"CONV#{conversation_id}", "SK": "METADATA"},
-            UpdateExpression="SET message_count = :mc, updated_at = :ua",
-            ExpressionAttributeValues={":mc": message_count, ":ua": now},
+            UpdateExpression="SET message_count = :mc, updated_at = :ua, GSI2SK = :gsi2sk",
+            ExpressionAttributeValues={
+                ":mc": message_count,
+                ":ua": now,
+                ":gsi2sk": f"CONV#{now}",
+            },
         )
     except ClientError as e:
         logger.error(f"Error updating conversation: {e}")
@@ -1068,8 +1074,12 @@ def update_memory_chunk_count(conversation_id: str, chunk_count: int):
     try:
         table.update_item(
             Key={"PK": f"CONV#{conversation_id}", "SK": "METADATA"},
-            UpdateExpression="SET memory_chunk_count = :mcc, updated_at = :ua",
-            ExpressionAttributeValues={":mcc": chunk_count, ":ua": now},
+            UpdateExpression="SET memory_chunk_count = :mcc, updated_at = :ua, GSI2SK = :gsi2sk",
+            ExpressionAttributeValues={
+                ":mcc": chunk_count,
+                ":ua": now,
+                ":gsi2sk": f"CONV#{now}",
+            },
         )
     except ClientError as e:
         logger.error(f"Error updating memory chunk count: {e}")
@@ -1538,9 +1548,14 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
 
     logger.info(f"REST API: {http_method} {path} (user: {user_id})")
 
+    # Parse query string parameters
+    query_params = event.get("queryStringParameters") or {}
+
     # Route handling
     if path == "/conversations" and http_method == "GET":
-        return list_conversations(user_id=user_id)
+        limit = min(int(query_params.get("limit", "20")), 100)
+        cursor = query_params.get("cursor")
+        return list_conversations(user_id=user_id, limit=limit, cursor=cursor)
     elif path.startswith("/conversations/") and http_method == "GET":
         conv_id = path.split("/")[-1]
         return get_conversation_with_messages(conv_id, user_id=user_id)
@@ -1554,34 +1569,58 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         }
 
 
-def list_conversations(user_id: str = None) -> Dict:
-    """List conversations (most recent first), optionally filtered by user."""
+def list_conversations(user_id: str = None, limit: int = 20, cursor: str = None) -> Dict:
+    """List conversations for a user, paginated, most recent first."""
+    import base64
+
     dynamodb = _get_dynamodb()
     table = dynamodb.Table(_get_chat_table())
 
     try:
-        # Scan for conversation metadata, optionally filtered by user_id
         if user_id:
-            response = table.scan(
-                FilterExpression="SK = :sk AND user_id = :uid",
-                ExpressionAttributeValues={":sk": "METADATA", ":uid": user_id},
-            )
+            # Use GSI2 for efficient user-scoped queries sorted by recency
+            query_params = {
+                "IndexName": "GSI2",
+                "KeyConditionExpression": "GSI2PK = :pk",
+                "ExpressionAttributeValues": {":pk": f"USER#{user_id}"},
+                "ScanIndexForward": False,
+                "Limit": limit,
+            }
+
+            if cursor:
+                try:
+                    query_params["ExclusiveStartKey"] = json.loads(
+                        base64.b64decode(cursor).decode()
+                    )
+                except Exception:
+                    return {
+                        "statusCode": 400,
+                        "body": json.dumps({"error": "Invalid cursor"}),
+                    }
+
+            response = table.query(**query_params)
         else:
+            # Fallback to scan when no user_id (admin use case)
             response = table.scan(
                 FilterExpression="SK = :sk",
                 ExpressionAttributeValues={":sk": "METADATA"},
             )
 
-        conversations = sorted(
-            response.get("Items", []),
-            key=lambda x: x.get("updated_at", ""),
-            reverse=True,
-        )
+        conversations = response.get("Items", [])
+
+        result = {"conversations": conversations}
+
+        last_key = response.get("LastEvaluatedKey")
+        if last_key:
+            result["next_cursor"] = base64.b64encode(
+                json.dumps(last_key, default=str).encode()
+            ).decode()
+        result["has_more"] = last_key is not None
 
         return {
             "statusCode": 200,
             "headers": {"Content-Type": "application/json"},
-            "body": json.dumps({"conversations": conversations}, default=str),
+            "body": json.dumps(result, default=str),
         }
     except ClientError as e:
         logger.error(f"Error listing conversations: {e}")

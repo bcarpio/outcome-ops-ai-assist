@@ -18,6 +18,7 @@ import {
   Copy,
   Check,
   Server,
+  List,
 } from 'lucide-react'
 import {
   sendChatMessage,
@@ -33,6 +34,7 @@ import {
   type SearchableWorkspace,
   type ChatMcpServer,
 } from '../lib/api'
+import AllChatsModal from '../components/AllChatsModal'
 
 interface DisplayMessage extends Message {
   isStreaming?: boolean
@@ -59,6 +61,8 @@ export default function Chat() {
   const [lastCost, setLastCost] = useState<{ input_tokens: number; output_tokens: number; cost: number } | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null)
+  const [hasMoreConversations, setHasMoreConversations] = useState(false)
+  const [showAllChats, setShowAllChats] = useState(false)
 
   const handleCopyMessage = useCallback(async (content: string, messageId: string) => {
     try {
@@ -198,10 +202,10 @@ export default function Chat() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
-  // Load conversations from localStorage
   async function loadConversations() {
-    const convs = await listConversations()
-    setConversations(convs)
+    const result = await listConversations(20)
+    setConversations(result.conversations)
+    setHasMoreConversations(result.has_more)
   }
 
   // Start new chat
@@ -468,6 +472,16 @@ export default function Chat() {
               </button>
             </div>
           ))}
+
+          {hasMoreConversations && (
+            <button
+              onClick={() => setShowAllChats(true)}
+              className="w-full flex items-center justify-center gap-2 py-2 mt-1 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
+            >
+              <List size={16} />
+              All Chats
+            </button>
+          )}
         </div>
 
         {/* Workspace indicator (when workspaces feature is enabled) */}
@@ -854,6 +868,22 @@ export default function Chat() {
           </div>
         </div>
       </div>
+
+      {showAllChats && (
+        <AllChatsModal
+          onClose={() => setShowAllChats(false)}
+          onSelect={(conv) => {
+            handleSelectConversation(conv)
+            setShowAllChats(false)
+          }}
+          onDelete={(convId) => {
+            setConversations(prev => prev.filter(c => c.conversation_id !== convId))
+            if (currentConversationId === convId) {
+              handleNewChat()
+            }
+          }}
+        />
+      )}
     </div>
   )
 }

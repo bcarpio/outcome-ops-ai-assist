@@ -359,7 +359,14 @@ app.get("/api/conversations", async (req, res) => {
   console.log(`[proxy] List conversations for: ${user.email}`);
 
   try {
-    const response = await signedChatFetch("GET", "/conversations", {
+    // Forward pagination query params to Lambda
+    const params = new URLSearchParams();
+    if (req.query.limit) params.set("limit", req.query.limit);
+    if (req.query.cursor) params.set("cursor", req.query.cursor);
+    const qs = params.toString();
+    const path = qs ? `/conversations?${qs}` : "/conversations";
+
+    const response = await signedChatFetch("GET", path, {
       extraHeaders: { "x-user-email": user.email },
     });
     const data = await response.json();
