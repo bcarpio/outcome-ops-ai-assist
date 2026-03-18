@@ -1606,7 +1606,7 @@ def list_conversations(user_id: str = None, limit: int = 20, cursor: str = None)
                 response = table.query(**query_params)
             except ClientError as gsi_err:
                 error_code = gsi_err.response.get("Error", {}).get("Code", "")
-                if error_code == "ValidationException":
+                if error_code in ("ValidationException", "AccessDeniedException"):
                     # GSI2 doesn't exist yet — fall back to scan
                     logger.warning("GSI2 not available, falling back to scan")
                     response = table.scan(

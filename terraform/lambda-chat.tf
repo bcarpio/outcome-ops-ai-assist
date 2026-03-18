@@ -87,7 +87,8 @@ module "chat_streaming_lambda" {
         "dynamodb:Scan"
       ]
       resources = [
-        module.chat_table.dynamodb_table_arn
+        module.chat_table.dynamodb_table_arn,
+        "${module.chat_table.dynamodb_table_arn}/index/*"
       ]
     }
 
