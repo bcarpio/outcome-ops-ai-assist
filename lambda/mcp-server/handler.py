@@ -328,7 +328,7 @@ def format_results(results):
     for i, r in enumerate(results, 1):
         source = r.get("repo", "unknown")
         doc_type = r.get("type", "document")
-        content = r.get("content", "")[:3000]
+        content = r.get("content", "")
         parts.append(f"[{i}] Source: {source} ({doc_type})\n{content}")
 
     return "\n\n---\n\n".join(parts)
