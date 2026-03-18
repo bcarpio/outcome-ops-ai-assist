@@ -81,7 +81,7 @@ module "mcp_sonarqube" {
 
   # ALB routing - Lambda calls MCP through ALB, bypassing OIDC
   alb_listener_arn           = local.mcp_alb_listener_arn
-  alb_listener_rule_priority = 5
+  alb_listener_rule_priority = 7
   mcp_path_pattern           = "/mcp"
 
   # Allow ALB to reach the MCP container
