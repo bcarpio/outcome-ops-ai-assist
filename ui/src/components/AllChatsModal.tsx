@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
 import { Search, X, MessageSquare, Trash2, Loader2 } from 'lucide-react'
-import { listConversations, deleteConversation, type Conversation, type ConversationListResponse } from '../lib/api'
+import { listConversations, deleteConversation, type Conversation } from '../lib/api'
 
 interface AllChatsModalProps {
   onClose: () => void
