@@ -57,6 +57,10 @@ enable_jira_integration = false
 # bedrock_basic_input_price     = 0.80  # Haiku input
 # bedrock_basic_output_price    = 4.0   # Haiku output
 
+# Max characters per document in RAG context (default 3000)
+# Increase for larger code maps; decrease to reduce token costs
+# rag_max_doc_chars = 10000
+
 # ============================================================================
 # Audit & Compliance
 # ============================================================================

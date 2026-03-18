@@ -844,7 +844,8 @@ def format_context(results: List[Dict]) -> str:
     for i, r in enumerate(results, 1):
         source = r.get("repo", "unknown")
         doc_type = r.get("type", "document")
-        content = r.get("content", "")[:3000]  # Limit per doc
+        max_doc_chars = int(os.environ.get("RAG_MAX_DOC_CHARS", "3000"))
+        content = r.get("content", "")[:max_doc_chars]
         context_parts.append(f"[{i}] Source: {source} ({doc_type})\n{content}")
 
     return "\n\n---\n\n".join(context_parts)
@@ -1111,7 +1112,7 @@ def generate_answer_stream(
     if memory_context:
         memory_section = f"\n{memory_context}\n\n---\n\n"
 
-    user_prompt = f"""Based on the following knowledge base context, answer the user's question.
+    user_prompt = f"""The following code maps and documents are extracted directly from source code. They contain exact implementations. Use them as fact.
 {memory_section}
 KNOWLEDGE BASE CONTEXT:
 {context}
@@ -1119,7 +1120,7 @@ KNOWLEDGE BASE CONTEXT:
 USER QUESTION:
 {question}
 
-Answer definitively based on the context above. State what the code does, not what it "likely" or "probably" does."""
+Remember: code maps ARE the source code. Quote exact method signatures and trace complete call chains. Never hedge."""
 
     messages.append({"role": "user", "content": [{"text": user_prompt}]})
 

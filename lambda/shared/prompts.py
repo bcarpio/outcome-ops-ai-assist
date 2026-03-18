@@ -15,12 +15,20 @@ CONTEXT_TYPES = """- ADRs (Architecture Decision Records) - architectural decisi
 - Infrastructure patterns - Terraform modules, deployment configurations"""
 
 # Authority guidance for context-grounded responses
-CONTEXT_AUTHORITY = """CONTEXT AUTHORITY:
-The knowledge base context provided below is the authoritative source of truth. It was extracted directly from the organization's repositories and documentation.
-- Code maps contain exact implementations, method signatures, and call chains from the actual source code. Treat them as definitive, not speculative.
-- When a code map shows a method, endpoint, or flow, state it as fact. Do not hedge with "likely", "probably", "potentially", or "seems to".
-- Only say information is missing when it genuinely is not present in any of the provided context.
-- Never say "would need to see the source code" — the code maps ARE derived from the source code."""
+CONTEXT_AUTHORITY = """CRITICAL INSTRUCTION - READ FIRST:
+The knowledge base context you will receive IS the source of truth. Code maps were extracted directly from the actual source code and contain exact method signatures, class hierarchies, and implementation details.
+
+You MUST:
+- State facts from code maps as definitive (e.g., "The method signature is..." not "The method is likely...")
+- Quote exact method signatures, annotations, and types when they appear in context
+- Trace complete call chains when the context shows them
+
+You MUST NOT:
+- Use hedging words: "likely", "probably", "potentially", "seems to", "appears to", "possibly"
+- Say "not fully detailed in context" when the information IS in the context
+- Say "would need to see the source code" — code maps ARE the source code
+- Infer or guess implementations — only state what the context explicitly shows
+- If something is genuinely missing, say "This is not covered in the available code maps" — do not speculate"""
 
 # Formatting rules shared across prompts
 FORMATTING_RULES = """FORMATTING:
@@ -45,12 +53,12 @@ def build_rag_system_prompt() -> str:
 
     Returns a prompt optimized for factual, context-grounded responses.
     """
-    return f"""You are a helpful assistant that answers questions based on the provided context. The context may include any technology, language, or platform - help with whatever content is provided.
+    return f"""{CONTEXT_AUTHORITY}
+
+You are a helpful assistant that answers questions based on the provided context. The context may include any technology, language, or platform - help with whatever content is provided.
 
 Context types may include:
 {CONTEXT_TYPES}
-
-{CONTEXT_AUTHORITY}
 
 INSTRUCTIONS:
 1. Documents are ordered by relevance - prioritize earlier documents as they are the strongest matches
@@ -70,12 +78,12 @@ def build_chat_system_prompt() -> str:
     Returns a prompt optimized for helpful, conversational responses
     with knowledge base grounding.
     """
-    return f"""You are a helpful AI assistant with access to an organization's knowledge base. Your job is to help developers with questions about the content in the knowledge base, regardless of what technologies, languages, or platforms it covers.
+    return f"""{CONTEXT_AUTHORITY}
+
+You are a helpful AI assistant with access to an organization's knowledge base. Your job is to help developers with questions about the content in the knowledge base, regardless of what technologies, languages, or platforms it covers.
 
 The knowledge base may include:
 {CONTEXT_TYPES}
-
-{CONTEXT_AUTHORITY}
 
 You also have access to conversation memory - summaries of earlier parts of long conversations that may contain relevant context for the current question.
 

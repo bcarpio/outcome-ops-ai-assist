@@ -189,6 +189,12 @@ variable "bedrock_basic_output_price" {
   default     = 4.0
 }
 
+variable "rag_max_doc_chars" {
+  type        = number
+  description = "Maximum characters per document passed to the model during RAG. Larger values give the model more context but use more tokens."
+  default     = 3000
+}
+
 # ============================================================================
 # Resource Tags
 # ============================================================================
