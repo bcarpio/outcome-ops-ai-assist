@@ -12,6 +12,7 @@ vi.mock('../../../src/lib/api', () => ({
   deleteConversation: vi.fn(),
   getSearchableWorkspaces: vi.fn(),
   getChatMcpServers: vi.fn(),
+  getChatAvailablePrompts: vi.fn(),
 }))
 
 vi.mock('../../../src/components/AllChatsModal', () => ({
@@ -29,6 +30,7 @@ import {
   deleteConversation,
   getSearchableWorkspaces,
   getChatMcpServers,
+  getChatAvailablePrompts,
 } from '../../../src/lib/api'
 
 const mockSendChatMessage = vi.mocked(sendChatMessage)
@@ -37,12 +39,14 @@ const mockGetConversation = vi.mocked(getConversation)
 const mockDeleteConversation = vi.mocked(deleteConversation)
 const mockGetSearchableWorkspaces = vi.mocked(getSearchableWorkspaces)
 const mockGetChatMcpServers = vi.mocked(getChatMcpServers)
+const mockGetChatAvailablePrompts = vi.mocked(getChatAvailablePrompts)
 
 beforeEach(() => {
   vi.clearAllMocks()
   mockListConversations.mockResolvedValue({ conversations: [], has_more: false })
   mockGetSearchableWorkspaces.mockResolvedValue([])
   mockGetChatMcpServers.mockResolvedValue([])
+  mockGetChatAvailablePrompts.mockResolvedValue([])
 })
 
 function renderChat(conversationId?: string) {

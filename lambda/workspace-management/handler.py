@@ -48,6 +48,7 @@ API Endpoints:
 
     Chat:
         GET    /chat/searchable-workspaces        - List workspaces user can query
+        GET    /chat/available-prompts            - List workspaces with custom prompts
         GET    /chat/mcp-servers                  - List MCP servers available for chat
 
     MCP Server Management (org_admin only):
@@ -1526,6 +1527,56 @@ def get_searchable_workspaces(user_email: str) -> Dict:
         return _error(500, "Failed to get searchable workspaces")
 
 
+def get_available_prompts(user_email: str) -> Dict:
+    """
+    Get workspaces with custom system prompts that the user is a direct member of.
+
+    Only includes direct memberships (not shared or org_admin access).
+    Only includes workspaces that have a custom_system_prompt set.
+    """
+    dynamodb = _get_dynamodb()
+    table = dynamodb.Table(_get_workspaces_table())
+
+    try:
+        # Get user's direct workspace memberships
+        member_response = table.query(
+            KeyConditionExpression="PK = :pk AND begins_with(SK, :sk)",
+            ExpressionAttributeValues={
+                ":pk": f"USER#{user_email}",
+                ":sk": "WS_MEMBER#",
+            },
+        )
+
+        prompts = []
+        for membership in member_response.get("Items", []):
+            ws_id = membership.get("workspace_id")
+
+            # Get workspace metadata
+            ws_response = table.get_item(
+                Key={"PK": f"WS#{ws_id}", "SK": "METADATA"},
+                ProjectionExpression="#n, custom_system_prompt",
+                ExpressionAttributeNames={"#n": "name"},
+            )
+            if "Item" in ws_response:
+                ws = ws_response["Item"]
+                custom_prompt = ws.get("custom_system_prompt")
+                if custom_prompt:
+                    prompts.append({
+                        "workspace_id": ws_id,
+                        "workspace_name": ws.get("name", ""),
+                        "prompt_preview": custom_prompt[:200],
+                    })
+
+        # Sort by workspace name
+        prompts.sort(key=lambda x: x.get("workspace_name", "").lower())
+
+        logger.info(f"Returning {len(prompts)} available prompts for {user_email}")
+        return _response(200, {"prompts": prompts})
+    except ClientError as e:
+        logger.error(f"Error getting available prompts: {e}")
+        return _error(500, "Failed to get available prompts")
+
+
 # ============================================================================
 # Document Operations
 # ============================================================================
@@ -2965,6 +3016,10 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         # Route: GET /chat/searchable-workspaces
         if parts == ("chat", "searchable-workspaces") and http_method == "GET":
             return get_searchable_workspaces(user_email)
+
+        # Route: GET /chat/available-prompts
+        if parts == ("chat", "available-prompts") and http_method == "GET":
+            return get_available_prompts(user_email)
 
         # ====================================================================
         # MCP Server Management Routes

@@ -656,6 +656,9 @@ app.delete("/api/org/members/:email", (req, res) => proxyWorkspaceRequest(req, r
 // Chat searchable workspaces
 app.get("/api/chat/searchable-workspaces", (req, res) => proxyWorkspaceRequest(req, res, "GET", "/chat/searchable-workspaces"));
 
+// Chat available prompts
+app.get("/api/chat/available-prompts", (req, res) => proxyWorkspaceRequest(req, res, "GET", "/chat/available-prompts"));
+
 // ============================================================================
 // MCP Server Management (org admin)
 // ============================================================================

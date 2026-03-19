@@ -361,6 +361,16 @@ async def get_searchable_workspaces(request: Request):
     return _parse_response(result)
 
 
+@app.get("/chat/available-prompts")
+async def get_available_prompts(request: Request):
+    """List workspaces with custom system prompts the user can select."""
+    from handler import lambda_handler
+
+    event = _build_event(request, "GET", "/chat/available-prompts")
+    result = lambda_handler(event, None)
+    return _parse_response(result)
+
+
 # ============================================================================
 # Document Upload Routes
 # ============================================================================

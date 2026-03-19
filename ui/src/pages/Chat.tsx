@@ -19,6 +19,7 @@ import {
   Check,
   Server,
   List,
+  Mic,
 } from 'lucide-react'
 import {
   sendChatMessage,
@@ -27,12 +28,14 @@ import {
   deleteConversation,
   getSearchableWorkspaces,
   getChatMcpServers,
+  getChatAvailablePrompts,
   type Conversation,
   type Message,
   type Source,
   type StreamEvent,
   type SearchableWorkspace,
   type ChatMcpServer,
+  type AvailablePrompt,
 } from '../lib/api'
 import AllChatsModal from '../components/AllChatsModal'
 
@@ -113,6 +116,12 @@ export default function Chat() {
   const [loadingMcpServers, setLoadingMcpServers] = useState(true)
   const [activeToolCall, setActiveToolCall] = useState<string | null>(null)
 
+  // Prompt picker state
+  const [availablePrompts, setAvailablePrompts] = useState<AvailablePrompt[]>([])
+  const [selectedPromptWorkspaceId, setSelectedPromptWorkspaceId] = useState<string | null>(null)
+  const [showPromptDropdown, setShowPromptDropdown] = useState(false)
+  const [loadingPrompts, setLoadingPrompts] = useState(false)
+
   // Legacy workspace context (stored in localStorage when workspaces feature is enabled)
   const [workspaceName, setWorkspaceName] = useState<string | null>(null)
 
@@ -148,6 +157,26 @@ export default function Chat() {
       }
     }
     loadMcpServers()
+  }, [])
+
+  // Load available prompts on mount
+  useEffect(() => {
+    async function loadPrompts() {
+      setLoadingPrompts(true)
+      try {
+        const prompts = await getChatAvailablePrompts()
+        setAvailablePrompts(prompts)
+        // Auto-select if exactly one prompt available
+        if (prompts.length === 1) {
+          setSelectedPromptWorkspaceId(prompts[0].workspace_id)
+        }
+      } catch (err) {
+        console.error('Failed to load available prompts:', err)
+      } finally {
+        setLoadingPrompts(false)
+      }
+    }
+    loadPrompts()
   }, [])
 
   // Check for legacy workspace context on mount
@@ -271,6 +300,7 @@ export default function Chat() {
           show_cost: showCost,
           workspace_ids: selectedWorkspaceIds.size > 0 ? Array.from(selectedWorkspaceIds) : undefined,
           mcp_server_ids: selectedMcpServerIds.size > 0 ? Array.from(selectedMcpServerIds) : undefined,
+          prompt_workspace_id: selectedPromptWorkspaceId || undefined,
         },
         (event: StreamEvent) => {
           switch (event.type) {
@@ -439,6 +469,14 @@ export default function Chat() {
     return `${selectedMcpServerIds.size} MCP servers`
   }
 
+  // Get prompt selector display text
+  function getPromptSelectorText(): string {
+    if (loadingPrompts) return 'Loading...'
+    if (!selectedPromptWorkspaceId) return 'Voice: Default'
+    const prompt = availablePrompts.find(p => p.workspace_id === selectedPromptWorkspaceId)
+    return prompt ? `Voice: ${prompt.workspace_name}` : 'Voice: Default'
+  }
+
   return (
     <div className="flex h-screen bg-gray-50">
       {/* Sidebar */}
@@ -541,7 +579,7 @@ export default function Chat() {
             {searchableWorkspaces.length > 0 && (
               <div className="relative">
                 <button
-                  onClick={() => { setShowWorkspaceDropdown(!showWorkspaceDropdown); setShowMcpDropdown(false) }}
+                  onClick={() => { setShowWorkspaceDropdown(!showWorkspaceDropdown); setShowMcpDropdown(false); setShowPromptDropdown(false) }}
                   className="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
                 >
                   <Folder size={14} className="text-sky-500" />
@@ -604,7 +642,7 @@ export default function Chat() {
             {mcpServers.length > 0 && (
               <div className="relative">
                 <button
-                  onClick={() => { setShowMcpDropdown(!showMcpDropdown); setShowWorkspaceDropdown(false) }}
+                  onClick={() => { setShowMcpDropdown(!showMcpDropdown); setShowWorkspaceDropdown(false); setShowPromptDropdown(false) }}
                   className={`flex items-center gap-2 px-3 py-1.5 text-sm rounded-lg transition-colors ${
                     selectedMcpServerIds.size > 0
                       ? 'text-purple-700 bg-purple-50 hover:bg-purple-100 border border-purple-200'
@@ -655,6 +693,73 @@ export default function Chat() {
                             </p>
                           </div>
                         </label>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+
+            {/* Prompt/Voice Picker */}
+            {availablePrompts.length > 0 && (
+              <div className="relative">
+                <button
+                  onClick={() => { setShowPromptDropdown(!showPromptDropdown); setShowWorkspaceDropdown(false); setShowMcpDropdown(false) }}
+                  className={`flex items-center gap-2 px-3 py-1.5 text-sm rounded-lg transition-colors ${
+                    selectedPromptWorkspaceId
+                      ? 'text-teal-700 bg-teal-50 hover:bg-teal-100 border border-teal-200'
+                      : 'text-gray-700 bg-gray-100 hover:bg-gray-200'
+                  }`}
+                >
+                  <Mic size={14} className={selectedPromptWorkspaceId ? 'text-teal-500' : 'text-gray-400'} />
+                  <span>{getPromptSelectorText()}</span>
+                  <ChevronDown size={14} className={`transition-transform ${showPromptDropdown ? 'rotate-180' : ''}`} />
+                </button>
+
+                {showPromptDropdown && (
+                  <>
+                    <div
+                      className="fixed inset-0 z-10"
+                      onClick={() => setShowPromptDropdown(false)}
+                    />
+                    <div className="absolute right-0 mt-2 w-72 bg-white rounded-lg shadow-lg border z-20 py-2 max-h-80 overflow-y-auto">
+                      <div className="px-3 py-2 border-b">
+                        <span className="text-xs font-medium text-gray-500 uppercase">System Prompt</span>
+                      </div>
+                      <button
+                        onClick={() => { setSelectedPromptWorkspaceId(null); setShowPromptDropdown(false) }}
+                        className={`w-full flex items-center gap-3 px-3 py-2 hover:bg-gray-50 cursor-pointer text-left ${
+                          !selectedPromptWorkspaceId ? 'bg-teal-50' : ''
+                        }`}
+                      >
+                        <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center ${
+                          !selectedPromptWorkspaceId ? 'border-teal-500' : 'border-gray-300'
+                        }`}>
+                          {!selectedPromptWorkspaceId && <div className="w-2 h-2 rounded-full bg-teal-500" />}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium text-gray-900">Default</p>
+                          <p className="text-xs text-gray-500">Standard system prompt</p>
+                        </div>
+                      </button>
+                      {availablePrompts.map(prompt => (
+                        <button
+                          key={prompt.workspace_id}
+                          onClick={() => { setSelectedPromptWorkspaceId(prompt.workspace_id); setShowPromptDropdown(false) }}
+                          className={`w-full flex items-center gap-3 px-3 py-2 hover:bg-gray-50 cursor-pointer text-left ${
+                            selectedPromptWorkspaceId === prompt.workspace_id ? 'bg-teal-50' : ''
+                          }`}
+                        >
+                          <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center ${
+                            selectedPromptWorkspaceId === prompt.workspace_id ? 'border-teal-500' : 'border-gray-300'
+                          }`}>
+                            {selectedPromptWorkspaceId === prompt.workspace_id && <div className="w-2 h-2 rounded-full bg-teal-500" />}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-medium text-gray-900 truncate">{prompt.workspace_name}</p>
+                            <p className="text-xs text-gray-500 truncate" title={prompt.prompt_preview}>{prompt.prompt_preview}</p>
+                          </div>
+                        </button>
                       ))}
                     </div>
                   </>

@@ -454,6 +454,7 @@ class ChatMessageRequest(BaseModel):
     workspace_id: Optional[str] = None  # Single workspace (deprecated, use workspace_ids)
     workspace_ids: Optional[List[str]] = None  # Multiple workspaces for cross-workspace search
     mcp_server_ids: Optional[List[str]] = None  # MCP servers for tool use
+    prompt_workspace_id: Optional[str] = None  # Workspace whose custom prompt to use
 
     @field_validator("message")
     @classmethod
@@ -1330,7 +1331,10 @@ def handle_chat_stream(event: Dict) -> Generator[str, None, None]:
 
     # For conversation storage, use first workspace_id
     primary_workspace_id = workspace_ids[0] if workspace_ids else None
-    workspace_prompt = _get_workspace_custom_prompt(primary_workspace_id)
+
+    # Use explicitly selected prompt workspace, or fall back to primary
+    prompt_ws_id = request.prompt_workspace_id or primary_workspace_id
+    workspace_prompt = _get_workspace_custom_prompt(prompt_ws_id)
     mcp_server_ids = request.mcp_server_ids
 
     if request.conversation_id:

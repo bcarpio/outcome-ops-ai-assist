@@ -57,6 +57,7 @@ export interface ChatRequest {
   show_cost?: boolean
   workspace_ids?: string[]
   mcp_server_ids?: string[]
+  prompt_workspace_id?: string
 }
 
 export interface Conversation {
@@ -758,6 +759,29 @@ export async function getSearchableWorkspaces(): Promise<SearchableWorkspace[]> 
   }
   const data = await safeJson(response)
   return (data?.workspaces as SearchableWorkspace[]) || []
+}
+
+// ============================================================================
+// Chat Available Prompts
+// ============================================================================
+
+export interface AvailablePrompt {
+  workspace_id: string
+  workspace_name: string
+  prompt_preview: string
+}
+
+/**
+ * Get workspaces with custom system prompts available for chat
+ */
+export async function getChatAvailablePrompts(): Promise<AvailablePrompt[]> {
+  const response = await fetch(`${API_BASE}/chat/available-prompts`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to get available prompts: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return (data?.prompts as AvailablePrompt[]) || []
 }
 
 // ============================================================================
