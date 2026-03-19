@@ -78,13 +78,33 @@ def calculate_cost(input_tokens: int, output_tokens: int, model: str = "haiku") 
     return round(input_cost + output_cost, 6)
 
 
-def build_prompt(query: str, context: List[Dict[str, Any]]) -> str:
+def _get_workspace_custom_prompt(workspace_id: str) -> str:
+    """Fetch custom system prompt for a workspace, if set."""
+    if not workspace_id:
+        return None
+    try:
+        table_name = os.environ.get("WORKSPACES_TABLE")
+        if not table_name:
+            return None
+        dynamodb = boto3.resource("dynamodb")
+        table = dynamodb.Table(table_name)
+        response = table.get_item(
+            Key={"PK": f"WS#{workspace_id}", "SK": "METADATA"},
+            ProjectionExpression="custom_system_prompt",
+        )
+        return response.get("Item", {}).get("custom_system_prompt")
+    except ClientError:
+        return None
+
+
+def build_prompt(query: str, context: List[Dict[str, Any]], workspace_prompt: str = None) -> str:
     """
     Build a RAG prompt with context and query.
 
     Args:
         query: User's natural language question
         context: List of relevant document chunks with scores and sources
+        workspace_prompt: Optional workspace-specific instructions
 
     Returns:
         Formatted prompt for Claude
@@ -100,7 +120,7 @@ def build_prompt(query: str, context: List[Dict[str, Any]]) -> str:
         context_text += f"{text}\n"
 
     # Build full prompt using shared system prompt
-    system_prompt = build_rag_system_prompt()
+    system_prompt = build_rag_system_prompt(workspace_prompt=workspace_prompt)
     prompt = f"""{system_prompt}
 
 CONTEXT:
@@ -233,10 +253,11 @@ def handler(event, context):
     }
     """
     try:
-        # Extract query, context, and model from event
+        # Extract query, context, model, and workspace_id from event
         query = event.get("query")
         context_docs = event.get("context", [])
         model = event.get("model", "haiku")  # Default to haiku for cost-effectiveness
+        workspace_id = event.get("workspace_id")
 
         # Validate model
         if model not in ("haiku", "sonnet"):
@@ -262,8 +283,11 @@ def handler(event, context):
 
         logger.info(f"[ask-claude] Generating answer for query: '{query}' with {len(context_docs)} context documents (model: {model})")
 
+        # Fetch workspace custom prompt if workspace_id is provided
+        workspace_prompt = _get_workspace_custom_prompt(workspace_id)
+
         # Build prompt
-        prompt = build_prompt(query, context_docs)
+        prompt = build_prompt(query, context_docs, workspace_prompt=workspace_prompt)
 
         # Invoke Claude with selected model
         bedrock_start = time.time()

@@ -1776,3 +1776,58 @@ export async function revokeApiKey(keyId: string): Promise<void> {
     throw new Error((data?.error as string) || `Failed to revoke API key: ${response.status}`)
   }
 }
+
+// ============================================================================
+// Workspace System Prompt API
+// ============================================================================
+
+export interface WorkspaceSystemPrompt {
+  custom_system_prompt: string | null
+  updated_by: string | null
+  updated_at: string | null
+}
+
+/**
+ * Get the custom system prompt for a workspace
+ */
+export async function getWorkspaceSystemPrompt(workspaceId: string): Promise<WorkspaceSystemPrompt> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/system-prompt`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to fetch system prompt: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return data as unknown as WorkspaceSystemPrompt
+}
+
+/**
+ * Update the custom system prompt for a workspace
+ */
+export async function updateWorkspaceSystemPrompt(workspaceId: string, prompt: string): Promise<WorkspaceSystemPrompt> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/system-prompt`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ custom_system_prompt: prompt }),
+  })
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to update system prompt: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return data as unknown as WorkspaceSystemPrompt
+}
+
+/**
+ * Reset the custom system prompt for a workspace (revert to default)
+ */
+export async function resetWorkspaceSystemPrompt(workspaceId: string): Promise<WorkspaceSystemPrompt> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/system-prompt`, {
+    method: 'DELETE',
+  })
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to reset system prompt: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return data as unknown as WorkspaceSystemPrompt
+}

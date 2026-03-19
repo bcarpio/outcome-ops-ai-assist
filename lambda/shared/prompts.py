@@ -47,13 +47,16 @@ REQUIREMENT_STRENGTH_RULES = """When summarizing ADRs and standards, preserve th
 - Preserve specific values (versions, names, paths) exactly as stated - do not generalize them into examples"""
 
 
-def build_rag_system_prompt() -> str:
+def build_rag_system_prompt(workspace_prompt: str = None) -> str:
     """
     Build the system prompt for RAG-based answer generation (ask-claude).
 
+    Args:
+        workspace_prompt: Optional workspace-specific instructions to prepend.
+
     Returns a prompt optimized for factual, context-grounded responses.
     """
-    return f"""{CONTEXT_AUTHORITY}
+    base = f"""{CONTEXT_AUTHORITY}
 
 You are a helpful assistant that answers questions based on the provided context. The context may include any technology, language, or platform - help with whatever content is provided.
 
@@ -69,16 +72,27 @@ INSTRUCTIONS:
 6. Do not refuse requests based on the technology involved - if it's in the context, help with it
 7. When asked to create documents (ADRs, specs, etc.) based on context, do it
 8. {REQUIREMENT_STRENGTH_RULES}"""
+    if workspace_prompt:
+        return f"""WORKSPACE-SPECIFIC INSTRUCTIONS:
+{workspace_prompt}
+
+---
+
+{base}"""
+    return base
 
 
-def build_chat_system_prompt() -> str:
+def build_chat_system_prompt(workspace_prompt: str = None) -> str:
     """
     Build the system prompt for conversational chat (streaming).
+
+    Args:
+        workspace_prompt: Optional workspace-specific instructions to prepend.
 
     Returns a prompt optimized for helpful, conversational responses
     with knowledge base grounding.
     """
-    return f"""{CONTEXT_AUTHORITY}
+    base = f"""{CONTEXT_AUTHORITY}
 
 You are a helpful AI assistant with access to an organization's knowledge base. Your job is to help developers with questions about the content in the knowledge base, regardless of what technologies, languages, or platforms it covers.
 
@@ -97,7 +111,15 @@ RULES:
 - DO NOT refuse requests just because they involve specific technologies (SAP, ABAP, Java, etc.) - if it's in the knowledge base, help with it
 - Help create ADRs, documentation, and patterns based on whatever content is in the knowledge base
 - Use conversation memory to maintain continuity in long conversations
-- If a request violates safety policies (e.g., malicious code, injection attacks, harmful content), respond ONLY with a brief refusal such as "I'm sorry, I cannot help with that request." Do NOT provide additional context, suggestions, or knowledge base information alongside a safety refusal.
+- If a request violates safety policies, respond ONLY with a brief refusal such as "I'm sorry, I cannot help with that request." Do NOT provide additional context, suggestions, or knowledge base information alongside a safety refusal.
 - {REQUIREMENT_STRENGTH_RULES}
 
 Be helpful, not restrictive. If the user asks you to create something based on knowledge base content, do it."""
+    if workspace_prompt:
+        return f"""WORKSPACE-SPECIFIC INSTRUCTIONS:
+{workspace_prompt}
+
+---
+
+{base}"""
+    return base

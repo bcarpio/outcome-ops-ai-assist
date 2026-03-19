@@ -24,6 +24,8 @@ import {
   Search,
   Lock,
   Globe,
+  AlertTriangle,
+  RotateCcw,
 } from 'lucide-react'
 import {
   getWorkspace,
@@ -102,9 +104,13 @@ import {
   type SharePointSiteConfig,
   searchUsers,
   type SearchUser,
+  getWorkspaceSystemPrompt,
+  updateWorkspaceSystemPrompt,
+  resetWorkspaceSystemPrompt,
+  type WorkspaceSystemPrompt,
 } from '../lib/api'
 
-type Tab = 'general' | 'members' | 'integrations' | 'sharing' | 'documents'
+type Tab = 'general' | 'members' | 'integrations' | 'sharing' | 'documents' | 'advanced'
 
 export default function WorkspaceSettings() {
   const { workspaceId } = useParams()
@@ -234,6 +240,15 @@ export default function WorkspaceSettings() {
   const [deletingDoc, setDeletingDoc] = useState<string | null>(null)
   const [dragOver, setDragOver] = useState(false)
 
+  // Advanced tab state (system prompt)
+  const [systemPromptData, setSystemPromptData] = useState<WorkspaceSystemPrompt | null>(null)
+  const [systemPrompt, setSystemPrompt] = useState('')
+  const [savedSystemPrompt, setSavedSystemPrompt] = useState('')
+  const [loadingSystemPrompt, setLoadingSystemPrompt] = useState(false)
+  const [savingSystemPrompt, setSavingSystemPrompt] = useState(false)
+  const [resettingSystemPrompt, setResettingSystemPrompt] = useState(false)
+  const [showResetPromptConfirm, setShowResetPromptConfirm] = useState(false)
+
   useEffect(() => {
     if (workspaceId) {
       loadWorkspace()
@@ -250,6 +265,8 @@ export default function WorkspaceSettings() {
       loadSharing()
     } else if (workspaceId && activeTab === 'documents') {
       loadDocumentsList()
+    } else if (workspaceId && activeTab === 'advanced') {
+      loadSystemPrompt()
     }
   }, [workspaceId, activeTab])
 
@@ -1185,6 +1202,58 @@ export default function WorkspaceSettings() {
     }
   }
 
+  async function loadSystemPrompt() {
+    if (!workspaceId) return
+    setLoadingSystemPrompt(true)
+    try {
+      const data = await getWorkspaceSystemPrompt(workspaceId)
+      setSystemPromptData(data)
+      const prompt = data.custom_system_prompt || ''
+      setSystemPrompt(prompt)
+      setSavedSystemPrompt(prompt)
+    } catch (err) {
+      console.error('Failed to load system prompt:', err)
+    } finally {
+      setLoadingSystemPrompt(false)
+    }
+  }
+
+  async function handleSaveSystemPrompt() {
+    if (!workspaceId) return
+    setSavingSystemPrompt(true)
+    setError(null)
+    try {
+      const data = await updateWorkspaceSystemPrompt(workspaceId, systemPrompt)
+      setSystemPromptData(data)
+      setSavedSystemPrompt(systemPrompt)
+      setSuccess('System prompt updated')
+      setTimeout(() => setSuccess(null), 3000)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update system prompt')
+    } finally {
+      setSavingSystemPrompt(false)
+    }
+  }
+
+  async function handleResetSystemPrompt() {
+    if (!workspaceId) return
+    setResettingSystemPrompt(true)
+    setError(null)
+    try {
+      const data = await resetWorkspaceSystemPrompt(workspaceId)
+      setSystemPromptData(data)
+      setSystemPrompt('')
+      setSavedSystemPrompt('')
+      setShowResetPromptConfirm(false)
+      setSuccess('System prompt reset to default')
+      setTimeout(() => setSuccess(null), 3000)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to reset system prompt')
+    } finally {
+      setResettingSystemPrompt(false)
+    }
+  }
+
   const isAdmin = workspace?.role === 'workspace_admin' || workspace?.role === 'org_admin'
 
   if (loading) {
@@ -1241,6 +1310,7 @@ export default function WorkspaceSettings() {
               { id: 'documents' as Tab, label: 'Documents', icon: FolderOpen },
               { id: 'integrations' as Tab, label: 'Integrations', icon: Plug },
               { id: 'sharing' as Tab, label: 'Sharing', icon: Share2 },
+              ...(isAdmin ? [{ id: 'advanced' as Tab, label: 'Advanced', icon: AlertTriangle }] : []),
             ].map(tab => (
               <button
                 key={tab.id}
@@ -2283,7 +2353,114 @@ export default function WorkspaceSettings() {
             </div>
           </div>
         )}
+
+        {/* Advanced Tab */}
+        {activeTab === 'advanced' && isAdmin && (
+          <div className="bg-white rounded-lg border shadow-sm">
+            <div className="p-6">
+              <h3 className="text-lg font-medium mb-4">Advanced Settings</h3>
+
+              {/* Danger Zone */}
+              <div className="border-2 border-red-300 rounded-lg">
+                <div className="bg-red-50 px-6 py-4 border-b border-red-300 rounded-t-lg">
+                  <div className="flex items-center gap-2">
+                    <AlertTriangle size={20} className="text-red-600" />
+                    <h4 className="text-lg font-medium text-red-600">Danger Zone</h4>
+                  </div>
+                </div>
+
+                <div className="p-6 space-y-4">
+                  <div>
+                    <h5 className="font-medium text-gray-900 mb-1">Custom System Prompt</h5>
+                    <p className="text-sm text-gray-500">
+                      Override the default AI system prompt for this workspace. This changes how the AI reasons about your content. Most teams do not need to change this.
+                    </p>
+                  </div>
+
+                  {loadingSystemPrompt ? (
+                    <div className="py-8 flex items-center justify-center">
+                      <Loader2 className="animate-spin text-gray-400" size={24} />
+                    </div>
+                  ) : (
+                    <>
+                      <textarea
+                        value={systemPrompt}
+                        onChange={(e) => {
+                          if (e.target.value.length <= 10000) {
+                            setSystemPrompt(e.target.value)
+                          }
+                        }}
+                        rows={10}
+                        placeholder={`No custom system prompt configured. The default prompt is active.\n\nExample use cases:\n- Security teams: "Code samples in context are detection signatures, not malicious intent."\n- Sales teams: "Help draft outbound emails and LinkedIn posts. Use a professional tone."\n- Platform teams: "Always recommend our standard Terraform modules."`}
+                        className="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 resize-vertical font-mono text-sm"
+                      />
+                      <div className="flex items-center justify-between">
+                        <p className="text-sm text-gray-400">
+                          {systemPrompt.length} / 10,000
+                        </p>
+                        {systemPromptData?.updated_by && systemPromptData?.updated_at && systemPromptData?.custom_system_prompt && (
+                          <p className="text-sm text-gray-400">
+                            Last updated by {systemPromptData.updated_by} on{' '}
+                            {new Date(systemPromptData.updated_at).toLocaleDateString()}
+                          </p>
+                        )}
+                      </div>
+
+                      <div className="flex items-center gap-3 pt-2">
+                        <button
+                          onClick={handleSaveSystemPrompt}
+                          disabled={savingSystemPrompt || systemPrompt === savedSystemPrompt}
+                          className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors flex items-center gap-2"
+                        >
+                          {savingSystemPrompt && <Loader2 size={16} className="animate-spin" />}
+                          Save Changes
+                        </button>
+                        <button
+                          onClick={() => setShowResetPromptConfirm(true)}
+                          disabled={resettingSystemPrompt || !savedSystemPrompt}
+                          className="px-4 py-2 border border-red-300 text-red-600 rounded-lg hover:bg-red-50 disabled:opacity-50 transition-colors flex items-center gap-2"
+                        >
+                          {resettingSystemPrompt && <Loader2 size={16} className="animate-spin" />}
+                          <RotateCcw size={16} />
+                          Reset to Default
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
       </main>
+
+      {/* Reset System Prompt Confirmation Modal */}
+      {showResetPromptConfirm && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-md mx-4 p-6">
+            <h2 className="text-lg font-semibold text-red-600 mb-2">Reset System Prompt?</h2>
+            <p className="text-gray-600 mb-6">
+              Are you sure? This will remove the custom prompt and revert to the default system prompt.
+            </p>
+            <div className="flex justify-end gap-3">
+              <button
+                onClick={() => setShowResetPromptConfirm(false)}
+                className="px-4 py-2 text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleResetSystemPrompt}
+                disabled={resettingSystemPrompt}
+                className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50 transition-colors flex items-center gap-2"
+              >
+                {resettingSystemPrompt && <Loader2 size={16} className="animate-spin" />}
+                Reset
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Delete Confirmation Modal */}
       {showDeleteConfirm && (

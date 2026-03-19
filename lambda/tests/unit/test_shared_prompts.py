@@ -423,17 +423,21 @@ class TestModuleStructure:
         assert build_chat_system_prompt.__doc__ is not None
         assert len(build_chat_system_prompt.__doc__.strip()) > 0
 
-    def test_build_rag_system_prompt_takes_no_args(self):
-        """Test build_rag_system_prompt requires no arguments."""
+    def test_build_rag_system_prompt_has_optional_workspace_prompt(self):
+        """Test build_rag_system_prompt accepts optional workspace_prompt parameter."""
         import inspect
         sig = inspect.signature(build_rag_system_prompt)
-        assert len(sig.parameters) == 0
+        assert len(sig.parameters) == 1
+        param = sig.parameters["workspace_prompt"]
+        assert param.default is None
 
-    def test_build_chat_system_prompt_takes_no_args(self):
-        """Test build_chat_system_prompt requires no arguments."""
+    def test_build_chat_system_prompt_has_optional_workspace_prompt(self):
+        """Test build_chat_system_prompt accepts optional workspace_prompt parameter."""
         import inspect
         sig = inspect.signature(build_chat_system_prompt)
-        assert len(sig.parameters) == 0
+        assert len(sig.parameters) == 1
+        param = sig.parameters["workspace_prompt"]
+        assert param.default is None
 
     def test_build_rag_system_prompt_return_annotation(self):
         """Test build_rag_system_prompt has str return type annotation."""
@@ -446,3 +450,49 @@ class TestModuleStructure:
         import inspect
         sig = inspect.signature(build_chat_system_prompt)
         assert sig.return_annotation is str
+
+
+class TestWorkspacePromptMerging:
+    """Tests for workspace-specific prompt prepending."""
+
+    def test_rag_prompt_without_workspace_prompt(self):
+        """Test build_rag_system_prompt returns base prompt when no workspace_prompt."""
+        base = build_rag_system_prompt()
+        with_none = build_rag_system_prompt(workspace_prompt=None)
+        assert base == with_none
+
+    def test_chat_prompt_without_workspace_prompt(self):
+        """Test build_chat_system_prompt returns base prompt when no workspace_prompt."""
+        base = build_chat_system_prompt()
+        with_none = build_chat_system_prompt(workspace_prompt=None)
+        assert base == with_none
+
+    def test_rag_prompt_with_workspace_prompt_prepends(self):
+        """Test build_rag_system_prompt prepends workspace instructions."""
+        workspace_text = "Always recommend our standard Terraform modules."
+        result = build_rag_system_prompt(workspace_prompt=workspace_text)
+        assert result.startswith("WORKSPACE-SPECIFIC INSTRUCTIONS:")
+        assert workspace_text in result
+        # Base prompt content should still be present after the separator
+        assert "CRITICAL INSTRUCTION" in result
+
+    def test_chat_prompt_with_workspace_prompt_prepends(self):
+        """Test build_chat_system_prompt prepends workspace instructions."""
+        workspace_text = "Help draft outbound emails. Use a professional tone."
+        result = build_chat_system_prompt(workspace_prompt=workspace_text)
+        assert result.startswith("WORKSPACE-SPECIFIC INSTRUCTIONS:")
+        assert workspace_text in result
+        # Base prompt content should still be present after the separator
+        assert "CRITICAL INSTRUCTION" in result
+
+    def test_workspace_prompt_separator(self):
+        """Test that workspace prompt and base prompt are separated by ---."""
+        workspace_text = "Security team context."
+        result = build_rag_system_prompt(workspace_prompt=workspace_text)
+        assert "\n---\n" in result
+
+    def test_empty_string_workspace_prompt_returns_base(self):
+        """Test that empty string workspace_prompt returns base prompt (falsy)."""
+        base = build_rag_system_prompt()
+        with_empty = build_rag_system_prompt(workspace_prompt="")
+        assert base == with_empty

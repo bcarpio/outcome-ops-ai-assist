@@ -4,6 +4,8 @@
 
 OutcomeOps AI Assist is a **generic platform** for AI-powered code generation designed to support Fortune 500 companies with hundreds or thousands of repositories. The platform is language-agnostic and framework-agnostic by design.
 
+**Deployment model:** The product deploys into each customer's own AWS account. All infrastructure is parameterized via `terraform/*.tfvars` files — nothing is hardcoded to a specific customer. Target customers are large enterprises that use Azure AD for identity. Authentication uses Azure AD (OIDC for the UI, OAuth 2.0 JWTs for the MCP server).
+
 **Key insight:** Different repos may use Terraform, Helm, CloudFormation, Python, Java, TypeScript, Spring Boot, Lambda, ECS, Kubernetes, etc. The platform code must remain generic - all domain-specific knowledge lives in the **Knowledge Base** (ADRs, docs, code maps).
 
 ## Core Principle: Documentation-Driven Decisions (ADR-007)

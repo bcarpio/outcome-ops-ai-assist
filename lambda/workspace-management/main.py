@@ -244,6 +244,44 @@ async def list_sharing_available(workspace_id: str, request: Request):
 
 
 # ============================================================================
+# System Prompt Routes
+# ============================================================================
+
+
+@app.get("/workspaces/{workspace_id}/system-prompt")
+async def get_system_prompt(workspace_id: str, request: Request):
+    """Get workspace custom system prompt."""
+    from handler import lambda_handler
+
+    event = _build_event(request, "GET", f"/workspaces/{workspace_id}/system-prompt")
+    result = lambda_handler(event, None)
+    return _parse_response(result)
+
+
+@app.put("/workspaces/{workspace_id}/system-prompt")
+async def update_system_prompt(workspace_id: str, request: Request):
+    """Set workspace custom system prompt."""
+    from handler import lambda_handler
+
+    body = await request.body()
+    event = _build_event(
+        request, "PUT", f"/workspaces/{workspace_id}/system-prompt", body.decode("utf-8")
+    )
+    result = lambda_handler(event, None)
+    return _parse_response(result)
+
+
+@app.delete("/workspaces/{workspace_id}/system-prompt")
+async def reset_system_prompt(workspace_id: str, request: Request):
+    """Reset workspace system prompt to default."""
+    from handler import lambda_handler
+
+    event = _build_event(request, "DELETE", f"/workspaces/{workspace_id}/system-prompt")
+    result = lambda_handler(event, None)
+    return _parse_response(result)
+
+
+# ============================================================================
 # User Search Routes
 # ============================================================================
 

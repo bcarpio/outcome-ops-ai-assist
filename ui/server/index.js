@@ -622,6 +622,11 @@ app.get("/api/workspaces/:id/sharing", (req, res) => proxyWorkspaceRequest(req, 
 app.put("/api/workspaces/:id/sharing", (req, res) => proxyWorkspaceRequest(req, res, "PUT", `/workspaces/${req.params.id}/sharing`));
 app.get("/api/workspaces/:id/sharing/available", (req, res) => proxyWorkspaceRequest(req, res, "GET", `/workspaces/${req.params.id}/sharing/available`));
 
+// Workspace system prompt
+app.get("/api/workspaces/:id/system-prompt", (req, res) => proxyWorkspaceRequest(req, res, "GET", `/workspaces/${req.params.id}/system-prompt`));
+app.put("/api/workspaces/:id/system-prompt", (req, res) => proxyWorkspaceRequest(req, res, "PUT", `/workspaces/${req.params.id}/system-prompt`));
+app.delete("/api/workspaces/:id/system-prompt", (req, res) => proxyWorkspaceRequest(req, res, "DELETE", `/workspaces/${req.params.id}/system-prompt`));
+
 // Workspace documents
 app.post("/api/workspaces/:id/documents/upload", (req, res) => proxyWorkspaceRequest(req, res, "POST", `/workspaces/${req.params.id}/documents/upload`));
 app.get("/api/workspaces/:id/documents", (req, res) => {

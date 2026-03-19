@@ -35,6 +35,11 @@ API Endpoints:
         PUT    /workspaces/{id}/sharing           - Update search access list
         GET    /workspaces/{id}/sharing/available - List workspaces for sharing dropdown
 
+    System Prompt:
+        GET    /workspaces/{id}/system-prompt     - Get custom system prompt
+        PUT    /workspaces/{id}/system-prompt     - Set custom system prompt (admin only)
+        DELETE /workspaces/{id}/system-prompt     - Reset to default (admin only)
+
     Org Management (org_admin only):
         GET    /org/members                       - List all org members
         POST   /org/members                       - Add org member
@@ -73,6 +78,7 @@ import logging
 import os
 import posixpath
 import secrets
+import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -90,6 +96,7 @@ logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 # Environment variables
 ENV = os.environ.get("ENV", "dev")
 APP_NAME = os.environ.get("APP_NAME", "outcome-ops-ai-assist")
+AUDIT_TABLE = os.environ.get("AUDIT_TABLE", "")
 
 # Cached clients and config
 _dynamodb = None
@@ -2508,6 +2515,167 @@ def validate_api_key(api_key: str) -> Optional[Dict]:
 
 
 # ============================================================================
+# Audit Logging
+# ============================================================================
+
+
+def _write_audit_log(
+    workspace_id: str, user_email: str, action: str, details: dict = None
+):
+    """Write an entry to the audit log table."""
+    if not AUDIT_TABLE:
+        return
+    try:
+        table = _get_dynamodb().Table(AUDIT_TABLE)
+        now = datetime.now(timezone.utc).isoformat()
+        request_id = secrets.token_hex(8)
+        item = {
+            "PK": f"WS#{workspace_id}",
+            "SK": f"{now}#{request_id}",
+            "GSI1PK": f"USER#{user_email}",
+            "GSI1SK": f"{now}#{request_id}",
+            "action": action,
+            "workspace_id": workspace_id,
+            "user_email": user_email,
+            "timestamp": now,
+            "ttl": int(time.time()) + (365 * 86400),
+        }
+        if details:
+            item["details"] = details
+        table.put_item(Item=item)
+    except Exception as e:
+        logger.error(f"Error writing audit log: {e}")
+
+
+# ============================================================================
+# System Prompt Management
+# ============================================================================
+
+
+def handle_get_system_prompt(workspace_id: str, user_email: str) -> Dict:
+    """Get the custom system prompt for a workspace."""
+    dynamodb = _get_dynamodb()
+    table = dynamodb.Table(_get_workspaces_table())
+
+    try:
+        # Any workspace member can read the system prompt
+        if not _can_access_workspace(table, user_email, workspace_id):
+            return _error(403, "Not a member of this workspace")
+
+        # Get workspace metadata
+        response = table.get_item(Key={"PK": f"WS#{workspace_id}", "SK": "METADATA"})
+        if "Item" not in response:
+            return _error(404, "Workspace not found")
+
+        workspace = response["Item"]
+        custom_prompt = workspace.get("custom_system_prompt")
+
+        return _response(200, {
+            "custom_system_prompt": custom_prompt,
+            "updated_at": workspace.get("custom_prompt_updated_at"),
+            "updated_by": workspace.get("custom_prompt_updated_by"),
+            "is_default": custom_prompt is None,
+        })
+    except ClientError as e:
+        logger.error(f"Error getting system prompt: {e}")
+        return _error(500, "Failed to get system prompt")
+
+
+def handle_update_system_prompt(
+    workspace_id: str, user_email: str, body: Dict
+) -> Dict:
+    """Set a custom system prompt for a workspace (admin only)."""
+    dynamodb = _get_dynamodb()
+    table = dynamodb.Table(_get_workspaces_table())
+
+    try:
+        # Only workspace admins or org admins can update
+        if not _is_workspace_admin(table, user_email, workspace_id):
+            return _error(403, "Only workspace admins can update the system prompt")
+
+        # Validate request body
+        custom_system_prompt = body.get("custom_system_prompt")
+        if not custom_system_prompt or not isinstance(custom_system_prompt, str):
+            return _error(400, "custom_system_prompt is required and must be a non-empty string")
+
+        custom_system_prompt = custom_system_prompt.strip()
+        if not custom_system_prompt:
+            return _error(400, "custom_system_prompt must not be empty")
+
+        if len(custom_system_prompt) > 10000:
+            return _error(400, "custom_system_prompt must not exceed 10,000 characters")
+
+        # Check workspace exists
+        response = table.get_item(Key={"PK": f"WS#{workspace_id}", "SK": "METADATA"})
+        if "Item" not in response:
+            return _error(404, "Workspace not found")
+
+        now = datetime.now(timezone.utc).isoformat()
+
+        # Update workspace metadata
+        table.update_item(
+            Key={"PK": f"WS#{workspace_id}", "SK": "METADATA"},
+            UpdateExpression="SET custom_system_prompt = :p, custom_prompt_updated_at = :t, custom_prompt_updated_by = :u, updated_at = :t",
+            ExpressionAttributeValues={
+                ":p": custom_system_prompt,
+                ":t": now,
+                ":u": user_email,
+            },
+        )
+
+        # Write audit log
+        _write_audit_log(workspace_id, user_email, "SYSTEM_PROMPT_UPDATED", {
+            "prompt_length": len(custom_system_prompt),
+            "prompt_preview": custom_system_prompt[:200],
+        })
+
+        logger.info(f"Updated system prompt for workspace {workspace_id} by {user_email}")
+        return _response(200, {
+            "custom_system_prompt": custom_system_prompt,
+            "updated_at": now,
+            "updated_by": user_email,
+            "is_default": False,
+        })
+    except ClientError as e:
+        logger.error(f"Error updating system prompt: {e}")
+        return _error(500, "Failed to update system prompt")
+
+
+def handle_reset_system_prompt(workspace_id: str, user_email: str) -> Dict:
+    """Reset workspace system prompt to default (admin only)."""
+    dynamodb = _get_dynamodb()
+    table = dynamodb.Table(_get_workspaces_table())
+
+    try:
+        # Only workspace admins or org admins can reset
+        if not _is_workspace_admin(table, user_email, workspace_id):
+            return _error(403, "Only workspace admins can reset the system prompt")
+
+        # Check workspace exists
+        response = table.get_item(Key={"PK": f"WS#{workspace_id}", "SK": "METADATA"})
+        if "Item" not in response:
+            return _error(404, "Workspace not found")
+
+        now = datetime.now(timezone.utc).isoformat()
+
+        # Remove custom prompt attributes
+        table.update_item(
+            Key={"PK": f"WS#{workspace_id}", "SK": "METADATA"},
+            UpdateExpression="REMOVE custom_system_prompt, custom_prompt_updated_at, custom_prompt_updated_by SET updated_at = :t",
+            ExpressionAttributeValues={":t": now},
+        )
+
+        # Write audit log
+        _write_audit_log(workspace_id, user_email, "SYSTEM_PROMPT_RESET")
+
+        logger.info(f"Reset system prompt for workspace {workspace_id} by {user_email}")
+        return _response(200, {"is_default": True})
+    except ClientError as e:
+        logger.error(f"Error resetting system prompt: {e}")
+        return _error(500, "Failed to reset system prompt")
+
+
+# ============================================================================
 # Main Handler
 # ============================================================================
 
@@ -2714,6 +2882,37 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             and http_method == "GET"
         ):
             return list_all_workspaces_for_sharing(user_email, parts[1])
+
+        # ====================================================================
+        # System Prompt Routes
+        # ====================================================================
+
+        # Route: GET /workspaces/{id}/system-prompt
+        if (
+            len(parts) == 3
+            and parts[0] == "workspaces"
+            and parts[2] == "system-prompt"
+            and http_method == "GET"
+        ):
+            return handle_get_system_prompt(parts[1], user_email)
+
+        # Route: PUT /workspaces/{id}/system-prompt
+        if (
+            len(parts) == 3
+            and parts[0] == "workspaces"
+            and parts[2] == "system-prompt"
+            and http_method == "PUT"
+        ):
+            return handle_update_system_prompt(parts[1], user_email, body)
+
+        # Route: DELETE /workspaces/{id}/system-prompt
+        if (
+            len(parts) == 3
+            and parts[0] == "workspaces"
+            and parts[2] == "system-prompt"
+            and http_method == "DELETE"
+        ):
+            return handle_reset_system_prompt(parts[1], user_email)
 
         # ====================================================================
         # User Search Routes

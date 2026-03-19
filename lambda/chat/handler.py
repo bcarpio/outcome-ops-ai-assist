@@ -1104,8 +1104,20 @@ def update_memory_chunk_count(conversation_id: str, chunk_count: int):
 # Answer Generation (Streaming)
 # ============================================================================
 
-# System prompt is built from shared module for consistency
-SYSTEM_PROMPT = build_chat_system_prompt()
+def _get_workspace_custom_prompt(workspace_id: str) -> Optional[str]:
+    """Fetch custom system prompt for a workspace, if set."""
+    if not workspace_id:
+        return None
+    try:
+        dynamodb = _get_dynamodb()
+        table = dynamodb.Table(_get_workspaces_table())
+        response = table.get_item(
+            Key={"PK": f"WS#{workspace_id}", "SK": "METADATA"},
+            ProjectionExpression="custom_system_prompt",
+        )
+        return response.get("Item", {}).get("custom_system_prompt")
+    except ClientError:
+        return None
 
 
 def generate_answer_stream(
@@ -1116,6 +1128,7 @@ def generate_answer_stream(
     advanced: bool = False,
     tool_config: Dict = None,
     tool_mapping: Dict = None,
+    workspace_prompt: str = None,
 ) -> Generator:
     """
     Stream answer from Bedrock using ConverseStream.
@@ -1154,12 +1167,14 @@ Remember: code maps ARE the source code. Quote exact method signatures and trace
     total_input_tokens = 0
     total_output_tokens = 0
 
+    system_prompt = build_chat_system_prompt(workspace_prompt=workspace_prompt)
+
     try:
         for iteration in range(max_iterations):
             params = {
                 "modelId": model_id,
                 "messages": messages,
-                "system": [{"text": SYSTEM_PROMPT}],
+                "system": [{"text": system_prompt}],
                 "inferenceConfig": {
                     "maxTokens": 8192,
                     "temperature": 0.3,
@@ -1315,6 +1330,7 @@ def handle_chat_stream(event: Dict) -> Generator[str, None, None]:
 
     # For conversation storage, use first workspace_id
     primary_workspace_id = workspace_ids[0] if workspace_ids else None
+    workspace_prompt = _get_workspace_custom_prompt(primary_workspace_id)
     mcp_server_ids = request.mcp_server_ids
 
     if request.conversation_id:
@@ -1481,6 +1497,7 @@ def handle_chat_stream(event: Dict) -> Generator[str, None, None]:
             request.advanced,
             tool_config=tool_config,
             tool_mapping=tool_mapping,
+            workspace_prompt=workspace_prompt,
         ):
             if isinstance(chunk, dict):
                 if chunk.get("type") == "tool_use":
