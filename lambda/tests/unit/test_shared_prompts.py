@@ -467,23 +467,23 @@ class TestWorkspacePromptMerging:
         with_none = build_chat_system_prompt(workspace_prompt=None)
         assert base == with_none
 
-    def test_rag_prompt_with_workspace_prompt_prepends(self):
-        """Test build_rag_system_prompt prepends workspace instructions."""
+    def test_rag_prompt_with_workspace_prompt_appends(self):
+        """Test build_rag_system_prompt appends workspace instructions after base."""
         workspace_text = "Always recommend our standard Terraform modules."
         result = build_rag_system_prompt(workspace_prompt=workspace_text)
-        assert result.startswith("WORKSPACE-SPECIFIC INSTRUCTIONS:")
+        assert result.startswith("CRITICAL INSTRUCTION")
+        assert result.endswith(workspace_text)
+        assert "WORKSPACE-SPECIFIC INSTRUCTIONS" in result
         assert workspace_text in result
-        # Base prompt content should still be present after the separator
-        assert "CRITICAL INSTRUCTION" in result
 
-    def test_chat_prompt_with_workspace_prompt_prepends(self):
-        """Test build_chat_system_prompt prepends workspace instructions."""
+    def test_chat_prompt_with_workspace_prompt_appends(self):
+        """Test build_chat_system_prompt appends workspace instructions after base."""
         workspace_text = "Help draft outbound emails. Use a professional tone."
         result = build_chat_system_prompt(workspace_prompt=workspace_text)
-        assert result.startswith("WORKSPACE-SPECIFIC INSTRUCTIONS:")
+        assert result.startswith("CRITICAL INSTRUCTION")
+        assert result.endswith(workspace_text)
+        assert "WORKSPACE-SPECIFIC INSTRUCTIONS" in result
         assert workspace_text in result
-        # Base prompt content should still be present after the separator
-        assert "CRITICAL INSTRUCTION" in result
 
     def test_workspace_prompt_separator(self):
         """Test that workspace prompt and base prompt are separated by ---."""

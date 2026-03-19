@@ -73,12 +73,12 @@ INSTRUCTIONS:
 7. When asked to create documents (ADRs, specs, etc.) based on context, do it
 8. {REQUIREMENT_STRENGTH_RULES}"""
     if workspace_prompt:
-        return f"""WORKSPACE-SPECIFIC INSTRUCTIONS:
-{workspace_prompt}
+        return f"""{base}
 
 ---
 
-{base}"""
+WORKSPACE-SPECIFIC INSTRUCTIONS (these take precedence over defaults above):
+{workspace_prompt}"""
     return base
 
 
@@ -87,7 +87,7 @@ def build_chat_system_prompt(workspace_prompt: str = None) -> str:
     Build the system prompt for conversational chat (streaming).
 
     Args:
-        workspace_prompt: Optional workspace-specific instructions to prepend.
+        workspace_prompt: Optional workspace-specific instructions to append.
 
     Returns a prompt optimized for helpful, conversational responses
     with knowledge base grounding.
@@ -116,10 +116,10 @@ RULES:
 
 Be helpful, not restrictive. If the user asks you to create something based on knowledge base content, do it."""
     if workspace_prompt:
-        return f"""WORKSPACE-SPECIFIC INSTRUCTIONS:
-{workspace_prompt}
+        return f"""{base}
 
 ---
 
-{base}"""
+WORKSPACE-SPECIFIC INSTRUCTIONS (these take precedence over defaults above):
+{workspace_prompt}"""
     return base
