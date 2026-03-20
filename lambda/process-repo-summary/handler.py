@@ -702,7 +702,7 @@ def handler(event, context):
                 content=arch_summary,
                 content_hash=summary_hash,
                 embedding=summary_embedding,
-                repo=repo,
+                repo=repo_project,
                 doc_type="code-map",
                 path="code-map",
                 workspace_id=workspace_id

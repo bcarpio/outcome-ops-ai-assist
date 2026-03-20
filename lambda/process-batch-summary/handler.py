@@ -929,7 +929,7 @@ def store_batch_summary(
         metadata = {
             "content": summary,
             "content_hash": content_hash,
-            "repo": batch["repo"],
+            "repo": batch["repo_project"],
             "type": doc_type,
             "batch_type": batch["batch_type"],
             "group_name": batch["group_name"],
