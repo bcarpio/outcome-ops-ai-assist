@@ -33,17 +33,3 @@ The Teams file sync re-processes ALL files every hourly sync cycle, even if they
 **Fix (two layers):**
 1. **Teams sync (primary):** Use the SharePoint drive delta API for channel files (Teams stores files in SharePoint under the hood) or filter files by `lastModifiedDateTime` >= `last_sync_at`, matching the Confluence/SharePoint pattern
 2. **File ingestion (safety net):** Before uploading to S3, compare the file's etag or content hash against the existing S3 object. Skip upload if unchanged
-
-## Code Maps: Repo Metadata Missing Owner Prefix
-
-**Discovered:** 2026-03-20
-**Severity:** Medium
-**Component:** `process-repo-summary`, `process-batch-summary`
-
-The code-maps/summary pipeline stores `repo` in vector metadata as just the repo name (e.g., `outcome-ops-ai-assist-private`) instead of `owner/repo` (e.g., `bcarpio/outcome-ops-ai-assist-private`). The file ingestion pipeline correctly stores `owner/repo`. This inconsistency shows in the chat UI sources list.
-
-**Root cause:** Both `process-repo-summary/handler.py` (line 524) and `process-batch-summary/handler.py` (line 932) store `batch["repo"]` (short name) in vector metadata instead of `batch["repo_project"]` (full `owner/repo`). The `repo_project` field is available in the SQS message but unused for metadata.
-
-**Impact:** Ambiguous repo attribution in the UI and audit logs. Breaks if a customer has the same repo name across multiple GitHub orgs.
-
-**Fix:** Change `"repo": repo` to `"repo": repo_project` in both files' metadata dicts. Existing vectors will retain the old short name until the next re-sync.

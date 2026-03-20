@@ -101,6 +101,7 @@ make audit
 **CI will fail if you skip these steps.** Run them every time before committing.
 
 ### Local Development
+- **Always activate the Python venv first:** `source lambda/.venv/bin/activate` — required for newer AWS SDK features (e.g., s3vectors)
 - Never run `terraform apply` locally - CI/CD only
 - Use MCP tools (`query_knowledge_base`, `get_coding_standards`) to query the knowledge base
 
