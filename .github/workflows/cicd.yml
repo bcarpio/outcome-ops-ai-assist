@@ -81,8 +81,9 @@ jobs:
           fi
 
       - name: Trivy - Scan Terraform
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@v0.35.0
         with:
+          version: 'v0.69.3'
           scan-type: config
           scan-ref: ${{ env.TERRAFORM_DIR }}
           severity: CRITICAL,HIGH
