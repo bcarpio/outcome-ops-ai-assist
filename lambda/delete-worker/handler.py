@@ -334,11 +334,14 @@ def find_orphaned_documents(
 
     orphaned = []
     for key in s3_keys:
-        # Extract ID from key
+        # Extract ID from key based on source type
         if source == "confluence":
             item_id = extract_page_id_from_s3_key(key)
+        elif source == "github":
+            # GitHub S3 key: workspaces/{ws}/github/{repo}/{file_path}
+            # Strip prefix to get relative file path
+            item_id = key[len(s3_prefix):] if key.startswith(s3_prefix) else ""
         else:
-            # For other sources, extract ID differently
             item_id = key.split("/")[-1].split("_")[0]
 
         if item_id and item_id not in current_ids:

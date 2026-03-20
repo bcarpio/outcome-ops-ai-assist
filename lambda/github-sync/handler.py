@@ -542,6 +542,43 @@ def upload_file_to_s3(
 
 
 # ============================================================================
+# Orphan Detection
+# ============================================================================
+
+
+def _queue_orphan_detection(
+    workspace_id: str,
+    repo_name: str,
+    current_file_paths: List[str],
+) -> None:
+    """Queue orphan detection to clean up files removed from the repo."""
+    if not DELETE_QUEUE:
+        logger.warning("DELETE_QUEUE not configured, skipping orphan detection")
+        return
+
+    if not current_file_paths:
+        logger.info("No current files, skipping orphan detection")
+        return
+
+    message = {
+        "action": "delete_orphans",
+        "workspace_id": workspace_id,
+        "source": "github",
+        "prefix": repo_name + "/",
+        "current_ids": current_file_paths,
+    }
+
+    try:
+        _get_sqs().send_message(
+            QueueUrl=DELETE_QUEUE,
+            MessageBody=json.dumps(message),
+        )
+        logger.info(f"Queued orphan detection for {workspace_id}/github/{repo_name}")
+    except ClientError as e:
+        logger.error(f"Failed to queue orphan detection: {e}")
+
+
+# ============================================================================
 # Code Maps Queue (for application repos)
 # ============================================================================
 
@@ -766,6 +803,10 @@ def _process_standards_repo(
         if s3_key:
             uploaded += 1
 
+    # Queue orphan detection to clean up deleted files
+    current_file_paths = [f["path"] for f in files_to_process]
+    _queue_orphan_detection(workspace_id, repo_name, current_file_paths)
+
     # Update sync status
     update_sync_status(workspace_id, repo_name, "success", commit_sha=current_sha)
 
@@ -831,6 +872,10 @@ def _process_application_repo(
 
     if docs_uploaded:
         logger.info(f"Uploaded {docs_uploaded} doc files to S3 for {repo_name}")
+
+    # Queue orphan detection to clean up deleted doc files
+    current_doc_paths = [f["path"] for f in doc_files]
+    _queue_orphan_detection(workspace_id, repo_name, current_doc_paths)
 
     # Queue repo to repo-summaries queue for code-map generation
     if queue_repo_for_code_maps(
