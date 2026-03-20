@@ -31,7 +31,8 @@
     "remark-gfm": "^4.0.1"
   },
   "overrides": {
-    "rollup": ">=4.59.0"
+    "rollup": ">=4.59.0",
+    "fast-xml-parser": ">=5.5.8"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "^6.9.1",
