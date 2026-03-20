@@ -29,7 +29,7 @@ locals {
 resource "aws_service_discovery_private_dns_namespace" "mcp" {
   count = local.any_mcp_enabled ? 1 : 0
 
-  name = "mcp.local"
+  name = "${var.environment}-mcp.local"
   vpc  = var.ui_vpc_id
 
   tags = {
