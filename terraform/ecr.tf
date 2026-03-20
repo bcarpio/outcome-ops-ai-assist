@@ -21,6 +21,7 @@
 resource "aws_ecr_repository" "run_tests" {
   name                 = "${var.environment}-${var.app_name}-run-tests"
   image_tag_mutability = "IMMUTABLE"
+  force_delete         = true
 
   image_scanning_configuration {
     scan_on_push = true
@@ -84,6 +85,7 @@ resource "aws_ecr_repository" "chat_ui" {
 
   name                 = "${var.environment}-${var.app_name}-chat-ui"
   image_tag_mutability = "MUTABLE" # Allow :latest for simpler deploys
+  force_delete         = true
 
   image_scanning_configuration {
     scan_on_push = true
