@@ -65,8 +65,7 @@ lambda/runtime-layer/libexec/
 lambda/java-layer/java/
 
 # Terraform layer (binaries only - keep README)
-terraform-layer/*
-!terraform-layer/README.md
+lambda/terraform-layer/bin/
 
 # Scratch/working directory
 .scratch/
