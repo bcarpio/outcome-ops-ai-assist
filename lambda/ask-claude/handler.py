@@ -326,6 +326,19 @@ def handler(event, context):
 
         # Audit log the Bedrock call
         ask_model_id = ADVANCED_MODEL_ID if model == "sonnet" else BASIC_MODEL_ID
+        # Build structured sources for audit
+        audit_sources = []
+        seen_paths = set()
+        for doc in context_docs:
+            path = doc.get("file_path", doc.get("source", ""))
+            if path and path not in seen_paths:
+                seen_paths.add(path)
+                audit_sources.append({
+                    "repo": doc.get("repo", ""),
+                    "type": doc.get("type", ""),
+                    "path": path,
+                })
+
         log_audit_entry(
             audit_table_name=os.environ.get("AUDIT_TABLE", ""),
             lambda_name="ask-claude",
@@ -336,6 +349,7 @@ def handler(event, context):
             output_tokens=output_tokens,
             cost_usd=cost_usd,
             duration_ms=bedrock_duration_ms,
+            sources=audit_sources,
         )
 
         return {

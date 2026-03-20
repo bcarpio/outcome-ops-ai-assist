@@ -162,6 +162,7 @@ def log_audit_entry(
     user_email: str = "",
     workspace_id: str = "",
     workspace_ids: Optional[List[str]] = None,
+    sources: Optional[List] = None,
 ) -> None:
     """
     Log a Bedrock invocation to the audit table.
@@ -233,6 +234,11 @@ def log_audit_entry(
             "timestamp": timestamp,
             "ttl": ttl,
         }
+
+        # Add KB sources if provided
+        if sources:
+            item["sources"] = sources
+            item["source_count"] = len(sources)
 
         table = _get_dynamodb_table(audit_table_name)
         table.put_item(Item=item)

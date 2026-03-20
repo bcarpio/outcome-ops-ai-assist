@@ -1536,6 +1536,7 @@ def handle_chat_stream(event: Dict) -> Generator[str, None, None]:
         user_email=user_id or "",
         workspace_id=primary_workspace_id or "",
         workspace_ids=workspace_ids,
+        sources=sources,
     )
 
     # Save assistant message
