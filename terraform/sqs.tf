@@ -9,8 +9,9 @@ module "code_maps_dlq" {
 
   name = "${var.environment}-${var.app_name}-code-maps-dlq"
 
-  # Enable SQS-managed server-side encryption
-  sqs_managed_sse_enabled = true
+  # Encryption at rest (CMK when enabled, SQS-managed otherwise)
+  sqs_managed_sse_enabled = var.enable_cmk_encryption ? false : true
+  kms_master_key_id       = local.data_cmk_arn
 
   tags = {
     Purpose = "code-maps-dlq"
@@ -25,8 +26,9 @@ module "code_maps_queue" {
   name                       = "${var.environment}-${var.app_name}-code-maps-queue"
   visibility_timeout_seconds = 900 # Match Lambda timeout
 
-  # Enable SQS-managed server-side encryption
-  sqs_managed_sse_enabled = true
+  # Encryption at rest (CMK when enabled, SQS-managed otherwise)
+  sqs_managed_sse_enabled = var.enable_cmk_encryption ? false : true
+  kms_master_key_id       = local.data_cmk_arn
 
   # Dead letter queue configuration
   redrive_policy = {
@@ -65,8 +67,9 @@ module "pr_checks_dlq" {
   fifo_queue                  = true
   content_based_deduplication = true
 
-  # Enable SQS-managed server-side encryption
-  sqs_managed_sse_enabled = true
+  # Encryption at rest (CMK when enabled, SQS-managed otherwise)
+  sqs_managed_sse_enabled = var.enable_cmk_encryption ? false : true
+  kms_master_key_id       = local.data_cmk_arn
 
   tags = {
     Purpose = "pr-checks-dlq"
@@ -83,8 +86,9 @@ module "pr_checks_queue" {
   content_based_deduplication = false # We provide explicit MessageDeduplicationId
   visibility_timeout_seconds  = 720   # 12 minutes (Lambda timeout is 10 minutes)
 
-  # Enable SQS-managed server-side encryption
-  sqs_managed_sse_enabled = true
+  # Encryption at rest (CMK when enabled, SQS-managed otherwise)
+  sqs_managed_sse_enabled = var.enable_cmk_encryption ? false : true
+  kms_master_key_id       = local.data_cmk_arn
 
   # Dead letter queue configuration
   redrive_policy = {
@@ -168,8 +172,9 @@ module "code_generation_dlq" {
   content_based_deduplication = true
   visibility_timeout_seconds  = 90 # Must be >= DLQ Lambda timeout (60s)
 
-  # Enable SQS-managed server-side encryption
-  sqs_managed_sse_enabled = true
+  # Encryption at rest (CMK when enabled, SQS-managed otherwise)
+  sqs_managed_sse_enabled = var.enable_cmk_encryption ? false : true
+  kms_master_key_id       = local.data_cmk_arn
 
   tags = {
     Purpose = "code-generation-dlq"
@@ -186,8 +191,9 @@ module "code_generation_queue" {
   content_based_deduplication = false # We provide explicit MessageDeduplicationId
   visibility_timeout_seconds  = 900   # Match Lambda timeout (15 minutes)
 
-  # Enable SQS-managed server-side encryption
-  sqs_managed_sse_enabled = true
+  # Encryption at rest (CMK when enabled, SQS-managed otherwise)
+  sqs_managed_sse_enabled = var.enable_cmk_encryption ? false : true
+  kms_master_key_id       = local.data_cmk_arn
 
   # Dead letter queue configuration
   redrive_policy = {
@@ -250,8 +256,9 @@ module "repo_summaries_dlq" {
   fifo_queue                  = true
   content_based_deduplication = true
 
-  # Enable SQS-managed server-side encryption
-  sqs_managed_sse_enabled = true
+  # Encryption at rest (CMK when enabled, SQS-managed otherwise)
+  sqs_managed_sse_enabled = var.enable_cmk_encryption ? false : true
+  kms_master_key_id       = local.data_cmk_arn
 
   tags = {
     Purpose = "repo-summaries-dlq"
@@ -268,8 +275,9 @@ module "repo_summaries_queue" {
   content_based_deduplication = false # We provide explicit MessageDeduplicationId
   visibility_timeout_seconds  = 600   # 10 minutes (Lambda timeout is 5 minutes)
 
-  # Enable SQS-managed server-side encryption
-  sqs_managed_sse_enabled = true
+  # Encryption at rest (CMK when enabled, SQS-managed otherwise)
+  sqs_managed_sse_enabled = var.enable_cmk_encryption ? false : true
+  kms_master_key_id       = local.data_cmk_arn
 
   # Dead letter queue configuration
   redrive_policy = {

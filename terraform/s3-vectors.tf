@@ -7,7 +7,8 @@ resource "aws_s3vectors_vector_bucket" "knowledge_base" {
   vector_bucket_name = "${var.environment}-${var.app_name}-vectors"
 
   encryption_configuration {
-    sse_type = "AES256"
+    sse_type    = var.enable_cmk_encryption ? "aws:kms" : "AES256"
+    kms_key_arn = local.data_cmk_arn
   }
 
   tags = {

@@ -2,13 +2,12 @@
 # SNS Topics
 # ============================================================================
 
-# trivy:ignore:AVD-AWS-0136 -- Using AWS-managed key (alias/aws/sns); CMK not required for audit alerts
 module "audit_alerts_sns" {
   source  = "terraform-aws-modules/sns/aws"
   version = "~> 7.1"
 
   name              = "${var.environment}-${var.app_name}-audit-alerts"
-  kms_master_key_id = "alias/aws/sns"
+  kms_master_key_id = var.enable_cmk_encryption ? aws_kms_key.data_at_rest[0].arn : "alias/aws/sns"
 
   # Email subscription (only created when email is provided)
   subscriptions = var.audit_alert_email != "" ? {

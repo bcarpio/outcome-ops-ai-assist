@@ -53,8 +53,9 @@ module "workspaces_table" {
   # Point-in-time recovery for data protection
   point_in_time_recovery_enabled = true
 
-  # Server-side encryption enabled by default
-  server_side_encryption_enabled = true
+  # Server-side encryption (CMK when enabled, AWS-managed otherwise)
+  server_side_encryption_enabled     = true
+  server_side_encryption_kms_key_arn = local.data_cmk_arn
 
   tags = {
     Purpose = "workspaces"

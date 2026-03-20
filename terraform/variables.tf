@@ -1,9 +1,9 @@
 variable "environment" {
   type        = string
-  description = "Environment name (dev or prd)"
+  description = "Environment name (e.g., dev, prd, cmk)"
   validation {
-    condition     = contains(["dev", "prd"], var.environment)
-    error_message = "Environment must be 'dev' or 'prd'."
+    condition     = can(regex("^[a-z0-9-]+$", var.environment))
+    error_message = "Environment must contain only lowercase alphanumeric characters and hyphens."
   }
 }
 
@@ -350,4 +350,14 @@ variable "security_scanner_email" {
   type        = string
   description = "Email address for the security scanner service account"
   default     = "security-scanner@outcomeops.local"
+}
+
+# ============================================================================
+# Encryption (Customer Managed Keys)
+# ============================================================================
+
+variable "enable_cmk_encryption" {
+  type        = bool
+  description = "Use a Customer Managed KMS Key (CMK) for data-at-rest encryption on S3, DynamoDB, SQS, SNS, and ECR. When false, services use AWS-managed encryption (AES256/SSE-SQS/aws/sns)."
+  default     = false
 }

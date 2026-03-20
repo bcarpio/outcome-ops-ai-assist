@@ -170,7 +170,8 @@ resource "aws_sqs_queue" "outlook_sync" {
   })
 
   # Encryption at rest
-  sqs_managed_sse_enabled = true
+  sqs_managed_sse_enabled = var.enable_cmk_encryption ? null : true
+  kms_master_key_id       = local.data_cmk_arn
 
   tags = {
     Purpose = "outlook-sync-queue"
@@ -183,7 +184,8 @@ resource "aws_sqs_queue" "outlook_sync_dlq" {
   name                      = "${var.environment}-${var.app_name}-outlook-sync-dlq"
   message_retention_seconds = 1209600 # 14 days
 
-  sqs_managed_sse_enabled = true
+  sqs_managed_sse_enabled = var.enable_cmk_encryption ? null : true
+  kms_master_key_id       = local.data_cmk_arn
 
   tags = {
     Purpose = "outlook-sync-dlq"

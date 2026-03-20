@@ -135,3 +135,12 @@ enable_jira_integration = false
 # First-time deploy: ENVIRONMENT=dev make build-mcp-server-image
 # See docs/mcp-server.md for full setup instructions.
 # mcp_server_enabled = true
+
+# ============================================================================
+# Encryption (Customer Managed Keys)
+# ============================================================================
+
+# Use CMK for data-at-rest encryption on S3, DynamoDB, SQS, SNS, ECR
+# When false (default), services use AWS-managed encryption (no cost)
+# When true, creates a shared KMS key (~$1/month) for all data services
+# enable_cmk_encryption = true

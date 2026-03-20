@@ -21,12 +21,14 @@ module "knowledge_base_bucket" {
     }
   ]
 
-  # Enforce encryption
+  # Enforce encryption (CMK when enabled, AES256 otherwise)
   server_side_encryption_configuration = {
     rule = {
       apply_server_side_encryption_by_default = {
-        sse_algorithm = "AES256"
+        sse_algorithm     = var.enable_cmk_encryption ? "aws:kms" : "AES256"
+        kms_master_key_id = local.data_cmk_arn
       }
+      bucket_key_enabled = var.enable_cmk_encryption
     }
   }
 

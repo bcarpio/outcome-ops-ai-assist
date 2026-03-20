@@ -27,7 +27,8 @@ resource "aws_ecr_repository" "run_tests" {
   }
 
   encryption_configuration {
-    encryption_type = "AES256"
+    encryption_type = var.enable_cmk_encryption ? "KMS" : "AES256"
+    kms_key         = local.data_cmk_arn
   }
 
   tags = {
@@ -89,7 +90,8 @@ resource "aws_ecr_repository" "chat_ui" {
   }
 
   encryption_configuration {
-    encryption_type = "AES256"
+    encryption_type = var.enable_cmk_encryption ? "KMS" : "AES256"
+    kms_key         = local.data_cmk_arn
   }
 
   tags = {

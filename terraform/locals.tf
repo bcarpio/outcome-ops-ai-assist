@@ -12,10 +12,7 @@ locals {
 resource "terraform_data" "workspace_environment_guard" {
   lifecycle {
     precondition {
-      condition = (
-        (terraform.workspace == "dev" && var.environment == "dev") ||
-        (terraform.workspace == "prd" && var.environment == "prd")
-      )
+      condition     = terraform.workspace == var.environment
       error_message = "BLOCKED: Terraform workspace '${terraform.workspace}' does not match environment '${var.environment}'. Run 'terraform workspace select ${var.environment}' to fix."
     }
   }

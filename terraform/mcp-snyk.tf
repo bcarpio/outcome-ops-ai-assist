@@ -20,7 +20,8 @@ resource "aws_ecr_repository" "mcp_snyk" {
   }
 
   encryption_configuration {
-    encryption_type = "AES256"
+    encryption_type = var.enable_cmk_encryption ? "KMS" : "AES256"
+    kms_key         = local.data_cmk_arn
   }
 
   tags = {

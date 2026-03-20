@@ -28,7 +28,8 @@ resource "aws_sqs_queue" "file_ingestion" {
   })
 
   # Encryption at rest
-  sqs_managed_sse_enabled = true
+  sqs_managed_sse_enabled = var.enable_cmk_encryption ? null : true
+  kms_master_key_id       = local.data_cmk_arn
 
   tags = {
     Purpose = "file-ingestion-queue"
@@ -42,7 +43,8 @@ resource "aws_sqs_queue" "file_ingestion_dlq" {
   fifo_queue                = true
   message_retention_seconds = 1209600 # 14 days
 
-  sqs_managed_sse_enabled = true
+  sqs_managed_sse_enabled = var.enable_cmk_encryption ? null : true
+  kms_master_key_id       = local.data_cmk_arn
 
   tags = {
     Purpose = "file-ingestion-dlq"
@@ -65,7 +67,8 @@ resource "aws_sqs_queue" "delete_queue" {
   })
 
   # Encryption at rest
-  sqs_managed_sse_enabled = true
+  sqs_managed_sse_enabled = var.enable_cmk_encryption ? null : true
+  kms_master_key_id       = local.data_cmk_arn
 
   tags = {
     Purpose = "delete-queue"
@@ -78,7 +81,8 @@ resource "aws_sqs_queue" "delete_dlq" {
   name                      = "${var.environment}-${var.app_name}-delete-dlq"
   message_retention_seconds = 1209600 # 14 days
 
-  sqs_managed_sse_enabled = true
+  sqs_managed_sse_enabled = var.enable_cmk_encryption ? null : true
+  kms_master_key_id       = local.data_cmk_arn
 
   tags = {
     Purpose = "delete-dlq"
