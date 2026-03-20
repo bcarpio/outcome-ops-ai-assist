@@ -291,6 +291,7 @@ class TestStoreBatchSummary:
         # Arrange
         batch = {
             "repo": "outcome-ops-ai-assist",
+            "repo_project": "bcarpio/outcome-ops-ai-assist",
             "storage_key": "summary#handler#ingest-docs",
             "batch_type": "handler-group",
             "group_name": "ingest-docs",
@@ -314,7 +315,7 @@ class TestStoreBatchSummary:
         vectors = call_kwargs["vectors"]
         assert len(vectors) == 1
         assert vectors[0]["key"] == "outcome-ops-ai-assist#handler-group-summary#ingest-docs"
-        assert vectors[0]["metadata"]["repo"] == "outcome-ops-ai-assist"
+        assert vectors[0]["metadata"]["repo"] == "bcarpio/outcome-ops-ai-assist"
         assert vectors[0]["metadata"]["batch_type"] == "handler-group"
         assert vectors[0]["metadata"]["group_name"] == "ingest-docs"
 
