@@ -1,3 +1,4 @@
+# trivy:ignore:AVD-AWS-0132 -- CMK encryption is optional via enable_cmk_encryption toggle
 module "knowledge_base_bucket" {
   source  = "terraform-aws-modules/s3-bucket/aws"
   version = "4.1.1"

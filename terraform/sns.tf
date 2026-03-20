@@ -2,6 +2,7 @@
 # SNS Topics
 # ============================================================================
 
+# trivy:ignore:AVD-AWS-0136 -- CMK encryption is optional via enable_cmk_encryption toggle
 module "audit_alerts_sns" {
   source  = "terraform-aws-modules/sns/aws"
   version = "~> 7.1"
