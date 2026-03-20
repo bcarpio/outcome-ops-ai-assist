@@ -971,6 +971,21 @@ def remove_repo(user_email: str, workspace_id: str, repo_name: str) -> Dict:
             Key={"PK": f"WS#{workspace_id}", "SK": f"GITHUB_REPO#{repo_name}"}
         )
 
+        # Queue cleanup of S3 documents and vector embeddings for this repo
+        queue_url = _get_delete_queue_url()
+        if queue_url:
+            sqs_client = _get_sqs_client()
+            sqs_client.send_message(
+                QueueUrl=queue_url,
+                MessageBody=json.dumps({
+                    "action": "delete_prefix",
+                    "workspace_id": workspace_id,
+                    "source": "github",
+                    "prefix": repo_name + "/",
+                }),
+            )
+            logger.info(f"Queued cleanup for {workspace_id}/github/{repo_name}/")
+
         logger.info(f"Removed repo {repo_name} from workspace {workspace_id}")
         return _response(200, {"removed": repo_name})
     except ClientError as e:
