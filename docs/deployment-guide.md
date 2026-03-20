@@ -374,6 +374,15 @@ The Chat UI Fargate service exposes a health endpoint:
 - **Unhealthy threshold:** 3 consecutive failures
 - **ALB target group** automatically deregisters unhealthy tasks
 
+### MCP Server Health Checks
+
+Each MCP server container (OutcomeOps, SonarQube, Snyk) exposes health endpoints on port 8080:
+
+- **Endpoints:** `GET /health`, `GET /mcp/v1` (returns 200 OK)
+- **ECS health check:** Configured per target group
+- **Service discovery:** Cloud Map DNS entries (`{name}-mcp.mcp.local`) are updated based on ECS task health
+- **Session note:** MCP sessions are in-memory. If a Fargate Spot task is interrupted and replaced, active MCP client sessions are lost and clients must re-authenticate
+
 ### CloudWatch Monitoring
 
 All Lambda functions log to CloudWatch Logs with:
@@ -524,6 +533,35 @@ This is the OAuth client secret for the GitHub App (used for user-level OAuth fl
      --overwrite
    ```
 
+### MCP API Keys
+
+MCP API keys are managed by individual users through the UI. Unlike SSM-stored secrets, there is no centralized rotation command.
+
+1. User navigates to **Settings > API Keys** in the UI
+2. User creates a new API key (key is shown once; copy it immediately)
+3. User updates their MCP client configuration with the new key
+4. User revokes the old key via the UI
+5. No infrastructure restart required; revocation takes effect immediately
+
+### SonarQube / Snyk MCP Tokens
+
+After rotating tokens in SonarQube or Snyk, update SSM and force a new ECS deployment:
+
+```bash
+# Update the SSM parameter
+aws ssm put-parameter \
+  --name "/${ENV}/${APP_NAME}/mcp/sonarqube-token" \
+  --value "new-token-value" \
+  --type SecureString \
+  --overwrite
+
+# Force new ECS deployment to pick up the new token
+aws ecs update-service \
+  --cluster ${ENV}-outcome-ops-ai-assist \
+  --service ${ENV}-outcome-ops-ai-assist-sonarqube-mcp \
+  --force-new-deployment
+```
+
 ### KMS Keys
 
 - KMS keys used for CloudWatch Logs encryption have **automatic annual rotation** enabled by default
@@ -542,6 +580,8 @@ This is the OAuth client secret for the GitHub App (used for user-level OAuth fl
 | Microsoft OAuth Secret | `/{env}/{app}/oauth/microsoft/client-secret` | Per Azure AD policy (1-2 years) | Outlook, Teams, SharePoint integrations |
 | Atlassian OAuth Secret | `/{env}/{app}/oauth/atlassian/client-secret` | Annually | Confluence, Jira integrations |
 | SonarQube MCP Token | `/{env}/{app}/mcp/sonarqube-token` | Per SonarQube policy | Force new ECS deployment after rotation |
+| Snyk MCP Token | `/{env}/{app}/mcp/snyk-token` | Per Snyk policy | Force new ECS deployment after rotation |
+| MCP API Keys | N/A (user-managed) | Per organizational policy | Users create/revoke via UI Settings; keys are SHA-256 hashed |
 | KMS Keys | N/A | Automatic (annual) | Managed by AWS |
 
 ---

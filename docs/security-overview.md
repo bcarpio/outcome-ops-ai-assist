@@ -30,8 +30,8 @@ OutcomeOps AI Assist is deployed **in the customer's own AWS account**. This is 
 
 | Service | Purpose | Configuration |
 |---------|---------|---------------|
-| **ALB** | Application Load Balancer for UI | OIDC auth (Azure AD), TLS 1.3 |
-| **ECS Fargate** | Container hosting for UI proxy | Fargate Spot, read-only filesystem |
+| **ALB** | Application Load Balancer for UI and MCP servers | OIDC auth (Azure AD) for UI, API key auth for MCP, TLS 1.3 |
+| **ECS Fargate** | Container hosting for UI proxy and MCP servers | Fargate Spot, private subnets |
 | **Lambda** | Serverless compute | Python 3.12, various memory/timeout configs |
 | **Lambda Function URL** | Streaming chat endpoint | IAM auth (SigV4), response streaming |
 | **API Gateway v2** | GitHub webhook endpoint | HTTP API, CORS restricted to github.com |
@@ -44,6 +44,7 @@ OutcomeOps AI Assist is deployed **in the customer's own AWS account**. This is 
 | **EventBridge** | Scheduled jobs, automation events | Hourly sync triggers |
 | **Bedrock** | AI/ML | Titan Embeddings v2, Claude models |
 | **ECR** | Container image registry | Scan on push, AES-256 encryption |
+| **Cloud Map** | Service discovery for MCP servers | Internal DNS (`mcp.local`), multivalue routing |
 | **ACM** | TLS certificates | DNS-validated, auto-renewed |
 | **Route 53** | DNS management | FQDN for UI endpoint |
 
@@ -54,6 +55,8 @@ OutcomeOps AI Assist is deployed **in the customer's own AWS account**. This is 
 3. **Knowledge Base Search**: Query -> Titan embedding -> S3 Vectors cosine search -> Context retrieval
 4. **Document Ingestion**: EventBridge (hourly) -> SQS -> Ingest Lambda -> S3 + S3 Vectors
 5. **Code Generation**: GitHub webhook -> API Gateway -> Lambda -> SQS pipeline -> PR creation
+6. **MCP Client Query**: MCP client -> API key auth -> ALB (bypasses OIDC) -> MCP Server (Fargate) -> DynamoDB/S3 Vectors/Bedrock
+7. **MCP Tool Proxy**: MCP Server -> discovers downstream MCP servers -> proxies tool calls with SSM tokens or KMS-encrypted credentials
 
 ---
 
@@ -138,6 +141,56 @@ app.get("/api/logout", (req, res) => {
 });
 ```
 
+### MCP Client Authentication: API Keys
+
+The MCP server exposes tools via the Streamable HTTP transport (JSON-RPC 2.0 over HTTP POST). MCP clients authenticate using API keys instead of OIDC. The ALB routes MCP traffic (`/mcp/v1*`) directly to the MCP server container, **bypassing the OIDC authentication rule**.
+
+**Implementation**: `terraform/mcp-outcomeops.tf`, `lambda/mcp-server/handler.py`
+
+#### API Key Format and Storage
+
+| Aspect | Detail |
+|--------|--------|
+| Format | `ooa_` prefix + 40 hex characters (20 random bytes) |
+| Storage | SHA-256 hash in DynamoDB (`GSI1PK: API_KEY#{hash}`) |
+| Plaintext | Never stored; shown once at creation time |
+| Expiration | Optional; enforced at validation time |
+| Revocation | `status` field set to `revoked`; checked on every request |
+
+#### Authentication Flow
+
+1. MCP client sends `initialize` JSON-RPC request with `Authorization: Bearer ooa_xxxxx` header
+2. MCP server hashes the key with SHA-256 and queries DynamoDB GSI
+3. Server verifies the key is `active` and not expired
+4. Server creates an in-memory session (32-char hex ID, 1-hour timeout) and returns `Mcp-Session-Id` header
+5. Subsequent requests use the session ID header (or Bearer token) for authentication
+6. Background thread cleans up expired sessions every 5 minutes
+
+#### API Key Management
+
+Users create and manage API keys via the UI Settings page:
+
+| Operation | Endpoint | Auth |
+|-----------|----------|------|
+| Create key | `POST /api/api-keys` | OIDC (UI) |
+| List keys | `GET /api/api-keys` | OIDC (UI) |
+| Revoke key | `DELETE /api/api-keys/{key_id}` | OIDC (UI) |
+
+Keys are scoped to the authenticated user's email. The `last_used_at` timestamp is updated on each MCP request.
+
+#### ALB Routing (OIDC Bypass)
+
+MCP paths are routed via ALB listener rules that do **not** include an OIDC authentication action:
+
+| ALB Path | Priority | Target | Auth |
+|----------|----------|--------|------|
+| `/mcp/v1*` | 3 | OutcomeOps MCP server | API key (application-level) |
+| `/mcp/snyk*` | 6 | Snyk MCP server | API key (application-level) |
+| `/mcp*` | 7 | SonarQube MCP server | API key (application-level) |
+| All other paths | Default | UI Fargate (with OIDC) | Azure AD OIDC |
+
+This design is intentional: MCP clients (Claude Code, VS Code, Cursor) cannot participate in browser-based OIDC flows. Authentication is enforced at the application layer via API key validation.
+
 ### Service-to-Service Authentication: IAM + SigV4
 
 Internal service communication uses AWS IAM with Signature Version 4:
@@ -148,6 +201,9 @@ Internal service communication uses AWS IAM with Signature Version 4:
 | Lambda | DynamoDB, S3, Bedrock | IAM role credentials |
 | Lambda | Lambda (invocation) | IAM role credentials |
 | GitHub | API Gateway | Webhook signature (HMAC-SHA256) |
+| MCP server | DynamoDB, S3 Vectors, Bedrock | IAM task role credentials |
+| MCP server | Catalog MCP servers (SonarQube, Snyk) | SSM-stored tokens (custom headers) |
+| MCP server | User-added MCP servers | KMS-encrypted credentials (Bearer or API key) |
 
 **SigV4 Implementation** (`ui/server/index.js`):
 
@@ -186,6 +242,45 @@ conversations = list_conversations(user_id=user_id)
 
 Users can only see and manage their own conversations.
 
+### MCP Server Proxy Security
+
+The OutcomeOps MCP server acts as a gateway that discovers and proxies tools from downstream MCP servers (SonarQube, Snyk, and user-added servers). This proxy layer has its own security model.
+
+#### Tool Discovery and Namespacing
+
+When a client calls `tools/list`, the MCP server discovers available downstream servers by querying DynamoDB for workspace-to-server assignments and global catalog servers. Tools from downstream servers are namespaced to prevent collisions:
+
+| Server | Original Tool | Exposed As |
+|--------|--------------|------------|
+| SonarQube | `search_issues` | `sonarqube__search_issues` |
+| Snyk | `list_organizations` | `snyk__list_organizations` |
+
+Tool routing is stored per-session. Clients can only invoke tools from servers assigned to their accessible workspaces.
+
+#### Credential Isolation for Downstream Servers
+
+| Server Type | Credential Source | Mechanism |
+|-------------|------------------|-----------|
+| Catalog servers (SonarQube, Snyk) | SSM Parameter Store | Token fetched from SSM, sent as custom header |
+| User-added servers (Bearer auth) | DynamoDB | KMS-encrypted credentials decrypted at call time |
+| User-added servers (API key auth) | DynamoDB | KMS-encrypted credentials decrypted at call time |
+| No-auth servers | N/A | Request sent without credentials |
+
+Credentials for user-added MCP servers are encrypted with a dedicated KMS key (`kms-oauth.tf`) before storage in DynamoDB and decrypted only when proxying a tool call.
+
+#### Session Management
+
+| Parameter | Value |
+|-----------|-------|
+| Session storage | In-memory (per-process) |
+| Session ID format | 32-character hex token (`secrets.token_hex(16)`) |
+| Session timeout | 1 hour (3600 seconds) |
+| Cleanup interval | Every 5 minutes (background thread) |
+| Downstream session TTL | 30 minutes (reused across tool calls) |
+| Tool cache TTL | 5 minutes (per-server, in-memory + DynamoDB fallback) |
+
+Sessions are not persisted across container restarts. If a Fargate task is replaced (Spot interruption, deployment), clients must re-authenticate.
+
 ---
 
 ## Data Security
@@ -199,6 +294,11 @@ Users can only see and manage their own conversations.
 | Conversation memory | S3 Vectors | `conv#{conversation_id}#memory#{chunk_id}` |
 | State tracking | DynamoDB | `PK: REPO#{repo}`, `SK: STATE#{type}` |
 | Chat conversations | DynamoDB | `PK: CONV#{conversation_id}`, `SK: METADATA \| MSG#{ts}#{id}` |
+| API key hashes | DynamoDB | `PK: USER#{email}`, `SK: API_KEY#{key_id}`, `GSI1PK: API_KEY#{hash}` |
+| MCP server metadata | DynamoDB | `PK: MCP#{mcp_id}`, `SK: METADATA` |
+| MCP server tools cache | DynamoDB | `PK: MCP#{mcp_id}`, `SK: TOOLS` |
+| MCP workspace assignments | DynamoDB | `PK: WS#{workspace_id}`, `SK: MCP_SERVER#{mcp_id}` |
+| MCP encrypted credentials | DynamoDB | Stored in MCP server metadata, KMS-encrypted |
 | Configuration | SSM Parameter Store | `/{env}/{app_name}/{category}/{key}` |
 | Container images | ECR | `{env}-{app_name}-{service}` |
 
@@ -245,6 +345,9 @@ All connections use HTTPS with TLS 1.2 minimum:
 | Connection | TLS Version | Certificate |
 |------------|-------------|-------------|
 | User -> ALB | TLS 1.3 (`ELBSecurityPolicy-TLS13-1-2-2021-06`) | ACM |
+| MCP Client -> ALB | TLS 1.3 (`ELBSecurityPolicy-TLS13-1-2-2021-06`) | ACM |
+| ALB -> MCP Server (Fargate) | HTTP (internal, within VPC) | N/A |
+| MCP Server -> Downstream MCP Servers | HTTP (internal, via Cloud Map DNS) | N/A |
 | Fargate -> Lambda Function URL | TLS 1.2+ | AWS internal |
 | Lambda -> AWS services | TLS 1.2+ | AWS internal |
 | Lambda -> GitHub API | TLS 1.2+ | GitHub-managed |
@@ -377,6 +480,8 @@ All queues are FIFO with server-side encryption and dead letter queues:
 |------------|---------------------|--------------|------------|
 | run-tests | Immutable | Yes | AES-256 |
 | chat-ui | Mutable | Yes | AES-256 |
+| mcp-server (outcomeops) | Mutable | Yes | AES-256 |
+| mcp-snyk | Mutable | Yes | AES-256 |
 
 Lifecycle policies retain the last 5-10 images.
 
@@ -391,7 +496,7 @@ ingress: 80/tcp, 443/tcp from VPC CIDR or 0.0.0.0/0
 egress: all
 ```
 
-#### Fargate Security Group
+#### UI Fargate Security Group
 
 ```hcl
 # Only accepts traffic from ALB
@@ -399,9 +504,20 @@ ingress: 3000/tcp from ALB security group only
 egress: all
 ```
 
+#### MCP Server Security Groups
+
+Each MCP server (OutcomeOps, SonarQube, Snyk) has a dedicated security group:
+
+```hcl
+# Only accepts traffic from ALB on MCP port
+ingress: 8080/tcp from ALB security group only
+egress: all
+```
+
 **Security posture**:
-- Fargate tasks are only reachable via ALB
-- ALB enforces OIDC authentication before forwarding
+- All Fargate tasks (UI and MCP) are only reachable via ALB
+- UI paths enforce OIDC authentication at the ALB
+- MCP paths enforce API key authentication at the application layer
 - No direct internet access to containers
 - HTTP automatically redirected to HTTPS (301)
 
@@ -411,6 +527,8 @@ Lambda functions run in the AWS-managed VPC (not customer VPC). They access AWS 
 
 ### Fargate Container Security
 
+#### UI Proxy Container
+
 | Control | Configuration |
 |---------|---------------|
 | Read-only root filesystem | `readonlyRootFilesystem = true` |
@@ -418,6 +536,18 @@ Lambda functions run in the AWS-managed VPC (not customer VPC). They access AWS 
 | Capacity provider | Fargate Spot |
 | Health check | HTTP GET `/health` every 30s |
 | Task role | Scoped to `lambda:InvokeFunctionUrl` only |
+
+#### MCP Server Containers
+
+| Control | Configuration |
+|---------|---------------|
+| Resources | 0.5 vCPU, 1 GB RAM per server |
+| Capacity provider | Fargate Spot |
+| Networking | Private subnets only (no public IP) |
+| Health check | HTTP GET `/health` on port 8080 |
+| Service discovery | Cloud Map DNS (`{name}-mcp.mcp.local`, TTL 10s) |
+| Task role | DynamoDB, S3 Vectors, Bedrock, SSM read, KMS decrypt |
+| Secrets injection | SSM Parameter Store values injected at task startup |
 
 ### CloudWatch Logs
 
@@ -440,6 +570,8 @@ All secrets are managed through AWS Systems Manager Parameter Store. No secrets 
 | GitHub Webhook Secret | `/{env}/{app_name}/github/webhook-secret` | SecureString |
 | OIDC Client Secret | `/{env}/{app_name}/oidc/client-secret` | SecureString |
 | License Key (optional) | `/{env}/{app_name}/outcomeops/license/key` | SecureString |
+| SonarQube MCP Token | `/{env}/{app_name}/mcp/sonarqube-token` | SecureString |
+| Snyk MCP Token | `/{env}/{app_name}/mcp/snyk-token` | SecureString |
 
 ### Configuration Parameters
 
@@ -539,7 +671,7 @@ app.use(express.json({ limit: "1mb" }));
 The following security principles are enforced throughout the codebase:
 
 1. **Customer-deployed**: All data stays in the customer's AWS account. No data leaves to OutcomeOps infrastructure.
-2. **OIDC at the edge**: Authentication is enforced at the ALB before any request reaches the application.
+2. **Auth at the edge**: OIDC enforced at the ALB for UI; API key auth enforced at the application layer for MCP (ALB routes MCP traffic without OIDC).
 3. **SigV4 internal auth**: Service-to-service communication uses IAM with SigV4 signing, not shared secrets.
 4. **Least-privilege IAM**: Each Lambda has granular IAM policies scoped to specific resource ARNs.
 5. **Secrets in SSM**: All secrets stored in SSM SecureString with KMS encryption. No secrets in code or environment variables.
@@ -550,6 +682,8 @@ The following security principles are enforced throughout the codebase:
 10. **Image scanning**: ECR scans container images on push for vulnerabilities.
 11. **Webhook verification**: GitHub webhooks validated via HMAC-SHA256 before processing.
 12. **User scoping**: Chat conversations are scoped to authenticated users via OIDC identity.
+13. **API key hashing**: MCP API keys stored as SHA-256 hashes; plaintext never persisted.
+14. **MCP credential isolation**: Downstream MCP server credentials encrypted with KMS or stored in SSM SecureString; decrypted only at proxy time.
 
 ---
 
