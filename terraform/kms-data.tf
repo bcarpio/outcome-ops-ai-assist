@@ -42,6 +42,20 @@ resource "aws_kms_key" "data_at_rest" {
             "kms:CallerAccount" = data.aws_caller_identity.current.account_id
           }
         }
+      },
+      {
+        Sid    = "Allow S3 Vectors Indexing"
+        Effect = "Allow"
+        Principal = {
+          Service = "indexing.s3vectors.amazonaws.com"
+        }
+        Action = [
+          "kms:Decrypt",
+          "kms:GenerateDataKey*",
+          "kms:DescribeKey",
+          "kms:CreateGrant"
+        ]
+        Resource = "*"
       }
     ]
   })

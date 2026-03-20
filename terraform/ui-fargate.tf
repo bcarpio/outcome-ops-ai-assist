@@ -336,9 +336,10 @@ module "ui_ecs" {
       # Container definition
       container_definitions = {
         ui = {
-          essential              = true
-          image                  = var.ui_container_image
-          readonlyRootFilesystem = true
+          essential                   = true
+          image                       = var.ui_container_image
+          readonlyRootFilesystem      = true
+          create_cloudwatch_log_group = false
 
           portMappings = [
             {
