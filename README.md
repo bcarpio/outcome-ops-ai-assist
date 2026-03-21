@@ -1,4 +1,4 @@
-# OutcomeOps: Context Engineering for AI-Assisted Development
+# OutcomeOps: Context Engineering for AI-Assisted Development 
 
 [![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=bcarpio_outcome-ops-ai-assist&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=bcarpio_outcome-ops-ai-assist)
 [![Coverage](https://sonarcloud.io/api/project_badges/measure?project=bcarpio_outcome-ops-ai-assist&metric=coverage)](https://sonarcloud.io/summary/new_code?id=bcarpio_outcome-ops-ai-assist)
