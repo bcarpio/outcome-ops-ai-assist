@@ -46,7 +46,7 @@ bedrock_client = boto3.client("bedrock-runtime", config=bedrock_config)
 lambda_client = boto3.client("lambda")
 
 CLAUDE_MODEL_ID = os.environ.get(
-    "BEDROCK_ADVANCED_MODEL_ID", "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+    "BEDROCK_ADVANCED_MODEL_ID", "us.anthropic.claude-sonnet-4-6"
 )
 
 

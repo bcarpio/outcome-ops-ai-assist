@@ -66,7 +66,7 @@ with Diagram(
                 ui_fargate = Fargate("Chat UI\nProxy\n0.25 vCPU")
 
         # --- Service Discovery ---
-        cloudmap = CloudMap("Cloud Map\nmcp.local\n(DNS discovery)")
+        cloudmap = CloudMap("Cloud Map\n{env}-mcp.local\n(DNS discovery)")
 
         # --- Data Stores ---
         with Cluster("DynamoDB (Workspaces Table)"):

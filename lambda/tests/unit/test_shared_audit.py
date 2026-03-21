@@ -118,12 +118,18 @@ class TestModelPricing:
     """Test the MODEL_PRICING constant structure."""
 
     def test_model_pricing_contains_sonnet(self):
-        """Test Claude Sonnet 4.5 models are in pricing table."""
+        """Test Claude Sonnet models are in pricing table."""
+        assert "us.anthropic.claude-sonnet-4-6" in MODEL_PRICING
+        assert "anthropic.claude-sonnet-4-6" in MODEL_PRICING
+        # Backward compat for previous version
         assert "us.anthropic.claude-sonnet-4-5-20250929-v1:0" in MODEL_PRICING
         assert "anthropic.claude-sonnet-4-5-20250929-v1:0" in MODEL_PRICING
 
     def test_model_pricing_contains_haiku(self):
-        """Test Claude Haiku 3.5 models are in pricing table."""
+        """Test Claude Haiku models are in pricing table."""
+        assert "us.anthropic.claude-haiku-4-5-20251001-v1:0" in MODEL_PRICING
+        assert "anthropic.claude-haiku-4-5-20251001-v1:0" in MODEL_PRICING
+        # Backward compat for previous version
         assert "us.anthropic.claude-3-5-haiku-20241022-v1:0" in MODEL_PRICING
         assert "anthropic.claude-3-5-haiku-20241022-v1:0" in MODEL_PRICING
 

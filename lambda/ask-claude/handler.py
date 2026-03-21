@@ -41,10 +41,10 @@ APP_NAME = os.environ.get("APP_NAME", "outcome-ops-ai-assist")
 # Basic: Cost-effective for simple RAG synthesis (default)
 # Advanced: Advanced reasoning for complex architecture/integration questions
 BASIC_MODEL_ID = os.environ.get(
-    "BEDROCK_BASIC_MODEL_ID", "us.anthropic.claude-3-5-haiku-20241022-v1:0"
+    "BEDROCK_BASIC_MODEL_ID", "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 )
 ADVANCED_MODEL_ID = os.environ.get(
-    "BEDROCK_ADVANCED_MODEL_ID", "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+    "BEDROCK_ADVANCED_MODEL_ID", "us.anthropic.claude-sonnet-4-6"
 )
 
 # Pricing (USD per million tokens, configurable via env vars)

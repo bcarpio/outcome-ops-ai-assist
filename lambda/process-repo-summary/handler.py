@@ -52,7 +52,7 @@ logger.setLevel(logging.INFO)
 
 # Bedrock model IDs (configurable via environment variables)
 ADVANCED_MODEL_ID = os.environ.get(
-    "BEDROCK_ADVANCED_MODEL_ID", "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+    "BEDROCK_ADVANCED_MODEL_ID", "us.anthropic.claude-sonnet-4-6"
 )
 EMBEDDING_MODEL_ID = os.environ.get(
     "BEDROCK_EMBEDDING_MODEL_ID", "amazon.titan-embed-text-v2:0"

@@ -51,7 +51,7 @@ bedrock_client = boto3.client("bedrock-runtime")
 ENVIRONMENT = os.environ.get("ENV", "dev")
 APP_NAME = os.environ.get("APP_NAME", "outcome-ops-ai-assist")
 BASIC_MODEL_ID = os.environ.get(
-    "BEDROCK_BASIC_MODEL_ID", "us.anthropic.claude-3-5-haiku-20241022-v1:0"
+    "BEDROCK_BASIC_MODEL_ID", "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 )
 
 

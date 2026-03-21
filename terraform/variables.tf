@@ -131,13 +131,13 @@ variable "enable_bedrock_cooldown" {
 variable "bedrock_advanced_model_id" {
   type        = string
   description = "Bedrock model ID for advanced/primary inference (e.g., Claude Sonnet)"
-  default     = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+  default     = "us.anthropic.claude-sonnet-4-6"
 }
 
 variable "bedrock_basic_model_id" {
   type        = string
   description = "Bedrock model ID for fast/default inference (e.g., Claude Haiku)"
-  default     = "us.anthropic.claude-3-5-haiku-20241022-v1:0"
+  default     = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 }
 
 variable "bedrock_embedding_model_id" {

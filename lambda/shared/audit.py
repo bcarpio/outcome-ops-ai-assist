@@ -48,10 +48,10 @@ def _get_dynamodb_table(table_name: str):
 # ============================================================================
 
 ADVANCED_MODEL_ID = os.environ.get(
-    "BEDROCK_ADVANCED_MODEL_ID", "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+    "BEDROCK_ADVANCED_MODEL_ID", "us.anthropic.claude-sonnet-4-6"
 )
 BASIC_MODEL_ID = os.environ.get(
-    "BEDROCK_BASIC_MODEL_ID", "us.anthropic.claude-3-5-haiku-20241022-v1:0"
+    "BEDROCK_BASIC_MODEL_ID", "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 )
 EMBEDDING_MODEL_ID = os.environ.get(
     "BEDROCK_EMBEDDING_MODEL_ID", "amazon.titan-embed-text-v2:0"
@@ -71,6 +71,12 @@ MODEL_PRICING = {
 for _id, _pricing in list(MODEL_PRICING.items()):
     if _id.startswith("us."):
         MODEL_PRICING[_id.replace("us.", "", 1)] = _pricing
+
+# Backward compatibility for previous model versions
+MODEL_PRICING["us.anthropic.claude-sonnet-4-5-20250929-v1:0"] = ADVANCED_PRICING
+MODEL_PRICING["anthropic.claude-sonnet-4-5-20250929-v1:0"] = ADVANCED_PRICING
+MODEL_PRICING["us.anthropic.claude-3-5-haiku-20241022-v1:0"] = BASIC_PRICING
+MODEL_PRICING["anthropic.claude-3-5-haiku-20241022-v1:0"] = BASIC_PRICING
 
 
 def _calculate_cost(model_id: str, input_tokens: int, output_tokens: int) -> float:

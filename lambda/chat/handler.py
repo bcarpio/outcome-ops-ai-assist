@@ -65,10 +65,10 @@ bedrock_config = Config(
 
 # Bedrock model IDs (configurable via environment variables)
 ADVANCED_MODEL_ID = os.environ.get(
-    "BEDROCK_ADVANCED_MODEL_ID", "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+    "BEDROCK_ADVANCED_MODEL_ID", "us.anthropic.claude-sonnet-4-6"
 )
 BASIC_MODEL_ID = os.environ.get(
-    "BEDROCK_BASIC_MODEL_ID", "us.anthropic.claude-3-5-haiku-20241022-v1:0"
+    "BEDROCK_BASIC_MODEL_ID", "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 )
 EMBEDDING_MODEL_ID = os.environ.get(
     "BEDROCK_EMBEDDING_MODEL_ID", "amazon.titan-embed-text-v2:0"
