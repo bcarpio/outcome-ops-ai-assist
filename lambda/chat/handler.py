@@ -1345,6 +1345,10 @@ def handle_chat_stream(event: Dict) -> Generator[str, None, None]:
         if not conversation:
             yield _stream_error("Conversation not found", 404) + "\n"
             return
+        # Only the conversation owner can send messages
+        if user_id and conversation.get("user_id") and conversation.get("user_id") != user_id:
+            yield _stream_error("Read-only: shared conversations cannot be modified", 403) + "\n"
+            return
         # Use workspace_id from existing conversation if not provided in request
         if not workspace_ids:
             conv_ws = conversation.get("workspace_id")
