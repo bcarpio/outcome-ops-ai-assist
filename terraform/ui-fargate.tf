@@ -336,10 +336,13 @@ module "ui_ecs" {
       # Container definition
       container_definitions = {
         ui = {
-          essential                   = true
-          image                       = var.ui_container_image
-          readonlyRootFilesystem      = true
-          create_cloudwatch_log_group = false
+          essential                              = true
+          image                                  = var.ui_container_image
+          readonlyRootFilesystem                 = true
+          create_cloudwatch_log_group            = true
+          cloudwatch_log_group_name              = "/ecs/${var.environment}-${var.app_name}-ui"
+          cloudwatch_log_group_retention_in_days = 7
+          cloudwatch_log_group_kms_key_id        = aws_kms_key.cloudwatch_logs.arn
 
           portMappings = [
             {
@@ -408,16 +411,6 @@ module "ui_ecs" {
             startPeriod = 10
           }
 
-          # CloudWatch Logs
-          logConfiguration = {
-            logDriver = "awslogs"
-            options = {
-              "awslogs-group"         = "/ecs/${var.environment}-${var.app_name}-ui"
-              "awslogs-region"        = var.aws_region
-              "awslogs-stream-prefix" = "ui"
-              "awslogs-create-group"  = "true"
-            }
-          }
         }
       }
 
