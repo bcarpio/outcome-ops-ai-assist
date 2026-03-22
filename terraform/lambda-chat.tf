@@ -216,7 +216,7 @@ resource "aws_lambda_function_url" "chat_streaming" {
 
   cors {
     allow_origins     = ["*"]
-    allow_methods     = ["POST", "GET", "DELETE"]
+    allow_methods     = ["POST", "GET", "DELETE", "PUT"]
     allow_headers     = ["content-type", "authorization", "x-amz-date", "x-amz-security-token", "x-user-email"]
     allow_credentials = false
     max_age           = 300

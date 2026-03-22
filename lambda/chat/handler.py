@@ -1831,6 +1831,12 @@ def handle_share_conversation(
             "statusCode": 500,
             "body": json.dumps({"error": "Failed to update conversation sharing"}),
         }
+    except Exception as e:
+        logger.error(f"Unexpected error in share_conversation: {e}", exc_info=True)
+        return {
+            "statusCode": 500,
+            "body": json.dumps({"error": f"Internal error: {str(e)}"}),
+        }
 
 
 def list_shared_conversations(
