@@ -30,18 +30,37 @@ module "chat_table" {
     {
       name = "GSI2SK"
       type = "S"
+    },
+    {
+      name = "GSI3PK"
+      type = "S"
+    },
+    {
+      name = "GSI3SK"
+      type = "S"
     }
   ]
 
   # GSI2: User conversations sorted by recency
   # GSI2PK: USER#{user_id}
   # GSI2SK: CONV#{updated_at} (ISO 8601, sorts lexicographically)
+  #
+  # GSI3: Workspace-scoped shared conversations sorted by recency
+  # GSI3PK: WS_SHARE#{workspace_id}
+  # GSI3SK: CONV#{updated_at} (ISO 8601, sorts lexicographically)
   global_secondary_indexes = [
     {
       name            = "GSI2"
       hash_key        = "GSI2PK"
       range_key       = "GSI2SK"
       projection_type = "ALL"
+    },
+    {
+      name               = "GSI3"
+      hash_key           = "GSI3PK"
+      range_key          = "GSI3SK"
+      projection_type    = "INCLUDE"
+      non_key_attributes = ["conversation_id", "title", "message_count", "user_id", "shared_workspace_ids"]
     }
   ]
 

@@ -100,3 +100,42 @@ async def delete_conversation(conversation_id: str, request: Request):
     event = _build_rest_event(request, "DELETE", f"/conversations/{conversation_id}")
     result = lambda_handler(event, None)
     return _parse_lambda_response(result)
+
+
+# ============================================================================
+# Conversation Sharing Endpoints
+# ============================================================================
+
+
+@app.put("/conversations/{conversation_id}/share")
+async def share_conversation(conversation_id: str, request: Request):
+    """Set sharing for a conversation (replaces current sharing)."""
+    from handler import lambda_handler
+
+    body = await request.body()
+    event = _build_rest_event(
+        request, "PUT", f"/conversations/{conversation_id}/share"
+    )
+    event["body"] = body.decode("utf-8")
+    result = lambda_handler(event, None)
+    return _parse_lambda_response(result)
+
+
+@app.get("/shared")
+async def list_shared_conversations(
+    request: Request,
+    workspace_id: str = None,
+    limit: int = 20,
+    cursor: str = None,
+):
+    """List shared conversations visible to the user."""
+    from handler import lambda_handler
+
+    event = _build_rest_event(request, "GET", "/shared")
+    event["queryStringParameters"] = {"limit": str(limit)}
+    if workspace_id:
+        event["queryStringParameters"]["workspace_id"] = workspace_id
+    if cursor:
+        event["queryStringParameters"]["cursor"] = cursor
+    result = lambda_handler(event, None)
+    return _parse_lambda_response(result)

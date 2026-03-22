@@ -16,7 +16,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     <AiDisclosureModal />
     <Routes>
       <Route path="/" element={<Chat />} />
-      <Route path="/chat" element={<Chat />} />
+<Route path="/chat" element={<Chat />} />
       <Route path="/chat/:conversationId" element={<Chat />} />
       <Route path="/workspaces" element={<Workspaces />} />
       <Route path="/workspaces/:workspaceId" element={<WorkspaceSettings />} />

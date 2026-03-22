@@ -20,6 +20,7 @@ import {
   Server,
   List,
   Mic,
+  Share2,
 } from 'lucide-react'
 import {
   sendChatMessage,
@@ -38,6 +39,8 @@ import {
   type AvailablePrompt,
 } from '../lib/api'
 import AllChatsModal from '../components/AllChatsModal'
+import ShareDialog from '../components/ShareDialog'
+import SharedConversationsList from '../components/SharedConversationsList'
 
 interface DisplayMessage extends Message {
   isStreaming?: boolean
@@ -66,6 +69,9 @@ export default function Chat() {
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null)
   const [hasMoreConversations, setHasMoreConversations] = useState(false)
   const [showAllChats, setShowAllChats] = useState(false)
+  const [showShareDialog, setShowShareDialog] = useState(false)
+  const [isOwner, setIsOwner] = useState(true)
+  const [ownerEmail, setOwnerEmail] = useState<string | null>(null)
 
   const handleCopyMessage = useCallback(async (content: string, messageId: string) => {
     try {
@@ -222,6 +228,9 @@ export default function Chat() {
         } else {
           setMessages([])
         }
+        // Set ownership state from backend response
+        setIsOwner(data?.conversation?.is_owner !== false)
+        setOwnerEmail(data?.conversation?.owner_email || null)
       })
     }
   }, [conversationId, conversations])
@@ -245,6 +254,8 @@ export default function Chat() {
     setMessages([])
     setSources([])
     setLastCost(null)
+    setIsOwner(true)
+    setOwnerEmail(null)
     navigate('/')
     inputRef.current?.focus()
   }
@@ -520,6 +531,9 @@ export default function Chat() {
               All Chats
             </button>
           )}
+
+          {/* Shared with me */}
+          <SharedConversationsList />
         </div>
 
         {/* Workspace indicator (when workspaces feature is enabled) */}
@@ -572,6 +586,15 @@ export default function Chat() {
               <MessageSquare size={20} />
             </button>
             <h1 className="font-medium">{currentTitle}</h1>
+            {currentConversationId && isOwner && (
+              <button
+                onClick={() => setShowShareDialog(true)}
+                title="Share conversation"
+                className="p-2 hover:bg-gray-100 rounded-lg text-gray-500 hover:text-gray-700 transition-colors"
+              >
+                <Share2 size={18} />
+              </button>
+            )}
           </div>
 
           <div className="flex items-center gap-2">
@@ -877,8 +900,16 @@ export default function Chat() {
           </div>
         )}
 
+        {/* Read-only banner for shared conversations */}
+        {!isOwner && currentConversationId && (
+          <div className="border-t bg-gray-50 px-4 py-3 text-sm text-gray-500 flex items-center justify-center gap-2">
+            <Share2 size={14} />
+            Shared by {ownerEmail?.split('@')[0] || 'unknown'} — read-only
+          </div>
+        )}
+
         {/* Input */}
-        <div className="border-t bg-white p-4">
+        {isOwner && <div className="border-t bg-white p-4">
           <div className="max-w-5xl mx-auto flex items-end gap-2">
             <textarea
               ref={inputRef}
@@ -971,7 +1002,7 @@ export default function Chat() {
               </span>
             </div>
           </div>
-        </div>
+        </div>}
       </div>
 
       {showAllChats && (
@@ -987,6 +1018,14 @@ export default function Chat() {
               handleNewChat()
             }
           }}
+        />
+      )}
+
+      {showShareDialog && currentConversationId && (
+        <ShareDialog
+          conversationId={currentConversationId}
+          workspaces={searchableWorkspaces}
+          onClose={() => setShowShareDialog(false)}
         />
       )}
     </div>

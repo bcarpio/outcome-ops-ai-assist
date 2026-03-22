@@ -547,7 +547,7 @@ def create_conversation(title: str, user_id: str = None, workspace_id: str = Non
 
 
 def update_conversation(conversation_id: str, message_count: int):
-    """Update conversation message count and timestamp."""
+    """Update conversation message count and timestamp, and sync share items."""
     dynamodb = _get_dynamodb()
     table = dynamodb.Table(_get_chat_table())
 
@@ -563,6 +563,9 @@ def update_conversation(conversation_id: str, message_count: int):
                 ":gsi2sk": f"CONV#{now}",
             },
         )
+
+        # Sync share items if conversation is shared
+        _sync_share_items(conversation_id, message_count=message_count, updated_at=now)
     except ClientError as e:
         logger.error(f"Error updating conversation: {e}")
 
@@ -1573,8 +1576,10 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     REST API handler for conversation management.
     Routes:
         GET /conversations - List conversations
-        GET /conversations/{id} - Get conversation with messages
+        GET /conversations/{id} - Get conversation with messages (+ shared access fallback)
         DELETE /conversations/{id} - Delete conversation
+        PUT /conversations/{id}/share - Set sharing (non-empty workspace_ids = share, empty = unshare)
+        GET /shared - List shared conversations
     """
     http_method = event.get("httpMethod") or event.get("requestContext", {}).get("http", {}).get("method", "GET")
     raw_path = event.get("path") or event.get("requestContext", {}).get("http", {}).get("path", "/")
@@ -1590,15 +1595,30 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     # Parse query string parameters
     query_params = event.get("queryStringParameters") or {}
 
+    # Parse body for POST/PUT/DELETE with body
+    body = {}
+    raw_body = event.get("body")
+    if raw_body:
+        try:
+            body = json.loads(raw_body) if isinstance(raw_body, str) else raw_body
+        except (json.JSONDecodeError, TypeError):
+            body = {}
+
     # Route handling
+    # Share routes must be checked BEFORE generic /conversations/{id} routes
     if path == "/conversations" and http_method == "GET":
         limit = min(int(query_params.get("limit", "20")), 100)
         cursor = query_params.get("cursor")
         return list_conversations(user_id=user_id, limit=limit, cursor=cursor)
-    elif path.startswith("/conversations/") and http_method == "GET":
+    elif path.endswith("/share") and path.startswith("/conversations/") and http_method == "PUT":
+        conv_id = path.split("/")[-2]
+        return handle_share_conversation(conv_id, user_id=user_id, body=body)
+    elif path == "/shared" and http_method == "GET":
+        return list_shared_conversations(user_id=user_id, query_params=query_params)
+    elif path.startswith("/conversations/") and not path.endswith("/share") and http_method == "GET":
         conv_id = path.split("/")[-1]
         return get_conversation_with_messages(conv_id, user_id=user_id)
-    elif path.startswith("/conversations/") and http_method == "DELETE":
+    elif path.startswith("/conversations/") and not path.endswith("/share") and http_method == "DELETE":
         conv_id = path.split("/")[-1]
         return delete_conversation(conv_id, user_id=user_id)
     else:
@@ -1606,6 +1626,355 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             "statusCode": 404,
             "body": json.dumps({"error": "Not found"}),
         }
+
+
+# ============================================================================
+# Conversation Sharing
+# ============================================================================
+
+
+def _sync_share_items(
+    conversation_id: str,
+    title: str = None,
+    message_count: int = None,
+    updated_at: str = None,
+):
+    """Sync share items when conversation metadata changes.
+
+    This is best-effort - failures are logged but do not propagate.
+    """
+    dynamodb = _get_dynamodb()
+    table = dynamodb.Table(_get_chat_table())
+
+    try:
+        # Find all SHARE# items for this conversation
+        response = table.query(
+            KeyConditionExpression="PK = :pk AND begins_with(SK, :sk)",
+            ExpressionAttributeValues={
+                ":pk": f"CONV#{conversation_id}",
+                ":sk": "SHARE#",
+            },
+        )
+
+        share_items = response.get("Items", [])
+        if not share_items:
+            return
+
+        # Build update expression dynamically
+        update_parts = []
+        expr_values = {}
+
+        if updated_at:
+            update_parts.append("updated_at = :ua")
+            expr_values[":ua"] = updated_at
+        if title is not None:
+            update_parts.append("title = :t")
+            expr_values[":t"] = title
+        if message_count is not None:
+            update_parts.append("message_count = :mc")
+            expr_values[":mc"] = message_count
+
+        if not update_parts:
+            return
+
+        # Also update GSI3SK for sort order
+        if updated_at:
+            update_parts.append("GSI3SK = :gsi3sk")
+            expr_values[":gsi3sk"] = f"CONV#{updated_at}"
+
+        update_expr = "SET " + ", ".join(update_parts)
+
+        for item in share_items:
+            try:
+                table.update_item(
+                    Key={"PK": item["PK"], "SK": item["SK"]},
+                    UpdateExpression=update_expr,
+                    ExpressionAttributeValues=expr_values,
+                )
+            except ClientError as e:
+                logger.error(
+                    f"Error syncing share item {item['SK']}: {e}"
+                )
+    except Exception as e:
+        # Best-effort sync - log and continue
+        logger.debug(f"Share item sync skipped for {conversation_id}: {e}")
+
+
+def handle_share_conversation(
+    conversation_id: str, user_id: str, body: Dict
+) -> Dict:
+    """Set sharing for a conversation (PUT semantics - replaces current sharing).
+
+    - Non-empty workspace_ids: share with those workspaces (replaces, not additive)
+    - Empty workspace_ids list: unshare all
+    """
+    workspace_ids = body.get("workspace_ids", [])
+
+    # Get conversation metadata
+    conversation = get_conversation(conversation_id)
+    if not conversation:
+        return {
+            "statusCode": 404,
+            "body": json.dumps({"error": "Conversation not found"}),
+        }
+
+    # Verify ownership
+    if conversation.get("user_id") != user_id:
+        return {
+            "statusCode": 404,
+            "body": json.dumps({"error": "Conversation not found"}),
+        }
+
+    dynamodb = _get_dynamodb()
+    table = dynamodb.Table(_get_chat_table())
+    existing_shared = set(conversation.get("shared_workspace_ids", []))
+
+    try:
+        if not workspace_ids:
+            # --- Unshare all ---
+            # Delete all existing SHARE items
+            with table.batch_writer() as batch:
+                for ws_id in existing_shared:
+                    batch.delete_item(
+                        Key={
+                            "PK": f"CONV#{conversation_id}",
+                            "SK": f"SHARE#{ws_id}",
+                        }
+                    )
+
+            # Remove shared_workspace_ids and shared_at from METADATA
+            table.update_item(
+                Key={"PK": f"CONV#{conversation_id}", "SK": "METADATA"},
+                UpdateExpression="REMOVE shared_workspace_ids, shared_at",
+            )
+
+            logger.info(f"Unshared conversation {conversation_id} from all workspaces")
+
+            return {
+                "statusCode": 200,
+                "headers": {"Content-Type": "application/json"},
+                "body": json.dumps({
+                    "shared_workspace_ids": [],
+                    "share_url": f"/chat/{conversation_id}",
+                }),
+            }
+
+        # --- Share with specified workspaces (replace) ---
+        authorized_ws = _validate_workspace_access(user_id, workspace_ids)
+        if not authorized_ws:
+            return {
+                "statusCode": 403,
+                "body": json.dumps({"error": "No access to the specified workspaces"}),
+            }
+
+        now = datetime.now(timezone.utc).isoformat()
+        updated_at = conversation.get("updated_at", now)
+
+        # Delete old SHARE items that are no longer in the new set
+        to_remove = existing_shared - set(authorized_ws)
+        if to_remove:
+            with table.batch_writer() as batch:
+                for ws_id in to_remove:
+                    batch.delete_item(
+                        Key={
+                            "PK": f"CONV#{conversation_id}",
+                            "SK": f"SHARE#{ws_id}",
+                        }
+                    )
+
+        # Write SHARE items for each authorized workspace
+        with table.batch_writer() as batch:
+            for ws_id in authorized_ws:
+                share_item = {
+                    "PK": f"CONV#{conversation_id}",
+                    "SK": f"SHARE#{ws_id}",
+                    "GSI3PK": f"WS_SHARE#{ws_id}",
+                    "GSI3SK": f"CONV#{updated_at}",
+                    "conversation_id": conversation_id,
+                    "title": conversation.get("title", ""),
+                    "message_count": conversation.get("message_count", 0),
+                    "user_id": user_id,
+                    "updated_at": updated_at,
+                    "shared_at": now,
+                }
+                batch.put_item(Item=share_item)
+
+        # Update METADATA: replace shared_workspace_ids, preserve original shared_at
+        existing_shared_at = conversation.get("shared_at")
+        update_expr = "SET shared_workspace_ids = :sws"
+        expr_values = {":sws": authorized_ws}
+        if not existing_shared_at:
+            update_expr += ", shared_at = :sat"
+            expr_values[":sat"] = now
+
+        table.update_item(
+            Key={"PK": f"CONV#{conversation_id}", "SK": "METADATA"},
+            UpdateExpression=update_expr,
+            ExpressionAttributeValues=expr_values,
+        )
+
+        logger.info(
+            f"Shared conversation {conversation_id} with workspaces: {authorized_ws}"
+        )
+
+        return {
+            "statusCode": 200,
+            "headers": {"Content-Type": "application/json"},
+            "body": json.dumps({
+                "shared_workspace_ids": sorted(authorized_ws),
+                "share_url": f"/chat/{conversation_id}",
+            }),
+        }
+    except ClientError as e:
+        logger.error(f"Error updating share for conversation: {e}")
+        return {
+            "statusCode": 500,
+            "body": json.dumps({"error": "Failed to update conversation sharing"}),
+        }
+
+
+def list_shared_conversations(
+    user_id: str, query_params: Dict
+) -> Dict:
+    """List shared conversations visible to the user."""
+    import base64
+
+    workspace_id = query_params.get("workspace_id")
+    limit = min(int(query_params.get("limit", "20")), 100)
+    cursor = query_params.get("cursor")
+
+    dynamodb = _get_dynamodb()
+    table = dynamodb.Table(_get_chat_table())
+
+    try:
+        # Determine which workspaces to query
+        if workspace_id:
+            # Validate user has access to this workspace
+            authorized = _validate_workspace_access(user_id, [workspace_id])
+            if not authorized:
+                return {
+                    "statusCode": 403,
+                    "body": json.dumps({"error": "Access denied to workspace"}),
+                }
+            workspace_ids_to_query = [workspace_id]
+        else:
+            # Get all workspaces the user is a member of
+            workspace_ids_to_query = _get_user_workspace_ids(user_id)
+            if not workspace_ids_to_query:
+                return {
+                    "statusCode": 200,
+                    "headers": {"Content-Type": "application/json"},
+                    "body": json.dumps({
+                        "conversations": [],
+                        "has_more": False,
+                    }),
+                }
+
+        # Query GSI3 for each workspace
+        all_conversations = []
+        for ws_id in workspace_ids_to_query:
+            try:
+                gsi_query = {
+                    "IndexName": "GSI3",
+                    "KeyConditionExpression": "GSI3PK = :pk",
+                    "ExpressionAttributeValues": {
+                        ":pk": f"WS_SHARE#{ws_id}"
+                    },
+                    "ScanIndexForward": False,
+                    "Limit": limit,
+                }
+                response = table.query(**gsi_query)
+                all_conversations.extend(response.get("Items", []))
+            except ClientError as gsi_err:
+                error_code = gsi_err.response.get("Error", {}).get("Code", "")
+                if error_code in ("ValidationException", "AccessDeniedException"):
+                    logger.warning("GSI3 not available, skipping workspace query")
+                    continue
+                raise
+
+        # Deduplicate by conversation_id (a conversation may be shared to multiple workspaces)
+        seen = set()
+        unique_conversations = []
+        for conv in all_conversations:
+            cid = conv.get("conversation_id")
+            if cid and cid not in seen:
+                seen.add(cid)
+                unique_conversations.append(conv)
+
+        # Sort by updated_at descending
+        unique_conversations.sort(
+            key=lambda x: x.get("updated_at", ""), reverse=True
+        )
+
+        # Apply pagination
+        start = 0
+        if cursor:
+            try:
+                cursor_data = json.loads(base64.b64decode(cursor).decode())
+                cursor_updated_at = cursor_data.get("updated_at", "")
+                # Find start position after cursor
+                for i, conv in enumerate(unique_conversations):
+                    if conv.get("updated_at", "") < cursor_updated_at:
+                        start = i
+                        break
+                else:
+                    start = len(unique_conversations)
+            except Exception:
+                return {
+                    "statusCode": 400,
+                    "body": json.dumps({"error": "Invalid cursor"}),
+                }
+
+        page = unique_conversations[start : start + limit]
+        has_more = (start + limit) < len(unique_conversations)
+
+        result = {"conversations": page, "has_more": has_more}
+
+        if has_more and page:
+            last_item = page[-1]
+            next_cursor_data = {"updated_at": last_item.get("updated_at", "")}
+            result["next_cursor"] = base64.b64encode(
+                json.dumps(next_cursor_data).encode()
+            ).decode()
+
+        return {
+            "statusCode": 200,
+            "headers": {"Content-Type": "application/json"},
+            "body": json.dumps(result, default=str),
+        }
+    except ClientError as e:
+        logger.error(f"Error listing shared conversations: {e}")
+        return {
+            "statusCode": 500,
+            "body": json.dumps({"error": "Failed to list shared conversations"}),
+        }
+
+
+def _get_user_workspace_ids(user_id: str) -> List[str]:
+    """Get all workspace IDs the user is a member of."""
+    dynamodb = _get_dynamodb()
+    table = dynamodb.Table(_get_workspaces_table())
+
+    try:
+        response = table.query(
+            KeyConditionExpression="PK = :pk AND begins_with(SK, :sk)",
+            ExpressionAttributeValues={
+                ":pk": f"USER#{user_id}",
+                ":sk": "WS_MEMBER#",
+            },
+        )
+        workspace_ids = []
+        for item in response.get("Items", []):
+            # SK format is WS_MEMBER#{workspace_id}
+            sk = item.get("SK", "")
+            if sk.startswith("WS_MEMBER#"):
+                ws_id = sk[len("WS_MEMBER#"):]
+                if ws_id:
+                    workspace_ids.append(ws_id)
+        return workspace_ids
+    except ClientError as e:
+        logger.error(f"Error getting user workspace IDs: {e}")
+        return []
 
 
 def list_conversations(user_id: str = None, limit: int = 20, cursor: str = None) -> Dict:
@@ -1690,7 +2059,7 @@ def list_conversations(user_id: str = None, limit: int = 20, cursor: str = None)
 
 
 def get_conversation_with_messages(conversation_id: str, user_id: str = None) -> Dict:
-    """Get conversation with all messages (verifies ownership)."""
+    """Get conversation with messages (supports owner access and shared access fallback)."""
     conversation = get_conversation(conversation_id)
     if not conversation:
         return {
@@ -1698,19 +2067,47 @@ def get_conversation_with_messages(conversation_id: str, user_id: str = None) ->
             "body": json.dumps({"error": "Conversation not found"}),
         }
 
-    if user_id and conversation.get("user_id") != user_id:
-        return {
-            "statusCode": 403,
-            "body": json.dumps({"error": "Access denied"}),
-        }
+    # user_id=None means internal call (no auth) - treat as owner for backward compat
+    is_owner = (user_id is None) or (conversation.get("user_id") == user_id)
 
-    messages = get_conversation_messages(conversation_id, limit=30)
+    if not is_owner:
+        # Check if shared with any workspace the viewer is a member of
+        shared_workspace_ids = conversation.get("shared_workspace_ids", [])
+        if not shared_workspace_ids:
+            return {
+                "statusCode": 404,
+                "body": json.dumps({"error": "Conversation not found"}),
+            }
+
+        authorized_ws = _validate_workspace_access(user_id, shared_workspace_ids)
+        if not authorized_ws:
+            return {
+                "statusCode": 404,
+                "body": json.dumps({"error": "Conversation not found"}),
+            }
+
+    messages = get_conversation_messages(
+        conversation_id, limit=30 if is_owner else 100
+    )
+
+    # Build response with is_owner flag
+    conv_response = {
+        "conversation_id": conversation.get("conversation_id"),
+        "title": conversation.get("title", ""),
+        "message_count": conversation.get("message_count", 0),
+        "created_at": conversation.get("created_at"),
+        "updated_at": conversation.get("updated_at"),
+        "is_owner": is_owner,
+        "shared_workspace_ids": conversation.get("shared_workspace_ids", []),
+    }
+    if not is_owner:
+        conv_response["owner_email"] = conversation.get("user_id")
 
     return {
         "statusCode": 200,
         "headers": {"Content-Type": "application/json"},
         "body": json.dumps({
-            "conversation": conversation,
+            "conversation": conv_response,
             "messages": messages,
         }, default=str),
     }
@@ -1739,13 +2136,13 @@ def delete_conversation(conversation_id: str, user_id: str = None) -> Dict:
         # Delete memory chunks from S3 Vectors first
         delete_conversation_memory(conversation_id)
 
-        # Get all items for this conversation
+        # Get all items for this conversation (includes messages, metadata, and share items)
         response = table.query(
             KeyConditionExpression="PK = :pk",
             ExpressionAttributeValues={":pk": f"CONV#{conversation_id}"},
         )
 
-        # Delete all items
+        # Delete all items (messages, metadata, SHARE# items)
         with table.batch_writer() as batch:
             for item in response.get("Items", []):
                 batch.delete_item(Key={"PK": item["PK"], "SK": item["SK"]})

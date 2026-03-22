@@ -66,6 +66,9 @@ export interface Conversation {
   message_count: number
   created_at: string
   updated_at: string
+  shared_workspace_ids?: string[]
+  is_owner?: boolean
+  owner_email?: string
 }
 
 export interface Message {
@@ -1854,4 +1857,58 @@ export async function resetWorkspaceSystemPrompt(workspaceId: string): Promise<W
   }
   const data = await safeJson(response)
   return data as unknown as WorkspaceSystemPrompt
+}
+
+// ============================================================================
+// Conversation Link Sharing Types and API
+// ============================================================================
+
+export interface ShareResponse {
+  shared_workspace_ids: string[]
+  share_url: string
+}
+
+export interface SharedConversationListItem {
+  conversation_id: string
+  title: string
+  message_count: number
+  shared_by: string
+  updated_at: string
+  workspace_id: string
+}
+
+export interface SharedConversationListResponse {
+  conversations: SharedConversationListItem[]
+  next_cursor?: string
+  has_more: boolean
+}
+
+/**
+ * Share/unshare a conversation with workspaces (PUT).
+ * Pass non-empty workspaceIds to share, empty array to unshare all.
+ */
+export async function shareConversation(conversationId: string, workspaceIds: string[]): Promise<ShareResponse> {
+  const response = await fetch(`${API_BASE}/conversations/${conversationId}/share`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ workspace_ids: workspaceIds }),
+  })
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}))
+    throw new Error(error.error || 'Failed to share conversation')
+  }
+  return response.json()
+}
+
+/**
+ * List shared conversations accessible to the user
+ */
+export async function listSharedConversations(workspaceId?: string, limit?: number, cursor?: string): Promise<SharedConversationListResponse> {
+  const params = new URLSearchParams()
+  if (workspaceId) params.set('workspace_id', workspaceId)
+  if (limit) params.set('limit', String(limit))
+  if (cursor) params.set('cursor', cursor)
+  const response = await fetch(`${API_BASE}/shared?${params.toString()}`)
+  if (!response.ok) throw new Error('Failed to list shared conversations')
+  return response.json()
 }

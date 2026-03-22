@@ -13,10 +13,20 @@ vi.mock('../../../src/lib/api', () => ({
   getSearchableWorkspaces: vi.fn(),
   getChatMcpServers: vi.fn(),
   getChatAvailablePrompts: vi.fn(),
+  shareConversation: vi.fn(),
+  listSharedConversations: vi.fn(),
 }))
 
 vi.mock('../../../src/components/AllChatsModal', () => ({
   default: () => <div data-testid="all-chats-modal">All Chats Modal</div>,
+}))
+
+vi.mock('../../../src/components/ShareDialog', () => ({
+  default: () => <div data-testid="share-dialog">Share Dialog</div>,
+}))
+
+vi.mock('../../../src/components/SharedConversationsList', () => ({
+  default: () => <div data-testid="shared-conversations-list">Shared Conversations</div>,
 }))
 
 vi.mock('react-markdown', () => ({
@@ -31,6 +41,7 @@ import {
   getSearchableWorkspaces,
   getChatMcpServers,
   getChatAvailablePrompts,
+  listSharedConversations,
 } from '../../../src/lib/api'
 
 const mockSendChatMessage = vi.mocked(sendChatMessage)
@@ -40,6 +51,7 @@ const mockDeleteConversation = vi.mocked(deleteConversation)
 const mockGetSearchableWorkspaces = vi.mocked(getSearchableWorkspaces)
 const mockGetChatMcpServers = vi.mocked(getChatMcpServers)
 const mockGetChatAvailablePrompts = vi.mocked(getChatAvailablePrompts)
+const mockListSharedConversations = vi.mocked(listSharedConversations)
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -47,6 +59,7 @@ beforeEach(() => {
   mockGetSearchableWorkspaces.mockResolvedValue([])
   mockGetChatMcpServers.mockResolvedValue([])
   mockGetChatAvailablePrompts.mockResolvedValue([])
+  mockListSharedConversations.mockResolvedValue({ conversations: [], has_more: false })
 })
 
 function renderChat(conversationId?: string) {

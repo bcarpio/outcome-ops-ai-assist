@@ -348,6 +348,22 @@ app.post("/api/chat", async (req, res) => {
 // REST Conversation API (proxied to Lambda with SigV4)
 // ============================================================================
 
+// Share/unshare a conversation (PUT with workspace_ids; empty list = unshare)
+app.put("/api/conversations/:id/share", async (req, res) => {
+  try {
+    const user = extractUser(req);
+    const response = await signedChatFetch("PUT", `/conversations/${req.params.id}/share`, {
+      body: JSON.stringify(req.body),
+      extraHeaders: { "x-user-email": user.email },
+    });
+    const data = await response.json();
+    res.status(response.status).json(data);
+  } catch (err) {
+    console.error("Share conversation error:", err.message);
+    res.status(500).json({ error: "Failed to share conversation" });
+  }
+});
+
 // List conversations for the authenticated user
 app.get("/api/conversations", async (req, res) => {
   if (!LAMBDA_FUNCTION_URL) {
@@ -418,6 +434,30 @@ app.delete("/api/conversations/:id", async (req, res) => {
   } catch (error) {
     console.error(`[proxy] Error deleting conversation: ${error.message}`);
     res.status(500).json({ error: "Failed to delete conversation" });
+  }
+});
+
+// ============================================================================
+// Shared Conversations API (proxied to Lambda with SigV4)
+// ============================================================================
+
+// List shared conversations
+app.get("/api/shared", async (req, res) => {
+  try {
+    const user = extractUser(req);
+    const params = new URLSearchParams();
+    if (req.query.workspace_id) params.set("workspace_id", req.query.workspace_id);
+    if (req.query.limit) params.set("limit", req.query.limit);
+    if (req.query.cursor) params.set("cursor", req.query.cursor);
+    const path = `/shared?${params.toString()}`;
+    const response = await signedChatFetch("GET", path, {
+      extraHeaders: { "x-user-email": user.email },
+    });
+    const data = await response.json();
+    res.status(response.status).json(data);
+  } catch (err) {
+    console.error("List shared conversations error:", err.message);
+    res.status(500).json({ error: "Failed to list shared conversations" });
   }
 });
 
