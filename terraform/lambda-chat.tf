@@ -83,6 +83,7 @@ module "chat_streaming_lambda" {
         "dynamodb:PutItem",
         "dynamodb:UpdateItem",
         "dynamodb:DeleteItem",
+        "dynamodb:BatchWriteItem",
         "dynamodb:Query",
         "dynamodb:Scan"
       ]
