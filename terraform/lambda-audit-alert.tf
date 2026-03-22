@@ -74,6 +74,17 @@ resource "aws_lambda_event_source_mapping" "audit_logs_stream" {
   batch_size        = 10
   enabled           = true
 
+  # Limit retries to prevent infinite loops on persistent failures
+  maximum_retry_attempts        = 3
+  maximum_record_age_in_seconds = 3600 # Discard records older than 1 hour
+
+  # Send failed records to SNS for visibility
+  destination_config {
+    on_failure {
+      destination_arn = module.audit_alerts_sns.topic_arn
+    }
+  }
+
   # Filter to only INSERT events where status is "refusal"
   filter_criteria {
     filter {
