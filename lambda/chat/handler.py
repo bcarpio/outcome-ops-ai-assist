@@ -1902,12 +1902,12 @@ def list_shared_conversations(
                     continue
                 raise
 
-        # Deduplicate by conversation_id (a conversation may be shared to multiple workspaces)
+        # Deduplicate by conversation_id and exclude conversations owned by the viewer
         seen = set()
         unique_conversations = []
         for conv in all_conversations:
             cid = conv.get("conversation_id")
-            if cid and cid not in seen:
+            if cid and cid not in seen and conv.get("user_id") != user_id:
                 seen.add(cid)
                 unique_conversations.append(conv)
 
