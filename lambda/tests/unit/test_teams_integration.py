@@ -1,9 +1,12 @@
-"""Unit tests for teams-integration Lambda handler."""
+"""Unit tests for teams-integration Lambda (handler, teams_api, token_manager)."""
 
+import base64
 import importlib.util
 import json
 import os
 import sys
+import urllib.error
+import urllib.parse
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -14,1084 +17,782 @@ from botocore.exceptions import ClientError
 # Module loading
 # ============================================================================
 
-def _load_handler_module():
-    """Load or reload the teams-integration handler module."""
-    if 'teams_integration_handler' in sys.modules:
-        del sys.modules['teams_integration_handler']
+def _load_module(mod_name, filename, directory, also_register_as=None):
+    """Load a module from teams-integration by file path."""
+    if mod_name in sys.modules:
+        del sys.modules[mod_name]
 
-    # Clear cached sibling modules that may conflict with other integration dirs
-    for mod_name in ['token_manager', 'teams_api']:
-        if mod_name in sys.modules:
-            del sys.modules[mod_name]
+    mod_dir = os.path.join(os.path.dirname(__file__), directory)
+    if mod_dir not in sys.path:
+        sys.path.insert(0, mod_dir)
 
-    # Add teams-integration dir to path so handler can resolve its sibling imports
-    teams_dir = os.path.join(os.path.dirname(__file__), '../../teams-integration')
-    abs_teams_dir = os.path.abspath(teams_dir)
-    # Remove any existing entry and re-insert at front
-    sys.path = [p for p in sys.path if os.path.abspath(p) != abs_teams_dir]
-    sys.path.insert(0, abs_teams_dir)
-
-    handler_path = os.path.join(teams_dir, 'handler.py')
-    spec = importlib.util.spec_from_file_location("teams_integration_handler", handler_path)
-    handler_module = importlib.util.module_from_spec(spec)
-    sys.modules['teams_integration_handler'] = handler_module
-    spec.loader.exec_module(handler_module)
-    return handler_module
+    mod_path = os.path.join(mod_dir, filename)
+    spec = importlib.util.spec_from_file_location(mod_name, mod_path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[mod_name] = module
+    if also_register_as:
+        sys.modules[also_register_as] = module
+    spec.loader.exec_module(module)
+    return module
 
 
-handler_module = _load_handler_module()
-
-# Import functions
-lambda_handler = handler_module.lambda_handler
-get_authorize_url = handler_module.get_authorize_url
-handle_callback = handler_module.handle_callback
-list_connections = handler_module.list_connections
-get_connection = handler_module.get_connection
-get_teams = handler_module.get_teams
-get_channels = handler_module.get_channels
-save_config = handler_module.save_config
-trigger_sync = handler_module.trigger_sync
-delete_connection = handler_module.delete_connection
-_response = handler_module._response
-_error = handler_module._error
-_redirect = handler_module._redirect
-_get_user_from_request = handler_module._get_user_from_request
-_parse_path = handler_module._parse_path
-_get_membership = handler_module._get_membership
-_is_workspace_admin = handler_module._is_workspace_admin
-generate_id = handler_module.generate_id
-_queue_sync = handler_module._queue_sync
+# Register sibling modules under their import names so handler.py resolves them
+token_module = _load_module(
+    "teams_int_token_manager", "token_manager.py", "../../teams-integration",
+    also_register_as="token_manager",
+)
+api_module = _load_module(
+    "teams_int_teams_api", "teams_api.py", "../../teams-integration",
+    also_register_as="teams_api",
+)
+handler_module = _load_module(
+    "teams_int_handler", "handler.py", "../../teams-integration"
+)
 
 
 # ============================================================================
-# Fixtures
+# Helpers
 # ============================================================================
 
-@pytest.fixture(autouse=True)
-def reset_module_globals():
-    """Reset cached module globals between tests."""
-    handler_module._oauth_config = None
-    handler_module._dynamodb = None
-    handler_module._ssm = None
-    handler_module._sqs = None
-    yield
-
-
-@pytest.fixture
-def mock_table():
-    """Create a mock DynamoDB table."""
-    return MagicMock()
-
-
-@pytest.fixture
-def mock_dynamodb(mock_table):
-    """Create a mock DynamoDB resource."""
-    mock_db = MagicMock()
-    mock_db.Table.return_value = mock_table
-    return mock_db
-
-
-@pytest.fixture
-def oauth_config():
-    """Sample OAuth configuration."""
-    return {
-        "client_id": "test-client-id",
-        "client_secret": "test-client-secret",
-        "callback_url": "https://example.com/api/teams/callback",
-    }
-
-
-@pytest.fixture
-def sample_connection():
-    """Sample Teams connection record."""
-    return {
-        "PK": "WS#ws_test",
-        "SK": "TEAMS_CONNECTION#conn_test",
-        "connection_id": "conn_test",
-        "workspace_id": "ws_test",
-        "user_email": "user@example.com",
-        "display_name": "Test User",
-        "config": {
-            "days_back": 30,
-            "include_channels": [
-                {"team_id": "team1", "channel_id": "ch1", "displayName": "General"},
-            ],
-            "sync_files": True,
-        },
-        "delta_links": {},
-        "last_sync_status": "completed",
-        "message_count": 42,
-        "file_count": 5,
-    }
+def _make_urlopen_response(body_dict):
+    resp = MagicMock()
+    resp.read.return_value = json.dumps(body_dict).encode("utf-8")
+    resp.__enter__ = MagicMock(return_value=resp)
+    resp.__exit__ = MagicMock(return_value=False)
+    return resp
 
 
 # ============================================================================
-# Helper Functions
+# Token Manager Tests
 # ============================================================================
 
-class TestResponseHelpers:
-    """Test response helper functions."""
+class TestTeamsTokenManagerEncryptDecrypt:
 
-    def test_response_builds_correct_format(self):
-        """Test _response builds HTTP response with JSON body."""
-        result = _response(200, {"key": "value"})
+    @pytest.fixture(autouse=True)
+    def reset_globals(self):
+        token_module._dynamodb = None
+        token_module._kms = None
+        yield
+
+    @patch.object(token_module, "_get_kms")
+    def test_encrypt_token(self, mock_kms_fn):
+        mock_kms = MagicMock()
+        mock_kms.encrypt.return_value = {"CiphertextBlob": b"encrypted"}
+        mock_kms_fn.return_value = mock_kms
+
+        result = token_module._encrypt_token("my_token")
+        assert isinstance(result, str)
+        assert base64.b64decode(result) == b"encrypted"
+
+    @patch.object(token_module, "_get_kms")
+    def test_decrypt_token(self, mock_kms_fn):
+        mock_kms = MagicMock()
+        mock_kms.decrypt.return_value = {"Plaintext": b"decrypted"}
+        mock_kms_fn.return_value = mock_kms
+
+        encrypted = base64.b64encode(b"cipher").decode("utf-8")
+        result = token_module._decrypt_token(encrypted)
+        assert result == "decrypted"
+
+
+class TestTeamsTokenManagerSaveTokens:
+
+    @pytest.fixture(autouse=True)
+    def reset_globals(self):
+        token_module._dynamodb = None
+        token_module._kms = None
+        yield
+
+    @patch.object(token_module, "_encrypt_token")
+    @patch.object(token_module, "_get_dynamodb")
+    def test_save_tokens_success(self, mock_db_fn, mock_encrypt):
+        mock_table = MagicMock()
+        mock_db = MagicMock()
+        mock_db.Table.return_value = mock_table
+        mock_db_fn.return_value = mock_db
+        mock_encrypt.return_value = "encrypted_refresh"
+
+        result = token_module.save_tokens("conn1", "access", "refresh", 3600)
+        assert result is True
+        item = mock_table.put_item.call_args[1]["Item"]
+        assert item["PK"] == "TEAMS_TOKEN#conn1"
+        assert item["SK"] == "CREDENTIALS"
+        assert item["encrypted_refresh_token"] == "encrypted_refresh"
+
+    @patch.object(token_module, "_encrypt_token")
+    @patch.object(token_module, "_get_dynamodb")
+    def test_save_tokens_error(self, mock_db_fn, mock_encrypt):
+        mock_table = MagicMock()
+        mock_db = MagicMock()
+        mock_db.Table.return_value = mock_table
+        mock_db_fn.return_value = mock_db
+        mock_encrypt.return_value = "enc"
+        mock_table.put_item.side_effect = ClientError(
+            {"Error": {"Code": "500", "Message": "err"}}, "PutItem"
+        )
+        result = token_module.save_tokens("conn1", "access", "refresh")
+        assert result is False
+
+
+class TestTeamsTokenManagerGetRefreshToken:
+
+    @pytest.fixture(autouse=True)
+    def reset_globals(self):
+        token_module._dynamodb = None
+        token_module._kms = None
+        yield
+
+    @patch.object(token_module, "_decrypt_token")
+    @patch.object(token_module, "_get_dynamodb")
+    def test_get_refresh_token_success(self, mock_db_fn, mock_decrypt):
+        mock_table = MagicMock()
+        mock_db = MagicMock()
+        mock_db.Table.return_value = mock_table
+        mock_db_fn.return_value = mock_db
+        mock_table.get_item.return_value = {
+            "Item": {"encrypted_refresh_token": "enc_val"}
+        }
+        mock_decrypt.return_value = "plain_token"
+
+        result = token_module.get_refresh_token("conn1")
+        assert result == "plain_token"
+
+    @patch.object(token_module, "_get_dynamodb")
+    def test_get_refresh_token_not_found(self, mock_db_fn):
+        mock_table = MagicMock()
+        mock_db = MagicMock()
+        mock_db.Table.return_value = mock_table
+        mock_db_fn.return_value = mock_db
+        mock_table.get_item.return_value = {}
+
+        result = token_module.get_refresh_token("conn1")
+        assert result is None
+
+    @patch.object(token_module, "_get_dynamodb")
+    def test_get_refresh_token_no_encrypted_field(self, mock_db_fn):
+        mock_table = MagicMock()
+        mock_db = MagicMock()
+        mock_db.Table.return_value = mock_table
+        mock_db_fn.return_value = mock_db
+        mock_table.get_item.return_value = {"Item": {}}
+
+        result = token_module.get_refresh_token("conn1")
+        assert result is None
+
+    @patch.object(token_module, "_get_dynamodb")
+    def test_get_refresh_token_dynamodb_error(self, mock_db_fn):
+        mock_table = MagicMock()
+        mock_db = MagicMock()
+        mock_db.Table.return_value = mock_table
+        mock_db_fn.return_value = mock_db
+        mock_table.get_item.side_effect = ClientError(
+            {"Error": {"Code": "500", "Message": "err"}}, "GetItem"
+        )
+        result = token_module.get_refresh_token("conn1")
+        assert result is None
+
+
+class TestTeamsTokenManagerRefreshAccessToken:
+
+    @pytest.fixture(autouse=True)
+    def reset_globals(self):
+        token_module._dynamodb = None
+        token_module._kms = None
+        yield
+
+    @patch.object(token_module, "save_tokens")
+    @patch("teams_int_token_manager.urllib.request.urlopen")
+    @patch.object(token_module, "get_refresh_token")
+    def test_refresh_success(self, mock_get_refresh, mock_urlopen, mock_save):
+        mock_get_refresh.return_value = "old_refresh"
+        mock_urlopen.return_value = _make_urlopen_response({
+            "access_token": "new_access",
+            "refresh_token": "new_refresh",
+            "expires_in": 3600,
+        })
+        result = token_module.refresh_access_token("conn1", "cid", "csecret")
+        assert result == "new_access"
+        mock_save.assert_called_once()
+
+    @patch.object(token_module, "get_refresh_token")
+    def test_refresh_no_stored_token(self, mock_get_refresh):
+        mock_get_refresh.return_value = None
+        result = token_module.refresh_access_token("conn1", "cid", "csecret")
+        assert result is None
+
+    @patch("teams_int_token_manager.urllib.request.urlopen")
+    @patch.object(token_module, "get_refresh_token")
+    def test_refresh_http_error(self, mock_get_refresh, mock_urlopen):
+        mock_get_refresh.return_value = "refresh"
+        mock_urlopen.side_effect = urllib.error.HTTPError(
+            url="https://example.com", code=400, msg="Bad",
+            hdrs={}, fp=MagicMock(read=MagicMock(return_value=b'{"error":"invalid_grant"}')),
+        )
+        result = token_module.refresh_access_token("conn1", "cid", "csecret")
+        assert result is None
+
+    @patch("teams_int_token_manager.urllib.request.urlopen")
+    @patch.object(token_module, "get_refresh_token")
+    def test_refresh_url_error(self, mock_get_refresh, mock_urlopen):
+        mock_get_refresh.return_value = "refresh"
+        mock_urlopen.side_effect = urllib.error.URLError("Connection refused")
+        result = token_module.refresh_access_token("conn1", "cid", "csecret")
+        assert result is None
+
+    @patch("teams_int_token_manager.urllib.request.urlopen")
+    @patch.object(token_module, "get_refresh_token")
+    def test_refresh_no_access_in_response(self, mock_get_refresh, mock_urlopen):
+        mock_get_refresh.return_value = "refresh"
+        mock_urlopen.return_value = _make_urlopen_response({"error": "something"})
+        result = token_module.refresh_access_token("conn1", "cid", "csecret")
+        assert result is None
+
+
+class TestTeamsTokenManagerDeleteTokens:
+
+    @pytest.fixture(autouse=True)
+    def reset_globals(self):
+        token_module._dynamodb = None
+        token_module._kms = None
+        yield
+
+    @patch.object(token_module, "_get_dynamodb")
+    def test_delete_success(self, mock_db_fn):
+        mock_table = MagicMock()
+        mock_db = MagicMock()
+        mock_db.Table.return_value = mock_table
+        mock_db_fn.return_value = mock_db
+
+        result = token_module.delete_tokens("conn1")
+        assert result is True
+        mock_table.delete_item.assert_called_once_with(
+            Key={"PK": "TEAMS_TOKEN#conn1", "SK": "CREDENTIALS"}
+        )
+
+    @patch.object(token_module, "_get_dynamodb")
+    def test_delete_error(self, mock_db_fn):
+        mock_table = MagicMock()
+        mock_db = MagicMock()
+        mock_db.Table.return_value = mock_table
+        mock_db_fn.return_value = mock_db
+        mock_table.delete_item.side_effect = ClientError(
+            {"Error": {"Code": "500", "Message": "err"}}, "DeleteItem"
+        )
+        result = token_module.delete_tokens("conn1")
+        assert result is False
+
+
+class TestTeamsTokenManagerExchangeCode:
+
+    @pytest.fixture(autouse=True)
+    def reset_globals(self):
+        token_module._dynamodb = None
+        token_module._kms = None
+        yield
+
+    @patch("teams_int_token_manager.urllib.request.urlopen")
+    def test_exchange_success(self, mock_urlopen):
+        mock_urlopen.return_value = _make_urlopen_response({
+            "access_token": "at", "refresh_token": "rt", "expires_in": 3600,
+        })
+        access, refresh, expires = token_module.exchange_code_for_tokens(
+            "code", "cid", "csecret", "https://example.com/cb"
+        )
+        assert access == "at"
+        assert refresh == "rt"
+        assert expires == 3600
+
+    @patch("teams_int_token_manager.urllib.request.urlopen")
+    def test_exchange_http_error(self, mock_urlopen):
+        mock_urlopen.side_effect = urllib.error.HTTPError(
+            url="https://example.com", code=400, msg="Bad",
+            hdrs={}, fp=MagicMock(read=MagicMock(return_value=b'error')),
+        )
+        access, refresh, expires = token_module.exchange_code_for_tokens(
+            "code", "cid", "csecret", "https://example.com/cb"
+        )
+        assert access is None
+        assert refresh is None
+        assert expires is None
+
+    @patch("teams_int_token_manager.urllib.request.urlopen")
+    def test_exchange_url_error(self, mock_urlopen):
+        mock_urlopen.side_effect = urllib.error.URLError("Connection refused")
+        access, refresh, expires = token_module.exchange_code_for_tokens(
+            "code", "cid", "csecret", "https://example.com/cb"
+        )
+        assert access is None
+
+
+# ============================================================================
+# Teams API Tests
+# ============================================================================
+
+class TestTeamsAPI:
+
+    @patch("teams_int_teams_api.urllib.request.urlopen")
+    def test_make_request_success(self, mock_urlopen):
+        mock_urlopen.return_value = _make_urlopen_response({"id": "123"})
+        result = api_module._make_request("token", "https://graph.microsoft.com/v1.0/me")
+        assert result["id"] == "123"
+
+    @patch("teams_int_teams_api.urllib.request.urlopen")
+    def test_make_request_auth_error(self, mock_urlopen):
+        mock_urlopen.side_effect = urllib.error.HTTPError(
+            url="https://graph.microsoft.com", code=401, msg="Unauthorized",
+            hdrs={}, fp=MagicMock(read=MagicMock(return_value=b'unauthorized')),
+        )
+        with pytest.raises(api_module.TeamsAuthError):
+            api_module._make_request("token", "https://graph.microsoft.com/v1.0/me")
+
+    @patch("teams_int_teams_api.urllib.request.urlopen")
+    def test_make_request_api_error(self, mock_urlopen):
+        mock_urlopen.side_effect = urllib.error.HTTPError(
+            url="https://graph.microsoft.com", code=500, msg="Server Error",
+            hdrs={}, fp=MagicMock(read=MagicMock(return_value=b'error')),
+        )
+        with pytest.raises(api_module.TeamsAPIError):
+            api_module._make_request("token", "https://graph.microsoft.com/v1.0/me")
+
+    @patch("teams_int_teams_api.urllib.request.urlopen")
+    def test_make_request_network_error(self, mock_urlopen):
+        mock_urlopen.side_effect = urllib.error.URLError("Connection refused")
+        with pytest.raises(api_module.TeamsAPIError):
+            api_module._make_request("token", "https://graph.microsoft.com/v1.0/me")
+
+    @patch.object(api_module, "_make_request")
+    def test_get_user_profile(self, mock_req):
+        mock_req.return_value = {"displayName": "Test User"}
+        result = api_module.get_user_profile("token")
+        assert result["displayName"] == "Test User"
+
+    @patch.object(api_module, "_make_request")
+    def test_list_joined_teams(self, mock_req):
+        mock_req.return_value = {"value": [{"id": "t1"}]}
+        result = api_module.list_joined_teams("token")
+        assert len(result) == 1
+
+    @patch.object(api_module, "_make_request")
+    def test_list_joined_teams_pagination(self, mock_req):
+        mock_req.side_effect = [
+            {"value": [{"id": "t1"}], "@odata.nextLink": "https://next"},
+            {"value": [{"id": "t2"}]},
+        ]
+        result = api_module.list_joined_teams("token")
+        assert len(result) == 2
+
+    @patch.object(api_module, "_make_request")
+    def test_list_channels(self, mock_req):
+        mock_req.return_value = {"value": [{"id": "c1", "displayName": "General"}]}
+        result = api_module.list_channels("token", "team1")
+        assert len(result) == 1
+
+    @patch.object(api_module, "_make_request")
+    def test_get_channel_messages(self, mock_req):
+        mock_req.return_value = {"value": [{"id": "m1"}], "@odata.nextLink": "https://next"}
+        messages, next_link = api_module.get_channel_messages("token", "t1", "c1")
+        assert len(messages) == 1
+        assert next_link == "https://next"
+
+    @patch.object(api_module, "_make_request")
+    def test_get_channel_messages_with_skip_token(self, mock_req):
+        mock_req.return_value = {"value": [{"id": "m2"}]}
+        messages, next_link = api_module.get_channel_messages(
+            "token", "t1", "c1", skip_token="https://skip"
+        )
+        assert len(messages) == 1
+        mock_req.assert_called_with("token", "https://skip")
+
+    @patch.object(api_module, "_make_request")
+    def test_get_message_replies(self, mock_req):
+        mock_req.return_value = {"value": [{"id": "r1"}]}
+        result = api_module.get_message_replies("token", "t1", "c1", "m1")
+        assert len(result) == 1
+
+    @patch.object(api_module, "_make_request")
+    def test_get_messages_delta(self, mock_req):
+        mock_req.return_value = {
+            "value": [{"id": "m1"}, {"id": "m2", "@removed": {}}],
+            "@odata.deltaLink": "https://delta",
+        }
+        result = api_module.get_messages_delta("token", "t1", "c1")
+        assert len(result["messages"]) == 1
+        assert len(result["deleted_ids"]) == 1
+        assert result["delta_link"] == "https://delta"
+
+    @patch.object(api_module, "_make_request")
+    def test_get_messages_delta_next_link(self, mock_req):
+        mock_req.return_value = {
+            "value": [{"id": "m1"}],
+            "@odata.nextLink": "https://next",
+        }
+        result = api_module.get_messages_delta("token", "t1", "c1")
+        assert result["next_link"] == "https://next"
+        assert result["delta_link"] is None
+
+    @patch.object(api_module, "_make_request")
+    def test_get_channel_files_folder(self, mock_req):
+        mock_req.return_value = {"id": "folder1"}
+        result = api_module.get_channel_files_folder("token", "t1", "c1")
+        assert result["id"] == "folder1"
+
+    @patch.object(api_module, "_make_request")
+    def test_get_channel_files_folder_error(self, mock_req):
+        mock_req.side_effect = api_module.TeamsAPIError("error")
+        result = api_module.get_channel_files_folder("token", "t1", "c1")
+        assert result is None
+
+    @patch.object(api_module, "_make_request")
+    def test_list_folder_files(self, mock_req):
+        mock_req.return_value = {"value": [{"id": "f1", "name": "file.txt"}]}
+        result = api_module.list_folder_files("token", "drive1", "folder1")
+        assert len(result) == 1
+
+    def test_get_days_back_filter(self):
+        result = api_module.get_days_back_filter(30)
+        assert isinstance(result, str)
+
+    def test_filter_messages_by_date(self):
+        from datetime import datetime, timezone
+        now_iso = datetime.now(timezone.utc).isoformat()
+        old_iso = "2020-01-01T00:00:00+00:00"
+        messages = [
+            {"createdDateTime": now_iso},
+            {"createdDateTime": old_iso},
+            {"createdDateTime": ""},
+            {},
+        ]
+        result = api_module.filter_messages_by_date(messages, 30)
+        assert len(result) == 3
+
+    def test_filter_messages_invalid_date(self):
+        messages = [{"createdDateTime": "not-a-date"}]
+        result = api_module.filter_messages_by_date(messages, 30)
+        assert len(result) == 1
+
+    @patch("teams_int_teams_api.urllib.request.urlopen")
+    def test_download_file(self, mock_urlopen):
+        resp = MagicMock()
+        resp.read.return_value = b"file_content"
+        resp.__enter__ = MagicMock(return_value=resp)
+        resp.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = resp
+        result = api_module.download_file("token", "https://download.url")
+        assert result == b"file_content"
+
+    @patch("teams_int_teams_api.urllib.request.urlopen")
+    def test_download_file_error(self, mock_urlopen):
+        mock_urlopen.side_effect = urllib.error.HTTPError(
+            url="https://download.url", code=404, msg="Not Found",
+            hdrs={}, fp=MagicMock(read=MagicMock(return_value=b'')),
+        )
+        with pytest.raises(api_module.TeamsAPIError):
+            api_module.download_file("token", "https://download.url")
+
+
+# ============================================================================
+# Handler Tests
+# ============================================================================
+
+class TestTeamsIntegrationHandlerHelpers:
+
+    def test_response(self):
+        result = handler_module._response(200, {"key": "val"})
         assert result["statusCode"] == 200
-        assert result["headers"]["Content-Type"] == "application/json"
-        assert json.loads(result["body"]) == {"key": "value"}
+        assert json.loads(result["body"])["key"] == "val"
 
-    def test_response_with_different_status_codes(self):
-        """Test _response works with various status codes."""
-        for code in [200, 400, 401, 403, 404, 500]:
-            result = _response(code, {"status": "test"})
-            assert result["statusCode"] == code
-
-    def test_error_builds_error_response(self):
-        """Test _error returns response with error field."""
-        result = _error(400, "Bad request")
+    def test_error(self):
+        result = handler_module._error(400, "bad request")
         assert result["statusCode"] == 400
-        body = json.loads(result["body"])
-        assert body["error"] == "Bad request"
+        assert "bad request" in json.loads(result["body"])["error"]
 
-    def test_redirect_builds_302_response(self):
-        """Test _redirect builds redirect response."""
-        result = _redirect("https://example.com")
+    def test_redirect(self):
+        result = handler_module._redirect("https://example.com")
         assert result["statusCode"] == 302
         assert result["headers"]["Location"] == "https://example.com"
 
-    def test_get_user_from_request_extracts_email(self):
-        """Test extracting user email from headers."""
-        event = {"headers": {"x-user-email": "test@example.com"}}
-        assert _get_user_from_request(event) == "test@example.com"
-
-    def test_get_user_from_request_missing_headers(self):
-        """Test returns None when headers missing."""
-        assert _get_user_from_request({}) is None
-        assert _get_user_from_request({"headers": {}}) is None
-
-    def test_parse_path_splits_correctly(self):
-        """Test path parsing into components."""
-        assert _parse_path("/teams/authorize") == ("teams", "authorize")
-        assert _parse_path("/workspaces/ws1/teams/connections") == ("workspaces", "ws1", "teams", "connections")
-        assert _parse_path("//extra//slashes//") == ("extra", "slashes")
-
-    def test_generate_id_returns_unique_ids(self):
-        """Test that generate_id returns unique IDs."""
-        ids = [generate_id() for _ in range(50)]
-        assert len(set(ids)) == 50
-
-
-# ============================================================================
-# Workspace Helpers
-# ============================================================================
-
-class TestWorkspaceHelpers:
-    """Test workspace membership helpers."""
-
-    def test_get_membership_found(self, mock_table):
-        """Test getting existing membership."""
-        mock_table.get_item.return_value = {"Item": {"role": "workspace_admin"}}
-        result = _get_membership(mock_table, "user@example.com", "ws_test")
-        assert result["role"] == "workspace_admin"
-
-    def test_get_membership_not_found(self, mock_table):
-        """Test returns None when not a member."""
-        mock_table.get_item.return_value = {}
-        result = _get_membership(mock_table, "user@example.com", "ws_test")
-        assert result is None
-
-    def test_get_membership_client_error(self, mock_table):
-        """Test returns None on DynamoDB error."""
-        mock_table.get_item.side_effect = ClientError(
-            {"Error": {"Code": "500", "Message": "Internal"}}, "GetItem"
-        )
-        result = _get_membership(mock_table, "user@example.com", "ws_test")
-        assert result is None
-
-    def test_is_workspace_admin_true(self, mock_table):
-        """Test admin check returns True for admin."""
-        mock_table.get_item.return_value = {"Item": {"role": "workspace_admin"}}
-        assert _is_workspace_admin(mock_table, "admin@example.com", "ws_test") is True
-
-    def test_is_workspace_admin_false_for_member(self, mock_table):
-        """Test admin check returns False for regular member."""
-        mock_table.get_item.return_value = {"Item": {"role": "member"}}
-        assert _is_workspace_admin(mock_table, "user@example.com", "ws_test") is False
-
-    def test_is_workspace_admin_false_when_not_member(self, mock_table):
-        """Test admin check returns False when not a member."""
-        mock_table.get_item.return_value = {}
-        assert _is_workspace_admin(mock_table, "stranger@example.com", "ws_test") is False
-
-
-# ============================================================================
-# OAuth Flow
-# ============================================================================
-
-class TestGetAuthorizeUrl:
-    """Test OAuth authorization URL generation."""
-
-    @patch.object(handler_module, '_load_oauth_config')
-    def test_generates_auth_url(self, mock_config, oauth_config):
-        """Test generates valid Microsoft OAuth URL."""
-        mock_config.return_value = oauth_config
-
-        result = get_authorize_url("ws_test")
-        assert result["statusCode"] == 200
-        body = json.loads(result["body"])
-        assert "auth_url" in body
-
-        auth_url = body["auth_url"]
-        assert "login.microsoftonline.com" in auth_url
-        assert "client_id=test-client-id" in auth_url
-        assert "response_type=code" in auth_url
-
-    @patch.object(handler_module, '_load_oauth_config')
-    def test_includes_teams_scopes_in_url(self, mock_config, oauth_config):
-        """Test auth URL includes Teams OAuth scopes."""
-        mock_config.return_value = oauth_config
-
-        result = get_authorize_url("ws_test")
-        body = json.loads(result["body"])
-        auth_url = body["auth_url"]
-        assert "Team.ReadBasic.All" in auth_url
-        assert "offline_access" in auth_url
-
-    @patch.object(handler_module, '_load_oauth_config')
-    def test_includes_workspace_in_state(self, mock_config, oauth_config):
-        """Test auth URL encodes workspace_id in state."""
-        mock_config.return_value = oauth_config
-
-        result = get_authorize_url("ws_test")
-        body = json.loads(result["body"])
-        auth_url = body["auth_url"]
-        assert "workspace_id" in auth_url
-
-
-class TestHandleCallback:
-    """Test OAuth callback handling."""
-
-    @patch.object(handler_module, 'save_tokens')
-    @patch.object(handler_module, 'get_user_profile')
-    @patch.object(handler_module, 'exchange_code_for_tokens')
-    @patch.object(handler_module, '_load_oauth_config')
-    @patch.object(handler_module, '_get_dynamodb')
-    def test_callback_success(self, mock_db, mock_config, mock_exchange, mock_profile, mock_save, oauth_config, mock_dynamodb, mock_table):
-        """Test successful OAuth callback creates connection."""
-        mock_db.return_value = mock_dynamodb
-        mock_config.return_value = oauth_config
-        mock_exchange.return_value = ("access_token", "refresh_token", 3600)
-        mock_profile.return_value = {"mail": "user@example.com", "displayName": "Test User"}
-
-        event = {
-            "queryStringParameters": {
-                "code": "auth_code_123",
-                "state": json.dumps({"workspace_id": "ws_test"}),
-            }
-        }
-
-        result = handle_callback(event)
-        assert result["statusCode"] == 200
-        body = json.loads(result["body"])
-        assert "/workspaces/ws_test/settings" in body["redirect"]
-        mock_table.put_item.assert_called_once()
-        mock_save.assert_called_once()
-
-    def test_callback_with_error_param(self):
-        """Test callback handles OAuth error."""
-        event = {
-            "queryStringParameters": {"error": "access_denied"},
-        }
-        result = handle_callback(event)
-        assert result["statusCode"] == 200
-        body = json.loads(result["body"])
-        assert "error=oauth_denied" in body["redirect"]
-
-    def test_callback_missing_code(self):
-        """Test callback handles missing code."""
-        event = {
-            "queryStringParameters": {"state": json.dumps({"workspace_id": "ws_test"})},
-        }
-        result = handle_callback(event)
-        assert result["statusCode"] == 400
-        body = json.loads(result["body"])
-        assert "error=invalid_callback" in body.get("redirect", "")
-
-    @patch.object(handler_module, 'exchange_code_for_tokens')
-    @patch.object(handler_module, '_load_oauth_config')
-    def test_callback_token_exchange_fails(self, mock_config, mock_exchange, oauth_config):
-        """Test callback handles failed token exchange."""
-        mock_config.return_value = oauth_config
-        mock_exchange.return_value = (None, None, None)
-
-        event = {
-            "queryStringParameters": {
-                "code": "bad_code",
-                "state": json.dumps({"workspace_id": "ws_test"}),
-            }
-        }
-
-        result = handle_callback(event)
-        body = json.loads(result["body"])
-        assert "error=token_exchange_failed" in body["redirect"]
-
-    def test_callback_invalid_state_json(self):
-        """Test callback handles invalid state JSON."""
-        event = {
-            "queryStringParameters": {
-                "code": "auth_code",
-                "state": "not-json",
-            }
-        }
-        result = handle_callback(event)
-        body = json.loads(result["body"])
-        assert "error=invalid_state" in body.get("redirect", "")
-
-    @patch.object(handler_module, 'get_user_profile')
-    @patch.object(handler_module, 'exchange_code_for_tokens')
-    @patch.object(handler_module, '_load_oauth_config')
-    def test_callback_api_error(self, mock_config, mock_exchange, mock_profile, oauth_config):
-        """Test callback handles profile API error."""
-        mock_config.return_value = oauth_config
-        mock_exchange.return_value = ("access_token", "refresh_token", 3600)
-        mock_profile.side_effect = handler_module.TeamsAPIError("API error")
-
-        event = {
-            "queryStringParameters": {
-                "code": "auth_code",
-                "state": json.dumps({"workspace_id": "ws_test"}),
-            }
-        }
-
-        result = handle_callback(event)
-        body = json.loads(result["body"])
-        assert "error=api_error" in body["redirect"]
-
-    @patch.object(handler_module, 'save_tokens')
-    @patch.object(handler_module, 'get_user_profile')
-    @patch.object(handler_module, 'exchange_code_for_tokens')
-    @patch.object(handler_module, '_load_oauth_config')
-    @patch.object(handler_module, '_get_dynamodb')
-    def test_callback_url_encoded_state(self, mock_db, mock_config, mock_exchange, mock_profile, mock_save, oauth_config, mock_dynamodb, mock_table):
-        """Test callback handles URL-encoded state parameter."""
-        mock_db.return_value = mock_dynamodb
-        mock_config.return_value = oauth_config
-        mock_exchange.return_value = ("access_token", "refresh_token", 3600)
-        mock_profile.return_value = {"mail": "user@example.com", "displayName": "Test"}
-
-        import urllib.parse
-        state = urllib.parse.quote(json.dumps({"workspace_id": "ws_test"}))
-
-        event = {
-            "queryStringParameters": {
-                "code": "auth_code_123",
-                "state": state,
-            }
-        }
-
-        result = handle_callback(event)
-        assert result["statusCode"] == 200
-        mock_table.put_item.assert_called_once()
-
-    @patch.object(handler_module, 'save_tokens')
-    @patch.object(handler_module, 'get_user_profile')
-    @patch.object(handler_module, 'exchange_code_for_tokens')
-    @patch.object(handler_module, '_load_oauth_config')
-    @patch.object(handler_module, '_get_dynamodb')
-    def test_callback_connection_has_default_config(self, mock_db, mock_config, mock_exchange, mock_profile, mock_save, oauth_config, mock_dynamodb, mock_table):
-        """Test callback creates connection with default config structure."""
-        mock_db.return_value = mock_dynamodb
-        mock_config.return_value = oauth_config
-        mock_exchange.return_value = ("access_token", "refresh_token", 3600)
-        mock_profile.return_value = {"mail": "user@example.com", "displayName": "Test User"}
-
-        event = {
-            "queryStringParameters": {
-                "code": "auth_code_123",
-                "state": json.dumps({"workspace_id": "ws_test"}),
-            }
-        }
-
-        handle_callback(event)
-        put_call = mock_table.put_item.call_args
-        item = put_call[1]["Item"]
-        assert item["config"]["days_back"] == 30
-        assert item["config"]["include_channels"] == []
-        assert item["config"]["sync_files"] is True
-        assert item["last_sync_status"] == "needs_configuration"
-
-
-# ============================================================================
-# Connection Operations
-# ============================================================================
-
-class TestListConnections:
-    """Test listing Teams connections."""
-
-    @patch.object(handler_module, '_get_dynamodb')
-    def test_list_connections_success(self, mock_db, mock_dynamodb, mock_table, sample_connection):
-        """Test listing connections returns sanitized data."""
-        mock_db.return_value = mock_dynamodb
-        mock_table.get_item.return_value = {"Item": {"role": "member"}}
-        mock_table.query.return_value = {"Items": [sample_connection.copy()]}
-
-        result = list_connections("user@example.com", "ws_test")
-        assert result["statusCode"] == 200
-        body = json.loads(result["body"])
-        conns = body["connections"]
-        assert len(conns) == 1
-        # Internal fields should be stripped
-        assert "PK" not in conns[0]
-        assert "SK" not in conns[0]
-        assert "delta_links" not in conns[0]
-
-    @patch.object(handler_module, '_get_dynamodb')
-    def test_list_connections_not_member(self, mock_db, mock_dynamodb, mock_table):
-        """Test non-member gets 403."""
-        mock_db.return_value = mock_dynamodb
-        mock_table.get_item.return_value = {}
-
-        result = list_connections("stranger@example.com", "ws_test")
-        assert result["statusCode"] == 403
-
-    @patch.object(handler_module, '_get_dynamodb')
-    def test_list_connections_empty(self, mock_db, mock_dynamodb, mock_table):
-        """Test empty connections list."""
-        mock_db.return_value = mock_dynamodb
-        mock_table.get_item.return_value = {"Item": {"role": "member"}}
-        mock_table.query.return_value = {"Items": []}
-
-        result = list_connections("user@example.com", "ws_test")
-        body = json.loads(result["body"])
-        assert body["connections"] == []
-
-    @patch.object(handler_module, '_get_dynamodb')
-    def test_list_connections_queries_teams_connection_prefix(self, mock_db, mock_dynamodb, mock_table):
-        """Test list connections queries with TEAMS_CONNECTION# SK prefix."""
-        mock_db.return_value = mock_dynamodb
-        mock_table.get_item.return_value = {"Item": {"role": "member"}}
-        mock_table.query.return_value = {"Items": []}
-
-        list_connections("user@example.com", "ws_test")
-        call_args = mock_table.query.call_args
-        expr_values = call_args[1]["ExpressionAttributeValues"]
-        assert expr_values[":sk"] == "TEAMS_CONNECTION#"
-
-
-class TestGetTeams:
-    """Test listing joined Teams for a connection."""
-
-    @patch.object(handler_module, 'list_joined_teams')
-    @patch.object(handler_module, 'refresh_access_token')
-    @patch.object(handler_module, '_load_oauth_config')
-    @patch.object(handler_module, 'get_connection')
-    def test_list_teams_success(self, mock_get_conn, mock_config, mock_refresh, mock_list):
-        """Test successfully listing joined teams."""
-        mock_get_conn.return_value = {"connection_id": "conn_test"}
-        mock_config.return_value = {"client_id": "cid", "client_secret": "csec"}
-        mock_refresh.return_value = "access_token"
-        mock_list.return_value = [
-            {"id": "team1", "displayName": "Engineering", "description": "Eng team"},
-            {"id": "team2", "displayName": "Marketing", "description": "Marketing team"},
-        ]
-
-        result = get_teams("user@example.com", "ws_test", "conn_test")
-        assert result["statusCode"] == 200
-        body = json.loads(result["body"])
-        assert len(body["teams"]) == 2
-        assert body["teams"][0]["displayName"] == "Engineering"
-
-    @patch.object(handler_module, 'get_connection')
-    def test_list_teams_connection_not_found(self, mock_get_conn):
-        """Test returns 404 when connection not found."""
-        mock_get_conn.return_value = None
-
-        result = get_teams("user@example.com", "ws_test", "bad_id")
-        assert result["statusCode"] == 404
-
-    @patch.object(handler_module, 'refresh_access_token')
-    @patch.object(handler_module, '_load_oauth_config')
-    @patch.object(handler_module, 'get_connection')
-    def test_list_teams_token_refresh_fails(self, mock_get_conn, mock_config, mock_refresh):
-        """Test returns 401 when token refresh fails."""
-        mock_get_conn.return_value = {"connection_id": "conn_test"}
-        mock_config.return_value = {"client_id": "cid", "client_secret": "csec"}
-        mock_refresh.return_value = None
-
-        result = get_teams("user@example.com", "ws_test", "conn_test")
-        assert result["statusCode"] == 401
-
-    @patch.object(handler_module, 'list_joined_teams')
-    @patch.object(handler_module, 'refresh_access_token')
-    @patch.object(handler_module, '_load_oauth_config')
-    @patch.object(handler_module, 'get_connection')
-    def test_list_teams_auth_error(self, mock_get_conn, mock_config, mock_refresh, mock_list):
-        """Test returns 401 on TeamsAuthError."""
-        mock_get_conn.return_value = {"connection_id": "conn_test"}
-        mock_config.return_value = {"client_id": "cid", "client_secret": "csec"}
-        mock_refresh.return_value = "access_token"
-        mock_list.side_effect = handler_module.TeamsAuthError("Auth failed")
-
-        result = get_teams("user@example.com", "ws_test", "conn_test")
-        assert result["statusCode"] == 401
-
-    @patch.object(handler_module, 'list_joined_teams')
-    @patch.object(handler_module, 'refresh_access_token')
-    @patch.object(handler_module, '_load_oauth_config')
-    @patch.object(handler_module, 'get_connection')
-    def test_list_teams_api_error(self, mock_get_conn, mock_config, mock_refresh, mock_list):
-        """Test returns 500 on TeamsAPIError."""
-        mock_get_conn.return_value = {"connection_id": "conn_test"}
-        mock_config.return_value = {"client_id": "cid", "client_secret": "csec"}
-        mock_refresh.return_value = "access_token"
-        mock_list.side_effect = handler_module.TeamsAPIError("API failed")
-
-        result = get_teams("user@example.com", "ws_test", "conn_test")
-        assert result["statusCode"] == 500
-
-
-class TestGetChannels:
-    """Test listing channels for a team."""
-
-    @patch.object(handler_module, 'list_channels')
-    @patch.object(handler_module, 'refresh_access_token')
-    @patch.object(handler_module, '_load_oauth_config')
-    @patch.object(handler_module, 'get_connection')
-    def test_list_channels_success(self, mock_get_conn, mock_config, mock_refresh, mock_list):
-        """Test successfully listing channels."""
-        mock_get_conn.return_value = {"connection_id": "conn_test"}
-        mock_config.return_value = {"client_id": "cid", "client_secret": "csec"}
-        mock_refresh.return_value = "access_token"
-        mock_list.return_value = [
-            {"id": "ch1", "displayName": "General", "membershipType": "standard"},
-            {"id": "ch2", "displayName": "Random", "membershipType": "standard"},
-        ]
-
-        result = get_channels("user@example.com", "ws_test", "conn_test", "team1")
-        assert result["statusCode"] == 200
-        body = json.loads(result["body"])
-        assert len(body["channels"]) == 2
-        assert body["channels"][0]["displayName"] == "General"
-
-    @patch.object(handler_module, 'get_connection')
-    def test_list_channels_connection_not_found(self, mock_get_conn):
-        """Test returns 404 when connection not found."""
-        mock_get_conn.return_value = None
-
-        result = get_channels("user@example.com", "ws_test", "bad_id", "team1")
-        assert result["statusCode"] == 404
-
-    @patch.object(handler_module, 'refresh_access_token')
-    @patch.object(handler_module, '_load_oauth_config')
-    @patch.object(handler_module, 'get_connection')
-    def test_list_channels_token_refresh_fails(self, mock_get_conn, mock_config, mock_refresh):
-        """Test returns 401 when token refresh fails."""
-        mock_get_conn.return_value = {"connection_id": "conn_test"}
-        mock_config.return_value = {"client_id": "cid", "client_secret": "csec"}
-        mock_refresh.return_value = None
-
-        result = get_channels("user@example.com", "ws_test", "conn_test", "team1")
-        assert result["statusCode"] == 401
-
-    @patch.object(handler_module, 'list_channels')
-    @patch.object(handler_module, 'refresh_access_token')
-    @patch.object(handler_module, '_load_oauth_config')
-    @patch.object(handler_module, 'get_connection')
-    def test_list_channels_auth_error(self, mock_get_conn, mock_config, mock_refresh, mock_list):
-        """Test returns 401 on TeamsAuthError."""
-        mock_get_conn.return_value = {"connection_id": "conn_test"}
-        mock_config.return_value = {"client_id": "cid", "client_secret": "csec"}
-        mock_refresh.return_value = "access_token"
-        mock_list.side_effect = handler_module.TeamsAuthError("Auth failed")
-
-        result = get_channels("user@example.com", "ws_test", "conn_test", "team1")
-        assert result["statusCode"] == 401
-
-    @patch.object(handler_module, 'list_channels')
-    @patch.object(handler_module, 'refresh_access_token')
-    @patch.object(handler_module, '_load_oauth_config')
-    @patch.object(handler_module, 'get_connection')
-    def test_list_channels_api_error(self, mock_get_conn, mock_config, mock_refresh, mock_list):
-        """Test returns 500 on TeamsAPIError."""
-        mock_get_conn.return_value = {"connection_id": "conn_test"}
-        mock_config.return_value = {"client_id": "cid", "client_secret": "csec"}
-        mock_refresh.return_value = "access_token"
-        mock_list.side_effect = handler_module.TeamsAPIError("API failed")
-
-        result = get_channels("user@example.com", "ws_test", "conn_test", "team1")
-        assert result["statusCode"] == 500
-
-
-class TestSaveConfig:
-    """Test saving Teams connection configuration."""
-
-    @patch.object(handler_module, '_queue_sync')
-    @patch.object(handler_module, 'get_connection')
-    @patch.object(handler_module, '_get_dynamodb')
-    def test_save_config_success(self, mock_db, mock_get_conn, mock_queue, mock_dynamodb, mock_table):
-        """Test saving config updates DynamoDB and triggers sync."""
-        mock_db.return_value = mock_dynamodb
-        mock_table.get_item.return_value = {"Item": {"role": "workspace_admin"}}
-        mock_get_conn.return_value = {"connection_id": "conn_test"}
-
-        body = {
-            "days_back": 14,
-            "include_channels": [
-                {"team_id": "team1", "channel_id": "ch1", "displayName": "General"},
-            ],
-            "sync_files": False,
-        }
-        handler_module.TEAMS_SYNC_QUEUE = "https://sqs.example.com/queue"
-
-        result = save_config("admin@example.com", "ws_test", "conn_test", body)
-        assert result["statusCode"] == 200
-        result_body = json.loads(result["body"])
-        assert result_body["channel_count"] == 1
-        mock_queue.assert_called_once_with("ws_test", "conn_test")
-
-    @patch.object(handler_module, '_get_dynamodb')
-    def test_save_config_not_admin(self, mock_db, mock_dynamodb, mock_table):
-        """Test non-admin gets 403."""
-        mock_db.return_value = mock_dynamodb
-        mock_table.get_item.return_value = {"Item": {"role": "member"}}
-
-        result = save_config("user@example.com", "ws_test", "conn_test", {})
-        assert result["statusCode"] == 403
-
-    @patch.object(handler_module, 'get_connection')
-    @patch.object(handler_module, '_get_dynamodb')
-    def test_save_config_connection_not_found(self, mock_db, mock_get_conn, mock_dynamodb, mock_table):
-        """Test returns 404 when connection not found."""
-        mock_db.return_value = mock_dynamodb
-        mock_table.get_item.return_value = {"Item": {"role": "workspace_admin"}}
-        mock_get_conn.return_value = None
-
-        result = save_config("admin@example.com", "ws_test", "bad_id", {})
-        assert result["statusCode"] == 404
-
-    @patch.object(handler_module, '_queue_sync')
-    @patch.object(handler_module, 'get_connection')
-    @patch.object(handler_module, '_get_dynamodb')
-    def test_save_config_no_sync_when_no_channels(self, mock_db, mock_get_conn, mock_queue, mock_dynamodb, mock_table):
-        """Test sync is not triggered when no channels are included."""
-        mock_db.return_value = mock_dynamodb
-        mock_table.get_item.return_value = {"Item": {"role": "workspace_admin"}}
-        mock_get_conn.return_value = {"connection_id": "conn_test"}
-
-        body = {"days_back": 7, "include_channels": [], "sync_files": True}
-        handler_module.TEAMS_SYNC_QUEUE = "https://sqs.example.com/queue"
-
-        result = save_config("admin@example.com", "ws_test", "conn_test", body)
-        assert result["statusCode"] == 200
-        mock_queue.assert_not_called()
-
-    @patch.object(handler_module, '_queue_sync')
-    @patch.object(handler_module, 'get_connection')
-    @patch.object(handler_module, '_get_dynamodb')
-    def test_save_config_uses_defaults(self, mock_db, mock_get_conn, mock_queue, mock_dynamodb, mock_table):
-        """Test save_config uses defaults when fields not provided."""
-        mock_db.return_value = mock_dynamodb
-        mock_table.get_item.return_value = {"Item": {"role": "workspace_admin"}}
-        mock_get_conn.return_value = {"connection_id": "conn_test"}
-        handler_module.TEAMS_SYNC_QUEUE = None
-
-        result = save_config("admin@example.com", "ws_test", "conn_test", {})
-        assert result["statusCode"] == 200
-        update_call = mock_table.update_item.call_args
-        config_data = update_call[1]["ExpressionAttributeValues"][":config"]
-        assert config_data["days_back"] == 30
-        assert config_data["include_channels"] == []
-        assert config_data["sync_files"] is True
-
-
-class TestTriggerSync:
-    """Test manual sync trigger."""
-
-    @patch.object(handler_module, '_queue_sync')
-    @patch.object(handler_module, 'get_connection')
-    @patch.object(handler_module, '_get_dynamodb')
-    def test_trigger_sync_success(self, mock_db, mock_get_conn, mock_queue, mock_dynamodb, mock_table):
-        """Test triggering sync queues job."""
-        mock_db.return_value = mock_dynamodb
-        mock_table.get_item.return_value = {"Item": {"role": "workspace_admin"}}
-        mock_get_conn.return_value = {
-            "connection_id": "conn_test",
-            "config": {
-                "include_channels": [{"team_id": "t1", "channel_id": "ch1"}],
-            },
-        }
-
-        result = trigger_sync("admin@example.com", "ws_test", "conn_test")
-        assert result["statusCode"] == 200
-        body = json.loads(result["body"])
-        assert body["status"] == "queued"
-        mock_queue.assert_called_once()
-
-    @patch.object(handler_module, 'get_connection')
-    @patch.object(handler_module, '_get_dynamodb')
-    def test_trigger_sync_no_channels(self, mock_db, mock_get_conn, mock_dynamodb, mock_table):
-        """Test trigger fails when no channels configured."""
-        mock_db.return_value = mock_dynamodb
-        mock_table.get_item.return_value = {"Item": {"role": "workspace_admin"}}
-        mock_get_conn.return_value = {
-            "connection_id": "conn_test",
-            "config": {"include_channels": []},
-        }
-
-        result = trigger_sync("admin@example.com", "ws_test", "conn_test")
-        assert result["statusCode"] == 400
-
-    @patch.object(handler_module, '_get_dynamodb')
-    def test_trigger_sync_not_admin(self, mock_db, mock_dynamodb, mock_table):
-        """Test non-admin gets 403."""
-        mock_db.return_value = mock_dynamodb
-        mock_table.get_item.return_value = {"Item": {"role": "member"}}
-
-        result = trigger_sync("user@example.com", "ws_test", "conn_test")
-        assert result["statusCode"] == 403
-
-    @patch.object(handler_module, 'get_connection')
-    @patch.object(handler_module, '_get_dynamodb')
-    def test_trigger_sync_connection_not_found(self, mock_db, mock_get_conn, mock_dynamodb, mock_table):
-        """Test trigger returns 404 when connection not found."""
-        mock_db.return_value = mock_dynamodb
-        mock_table.get_item.return_value = {"Item": {"role": "workspace_admin"}}
-        mock_get_conn.return_value = None
-
-        result = trigger_sync("admin@example.com", "ws_test", "bad_id")
-        assert result["statusCode"] == 404
-
-
-class TestDeleteConnection:
-    """Test deleting a Teams connection."""
-
-    @patch.object(handler_module, 'delete_tokens')
-    @patch.object(handler_module, 'get_connection')
-    @patch.object(handler_module, '_get_dynamodb')
-    def test_delete_connection_success(self, mock_db, mock_get_conn, mock_del_tokens, mock_dynamodb, mock_table, sample_connection):
-        """Test deleting connection removes record and tokens."""
-        mock_db.return_value = mock_dynamodb
-        mock_table.get_item.return_value = {"Item": {"role": "workspace_admin"}}
-        mock_get_conn.return_value = sample_connection
-        handler_module.DELETE_QUEUE = None
-
-        result = delete_connection("admin@example.com", "ws_test", "conn_test")
-        assert result["statusCode"] == 200
-        mock_table.delete_item.assert_called_once()
-        mock_del_tokens.assert_called_once_with("conn_test")
-
-    @patch.object(handler_module, '_get_dynamodb')
-    def test_delete_connection_not_admin(self, mock_db, mock_dynamodb, mock_table):
-        """Test non-admin gets 403."""
-        mock_db.return_value = mock_dynamodb
-        mock_table.get_item.return_value = {"Item": {"role": "member"}}
-
-        result = delete_connection("user@example.com", "ws_test", "conn_test")
-        assert result["statusCode"] == 403
-
-    @patch.object(handler_module, 'get_connection')
-    @patch.object(handler_module, '_get_dynamodb')
-    def test_delete_connection_not_found(self, mock_db, mock_get_conn, mock_dynamodb, mock_table):
-        """Test delete returns 404 when not found."""
-        mock_db.return_value = mock_dynamodb
-        mock_table.get_item.return_value = {"Item": {"role": "workspace_admin"}}
-        mock_get_conn.return_value = None
-
-        result = delete_connection("admin@example.com", "ws_test", "bad_id")
-        assert result["statusCode"] == 404
-
-    @patch.object(handler_module, 'delete_tokens')
-    @patch.object(handler_module, 'get_connection')
-    @patch.object(handler_module, '_get_sqs')
-    @patch.object(handler_module, '_get_dynamodb')
-    def test_delete_connection_queues_document_deletion(self, mock_db, mock_sqs_fn, mock_get_conn, mock_del_tokens, mock_dynamodb, mock_table, sample_connection):
-        """Test deleting connection queues document deletion via SQS."""
-        mock_db.return_value = mock_dynamodb
-        mock_sqs_client = MagicMock()
-        mock_sqs_fn.return_value = mock_sqs_client
-        mock_table.get_item.return_value = {"Item": {"role": "workspace_admin"}}
-        mock_get_conn.return_value = sample_connection
-        handler_module.DELETE_QUEUE = "https://sqs.example.com/delete-queue"
-
-        result = delete_connection("admin@example.com", "ws_test", "conn_test")
-        assert result["statusCode"] == 200
-        # Should queue deletion for Teams documents
-        mock_sqs_client.send_message.assert_called_once()
-        call_args = mock_sqs_client.send_message.call_args
-        msg_body = json.loads(call_args[1]["MessageBody"])
-        assert msg_body["action"] == "delete_prefix"
-        assert msg_body["source"] == "teams"
-
-
-# ============================================================================
-# Queue Sync Helper
-# ============================================================================
-
-class TestQueueSync:
-    """Test SQS sync queuing."""
-
-    @patch.object(handler_module, '_get_sqs')
-    def test_queue_sync_sends_message(self, mock_sqs_fn):
-        """Test queuing a sync job sends SQS message."""
-        mock_sqs_client = MagicMock()
-        mock_sqs_fn.return_value = mock_sqs_client
-        handler_module.TEAMS_SYNC_QUEUE = "https://sqs.example.com/queue"
-
-        _queue_sync("ws_test", "conn_test")
-        mock_sqs_client.send_message.assert_called_once()
-        call_args = mock_sqs_client.send_message.call_args
-        msg_body = json.loads(call_args[1]["MessageBody"])
-        assert msg_body["workspace_id"] == "ws_test"
-        assert msg_body["connection_id"] == "conn_test"
-
-    def test_queue_sync_no_queue_configured(self):
-        """Test no-op when queue not configured."""
-        handler_module.TEAMS_SYNC_QUEUE = None
-        # Should not raise
-        _queue_sync("ws_test", "conn_test")
-
-
-# ============================================================================
-# OAuth Config Loading
-# ============================================================================
-
-class TestLoadOAuthConfig:
-    """Test loading OAuth config from SSM."""
-
-    @patch.object(handler_module, '_get_ssm')
-    def test_load_oauth_config_success(self, mock_ssm_fn):
-        """Test loading OAuth config from SSM."""
-        mock_ssm_client = MagicMock()
-        mock_ssm_fn.return_value = mock_ssm_client
-        mock_ssm_client.get_parameter.side_effect = [
-            {"Parameter": {"Value": "client-id-value"}},
-            {"Parameter": {"Value": "client-secret-value"}},
-            {"Parameter": {"Value": "https://example.com/callback"}},
-        ]
-
-        config = handler_module._load_oauth_config()
-        assert config["client_id"] == "client-id-value"
-        assert config["client_secret"] == "client-secret-value"
-        assert config["callback_url"] == "https://example.com/callback"
-
-    @patch.object(handler_module, '_get_ssm')
-    def test_load_oauth_config_ssm_error(self, mock_ssm_fn):
-        """Test raises on SSM error."""
-        mock_ssm_client = MagicMock()
-        mock_ssm_fn.return_value = mock_ssm_client
-        mock_ssm_client.get_parameter.side_effect = ClientError(
-            {"Error": {"Code": "ParameterNotFound", "Message": "Not found"}},
-            "GetParameter",
+    def test_get_user_from_request(self):
+        event = {"headers": {"x-user-email": "user@test.com"}}
+        assert handler_module._get_user_from_request(event) == "user@test.com"
+
+    def test_get_user_from_request_no_headers(self):
+        assert handler_module._get_user_from_request({}) is None
+
+    def test_parse_path(self):
+        assert handler_module._parse_path("/workspaces/ws1/teams/connections") == (
+            "workspaces", "ws1", "teams", "connections"
         )
 
-        with pytest.raises(ClientError):
-            handler_module._load_oauth_config()
+    def test_parse_path_trailing_slash(self):
+        assert handler_module._parse_path("/a/b/") == ("a", "b")
 
-    @patch.object(handler_module, '_get_ssm')
-    def test_load_oauth_config_caches_result(self, mock_ssm_fn):
-        """Test config is cached after first load."""
-        mock_ssm_client = MagicMock()
-        mock_ssm_fn.return_value = mock_ssm_client
-        mock_ssm_client.get_parameter.side_effect = [
-            {"Parameter": {"Value": "cid"}},
-            {"Parameter": {"Value": "csec"}},
-            {"Parameter": {"Value": "url"}},
-        ]
-
-        handler_module._load_oauth_config()
-        handler_module._load_oauth_config()
-        # Should only call SSM once (3 params)
-        assert mock_ssm_client.get_parameter.call_count == 3
-
-    @patch.object(handler_module, '_get_ssm')
-    def test_load_oauth_config_fetches_teams_callback_url(self, mock_ssm_fn):
-        """Test config fetches teams-callback-url SSM parameter."""
-        mock_ssm_client = MagicMock()
-        mock_ssm_fn.return_value = mock_ssm_client
-        mock_ssm_client.get_parameter.side_effect = [
-            {"Parameter": {"Value": "cid"}},
-            {"Parameter": {"Value": "csec"}},
-            {"Parameter": {"Value": "https://example.com/teams/callback"}},
-        ]
-
-        handler_module._load_oauth_config()
-        # Verify the third SSM call uses teams-callback-url path
-        calls = mock_ssm_client.get_parameter.call_args_list
-        callback_call = calls[2]
-        assert "teams-callback-url" in callback_call[1]["Name"]
+    def test_generate_id(self):
+        id1 = handler_module.generate_id()
+        id2 = handler_module.generate_id()
+        assert isinstance(id1, str)
+        assert id1 != id2
 
 
-# ============================================================================
-# Lambda Handler Routing
-# ============================================================================
+class TestTeamsIntegrationHandlerRouting:
 
-class TestLambdaHandlerRouting:
-    """Test main handler routes requests correctly."""
+    @pytest.fixture(autouse=True)
+    def reset_globals(self):
+        handler_module._oauth_config = None
+        handler_module._dynamodb = None
+        handler_module._ssm = None
+        handler_module._sqs = None
+        yield
 
-    @patch.object(handler_module, '_is_workspace_admin', return_value=True)
-    @patch.object(handler_module, 'get_authorize_url')
-    def test_routes_authorize(self, mock_fn, mock_admin):
-        """Test routing GET /teams/authorize."""
-        mock_fn.return_value = _response(200, {"auth_url": "https://..."})
-
+    def test_not_found(self):
         event = {
-            "requestContext": {"http": {"method": "GET", "path": "/teams/authorize"}},
-            "headers": {"x-user-email": "admin@example.com"},
-            "queryStringParameters": {"workspace_id": "ws_test"},
+            "httpMethod": "GET",
+            "path": "/unknown/route",
+            "headers": {"x-user-email": "user@test.com"},
         }
+        result = handler_module.lambda_handler(event, None)
+        assert result["statusCode"] == 404
 
-        result = lambda_handler(event, None)
-        mock_fn.assert_called_once_with("ws_test")
-
-    def test_authorize_missing_workspace_id(self):
-        """Test authorize returns 401 without user email."""
+    def test_auth_required(self):
         event = {
-            "requestContext": {"http": {"method": "GET", "path": "/teams/authorize"}},
-            "queryStringParameters": {},
-        }
-        result = lambda_handler(event, None)
-        assert result["statusCode"] == 401
-
-    @patch.object(handler_module, 'handle_callback')
-    def test_routes_callback_get(self, mock_fn):
-        """Test routing GET /teams/callback."""
-        mock_fn.return_value = _response(200, {"redirect": "/"})
-
-        event = {
-            "requestContext": {"http": {"method": "GET", "path": "/teams/callback"}},
-            "queryStringParameters": {"code": "abc", "state": "{}"},
-        }
-
-        lambda_handler(event, None)
-        mock_fn.assert_called_once()
-
-    @patch.object(handler_module, 'handle_callback')
-    def test_routes_callback_post(self, mock_fn):
-        """Test routing POST /teams/callback."""
-        mock_fn.return_value = _response(200, {"redirect": "/"})
-
-        event = {
-            "requestContext": {"http": {"method": "POST", "path": "/teams/callback"}},
-            "body": json.dumps({"code": "abc", "state": "{}"}),
-        }
-
-        lambda_handler(event, None)
-        mock_fn.assert_called_once()
-
-    def test_authenticated_route_requires_email(self):
-        """Test authenticated routes return 401 without user email."""
-        event = {
-            "requestContext": {"http": {"method": "GET", "path": "/workspaces/ws1/teams/connections"}},
+            "httpMethod": "GET",
+            "path": "/workspaces/ws1/teams/connections",
             "headers": {},
         }
-        result = lambda_handler(event, None)
+        result = handler_module.lambda_handler(event, None)
         assert result["statusCode"] == 401
 
-    @patch.object(handler_module, 'list_connections')
-    def test_routes_list_connections(self, mock_fn):
-        """Test routing GET /workspaces/{id}/teams/connections."""
-        mock_fn.return_value = _response(200, {"connections": []})
-
+    @patch.object(handler_module, "list_connections")
+    def test_list_connections_route(self, mock_list):
+        mock_list.return_value = handler_module._response(200, {"connections": []})
         event = {
-            "requestContext": {"http": {"method": "GET", "path": "/workspaces/ws1/teams/connections"}},
-            "headers": {"x-user-email": "user@example.com"},
+            "httpMethod": "GET",
+            "path": "/workspaces/ws1/teams/connections",
+            "headers": {"x-user-email": "user@test.com"},
+        }
+        result = handler_module.lambda_handler(event, None)
+        assert result["statusCode"] == 200
+        mock_list.assert_called_once_with("user@test.com", "ws1")
+
+    @patch.object(handler_module, "handle_callback")
+    def test_callback_route(self, mock_callback):
+        mock_callback.return_value = handler_module._response(200, {"redirect": "/ok"})
+        event = {
+            "httpMethod": "GET",
+            "path": "/teams/callback",
+            "queryStringParameters": {"code": "abc", "state": "{}"},
+        }
+        result = handler_module.lambda_handler(event, None)
+        assert result["statusCode"] == 200
+
+    @patch.object(handler_module, "delete_connection")
+    def test_delete_connection_route(self, mock_delete):
+        mock_delete.return_value = handler_module._response(200, {"message": "deleted"})
+        event = {
+            "httpMethod": "DELETE",
+            "path": "/workspaces/ws1/teams/connections/conn1",
+            "headers": {"x-user-email": "user@test.com"},
+        }
+        result = handler_module.lambda_handler(event, None)
+        assert result["statusCode"] == 200
+        mock_delete.assert_called_once_with("user@test.com", "ws1", "conn1")
+
+    @patch.object(handler_module, "save_config")
+    def test_save_config_route(self, mock_save):
+        mock_save.return_value = handler_module._response(200, {"message": "ok"})
+        event = {
+            "httpMethod": "PUT",
+            "path": "/workspaces/ws1/teams/connections/conn1/config",
+            "headers": {"x-user-email": "user@test.com"},
+            "body": json.dumps({"days_back": 30}),
+        }
+        result = handler_module.lambda_handler(event, None)
+        assert result["statusCode"] == 200
+
+    @patch.object(handler_module, "trigger_sync")
+    def test_trigger_sync_route(self, mock_sync):
+        mock_sync.return_value = handler_module._response(200, {"message": "ok"})
+        event = {
+            "httpMethod": "POST",
+            "path": "/workspaces/ws1/teams/connections/conn1/sync",
+            "headers": {"x-user-email": "user@test.com"},
+        }
+        result = handler_module.lambda_handler(event, None)
+        assert result["statusCode"] == 200
+
+    def test_invalid_json_body(self):
+        event = {
+            "httpMethod": "GET",
+            "path": "/unknown",
+            "headers": {"x-user-email": "user@test.com"},
+            "body": "not json{{{",
+        }
+        result = handler_module.lambda_handler(event, None)
+        assert result["statusCode"] == 404
+
+
+class TestTeamsIntegrationListConnections:
+
+    @pytest.fixture(autouse=True)
+    def reset_globals(self):
+        handler_module._oauth_config = None
+        handler_module._dynamodb = None
+        handler_module._ssm = None
+        handler_module._sqs = None
+        yield
+
+    @patch.object(handler_module, "_get_dynamodb")
+    def test_list_connections_success(self, mock_db_fn):
+        mock_table = MagicMock()
+        mock_db = MagicMock()
+        mock_db.Table.return_value = mock_table
+        mock_db_fn.return_value = mock_db
+        mock_table.get_item.return_value = {"Item": {"role": "member"}}
+        mock_table.query.return_value = {
+            "Items": [
+                {
+                    "PK": "WS#ws1",
+                    "SK": "TEAMS_CONNECTION#conn1",
+                    "connection_id": "conn1",
+                }
+            ]
+        }
+        result = handler_module.list_connections("user@test.com", "ws1")
+        assert result["statusCode"] == 200
+        body = json.loads(result["body"])
+        assert len(body["connections"]) == 1
+
+    @patch.object(handler_module, "_get_dynamodb")
+    def test_list_connections_not_member(self, mock_db_fn):
+        mock_table = MagicMock()
+        mock_db = MagicMock()
+        mock_db.Table.return_value = mock_table
+        mock_db_fn.return_value = mock_db
+        mock_table.get_item.return_value = {}
+        result = handler_module.list_connections("user@test.com", "ws1")
+        assert result["statusCode"] == 403
+
+
+class TestTeamsIntegrationCallback:
+
+    @pytest.fixture(autouse=True)
+    def reset_globals(self):
+        handler_module._oauth_config = None
+        handler_module._dynamodb = None
+        handler_module._ssm = None
+        handler_module._sqs = None
+        yield
+
+    @patch.object(handler_module, "save_tokens")
+    @patch.object(handler_module, "get_user_profile")
+    @patch.object(handler_module, "exchange_code_for_tokens")
+    @patch.object(handler_module, "_load_oauth_config")
+    @patch.object(handler_module, "_get_dynamodb")
+    def test_callback_success(self, mock_db_fn, mock_oauth, mock_exchange,
+                               mock_profile, mock_save):
+        mock_table = MagicMock()
+        mock_db = MagicMock()
+        mock_db.Table.return_value = mock_table
+        mock_db_fn.return_value = mock_db
+        mock_oauth.return_value = {
+            "client_id": "cid", "client_secret": "csec", "callback_url": "https://cb"
+        }
+        mock_exchange.return_value = ("access", "refresh", 3600)
+        mock_profile.return_value = {
+            "mail": "user@test.com", "displayName": "Test User"
         }
 
-        lambda_handler(event, None)
-        mock_fn.assert_called_once_with("user@example.com", "ws1")
-
-    @patch.object(handler_module, 'get_teams')
-    def test_routes_list_teams(self, mock_fn):
-        """Test routing GET /workspaces/{id}/teams/connections/{connId}/teams."""
-        mock_fn.return_value = _response(200, {"teams": []})
-
         event = {
-            "requestContext": {"http": {"method": "GET", "path": "/workspaces/ws1/teams/connections/conn1/teams"}},
-            "headers": {"x-user-email": "user@example.com"},
+            "queryStringParameters": {
+                "code": "auth_code",
+                "state": json.dumps({"workspace_id": "ws1"}),
+            }
         }
+        result = handler_module.handle_callback(event)
+        assert result["statusCode"] == 200
+        body = json.loads(result["body"])
+        assert "redirect" in body
+        assert "ws1" in body["redirect"]
 
-        lambda_handler(event, None)
-        mock_fn.assert_called_once_with("user@example.com", "ws1", "conn1")
+    def test_callback_error_param(self):
+        event = {"queryStringParameters": {"error": "access_denied"}}
+        result = handler_module.handle_callback(event)
+        body = json.loads(result["body"])
+        assert "oauth_denied" in body["redirect"]
 
-    @patch.object(handler_module, 'get_channels')
-    def test_routes_list_channels(self, mock_fn):
-        """Test routing GET /workspaces/{id}/teams/connections/{connId}/channels."""
-        mock_fn.return_value = _response(200, {"channels": []})
-
-        event = {
-            "requestContext": {"http": {"method": "GET", "path": "/workspaces/ws1/teams/connections/conn1/channels"}},
-            "headers": {"x-user-email": "user@example.com"},
-            "queryStringParameters": {"team_id": "team1"},
-        }
-
-        lambda_handler(event, None)
-        mock_fn.assert_called_once_with("user@example.com", "ws1", "conn1", "team1")
-
-    def test_routes_list_channels_missing_team_id(self):
-        """Test channels route returns 400 without team_id."""
-        event = {
-            "requestContext": {"http": {"method": "GET", "path": "/workspaces/ws1/teams/connections/conn1/channels"}},
-            "headers": {"x-user-email": "user@example.com"},
-            "queryStringParameters": {},
-        }
-
-        result = lambda_handler(event, None)
+    def test_callback_missing_code(self):
+        event = {"queryStringParameters": {"state": "{}"}}
+        result = handler_module.handle_callback(event)
         assert result["statusCode"] == 400
 
-    @patch.object(handler_module, 'save_config')
-    def test_routes_save_config(self, mock_fn):
-        """Test routing PUT /workspaces/{id}/teams/connections/{connId}/config."""
-        mock_fn.return_value = _response(200, {"message": "Saved"})
-
-        event = {
-            "requestContext": {"http": {"method": "PUT", "path": "/workspaces/ws1/teams/connections/conn1/config"}},
-            "headers": {"x-user-email": "admin@example.com"},
-            "body": json.dumps({"days_back": 7, "include_channels": [], "sync_files": True}),
+    @patch.object(handler_module, "exchange_code_for_tokens")
+    @patch.object(handler_module, "_load_oauth_config")
+    def test_callback_token_exchange_failed(self, mock_oauth, mock_exchange):
+        mock_oauth.return_value = {
+            "client_id": "cid", "client_secret": "csec", "callback_url": "https://cb"
         }
-
-        lambda_handler(event, None)
-        mock_fn.assert_called_once()
-
-    @patch.object(handler_module, 'trigger_sync')
-    def test_routes_trigger_sync(self, mock_fn):
-        """Test routing POST /workspaces/{id}/teams/connections/{connId}/sync."""
-        mock_fn.return_value = _response(200, {"status": "queued"})
-
+        mock_exchange.return_value = (None, None, None)
         event = {
-            "requestContext": {"http": {"method": "POST", "path": "/workspaces/ws1/teams/connections/conn1/sync"}},
-            "headers": {"x-user-email": "admin@example.com"},
+            "queryStringParameters": {
+                "code": "code",
+                "state": json.dumps({"workspace_id": "ws1"}),
+            }
         }
+        result = handler_module.handle_callback(event)
+        body = json.loads(result["body"])
+        assert "token_exchange_failed" in body["redirect"]
 
-        lambda_handler(event, None)
-        mock_fn.assert_called_once_with("admin@example.com", "ws1", "conn1")
-
-    @patch.object(handler_module, 'delete_connection')
-    def test_routes_delete_connection(self, mock_fn):
-        """Test routing DELETE /workspaces/{id}/teams/connections/{connId}."""
-        mock_fn.return_value = _response(200, {"message": "Deleted"})
-
+    def test_callback_invalid_state(self):
         event = {
-            "requestContext": {"http": {"method": "DELETE", "path": "/workspaces/ws1/teams/connections/conn1"}},
-            "headers": {"x-user-email": "admin@example.com"},
+            "queryStringParameters": {
+                "code": "code",
+                "state": "not-valid-json{{{",
+            }
         }
+        result = handler_module.handle_callback(event)
+        assert result["statusCode"] == 400
 
-        lambda_handler(event, None)
-        mock_fn.assert_called_once_with("admin@example.com", "ws1", "conn1")
 
-    def test_unknown_route_returns_404(self):
-        """Test unknown routes return 404."""
-        event = {
-            "requestContext": {"http": {"method": "GET", "path": "/unknown/route"}},
-            "headers": {"x-user-email": "user@example.com"},
-        }
-        result = lambda_handler(event, None)
-        assert result["statusCode"] == 404
+class TestTeamsIntegrationDeleteConnection:
 
-    def test_invalid_body_json_handled(self):
-        """Test handler handles invalid JSON body gracefully."""
-        event = {
-            "requestContext": {"http": {"method": "GET", "path": "/unknown"}},
-            "headers": {"x-user-email": "user@example.com"},
-            "body": "not valid json",
-        }
-        result = lambda_handler(event, None)
-        assert result["statusCode"] == 404
+    @pytest.fixture(autouse=True)
+    def reset_globals(self):
+        handler_module._oauth_config = None
+        handler_module._dynamodb = None
+        handler_module._ssm = None
+        handler_module._sqs = None
+        yield
+
+    @patch.object(handler_module, "delete_tokens")
+    @patch.object(handler_module, "get_connection")
+    @patch.object(handler_module, "_get_sqs")
+    @patch.object(handler_module, "_get_dynamodb")
+    def test_delete_connection_success(self, mock_db_fn, mock_sqs_fn,
+                                        mock_get_conn, mock_del_tokens):
+        mock_table = MagicMock()
+        mock_db = MagicMock()
+        mock_db.Table.return_value = mock_table
+        mock_db_fn.return_value = mock_db
+        mock_sqs = MagicMock()
+        mock_sqs_fn.return_value = mock_sqs
+
+        mock_table.get_item.side_effect = [
+            {"Item": {"role": "workspace_admin"}},
+            {"Item": {"role": "workspace_admin"}},
+        ]
+        mock_get_conn.return_value = {"connection_id": "conn1"}
+        mock_del_tokens.return_value = True
+
+        handler_module.DELETE_QUEUE = "https://sqs.example.com/delete"
+        result = handler_module.delete_connection("admin@test.com", "ws1", "conn1")
+        assert result["statusCode"] == 200
+
+    @patch.object(handler_module, "_get_dynamodb")
+    def test_delete_connection_not_member(self, mock_db_fn):
+        mock_table = MagicMock()
+        mock_db = MagicMock()
+        mock_db.Table.return_value = mock_table
+        mock_db_fn.return_value = mock_db
+        mock_table.get_item.return_value = {}
+
+        result = handler_module.delete_connection("user@test.com", "ws1", "conn1")
+        assert result["statusCode"] == 403

@@ -1011,6 +1011,27 @@ class McpHandler(BaseHTTPRequestHandler):
         # Check proxied tools
         session = _sessions.get(session_id, {})
         tool_routing = session.get("tool_routing", {})
+
+        # Build tool_routing on-demand if not yet populated
+        # (handles cases where tools/call arrives before tools/list)
+        if not tool_routing and email:
+            try:
+                workspace_ids = get_user_workspace_ids(email) if email else []
+                servers = discover_mcp_servers(workspace_ids)
+                for server in servers:
+                    server_name = server["config"]["name"].lower().replace(" ", "_").replace("-", "_")
+                    for tool in server.get("tools", []):
+                        namespaced_name = f"{server_name}__{tool['name']}"
+                        tool_routing[namespaced_name] = {
+                            "config": server["config"],
+                            "original_name": tool["name"],
+                        }
+                if session_id and session_id in _sessions:
+                    _sessions[session_id]["tool_routing"] = tool_routing
+                logger.info(f"Built tool_routing on-demand: {len(tool_routing)} proxied tools")
+            except Exception as e:
+                logger.error(f"Error building tool_routing on-demand: {e}", exc_info=True)
+
         route = tool_routing.get(tool_name)
 
         if not route:

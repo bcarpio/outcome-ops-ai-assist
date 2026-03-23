@@ -1,9 +1,11 @@
-"""Unit tests for sharepoint-integration Lambda handler."""
+"""Unit tests for sharepoint-integration Lambda (handler, sharepoint_api, token_manager)."""
 
+import base64
 import importlib.util
 import json
 import os
 import sys
+import urllib.error
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -14,952 +16,523 @@ from botocore.exceptions import ClientError
 # Module loading
 # ============================================================================
 
-def _load_handler_module():
-    """Load or reload the sharepoint-integration handler module."""
-    if 'sharepoint_integration_handler' in sys.modules:
-        del sys.modules['sharepoint_integration_handler']
+def _load_module(mod_name, filename, directory, also_register_as=None):
+    if mod_name in sys.modules:
+        del sys.modules[mod_name]
 
-    # Clear cached sibling modules that may conflict with other integration dirs
-    for mod_name in ['token_manager', 'sharepoint_api']:
-        if mod_name in sys.modules:
-            del sys.modules[mod_name]
+    mod_dir = os.path.join(os.path.dirname(__file__), directory)
+    if mod_dir not in sys.path:
+        sys.path.insert(0, mod_dir)
 
-    # Add sharepoint-integration dir to path so handler can resolve its sibling imports
-    sharepoint_dir = os.path.join(os.path.dirname(__file__), '../../sharepoint-integration')
-    abs_sp_dir = os.path.abspath(sharepoint_dir)
-    # Remove any existing entry and re-insert at front
-    sys.path = [p for p in sys.path if os.path.abspath(p) != abs_sp_dir]
-    sys.path.insert(0, abs_sp_dir)
-
-    handler_path = os.path.join(sharepoint_dir, 'handler.py')
-    spec = importlib.util.spec_from_file_location("sharepoint_integration_handler", handler_path)
-    handler_module = importlib.util.module_from_spec(spec)
-    sys.modules['sharepoint_integration_handler'] = handler_module
-    spec.loader.exec_module(handler_module)
-    return handler_module
+    mod_path = os.path.join(mod_dir, filename)
+    spec = importlib.util.spec_from_file_location(mod_name, mod_path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[mod_name] = module
+    if also_register_as:
+        sys.modules[also_register_as] = module
+    spec.loader.exec_module(module)
+    return module
 
 
-handler_module = _load_handler_module()
-
-# Import functions
-lambda_handler = handler_module.lambda_handler
-get_authorize_url = handler_module.get_authorize_url
-handle_callback = handler_module.handle_callback
-list_connections = handler_module.list_connections
-get_connection = handler_module.get_connection
-get_sites = handler_module.get_sites
-update_sites = handler_module.update_sites
-trigger_sync = handler_module.trigger_sync
-delete_connection = handler_module.delete_connection
-_response = handler_module._response
-_error = handler_module._error
-_redirect = handler_module._redirect
-_get_user_from_request = handler_module._get_user_from_request
-_parse_path = handler_module._parse_path
-_get_membership = handler_module._get_membership
-_is_workspace_admin = handler_module._is_workspace_admin
-generate_id = handler_module.generate_id
-_queue_sync = handler_module._queue_sync
+# Load token_manager and sharepoint_api first, registering them under the
+# names the handler will import (from token_manager / from sharepoint_api).
+token_module = _load_module(
+    "sp_int_token_manager", "token_manager.py", "../../sharepoint-integration",
+    also_register_as="token_manager",
+)
+api_module = _load_module(
+    "sp_int_sharepoint_api", "sharepoint_api.py", "../../sharepoint-integration",
+    also_register_as="sharepoint_api",
+)
+handler_module = _load_module(
+    "sp_int_handler", "handler.py", "../../sharepoint-integration"
+)
 
 
 # ============================================================================
-# Fixtures
+# Helpers
 # ============================================================================
 
-@pytest.fixture(autouse=True)
-def reset_module_globals():
-    """Reset cached module globals between tests."""
-    handler_module._oauth_config = None
-    handler_module._dynamodb = None
-    handler_module._ssm = None
-    handler_module._sqs = None
-    yield
-
-
-@pytest.fixture
-def mock_table():
-    """Create a mock DynamoDB table."""
-    return MagicMock()
-
-
-@pytest.fixture
-def mock_dynamodb(mock_table):
-    """Create a mock DynamoDB resource."""
-    mock_db = MagicMock()
-    mock_db.Table.return_value = mock_table
-    return mock_db
-
-
-@pytest.fixture
-def oauth_config():
-    """Sample OAuth configuration."""
-    return {
-        "client_id": "test-client-id",
-        "client_secret": "test-client-secret",
-        "callback_url": "https://example.com/api/sharepoint/callback",
-    }
-
-
-@pytest.fixture
-def sample_connection():
-    """Sample SharePoint connection record."""
-    return {
-        "PK": "WS#ws_test",
-        "SK": "SHAREPOINT_CONNECTION#conn_test",
-        "connection_id": "conn_test",
-        "workspace_id": "ws_test",
-        "user_email": "user@example.com",
-        "display_name": "Test User",
-        "selected_sites": [
-            {"site_id": "site1", "site_name": "Project Site", "drives": [{"id": "drive1", "name": "Documents"}]},
-            {"site_id": "site2", "site_name": "Team Site", "drives": [{"id": "drive2", "name": "Shared Documents"}]},
-        ],
-        "include_pages": True,
-        "delta_tokens": {},
-        "last_sync_status": "completed",
-        "file_count": 42,
-        "page_count": 10,
-    }
+def _make_urlopen_response(body_dict):
+    resp = MagicMock()
+    resp.read.return_value = json.dumps(body_dict).encode("utf-8")
+    resp.__enter__ = MagicMock(return_value=resp)
+    resp.__exit__ = MagicMock(return_value=False)
+    return resp
 
 
 # ============================================================================
-# Helper Functions
+# Token Manager Tests
 # ============================================================================
 
-class TestResponseHelpers:
-    """Test response helper functions."""
+class TestSPTokenManager:
 
-    def test_response_builds_correct_format(self):
-        """Test _response builds HTTP response with JSON body."""
-        result = _response(200, {"key": "value"})
-        assert result["statusCode"] == 200
-        assert result["headers"]["Content-Type"] == "application/json"
-        assert json.loads(result["body"]) == {"key": "value"}
+    @pytest.fixture(autouse=True)
+    def reset_globals(self):
+        token_module._dynamodb = None
+        token_module._kms = None
+        yield
 
-    def test_response_with_different_status_codes(self):
-        """Test _response works with various status codes."""
-        for code in [200, 400, 401, 403, 404, 500]:
-            result = _response(code, {"status": "test"})
-            assert result["statusCode"] == code
+    @patch.object(token_module, "_get_kms")
+    def test_encrypt_token(self, mock_kms_fn):
+        mock_kms = MagicMock()
+        mock_kms.encrypt.return_value = {"CiphertextBlob": b"encrypted"}
+        mock_kms_fn.return_value = mock_kms
+        result = token_module._encrypt_token("token")
+        assert base64.b64decode(result) == b"encrypted"
 
-    def test_error_builds_error_response(self):
-        """Test _error returns response with error field."""
-        result = _error(400, "Bad request")
-        assert result["statusCode"] == 400
-        body = json.loads(result["body"])
-        assert body["error"] == "Bad request"
+    @patch.object(token_module, "_get_kms")
+    def test_decrypt_token(self, mock_kms_fn):
+        mock_kms = MagicMock()
+        mock_kms.decrypt.return_value = {"Plaintext": b"decrypted"}
+        mock_kms_fn.return_value = mock_kms
+        result = token_module._decrypt_token(base64.b64encode(b"cipher").decode())
+        assert result == "decrypted"
 
-    def test_redirect_builds_302_response(self):
-        """Test _redirect builds redirect response."""
-        result = _redirect("https://example.com")
-        assert result["statusCode"] == 302
-        assert result["headers"]["Location"] == "https://example.com"
+    @patch.object(token_module, "_encrypt_token")
+    @patch.object(token_module, "_get_dynamodb")
+    def test_save_tokens_success(self, mock_db_fn, mock_encrypt):
+        mock_table = MagicMock()
+        mock_db = MagicMock()
+        mock_db.Table.return_value = mock_table
+        mock_db_fn.return_value = mock_db
+        mock_encrypt.return_value = "encrypted"
+        result = token_module.save_tokens("conn1", "access", "refresh", 3600)
+        assert result is True
+        item = mock_table.put_item.call_args[1]["Item"]
+        assert item["PK"] == "SHAREPOINT_TOKEN#conn1"
 
-    def test_get_user_from_request_extracts_email(self):
-        """Test extracting user email from headers."""
-        event = {"headers": {"x-user-email": "test@example.com"}}
-        assert _get_user_from_request(event) == "test@example.com"
-
-    def test_get_user_from_request_missing_headers(self):
-        """Test returns None when headers missing."""
-        assert _get_user_from_request({}) is None
-        assert _get_user_from_request({"headers": {}}) is None
-
-    def test_parse_path_splits_correctly(self):
-        """Test path parsing into components."""
-        assert _parse_path("/sharepoint/authorize") == ("sharepoint", "authorize")
-        assert _parse_path("/workspaces/ws1/sharepoint/connections") == ("workspaces", "ws1", "sharepoint", "connections")
-        assert _parse_path("//extra//slashes//") == ("extra", "slashes")
-
-    def test_generate_id_returns_unique_ids(self):
-        """Test that generate_id returns unique IDs."""
-        ids = [generate_id() for _ in range(50)]
-        assert len(set(ids)) == 50
-
-
-# ============================================================================
-# Workspace Helpers
-# ============================================================================
-
-class TestWorkspaceHelpers:
-    """Test workspace membership helpers."""
-
-    def test_get_membership_found(self, mock_table):
-        """Test getting existing membership."""
-        mock_table.get_item.return_value = {"Item": {"role": "workspace_admin"}}
-        result = _get_membership(mock_table, "user@example.com", "ws_test")
-        assert result["role"] == "workspace_admin"
-
-    def test_get_membership_not_found(self, mock_table):
-        """Test returns None when not a member."""
-        mock_table.get_item.return_value = {}
-        result = _get_membership(mock_table, "user@example.com", "ws_test")
-        assert result is None
-
-    def test_get_membership_client_error(self, mock_table):
-        """Test returns None on DynamoDB error."""
-        mock_table.get_item.side_effect = ClientError(
-            {"Error": {"Code": "500", "Message": "Internal"}}, "GetItem"
+    @patch.object(token_module, "_encrypt_token")
+    @patch.object(token_module, "_get_dynamodb")
+    def test_save_tokens_error(self, mock_db_fn, mock_encrypt):
+        mock_table = MagicMock()
+        mock_db = MagicMock()
+        mock_db.Table.return_value = mock_table
+        mock_db_fn.return_value = mock_db
+        mock_encrypt.return_value = "enc"
+        mock_table.put_item.side_effect = ClientError(
+            {"Error": {"Code": "500", "Message": "err"}}, "PutItem"
         )
-        result = _get_membership(mock_table, "user@example.com", "ws_test")
-        assert result is None
+        assert token_module.save_tokens("conn1", "a", "r") is False
 
-    def test_is_workspace_admin_true(self, mock_table):
-        """Test admin check returns True for admin."""
-        mock_table.get_item.return_value = {"Item": {"role": "workspace_admin"}}
-        assert _is_workspace_admin(mock_table, "admin@example.com", "ws_test") is True
+    @patch.object(token_module, "_decrypt_token")
+    @patch.object(token_module, "_get_dynamodb")
+    def test_get_refresh_token_success(self, mock_db_fn, mock_decrypt):
+        mock_table = MagicMock()
+        mock_db = MagicMock()
+        mock_db.Table.return_value = mock_table
+        mock_db_fn.return_value = mock_db
+        mock_table.get_item.return_value = {"Item": {"encrypted_refresh_token": "enc"}}
+        mock_decrypt.return_value = "plain"
+        assert token_module.get_refresh_token("conn1") == "plain"
 
-    def test_is_workspace_admin_false_for_member(self, mock_table):
-        """Test admin check returns False for regular member."""
-        mock_table.get_item.return_value = {"Item": {"role": "member"}}
-        assert _is_workspace_admin(mock_table, "user@example.com", "ws_test") is False
-
-    def test_is_workspace_admin_false_when_not_member(self, mock_table):
-        """Test admin check returns False when not a member."""
+    @patch.object(token_module, "_get_dynamodb")
+    def test_get_refresh_token_not_found(self, mock_db_fn):
+        mock_table = MagicMock()
+        mock_db = MagicMock()
+        mock_db.Table.return_value = mock_table
+        mock_db_fn.return_value = mock_db
         mock_table.get_item.return_value = {}
-        assert _is_workspace_admin(mock_table, "stranger@example.com", "ws_test") is False
+        assert token_module.get_refresh_token("conn1") is None
 
+    @patch.object(token_module, "_get_dynamodb")
+    def test_get_refresh_token_error(self, mock_db_fn):
+        mock_table = MagicMock()
+        mock_db = MagicMock()
+        mock_db.Table.return_value = mock_table
+        mock_db_fn.return_value = mock_db
+        mock_table.get_item.side_effect = ClientError(
+            {"Error": {"Code": "500", "Message": "err"}}, "GetItem"
+        )
+        assert token_module.get_refresh_token("conn1") is None
 
-# ============================================================================
-# OAuth Flow
-# ============================================================================
-
-class TestGetAuthorizeUrl:
-    """Test OAuth authorization URL generation."""
-
-    @patch.object(handler_module, '_load_oauth_config')
-    def test_generates_auth_url(self, mock_config, oauth_config):
-        """Test generates valid Microsoft OAuth URL."""
-        mock_config.return_value = oauth_config
-
-        result = get_authorize_url("ws_test")
-        assert result["statusCode"] == 200
-        body = json.loads(result["body"])
-        assert "auth_url" in body
-
-        auth_url = body["auth_url"]
-        assert "login.microsoftonline.com" in auth_url
-        assert "client_id=test-client-id" in auth_url
-        assert "response_type=code" in auth_url
-
-    @patch.object(handler_module, '_load_oauth_config')
-    def test_includes_scopes_in_url(self, mock_config, oauth_config):
-        """Test auth URL includes SharePoint OAuth scopes."""
-        mock_config.return_value = oauth_config
-
-        result = get_authorize_url("ws_test")
-        body = json.loads(result["body"])
-        auth_url = body["auth_url"]
-        assert "Sites.Read.All" in auth_url
-        assert "offline_access" in auth_url
-
-    @patch.object(handler_module, '_load_oauth_config')
-    def test_includes_workspace_in_state(self, mock_config, oauth_config):
-        """Test auth URL encodes workspace_id in state."""
-        mock_config.return_value = oauth_config
-
-        result = get_authorize_url("ws_test")
-        body = json.loads(result["body"])
-        auth_url = body["auth_url"]
-        assert "workspace_id" in auth_url
-
-
-class TestHandleCallback:
-    """Test OAuth callback handling."""
-
-    @patch.object(handler_module, 'save_tokens')
-    @patch.object(handler_module, 'get_user_profile')
-    @patch.object(handler_module, 'exchange_code_for_tokens')
-    @patch.object(handler_module, '_load_oauth_config')
-    @patch.object(handler_module, '_get_dynamodb')
-    def test_callback_success(self, mock_db, mock_config, mock_exchange, mock_profile, mock_save, oauth_config, mock_dynamodb, mock_table):
-        """Test successful OAuth callback creates connection."""
-        mock_db.return_value = mock_dynamodb
-        mock_config.return_value = oauth_config
-        mock_exchange.return_value = ("access_token", "refresh_token", 3600)
-        mock_profile.return_value = {"mail": "user@example.com", "displayName": "Test User"}
-
-        event = {
-            "queryStringParameters": {
-                "code": "auth_code_123",
-                "state": json.dumps({"workspace_id": "ws_test"}),
-            }
-        }
-
-        result = handle_callback(event)
-        assert result["statusCode"] == 200
-        body = json.loads(result["body"])
-        assert "/workspaces/ws_test/settings" in body["redirect"]
-        mock_table.put_item.assert_called_once()
+    @patch.object(token_module, "save_tokens")
+    @patch("sp_int_token_manager.urllib.request.urlopen")
+    @patch.object(token_module, "get_refresh_token")
+    def test_refresh_success(self, mock_get, mock_urlopen, mock_save):
+        mock_get.return_value = "old_refresh"
+        mock_urlopen.return_value = _make_urlopen_response({
+            "access_token": "new_at", "refresh_token": "new_rt", "expires_in": 3600,
+        })
+        result = token_module.refresh_access_token("conn1", "cid", "csec")
+        assert result == "new_at"
         mock_save.assert_called_once()
 
-    def test_callback_with_error_param(self):
-        """Test callback handles OAuth error."""
-        event = {
-            "queryStringParameters": {"error": "access_denied"},
-        }
-        result = handle_callback(event)
-        assert result["statusCode"] == 200
-        body = json.loads(result["body"])
-        assert "error=oauth_denied" in body["redirect"]
-
-    def test_callback_missing_code(self):
-        """Test callback handles missing code."""
-        event = {
-            "queryStringParameters": {"state": json.dumps({"workspace_id": "ws_test"})},
-        }
-        result = handle_callback(event)
-        body = json.loads(result["body"])
-        assert "error=invalid_callback" in body.get("redirect", "")
-
-    @patch.object(handler_module, 'exchange_code_for_tokens')
-    @patch.object(handler_module, '_load_oauth_config')
-    def test_callback_token_exchange_fails(self, mock_config, mock_exchange, oauth_config):
-        """Test callback handles failed token exchange."""
-        mock_config.return_value = oauth_config
-        mock_exchange.return_value = (None, None, None)
-
-        event = {
-            "queryStringParameters": {
-                "code": "bad_code",
-                "state": json.dumps({"workspace_id": "ws_test"}),
-            }
-        }
-
-        result = handle_callback(event)
-        body = json.loads(result["body"])
-        assert "error=token_exchange_failed" in body["redirect"]
-
-    def test_callback_invalid_state_json(self):
-        """Test callback handles invalid state JSON."""
-        event = {
-            "queryStringParameters": {
-                "code": "auth_code",
-                "state": "not-json",
-            }
-        }
-        result = handle_callback(event)
-        body = json.loads(result["body"])
-        assert "error=invalid_state" in body.get("redirect", "")
-
-    @patch.object(handler_module, 'get_user_profile')
-    @patch.object(handler_module, 'exchange_code_for_tokens')
-    @patch.object(handler_module, '_load_oauth_config')
-    def test_callback_api_error(self, mock_config, mock_exchange, mock_profile, oauth_config):
-        """Test callback handles profile API error."""
-        mock_config.return_value = oauth_config
-        mock_exchange.return_value = ("access_token", "refresh_token", 3600)
-        mock_profile.side_effect = handler_module.SharePointAPIError("API error")
-
-        event = {
-            "queryStringParameters": {
-                "code": "auth_code",
-                "state": json.dumps({"workspace_id": "ws_test"}),
-            }
-        }
-
-        result = handle_callback(event)
-        body = json.loads(result["body"])
-        assert "error=api_error" in body["redirect"]
-
-    @patch.object(handler_module, 'save_tokens')
-    @patch.object(handler_module, 'get_user_profile')
-    @patch.object(handler_module, 'exchange_code_for_tokens')
-    @patch.object(handler_module, '_load_oauth_config')
-    @patch.object(handler_module, '_get_dynamodb')
-    def test_callback_url_encoded_state(self, mock_db, mock_config, mock_exchange, mock_profile, mock_save, oauth_config, mock_dynamodb, mock_table):
-        """Test callback handles URL-encoded state parameter."""
-        mock_db.return_value = mock_dynamodb
-        mock_config.return_value = oauth_config
-        mock_exchange.return_value = ("access_token", "refresh_token", 3600)
-        mock_profile.return_value = {"mail": "user@example.com", "displayName": "Test"}
-
-        import urllib.parse
-        state = urllib.parse.quote(json.dumps({"workspace_id": "ws_test"}))
-
-        event = {
-            "queryStringParameters": {
-                "code": "auth_code_123",
-                "state": state,
-            }
-        }
-
-        result = handle_callback(event)
-        assert result["statusCode"] == 200
-        mock_table.put_item.assert_called_once()
-
-
-# ============================================================================
-# Connection Operations
-# ============================================================================
-
-class TestListConnections:
-    """Test listing SharePoint connections."""
-
-    @patch.object(handler_module, '_get_dynamodb')
-    def test_list_connections_success(self, mock_db, mock_dynamodb, mock_table, sample_connection):
-        """Test listing connections returns sanitized data."""
-        mock_db.return_value = mock_dynamodb
-        mock_table.get_item.return_value = {"Item": {"role": "member"}}
-        mock_table.query.return_value = {"Items": [sample_connection.copy()]}
-
-        result = list_connections("user@example.com", "ws_test")
-        assert result["statusCode"] == 200
-        body = json.loads(result["body"])
-        conns = body["connections"]
-        assert len(conns) == 1
-        # Internal fields should be stripped
-        assert "PK" not in conns[0]
-        assert "SK" not in conns[0]
-        assert "delta_tokens" not in conns[0]
-
-    @patch.object(handler_module, '_get_dynamodb')
-    def test_list_connections_not_member(self, mock_db, mock_dynamodb, mock_table):
-        """Test non-member gets 403."""
-        mock_db.return_value = mock_dynamodb
-        mock_table.get_item.return_value = {}
-
-        result = list_connections("stranger@example.com", "ws_test")
-        assert result["statusCode"] == 403
-
-    @patch.object(handler_module, '_get_dynamodb')
-    def test_list_connections_empty(self, mock_db, mock_dynamodb, mock_table):
-        """Test empty connections list."""
-        mock_db.return_value = mock_dynamodb
-        mock_table.get_item.return_value = {"Item": {"role": "member"}}
-        mock_table.query.return_value = {"Items": []}
-
-        result = list_connections("user@example.com", "ws_test")
-        body = json.loads(result["body"])
-        assert body["connections"] == []
-
-    @patch.object(handler_module, '_get_dynamodb')
-    def test_list_connections_uses_sharepoint_sk_prefix(self, mock_db, mock_dynamodb, mock_table):
-        """Test query uses SHAREPOINT_CONNECTION# SK prefix."""
-        mock_db.return_value = mock_dynamodb
-        mock_table.get_item.return_value = {"Item": {"role": "member"}}
-        mock_table.query.return_value = {"Items": []}
-
-        list_connections("user@example.com", "ws_test")
-        call_args = mock_table.query.call_args
-        expr_values = call_args[1]["ExpressionAttributeValues"]
-        assert expr_values[":sk"] == "SHAREPOINT_CONNECTION#"
-
-
-class TestGetSites:
-    """Test listing SharePoint sites for a connection."""
-
-    @patch.object(handler_module, 'get_user_sites')
-    @patch.object(handler_module, 'list_site_drives')
-    @patch.object(handler_module, 'refresh_access_token')
-    @patch.object(handler_module, '_load_oauth_config')
-    @patch.object(handler_module, 'get_connection')
-    def test_get_sites_success(self, mock_get_conn, mock_config, mock_refresh, mock_list_drives, mock_get_sites):
-        """Test successfully listing SharePoint sites."""
-        mock_get_conn.return_value = {
-            "connection_id": "conn_test",
-            "selected_sites": [{"site_id": "site1"}],
-        }
-        mock_config.return_value = {"client_id": "cid", "client_secret": "csec"}
-        mock_refresh.return_value = "access_token"
-        mock_get_sites.return_value = [
-            {"id": "site1", "displayName": "Project Site", "name": "project"},
-            {"id": "site2", "displayName": "Team Site", "name": "team"},
-        ]
-        mock_list_drives.return_value = [
-            {"id": "drive1", "name": "Documents"},
-        ]
-
-        result = get_sites("user@example.com", "ws_test", "conn_test")
-        assert result["statusCode"] == 200
-        body = json.loads(result["body"])
-        assert len(body["sites"]) == 2
-        # site1 should be marked as selected
-        s1 = next(s for s in body["sites"] if s["id"] == "site1")
-        assert s1["selected"] is True
-        s2 = next(s for s in body["sites"] if s["id"] == "site2")
-        assert s2["selected"] is False
-
-    @patch.object(handler_module, 'get_connection')
-    def test_get_sites_connection_not_found(self, mock_get_conn):
-        """Test returns 404 when connection not found."""
-        mock_get_conn.return_value = None
-
-        result = get_sites("user@example.com", "ws_test", "bad_id")
-        assert result["statusCode"] == 404
-
-    @patch.object(handler_module, 'refresh_access_token')
-    @patch.object(handler_module, '_load_oauth_config')
-    @patch.object(handler_module, 'get_connection')
-    def test_get_sites_token_refresh_fails(self, mock_get_conn, mock_config, mock_refresh):
-        """Test returns 401 when token refresh fails."""
-        mock_get_conn.return_value = {"connection_id": "conn_test", "selected_sites": []}
-        mock_config.return_value = {"client_id": "cid", "client_secret": "csec"}
-        mock_refresh.return_value = None
-
-        result = get_sites("user@example.com", "ws_test", "conn_test")
-        assert result["statusCode"] == 401
-
-    @patch.object(handler_module, 'get_user_sites')
-    @patch.object(handler_module, 'refresh_access_token')
-    @patch.object(handler_module, '_load_oauth_config')
-    @patch.object(handler_module, 'get_connection')
-    def test_get_sites_auth_error(self, mock_get_conn, mock_config, mock_refresh, mock_get_sites):
-        """Test returns 401 on SharePointAuthError."""
-        mock_get_conn.return_value = {"connection_id": "conn_test", "selected_sites": []}
-        mock_config.return_value = {"client_id": "cid", "client_secret": "csec"}
-        mock_refresh.return_value = "access_token"
-        mock_get_sites.side_effect = handler_module.SharePointAuthError("Auth failed")
-
-        result = get_sites("user@example.com", "ws_test", "conn_test")
-        assert result["statusCode"] == 401
-
-    @patch.object(handler_module, 'get_user_sites')
-    @patch.object(handler_module, 'refresh_access_token')
-    @patch.object(handler_module, '_load_oauth_config')
-    @patch.object(handler_module, 'get_connection')
-    def test_get_sites_api_error(self, mock_get_conn, mock_config, mock_refresh, mock_get_sites):
-        """Test returns 500 on SharePointAPIError."""
-        mock_get_conn.return_value = {"connection_id": "conn_test", "selected_sites": []}
-        mock_config.return_value = {"client_id": "cid", "client_secret": "csec"}
-        mock_refresh.return_value = "access_token"
-        mock_get_sites.side_effect = handler_module.SharePointAPIError("API error")
-
-        result = get_sites("user@example.com", "ws_test", "conn_test")
-        assert result["statusCode"] == 500
-
-
-class TestUpdateSites:
-    """Test updating selected sites."""
-
-    @patch.object(handler_module, '_queue_sync')
-    @patch.object(handler_module, 'get_connection')
-    @patch.object(handler_module, '_get_dynamodb')
-    def test_update_sites_success(self, mock_db, mock_get_conn, mock_queue, mock_dynamodb, mock_table):
-        """Test updating sites triggers sync."""
-        mock_db.return_value = mock_dynamodb
-        mock_table.get_item.return_value = {"Item": {"role": "workspace_admin"}}
-        mock_get_conn.return_value = {"connection_id": "conn_test"}
-
-        body = {
-            "selected_sites": [
-                {"site_id": "site1", "site_name": "Project Site", "drives": [{"id": "drive1", "name": "Documents"}]},
-            ],
-            "include_pages": True,
-        }
-        handler_module.SHAREPOINT_SYNC_QUEUE = "https://sqs.example.com/queue"
-
-        result = update_sites("admin@example.com", "ws_test", "conn_test", body)
-        assert result["statusCode"] == 200
-        resp_body = json.loads(result["body"])
-        assert resp_body["selected_count"] == 1
-        mock_queue.assert_called_once_with("ws_test", "conn_test")
-
-    @patch.object(handler_module, '_get_dynamodb')
-    def test_update_sites_not_admin(self, mock_db, mock_dynamodb, mock_table):
-        """Test non-admin gets 403."""
-        mock_db.return_value = mock_dynamodb
-        mock_table.get_item.return_value = {"Item": {"role": "member"}}
-
-        result = update_sites("user@example.com", "ws_test", "conn_test", {})
-        assert result["statusCode"] == 403
-
-    @patch.object(handler_module, 'get_connection')
-    @patch.object(handler_module, '_get_dynamodb')
-    def test_update_sites_connection_not_found(self, mock_db, mock_get_conn, mock_dynamodb, mock_table):
-        """Test returns 404 when connection not found."""
-        mock_db.return_value = mock_dynamodb
-        mock_table.get_item.return_value = {"Item": {"role": "workspace_admin"}}
-        mock_get_conn.return_value = None
-
-        result = update_sites("admin@example.com", "ws_test", "bad_id", {})
-        assert result["statusCode"] == 404
-
-    @patch.object(handler_module, 'get_connection')
-    @patch.object(handler_module, '_get_dynamodb')
-    def test_update_sites_with_include_pages(self, mock_db, mock_get_conn, mock_dynamodb, mock_table):
-        """Test updating sites saves include_pages setting."""
-        mock_db.return_value = mock_dynamodb
-        mock_table.get_item.return_value = {"Item": {"role": "workspace_admin"}}
-        mock_get_conn.return_value = {"connection_id": "conn_test"}
-        handler_module.SHAREPOINT_SYNC_QUEUE = None
-
-        body = {
-            "selected_sites": [],
-            "include_pages": False,
-        }
-
-        result = update_sites("admin@example.com", "ws_test", "conn_test", body)
-        assert result["statusCode"] == 200
-        # Verify update_item was called with include_pages
-        call_args = mock_table.update_item.call_args
-        expr_values = call_args[1]["ExpressionAttributeValues"]
-        assert expr_values[":pages"] is False
-
-
-class TestTriggerSync:
-    """Test manual sync trigger."""
-
-    @patch.object(handler_module, '_queue_sync')
-    @patch.object(handler_module, 'get_connection')
-    @patch.object(handler_module, '_get_dynamodb')
-    def test_trigger_sync_success(self, mock_db, mock_get_conn, mock_queue, mock_dynamodb, mock_table):
-        """Test triggering sync queues job."""
-        mock_db.return_value = mock_dynamodb
-        mock_table.get_item.return_value = {"Item": {"role": "workspace_admin"}}
-        mock_get_conn.return_value = {
-            "connection_id": "conn_test",
-            "selected_sites": [{"site_id": "site1"}],
-        }
-
-        result = trigger_sync("admin@example.com", "ws_test", "conn_test")
-        assert result["statusCode"] == 200
-        body = json.loads(result["body"])
-        assert body["status"] == "queued"
-        mock_queue.assert_called_once()
-
-    @patch.object(handler_module, 'get_connection')
-    @patch.object(handler_module, '_get_dynamodb')
-    def test_trigger_sync_no_sites(self, mock_db, mock_get_conn, mock_dynamodb, mock_table):
-        """Test trigger fails when no sites selected."""
-        mock_db.return_value = mock_dynamodb
-        mock_table.get_item.return_value = {"Item": {"role": "workspace_admin"}}
-        mock_get_conn.return_value = {
-            "connection_id": "conn_test",
-            "selected_sites": [],
-        }
-
-        result = trigger_sync("admin@example.com", "ws_test", "conn_test")
-        assert result["statusCode"] == 400
-
-    @patch.object(handler_module, '_get_dynamodb')
-    def test_trigger_sync_not_admin(self, mock_db, mock_dynamodb, mock_table):
-        """Test non-admin gets 403."""
-        mock_db.return_value = mock_dynamodb
-        mock_table.get_item.return_value = {"Item": {"role": "member"}}
-
-        result = trigger_sync("user@example.com", "ws_test", "conn_test")
-        assert result["statusCode"] == 403
-
-    @patch.object(handler_module, 'get_connection')
-    @patch.object(handler_module, '_get_dynamodb')
-    def test_trigger_sync_connection_not_found(self, mock_db, mock_get_conn, mock_dynamodb, mock_table):
-        """Test trigger returns 404 when connection not found."""
-        mock_db.return_value = mock_dynamodb
-        mock_table.get_item.return_value = {"Item": {"role": "workspace_admin"}}
-        mock_get_conn.return_value = None
-
-        result = trigger_sync("admin@example.com", "ws_test", "bad_id")
-        assert result["statusCode"] == 404
-
-
-class TestDeleteConnection:
-    """Test deleting a SharePoint connection."""
-
-    @patch.object(handler_module, 'delete_tokens')
-    @patch.object(handler_module, 'get_connection')
-    @patch.object(handler_module, '_get_dynamodb')
-    def test_delete_connection_success(self, mock_db, mock_get_conn, mock_del_tokens, mock_dynamodb, mock_table, sample_connection):
-        """Test deleting connection removes record and tokens."""
-        mock_db.return_value = mock_dynamodb
-        mock_table.get_item.return_value = {"Item": {"role": "workspace_admin"}}
-        mock_get_conn.return_value = sample_connection
-        handler_module.DELETE_QUEUE = None
-
-        result = delete_connection("admin@example.com", "ws_test", "conn_test")
-        assert result["statusCode"] == 200
-        mock_table.delete_item.assert_called_once()
-        mock_del_tokens.assert_called_once_with("conn_test")
-
-    @patch.object(handler_module, '_get_dynamodb')
-    def test_delete_connection_not_admin(self, mock_db, mock_dynamodb, mock_table):
-        """Test non-admin gets 403."""
-        mock_db.return_value = mock_dynamodb
-        mock_table.get_item.return_value = {"Item": {"role": "member"}}
-
-        result = delete_connection("user@example.com", "ws_test", "conn_test")
-        assert result["statusCode"] == 403
-
-    @patch.object(handler_module, 'get_connection')
-    @patch.object(handler_module, '_get_dynamodb')
-    def test_delete_connection_not_found(self, mock_db, mock_get_conn, mock_dynamodb, mock_table):
-        """Test delete returns 404 when not found."""
-        mock_db.return_value = mock_dynamodb
-        mock_table.get_item.return_value = {"Item": {"role": "workspace_admin"}}
-        mock_get_conn.return_value = None
-
-        result = delete_connection("admin@example.com", "ws_test", "bad_id")
-        assert result["statusCode"] == 404
-
-    @patch.object(handler_module, 'delete_tokens')
-    @patch.object(handler_module, 'get_connection')
-    @patch.object(handler_module, '_get_sqs')
-    @patch.object(handler_module, '_get_dynamodb')
-    def test_delete_connection_queues_document_deletion(self, mock_db, mock_sqs_fn, mock_get_conn, mock_del_tokens, mock_dynamodb, mock_table, sample_connection):
-        """Test deleting connection queues document deletion via SQS."""
-        mock_db.return_value = mock_dynamodb
-        mock_sqs_client = MagicMock()
-        mock_sqs_fn.return_value = mock_sqs_client
-        mock_table.get_item.return_value = {"Item": {"role": "workspace_admin"}}
-        mock_get_conn.return_value = sample_connection
-        handler_module.DELETE_QUEUE = "https://sqs.example.com/delete-queue"
-
-        result = delete_connection("admin@example.com", "ws_test", "conn_test")
-        assert result["statusCode"] == 200
-        # Should queue deletion for SharePoint documents
-        mock_sqs_client.send_message.assert_called_once()
-        call_args = mock_sqs_client.send_message.call_args
-        msg_body = json.loads(call_args[1]["MessageBody"])
-        assert msg_body["action"] == "delete_prefix"
-        assert msg_body["source"] == "sharepoint"
-        assert msg_body["workspace_id"] == "ws_test"
-
-
-# ============================================================================
-# Queue Sync Helper
-# ============================================================================
-
-class TestQueueSync:
-    """Test SQS sync queuing."""
-
-    @patch.object(handler_module, '_get_sqs')
-    def test_queue_sync_sends_message(self, mock_sqs_fn):
-        """Test queuing a sync job sends SQS message."""
-        mock_sqs_client = MagicMock()
-        mock_sqs_fn.return_value = mock_sqs_client
-        handler_module.SHAREPOINT_SYNC_QUEUE = "https://sqs.example.com/queue"
-
-        _queue_sync("ws_test", "conn_test")
-        mock_sqs_client.send_message.assert_called_once()
-        call_args = mock_sqs_client.send_message.call_args
-        msg_body = json.loads(call_args[1]["MessageBody"])
-        assert msg_body["workspace_id"] == "ws_test"
-        assert msg_body["connection_id"] == "conn_test"
-
-    def test_queue_sync_no_queue_configured(self):
-        """Test no-op when queue not configured."""
-        handler_module.SHAREPOINT_SYNC_QUEUE = None
-        # Should not raise
-        _queue_sync("ws_test", "conn_test")
-
-
-# ============================================================================
-# OAuth Config Loading
-# ============================================================================
-
-class TestLoadOAuthConfig:
-    """Test loading OAuth config from SSM."""
-
-    @patch.object(handler_module, '_get_ssm')
-    def test_load_oauth_config_success(self, mock_ssm_fn):
-        """Test loading OAuth config from SSM."""
-        mock_ssm_client = MagicMock()
-        mock_ssm_fn.return_value = mock_ssm_client
-        mock_ssm_client.get_parameter.side_effect = [
-            {"Parameter": {"Value": "client-id-value"}},
-            {"Parameter": {"Value": "client-secret-value"}},
-            {"Parameter": {"Value": "https://example.com/callback"}},
-        ]
-
-        config = handler_module._load_oauth_config()
-        assert config["client_id"] == "client-id-value"
-        assert config["client_secret"] == "client-secret-value"
-        assert config["callback_url"] == "https://example.com/callback"
-
-    @patch.object(handler_module, '_get_ssm')
-    def test_load_oauth_config_ssm_error(self, mock_ssm_fn):
-        """Test raises on SSM error."""
-        mock_ssm_client = MagicMock()
-        mock_ssm_fn.return_value = mock_ssm_client
-        mock_ssm_client.get_parameter.side_effect = ClientError(
-            {"Error": {"Code": "ParameterNotFound", "Message": "Not found"}},
-            "GetParameter",
+    @patch.object(token_module, "get_refresh_token")
+    def test_refresh_no_token(self, mock_get):
+        mock_get.return_value = None
+        assert token_module.refresh_access_token("conn1", "cid", "csec") is None
+
+    @patch("sp_int_token_manager.urllib.request.urlopen")
+    @patch.object(token_module, "get_refresh_token")
+    def test_refresh_http_error(self, mock_get, mock_urlopen):
+        mock_get.return_value = "refresh"
+        mock_urlopen.side_effect = urllib.error.HTTPError(
+            url="https://example.com", code=400, msg="Bad",
+            hdrs={}, fp=MagicMock(read=MagicMock(return_value=b'invalid_grant')),
+        )
+        assert token_module.refresh_access_token("conn1", "cid", "csec") is None
+
+    @patch.object(token_module, "_get_dynamodb")
+    def test_delete_tokens_success(self, mock_db_fn):
+        mock_table = MagicMock()
+        mock_db = MagicMock()
+        mock_db.Table.return_value = mock_table
+        mock_db_fn.return_value = mock_db
+        assert token_module.delete_tokens("conn1") is True
+        mock_table.delete_item.assert_called_once_with(
+            Key={"PK": "SHAREPOINT_TOKEN#conn1", "SK": "CREDENTIALS"}
         )
 
-        with pytest.raises(ClientError):
-            handler_module._load_oauth_config()
+    @patch.object(token_module, "_get_dynamodb")
+    def test_delete_tokens_error(self, mock_db_fn):
+        mock_table = MagicMock()
+        mock_db = MagicMock()
+        mock_db.Table.return_value = mock_table
+        mock_db_fn.return_value = mock_db
+        mock_table.delete_item.side_effect = ClientError(
+            {"Error": {"Code": "500", "Message": "err"}}, "DeleteItem"
+        )
+        assert token_module.delete_tokens("conn1") is False
 
-    @patch.object(handler_module, '_get_ssm')
-    def test_load_oauth_config_caches_result(self, mock_ssm_fn):
-        """Test config is cached after first load."""
-        mock_ssm_client = MagicMock()
-        mock_ssm_fn.return_value = mock_ssm_client
-        mock_ssm_client.get_parameter.side_effect = [
-            {"Parameter": {"Value": "cid"}},
-            {"Parameter": {"Value": "csec"}},
-            {"Parameter": {"Value": "url"}},
-        ]
+    @patch("sp_int_token_manager.urllib.request.urlopen")
+    def test_exchange_success(self, mock_urlopen):
+        mock_urlopen.return_value = _make_urlopen_response({
+            "access_token": "at", "refresh_token": "rt", "expires_in": 3600,
+        })
+        a, r, e = token_module.exchange_code_for_tokens("code", "cid", "csec", "https://cb")
+        assert a == "at"
+        assert r == "rt"
+        assert e == 3600
 
-        handler_module._load_oauth_config()
-        handler_module._load_oauth_config()
-        # Should only call SSM once (3 params)
-        assert mock_ssm_client.get_parameter.call_count == 3
-
-    @patch.object(handler_module, '_get_ssm')
-    def test_load_oauth_config_uses_sharepoint_callback_url(self, mock_ssm_fn):
-        """Test SSM param path uses sharepoint-callback-url."""
-        mock_ssm_client = MagicMock()
-        mock_ssm_fn.return_value = mock_ssm_client
-        mock_ssm_client.get_parameter.side_effect = [
-            {"Parameter": {"Value": "cid"}},
-            {"Parameter": {"Value": "csec"}},
-            {"Parameter": {"Value": "https://example.com/sharepoint/callback"}},
-        ]
-
-        handler_module._load_oauth_config()
-        # Verify the third call uses sharepoint-callback-url
-        calls = mock_ssm_client.get_parameter.call_args_list
-        callback_param_name = calls[2][1]["Name"]
-        assert "sharepoint-callback-url" in callback_param_name
+    @patch("sp_int_token_manager.urllib.request.urlopen")
+    def test_exchange_error(self, mock_urlopen):
+        mock_urlopen.side_effect = urllib.error.HTTPError(
+            url="https://example.com", code=400, msg="Bad",
+            hdrs={}, fp=MagicMock(read=MagicMock(return_value=b'err')),
+        )
+        a, r, e = token_module.exchange_code_for_tokens("code", "cid", "csec", "https://cb")
+        assert a is None
 
 
 # ============================================================================
-# Lambda Handler Routing
+# SharePoint API Tests
 # ============================================================================
 
-class TestLambdaHandlerRouting:
-    """Test main handler routes requests correctly."""
+class TestSharePointAPI:
 
-    @patch.object(handler_module, '_is_workspace_admin', return_value=True)
-    @patch.object(handler_module, 'get_authorize_url')
-    def test_routes_authorize(self, mock_fn, mock_admin):
-        """Test routing GET /sharepoint/authorize."""
-        mock_fn.return_value = _response(200, {"auth_url": "https://..."})
+    @patch("sp_int_sharepoint_api.urllib.request.urlopen")
+    def test_make_request_success(self, mock_urlopen):
+        mock_urlopen.return_value = _make_urlopen_response({"id": "123"})
+        result = api_module._make_request("token", "https://graph.microsoft.com/v1.0/me")
+        assert result["id"] == "123"
 
-        event = {
-            "requestContext": {"http": {"method": "GET", "path": "/sharepoint/authorize"}},
-            "headers": {"x-user-email": "admin@example.com"},
-            "queryStringParameters": {"workspace_id": "ws_test"},
+    @patch("sp_int_sharepoint_api.urllib.request.urlopen")
+    def test_make_request_auth_error(self, mock_urlopen):
+        mock_urlopen.side_effect = urllib.error.HTTPError(
+            url="https://graph.microsoft.com", code=401, msg="Unauthorized",
+            hdrs={}, fp=MagicMock(read=MagicMock(return_value=b'unauthorized')),
+        )
+        with pytest.raises(api_module.SharePointAuthError):
+            api_module._make_request("token", "https://graph.microsoft.com/v1.0/me")
+
+    @patch("sp_int_sharepoint_api.urllib.request.urlopen")
+    def test_make_request_api_error(self, mock_urlopen):
+        mock_urlopen.side_effect = urllib.error.HTTPError(
+            url="https://graph.microsoft.com", code=500, msg="Server Error",
+            hdrs={}, fp=MagicMock(read=MagicMock(return_value=b'error')),
+        )
+        with pytest.raises(api_module.SharePointAPIError):
+            api_module._make_request("token", "https://graph.microsoft.com/v1.0/me")
+
+    @patch.object(api_module, "_make_request")
+    def test_get_user_profile(self, mock_req):
+        mock_req.return_value = {"displayName": "User"}
+        assert api_module.get_user_profile("token")["displayName"] == "User"
+
+    @patch.object(api_module, "_make_request")
+    def test_get_user_sites(self, mock_req):
+        mock_req.return_value = {
+            "value": [
+                {"name": "MySite", "displayName": "My Site", "webUrl": "https://site"},
+                {"name": "contentTypeHub", "displayName": "Hub"},
+            ]
         }
+        result = api_module.get_user_sites("token")
+        assert len(result) == 1
+        assert result[0]["name"] == "MySite"
 
-        result = lambda_handler(event, None)
-        mock_fn.assert_called_once_with("ws_test")
+    @patch.object(api_module, "_make_request")
+    def test_get_user_sites_pagination(self, mock_req):
+        mock_req.side_effect = [
+            {"value": [{"name": "s1", "displayName": "S1"}], "@odata.nextLink": "https://next"},
+            {"value": [{"name": "s2", "displayName": "S2"}]},
+        ]
+        result = api_module.get_user_sites("token")
+        assert len(result) == 2
 
-    def test_authorize_missing_workspace_id(self):
-        """Test authorize returns 401 without user email."""
-        event = {
-            "requestContext": {"http": {"method": "GET", "path": "/sharepoint/authorize"}},
-            "queryStringParameters": {},
+    def test_get_site_display_name_uses_display(self):
+        site = {"displayName": "Custom Name", "name": "site1"}
+        assert api_module._get_site_display_name(site) == "Custom Name"
+
+    def test_get_site_display_name_falls_back_to_name(self):
+        site = {"displayName": "Team Site", "name": "mysite"}
+        assert api_module._get_site_display_name(site) == "mysite"
+
+    def test_get_site_display_name_from_url(self):
+        site = {"displayName": "Team Site", "name": "", "webUrl": "https://org.sharepoint.com/sites/MySite"}
+        assert api_module._get_site_display_name(site) == "MySite"
+
+    def test_get_site_display_name_unknown(self):
+        site = {"displayName": "", "name": "", "webUrl": "https://org.sharepoint.com"}
+        result = api_module._get_site_display_name(site)
+        assert result == "Unknown Site"
+
+    @patch.object(api_module, "_make_request")
+    def test_list_site_drives(self, mock_req):
+        mock_req.return_value = {"value": [{"id": "d1", "name": "Documents"}]}
+        result = api_module.list_site_drives("token", "site1")
+        assert len(result) == 1
+
+    @patch.object(api_module, "_make_request")
+    def test_get_drive_delta(self, mock_req):
+        mock_req.return_value = {
+            "value": [{"id": "item1"}],
+            "@odata.deltaLink": "https://delta",
         }
-        result = lambda_handler(event, None)
-        assert result["statusCode"] == 401
+        items, delta = api_module.get_drive_delta("token", "drive1")
+        assert len(items) == 1
+        assert delta == "https://delta"
 
-    @patch.object(handler_module, 'handle_callback')
-    def test_routes_callback_get(self, mock_fn):
-        """Test routing GET /sharepoint/callback."""
-        mock_fn.return_value = _response(200, {"redirect": "/"})
+    @patch.object(api_module, "_make_request")
+    def test_get_drive_delta_with_token(self, mock_req):
+        mock_req.return_value = {"value": [], "@odata.deltaLink": "https://new-delta"}
+        items, delta = api_module.get_drive_delta("token", "drive1", delta_token="https://old-delta")
+        mock_req.assert_called_with("token", "https://old-delta")
 
-        event = {
-            "requestContext": {"http": {"method": "GET", "path": "/sharepoint/callback"}},
-            "queryStringParameters": {"code": "abc", "state": "{}"},
+    @patch.object(api_module, "_make_request")
+    def test_list_site_pages(self, mock_req):
+        mock_req.return_value = {"value": [{"id": "p1", "title": "Page"}]}
+        result = api_module.list_site_pages("token", "site1")
+        assert len(result) == 1
+
+    @patch.object(api_module, "_make_request")
+    def test_list_site_pages_error(self, mock_req):
+        mock_req.side_effect = api_module.SharePointAPIError("err")
+        result = api_module.list_site_pages("token", "site1")
+        assert result == []
+
+    @patch.object(api_module, "_make_request")
+    def test_get_page_content(self, mock_req):
+        mock_req.return_value = {"title": "Page", "canvasLayout": {}}
+        result = api_module.get_page_content("token", "site1", "page1")
+        assert result["title"] == "Page"
+
+    @patch.object(api_module, "_make_request")
+    def test_get_page_content_error(self, mock_req):
+        mock_req.side_effect = api_module.SharePointAPIError("err")
+        result = api_module.get_page_content("token", "site1", "page1")
+        assert result is None
+
+    def test_extract_page_text(self):
+        page = {
+            "title": "Test Page",
+            "canvasLayout": {
+                "horizontalSections": [
+                    {
+                        "columns": [
+                            {
+                                "webparts": [
+                                    {"innerHtml": "<p>Hello</p> <b>World</b>"}
+                                ]
+                            }
+                        ]
+                    }
+                ]
+            }
         }
+        text = api_module.extract_page_text(page)
+        assert "Test Page" in text
+        assert "Hello" in text
+        assert "World" in text
 
-        lambda_handler(event, None)
-        mock_fn.assert_called_once()
+    def test_extract_page_text_empty(self):
+        page = {"title": "Empty", "canvasLayout": {}}
+        text = api_module.extract_page_text(page)
+        assert "Empty" in text
 
-    @patch.object(handler_module, 'handle_callback')
-    def test_routes_callback_post(self, mock_fn):
-        """Test routing POST /sharepoint/callback."""
-        mock_fn.return_value = _response(200, {"redirect": "/"})
+    @patch("sp_int_sharepoint_api.urllib.request.urlopen")
+    def test_download_file(self, mock_urlopen):
+        resp = MagicMock()
+        resp.read.return_value = b"content"
+        resp.__enter__ = MagicMock(return_value=resp)
+        resp.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = resp
+        result = api_module.download_file("https://download.url")
+        assert result == b"content"
 
-        event = {
-            "requestContext": {"http": {"method": "POST", "path": "/sharepoint/callback"}},
-            "body": json.dumps({"code": "abc", "state": "{}"}),
-        }
 
-        lambda_handler(event, None)
-        mock_fn.assert_called_once()
+# ============================================================================
+# Handler Tests
+# ============================================================================
 
-    def test_authenticated_route_requires_email(self):
-        """Test authenticated routes return 401 without user email."""
-        event = {
-            "requestContext": {"http": {"method": "GET", "path": "/workspaces/ws1/sharepoint/connections"}},
-            "headers": {},
-        }
-        result = lambda_handler(event, None)
-        assert result["statusCode"] == 401
+class TestSPHandlerHelpers:
 
-    @patch.object(handler_module, 'list_connections')
-    def test_routes_list_connections(self, mock_fn):
-        """Test routing GET /workspaces/{id}/sharepoint/connections."""
-        mock_fn.return_value = _response(200, {"connections": []})
+    def test_response(self):
+        result = handler_module._response(200, {"key": "val"})
+        assert result["statusCode"] == 200
 
-        event = {
-            "requestContext": {"http": {"method": "GET", "path": "/workspaces/ws1/sharepoint/connections"}},
-            "headers": {"x-user-email": "user@example.com"},
-        }
+    def test_error(self):
+        result = handler_module._error(400, "bad")
+        assert result["statusCode"] == 400
 
-        lambda_handler(event, None)
-        mock_fn.assert_called_once_with("user@example.com", "ws1")
+    def test_redirect(self):
+        result = handler_module._redirect("https://example.com")
+        assert result["statusCode"] == 302
 
-    @patch.object(handler_module, 'get_sites')
-    def test_routes_get_sites(self, mock_fn):
-        """Test routing GET /workspaces/{id}/sharepoint/connections/{connId}/sites."""
-        mock_fn.return_value = _response(200, {"sites": []})
+    def test_parse_path(self):
+        assert handler_module._parse_path("/sharepoint/authorize") == ("sharepoint", "authorize")
 
-        event = {
-            "requestContext": {"http": {"method": "GET", "path": "/workspaces/ws1/sharepoint/connections/conn1/sites"}},
-            "headers": {"x-user-email": "user@example.com"},
-        }
+    def test_get_user_from_request(self):
+        assert handler_module._get_user_from_request({"headers": {"x-user-email": "u@t.com"}}) == "u@t.com"
 
-        lambda_handler(event, None)
-        mock_fn.assert_called_once_with("user@example.com", "ws1", "conn1")
+    def test_generate_id(self):
+        assert isinstance(handler_module.generate_id(), str)
 
-    @patch.object(handler_module, 'update_sites')
-    def test_routes_update_sites(self, mock_fn):
-        """Test routing PUT /workspaces/{id}/sharepoint/connections/{connId}/sites."""
-        mock_fn.return_value = _response(200, {"message": "Updated"})
 
-        event = {
-            "requestContext": {"http": {"method": "PUT", "path": "/workspaces/ws1/sharepoint/connections/conn1/sites"}},
-            "headers": {"x-user-email": "admin@example.com"},
-            "body": json.dumps({"selected_sites": []}),
-        }
+class TestSPHandlerRouting:
 
-        lambda_handler(event, None)
-        mock_fn.assert_called_once()
+    @pytest.fixture(autouse=True)
+    def reset_globals(self):
+        handler_module._oauth_config = None
+        handler_module._dynamodb = None
+        handler_module._ssm = None
+        handler_module._sqs = None
+        yield
 
-    @patch.object(handler_module, 'trigger_sync')
-    def test_routes_trigger_sync(self, mock_fn):
-        """Test routing POST /workspaces/{id}/sharepoint/connections/{connId}/sync."""
-        mock_fn.return_value = _response(200, {"status": "queued"})
-
-        event = {
-            "requestContext": {"http": {"method": "POST", "path": "/workspaces/ws1/sharepoint/connections/conn1/sync"}},
-            "headers": {"x-user-email": "admin@example.com"},
-        }
-
-        lambda_handler(event, None)
-        mock_fn.assert_called_once_with("admin@example.com", "ws1", "conn1")
-
-    @patch.object(handler_module, 'delete_connection')
-    def test_routes_delete_connection(self, mock_fn):
-        """Test routing DELETE /workspaces/{id}/sharepoint/connections/{connId}."""
-        mock_fn.return_value = _response(200, {"message": "Deleted"})
-
-        event = {
-            "requestContext": {"http": {"method": "DELETE", "path": "/workspaces/ws1/sharepoint/connections/conn1"}},
-            "headers": {"x-user-email": "admin@example.com"},
-        }
-
-        lambda_handler(event, None)
-        mock_fn.assert_called_once_with("admin@example.com", "ws1", "conn1")
-
-    def test_unknown_route_returns_404(self):
-        """Test unknown routes return 404."""
-        event = {
-            "requestContext": {"http": {"method": "GET", "path": "/unknown/route"}},
-            "headers": {"x-user-email": "user@example.com"},
-        }
-        result = lambda_handler(event, None)
+    def test_not_found(self):
+        event = {"httpMethod": "GET", "path": "/unknown", "headers": {"x-user-email": "u@t.com"}}
+        result = handler_module.lambda_handler(event, None)
         assert result["statusCode"] == 404
 
-    def test_invalid_body_json_handled(self):
-        """Test handler handles invalid JSON body gracefully."""
+    def test_auth_required(self):
+        event = {"httpMethod": "GET", "path": "/workspaces/ws1/sharepoint/connections", "headers": {}}
+        result = handler_module.lambda_handler(event, None)
+        assert result["statusCode"] == 401
+
+    @patch.object(handler_module, "list_connections")
+    def test_list_connections_route(self, mock_list):
+        mock_list.return_value = handler_module._response(200, {"connections": []})
         event = {
-            "requestContext": {"http": {"method": "GET", "path": "/unknown"}},
-            "headers": {"x-user-email": "user@example.com"},
-            "body": "not valid json",
+            "httpMethod": "GET",
+            "path": "/workspaces/ws1/sharepoint/connections",
+            "headers": {"x-user-email": "u@t.com"},
         }
-        result = lambda_handler(event, None)
-        assert result["statusCode"] == 404
+        result = handler_module.lambda_handler(event, None)
+        assert result["statusCode"] == 200
+
+    @patch.object(handler_module, "handle_callback")
+    def test_callback_route(self, mock_cb):
+        mock_cb.return_value = handler_module._response(200, {"redirect": "/"})
+        event = {"httpMethod": "GET", "path": "/sharepoint/callback", "queryStringParameters": {"code": "c", "state": "{}"}}
+        result = handler_module.lambda_handler(event, None)
+        assert result["statusCode"] == 200
+
+    @patch.object(handler_module, "delete_connection")
+    def test_delete_route(self, mock_del):
+        mock_del.return_value = handler_module._response(200, {"message": "ok"})
+        event = {
+            "httpMethod": "DELETE",
+            "path": "/workspaces/ws1/sharepoint/connections/conn1",
+            "headers": {"x-user-email": "u@t.com"},
+        }
+        result = handler_module.lambda_handler(event, None)
+        assert result["statusCode"] == 200
+
+    @patch.object(handler_module, "trigger_sync")
+    def test_sync_route(self, mock_sync):
+        mock_sync.return_value = handler_module._response(200, {"message": "ok"})
+        event = {
+            "httpMethod": "POST",
+            "path": "/workspaces/ws1/sharepoint/connections/conn1/sync",
+            "headers": {"x-user-email": "u@t.com"},
+        }
+        result = handler_module.lambda_handler(event, None)
+        assert result["statusCode"] == 200
+
+
+class TestSPHandlerCallback:
+
+    @pytest.fixture(autouse=True)
+    def reset_globals(self):
+        handler_module._oauth_config = None
+        handler_module._dynamodb = None
+        handler_module._ssm = None
+        handler_module._sqs = None
+        yield
+
+    @patch.object(handler_module, "save_tokens")
+    @patch.object(handler_module, "get_user_profile")
+    @patch.object(handler_module, "exchange_code_for_tokens")
+    @patch.object(handler_module, "_load_oauth_config")
+    @patch.object(handler_module, "_get_dynamodb")
+    def test_callback_success(self, mock_db_fn, mock_oauth, mock_exchange, mock_profile, mock_save):
+        mock_table = MagicMock()
+        mock_db = MagicMock()
+        mock_db.Table.return_value = mock_table
+        mock_db_fn.return_value = mock_db
+        mock_oauth.return_value = {"client_id": "cid", "client_secret": "csec", "callback_url": "https://cb"}
+        mock_exchange.return_value = ("access", "refresh", 3600)
+        mock_profile.return_value = {"mail": "u@t.com", "displayName": "User"}
+
+        event = {"queryStringParameters": {"code": "c", "state": json.dumps({"workspace_id": "ws1"})}}
+        result = handler_module.handle_callback(event)
+        assert result["statusCode"] == 200
+
+    def test_callback_error(self):
+        event = {"queryStringParameters": {"error": "denied"}}
+        result = handler_module.handle_callback(event)
+        body = json.loads(result["body"])
+        assert "oauth_denied" in body["redirect"]
+
+    def test_callback_missing_code(self):
+        event = {"queryStringParameters": {"state": "{}"}}
+        result = handler_module.handle_callback(event)
+        assert result["statusCode"] == 400
+
+    def test_callback_invalid_state(self):
+        event = {"queryStringParameters": {"code": "c", "state": "bad{{"}}
+        result = handler_module.handle_callback(event)
+        assert result["statusCode"] == 400
+
+
+class TestSPHandlerListConnections:
+
+    @pytest.fixture(autouse=True)
+    def reset_globals(self):
+        handler_module._oauth_config = None
+        handler_module._dynamodb = None
+        handler_module._ssm = None
+        handler_module._sqs = None
+        yield
+
+    @patch.object(handler_module, "_get_dynamodb")
+    def test_list_connections_success(self, mock_db_fn):
+        mock_table = MagicMock()
+        mock_db = MagicMock()
+        mock_db.Table.return_value = mock_table
+        mock_db_fn.return_value = mock_db
+        mock_table.get_item.return_value = {"Item": {"role": "member"}}
+        mock_table.query.return_value = {"Items": [{"PK": "WS#ws1", "SK": "SHAREPOINT_CONNECTION#c1", "connection_id": "c1"}]}
+        result = handler_module.list_connections("u@t.com", "ws1")
+        assert result["statusCode"] == 200
+
+    @patch.object(handler_module, "_get_dynamodb")
+    def test_list_connections_not_member(self, mock_db_fn):
+        mock_table = MagicMock()
+        mock_db = MagicMock()
+        mock_db.Table.return_value = mock_table
+        mock_db_fn.return_value = mock_db
+        mock_table.get_item.return_value = {}
+        result = handler_module.list_connections("u@t.com", "ws1")
+        assert result["statusCode"] == 403

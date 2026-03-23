@@ -284,6 +284,50 @@ class TestPostLogin:
         assert result["statusCode"] == 404
 
 
+class TestBase64Body:
+
+    def test_base64_encoded_post_body(self):
+        """POST with base64-encoded body is decoded correctly."""
+        form_data = f"email={SCANNER_EMAIL}&password={SCANNER_PASSWORD}"
+        encoded_body = base64.b64encode(form_data.encode("utf-8")).decode("utf-8")
+
+        event = {
+            "httpMethod": "POST",
+            "path": f"/auth/{SECRET_PATH}",
+            "headers": {"content-type": "application/x-www-form-urlencoded"},
+            "body": encoded_body,
+            "isBase64Encoded": True,
+        }
+        result = lambda_handler(event, None)
+
+        assert result["statusCode"] == 302
+        assert result["headers"]["Location"] == REDIRECT_URL
+
+
+class TestJwtSecretCaching:
+
+    def test_jwt_secret_cached_on_second_call(self):
+        """JWT secret is cached after first retrieval."""
+        # First login to populate the cache
+        handler_module._jwt_secret = None
+        event = _alb_post_event(
+            f"/auth/{SECRET_PATH}",
+            {"email": SCANNER_EMAIL, "password": SCANNER_PASSWORD},
+        )
+        lambda_handler(event, None)
+
+        # Cache should now have the secret
+        assert handler_module._jwt_secret == JWT_SECRET
+
+        # Second call should use cached value (not call SSM again)
+        mock_ssm_client.get_parameter.reset_mock()
+        result = handler_module.get_jwt_secret()
+        assert result == JWT_SECRET
+        # SSM should NOT be called again for the JWT secret
+        for call_item in mock_ssm_client.get_parameter.call_args_list:
+            assert call_item[1].get("Name") != "/test/security-scanner/jwt-secret"
+
+
 class TestUnsupportedMethod:
 
     def test_put_returns_405(self):
