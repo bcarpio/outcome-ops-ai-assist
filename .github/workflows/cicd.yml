@@ -173,25 +173,14 @@ jobs:
 
       - name: SonarCloud Scan
         uses: SonarSource/sonarqube-scan-action@v6.0.0
-        with:
-          args: >
-            -Dsonar.projectKey=bcarpio_outcome-ops-ai-assist-private
-            -Dsonar.organization=bcarpio
-            -Dsonar.sources=lambda,ui/src
-            -Dsonar.tests=lambda/tests,ui/tests
-            -Dsonar.python.coverage.reportPaths=lambda/coverage.xml
-            -Dsonar.python.xunit.reportPath=lambda/junit.xml
-            -Dsonar.javascript.lcov.reportPaths=ui/coverage/lcov.info
-            -Dsonar.exclusions=**/*_test.py,**/tests/**,**/__pycache__/**,**/venv/**,**/bin/**,**/lib/**,**/node_modules/**
-            -Dsonar.test.inclusions=**/tests/**/*.py,**/tests/**/*.ts,**/tests/**/*.tsx
-            -Dsonar.host.url=https://sonarcloud.io
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
-      # Quality gate check disabled - free tier doesn't allow custom gates
-      # Overall coverage is 80.7% which exceeds threshold
-      # Sonar Way's "new code" 80% requirement too strict for docs/test changes
-      # - name: SonarCloud Quality Gate check
+      - name: SonarCloud Quality Gate check
+        uses: SonarSource/sonarqube-quality-gate-action@v1
+        timeout-minutes: 5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
       #   uses: SonarSource/sonarqube-quality-gate-action@v1.1.0
       #   timeout-minutes: 5
       #   env:
