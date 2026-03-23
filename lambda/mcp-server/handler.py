@@ -570,7 +570,7 @@ def _proxy_tool_call(config, original_tool_name, arguments):
     """
     url = config["url"]
     mcp_id = config["mcp_id"]
-    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    headers = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
 
     # Add auth headers
     _add_mcp_auth_headers(headers, config)
@@ -597,7 +597,17 @@ def _proxy_tool_call(config, original_tool_name, arguments):
 
     req = urllib.request.Request(url, data=payload, headers=headers)
     resp = urllib.request.urlopen(req, timeout=30)
-    body = json.loads(resp.read())
+    raw = resp.read().decode()
+    content_type = resp.headers.get("Content-Type") or ""
+
+    # Handle SSE responses (Streamable HTTP may return text/event-stream)
+    if "text/event-stream" in content_type:
+        for line in raw.splitlines():
+            if line.startswith("data: "):
+                raw = line[6:]
+                break
+
+    body = json.loads(raw)
 
     if "error" in body:
         return {
@@ -620,9 +630,18 @@ def _mcp_initialize_session(url, headers):
         },
     }).encode()
 
-    req = urllib.request.Request(url, data=init_payload, headers=headers.copy())
+    init_headers = headers.copy()
+    init_headers.setdefault("Accept", "application/json, text/event-stream")
+    req = urllib.request.Request(url, data=init_payload, headers=init_headers)
     resp = urllib.request.urlopen(req, timeout=10)
-    json.loads(resp.read())  # consume response
+    raw = resp.read().decode()
+    content_type = resp.headers.get("Content-Type") or ""
+    if "text/event-stream" in content_type:
+        for line in raw.splitlines():
+            if line.startswith("data: "):
+                raw = line[6:]
+                break
+    json.loads(raw)  # consume/validate response
     session_id = resp.headers.get("Mcp-Session-Id", "")
 
     # Send initialized notification
