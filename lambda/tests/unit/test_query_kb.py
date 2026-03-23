@@ -31,6 +31,10 @@ with mock_aws():
 handler = handler_module.handler
 invoke_lambda = handler_module.invoke_lambda
 rerank_results = handler_module.rerank_results
+generate_embedding = handler_module.generate_embedding
+format_source = handler_module.format_source
+query_s3_vectors = handler_module.query_s3_vectors
+load_config = handler_module.load_config
 
 
 class TestInvokeLambda:
@@ -542,3 +546,563 @@ class TestHandlerWithReranking:
         assert response["statusCode"] == 200
         call_args = mock_query.call_args
         assert call_args[0][1] == 5
+
+
+class TestLoadConfig:
+    """Test SSM configuration loading."""
+
+    @patch('query_kb_handler.ssm_client')
+    def test_load_config_success(self, mock_ssm):
+        """Test successful config loading from SSM."""
+        # Reset globals
+        handler_module.ASK_CLAUDE_LAMBDA_ARN = None
+        handler_module.VECTOR_BUCKET = None
+        handler_module.VECTOR_INDEX = None
+
+        mock_ssm.get_parameter.side_effect = [
+            {"Parameter": {"Value": "arn:aws:lambda:us-east-1:123:function:ask-claude"}},
+            {"Parameter": {"Value": "test-bucket"}},
+            {"Parameter": {"Value": "test-index"}},
+        ]
+
+        load_config()
+
+        assert handler_module.ASK_CLAUDE_LAMBDA_ARN == "arn:aws:lambda:us-east-1:123:function:ask-claude"
+        assert handler_module.VECTOR_BUCKET == "test-bucket"
+        assert handler_module.VECTOR_INDEX == "test-index"
+
+    @patch('query_kb_handler.ssm_client')
+    def test_load_config_ssm_error(self, mock_ssm):
+        """Test config loading raises on SSM error."""
+        handler_module.ASK_CLAUDE_LAMBDA_ARN = None
+        handler_module.VECTOR_BUCKET = None
+        handler_module.VECTOR_INDEX = None
+
+        mock_ssm.get_parameter.side_effect = ClientError(
+            {"Error": {"Code": "ParameterNotFound", "Message": "Not found"}},
+            "GetParameter"
+        )
+
+        with pytest.raises(ClientError):
+            load_config()
+
+
+class TestGenerateEmbedding:
+    """Test embedding generation."""
+
+    @patch('query_kb_handler.log_audit_entry')
+    @patch('query_kb_handler.bedrock_client')
+    def test_generate_embedding_success(self, mock_bedrock, mock_audit):
+        """Test successful embedding generation."""
+        mock_response_body = MagicMock()
+        mock_response_body.read.return_value = json.dumps({
+            "embedding": [0.1] * 1024
+        }).encode()
+
+        mock_bedrock.invoke_model.return_value = {
+            "body": mock_response_body
+        }
+
+        result = generate_embedding("test query")
+
+        assert len(result) == 1024
+        mock_bedrock.invoke_model.assert_called_once()
+        mock_audit.assert_called_once()
+
+    @patch('query_kb_handler.bedrock_client')
+    def test_generate_embedding_empty_result(self, mock_bedrock):
+        """Test embedding generation returns empty when model returns no embedding."""
+        mock_response_body = MagicMock()
+        mock_response_body.read.return_value = json.dumps({
+            "embedding": []
+        }).encode()
+
+        mock_bedrock.invoke_model.return_value = {
+            "body": mock_response_body
+        }
+
+        result = generate_embedding("test query")
+
+        assert result == []
+
+    @patch('query_kb_handler.bedrock_client')
+    def test_generate_embedding_client_error(self, mock_bedrock):
+        """Test embedding generation raises on Bedrock error."""
+        mock_bedrock.invoke_model.side_effect = ClientError(
+            {"Error": {"Code": "ThrottlingException", "Message": "Rate exceeded"}},
+            "InvokeModel"
+        )
+
+        with pytest.raises(ClientError):
+            generate_embedding("test query")
+
+
+class TestFormatSource:
+    """Test source formatting for different document types."""
+
+    def test_format_source_adr_with_file_path(self):
+        """Test ADR formatting with file path."""
+        metadata = {"type": "adr", "repo": "my-repo", "file_path": "docs/adrs/ADR-001.md"}
+        result = format_source(metadata)
+        assert result == "ADR: ADR-001"
+
+    def test_format_source_adr_no_file_path(self):
+        """Test ADR formatting without file path."""
+        metadata = {"type": "adr", "repo": "my-repo", "file_path": ""}
+        result = format_source(metadata)
+        assert result == "ADR - my-repo"
+
+    def test_format_source_readme(self):
+        """Test README formatting."""
+        metadata = {"type": "readme", "repo": "my-repo", "file_path": "README.md"}
+        result = format_source(metadata)
+        assert result == "README.md - my-repo"
+
+    def test_format_source_doc_with_file_path(self):
+        """Test doc formatting with file path."""
+        metadata = {"type": "doc", "repo": "my-repo", "file_path": "docs/guide.md"}
+        result = format_source(metadata)
+        assert result == "guide.md - my-repo"
+
+    def test_format_source_doc_no_file_path(self):
+        """Test doc formatting without file path."""
+        metadata = {"type": "doc", "repo": "my-repo", "file_path": ""}
+        result = format_source(metadata)
+        assert result == "Doc - my-repo"
+
+    def test_format_source_dependency_with_file_path(self):
+        """Test dependency formatting with file path."""
+        metadata = {"type": "dependency", "repo": "my-repo", "file_path": "requirements.txt", "language": "python"}
+        result = format_source(metadata)
+        assert result == "requirements.txt (python) - my-repo"
+
+    def test_format_source_dependency_no_file_path(self):
+        """Test dependency formatting without file path."""
+        metadata = {"type": "dependency", "repo": "my-repo", "file_path": "", "language": "java"}
+        result = format_source(metadata)
+        assert result == "Dependencies (java) - my-repo"
+
+    def test_format_source_code_map(self):
+        """Test code-map formatting."""
+        metadata = {"type": "code-map", "repo": "my-repo", "file_path": ""}
+        result = format_source(metadata)
+        assert result == "Code map - my-repo"
+
+    def test_format_source_handler_group_summary(self):
+        """Test handler-group-summary formatting."""
+        metadata = {"type": "handler-group-summary", "repo": "my-repo", "file_path": ""}
+        result = format_source(metadata)
+        assert result == "Code map - my-repo"
+
+    def test_format_source_infrastructure_summary(self):
+        """Test infrastructure-summary formatting."""
+        metadata = {"type": "infrastructure-summary", "repo": "my-repo", "file_path": ""}
+        result = format_source(metadata)
+        assert result == "Code map - my-repo"
+
+    def test_format_source_unknown_type(self):
+        """Test unknown doc type formatting."""
+        metadata = {"type": "custom", "repo": "my-repo", "file_path": ""}
+        result = format_source(metadata)
+        assert result == "custom - my-repo"
+
+    def test_format_source_empty_type(self):
+        """Test empty doc type formatting."""
+        metadata = {"type": "", "repo": "my-repo", "file_path": ""}
+        result = format_source(metadata)
+        assert result == "Document - my-repo"
+
+    def test_format_source_adr_no_extension(self):
+        """Test ADR formatting with file that has no extension."""
+        metadata = {"type": "adr", "repo": "my-repo", "file_path": "docs/adrs/ADR-001"}
+        result = format_source(metadata)
+        assert result == "ADR: ADR-001"
+
+    def test_format_source_doc_no_extension(self):
+        """Test doc formatting with file that has no extension."""
+        metadata = {"type": "doc", "repo": "my-repo", "file_path": "docs/guide"}
+        result = format_source(metadata)
+        assert result == "guide.md - my-repo"
+
+
+class TestQueryS3Vectors:
+    """Test S3 Vectors querying."""
+
+    @patch('query_kb_handler.s3vectors_client')
+    @patch('query_kb_handler.VECTOR_BUCKET', 'test-bucket')
+    @patch('query_kb_handler.VECTOR_INDEX', 'test-index')
+    def test_query_vectors_basic(self, mock_s3v):
+        """Test basic vector query returns results."""
+        mock_s3v.query_vectors.return_value = {
+            "vectors": [
+                {
+                    "metadata": {
+                        "content": "Lambda handler content",
+                        "type": "adr",
+                        "repo": "my-repo",
+                        "file_path": "docs/adrs/ADR-004.md",
+                    },
+                    "distance": 0.1,
+                },
+            ]
+        }
+
+        result = query_s3_vectors([0.1] * 1024, top_k=5)
+
+        assert len(result) == 1
+        assert result[0]["score"] == 0.9
+        assert result[0]["type"] == "adr"
+        assert result[0]["repo"] == "my-repo"
+
+    @patch('query_kb_handler.s3vectors_client')
+    @patch('query_kb_handler.VECTOR_BUCKET', 'test-bucket')
+    @patch('query_kb_handler.VECTOR_INDEX', 'test-index')
+    def test_query_vectors_with_repo_filter(self, mock_s3v):
+        """Test vector query with repo filter."""
+        mock_s3v.query_vectors.return_value = {"vectors": []}
+
+        query_s3_vectors([0.1] * 1024, top_k=5, repo_filter="my-repo")
+
+        call_kwargs = mock_s3v.query_vectors.call_args[1]
+        assert call_kwargs["filter"] == {"repo": {"equals": "my-repo"}}
+
+    @patch('query_kb_handler.s3vectors_client')
+    @patch('query_kb_handler.VECTOR_BUCKET', 'test-bucket')
+    @patch('query_kb_handler.VECTOR_INDEX', 'test-index')
+    def test_query_vectors_with_doc_types_filter(self, mock_s3v):
+        """Test vector query with client-side doc_types filter."""
+        mock_s3v.query_vectors.return_value = {
+            "vectors": [
+                {
+                    "metadata": {"content": "ADR content", "type": "adr", "repo": "r", "file_path": "a.md"},
+                    "distance": 0.1,
+                },
+                {
+                    "metadata": {"content": "README content", "type": "readme", "repo": "r", "file_path": "README.md"},
+                    "distance": 0.2,
+                },
+            ]
+        }
+
+        result = query_s3_vectors([0.1] * 1024, top_k=5, doc_types=["adr"])
+
+        # Only ADR should be returned (readme filtered out)
+        assert len(result) == 1
+        assert result[0]["type"] == "adr"
+
+    @patch('query_kb_handler.s3vectors_client')
+    @patch('query_kb_handler.VECTOR_BUCKET', 'test-bucket')
+    @patch('query_kb_handler.VECTOR_INDEX', 'test-index')
+    def test_query_vectors_repo_fallback_github(self, mock_s3v):
+        """Test repo extraction fallback for GitHub source."""
+        mock_s3v.query_vectors.return_value = {
+            "vectors": [
+                {
+                    "metadata": {
+                        "content": "content",
+                        "type": "doc",
+                        "file_path": "file.md",
+                        "source": "github",
+                        "folder_path": "my-org/my-repo/docs",
+                    },
+                    "distance": 0.1,
+                },
+            ]
+        }
+
+        result = query_s3_vectors([0.1] * 1024, top_k=5)
+
+        assert result[0]["repo"] == "my-org"
+
+    @patch('query_kb_handler.s3vectors_client')
+    @patch('query_kb_handler.VECTOR_BUCKET', 'test-bucket')
+    @patch('query_kb_handler.VECTOR_INDEX', 'test-index')
+    def test_query_vectors_repo_fallback_other_source(self, mock_s3v):
+        """Test repo extraction fallback for non-GitHub source with folder_path."""
+        mock_s3v.query_vectors.return_value = {
+            "vectors": [
+                {
+                    "metadata": {
+                        "content": "content",
+                        "type": "doc",
+                        "file_path": "file.md",
+                        "source": "confluence",
+                        "folder_path": "spaces/engineering",
+                    },
+                    "distance": 0.1,
+                },
+            ]
+        }
+
+        result = query_s3_vectors([0.1] * 1024, top_k=5)
+
+        assert result[0]["repo"] == "Confluence/engineering"
+
+    @patch('query_kb_handler.s3vectors_client')
+    @patch('query_kb_handler.VECTOR_BUCKET', 'test-bucket')
+    @patch('query_kb_handler.VECTOR_INDEX', 'test-index')
+    def test_query_vectors_repo_fallback_source_only(self, mock_s3v):
+        """Test repo extraction fallback with source but no folder_path."""
+        mock_s3v.query_vectors.return_value = {
+            "vectors": [
+                {
+                    "metadata": {
+                        "content": "content",
+                        "type": "doc",
+                        "file_path": "file.md",
+                        "source": "jira",
+                    },
+                    "distance": 0.1,
+                },
+            ]
+        }
+
+        result = query_s3_vectors([0.1] * 1024, top_k=5)
+
+        assert result[0]["repo"] == "Jira"
+
+    @patch('query_kb_handler.s3vectors_client')
+    @patch('query_kb_handler.VECTOR_BUCKET', 'test-bucket')
+    @patch('query_kb_handler.VECTOR_INDEX', 'test-index')
+    def test_query_vectors_client_error(self, mock_s3v):
+        """Test vector query raises on S3 Vectors error."""
+        mock_s3v.query_vectors.side_effect = ClientError(
+            {"Error": {"Code": "InternalError", "Message": "fail"}},
+            "QueryVectors"
+        )
+
+        with pytest.raises(ClientError):
+            query_s3_vectors([0.1] * 1024, top_k=5)
+
+    @patch('query_kb_handler.s3vectors_client')
+    @patch('query_kb_handler.VECTOR_BUCKET', 'test-bucket')
+    @patch('query_kb_handler.VECTOR_INDEX', 'test-index')
+    def test_query_vectors_empty_results(self, mock_s3v):
+        """Test vector query returns empty list when no results."""
+        mock_s3v.query_vectors.return_value = {"vectors": []}
+
+        result = query_s3_vectors([0.1] * 1024, top_k=5)
+
+        assert result == []
+
+
+class TestRerankFallbacks:
+    """Test reranking fallback scenarios."""
+
+    @patch('query_kb_handler.bedrock_agent_runtime_client')
+    def test_rerank_generic_exception_fallback(self, mock_bedrock_agent):
+        """Test reranking falls back on unexpected Exception."""
+        documents = [
+            {"score": 0.90, "text": "Doc A", "source": "a", "type": "doc", "repo": "test", "file_path": "a.md"},
+            {"score": 0.85, "text": "Doc B", "source": "b", "type": "doc", "repo": "test", "file_path": "b.md"},
+        ]
+        mock_bedrock_agent.rerank.side_effect = RuntimeError("Unexpected")
+
+        result = rerank_results("test query", documents)
+
+        assert len(result) == 2
+        assert result[0]["source"] == "a"
+
+    @patch('query_kb_handler.bedrock_agent_runtime_client')
+    def test_rerank_generic_exception_with_top_n(self, mock_bedrock_agent):
+        """Test reranking falls back with top_n on unexpected Exception."""
+        documents = [
+            {"score": 0.90, "text": "Doc A", "source": "a", "type": "doc", "repo": "test", "file_path": "a.md"},
+            {"score": 0.85, "text": "Doc B", "source": "b", "type": "doc", "repo": "test", "file_path": "b.md"},
+        ]
+        mock_bedrock_agent.rerank.side_effect = RuntimeError("Unexpected")
+
+        result = rerank_results("test query", documents, top_n=1)
+
+        assert len(result) == 1
+
+    @patch('query_kb_handler.bedrock_agent_runtime_client')
+    def test_rerank_client_error_with_top_n(self, mock_bedrock_agent):
+        """Test reranking falls back with top_n on ClientError."""
+        documents = [
+            {"score": 0.90, "text": "Doc A", "source": "a", "type": "doc", "repo": "test", "file_path": "a.md"},
+            {"score": 0.85, "text": "Doc B", "source": "b", "type": "doc", "repo": "test", "file_path": "b.md"},
+        ]
+        mock_bedrock_agent.rerank.side_effect = ClientError(
+            {"Error": {"Code": "ThrottlingException"}}, "rerank"
+        )
+
+        result = rerank_results("test query", documents, top_n=1)
+
+        assert len(result) == 1
+
+
+class TestHandlerAdditional:
+    """Additional handler tests for uncovered paths."""
+
+    @patch('query_kb_handler.VECTOR_BUCKET', 'test-bucket')
+    @patch('query_kb_handler.VECTOR_INDEX', 'test-index')
+    @patch('query_kb_handler.ASK_CLAUDE_LAMBDA_ARN', 'arn:aws:lambda:us-east-1:123:function:ask-claude')
+    @patch('query_kb_handler.query_s3_vectors')
+    @patch('query_kb_handler.generate_embedding')
+    @patch('query_kb_handler.invoke_lambda')
+    def test_handler_with_repo_filter(self, mock_invoke, mock_embedding, mock_query):
+        """Test handler passes repo filter to query."""
+        event = {"query": "test", "repo": "spring-petclinic"}
+
+        mock_embedding.return_value = [0.1] * 1024
+        mock_query.return_value = [
+            {"score": 0.95, "text": "content", "source": "source", "type": "adr", "repo": "spring-petclinic", "file_path": "adr.md"}
+        ]
+        mock_invoke.return_value = {
+            "statusCode": 200,
+            "body": json.dumps({"answer": "test", "sources": ["source"]})
+        }
+
+        response = handler(event, None)
+
+        assert response["statusCode"] == 200
+        call_args = mock_query.call_args
+        assert call_args[0][2] == "spring-petclinic"  # repo_filter arg
+
+    @patch('query_kb_handler.VECTOR_BUCKET', 'test-bucket')
+    @patch('query_kb_handler.VECTOR_INDEX', 'test-index')
+    @patch('query_kb_handler.ASK_CLAUDE_LAMBDA_ARN', 'arn:aws:lambda:us-east-1:123:function:ask-claude')
+    @patch('query_kb_handler.query_s3_vectors')
+    @patch('query_kb_handler.generate_embedding')
+    @patch('query_kb_handler.invoke_lambda')
+    def test_handler_with_doc_types(self, mock_invoke, mock_embedding, mock_query):
+        """Test handler passes docTypes filter to query."""
+        event = {"query": "test", "docTypes": ["adr", "doc"]}
+
+        mock_embedding.return_value = [0.1] * 1024
+        mock_query.return_value = [
+            {"score": 0.95, "text": "content", "source": "source", "type": "adr", "repo": "test", "file_path": "adr.md"}
+        ]
+        mock_invoke.return_value = {
+            "statusCode": 200,
+            "body": json.dumps({"answer": "test", "sources": ["source"]})
+        }
+
+        response = handler(event, None)
+
+        assert response["statusCode"] == 200
+        call_args = mock_query.call_args
+        assert call_args[0][3] == ["adr", "doc"]  # doc_types arg
+
+    @patch('query_kb_handler.VECTOR_BUCKET', 'test-bucket')
+    @patch('query_kb_handler.VECTOR_INDEX', 'test-index')
+    @patch('query_kb_handler.ASK_CLAUDE_LAMBDA_ARN', 'arn:aws:lambda:us-east-1:123:function:ask-claude')
+    @patch('query_kb_handler.query_s3_vectors')
+    @patch('query_kb_handler.generate_embedding')
+    @patch('query_kb_handler.invoke_lambda')
+    def test_handler_with_model_sonnet(self, mock_invoke, mock_embedding, mock_query):
+        """Test handler passes model selection to ask-claude."""
+        event = {"query": "test", "model": "sonnet"}
+
+        mock_embedding.return_value = [0.1] * 1024
+        mock_query.return_value = [
+            {"score": 0.95, "text": "content", "source": "source", "type": "adr", "repo": "test", "file_path": "adr.md"}
+        ]
+        mock_invoke.return_value = {
+            "statusCode": 200,
+            "body": json.dumps({"answer": "test", "sources": ["source"]})
+        }
+
+        response = handler(event, None)
+
+        assert response["statusCode"] == 200
+        invoke_call = mock_invoke.call_args
+        assert invoke_call[0][1]["model"] == "sonnet"
+
+    @patch('query_kb_handler.VECTOR_BUCKET', 'test-bucket')
+    @patch('query_kb_handler.VECTOR_INDEX', 'test-index')
+    @patch('query_kb_handler.ASK_CLAUDE_LAMBDA_ARN', 'arn:aws:lambda:us-east-1:123:function:ask-claude')
+    @patch('query_kb_handler.query_s3_vectors')
+    @patch('query_kb_handler.generate_embedding')
+    @patch('query_kb_handler.invoke_lambda')
+    def test_handler_response_includes_usage(self, mock_invoke, mock_embedding, mock_query):
+        """Test handler includes usage info in response when present."""
+        event = {"query": "test"}
+
+        mock_embedding.return_value = [0.1] * 1024
+        mock_query.return_value = [
+            {"score": 0.95, "text": "content", "source": "source", "type": "adr", "repo": "test", "file_path": "adr.md"}
+        ]
+        mock_invoke.return_value = {
+            "statusCode": 200,
+            "body": json.dumps({
+                "answer": "test answer",
+                "sources": ["source"],
+                "usage": {
+                    "input_tokens": 100,
+                    "output_tokens": 50,
+                    "cost_usd": 0.001234
+                }
+            })
+        }
+
+        response = handler(event, None)
+
+        assert response["statusCode"] == 200
+        body = json.loads(response["body"])
+        assert "usage" in body
+        assert body["usage"]["input_tokens"] == 100
+        assert body["usage"]["cost_usd"] == 0.001234
+
+    @patch('query_kb_handler.VECTOR_BUCKET', None)
+    @patch('query_kb_handler.ssm_client')
+    @patch('query_kb_handler.query_s3_vectors')
+    @patch('query_kb_handler.generate_embedding')
+    @patch('query_kb_handler.invoke_lambda')
+    def test_handler_loads_config_on_first_call(self, mock_invoke, mock_embedding, mock_query, mock_ssm):
+        """Test handler calls load_config when VECTOR_BUCKET is None."""
+        mock_ssm.get_parameter.side_effect = [
+            {"Parameter": {"Value": "arn:aws:lambda:us-east-1:123:function:ask-claude"}},
+            {"Parameter": {"Value": "test-bucket"}},
+            {"Parameter": {"Value": "test-index"}},
+        ]
+
+        event = {"query": "test"}
+        mock_embedding.return_value = [0.1] * 1024
+        mock_query.return_value = [
+            {"score": 0.95, "text": "content", "source": "source", "type": "adr", "repo": "test", "file_path": "adr.md"}
+        ]
+        mock_invoke.return_value = {
+            "statusCode": 200,
+            "body": json.dumps({"answer": "test", "sources": ["source"]})
+        }
+
+        response = handler(event, None)
+
+        assert response["statusCode"] == 200
+        # SSM should have been called 3 times for config
+        assert mock_ssm.get_parameter.call_count == 3
+
+    @patch('query_kb_handler.RERANK_ENABLED', True)
+    @patch('query_kb_handler.RERANK_MIN_SCORE', 0.5)
+    @patch('query_kb_handler.VECTOR_BUCKET', 'test-bucket')
+    @patch('query_kb_handler.VECTOR_INDEX', 'test-index')
+    @patch('query_kb_handler.ASK_CLAUDE_LAMBDA_ARN', 'arn:aws:lambda:us-east-1:123:function:ask-claude')
+    @patch('query_kb_handler.rerank_results')
+    @patch('query_kb_handler.query_s3_vectors')
+    @patch('query_kb_handler.generate_embedding')
+    @patch('query_kb_handler.invoke_lambda')
+    def test_handler_rerank_min_score_filter(self, mock_invoke, mock_embedding, mock_query, mock_rerank):
+        """Test handler filters low-relevance results when RERANK_MIN_SCORE is set."""
+        event = {"query": "test", "topK": 5}
+
+        mock_embedding.return_value = [0.1] * 1024
+        mock_query.return_value = [
+            {"score": 0.8, "text": f"doc{i}", "source": f"s{i}", "type": "doc", "repo": "r", "file_path": f"f{i}.md"}
+            for i in range(5)
+        ]
+        # Rerank returns docs with scores, some below min
+        mock_rerank.return_value = [
+            {"score": 0.8, "text": "doc0", "source": "s0", "type": "doc", "repo": "r", "file_path": "f0.md", "rerank_score": 0.9},
+            {"score": 0.7, "text": "doc1", "source": "s1", "type": "doc", "repo": "r", "file_path": "f1.md", "rerank_score": 0.3},
+        ]
+
+        mock_invoke.return_value = {
+            "statusCode": 200,
+            "body": json.dumps({"answer": "test", "sources": ["s0"]})
+        }
+
+        response = handler(event, None)
+
+        assert response["statusCode"] == 200

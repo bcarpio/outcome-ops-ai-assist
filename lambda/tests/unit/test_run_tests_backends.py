@@ -841,3 +841,554 @@ dependencies {
         assert backend.build_tool == "maven-wrapper"
         assert backend.get_test_command() == ["./mvnw", "test"]
         assert backend.setup_environment() is True
+
+
+# =============================================================================
+# TypeScript Backend Tests
+# =============================================================================
+
+# Load typescript_backend with unique name
+typescript_backend_path = os.path.join(backends_dir, "typescript_backend.py")
+ts_spec = importlib.util.spec_from_file_location(
+    "run_tests_backends_typescript_test", typescript_backend_path
+)
+typescript_backend_module = importlib.util.module_from_spec(ts_spec)
+sys.modules["run_tests_backends_typescript_test"] = typescript_backend_module
+ts_spec.loader.exec_module(typescript_backend_module)
+
+TypeScriptBackend = typescript_backend_module.TypeScriptBackend
+
+
+class TestTypeScriptBackendBasics:
+    """Test TypeScript backend basic properties."""
+
+    def test_get_backend_name(self, tmp_path):
+        """Test get_backend_name returns correct name."""
+        backend = TypeScriptBackend(str(tmp_path), {})
+        assert backend.get_backend_name() == "TypeScript Backend"
+
+    def test_get_backend_type(self, tmp_path):
+        """Test get_backend_type returns 'typescript'."""
+        backend = TypeScriptBackend(str(tmp_path), {})
+        assert backend.get_backend_type() == "typescript"
+
+
+class TestTypeScriptPackageManagerDetection:
+    """Test package manager detection for TypeScript projects."""
+
+    def test_detect_pnpm(self, tmp_path):
+        """Detect pnpm from pnpm-lock.yaml."""
+        (tmp_path / "pnpm-lock.yaml").write_text("lockfileVersion: 5.4")
+        backend = TypeScriptBackend(str(tmp_path), {})
+        assert backend.package_manager == "pnpm"
+
+    def test_detect_yarn(self, tmp_path):
+        """Detect yarn from yarn.lock."""
+        (tmp_path / "yarn.lock").write_text("# yarn lockfile")
+        backend = TypeScriptBackend(str(tmp_path), {})
+        assert backend.package_manager == "yarn"
+
+    def test_detect_npm(self, tmp_path):
+        """Detect npm from package-lock.json."""
+        (tmp_path / "package-lock.json").write_text("{}")
+        backend = TypeScriptBackend(str(tmp_path), {})
+        assert backend.package_manager == "npm"
+
+    def test_default_to_npm(self, tmp_path):
+        """Default to npm when no lockfile found."""
+        backend = TypeScriptBackend(str(tmp_path), {})
+        assert backend.package_manager == "npm"
+
+
+class TestTypeScriptTestRunnerDetection:
+    """Test test runner detection from package.json."""
+
+    def test_detect_vitest(self, tmp_path):
+        """Detect vitest from package.json devDependencies."""
+        (tmp_path / "package.json").write_text(json.dumps({
+            "devDependencies": {"vitest": "^1.0.0"}
+        }))
+        backend = TypeScriptBackend(str(tmp_path), {})
+        assert backend.test_runner == "vitest"
+
+    def test_detect_jest(self, tmp_path):
+        """Detect jest from package.json devDependencies."""
+        (tmp_path / "package.json").write_text(json.dumps({
+            "devDependencies": {"jest": "^29.0.0"}
+        }))
+        backend = TypeScriptBackend(str(tmp_path), {})
+        assert backend.test_runner == "jest"
+
+    def test_detect_mocha(self, tmp_path):
+        """Detect mocha from package.json devDependencies."""
+        (tmp_path / "package.json").write_text(json.dumps({
+            "devDependencies": {"mocha": "^10.0.0"}
+        }))
+        backend = TypeScriptBackend(str(tmp_path), {})
+        assert backend.test_runner == "mocha"
+
+    def test_detect_from_dependencies(self, tmp_path):
+        """Detect test runner from dependencies (not just devDependencies)."""
+        (tmp_path / "package.json").write_text(json.dumps({
+            "dependencies": {"vitest": "^1.0.0"}
+        }))
+        backend = TypeScriptBackend(str(tmp_path), {})
+        assert backend.test_runner == "vitest"
+
+    def test_default_to_jest(self, tmp_path):
+        """Default to jest when no test runner found."""
+        backend = TypeScriptBackend(str(tmp_path), {})
+        assert backend.test_runner == "jest"
+
+    def test_default_to_jest_no_package_json(self, tmp_path):
+        """Default to jest when package.json does not exist."""
+        backend = TypeScriptBackend(str(tmp_path), {})
+        assert backend.test_runner == "jest"
+
+    def test_invalid_package_json(self, tmp_path):
+        """Handle invalid package.json gracefully and default to jest."""
+        (tmp_path / "package.json").write_text("not json")
+        backend = TypeScriptBackend(str(tmp_path), {})
+        assert backend.test_runner == "jest"
+
+
+class TestTypeScriptSetupEnvironment:
+    """Test environment setup for TypeScript projects."""
+
+    def test_setup_npm_success(self, tmp_path):
+        """Test successful npm ci setup."""
+        backend = TypeScriptBackend(str(tmp_path), {})
+        backend.package_manager = "npm"
+
+        with patch.object(backend, "_run_command") as mock_run:
+            mock_run.return_value = CommandResult(
+                command=["npm", "ci"], exit_code=0,
+                stdout="installed", stderr="", duration_seconds=1.0
+            )
+            result = backend.setup_environment()
+            assert result is True
+
+    def test_setup_yarn_success(self, tmp_path):
+        """Test successful yarn install setup."""
+        backend = TypeScriptBackend(str(tmp_path), {})
+        backend.package_manager = "yarn"
+
+        with patch.object(backend, "_run_command") as mock_run:
+            mock_run.return_value = CommandResult(
+                command=["yarn", "install"], exit_code=0,
+                stdout="installed", stderr="", duration_seconds=1.0
+            )
+            result = backend.setup_environment()
+            assert result is True
+
+    def test_setup_pnpm_success(self, tmp_path):
+        """Test successful pnpm install setup."""
+        backend = TypeScriptBackend(str(tmp_path), {})
+        backend.package_manager = "pnpm"
+
+        with patch.object(backend, "_run_command") as mock_run:
+            mock_run.return_value = CommandResult(
+                command=["pnpm", "install"], exit_code=0,
+                stdout="installed", stderr="", duration_seconds=1.0
+            )
+            result = backend.setup_environment()
+            assert result is True
+
+    def test_setup_fallback_on_frozen_lockfile_failure(self, tmp_path):
+        """Test fallback to regular install when frozen lockfile fails."""
+        backend = TypeScriptBackend(str(tmp_path), {})
+        backend.package_manager = "npm"
+
+        with patch.object(backend, "_run_command") as mock_run:
+            # First call (npm ci) fails, second call (npm install) succeeds
+            mock_run.side_effect = [
+                CommandResult(
+                    command=["npm", "ci"], exit_code=1,
+                    stdout="", stderr="lockfile error", duration_seconds=0.5
+                ),
+                CommandResult(
+                    command=["npm", "install"], exit_code=0,
+                    stdout="installed", stderr="", duration_seconds=1.0
+                ),
+            ]
+            result = backend.setup_environment()
+            assert result is True
+            assert mock_run.call_count == 2
+
+    def test_setup_pnpm_fallback(self, tmp_path):
+        """Test pnpm fallback to regular install."""
+        backend = TypeScriptBackend(str(tmp_path), {})
+        backend.package_manager = "pnpm"
+
+        with patch.object(backend, "_run_command") as mock_run:
+            mock_run.side_effect = [
+                CommandResult(
+                    command=["pnpm", "install", "--frozen-lockfile"], exit_code=1,
+                    stdout="", stderr="error", duration_seconds=0.5
+                ),
+                CommandResult(
+                    command=["pnpm", "install"], exit_code=0,
+                    stdout="ok", stderr="", duration_seconds=1.0
+                ),
+            ]
+            result = backend.setup_environment()
+            assert result is True
+
+    def test_setup_yarn_fallback(self, tmp_path):
+        """Test yarn fallback to regular install."""
+        backend = TypeScriptBackend(str(tmp_path), {})
+        backend.package_manager = "yarn"
+
+        with patch.object(backend, "_run_command") as mock_run:
+            mock_run.side_effect = [
+                CommandResult(
+                    command=["yarn", "install", "--frozen-lockfile"], exit_code=1,
+                    stdout="", stderr="error", duration_seconds=0.5
+                ),
+                CommandResult(
+                    command=["yarn", "install"], exit_code=0,
+                    stdout="ok", stderr="", duration_seconds=1.0
+                ),
+            ]
+            result = backend.setup_environment()
+            assert result is True
+
+    def test_setup_failure(self, tmp_path):
+        """Test setup failure when both install attempts fail."""
+        backend = TypeScriptBackend(str(tmp_path), {})
+        backend.package_manager = "npm"
+
+        with patch.object(backend, "_run_command") as mock_run:
+            mock_run.return_value = CommandResult(
+                command=["npm", "ci"], exit_code=1,
+                stdout="", stderr="install failed", duration_seconds=0.5
+            )
+            result = backend.setup_environment()
+            assert result is False
+
+
+class TestTypeScriptTestCommand:
+    """Test test command generation."""
+
+    def test_npm_test_command(self, tmp_path):
+        """Test npm test command."""
+        backend = TypeScriptBackend(str(tmp_path), {})
+        backend.package_manager = "npm"
+        cmd = backend.get_test_command()
+        assert cmd == ["npm", "test"]
+
+    def test_yarn_test_command(self, tmp_path):
+        """Test yarn test command."""
+        backend = TypeScriptBackend(str(tmp_path), {})
+        backend.package_manager = "yarn"
+        cmd = backend.get_test_command()
+        assert cmd == ["yarn", "test"]
+
+    def test_pnpm_test_command(self, tmp_path):
+        """Test pnpm test command."""
+        backend = TypeScriptBackend(str(tmp_path), {})
+        backend.package_manager = "pnpm"
+        cmd = backend.get_test_command()
+        assert cmd == ["pnpm", "test"]
+
+    def test_custom_test_command(self, tmp_path):
+        """Test custom test command from config."""
+        config = {"testing": {"test_command": "npx vitest run"}}
+        backend = TypeScriptBackend(str(tmp_path), config)
+        cmd = backend.get_test_command()
+        assert cmd == ["npx", "vitest", "run"]
+
+
+class TestTypeScriptJunitPaths:
+    """Test JUnit result path configuration."""
+
+    def test_get_junit_paths(self, tmp_path):
+        """Test JUnit paths include common locations."""
+        backend = TypeScriptBackend(str(tmp_path), {})
+        paths = backend.get_junit_paths()
+        path_strs = [str(p) for p in paths]
+
+        assert any("junit.xml" in p for p in path_strs)
+        assert any("test-results" in p for p in path_strs)
+
+
+class TestTypeScriptClassifyFailure:
+    """Test failure classification for TypeScript projects."""
+
+    def test_classify_import_error(self, tmp_path):
+        """Classify module resolution errors."""
+        backend = TypeScriptBackend(str(tmp_path), {})
+
+        assert backend.classify_failure("Cannot find module './utils'") == "import_error"
+        assert backend.classify_failure("Module not found: Error") == "import_error"
+        assert backend.classify_failure("could not resolve dependency") == "import_error"
+        assert backend.classify_failure("unable to resolve module") == "import_error"
+        assert backend.classify_failure("error: cannot find symbol") == "import_error"
+        assert backend.classify_failure("TS2307: Cannot find module") == "import_error"
+        assert backend.classify_failure("TS2305: Module has no exported member") == "import_error"
+
+    def test_classify_syntax_error(self, tmp_path):
+        """Classify syntax and type errors."""
+        backend = TypeScriptBackend(str(tmp_path), {})
+
+        assert backend.classify_failure("SyntaxError: Unexpected token") == "syntax_error"
+        assert backend.classify_failure("syntax error at line 5") == "syntax_error"
+        assert backend.classify_failure("unexpected token }") == "syntax_error"
+        assert backend.classify_failure("TS1005: Expected ')'") == "syntax_error"
+        assert backend.classify_failure("TS1003: Expected identifier") == "syntax_error"
+        assert backend.classify_failure("TS1002: Unterminated string") == "syntax_error"
+
+    def test_classify_type_error_as_syntax(self, tmp_path):
+        """Classify TypeScript type errors as syntax errors."""
+        backend = TypeScriptBackend(str(tmp_path), {})
+
+        assert backend.classify_failure("Type error in component") == "syntax_error"
+        assert backend.classify_failure("TS2322: Type 'string' not assignable") == "syntax_error"
+        assert backend.classify_failure("TS2345: Argument type mismatch") == "syntax_error"
+        assert backend.classify_failure("TS2339: Property does not exist") == "syntax_error"
+
+    def test_classify_logic_error(self, tmp_path):
+        """Classify unknown errors as logic errors."""
+        backend = TypeScriptBackend(str(tmp_path), {})
+
+        assert backend.classify_failure("Expected 42 but received 0") == "logic_error"
+        assert backend.classify_failure("AssertionError: values not equal") == "logic_error"
+
+
+class TestTypeScriptAutoFix:
+    """Test TypeScript auto-fix functionality."""
+
+    def test_attempt_auto_fix_import_error(self, tmp_path):
+        """Test auto-fix for import errors delegates to _fix_with_claude."""
+        backend = TypeScriptBackend(str(tmp_path), {})
+
+        with patch.object(backend, "_fix_with_claude") as mock_fix:
+            mock_fix.return_value = True
+            result = backend.attempt_auto_fix("import_error", "Cannot find module")
+            mock_fix.assert_called_once_with("Cannot find module", "import_error")
+            assert result is True
+
+    def test_attempt_auto_fix_syntax_error(self, tmp_path):
+        """Test auto-fix for syntax errors delegates to _fix_with_claude."""
+        backend = TypeScriptBackend(str(tmp_path), {})
+
+        with patch.object(backend, "_fix_with_claude") as mock_fix:
+            mock_fix.return_value = True
+            result = backend.attempt_auto_fix("syntax_error", "SyntaxError")
+            mock_fix.assert_called_once_with("SyntaxError", "syntax_error")
+            assert result is True
+
+    def test_attempt_auto_fix_logic_error_returns_false(self, tmp_path):
+        """Test auto-fix skips logic errors."""
+        backend = TypeScriptBackend(str(tmp_path), {})
+        result = backend.attempt_auto_fix("logic_error", "AssertionError")
+        assert result is False
+
+
+class TestTypeScriptParseErrorFile:
+    """Test parsing file paths from TypeScript error output."""
+
+    def test_parse_typescript_compiler_format(self, tmp_path):
+        """Parse TypeScript compiler error format."""
+        ts_file = tmp_path / "src" / "app.ts"
+        ts_file.parent.mkdir(parents=True)
+        ts_file.write_text("const x: number = 'hello';")
+
+        backend = TypeScriptBackend(str(tmp_path), {})
+        output = f"{ts_file}(10,5): error TS2322: Type 'string' is not assignable"
+        result = backend._parse_ts_error_file(output)
+        assert result is not None
+        assert result.endswith("app.ts")
+
+    def test_parse_jest_stack_trace(self, tmp_path):
+        """Parse Jest stack trace format."""
+        ts_file = tmp_path / "src" / "utils.ts"
+        ts_file.parent.mkdir(parents=True)
+        ts_file.write_text("export function foo() {}")
+
+        backend = TypeScriptBackend(str(tmp_path), {})
+        output = f"at Object.<anonymous> ({ts_file}:10:5)"
+        result = backend._parse_ts_error_file(output)
+        assert result is not None
+        assert result.endswith("utils.ts")
+
+    def test_parse_simple_path_line_col(self, tmp_path):
+        """Parse simple path:line:col format."""
+        ts_file = tmp_path / "src" / "index.ts"
+        ts_file.parent.mkdir(parents=True)
+        ts_file.write_text("export default 1;")
+
+        backend = TypeScriptBackend(str(tmp_path), {})
+        output = f"{ts_file}:15:3"
+        result = backend._parse_ts_error_file(output)
+        assert result is not None
+        assert result.endswith("index.ts")
+
+    def test_parse_jsx_file(self, tmp_path):
+        """Parse JSX file path."""
+        jsx_file = tmp_path / "src" / "App.jsx"
+        jsx_file.parent.mkdir(parents=True)
+        jsx_file.write_text("export default function App() {}")
+
+        backend = TypeScriptBackend(str(tmp_path), {})
+        output = f"{jsx_file}:5:10"
+        result = backend._parse_ts_error_file(output)
+        assert result is not None
+        assert result.endswith("App.jsx")
+
+    def test_parse_vitest_fail_format(self, tmp_path):
+        """Parse Vitest FAIL format."""
+        ts_file = tmp_path / "src" / "app.test.tsx"
+        ts_file.parent.mkdir(parents=True)
+        ts_file.write_text("test('foo', () => {})")
+
+        backend = TypeScriptBackend(str(tmp_path), {})
+        output = f"FAIL {ts_file} > test name"
+        result = backend._parse_ts_error_file(output)
+        assert result is not None
+        assert result.endswith("app.test.tsx")
+
+    def test_parse_returns_none_for_no_match(self, tmp_path):
+        """Return None when no file path found."""
+        backend = TypeScriptBackend(str(tmp_path), {})
+        result = backend._parse_ts_error_file("Some error without file path")
+        assert result is None
+
+
+class TestTypeScriptFixWithClaude:
+    """Test Claude-based fix for TypeScript backend."""
+
+    def test_fix_with_claude_no_file_found(self, tmp_path):
+        """Test _fix_with_claude returns False when no file path found."""
+        backend = TypeScriptBackend(str(tmp_path), {})
+        result = backend._fix_with_claude("Some vague error", "import_error")
+        assert result is False
+
+    def test_fix_with_claude_file_not_found(self, tmp_path):
+        """Test _fix_with_claude returns False when parsed file doesn't exist."""
+        backend = TypeScriptBackend(str(tmp_path), {})
+        output = "/nonexistent/file.ts:10:5"
+        result = backend._fix_with_claude(output, "import_error")
+        assert result is False
+
+    def test_fix_with_claude_apply_succeeds(self, tmp_path):
+        """Test _fix_with_claude when apply_fix_to_file succeeds."""
+        ts_file = tmp_path / "src" / "app.ts"
+        ts_file.parent.mkdir(parents=True)
+        ts_file.write_text("const x = 1;")
+
+        backend = TypeScriptBackend(str(tmp_path), {})
+        output = f"{ts_file}:1:5 Cannot find module './utils'"
+
+        with patch.object(typescript_backend_module, "apply_fix_to_file") as mock_fix:
+            mock_fix.return_value = True
+            result = backend._fix_with_claude(output, "import_error")
+            assert result is True
+            mock_fix.assert_called_once()
+            call_kwargs = mock_fix.call_args.kwargs
+            assert call_kwargs.get("backend_type") == "typescript"
+
+    def test_fix_with_claude_apply_fails(self, tmp_path):
+        """Test _fix_with_claude when apply_fix_to_file fails."""
+        ts_file = tmp_path / "src" / "app.ts"
+        ts_file.parent.mkdir(parents=True)
+        ts_file.write_text("const x = 1;")
+
+        backend = TypeScriptBackend(str(tmp_path), {})
+        output = f"{ts_file}:1:5 SyntaxError"
+
+        with patch.object(typescript_backend_module, "apply_fix_to_file") as mock_fix:
+            mock_fix.return_value = False
+            result = backend._fix_with_claude(output, "syntax_error")
+            assert result is False
+
+    def test_fix_with_claude_exception(self, tmp_path):
+        """Test _fix_with_claude handles exception from apply_fix_to_file."""
+        ts_file = tmp_path / "src" / "app.ts"
+        ts_file.parent.mkdir(parents=True)
+        ts_file.write_text("const x = 1;")
+
+        backend = TypeScriptBackend(str(tmp_path), {})
+        output = f"{ts_file}:1:5 Error"
+
+        with patch.object(typescript_backend_module, "apply_fix_to_file") as mock_fix:
+            mock_fix.side_effect = RuntimeError("Bedrock unavailable")
+            result = backend._fix_with_claude(output, "import_error")
+            assert result is False
+
+
+class TestTypeScriptResolveErrorFilePath:
+    """Test resolving error file paths from different environments."""
+
+    def test_resolve_relative_path(self, tmp_path):
+        """Resolve a path relative to repo root."""
+        ts_file = tmp_path / "src" / "app.ts"
+        ts_file.parent.mkdir(parents=True)
+        ts_file.write_text("code")
+
+        backend = TypeScriptBackend(str(tmp_path), {})
+        result = backend._resolve_error_file_path("src/app.ts")
+        assert result is not None
+        assert result.endswith("app.ts")
+
+    def test_resolve_tmp_path(self, tmp_path):
+        """Resolve a /tmp/ path to local file."""
+        ts_file = tmp_path / "src" / "index.ts"
+        ts_file.parent.mkdir(parents=True)
+        ts_file.write_text("code")
+
+        backend = TypeScriptBackend(str(tmp_path), {})
+        result = backend._resolve_error_file_path("/tmp/build/src/index.ts")
+        assert result is not None
+        assert result.endswith("index.ts")
+
+    def test_resolve_returns_none_for_missing_file(self, tmp_path):
+        """Return None for file that does not exist."""
+        backend = TypeScriptBackend(str(tmp_path), {})
+        result = backend._resolve_error_file_path("/nonexistent/path/file.ts")
+        assert result is None
+
+
+class TestTypeScriptSourcePaths:
+    """Test source path configuration."""
+
+    def test_default_source_paths(self, tmp_path):
+        """Test default source paths include common TS directories."""
+        backend = TypeScriptBackend(str(tmp_path), {})
+        paths = backend._get_source_paths()
+
+        path_strs = [p.replace(str(tmp_path), "") for p in paths]
+        assert any("src" in p for p in path_strs)
+        assert any("lib" in p for p in path_strs)
+        assert any("app" in p for p in path_strs)
+
+    def test_configured_source_paths(self, tmp_path):
+        """Test configured source paths are included."""
+        config = {
+            "code_generation": {
+                "typescript": {
+                    "source_paths": ["custom/src"]
+                }
+            }
+        }
+        backend = TypeScriptBackend(str(tmp_path), config)
+        paths = backend._get_source_paths()
+
+        # Configured path should be first
+        assert "custom/src" in paths[0]
+
+    def test_configured_paths_combined_with_defaults(self, tmp_path):
+        """Test configured paths don't replace defaults."""
+        config = {
+            "code_generation": {
+                "typescript": {
+                    "source_paths": ["custom"]
+                }
+            }
+        }
+        backend = TypeScriptBackend(str(tmp_path), config)
+        paths = backend._get_source_paths()
+
+        path_strs = [p.replace(str(tmp_path), "") for p in paths]
+        assert any("custom" in p for p in path_strs)
+        assert any("src" in p for p in path_strs)

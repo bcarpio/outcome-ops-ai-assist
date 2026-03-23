@@ -757,3 +757,452 @@ def test_post_test_failure_comment_truncates_long_output(mock_post):
     # The output in the comment should be truncated to last 2000 chars
     assert "x" * 2000 in comment_body
     assert len(long_output) == 3000  # Original unchanged
+
+
+# ============================================================================
+# Additional Handler Tests for Coverage
+# ============================================================================
+
+
+def test_mask_value():
+    """Test mask_value replaces secret values with ***."""
+    text = "git clone https://ghp_abc123@github.com/repo.git"
+    result = handler_module.mask_value(text, ["ghp_abc123"])
+    assert "ghp_abc123" not in result
+    assert "***" in result
+
+
+def test_mask_value_empty_secret():
+    """Test mask_value handles empty secret strings."""
+    text = "some text"
+    result = handler_module.mask_value(text, ["", None])
+    assert result == "some text"
+
+
+def test_mask_value_multiple_secrets():
+    """Test mask_value replaces multiple secrets."""
+    text = "token=abc123 key=xyz789"
+    result = handler_module.mask_value(text, ["abc123", "xyz789"])
+    assert "abc123" not in result
+    assert "xyz789" not in result
+    assert result.count("***") == 2
+
+
+def test_command_result_as_text():
+    """Test CommandResult.as_text() formatting."""
+    result = handler_module.CommandResult(
+        command=["echo", "hello"],
+        exit_code=0,
+        stdout="hello",
+        stderr="",
+        duration_seconds=0.5
+    )
+    text = result.as_text()
+    assert "echo hello" in text
+    assert "exit 0" in text
+    assert "0.50s" in text
+
+
+def test_read_file_if_exists(tmp_path):
+    """Test read_file_if_exists returns file contents."""
+    test_file = tmp_path / "test.txt"
+    test_file.write_text("hello world")
+    result = handler_module.read_file_if_exists(test_file)
+    assert result == "hello world"
+
+
+def test_read_file_if_exists_missing(tmp_path):
+    """Test read_file_if_exists returns None for missing file."""
+    result = handler_module.read_file_if_exists(tmp_path / "missing.txt")
+    assert result is None
+
+
+@patch("requests.post")
+def test_create_pull_request_tests_passed(mock_post):
+    """Test PR creation with tests passed."""
+    detail = handler_module.CodeGenerationCompletedDetail(
+        issueNumber=6,
+        issueTitle="Add handler",
+        repoFullName="user/repo",
+        branchName="test-branch",
+        baseBranch="main",
+        planFile="plan.md",
+        environment="dev",
+        appName="test-app"
+    )
+    mock_response = MagicMock()
+    mock_response.json.return_value = {
+        "html_url": "https://github.com/user/repo/pull/42",
+        "number": 42
+    }
+    mock_response.raise_for_status = MagicMock()
+    mock_post.return_value = mock_response
+
+    result = handler_module.create_pull_request(detail, "fake-token", tests_passed=True)
+
+    assert result["pr_url"] == "https://github.com/user/repo/pull/42"
+    assert result["pr_number"] == 42
+    body = mock_post.call_args[1]["json"]["body"]
+    assert "All tests passed" in body
+
+
+@patch("requests.post")
+def test_create_pull_request_tests_failed(mock_post):
+    """Test PR creation with tests failed."""
+    detail = handler_module.CodeGenerationCompletedDetail(
+        issueNumber=6,
+        issueTitle="Add handler",
+        repoFullName="user/repo",
+        branchName="test-branch",
+        baseBranch="main",
+        planFile="plan.md",
+        environment="dev",
+        appName="test-app"
+    )
+    mock_response = MagicMock()
+    mock_response.json.return_value = {
+        "html_url": "https://github.com/user/repo/pull/42",
+        "number": 42
+    }
+    mock_response.raise_for_status = MagicMock()
+    mock_post.return_value = mock_response
+
+    result = handler_module.create_pull_request(detail, "fake-token", tests_passed=False)
+
+    body = mock_post.call_args[1]["json"]["body"]
+    assert "Tests failed" in body
+
+
+@patch.object(handler_module, "lambda_client")
+def test_trigger_pr_analyzer_success(mock_lambda):
+    """Test triggering PR analyzer Lambda."""
+    mock_lambda.invoke.return_value = {"StatusCode": 202}
+
+    handler_module.trigger_pr_analyzer(42, "user/repo")
+
+    mock_lambda.invoke.assert_called_once()
+    call_args = mock_lambda.invoke.call_args
+    assert call_args[1]["InvocationType"] == "Event"
+
+
+@patch.object(handler_module, "lambda_client")
+def test_trigger_pr_analyzer_failure(mock_lambda):
+    """Test trigger_pr_analyzer handles errors gracefully."""
+    mock_lambda.invoke.side_effect = RuntimeError("Lambda error")
+
+    # Should not raise
+    handler_module.trigger_pr_analyzer(42, "user/repo")
+
+
+@patch("requests.post")
+def test_post_test_success_comment(mock_post):
+    """Test posting success comment on PR."""
+    detail = handler_module.CodeGenerationCompletedDetail(
+        issueNumber=6,
+        issueTitle="Test",
+        repoFullName="user/repo",
+        branchName="test-branch",
+        baseBranch="main",
+        prNumber=123,
+        planFile="plan.md",
+        environment="dev",
+        appName="test-app"
+    )
+    mock_post.return_value.raise_for_status = MagicMock()
+
+    handler_module.post_test_success_comment(detail, "fake-token")
+
+    mock_post.assert_called_once()
+    body = mock_post.call_args[1]["json"]["body"]
+    assert "Tests Passed" in body
+
+
+@patch("requests.post")
+def test_post_test_success_comment_no_pr(mock_post):
+    """Test post_test_success_comment skips when no PR number."""
+    detail = handler_module.CodeGenerationCompletedDetail(
+        issueNumber=6,
+        issueTitle="Test",
+        repoFullName="user/repo",
+        branchName="test-branch",
+        baseBranch="main",
+        prNumber=None,
+        planFile="plan.md",
+        environment="dev",
+        appName="test-app"
+    )
+
+    handler_module.post_test_success_comment(detail, "fake-token")
+
+    mock_post.assert_not_called()
+
+
+@patch("requests.post")
+def test_post_test_success_comment_api_error(mock_post):
+    """Test post_test_success_comment handles API errors gracefully."""
+    detail = handler_module.CodeGenerationCompletedDetail(
+        issueNumber=6,
+        issueTitle="Test",
+        repoFullName="user/repo",
+        branchName="test-branch",
+        baseBranch="main",
+        prNumber=123,
+        planFile="plan.md",
+        environment="dev",
+        appName="test-app"
+    )
+    mock_post.side_effect = RuntimeError("API error")
+
+    # Should not raise
+    handler_module.post_test_success_comment(detail, "fake-token")
+
+
+@patch("requests.post")
+def test_post_test_failure_comment_with_s3_url(mock_post):
+    """Test posting failure comment includes S3 log URL."""
+    detail = handler_module.CodeGenerationCompletedDetail(
+        issueNumber=6,
+        issueTitle="Test",
+        repoFullName="user/repo",
+        branchName="test-branch",
+        baseBranch="main",
+        prNumber=123,
+        planFile="plan.md",
+        environment="dev",
+        appName="test-app"
+    )
+    mock_post.return_value.raise_for_status = MagicMock()
+
+    handler_module.post_test_failure_comment(
+        detail=detail,
+        github_token="fake-token",
+        test_output="error",
+        failure_reason="failed",
+        github_usernames="user",
+        s3_log_url="https://s3.amazonaws.com/bucket/logs.txt"
+    )
+
+    body = mock_post.call_args[1]["json"]["body"]
+    assert "View full test logs in S3" in body
+
+
+@patch("requests.post")
+def test_post_test_failure_comment_api_error(mock_post):
+    """Test post_test_failure_comment handles API errors gracefully."""
+    detail = handler_module.CodeGenerationCompletedDetail(
+        issueNumber=6,
+        issueTitle="Test",
+        repoFullName="user/repo",
+        branchName="test-branch",
+        baseBranch="main",
+        prNumber=123,
+        planFile="plan.md",
+        environment="dev",
+        appName="test-app"
+    )
+    mock_post.side_effect = RuntimeError("API error")
+
+    # Should not raise
+    handler_module.post_test_failure_comment(
+        detail=detail,
+        github_token="fake-token",
+        test_output="error",
+        failure_reason="failed",
+        github_usernames="user"
+    )
+
+
+@patch.object(handler_module, "run_command")
+def test_update_plan_with_autofix_cost_no_cost(mock_run_cmd, tmp_path):
+    """Test update_plan skips when cost is zero."""
+    detail = handler_module.CodeGenerationCompletedDetail(
+        issueNumber=6, issueTitle="Test", repoFullName="user/repo",
+        branchName="branch", baseBranch="main", planFile="plan.md",
+        environment="dev", appName="test-app"
+    )
+    autofix_cost = {"cost_usd": 0, "input_tokens": 0, "output_tokens": 0}
+
+    result = handler_module.update_plan_with_autofix_cost(
+        str(tmp_path), "plan.md", autofix_cost, "token", detail
+    )
+
+    assert result is True
+    mock_run_cmd.assert_not_called()
+
+
+@patch.object(handler_module, "run_command")
+def test_update_plan_with_autofix_cost_missing_plan(mock_run_cmd, tmp_path):
+    """Test update_plan returns False when plan file missing."""
+    detail = handler_module.CodeGenerationCompletedDetail(
+        issueNumber=6, issueTitle="Test", repoFullName="user/repo",
+        branchName="branch", baseBranch="main", planFile="plan.md",
+        environment="dev", appName="test-app"
+    )
+    autofix_cost = {"cost_usd": 0.001, "input_tokens": 100, "output_tokens": 50}
+
+    result = handler_module.update_plan_with_autofix_cost(
+        str(tmp_path), "plan.md", autofix_cost, "token", detail
+    )
+
+    assert result is False
+
+
+@patch.object(handler_module, "run_command")
+def test_update_plan_with_autofix_cost_grand_total(mock_run_cmd, tmp_path):
+    """Test updating plan with existing Grand Total."""
+    plan_file = tmp_path / "plan.md"
+    plan_file.write_text("""## Cost Summary
+
+### Code Generation (Sonnet)
+
+**Cost:** $0.010000
+
+### Grand Total
+
+**Total Cost:** $0.010000
+""")
+
+    detail = handler_module.CodeGenerationCompletedDetail(
+        issueNumber=6, issueTitle="Test", repoFullName="user/repo",
+        branchName="branch", baseBranch="main", planFile="plan.md",
+        environment="dev", appName="test-app"
+    )
+    autofix_cost = {"cost_usd": 0.005000, "input_tokens": 200, "output_tokens": 100}
+
+    mock_run_cmd.return_value = handler_module.CommandResult(
+        command=["git"], exit_code=0, stdout="", stderr="", duration_seconds=0.1
+    )
+
+    result = handler_module.update_plan_with_autofix_cost(
+        str(tmp_path), "plan.md", autofix_cost, "token", detail
+    )
+
+    assert result is True
+    updated = plan_file.read_text()
+    assert "Auto-Fix (Sonnet)" in updated
+    assert "$0.015000" in updated
+
+
+@patch.object(handler_module, "run_command")
+def test_update_plan_with_autofix_cost_no_grand_total(mock_run_cmd, tmp_path):
+    """Test updating plan with Cost Summary but no Grand Total."""
+    plan_file = tmp_path / "plan.md"
+    plan_file.write_text("""## Cost Summary
+
+### Code Generation (Sonnet)
+
+**Cost:** $0.010000
+
+## Implementation
+""")
+
+    detail = handler_module.CodeGenerationCompletedDetail(
+        issueNumber=6, issueTitle="Test", repoFullName="user/repo",
+        branchName="branch", baseBranch="main", planFile="plan.md",
+        environment="dev", appName="test-app"
+    )
+    autofix_cost = {"cost_usd": 0.005, "input_tokens": 200, "output_tokens": 100}
+
+    mock_run_cmd.return_value = handler_module.CommandResult(
+        command=["git"], exit_code=0, stdout="", stderr="", duration_seconds=0.1
+    )
+
+    result = handler_module.update_plan_with_autofix_cost(
+        str(tmp_path), "plan.md", autofix_cost, "token", detail
+    )
+
+    assert result is True
+    updated = plan_file.read_text()
+    assert "Auto-Fix (Sonnet)" in updated
+
+
+@patch.object(handler_module, "run_command")
+def test_update_plan_with_autofix_cost_no_cost_summary(mock_run_cmd, tmp_path):
+    """Test updating plan with no Cost Summary section."""
+    plan_file = tmp_path / "plan.md"
+    plan_file.write_text("## Implementation\n\nSome content here.")
+
+    detail = handler_module.CodeGenerationCompletedDetail(
+        issueNumber=6, issueTitle="Test", repoFullName="user/repo",
+        branchName="branch", baseBranch="main", planFile="plan.md",
+        environment="dev", appName="test-app"
+    )
+    autofix_cost = {"cost_usd": 0.005, "input_tokens": 200, "output_tokens": 100}
+
+    mock_run_cmd.return_value = handler_module.CommandResult(
+        command=["git"], exit_code=0, stdout="", stderr="", duration_seconds=0.1
+    )
+
+    result = handler_module.update_plan_with_autofix_cost(
+        str(tmp_path), "plan.md", autofix_cost, "token", detail
+    )
+
+    assert result is True
+    updated = plan_file.read_text()
+    assert "Cost Summary" in updated
+    assert "Auto-Fix (Sonnet)" in updated
+
+
+@patch.object(handler_module, "run_command")
+def test_update_plan_with_autofix_cost_push_fails(mock_run_cmd, tmp_path):
+    """Test update_plan returns False when push fails."""
+    plan_file = tmp_path / "plan.md"
+    plan_file.write_text("## Cost Summary\n\n### Grand Total\n\n**Total Cost:** $0.01")
+
+    detail = handler_module.CodeGenerationCompletedDetail(
+        issueNumber=6, issueTitle="Test", repoFullName="user/repo",
+        branchName="branch", baseBranch="main", planFile="plan.md",
+        environment="dev", appName="test-app"
+    )
+    autofix_cost = {"cost_usd": 0.005, "input_tokens": 200, "output_tokens": 100}
+
+    def run_cmd_side_effect(cmd, **kwargs):
+        if "push" in cmd:
+            return handler_module.CommandResult(
+                command=cmd, exit_code=1, stdout="",
+                stderr="push rejected", duration_seconds=0.1
+            )
+        return handler_module.CommandResult(
+            command=cmd, exit_code=0, stdout="", stderr="", duration_seconds=0.1
+        )
+
+    mock_run_cmd.side_effect = run_cmd_side_effect
+
+    result = handler_module.update_plan_with_autofix_cost(
+        str(tmp_path), "plan.md", autofix_cost, "token", detail
+    )
+
+    assert result is False
+
+
+@patch.object(handler_module, "run_command")
+def test_update_plan_with_autofix_cost_exception(mock_run_cmd, tmp_path):
+    """Test update_plan handles exceptions gracefully."""
+    plan_file = tmp_path / "plan.md"
+    plan_file.write_text("## Cost Summary\n\n### Grand Total\n\n**Total Cost:** $0.01")
+
+    detail = handler_module.CodeGenerationCompletedDetail(
+        issueNumber=6, issueTitle="Test", repoFullName="user/repo",
+        branchName="branch", baseBranch="main", planFile="plan.md",
+        environment="dev", appName="test-app"
+    )
+    autofix_cost = {"cost_usd": 0.005, "input_tokens": 200, "output_tokens": 100}
+
+    mock_run_cmd.side_effect = RuntimeError("Unexpected error")
+
+    result = handler_module.update_plan_with_autofix_cost(
+        str(tmp_path), "plan.md", autofix_cost, "token", detail
+    )
+
+    assert result is False
+
+
+def test_cleanup_workspace(tmp_path):
+    """Test cleanup_workspace removes directory."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "file.txt").write_text("test")
+
+    handler_module.cleanup_workspace(str(workspace))
+
+    assert not workspace.exists()
