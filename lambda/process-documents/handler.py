@@ -60,6 +60,18 @@ s3_client = boto3.client("s3")
 ssm_client = boto3.client("ssm")
 bedrock_client = boto3.client("bedrock-runtime")
 s3vectors_client = boto3.client("s3vectors")
+sts_client = boto3.client("sts")
+
+# Cached account ID
+_account_id = None
+
+
+def _get_account_id() -> str:
+    """Return the AWS account ID (cached after first call)."""
+    global _account_id
+    if _account_id is None:
+        _account_id = sts_client.get_caller_identity()["Account"]
+    return _account_id
 
 # Vector store config (loaded from SSM)
 _vector_config = None
@@ -722,7 +734,7 @@ def process_document(bucket: str, key: str) -> Dict[str, Any]:
 
     try:
         # Get object from S3
-        response = s3_client.get_object(Bucket=bucket, Key=key)
+        response = s3_client.get_object(Bucket=bucket, Key=key, ExpectedBucketOwner=_get_account_id())
         content = response["Body"].read()
         metadata = response.get("Metadata", {})
 

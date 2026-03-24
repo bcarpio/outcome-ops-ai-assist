@@ -18,6 +18,7 @@ from botocore.exceptions import ClientError
 mock_s3_client = MagicMock()
 mock_ssm_client = MagicMock()
 mock_s3vectors_client = MagicMock()
+mock_sts_client = MagicMock()
 
 
 def _load_handler_module():
@@ -40,6 +41,7 @@ def _load_handler_module():
     handler_module.s3_client = mock_s3_client
     handler_module.ssm_client = mock_ssm_client
     handler_module.s3vectors_client = mock_s3vectors_client
+    handler_module.sts_client = mock_sts_client
 
     return handler_module
 
@@ -72,6 +74,9 @@ def reset_mocks():
     mock_s3_client.reset_mock()
     mock_ssm_client.reset_mock()
     mock_s3vectors_client.reset_mock()
+    mock_sts_client.reset_mock()
+    mock_sts_client.get_caller_identity.return_value = {"Account": "123456789012"}
+    handler_module._account_id = None
     # Explicitly clear side_effect on method mocks that tests configure with
     # side_effect lists/exceptions -- reset_mock on the parent clears child
     # mocks' call state but consumed iterators can cause StopIteration leaks.
@@ -189,7 +194,7 @@ class TestListS3KeysWithPrefix:
 
         assert result == ["prefix/file1.txt", "prefix/file2.txt"]
         mock_s3_client.get_paginator.assert_called_once_with("list_objects_v2")
-        paginator.paginate.assert_called_once_with(Bucket="test-kb-bucket", Prefix="prefix/")
+        paginator.paginate.assert_called_once_with(Bucket="test-kb-bucket", Prefix="prefix/", ExpectedBucketOwner="123456789012")
 
     def test_list_keys_multiple_pages(self):
         """Test listing keys across multiple pages."""
@@ -259,6 +264,7 @@ class TestDeleteS3Object:
         mock_s3_client.delete_object.assert_called_once_with(
             Bucket="test-kb-bucket",
             Key="workspaces/ws_123/confluence/space/page.html",
+            ExpectedBucketOwner="123456789012",
         )
 
     def test_delete_object_client_error(self):
@@ -300,6 +306,7 @@ class TestDeleteS3ObjectsBatch:
         mock_s3_client.delete_objects.assert_called_once_with(
             Bucket="test-kb-bucket",
             Delete={"Objects": [{"Key": "key1"}, {"Key": "key2"}, {"Key": "key3"}]},
+            ExpectedBucketOwner="123456789012",
         )
 
     def test_batch_delete_multiple_batches(self):

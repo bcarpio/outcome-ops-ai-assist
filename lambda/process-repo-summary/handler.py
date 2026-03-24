@@ -73,6 +73,18 @@ s3_client = boto3.client("s3")
 sqs_client = boto3.client("sqs")
 ssm_client = boto3.client("ssm")
 s3vectors_client = boto3.client("s3vectors")
+sts_client = boto3.client("sts")
+
+# Cached account ID
+_account_id = None
+
+
+def _get_account_id() -> str:
+    """Return the AWS account ID (cached after first call)."""
+    global _account_id
+    if _account_id is None:
+        _account_id = sts_client.get_caller_identity()["Account"]
+    return _account_id
 
 # Configuration (loaded from SSM at container startup)
 ENVIRONMENT = os.environ.get("ENV", "dev")
@@ -720,6 +732,7 @@ def handler(event, context):
                 Bucket=KB_BUCKET,
                 Key=s3_key,
                 Body=arch_summary.encode("utf-8"),
+                ExpectedBucketOwner=_get_account_id(),
             )
 
             logger.info(f"Stored architectural summary for {repo} at {s3_key}")

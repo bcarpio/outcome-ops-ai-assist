@@ -43,6 +43,18 @@ KB_BUCKET = os.environ.get("KB_BUCKET")
 s3_client = boto3.client("s3")
 ssm_client = boto3.client("ssm")
 s3vectors_client = boto3.client("s3vectors")
+sts_client = boto3.client("sts")
+
+# Cached account ID
+_account_id = None
+
+
+def _get_account_id() -> str:
+    """Return the AWS account ID (cached after first call)."""
+    global _account_id
+    if _account_id is None:
+        _account_id = sts_client.get_caller_identity()["Account"]
+    return _account_id
 
 # Vector config (loaded from SSM)
 _vector_config = None
@@ -84,7 +96,7 @@ def list_s3_keys_with_prefix(prefix: str) -> List[str]:
     paginator = s3_client.get_paginator("list_objects_v2")
 
     try:
-        for page in paginator.paginate(Bucket=KB_BUCKET, Prefix=prefix):
+        for page in paginator.paginate(Bucket=KB_BUCKET, Prefix=prefix, ExpectedBucketOwner=_get_account_id()):
             for obj in page.get("Contents", []):
                 keys.append(obj["Key"])
     except ClientError as e:
@@ -96,7 +108,7 @@ def list_s3_keys_with_prefix(prefix: str) -> List[str]:
 def delete_s3_object(key: str) -> bool:
     """Delete a single S3 object."""
     try:
-        s3_client.delete_object(Bucket=KB_BUCKET, Key=key)
+        s3_client.delete_object(Bucket=KB_BUCKET, Key=key, ExpectedBucketOwner=_get_account_id())
         logger.debug(f"Deleted S3 object: {key}")
         return True
     except ClientError as e:
@@ -126,6 +138,7 @@ def delete_s3_objects_batch(keys: List[str]) -> int:
             response = s3_client.delete_objects(
                 Bucket=KB_BUCKET,
                 Delete={"Objects": [{"Key": k} for k in batch]},
+                ExpectedBucketOwner=_get_account_id(),
             )
             deleted += len(response.get("Deleted", []))
         except ClientError as e:

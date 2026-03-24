@@ -88,6 +88,18 @@ ssm_client = boto3.client("ssm")
 s3_client = boto3.client("s3")
 events_client = boto3.client("events")
 lambda_client = boto3.client("lambda")
+sts_client = boto3.client("sts")
+
+# Cached account ID
+_account_id = None
+
+
+def _get_account_id() -> str:
+    """Return the AWS account ID (cached after first call)."""
+    global _account_id
+    if _account_id is None:
+        _account_id = sts_client.get_caller_identity()["Account"]
+    return _account_id
 
 # Bedrock client for Claude API (auto-fix) - used by handler's direct auto-fix functions
 bedrock_config = Config(
@@ -611,7 +623,8 @@ def upload_artifacts(
         Bucket=TEST_RESULTS_BUCKET,
         Key=log_key,
         Body=log_contents.encode("utf-8"),
-        ContentType="text/plain"
+        ContentType="text/plain",
+        ExpectedBucketOwner=_get_account_id(),
     )
 
     if junit_content:
@@ -619,7 +632,8 @@ def upload_artifacts(
             Bucket=TEST_RESULTS_BUCKET,
             Key=junit_key,
             Body=junit_content.encode("utf-8"),
-            ContentType="application/xml"
+            ContentType="application/xml",
+            ExpectedBucketOwner=_get_account_id(),
         )
 
     logger.info(

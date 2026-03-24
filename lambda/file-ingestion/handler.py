@@ -48,10 +48,20 @@ KB_BUCKET = os.environ.get("KB_BUCKET")
 dynamodb = boto3.resource("dynamodb")
 s3_client = boto3.client("s3")
 ssm_client = boto3.client("ssm")
+sts_client = boto3.client("sts")
 
 # Cached config
 _oauth_config = None
 _microsoft_oauth_config = None
+_account_id = None
+
+
+def _get_account_id() -> str:
+    """Return the AWS account ID (cached after first call)."""
+    global _account_id
+    if _account_id is None:
+        _account_id = sts_client.get_caller_identity()["Account"]
+    return _account_id
 
 
 def _load_oauth_config() -> Dict[str, str]:
@@ -256,6 +266,7 @@ def process_confluence_page(
             Body=full_html.encode("utf-8"),
             ContentType="text/html",
             Metadata=metadata,
+            ExpectedBucketOwner=_get_account_id(),
         )
 
         logger.info(f"Uploaded Confluence page to s3://{KB_BUCKET}/{s3_key}")
@@ -345,6 +356,7 @@ def process_confluence_attachment(
             Body=content,
             ContentType=content_type,
             Metadata=metadata,
+            ExpectedBucketOwner=_get_account_id(),
         )
 
         logger.info(f"Uploaded Confluence attachment to s3://{KB_BUCKET}/{s3_key}")
@@ -554,6 +566,7 @@ def process_jira_issue(
             Body=full_html.encode("utf-8"),
             ContentType="text/html",
             Metadata=metadata,
+            ExpectedBucketOwner=_get_account_id(),
         )
 
         logger.info(f"Uploaded Jira issue to s3://{KB_BUCKET}/{s3_key}")
@@ -643,6 +656,7 @@ def process_jira_attachment(
             Body=content,
             ContentType=content_type,
             Metadata=metadata,
+            ExpectedBucketOwner=_get_account_id(),
         )
 
         logger.info(f"Uploaded Jira attachment to s3://{KB_BUCKET}/{s3_key}")
@@ -751,6 +765,7 @@ def process_outlook_email(
             Body=full_html.encode("utf-8"),
             ContentType="text/html",
             Metadata=metadata,
+            ExpectedBucketOwner=_get_account_id(),
         )
 
         logger.info(f"Uploaded Outlook email to s3://{KB_BUCKET}/{s3_key}")
@@ -835,6 +850,7 @@ def process_outlook_attachment(
             Body=content,
             ContentType=content_type,
             Metadata=metadata,
+            ExpectedBucketOwner=_get_account_id(),
         )
 
         logger.info(f"Uploaded Outlook attachment to s3://{KB_BUCKET}/{s3_key}")
@@ -898,6 +914,7 @@ def process_teams_message(
             Body=body_content.encode("utf-8"),
             ContentType="text/html",
             Metadata=metadata,
+            ExpectedBucketOwner=_get_account_id(),
         )
 
         logger.info(f"Uploaded Teams message to s3://{KB_BUCKET}/{s3_key}")
@@ -963,6 +980,7 @@ def process_teams_file(
             Body=content,
             ContentType=mime_type,
             Metadata=metadata,
+            ExpectedBucketOwner=_get_account_id(),
         )
 
         logger.info(f"Uploaded Teams file to s3://{KB_BUCKET}/{s3_key}")
@@ -1036,6 +1054,7 @@ def process_sharepoint_file(
             Body=content,
             ContentType=mime_type,
             Metadata=metadata,
+            ExpectedBucketOwner=_get_account_id(),
         )
 
         logger.info(f"Uploaded SharePoint file to s3://{KB_BUCKET}/{s3_key}")
@@ -1118,6 +1137,7 @@ def process_sharepoint_page(
             Body=full_html.encode("utf-8"),
             ContentType="text/html",
             Metadata=metadata,
+            ExpectedBucketOwner=_get_account_id(),
         )
 
         logger.info(f"Uploaded SharePoint page to s3://{KB_BUCKET}/{s3_key}")
