@@ -6,7 +6,6 @@
 [![Security Rating](https://sonarcloud.io/api/project_badges/measure?project=bcarpio_outcome-ops-ai-assist-private&metric=security_rating&token=6aaae34e16124eecf5437befb74de946dd4aac6f)](https://sonarcloud.io/summary/new_code?id=bcarpio_outcome-ops-ai-assist-private)
 [![Reliability Rating](https://sonarcloud.io/api/project_badges/measure?project=bcarpio_outcome-ops-ai-assist-private&metric=reliability_rating&token=6aaae34e16124eecf5437befb74de946dd4aac6f)](https://sonarcloud.io/summary/new_code?id=bcarpio_outcome-ops-ai-assist-private)
 [![CI/CD](https://github.com/bcarpio/outcome-ops-ai-assist-private/actions/workflows/cicd.yml/badge.svg)](https://github.com/bcarpio/outcome-ops-ai-assist-private/actions/workflows/cicd.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/)
 
 AI generates generic code. You need code that matches **YOUR** standards.
