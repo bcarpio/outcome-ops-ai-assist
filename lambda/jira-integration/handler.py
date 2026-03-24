@@ -207,7 +207,7 @@ def save_connection(
             "updated_at": now,
         }
     )
-    logger.info(f"Saved Jira connection {connection_id} for workspace {workspace_id}")
+    logger.info("Saved Jira connection %s for workspace %s", connection_id, workspace_id)
 
 
 def get_connection(workspace_id: str, connection_id: str) -> Optional[Dict]:
@@ -410,7 +410,7 @@ def handle_callback(event: Dict) -> Dict:
         base_url = "https://dev.outcomeops.outcomeops.ai"
 
     if error:
-        logger.warning(f"OAuth error: {error}")
+        logger.warning("OAuth error: %s", error)
         return _redirect(f"{base_url}/workspaces?jira_error={error}")
 
     if not code or not state:

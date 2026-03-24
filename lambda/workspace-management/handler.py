@@ -2235,7 +2235,7 @@ def assign_mcp_to_workspace(user_email: str, workspace_id: str, body: Dict) -> D
         }
 
         table.put_item(Item=item)
-        logger.info(f"[workspace_handler] Assigned MCP {mcp_id} to workspace {workspace_id}")
+        logger.info("[workspace_handler] Assigned MCP %s to workspace %s", mcp_id, workspace_id)
         return _response(201, {"assignment": item})
     except ClientError as e:
         logger.error(f"[workspace_handler] Error assigning MCP to workspace: {e}", exc_info=True)

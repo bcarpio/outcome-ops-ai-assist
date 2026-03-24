@@ -1818,7 +1818,7 @@ def handle_share_conversation(
         )
 
         logger.info(
-            f"Shared conversation {conversation_id} with workspaces: {authorized_ws}"
+            "Shared conversation %s with workspaces: %s", conversation_id, authorized_ws
         )
 
         return {

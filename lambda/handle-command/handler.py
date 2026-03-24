@@ -659,7 +659,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     Returns:
         Response with command processing result
     """
-    logger.info(f"Handle command invoked: {json.dumps(event)}")
+    logger.info("Handle command invoked: %s", json.dumps(event))
 
     # Validate OutcomeOps license before processing
     try:

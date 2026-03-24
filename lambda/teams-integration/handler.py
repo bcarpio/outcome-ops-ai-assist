@@ -245,7 +245,7 @@ def handle_callback(event: Dict, body: Dict = None) -> Dict:
     error = body.get("error") or query_params.get("error")
 
     if error:
-        logger.error(f"OAuth error: {error}")
+        logger.error("OAuth error: %s", error)
         return _response(200, {"redirect": "/?error=oauth_denied"})
 
     if not code or not state:

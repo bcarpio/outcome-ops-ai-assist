@@ -196,7 +196,7 @@ def save_installation(
             "created_at": now,
         }
     )
-    logger.info(f"Saved GitHub installation {installation_id} for workspace {workspace_id}")
+    logger.info("Saved GitHub installation %s for workspace %s", installation_id, workspace_id)
 
 
 def get_installation(workspace_id: str, installation_id: str) -> Optional[Dict]:
@@ -355,7 +355,7 @@ def update_repo_sync_status(
             ConditionExpression="attribute_exists(repo_name)",
         )
     except table.meta.client.exceptions.ConditionalCheckFailedException:
-        logger.warning(f"Skipping sync status update for deleted repo {repo_name} in workspace {workspace_id}")
+        logger.warning("Skipping sync status update for deleted repo %s in workspace %s", repo_name, workspace_id)
 
 
 def delete_repo(workspace_id: str, repo_name: str) -> None:
@@ -388,7 +388,7 @@ def queue_sync_job(workspace_id: str, repo_name: str, installation_id: str) -> N
             "triggered_by": "manual",
         }),
     )
-    logger.info(f"Queued GitHub sync for {workspace_id}/{repo_name}")
+    logger.info("Queued GitHub sync for %s/%s", workspace_id, repo_name)
 
 
 def queue_delete_job(workspace_id: str, repo_name: str) -> None:
