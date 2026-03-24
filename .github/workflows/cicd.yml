@@ -24,8 +24,6 @@ env:
 permissions:
   id-token: write
   contents: read
-  security-events: write
-  actions: read
 
 jobs:
 
@@ -105,16 +103,10 @@ jobs:
           version: 'v0.69.3'
           scan-type: fs
           scan-ref: '.'
-          scanners: vuln,config
-          format: sarif
-          output: trivy-results.sarif
+          scanners: vuln
+          format: table
           severity: CRITICAL,HIGH
-
-      - name: Upload Trivy SARIF to GitHub Security
-        uses: github/codeql-action/upload-sarif@v4
-        if: always()
-        with:
-          sarif_file: trivy-results.sarif
+          exit-code: 1
 
   ui-tests:
     name: UI Tests
