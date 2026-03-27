@@ -361,11 +361,15 @@ def update_sync_status(
     if remove_parts:
         update_expr += " REMOVE " + ", ".join(remove_parts)
 
-    table.update_item(
-        Key={"PK": f"WS#{workspace_id}", "SK": f"GITHUB_REPO#{repo_name}"},
-        UpdateExpression=update_expr,
-        ExpressionAttributeValues=expr_values,
-    )
+    try:
+        table.update_item(
+            Key={"PK": f"WS#{workspace_id}", "SK": f"GITHUB_REPO#{repo_name}"},
+            UpdateExpression=update_expr,
+            ExpressionAttributeValues=expr_values,
+            ConditionExpression="attribute_exists(repo_name)",
+        )
+    except table.meta.client.exceptions.ConditionalCheckFailedException:
+        logger.warning("Skipping sync status update for deleted repo %s in workspace %s", repo_name, workspace_id)
 
 
 # ============================================================================

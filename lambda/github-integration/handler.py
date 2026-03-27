@@ -595,7 +595,7 @@ def handle_list_installation_repos(event: Dict) -> Dict:
 
         # Get already-added repos for this workspace
         workspace_repos = list_repos(workspace_id)
-        added_names = {r["repo_name"] for r in workspace_repos}
+        added_names = {r["repo_name"] for r in workspace_repos if "repo_name" in r}
 
         return _response(200, {
             "repos": [
