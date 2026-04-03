@@ -1544,15 +1544,17 @@ def get_searchable_workspaces(user_email: str) -> Dict:
 
 def get_available_prompts(user_email: str) -> Dict:
     """
-    Get workspaces with custom system prompts that the user is a direct member of.
+    Get workspaces with custom system prompts that the user can access.
 
-    Only includes direct memberships (not shared or org_admin access).
-    Only includes workspaces that have a custom_system_prompt set.
+    Includes workspaces the user is a direct member of and workspaces
+    that have shared search access with the user's workspaces.
     """
     dynamodb = _get_dynamodb()
     table = dynamodb.Table(_get_workspaces_table())
 
     try:
+        is_admin = _is_org_admin(table, user_email)
+
         # Get user's direct workspace memberships
         member_response = table.query(
             KeyConditionExpression="PK = :pk AND begins_with(SK, :sk)",
@@ -1562,11 +1564,34 @@ def get_available_prompts(user_email: str) -> Dict:
             },
         )
 
-        prompts = []
+        user_workspace_ids = []
         for membership in member_response.get("Items", []):
             ws_id = membership.get("workspace_id")
+            if ws_id:
+                user_workspace_ids.append(ws_id)
 
-            # Get workspace metadata
+        # Collect all workspace IDs to check for prompts
+        ws_ids_to_check = set(user_workspace_ids)
+
+        if is_admin:
+            # Org admins see all workspaces with prompts
+            all_ws = _scan_all_workspaces(table)
+            for ws in all_ws:
+                ws_id = ws.get("workspace_id")
+                if ws_id:
+                    ws_ids_to_check.add(ws_id)
+        elif user_workspace_ids:
+            # Also include workspaces shared with the user's workspaces
+            all_ws = _scan_all_workspaces(table)
+            for ws in all_ws:
+                ws_id = ws.get("workspace_id")
+                if ws_id and ws_id not in ws_ids_to_check:
+                    allowed = ws.get("search_allowed_workspaces", [])
+                    if allowed and any(uws in allowed for uws in user_workspace_ids):
+                        ws_ids_to_check.add(ws_id)
+
+        prompts = []
+        for ws_id in ws_ids_to_check:
             ws_response = table.get_item(
                 Key={"PK": f"WS#{ws_id}", "SK": "METADATA"},
                 ProjectionExpression="#n, custom_system_prompt",
@@ -1585,10 +1610,10 @@ def get_available_prompts(user_email: str) -> Dict:
         # Sort by workspace name
         prompts.sort(key=lambda x: x.get("workspace_name", "").lower())
 
-        logger.info(f"Returning {len(prompts)} available prompts for {user_email}")
+        logger.info("Returning %s available prompts for %s", len(prompts), user_email)
         return _response(200, {"prompts": prompts})
     except ClientError as e:
-        logger.error(f"Error getting available prompts: {e}")
+        logger.error("Error getting available prompts: %s", e)
         return _error(500, "Failed to get available prompts")
 
 

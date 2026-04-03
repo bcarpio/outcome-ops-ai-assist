@@ -1271,6 +1271,7 @@ class TestAvailablePrompts:
             "Items": [{"workspace_id": "ws1"}, {"workspace_id": "ws2"}]
         }
         mock_table.get_item.side_effect = [
+            {},  # org_admin check - not an admin
             {"Item": {"name": "WS1", "custom_system_prompt": "You are a helpful assistant."}},
             {"Item": {"name": "WS2"}},  # No custom prompt
         ]
