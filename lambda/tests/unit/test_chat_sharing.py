@@ -200,14 +200,12 @@ class TestShareConversation:
         chat_table.batch_writer.return_value.__enter__ = MagicMock(return_value=batch_ctx)
         chat_table.batch_writer.return_value.__exit__ = MagicMock(return_value=False)
 
-        def ws_get_item(**kwargs):
-            sk = kwargs["Key"]["SK"]
-            if sk == "ORG_MEMBER":
-                return {}
-            if sk == "WS_MEMBER#ws-1":
-                return {"Item": {"PK": "USER#owner@example.com", "SK": "WS_MEMBER#ws-1"}}
-            return {}
-        ws_table.get_item.side_effect = ws_get_item
+        ws_table.get_item.return_value = {}  # Not org_admin
+        ws_table.query.return_value = {
+            "Items": [
+                {"PK": "USER#owner@example.com", "SK": "WS_MEMBER#ws-1", "workspace_id": "ws-1"},
+            ]
+        }
 
         event = _make_event("PUT", "/conversations/conv_test123/share",
                            body={"workspace_ids": ["ws-1"]})
@@ -275,7 +273,8 @@ class TestShareConversation:
             chat_table if name == "test-chat-table" else ws_table
         )
         chat_table.get_item.return_value = {"Item": sample_conversation}
-        ws_table.get_item.return_value = {}  # No membership
+        ws_table.get_item.return_value = {}  # Not org_admin
+        ws_table.query.return_value = {"Items": []}  # No memberships
 
         event = _make_event("PUT", "/conversations/conv_test123/share",
                            body={"workspace_ids": ["ws-no-access"]})
@@ -294,14 +293,12 @@ class TestShareConversation:
         chat_table.batch_writer.return_value.__enter__ = MagicMock(return_value=batch_ctx)
         chat_table.batch_writer.return_value.__exit__ = MagicMock(return_value=False)
 
-        def ws_get_item(**kwargs):
-            sk = kwargs["Key"]["SK"]
-            if sk == "ORG_MEMBER":
-                return {}
-            if sk == "WS_MEMBER#ws-3":
-                return {"Item": {"PK": "USER#owner@example.com", "SK": "WS_MEMBER#ws-3"}}
-            return {}
-        ws_table.get_item.side_effect = ws_get_item
+        ws_table.get_item.return_value = {}  # Not org_admin
+        ws_table.query.return_value = {
+            "Items": [
+                {"PK": "USER#owner@example.com", "SK": "WS_MEMBER#ws-3", "workspace_id": "ws-3"},
+            ]
+        }
 
         event = _make_event("PUT", "/conversations/conv_test123/share",
                            body={"workspace_ids": ["ws-3"]})
@@ -413,14 +410,12 @@ class TestSharedConversationAccess:
         chat_table.get_item.return_value = {"Item": shared_conversation}
         chat_table.query.return_value = {"Items": sample_messages}
 
-        def ws_get_item(**kwargs):
-            sk = kwargs["Key"]["SK"]
-            if sk == "ORG_MEMBER":
-                return {}
-            if sk == "WS_MEMBER#ws-1":
-                return {"Item": {"PK": "USER#reader@example.com", "SK": "WS_MEMBER#ws-1"}}
-            return {}
-        ws_table.get_item.side_effect = ws_get_item
+        ws_table.get_item.return_value = {}  # Not org_admin
+        ws_table.query.return_value = {
+            "Items": [
+                {"PK": "USER#reader@example.com", "SK": "WS_MEMBER#ws-1", "workspace_id": "ws-1"},
+            ]
+        }
 
         event = _make_event("GET", "/conversations/conv_test123", user_email="reader@example.com")
         result = lambda_handler(event, None)
@@ -440,7 +435,8 @@ class TestSharedConversationAccess:
             chat_table if name == "test-chat-table" else ws_table
         )
         chat_table.get_item.return_value = {"Item": shared_conversation}
-        ws_table.get_item.return_value = {}  # No access
+        ws_table.get_item.return_value = {}  # Not org_admin
+        ws_table.query.return_value = {"Items": []}  # No memberships
 
         event = _make_event("GET", "/conversations/conv_test123", user_email="noaccess@example.com")
         result = lambda_handler(event, None)
@@ -504,14 +500,12 @@ class TestSharedConversationAccess:
         chat_table.get_item.return_value = {"Item": shared_conversation}
         chat_table.query.return_value = {"Items": sample_messages}
 
-        def ws_get_item(**kwargs):
-            sk = kwargs["Key"]["SK"]
-            if sk == "ORG_MEMBER":
-                return {}
-            if sk == "WS_MEMBER#ws-1":
-                return {"Item": {"PK": "USER#reader@example.com", "SK": "WS_MEMBER#ws-1"}}
-            return {}
-        ws_table.get_item.side_effect = ws_get_item
+        ws_table.get_item.return_value = {}  # Not org_admin
+        ws_table.query.return_value = {
+            "Items": [
+                {"PK": "USER#reader@example.com", "SK": "WS_MEMBER#ws-1", "workspace_id": "ws-1"},
+            ]
+        }
 
         event = _make_event("GET", "/conversations/conv_test123", user_email="reader@example.com")
         result = lambda_handler(event, None)
@@ -559,14 +553,12 @@ class TestListSharedConversations:
         )
 
         # User has access to ws-1
-        def ws_get_item(**kwargs):
-            sk = kwargs["Key"]["SK"]
-            if sk == "ORG_MEMBER":
-                return {}
-            if sk == "WS_MEMBER#ws-1":
-                return {"Item": {"PK": "USER#user@example.com", "SK": "WS_MEMBER#ws-1"}}
-            return {}
-        ws_table.get_item.side_effect = ws_get_item
+        ws_table.get_item.return_value = {}  # Not org_admin
+        ws_table.query.return_value = {
+            "Items": [
+                {"PK": "USER#user@example.com", "SK": "WS_MEMBER#ws-1", "workspace_id": "ws-1"},
+            ]
+        }
 
         # GSI3 returns one conversation
         chat_table.query.return_value = {
@@ -598,7 +590,8 @@ class TestListSharedConversations:
         mock_dynamodb_resource.Table.side_effect = lambda name: (
             chat_table if name == "test-chat-table" else ws_table
         )
-        ws_table.get_item.return_value = {}  # No access
+        ws_table.get_item.return_value = {}  # Not org_admin
+        ws_table.query.return_value = {"Items": []}  # No memberships
 
         event = _make_event("GET", "/shared", user_email="user@example.com",
                            query_params={"workspace_id": "ws-noaccess"})
@@ -614,14 +607,12 @@ class TestListSharedConversations:
         )
 
         # User has access to ws-1
-        def ws_get_item(**kwargs):
-            sk = kwargs["Key"]["SK"]
-            if sk == "ORG_MEMBER":
-                return {}
-            if sk == "WS_MEMBER#ws-1":
-                return {"Item": {"PK": "USER#user@example.com", "SK": "WS_MEMBER#ws-1"}}
-            return {}
-        ws_table.get_item.side_effect = ws_get_item
+        ws_table.get_item.return_value = {}  # Not org_admin
+        ws_table.query.return_value = {
+            "Items": [
+                {"PK": "USER#user@example.com", "SK": "WS_MEMBER#ws-1", "workspace_id": "ws-1"},
+            ]
+        }
 
         chat_table.query.return_value = {"Items": []}
 
@@ -694,14 +685,12 @@ class TestListSharedConversations:
             chat_table if name == "test-chat-table" else ws_table
         )
 
-        def ws_get_item(**kwargs):
-            sk = kwargs["Key"]["SK"]
-            if sk == "ORG_MEMBER":
-                return {}
-            if sk == "WS_MEMBER#ws-1":
-                return {"Item": {"PK": "USER#user@example.com", "SK": "WS_MEMBER#ws-1"}}
-            return {}
-        ws_table.get_item.side_effect = ws_get_item
+        ws_table.get_item.return_value = {}  # Not org_admin
+        ws_table.query.return_value = {
+            "Items": [
+                {"PK": "USER#user@example.com", "SK": "WS_MEMBER#ws-1", "workspace_id": "ws-1"},
+            ]
+        }
 
         chat_table.query.return_value = {
             "Items": [

@@ -183,7 +183,9 @@ def _validate_workspace_access(user_email: str, workspace_ids: List[str]) -> Lis
     """Validate user has access to the requested workspaces.
 
     Returns list of workspace_ids the user is authorized to access.
-    Checks for direct membership or org_admin status.
+    Checks for direct membership, org_admin status, or cross-workspace
+    search sharing (where one of the user's workspaces has been granted
+    search access to the target workspace).
     """
     if not user_email or not workspace_ids:
         return []
@@ -201,14 +203,39 @@ def _validate_workspace_access(user_email: str, workspace_ids: List[str]) -> Lis
     except ClientError:
         pass
 
-    # Check membership for each workspace
+    # Get user's direct workspace memberships
+    user_workspace_ids = set()
+    try:
+        member_resp = table.query(
+            KeyConditionExpression="PK = :pk AND begins_with(SK, :sk)",
+            ExpressionAttributeValues={
+                ":pk": f"USER#{user_email}",
+                ":sk": "WS_MEMBER#",
+            },
+        )
+        for item in member_resp.get("Items", []):
+            ws_id = item.get("workspace_id") or item.get("SK", "").replace("WS_MEMBER#", "")
+            if ws_id:
+                user_workspace_ids.add(ws_id)
+    except ClientError:
+        pass
+
     authorized = []
     for ws_id in workspace_ids:
+        # Direct membership
+        if ws_id in user_workspace_ids:
+            authorized.append(ws_id)
+            continue
+
+        # Cross-workspace search sharing: check if the target workspace
+        # has granted search access to any of the user's workspaces
         try:
-            resp = table.get_item(
-                Key={"PK": f"USER#{user_email}", "SK": f"WS_MEMBER#{ws_id}"}
+            ws_resp = table.get_item(
+                Key={"PK": f"WS#{ws_id}", "SK": "METADATA"}
             )
-            if "Item" in resp:
+            ws_meta = ws_resp.get("Item", {})
+            allowed = ws_meta.get("search_allowed_workspaces", [])
+            if allowed and any(uws in allowed for uws in user_workspace_ids):
                 authorized.append(ws_id)
         except ClientError:
             continue
