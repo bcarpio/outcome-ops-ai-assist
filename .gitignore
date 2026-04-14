@@ -1,0 +1,71 @@
+# Terraform
+terraform/.terraform/
+terraform/.terraform.lock.hcl
+terraform/*.tfstate
+terraform/*.tfstate.*
+terraform/*.out
+terraform/builds/
+terraform/*.tfvars  # Ignore actual tfvars files (use .example files as templates)
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+# Python lib directories (but not ui/src/lib/)
+/lib/
+lib64/
+!ui/src/lib/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.pytest_cache/
+.coverage
+*.cover
+*.py,cover
+coverage.xml
+junit.xml
+htmlcov/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Environment
+.env
+.env.local
+venv/
+env/
+
+# Logs
+*.log
+
+# Lambda layer binaries (built locally via scripts/build-*-layer.sh)
+# Runtime layer
+lambda/runtime-layer/bin/
+lambda/runtime-layer/lib/
+lambda/runtime-layer/libexec/
+
+# Java layer
+lambda/java-layer/java/
+
+# Terraform layer (binaries only - keep README)
+lambda/terraform-layer/bin/
+
+# Scratch/working directory
+.scratch/

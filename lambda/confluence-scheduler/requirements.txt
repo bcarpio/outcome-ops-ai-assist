@@ -1,0 +1,3 @@
+# boto3 is provided by Lambda runtime
+# No additional dependencies needed
+urllib3>=2.6.3

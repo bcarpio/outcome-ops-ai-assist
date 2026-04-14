@@ -1,0 +1,146 @@
+environment = "dev"
+aws_region  = "us-west-2"
+
+# GitHub repos are now managed via workspace UI, not Terraform
+# Add repos to workspaces using the GitHub App integration
+# Repo types: "application" for full apps (code-maps), "standards" for ADR-only repos (file-ingestion)
+
+# GitHub usernames to tag when tests fail
+# Single user: "yourusername"
+# Team: "user1,user2,user3"
+github_usernames_to_tag = "yourusername"
+
+# ============================================================================
+# Integration Toggles
+# ============================================================================
+
+# Enable GitHub Issues integration - webhook triggers code generation from issue labels (default: true)
+# Set to false if you only want Jira integration
+enable_github_issue_integration = true
+
+# Enable Jira Automation integration via SSM Document (default: false)
+# Set to true to enable Jira as a trigger source
+enable_jira_integration = false
+
+# Atlassian Automation AWS account ID for SSM document sharing
+# Required if enable_jira_integration is true
+# Find this in your Jira Automation settings under AWS integration
+# atlassian_automation_account_id = "123456789012"
+
+# Jira to GitHub Repo Mapping (via Jira Components)
+# ------------------------------------------------
+# No Terraform mapping needed! Instead, create a Jira component with the
+# GitHub repo path as its name (e.g., "bcarpio/my-repo").
+#
+# In Jira Automation, use these Smart Values:
+#   - issueKey         → {{issue.key}}
+#   - issueSummary     → {{issue.summary}}
+#   - issueDescription → {{issue.description}}
+#   - componentKey     → {{issue.components.name}}
+
+# ============================================================================
+# Bedrock Reranking
+# ============================================================================
+
+# Model for post-retrieval reranking (improves search precision)
+# bedrock_rerank_model_id = "cohere.rerank-v3-5:0"
+# rerank_max_fetch        = 50   # Max documents to over-fetch for reranking
+# rerank_min_score        = 0.3  # Min relevance score (0-1) to include in results
+
+# ============================================================================
+# Bedrock Model Pricing (USD per million tokens)
+# ============================================================================
+
+# Update these when changing models to ensure accurate cost tracking
+# bedrock_advanced_input_price  = 3.0   # Sonnet input
+# bedrock_advanced_output_price = 15.0  # Sonnet output
+# bedrock_basic_input_price     = 0.80  # Haiku input
+# bedrock_basic_output_price    = 4.0   # Haiku output
+
+# Max characters per document in RAG context (default 3000)
+# Increase for larger code maps; decrease to reduce token costs
+# rag_max_doc_chars = 10000
+
+# ============================================================================
+# Audit & Compliance
+# ============================================================================
+
+# Email address for AI refusal alert notifications
+# When set, an SNS subscription is created and you'll receive an email to confirm
+# audit_alert_email = "your-team@example.com"
+
+# ============================================================================
+# Chat UI Deployment
+# ============================================================================
+
+# deploy_ui             = true
+# ui_vpc_id             = "vpc-xxxxxxxx"
+# ui_private_subnet_ids = ["subnet-xxxxxxxx", "subnet-yyyyyyyy"]
+# ui_container_image    = "123456789012.dkr.ecr.us-west-2.amazonaws.com/outcome-ops-ai-assist-ui:latest"
+
+# ALB Access Mode:
+#   true  = Internal ALB (default) - customer provides VPC/TGW/DX/VPN access
+#   false = Public ALB - secured by Azure AD OIDC
+# ui_alb_internal = true
+
+# ============================================================================
+# Microsoft Outlook 365 Integration
+# ============================================================================
+
+# Microsoft Entra ID (Azure AD) App Registration for Outlook integration
+# Required permissions: Mail.Read, Mail.ReadBasic, offline_access, openid, profile, email
+# microsoft_oauth_client_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+
+# Before enabling Outlook, store the client secret in SSM:
+#   aws ssm put-parameter --name "/dev/outcome-ops-ai-assist/oauth/microsoft/client-secret" \
+#     --type SecureString --value "your-client-secret"
+
+# ============================================================================
+# OIDC Authentication (Azure AD)
+# ============================================================================
+
+# Domain for HTTPS + OIDC (required when oidc_enabled = true)
+# FQDN: {ui_subdomain}-dev.{domain} for dev environment
+# Requires a Route53 hosted zone for this domain in your account
+# domain = "example.com"
+# ui_subdomain = "outcomeops"  # default
+
+# Azure AD Configuration
+# oidc_enabled   = true
+# oidc_client_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"  # Azure App (client) ID
+# oidc_tenant_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"  # Azure Directory (tenant) ID
+
+# Before enabling OIDC, store the client secret in SSM:
+#   aws ssm put-parameter --name "/dev/outcome-ops-ai-assist/oidc/client-secret" \
+#     --type SecureString --value "your-client-secret"
+# See docs/azure-ad-setup.md for full setup instructions
+
+# ============================================================================
+# MCP Server Catalog
+# ============================================================================
+
+# SonarQube MCP Server (code quality + security analysis)
+# Deploys as a Fargate Spot task in the same VPC as the UI.
+# Before enabling, store your SonarQube token in SSM:
+#   aws ssm put-parameter --name "/dev/outcome-ops-ai-assist/mcp/sonarqube-token" \
+#     --type SecureString --value "your-sonarqube-token"
+# See docs/sonarqube-mcp.md for full setup instructions.
+# SonarQube MCP Server (code quality + security analysis)
+# mcp_sonarqube_enabled = true
+# mcp_sonarqube_url     = "https://sonarcloud.io"
+# mcp_sonarqube_org     = "my-org"
+
+# OutcomeOps MCP Server (knowledge base access for Claude Code, VS Code, Cursor)
+# Requires: deploy_ui = true, Docker for building the container image.
+# First-time deploy: ENVIRONMENT=dev make build-mcp-server-image
+# See docs/mcp-server.md for full setup instructions.
+# mcp_server_enabled = true
+
+# ============================================================================
+# Encryption (Customer Managed Keys)
+# ============================================================================
+
+# Use CMK for data-at-rest encryption on S3, DynamoDB, SQS, SNS, ECR
+# When false (default), services use AWS-managed encryption (no cost)
+# When true, creates a shared KMS key (~$1/month) for all data services
+# enable_cmk_encryption = true
