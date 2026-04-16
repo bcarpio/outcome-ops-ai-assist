@@ -26,6 +26,7 @@ import {
   Globe,
   AlertTriangle,
   RotateCcw,
+  DollarSign,
 } from 'lucide-react'
 import {
   getWorkspace,
@@ -108,6 +109,9 @@ import {
   updateWorkspaceSystemPrompt,
   resetWorkspaceSystemPrompt,
   type WorkspaceSystemPrompt,
+  getWorkspaceBudget,
+  setWorkspaceBudget,
+  type WorkspaceBudget,
 } from '../lib/api'
 
 type Tab = 'general' | 'members' | 'integrations' | 'sharing' | 'documents' | 'advanced'
@@ -249,6 +253,11 @@ export default function WorkspaceSettings() {
   const [resettingSystemPrompt, setResettingSystemPrompt] = useState(false)
   const [showResetPromptConfirm, setShowResetPromptConfirm] = useState(false)
 
+  // Per-workspace monthly budget (USD). Empty string means "use org default".
+  const [budgetData, setBudgetData] = useState<WorkspaceBudget | null>(null)
+  const [budgetInput, setBudgetInput] = useState('')
+  const [savingBudget, setSavingBudget] = useState(false)
+
   useEffect(() => {
     if (workspaceId) {
       loadWorkspace()
@@ -296,6 +305,46 @@ export default function WorkspaceSettings() {
       setError(err instanceof Error ? err.message : 'Failed to load workspace')
     } finally {
       setLoading(false)
+    }
+    loadBudget()
+  }
+
+  async function loadBudget() {
+    if (!workspaceId) return
+    try {
+      const data = await getWorkspaceBudget(workspaceId)
+      setBudgetData(data)
+      setBudgetInput(data.monthly_budget_usd != null ? String(data.monthly_budget_usd) : '')
+    } catch {
+      // Budget endpoint may 403 for non-members; non-fatal
+      setBudgetData(null)
+      setBudgetInput('')
+    }
+  }
+
+  async function handleSaveBudget() {
+    if (!workspaceId) return
+    const trimmed = budgetInput.trim()
+    let value: number | null = null
+    if (trimmed !== '') {
+      const parsed = Number(trimmed)
+      if (!Number.isFinite(parsed) || parsed < 0) {
+        setError('Budget must be a non-negative number')
+        return
+      }
+      value = parsed
+    }
+    setSavingBudget(true)
+    setError(null)
+    try {
+      const data = await setWorkspaceBudget(workspaceId, value)
+      setBudgetData(data)
+      setBudgetInput(data.monthly_budget_usd != null ? String(data.monthly_budget_usd) : '')
+      setSuccess(value === null ? 'Budget cleared' : `Budget set to $${value.toFixed(2)}`)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save budget')
+    } finally {
+      setSavingBudget(false)
     }
   }
 
@@ -1389,6 +1438,55 @@ export default function WorkspaceSettings() {
                   </button>
                 </div>
               )}
+            </div>
+
+            <div className="border-t p-6 space-y-4">
+              <div className="flex items-start gap-3">
+                <DollarSign size={20} className="text-emerald-600 mt-0.5" />
+                <div>
+                  <h3 className="font-medium text-gray-900">Monthly Budget</h3>
+                  <p className="text-sm text-gray-500 mt-0.5">
+                    Send an SNS alert the first time this workspace's monthly spend
+                    crosses the threshold. Leave empty to use the org default.
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-end gap-3">
+                <div className="flex-1 max-w-xs">
+                  <label htmlFor="ws-budget" className="block text-xs text-gray-500 mb-1">
+                    Monthly budget (USD)
+                  </label>
+                  <div className="relative">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400">$</span>
+                    <input
+                      id="ws-budget"
+                      type="number"
+                      min="0"
+                      step="1"
+                      value={budgetInput}
+                      onChange={(e) => setBudgetInput(e.target.value)}
+                      disabled={!isAdmin}
+                      placeholder="org default"
+                      className="w-full pl-7 pr-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100"
+                    />
+                  </div>
+                  {budgetData && !budgetData.is_default && (
+                    <p className="mt-1 text-xs text-gray-500">
+                      Last updated by {budgetData.updated_by} on {budgetData.updated_at?.slice(0, 10)}
+                    </p>
+                  )}
+                </div>
+                {isAdmin && (
+                  <button
+                    onClick={handleSaveBudget}
+                    disabled={savingBudget}
+                    className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors flex items-center gap-2"
+                  >
+                    {savingBudget && <Loader2 size={16} className="animate-spin" />}
+                    Save Budget
+                  </button>
+                )}
+              </div>
             </div>
 
             {isAdmin && (

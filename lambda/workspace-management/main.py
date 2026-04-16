@@ -581,6 +581,34 @@ async def revoke_api_key_route(key_id: str, request: Request):
 
 
 # ============================================================================
+# Workspace Budget Routes
+# ============================================================================
+
+
+@app.get("/workspaces/{workspace_id}/budget")
+async def get_workspace_budget_route(workspace_id: str, request: Request):
+    """Get the per-workspace monthly budget."""
+    from handler import lambda_handler
+
+    event = _build_event(request, "GET", f"/workspaces/{workspace_id}/budget")
+    result = lambda_handler(event, None)
+    return _parse_response(result)
+
+
+@app.put("/workspaces/{workspace_id}/budget")
+async def update_workspace_budget_route(workspace_id: str, request: Request):
+    """Set or clear the per-workspace monthly budget."""
+    from handler import lambda_handler
+
+    body = await request.body()
+    event = _build_event(
+        request, "PUT", f"/workspaces/{workspace_id}/budget", body.decode("utf-8")
+    )
+    result = lambda_handler(event, None)
+    return _parse_response(result)
+
+
+# ============================================================================
 # Analytics Routes
 # ============================================================================
 

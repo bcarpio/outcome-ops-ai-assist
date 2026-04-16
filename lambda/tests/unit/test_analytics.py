@@ -546,6 +546,149 @@ class TestAnalyticsWorkspace:
 # ---------------------------------------------------------------------------
 
 
+class TestWorkspaceBudget:
+    @patch.object(handler_module, "_get_workspaces_table")
+    @patch.object(handler_module, "_get_dynamodb")
+    def test_get_budget_returns_value(self, mock_ddb, mock_ws):
+        ws_table = MagicMock()
+        # First get_item: org_admin check (not admin); second: membership check;
+        # third: workspace metadata with budget
+        ws_table.get_item.side_effect = [
+            {},  # org_admin check
+            {"Item": {"role": "member"}},  # _can_access_workspace membership
+            {"Item": {
+                "workspace_id": "ws-1",
+                "monthly_budget_usd": Decimal("250.00"),
+                "budget_updated_at": "2026-04-15T00:00:00+00:00",
+                "budget_updated_by": "admin@x",
+            }},
+        ]
+        ddb = MagicMock()
+        ddb.Table.return_value = ws_table
+        mock_ddb.return_value = ddb
+        mock_ws.return_value = "ws"
+
+        result = handler_module.get_workspace_budget("user@x", "ws-1")
+        body = json.loads(result["body"])
+        assert result["statusCode"] == 200
+        assert body["monthly_budget_usd"] == 250.0
+        assert body["is_default"] is False
+
+    @patch.object(handler_module, "_get_workspaces_table")
+    @patch.object(handler_module, "_get_dynamodb")
+    def test_get_budget_default_when_unset(self, mock_ddb, mock_ws):
+        ws_table = MagicMock()
+        ws_table.get_item.side_effect = [
+            {},
+            {"Item": {"role": "member"}},
+            {"Item": {"workspace_id": "ws-1"}},  # no budget field
+        ]
+        ddb = MagicMock()
+        ddb.Table.return_value = ws_table
+        mock_ddb.return_value = ddb
+        mock_ws.return_value = "ws"
+
+        result = handler_module.get_workspace_budget("user@x", "ws-1")
+        body = json.loads(result["body"])
+        assert body["monthly_budget_usd"] is None
+        assert body["is_default"] is True
+
+    @patch.object(handler_module, "_get_workspaces_table")
+    @patch.object(handler_module, "_get_dynamodb")
+    def test_get_budget_forbids_non_member(self, mock_ddb, mock_ws):
+        ws_table = MagicMock()
+        ws_table.get_item.side_effect = [
+            {},  # org_admin check
+            {},  # no membership
+        ]
+        ddb = MagicMock()
+        ddb.Table.return_value = ws_table
+        mock_ddb.return_value = ddb
+        mock_ws.return_value = "ws"
+
+        result = handler_module.get_workspace_budget("stranger@x", "ws-1")
+        assert result["statusCode"] == 403
+
+    @patch.object(handler_module, "_get_workspaces_table")
+    @patch.object(handler_module, "_get_dynamodb")
+    def test_update_budget_requires_admin(self, mock_ddb, mock_ws):
+        ws_table = MagicMock()
+        # _is_workspace_admin: org_admin check, membership check (not admin)
+        ws_table.get_item.side_effect = [{}, {"Item": {"role": "member"}}]
+        ddb = MagicMock()
+        ddb.Table.return_value = ws_table
+        mock_ddb.return_value = ddb
+        mock_ws.return_value = "ws"
+
+        result = handler_module.update_workspace_budget(
+            "user@x", "ws-1", {"monthly_budget_usd": 100}
+        )
+        assert result["statusCode"] == 403
+
+    @patch.object(handler_module, "_get_workspaces_table")
+    @patch.object(handler_module, "_get_dynamodb")
+    def test_update_budget_sets_value(self, mock_ddb, mock_ws):
+        ws_table = MagicMock()
+        # admin check passes (org_admin)
+        ws_table.get_item.side_effect = [
+            {"Item": {"org_role": "org_admin"}},  # org_admin check
+            {"Item": {"workspace_id": "ws-1"}},  # workspace exists
+        ]
+        ddb = MagicMock()
+        ddb.Table.return_value = ws_table
+        mock_ddb.return_value = ddb
+        mock_ws.return_value = "ws"
+
+        result = handler_module.update_workspace_budget(
+            "admin@x", "ws-1", {"monthly_budget_usd": 250}
+        )
+        body = json.loads(result["body"])
+        assert result["statusCode"] == 200
+        assert body["monthly_budget_usd"] == 250.0
+        assert body["is_default"] is False
+        # update_item called with SET path, not REMOVE
+        update_call = ws_table.update_item.call_args
+        assert "SET monthly_budget_usd" in update_call.kwargs["UpdateExpression"]
+
+    @patch.object(handler_module, "_get_workspaces_table")
+    @patch.object(handler_module, "_get_dynamodb")
+    def test_update_budget_zero_clears_override(self, mock_ddb, mock_ws):
+        ws_table = MagicMock()
+        ws_table.get_item.side_effect = [
+            {"Item": {"org_role": "org_admin"}},
+            {"Item": {"workspace_id": "ws-1"}},
+        ]
+        ddb = MagicMock()
+        ddb.Table.return_value = ws_table
+        mock_ddb.return_value = ddb
+        mock_ws.return_value = "ws"
+
+        result = handler_module.update_workspace_budget(
+            "admin@x", "ws-1", {"monthly_budget_usd": 0}
+        )
+        body = json.loads(result["body"])
+        assert result["statusCode"] == 200
+        assert body["monthly_budget_usd"] is None
+        assert body["is_default"] is True
+        update_call = ws_table.update_item.call_args
+        assert "REMOVE monthly_budget_usd" in update_call.kwargs["UpdateExpression"]
+
+    @patch.object(handler_module, "_get_workspaces_table")
+    @patch.object(handler_module, "_get_dynamodb")
+    def test_update_budget_rejects_negative(self, mock_ddb, mock_ws):
+        ws_table = MagicMock()
+        ws_table.get_item.side_effect = [{"Item": {"org_role": "org_admin"}}]
+        ddb = MagicMock()
+        ddb.Table.return_value = ws_table
+        mock_ddb.return_value = ddb
+        mock_ws.return_value = "ws"
+
+        result = handler_module.update_workspace_budget(
+            "admin@x", "ws-1", {"monthly_budget_usd": -5}
+        )
+        assert result["statusCode"] == 400
+
+
 class TestAnalyticsRouting:
     @patch.object(handler_module, "get_analytics_summary")
     def test_routes_summary(self, mock_fn):

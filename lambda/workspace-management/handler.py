@@ -83,6 +83,7 @@ import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import unquote
 
@@ -2778,6 +2779,131 @@ def handle_reset_system_prompt(workspace_id: str, user_email: str) -> Dict:
 
 
 # ============================================================================
+# Workspace Budget Management
+# Each workspace stores an optional ``monthly_budget_usd`` on its METADATA
+# item. The cost-alert Lambda uses this per-workspace value when present and
+# falls back to the global ``cost_alert_workspace_monthly_usd`` tfvar when
+# the field is absent or zero.
+# ============================================================================
+
+
+def _coerce_budget(raw: Any) -> Optional[float]:
+    """Parse and validate a budget value. Returns None for unset/zero/invalid."""
+    if raw is None:
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        raise ValueError("monthly_budget_usd must be a number")
+    if value < 0:
+        raise ValueError("monthly_budget_usd must be >= 0")
+    if value > 1_000_000:
+        raise ValueError("monthly_budget_usd must be <= 1,000,000")
+    if value == 0:
+        return None
+    return round(value, 2)
+
+
+def get_workspace_budget(user_email: str, workspace_id: str) -> Dict:
+    """Read the per-workspace monthly budget."""
+    dynamodb = _get_dynamodb()
+    table = dynamodb.Table(_get_workspaces_table())
+
+    try:
+        if not _can_access_workspace(table, user_email, workspace_id):
+            return _error(403, "Not a member of this workspace")
+
+        resp = table.get_item(Key={"PK": f"WS#{workspace_id}", "SK": "METADATA"})
+        if "Item" not in resp:
+            return _error(404, "Workspace not found")
+
+        ws = resp["Item"]
+        budget = ws.get("monthly_budget_usd")
+        try:
+            budget_value = float(budget) if budget is not None else None
+        except (TypeError, ValueError):
+            budget_value = None
+
+        return _response(200, {
+            "workspace_id": workspace_id,
+            "monthly_budget_usd": budget_value,
+            "updated_at": ws.get("budget_updated_at"),
+            "updated_by": ws.get("budget_updated_by"),
+            "is_default": budget_value is None,
+        })
+    except ClientError as e:
+        logger.error(f"Error getting workspace budget: {e}")
+        return _error(500, "Failed to get workspace budget")
+
+
+def update_workspace_budget(user_email: str, workspace_id: str, body: Dict) -> Dict:
+    """Set or clear the per-workspace monthly budget (workspace admin only).
+
+    Pass ``monthly_budget_usd: 0`` (or null/missing) to clear the override and
+    fall back to the org default.
+    """
+    dynamodb = _get_dynamodb()
+    table = dynamodb.Table(_get_workspaces_table())
+
+    try:
+        if not _is_workspace_admin(table, user_email, workspace_id):
+            return _error(403, "Only workspace admins can update the budget")
+
+        try:
+            budget = _coerce_budget(body.get("monthly_budget_usd"))
+        except ValueError as e:
+            return _error(400, str(e))
+
+        resp = table.get_item(Key={"PK": f"WS#{workspace_id}", "SK": "METADATA"})
+        if "Item" not in resp:
+            return _error(404, "Workspace not found")
+
+        now = datetime.now(timezone.utc).isoformat()
+
+        if budget is None:
+            table.update_item(
+                Key={"PK": f"WS#{workspace_id}", "SK": "METADATA"},
+                UpdateExpression=(
+                    "REMOVE monthly_budget_usd, budget_updated_by "
+                    "SET budget_updated_at = :t, updated_at = :t"
+                ),
+                ExpressionAttributeValues={":t": now},
+            )
+            logger.info(f"Cleared budget for workspace {workspace_id} by {user_email}")
+            return _response(200, {
+                "workspace_id": workspace_id,
+                "monthly_budget_usd": None,
+                "updated_at": now,
+                "updated_by": user_email,
+                "is_default": True,
+            })
+
+        table.update_item(
+            Key={"PK": f"WS#{workspace_id}", "SK": "METADATA"},
+            UpdateExpression=(
+                "SET monthly_budget_usd = :b, budget_updated_at = :t, "
+                "budget_updated_by = :u, updated_at = :t"
+            ),
+            ExpressionAttributeValues={
+                ":b": Decimal(str(budget)),
+                ":t": now,
+                ":u": user_email,
+            },
+        )
+        logger.info(f"Set budget=${budget:.2f} for workspace {workspace_id} by {user_email}")
+        return _response(200, {
+            "workspace_id": workspace_id,
+            "monthly_budget_usd": budget,
+            "updated_at": now,
+            "updated_by": user_email,
+            "is_default": False,
+        })
+    except ClientError as e:
+        logger.error(f"Error updating workspace budget: {e}")
+        return _error(500, "Failed to update workspace budget")
+
+
+# ============================================================================
 # Main Handler
 # ============================================================================
 
@@ -3491,6 +3617,24 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             and http_method == "PUT"
         ):
             return handle_update_system_prompt(parts[1], user_email, body)
+
+        # Route: GET /workspaces/{id}/budget
+        if (
+            len(parts) == 3
+            and parts[0] == "workspaces"
+            and parts[2] == "budget"
+            and http_method == "GET"
+        ):
+            return get_workspace_budget(user_email, parts[1])
+
+        # Route: PUT /workspaces/{id}/budget
+        if (
+            len(parts) == 3
+            and parts[0] == "workspaces"
+            and parts[2] == "budget"
+            and http_method == "PUT"
+        ):
+            return update_workspace_budget(user_email, parts[1], body)
 
         # Route: DELETE /workspaces/{id}/system-prompt
         if (

@@ -44,13 +44,25 @@ handler_module = _load_handler_module()
 
 
 def _make_workspaces_table(workspaces):
-    """Return a mock workspaces table scan-returning the given METADATA items."""
+    """Return a mock workspaces table scan-returning the given METADATA items.
+
+    ``workspaces`` is a sequence of (wid, name) or (wid, name, budget) tuples.
+    Tuples without a budget default to no override.
+    """
+    items = []
+    for entry in workspaces:
+        if len(entry) == 2:
+            wid, name = entry
+            items.append({"workspace_id": wid, "name": name})
+        else:
+            wid, name, budget = entry
+            items.append({
+                "workspace_id": wid,
+                "name": name,
+                "monthly_budget_usd": Decimal(str(budget)),
+            })
     table = MagicMock()
-    table.scan.return_value = {
-        "Items": [
-            {"workspace_id": wid, "name": name} for wid, name in workspaces
-        ]
-    }
+    table.scan.return_value = {"Items": items}
     return table
 
 
@@ -188,18 +200,80 @@ class TestHandler:
 
     @patch.object(handler_module, "_ddb")
     @patch.object(handler_module, "_sns_client")
-    def test_zero_thresholds_short_circuits(self, mock_sns, mock_ddb):
+    def test_zero_thresholds_publishes_nothing(self, mock_sns, mock_ddb):
+        # All thresholds zero and no per-workspace overrides -> no alerts.
+        _setup(
+            mock_ddb,
+            workspaces=[("ws-1", "A")],
+            cost_by_ws={"ws-1": 9999.0},
+        )
         sns = MagicMock()
         mock_sns.return_value = sns
-        mock_ddb.return_value = MagicMock()
         with (
             patch.object(handler_module, "ORG_MONTHLY_USD", 0.0),
             patch.object(handler_module, "WORKSPACE_MONTHLY_USD", 0.0),
         ):
             result = handler_module.handler({}, None)
         assert result["statusCode"] == 200
-        assert result["body"] == "disabled"
         sns.publish.assert_not_called()
+
+    @patch.object(handler_module, "_ddb")
+    @patch.object(handler_module, "_sns_client")
+    def test_per_workspace_override_fires_when_global_is_zero(
+        self, mock_sns, mock_ddb
+    ):
+        # Workspace override of $25 takes effect even when global default is 0.
+        _setup(
+            mock_ddb,
+            workspaces=[("ws-1", "Engineering", 25.0)],
+            cost_by_ws={"ws-1": 30.0},
+        )
+        sns = MagicMock()
+        mock_sns.return_value = sns
+        with (
+            patch.object(handler_module, "ORG_MONTHLY_USD", 0.0),
+            patch.object(handler_module, "WORKSPACE_MONTHLY_USD", 0.0),
+        ):
+            handler_module.handler({}, None)
+        assert sns.publish.call_count == 1
+        msg = sns.publish.call_args.kwargs["Message"]
+        assert "$25.00" in msg
+        assert "workspace override" in msg
+
+    @patch.object(handler_module, "_ddb")
+    @patch.object(handler_module, "_sns_client")
+    def test_per_workspace_override_supersedes_global(
+        self, mock_sns, mock_ddb
+    ):
+        # Workspace sets a high override ($500) so the lower global ($50)
+        # should NOT fire even when the global would otherwise alert.
+        _setup(
+            mock_ddb,
+            workspaces=[("ws-1", "Engineering", 500.0)],
+            cost_by_ws={"ws-1": 60.0},
+        )
+        sns = MagicMock()
+        mock_sns.return_value = sns
+        handler_module.handler({}, None)
+        sns.publish.assert_not_called()
+
+    @patch.object(handler_module, "_ddb")
+    @patch.object(handler_module, "_sns_client")
+    def test_workspace_without_override_uses_global(
+        self, mock_sns, mock_ddb
+    ):
+        # No override on this workspace -> the $50 global threshold applies.
+        _setup(
+            mock_ddb,
+            workspaces=[("ws-1", "Engineering")],
+            cost_by_ws={"ws-1": 75.0},
+        )
+        sns = MagicMock()
+        mock_sns.return_value = sns
+        handler_module.handler({}, None)
+        assert sns.publish.call_count == 1
+        msg = sns.publish.call_args.kwargs["Message"]
+        assert "org default" in msg
 
     @patch.object(handler_module, "_ddb")
     def test_handler_without_tables_env(self, mock_ddb):

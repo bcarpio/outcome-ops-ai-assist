@@ -64,20 +64,30 @@ def _month_bounds(now: datetime) -> Tuple[str, str, str]:
     return month_key, start_date, end_date
 
 
-def _iter_workspace_ids(ws_table) -> Iterable[Dict]:
-    """Yield (workspace_id, name) tuples from the workspaces table."""
+def _iter_workspaces(ws_table) -> Iterable[Tuple[str, str, float]]:
+    """Yield (workspace_id, name, per_workspace_budget) for each workspace.
+
+    ``per_workspace_budget`` is 0.0 when the workspace has no override; the
+    caller falls back to ``WORKSPACE_MONTHLY_USD`` in that case.
+    """
     scan_kwargs = {
         "FilterExpression": "SK = :sk AND begins_with(PK, :pkp)",
         "ExpressionAttributeValues": {":sk": "METADATA", ":pkp": "WS#"},
-        "ProjectionExpression": "workspace_id, #n",
+        "ProjectionExpression": "workspace_id, #n, monthly_budget_usd",
         "ExpressionAttributeNames": {"#n": "name"},
     }
     while True:
         resp = ws_table.scan(**scan_kwargs)
         for item in resp.get("Items", []):
             wid = item.get("workspace_id")
-            if wid:
-                yield wid, item.get("name") or wid
+            if not wid:
+                continue
+            raw_budget = item.get("monthly_budget_usd")
+            try:
+                budget = float(raw_budget) if raw_budget is not None else 0.0
+            except (TypeError, ValueError):
+                budget = 0.0
+            yield wid, (item.get("name") or wid), budget
         if "LastEvaluatedKey" not in resp:
             return
         scan_kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
@@ -151,9 +161,11 @@ def handler(event, context):
         logger.warning("[cost-alert] Tables not configured; skipping")
         return {"statusCode": 200, "body": "Tables not configured"}
 
-    if ORG_MONTHLY_USD <= 0 and WORKSPACE_MONTHLY_USD <= 0:
-        logger.info("[cost-alert] All thresholds disabled (0); nothing to do")
-        return {"statusCode": 200, "body": "disabled"}
+    # Note: per-workspace overrides may exist even when the global default is
+    # disabled, so don't short-circuit on WORKSPACE_MONTHLY_USD alone here.
+    # The org check is purely on the global tfvar, so we still bail when both
+    # the global and the org threshold are zero AND no per-workspace overrides
+    # are set — but checking that requires a scan, so we just enter the loop.
 
     now = datetime.now(timezone.utc)
     month_key, start_date, end_date = _month_bounds(now)
@@ -167,15 +179,24 @@ def handler(event, context):
 
     alerts_sent: List[str] = []
     org_total = 0.0
-    workspaces = list(_iter_workspace_ids(ws_table))
+    workspaces = list(_iter_workspaces(ws_table))
 
-    for wid, wname in workspaces:
+    if not workspaces:
+        logger.info("[cost-alert] no workspaces; nothing to do")
+        return {"statusCode": 200, "body": "no workspaces"}
+
+    for wid, wname, ws_override in workspaces:
         cost = _mtd_cost(analytics_table, wid, start_date, end_date)
         org_total += cost
 
-        if WORKSPACE_MONTHLY_USD > 0 and cost >= WORKSPACE_MONTHLY_USD:
+        # Per-workspace override wins over the org-wide default. A 0 / unset
+        # override falls through to the default, which itself may be 0
+        # (meaning per-workspace alerts are disabled for this workspace).
+        threshold = ws_override if ws_override > 0 else WORKSPACE_MONTHLY_USD
+        if threshold > 0 and cost >= threshold:
             sk = f"MTD#{month_key}#WS#{wid}"
-            if _claim_alert(analytics_table, sk, cost, WORKSPACE_MONTHLY_USD):
+            if _claim_alert(analytics_table, sk, cost, threshold):
+                source = "workspace override" if ws_override > 0 else "org default"
                 subject = f"[{ENV.upper()}] Workspace budget crossed: {wname}"
                 message = (
                     f"Workspace Budget Alert\n"
@@ -184,11 +205,14 @@ def handler(event, context):
                     f"Workspace:   {wname} ({wid})\n"
                     f"Month:       {month_key}\n"
                     f"Spend (MTD): ${cost:.2f}\n"
-                    f"Threshold:   ${WORKSPACE_MONTHLY_USD:.2f}\n"
+                    f"Threshold:   ${threshold:.2f} ({source})\n"
                 )
                 _publish(subject, message)
                 alerts_sent.append(sk)
-                logger.info("[cost-alert] published workspace alert for %s (%s)", wname, wid)
+                logger.info(
+                    "[cost-alert] published workspace alert for %s (%s) threshold=$%.2f source=%s",
+                    wname, wid, threshold, source,
+                )
 
     if ORG_MONTHLY_USD > 0 and org_total >= ORG_MONTHLY_USD:
         sk = f"MTD#{month_key}#ORG"

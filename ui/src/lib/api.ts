@@ -1914,6 +1914,46 @@ export async function listSharedConversations(workspaceId?: string, limit?: numb
 }
 
 // ============================================================================
+// Workspace Budget API
+// ============================================================================
+
+export interface WorkspaceBudget {
+  workspace_id: string
+  monthly_budget_usd: number | null
+  updated_at?: string
+  updated_by?: string
+  is_default: boolean
+}
+
+export async function getWorkspaceBudget(workspaceId: string): Promise<WorkspaceBudget> {
+  const response = await fetch(`${API_BASE}/workspaces/${encodeURIComponent(workspaceId)}/budget`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to get budget: ${response.status}`)
+  }
+  return (await response.json()) as WorkspaceBudget
+}
+
+/**
+ * Set or clear the per-workspace monthly budget. Pass 0 (or null) to clear.
+ */
+export async function setWorkspaceBudget(
+  workspaceId: string,
+  monthlyBudgetUsd: number | null,
+): Promise<WorkspaceBudget> {
+  const response = await fetch(`${API_BASE}/workspaces/${encodeURIComponent(workspaceId)}/budget`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ monthly_budget_usd: monthlyBudgetUsd }),
+  })
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to set budget: ${response.status}`)
+  }
+  return (await response.json()) as WorkspaceBudget
+}
+
+// ============================================================================
 // Analytics Types and API
 // ============================================================================
 
