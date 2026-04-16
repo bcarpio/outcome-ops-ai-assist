@@ -98,6 +98,7 @@ logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 ENV = os.environ.get("ENV", "dev")
 APP_NAME = os.environ.get("APP_NAME", "outcome-ops-ai-assist")
 AUDIT_TABLE = os.environ.get("AUDIT_TABLE", "")
+ANALYTICS_TABLE = os.environ.get("ANALYTICS_TABLE", "")
 
 # Cached clients and config
 _dynamodb = None
@@ -192,6 +193,11 @@ def _get_workspaces_table():
 def _get_audit_table() -> str:
     """Get audit logs table name from AUDIT_TABLE env var."""
     return AUDIT_TABLE
+
+
+def _get_analytics_table() -> str:
+    """Get analytics aggregates table name from ANALYTICS_TABLE env var."""
+    return ANALYTICS_TABLE
 
 
 # ============================================================================
@@ -2834,40 +2840,16 @@ def _get_user_workspace_ids(table, user_email: str) -> List[str]:
     return [m["workspace_id"] for m in response.get("Items", []) if m.get("workspace_id")]
 
 
-def _query_audit_for_workspace(
-    audit_table, workspace_id: str, start_iso: str, end_iso: str
-) -> List[Dict]:
-    """Query audit table for entries in a workspace within a date range."""
-    items = []
-    query_kwargs = {
-        "KeyConditionExpression": "PK = :pk AND SK BETWEEN :start AND :end",
-        "ExpressionAttributeValues": {
-            ":pk": f"WS#{workspace_id}",
-            ":start": start_iso,
-            # Append high char so SK prefix match includes full range
-            ":end": end_iso + "~",
-        },
-    }
-    while True:
-        response = audit_table.query(**query_kwargs)
-        items.extend(response.get("Items", []))
-        if "LastEvaluatedKey" not in response:
-            break
-        query_kwargs["ExclusiveStartKey"] = response["LastEvaluatedKey"]
-    return items
-
-
-def _audit_cost(item: Dict) -> float:
-    """Extract cost_usd as a float (stored as string in DynamoDB)."""
-    raw = item.get("cost_usd", "0")
+def _agg_num(item: Dict, key: str) -> float:
+    """Decimal-tolerant accessor for aggregate numeric fields."""
+    raw = item.get(key, 0)
     try:
         return float(raw)
     except (TypeError, ValueError):
         return 0.0
 
 
-def _audit_int(item: Dict, key: str) -> int:
-    """Extract an integer field from an audit item (handles Decimal)."""
+def _agg_int(item: Dict, key: str) -> int:
     raw = item.get(key, 0)
     try:
         return int(raw)
@@ -2875,92 +2857,52 @@ def _audit_int(item: Dict, key: str) -> int:
         return 0
 
 
-def _aggregate_audit_items(
-    items: List[Dict], workspace_names: Dict[str, str]
-) -> Dict[str, Any]:
-    """Aggregate a list of audit items into summary metrics."""
-    total_cost = 0.0
-    total_queries = 0
-    total_input_tokens = 0
-    total_output_tokens = 0
-    by_model: Dict[str, Dict[str, float]] = {}
-    by_workspace: Dict[str, Dict[str, Any]] = {}
-    by_date: Dict[str, Dict[str, float]] = {}
+def _query_aggregates(
+    analytics_table,
+    workspace_id: str,
+    start_date: str,
+    end_date: str,
+    prefixes: List[str],
+) -> List[Dict]:
+    """Query the analytics aggregates table for a workspace and date range.
 
-    for item in items:
-        cost = _audit_cost(item)
-        in_tokens = _audit_int(item, "input_tokens")
-        out_tokens = _audit_int(item, "output_tokens")
-        model_id = item.get("model_id", "unknown")
-        workspace_id = item.get("workspace_id", "")
-        timestamp = item.get("timestamp", "")
-        date_key = timestamp[:10] if timestamp else ""
+    Issues one Query per SK prefix (DT/DM/DU) to avoid over-reading. The
+    prefix bound ``{prefix}#{end_date}~`` is inclusive of the end date because
+    ``~`` (0x7E) sorts after any ASCII character a real SK would end with.
+    """
+    items: List[Dict] = []
+    for prefix in prefixes:
+        query_kwargs: Dict[str, Any] = {
+            "KeyConditionExpression": "PK = :pk AND SK BETWEEN :s AND :e",
+            "ExpressionAttributeValues": {
+                ":pk": f"WS#{workspace_id}",
+                ":s": f"{prefix}#{start_date}",
+                ":e": f"{prefix}#{end_date}~",
+            },
+        }
+        while True:
+            response = analytics_table.query(**query_kwargs)
+            items.extend(response.get("Items", []))
+            if "LastEvaluatedKey" not in response:
+                break
+            query_kwargs["ExclusiveStartKey"] = response["LastEvaluatedKey"]
+    return items
 
-        total_cost += cost
-        total_queries += 1
-        total_input_tokens += in_tokens
-        total_output_tokens += out_tokens
 
-        model_bucket = by_model.setdefault(model_id, {"queries": 0, "cost_usd": 0.0})
-        model_bucket["queries"] += 1
-        model_bucket["cost_usd"] += cost
-
-        if workspace_id:
-            ws_bucket = by_workspace.setdefault(
-                workspace_id,
-                {
-                    "workspace_id": workspace_id,
-                    "name": workspace_names.get(workspace_id, workspace_id),
-                    "queries": 0,
-                    "cost_usd": 0.0,
-                },
-            )
-            ws_bucket["queries"] += 1
-            ws_bucket["cost_usd"] += cost
-
-        if date_key:
-            day_bucket = by_date.setdefault(date_key, {"queries": 0, "cost_usd": 0.0})
-            day_bucket["queries"] += 1
-            day_bucket["cost_usd"] += cost
-
-    by_model_out = {
-        model: {"queries": v["queries"], "cost_usd": round(v["cost_usd"], 4)}
-        for model, v in by_model.items()
-    }
-    by_workspace_out = sorted(
-        (
-            {
-                "workspace_id": v["workspace_id"],
-                "name": v["name"],
-                "queries": v["queries"],
-                "cost_usd": round(v["cost_usd"], 4),
-            }
-            for v in by_workspace.values()
-        ),
-        key=lambda x: x["cost_usd"],
-        reverse=True,
-    )
-    daily_trend = sorted(
-        (
-            {"date": d, "queries": v["queries"], "cost_usd": round(v["cost_usd"], 4)}
-            for d, v in by_date.items()
-        ),
-        key=lambda x: x["date"],
-    )
-
-    return {
-        "total_cost_usd": round(total_cost, 4),
-        "total_queries": total_queries,
-        "total_input_tokens": total_input_tokens,
-        "total_output_tokens": total_output_tokens,
-        "by_model": by_model_out,
-        "by_workspace": by_workspace_out,
-        "daily_trend": daily_trend,
-    }
+def _parse_sk_date_and_suffix(sk: str) -> Tuple[str, str]:
+    """Return (date, suffix) from a rollup SK like ``DT#2026-04-01`` or
+    ``DM#2026-04-01#us.anthropic.sonnet``. If there is no suffix, an empty
+    string is returned for it.
+    """
+    parts = sk.split("#", 2)
+    if len(parts) < 2:
+        return "", ""
+    date = parts[1]
+    suffix = parts[2] if len(parts) > 2 else ""
+    return date, suffix
 
 
 def _get_workspace_names(table, workspace_ids: List[str]) -> Dict[str, str]:
-    """Fetch workspace names for a set of workspace IDs."""
     names: Dict[str, str] = {}
     for ws_id in set(workspace_ids):
         try:
@@ -2972,19 +2914,26 @@ def _get_workspace_names(table, workspace_ids: List[str]) -> Dict[str, str]:
     return names
 
 
+def _date_only(iso: str) -> str:
+    return iso[:10] if iso else ""
+
+
 def get_analytics_summary(user_email: str, query_params: Dict[str, Any]) -> Dict:
-    """Return org-level aggregated analytics for a date range."""
-    audit_table_name = _get_audit_table()
-    if not audit_table_name:
-        return _error(500, "Audit table not configured")
+    """Return org-level aggregated analytics by reading daily roll-ups."""
+    analytics_table_name = _get_analytics_table()
+    if not analytics_table_name:
+        return _error(500, "Analytics table not configured")
 
     start_iso, end_iso, err = _parse_analytics_date_range(query_params)
     if err:
         return _error(400, err)
 
+    start_date = _date_only(start_iso)
+    end_date = _date_only(end_iso)
+
     dynamodb = _get_dynamodb()
     ws_table = dynamodb.Table(_get_workspaces_table())
-    audit_table = dynamodb.Table(audit_table_name)
+    analytics_table = dynamodb.Table(analytics_table_name)
 
     try:
         is_admin = _is_org_admin(ws_table, user_email)
@@ -2994,40 +2943,131 @@ def get_analytics_summary(user_email: str, query_params: Dict[str, Any]) -> Dict
             if not _can_access_workspace(ws_table, user_email, filter_workspace_id):
                 return _error(403, "Not a member of this workspace")
             workspace_ids = [filter_workspace_id]
+            is_ws_admin = _is_workspace_admin(ws_table, user_email, filter_workspace_id)
         elif is_admin:
             all_ws = _scan_all_workspaces(ws_table)
             workspace_ids = [ws["workspace_id"] for ws in all_ws if ws.get("workspace_id")]
+            is_ws_admin = True
         else:
             workspace_ids = _get_user_workspace_ids(ws_table, user_email)
+            is_ws_admin = any(
+                _is_workspace_admin(ws_table, user_email, wid) for wid in workspace_ids
+            )
 
         workspace_names = _get_workspace_names(ws_table, workspace_ids)
 
-        items: List[Dict] = []
+        # Admins see aggregated totals; regular members see only their own
+        # usage, which means reading per-user rollups instead of day totals.
+        show_all_users = is_admin or is_ws_admin
+        prefixes = ["DT", "DM"] if show_all_users else ["DU"]
+
+        total_cost = 0.0
+        total_queries = 0
+        total_input_tokens = 0
+        total_output_tokens = 0
+        by_model: Dict[str, Dict[str, float]] = {}
+        by_workspace: Dict[str, Dict[str, Any]] = {}
+        by_date: Dict[str, Dict[str, float]] = {}
+
         for ws_id in workspace_ids:
-            items.extend(_query_audit_for_workspace(audit_table, ws_id, start_iso, end_iso))
-
-        # Members see only their own usage (non-admin, non-workspace-admin)
-        if not is_admin and not filter_workspace_id:
-            is_ws_admin_anywhere = any(
-                _is_workspace_admin(ws_table, user_email, wid) for wid in workspace_ids
+            items = _query_aggregates(
+                analytics_table, ws_id, start_date, end_date, prefixes
             )
-            if not is_ws_admin_anywhere:
-                items = [i for i in items if i.get("user_email", "").lower() == user_email]
+            for item in items:
+                sk = item.get("SK", "")
+                date, suffix = _parse_sk_date_and_suffix(sk)
+                cost = _agg_num(item, "cost_usd")
+                queries = _agg_int(item, "queries")
+                in_tokens = _agg_int(item, "input_tokens")
+                out_tokens = _agg_int(item, "output_tokens")
 
-        summary = _aggregate_audit_items(items, workspace_names)
-        summary["start_date"] = start_iso
-        summary["end_date"] = end_iso
-        return _response(200, summary)
+                if sk.startswith("DT#") or sk.startswith("DU#"):
+                    # Day totals (admins) or per-user-per-day (members).
+                    # Either way these represent queries for one day, so they
+                    # feed workspace / daily_trend totals without double-count.
+                    if sk.startswith("DU#"):
+                        email = suffix
+                        if email != user_email:
+                            continue  # members only see themselves
+                    total_cost += cost
+                    total_queries += queries
+                    total_input_tokens += in_tokens
+                    total_output_tokens += out_tokens
+
+                    ws_bucket = by_workspace.setdefault(
+                        ws_id,
+                        {
+                            "workspace_id": ws_id,
+                            "name": workspace_names.get(ws_id, ws_id),
+                            "queries": 0,
+                            "cost_usd": 0.0,
+                        },
+                    )
+                    ws_bucket["queries"] += queries
+                    ws_bucket["cost_usd"] += cost
+
+                    if date:
+                        day_bucket = by_date.setdefault(
+                            date, {"queries": 0, "cost_usd": 0.0}
+                        )
+                        day_bucket["queries"] += queries
+                        day_bucket["cost_usd"] += cost
+
+                elif sk.startswith("DM#"):
+                    # Admin view only; members don't query DM rows.
+                    model_id = suffix or "unknown"
+                    bucket = by_model.setdefault(
+                        model_id, {"queries": 0, "cost_usd": 0.0}
+                    )
+                    bucket["queries"] += queries
+                    bucket["cost_usd"] += cost
+
+        by_model_out = {
+            model: {"queries": v["queries"], "cost_usd": round(v["cost_usd"], 4)}
+            for model, v in by_model.items()
+        }
+        by_workspace_out = sorted(
+            (
+                {
+                    "workspace_id": v["workspace_id"],
+                    "name": v["name"],
+                    "queries": v["queries"],
+                    "cost_usd": round(v["cost_usd"], 4),
+                }
+                for v in by_workspace.values()
+            ),
+            key=lambda x: x["cost_usd"],
+            reverse=True,
+        )
+        daily_trend = sorted(
+            (
+                {"date": d, "queries": v["queries"], "cost_usd": round(v["cost_usd"], 4)}
+                for d, v in by_date.items()
+            ),
+            key=lambda x: x["date"],
+        )
+
+        return _response(200, {
+            "total_cost_usd": round(total_cost, 4),
+            "total_queries": total_queries,
+            "total_input_tokens": total_input_tokens,
+            "total_output_tokens": total_output_tokens,
+            "by_model": by_model_out,
+            "by_workspace": by_workspace_out,
+            "daily_trend": daily_trend,
+            "start_date": start_iso,
+            "end_date": end_iso,
+        })
     except ClientError as e:
         logger.error(f"Error getting analytics summary: {e}", exc_info=True)
         return _error(500, "Failed to get analytics summary")
 
 
 def get_analytics_users(user_email: str, query_params: Dict[str, Any]) -> Dict:
-    """Return top users by query count across accessible workspaces."""
-    audit_table_name = _get_audit_table()
-    if not audit_table_name:
-        return _error(500, "Audit table not configured")
+    """Return top users by query count, reading DU rollups."""
+    analytics_table_name = _get_analytics_table()
+    if not analytics_table_name:
+        return _error(500, "Analytics table not configured")
 
     start_iso, end_iso, err = _parse_analytics_date_range(query_params)
     if err:
@@ -3039,9 +3079,12 @@ def get_analytics_users(user_email: str, query_params: Dict[str, Any]) -> Dict:
         limit = 20
     limit = max(1, min(limit, 100))
 
+    start_date = _date_only(start_iso)
+    end_date = _date_only(end_iso)
+
     dynamodb = _get_dynamodb()
     ws_table = dynamodb.Table(_get_workspaces_table())
-    audit_table = dynamodb.Table(audit_table_name)
+    analytics_table = dynamodb.Table(analytics_table_name)
 
     try:
         is_admin = _is_org_admin(ws_table, user_email)
@@ -3055,7 +3098,6 @@ def get_analytics_users(user_email: str, query_params: Dict[str, Any]) -> Dict:
             all_ws = _scan_all_workspaces(ws_table)
             workspace_ids = [ws["workspace_id"] for ws in all_ws if ws.get("workspace_id")]
         else:
-            # Non-admins must be workspace admin of at least one workspace
             user_ws_ids = _get_user_workspace_ids(ws_table, user_email)
             workspace_ids = [
                 wid for wid in user_ws_ids
@@ -3064,33 +3106,33 @@ def get_analytics_users(user_email: str, query_params: Dict[str, Any]) -> Dict:
             if not workspace_ids:
                 return _error(403, "Admin access required")
 
-        items: List[Dict] = []
-        for ws_id in workspace_ids:
-            items.extend(_query_audit_for_workspace(audit_table, ws_id, start_iso, end_iso))
-
         users: Dict[str, Dict[str, Any]] = {}
-        for item in items:
-            email = item.get("user_email", "")
-            if not email:
-                continue
-            bucket = users.setdefault(
-                email,
-                {
-                    "email": email,
-                    "queries": 0,
-                    "cost_usd": 0.0,
-                    "input_tokens": 0,
-                    "output_tokens": 0,
-                    "last_active": "",
-                },
+        for ws_id in workspace_ids:
+            items = _query_aggregates(
+                analytics_table, ws_id, start_date, end_date, ["DU"]
             )
-            bucket["queries"] += 1
-            bucket["cost_usd"] += _audit_cost(item)
-            bucket["input_tokens"] += _audit_int(item, "input_tokens")
-            bucket["output_tokens"] += _audit_int(item, "output_tokens")
-            ts = item.get("timestamp", "")
-            if ts > bucket["last_active"]:
-                bucket["last_active"] = ts
+            for item in items:
+                _, email = _parse_sk_date_and_suffix(item.get("SK", ""))
+                if not email:
+                    continue
+                bucket = users.setdefault(
+                    email,
+                    {
+                        "email": email,
+                        "queries": 0,
+                        "cost_usd": 0.0,
+                        "input_tokens": 0,
+                        "output_tokens": 0,
+                        "last_active": "",
+                    },
+                )
+                bucket["queries"] += _agg_int(item, "queries")
+                bucket["cost_usd"] += _agg_num(item, "cost_usd")
+                bucket["input_tokens"] += _agg_int(item, "input_tokens")
+                bucket["output_tokens"] += _agg_int(item, "output_tokens")
+                last = item.get("last_active_ts", "")
+                if last and last > bucket["last_active"]:
+                    bucket["last_active"] = last
 
         sorted_users = sorted(users.values(), key=lambda u: u["queries"], reverse=True)[:limit]
         for u in sorted_users:
@@ -3105,18 +3147,21 @@ def get_analytics_users(user_email: str, query_params: Dict[str, Any]) -> Dict:
 def get_analytics_workspace(
     user_email: str, workspace_id: str, query_params: Dict[str, Any]
 ) -> Dict:
-    """Return detailed analytics for a single workspace."""
-    audit_table_name = _get_audit_table()
-    if not audit_table_name:
-        return _error(500, "Audit table not configured")
+    """Return detailed analytics for a single workspace from aggregates."""
+    analytics_table_name = _get_analytics_table()
+    if not analytics_table_name:
+        return _error(500, "Analytics table not configured")
 
     start_iso, end_iso, err = _parse_analytics_date_range(query_params)
     if err:
         return _error(400, err)
 
+    start_date = _date_only(start_iso)
+    end_date = _date_only(end_iso)
+
     dynamodb = _get_dynamodb()
     ws_table = dynamodb.Table(_get_workspaces_table())
-    audit_table = dynamodb.Table(audit_table_name)
+    analytics_table = dynamodb.Table(analytics_table_name)
 
     try:
         if not _can_access_workspace(ws_table, user_email, workspace_id):
@@ -3129,9 +3174,12 @@ def get_analytics_workspace(
             return _error(404, "Workspace not found")
         workspace_name = ws_response["Item"].get("name") or workspace_id
 
-        items = _query_audit_for_workspace(audit_table, workspace_id, start_iso, end_iso)
+        items = _query_aggregates(
+            analytics_table, workspace_id, start_date, end_date, ["DT", "DM", "DU"]
+        )
 
         total_cost = 0.0
+        total_queries = 0
         total_duration_ms = 0
         refusal_count = 0
         error_count = 0
@@ -3140,37 +3188,40 @@ def get_analytics_workspace(
         by_date: Dict[str, Dict[str, float]] = {}
 
         for item in items:
-            cost = _audit_cost(item)
-            total_cost += cost
-            total_duration_ms += _audit_int(item, "duration_ms")
+            sk = item.get("SK", "")
+            date, suffix = _parse_sk_date_and_suffix(sk)
+            cost = _agg_num(item, "cost_usd")
+            queries = _agg_int(item, "queries")
 
-            status = item.get("status", "")
-            if status == "refusal":
-                refusal_count += 1
-            elif status == "error":
-                error_count += 1
-
-            model_id = item.get("model_id", "unknown")
-            m_bucket = by_model.setdefault(model_id, {"queries": 0, "cost_usd": 0.0})
-            m_bucket["queries"] += 1
-            m_bucket["cost_usd"] += cost
-
-            email = item.get("user_email", "")
-            if email:
-                u_bucket = by_user.setdefault(
+            if sk.startswith("DT#"):
+                total_cost += cost
+                total_queries += queries
+                total_duration_ms += _agg_int(item, "total_duration_ms")
+                refusal_count += _agg_int(item, "refusal_count")
+                error_count += _agg_int(item, "error_count")
+                if date:
+                    bucket = by_date.setdefault(
+                        date, {"queries": 0, "cost_usd": 0.0}
+                    )
+                    bucket["queries"] += queries
+                    bucket["cost_usd"] += cost
+            elif sk.startswith("DM#"):
+                model_id = suffix or "unknown"
+                bucket = by_model.setdefault(
+                    model_id, {"queries": 0, "cost_usd": 0.0}
+                )
+                bucket["queries"] += queries
+                bucket["cost_usd"] += cost
+            elif sk.startswith("DU#"):
+                email = suffix
+                if not email:
+                    continue
+                bucket = by_user.setdefault(
                     email, {"email": email, "queries": 0, "cost_usd": 0.0}
                 )
-                u_bucket["queries"] += 1
-                u_bucket["cost_usd"] += cost
+                bucket["queries"] += queries
+                bucket["cost_usd"] += cost
 
-            ts = item.get("timestamp", "")
-            if ts:
-                date_key = ts[:10]
-                d_bucket = by_date.setdefault(date_key, {"queries": 0, "cost_usd": 0.0})
-                d_bucket["queries"] += 1
-                d_bucket["cost_usd"] += cost
-
-        total_queries = len(items)
         avg_duration_ms = int(total_duration_ms / total_queries) if total_queries else 0
 
         by_user_out = sorted(

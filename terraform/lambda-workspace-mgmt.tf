@@ -56,6 +56,7 @@ module "workspace_management_lambda" {
     DELETE_QUEUE_URL             = aws_sqs_queue.delete_queue[0].url
     OAUTH_KMS_KEY_ARN            = aws_kms_key.oauth_tokens[0].arn
     AUDIT_TABLE                  = module.audit_logs_table.dynamodb_table_id
+    ANALYTICS_TABLE              = module.analytics_table.dynamodb_table_id
   }
 
   # IAM permissions
@@ -79,17 +80,26 @@ module "workspace_management_lambda" {
       ]
     }
 
-    # DynamoDB for audit logs (system prompt changes + analytics reads)
+    # DynamoDB for audit logs (system prompt change records)
     dynamodb_audit = {
       effect = "Allow"
       actions = [
-        "dynamodb:PutItem",
-        "dynamodb:Query",
-        "dynamodb:Scan"
+        "dynamodb:PutItem"
       ]
       resources = [
-        module.audit_logs_table.dynamodb_table_arn,
-        "${module.audit_logs_table.dynamodb_table_arn}/index/*"
+        module.audit_logs_table.dynamodb_table_arn
+      ]
+    }
+
+    # DynamoDB for analytics aggregates (dashboard reads)
+    dynamodb_analytics = {
+      effect = "Allow"
+      actions = [
+        "dynamodb:Query",
+        "dynamodb:GetItem"
+      ]
+      resources = [
+        module.analytics_table.dynamodb_table_arn
       ]
     }
 
