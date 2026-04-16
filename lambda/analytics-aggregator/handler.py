@@ -151,6 +151,66 @@ def _apply_update(
         raise
 
 
+def aggregate_item(
+    table,
+    workspace_id: str,
+    user_email: str,
+    model_id: str,
+    cost: Decimal,
+    input_tokens: int,
+    output_tokens: int,
+    duration_ms: int,
+    status: str,
+    timestamp: str,
+    request_id: str,
+) -> bool:
+    """Apply DT/DM/DU rollup updates for a single audit record.
+
+    Returns True if the record was aggregated, False if it was skipped (for
+    example missing workspace, system call, or missing request_id).
+
+    This is the shared entry point used by both the live stream consumer and
+    the one-shot backfill script (``scripts/backfill-analytics.py``). The
+    ``processed_requests`` dedup guard inside ``_apply_update`` makes repeat
+    calls for the same ``request_id`` safe, so the two paths can overlap.
+    """
+    if not workspace_id or workspace_id == "SYSTEM":
+        return False
+    date = _date_from_timestamp(timestamp)
+    if not date or not request_id:
+        return False
+
+    model_id = model_id or "unknown"
+    refusal_inc = 1 if status == "refusal" else 0
+    error_inc = 1 if status == "error" else 0
+    pk = f"WS#{workspace_id}"
+
+    _apply_update(
+        table, pk, f"DT#{date}", request_id,
+        queries_inc=1, cost_inc=cost,
+        input_tokens=input_tokens, output_tokens=output_tokens,
+        duration_ms=duration_ms,
+        refusal_inc=refusal_inc, error_inc=error_inc,
+    )
+    _apply_update(
+        table, pk, f"DM#{date}#{model_id}", request_id,
+        queries_inc=1, cost_inc=cost,
+        input_tokens=input_tokens, output_tokens=output_tokens,
+        duration_ms=duration_ms,
+        refusal_inc=refusal_inc, error_inc=error_inc,
+    )
+    if user_email:
+        _apply_update(
+            table, pk, f"DU#{date}#{user_email.lower()}", request_id,
+            queries_inc=1, cost_inc=cost,
+            input_tokens=input_tokens, output_tokens=output_tokens,
+            duration_ms=duration_ms,
+            refusal_inc=refusal_inc, error_inc=error_inc,
+            last_active=timestamp,
+        )
+    return True
+
+
 def _process_record(record: Dict[str, Any]) -> None:
     if record.get("eventName") != "INSERT":
         return
@@ -159,62 +219,19 @@ def _process_record(record: Dict[str, Any]) -> None:
     if not new_image:
         return
 
-    workspace_id = _s(new_image, "workspace_id")
-    if not workspace_id or workspace_id == "SYSTEM":
-        # Skip system/pipeline calls that aren't attributable to a workspace.
-        return
-
-    timestamp = _s(new_image, "timestamp")
-    date = _date_from_timestamp(timestamp)
-    if not date:
-        return
-
-    request_id = _s(new_image, "request_id")
-    if not request_id:
-        return
-
-    user_email = _s(new_image, "user_email").lower()
-    model_id = _s(new_image, "model_id") or "unknown"
-    status = _s(new_image, "status")
-
-    cost = _cost(new_image)
-    input_tokens = _n(new_image, "input_tokens")
-    output_tokens = _n(new_image, "output_tokens")
-    duration_ms = _n(new_image, "duration_ms")
-    refusal_inc = 1 if status == "refusal" else 0
-    error_inc = 1 if status == "error" else 0
-
-    table = _get_table()
-    pk = f"WS#{workspace_id}"
-
-    # Day totals
-    _apply_update(
-        table, pk, f"DT#{date}", request_id,
-        queries_inc=1, cost_inc=cost,
-        input_tokens=input_tokens, output_tokens=output_tokens,
-        duration_ms=duration_ms,
-        refusal_inc=refusal_inc, error_inc=error_inc,
+    aggregate_item(
+        table=_get_table(),
+        workspace_id=_s(new_image, "workspace_id"),
+        user_email=_s(new_image, "user_email"),
+        model_id=_s(new_image, "model_id"),
+        cost=_cost(new_image),
+        input_tokens=_n(new_image, "input_tokens"),
+        output_tokens=_n(new_image, "output_tokens"),
+        duration_ms=_n(new_image, "duration_ms"),
+        status=_s(new_image, "status"),
+        timestamp=_s(new_image, "timestamp"),
+        request_id=_s(new_image, "request_id"),
     )
-
-    # Day x model
-    _apply_update(
-        table, pk, f"DM#{date}#{model_id}", request_id,
-        queries_inc=1, cost_inc=cost,
-        input_tokens=input_tokens, output_tokens=output_tokens,
-        duration_ms=duration_ms,
-        refusal_inc=refusal_inc, error_inc=error_inc,
-    )
-
-    # Day x user (skip when user_email unknown, e.g. system calls)
-    if user_email:
-        _apply_update(
-            table, pk, f"DU#{date}#{user_email}", request_id,
-            queries_inc=1, cost_inc=cost,
-            input_tokens=input_tokens, output_tokens=output_tokens,
-            duration_ms=duration_ms,
-            refusal_inc=refusal_inc, error_inc=error_inc,
-            last_active=timestamp,
-        )
 
 
 def handler(event, context):

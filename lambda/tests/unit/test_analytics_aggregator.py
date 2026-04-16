@@ -213,6 +213,71 @@ class TestProcessRecord:
         assert dm_call.kwargs["Key"]["SK"] == "DM#2026-04-10#unknown"
 
 
+class TestAggregateItem:
+    """Shared helper used by both the stream consumer and the backfill script."""
+
+    def test_aggregates_three_rollups(self):
+        table = MagicMock()
+        ok = handler_module.aggregate_item(
+            table=table,
+            workspace_id="ws-1",
+            user_email="alice@x",
+            model_id="sonnet",
+            cost=Decimal("0.10"),
+            input_tokens=100,
+            output_tokens=50,
+            duration_ms=500,
+            status="success",
+            timestamp="2026-04-10T12:00:00+00:00",
+            request_id="req-1",
+        )
+        assert ok is True
+        sks = [c.kwargs["Key"]["SK"] for c in table.update_item.call_args_list]
+        assert sks == ["DT#2026-04-10", "DM#2026-04-10#sonnet", "DU#2026-04-10#alice@x"]
+
+    def test_returns_false_for_missing_workspace(self):
+        table = MagicMock()
+        ok = handler_module.aggregate_item(
+            table=table, workspace_id="", user_email="a@x", model_id="m",
+            cost=Decimal("0"), input_tokens=0, output_tokens=0,
+            duration_ms=0, status="success",
+            timestamp="2026-04-10T12:00:00+00:00", request_id="req",
+        )
+        assert ok is False
+        assert table.update_item.call_count == 0
+
+    def test_returns_false_for_system_workspace(self):
+        table = MagicMock()
+        ok = handler_module.aggregate_item(
+            table=table, workspace_id="SYSTEM", user_email="a@x", model_id="m",
+            cost=Decimal("0"), input_tokens=0, output_tokens=0,
+            duration_ms=0, status="success",
+            timestamp="2026-04-10T12:00:00+00:00", request_id="req",
+        )
+        assert ok is False
+
+    def test_returns_false_for_missing_request_id(self):
+        table = MagicMock()
+        ok = handler_module.aggregate_item(
+            table=table, workspace_id="ws-1", user_email="a@x", model_id="m",
+            cost=Decimal("0"), input_tokens=0, output_tokens=0,
+            duration_ms=0, status="success",
+            timestamp="2026-04-10T12:00:00+00:00", request_id="",
+        )
+        assert ok is False
+
+    def test_lowercases_user_email_in_sk(self):
+        table = MagicMock()
+        handler_module.aggregate_item(
+            table=table, workspace_id="ws-1", user_email="MIX@Example.COM",
+            model_id="m", cost=Decimal("0"), input_tokens=0, output_tokens=0,
+            duration_ms=0, status="success",
+            timestamp="2026-04-10T12:00:00+00:00", request_id="req",
+        )
+        du_sk = table.update_item.call_args_list[2].kwargs["Key"]["SK"]
+        assert du_sk == "DU#2026-04-10#mix@example.com"
+
+
 class TestHandler:
     @patch.object(handler_module, "_get_table")
     def test_handler_processes_batch(self, mock_get_table):
