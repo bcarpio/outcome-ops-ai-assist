@@ -13,6 +13,7 @@ import {
   Check,
   Plus,
   Server,
+  BarChart3,
 } from 'lucide-react'
 import {
   listOrgMembers,
@@ -133,6 +134,13 @@ export default function OrgSettings() {
               </div>
             </div>
             <div className="flex items-center gap-2">
+              <button
+                onClick={() => navigate('/analytics')}
+                className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
+              >
+                <BarChart3 size={18} />
+                Analytics
+              </button>
               <button
                 onClick={() => navigate('/org/mcp-servers')}
                 className="flex items-center gap-2 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors"
