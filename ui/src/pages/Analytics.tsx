@@ -307,20 +307,26 @@ export default function Analytics() {
                     {summary.by_workspace.slice(0, 8).map(ws => {
                       const pct = maxWorkspaceCost > 0 ? (ws.cost_usd / maxWorkspaceCost) * 100 : 0
                       return (
-                        <div key={ws.workspace_id}>
+                        <button
+                          key={ws.workspace_id}
+                          onClick={() => navigate(`/analytics/workspace/${ws.workspace_id}`)}
+                          className="block w-full text-left group"
+                        >
                           <div className="flex items-center justify-between text-sm mb-1">
-                            <span className="text-gray-700 truncate pr-2">{ws.name}</span>
+                            <span className="text-gray-700 group-hover:text-blue-600 truncate pr-2 transition-colors">
+                              {ws.name}
+                            </span>
                             <span className="text-gray-900 font-medium">
                               {formatCost(ws.cost_usd)}
                             </span>
                           </div>
                           <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
                             <div
-                              className="h-full bg-sky-500"
+                              className="h-full bg-sky-500 group-hover:bg-sky-600 transition-colors"
                               style={{ width: `${pct}%` }}
                             />
                           </div>
-                        </div>
+                        </button>
                       )
                     })}
                   </div>
