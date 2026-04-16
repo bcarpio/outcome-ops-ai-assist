@@ -21,7 +21,6 @@ import {
   YAxis,
   CartesianGrid,
   Tooltip,
-  type TooltipProps,
 } from 'recharts'
 import {
   getAnalyticsSummary,
@@ -539,9 +538,14 @@ interface TrendTooltipPayload {
   queries: number
 }
 
-function TrendTooltip({ active, payload }: TooltipProps<number, string>) {
+interface TrendTooltipProps {
+  active?: boolean
+  payload?: Array<{ payload: TrendTooltipPayload }>
+}
+
+function TrendTooltip({ active, payload }: TrendTooltipProps) {
   if (!active || !payload || payload.length === 0) return null
-  const data = payload[0].payload as TrendTooltipPayload
+  const data = payload[0].payload
   return (
     <div className="bg-white border rounded-lg shadow-md px-3 py-2 text-xs">
       <div className="font-medium text-gray-900 mb-1">{data.date}</div>
