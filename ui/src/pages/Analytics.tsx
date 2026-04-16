@@ -10,7 +10,19 @@ import {
   LogOut,
   AlertCircle,
   TrendingUp,
+  ArrowUpRight,
+  ArrowDownRight,
 } from 'lucide-react'
+import {
+  ResponsiveContainer,
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  type TooltipProps,
+} from 'recharts'
 import {
   getAnalyticsSummary,
   getAnalyticsUsers,
@@ -18,6 +30,7 @@ import {
   type AnalyticsSummary,
   type AnalyticsUser,
   type SearchableWorkspace,
+  type AnalyticsDailyPoint,
 } from '../lib/api'
 
 type DateRangeOption = 30 | 60 | 90
@@ -61,6 +74,52 @@ function isoDaysAgo(days: number): string {
   const d = new Date()
   d.setUTCDate(d.getUTCDate() - days)
   return d.toISOString()
+}
+
+interface WoWDelta {
+  current: number
+  prior: number
+  pct: number | null
+}
+
+interface WoWDeltas {
+  cost: WoWDelta
+  queries: WoWDelta
+  tokens: WoWDelta
+}
+
+function computeWoWDeltas(trend: AnalyticsDailyPoint[] | undefined): WoWDeltas | null {
+  if (!trend || trend.length < 2) return null
+  // Use the last 7 days vs the 7 days before that. Older data is ignored so
+  // the comparison stays interpretable regardless of the selected range.
+  const sorted = [...trend].sort((a, b) => (a.date < b.date ? -1 : 1))
+  const tail = sorted.slice(-14)
+  if (tail.length < 2) return null
+  const half = Math.floor(tail.length / 2)
+  const prior = tail.slice(0, half)
+  const current = tail.slice(half)
+  if (prior.length === 0 || current.length === 0) return null
+
+  const sum = (pts: AnalyticsDailyPoint[], key: keyof AnalyticsDailyPoint) =>
+    pts.reduce((acc, p) => acc + Number(p[key] || 0), 0)
+
+  // daily_trend today only carries cost_usd + queries; tokens are totals-only,
+  // so WoW delta for tokens is not available from this response shape.
+  const costCur = sum(current, 'cost_usd')
+  const costPrior = sum(prior, 'cost_usd')
+  const qCur = sum(current, 'queries')
+  const qPrior = sum(prior, 'queries')
+
+  const pct = (cur: number, prev: number): number | null => {
+    if (prev === 0) return cur === 0 ? 0 : null
+    return (cur - prev) / prev
+  }
+
+  return {
+    cost: { current: costCur, prior: costPrior, pct: pct(costCur, costPrior) },
+    queries: { current: qCur, prior: qPrior, pct: pct(qCur, qPrior) },
+    tokens: { current: 0, prior: 0, pct: null },
+  }
 }
 
 export default function Analytics() {
@@ -113,11 +172,6 @@ export default function Analytics() {
     }
   }, [range, workspaceFilter])
 
-  const maxDailyCost = useMemo(() => {
-    if (!summary?.daily_trend.length) return 0
-    return Math.max(...summary.daily_trend.map(d => d.cost_usd))
-  }, [summary])
-
   const maxWorkspaceCost = useMemo(() => {
     if (!summary?.by_workspace.length) return 0
     return Math.max(...summary.by_workspace.map(w => w.cost_usd))
@@ -135,11 +189,10 @@ export default function Analytics() {
     return Math.max(...sortedModels.map(m => m.cost_usd))
   }, [sortedModels])
 
-  const errorRate = useMemo(() => {
-    if (!summary || summary.total_queries === 0) return 0
-    // Not directly in summary; treat as 0 here unless exposed later
-    return 0
-  }, [summary])
+  // Week-over-week deltas on cost / queries / tokens — computed from the
+  // trailing 14 days of the daily_trend series. Returns null when there's
+  // not enough data in the prior window to compare meaningfully.
+  const deltas = useMemo(() => computeWoWDeltas(summary?.daily_trend), [summary])
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -244,11 +297,15 @@ export default function Analytics() {
                 label="Total Cost"
                 value={formatCost(summary.total_cost_usd)}
                 sublabel={`last ${range} days`}
+                delta={deltas?.cost}
+                deltaDirection="higher-is-bad"
               />
               <StatCard
                 label="Queries"
                 value={formatNumber(summary.total_queries)}
                 sublabel={`${summary.total_queries === 0 ? 'no activity' : 'total'}`}
+                delta={deltas?.queries}
+                deltaDirection="higher-is-good"
               />
               <StatCard
                 label="Input Tokens"
@@ -280,18 +337,34 @@ export default function Analytics() {
               {summary.daily_trend.length === 0 ? (
                 <p className="text-sm text-gray-500 py-4">No activity in this range.</p>
               ) : (
-                <div className="flex items-end gap-1 h-32">
-                  {summary.daily_trend.map(day => {
-                    const heightPct = maxDailyCost > 0 ? (day.cost_usd / maxDailyCost) * 100 : 0
-                    return (
-                      <div
-                        key={day.date}
-                        className="flex-1 bg-blue-500 hover:bg-blue-600 rounded-t transition-colors min-w-[4px] relative group"
-                        style={{ height: `${Math.max(heightPct, 2)}%` }}
-                        title={`${day.date}: ${formatCost(day.cost_usd)} · ${formatNumber(day.queries)} queries`}
+                <div className="h-56">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={summary.daily_trend} margin={{ top: 8, right: 16, bottom: 0, left: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
+                      <XAxis
+                        dataKey="date"
+                        stroke="#9ca3af"
+                        fontSize={11}
+                        tickFormatter={d => d.slice(5)}
+                        minTickGap={20}
                       />
-                    )
-                  })}
+                      <YAxis
+                        stroke="#9ca3af"
+                        fontSize={11}
+                        tickFormatter={v => `$${v.toFixed(2)}`}
+                        width={60}
+                      />
+                      <Tooltip content={<TrendTooltip />} />
+                      <Line
+                        type="monotone"
+                        dataKey="cost_usd"
+                        stroke="#3b82f6"
+                        strokeWidth={2}
+                        dot={false}
+                        activeDot={{ r: 4 }}
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
                 </div>
               )}
             </section>
@@ -409,11 +482,6 @@ export default function Analytics() {
               )}
             </section>
 
-            {errorRate > 0 && (
-              <p className="text-xs text-gray-400 text-right">
-                Error rate: {(errorRate * 100).toFixed(2)}%
-              </p>
-            )}
           </div>
         )}
       </main>
@@ -425,14 +493,66 @@ interface StatCardProps {
   label: string
   value: string
   sublabel?: string
+  delta?: WoWDelta | null
+  deltaDirection?: 'higher-is-good' | 'higher-is-bad'
 }
 
-function StatCard({ label, value, sublabel }: StatCardProps) {
+function StatCard({ label, value, sublabel, delta, deltaDirection = 'higher-is-good' }: StatCardProps) {
   return (
     <div className="bg-white border rounded-lg shadow-sm p-4">
       <div className="text-xs text-gray-500 uppercase tracking-wide">{label}</div>
       <div className="mt-1 text-2xl font-semibold text-gray-900">{value}</div>
-      {sublabel && <div className="mt-1 text-xs text-gray-500">{sublabel}</div>}
+      {delta && delta.pct !== null ? (
+        <WoWBadge pct={delta.pct} direction={deltaDirection} />
+      ) : (
+        sublabel && <div className="mt-1 text-xs text-gray-500">{sublabel}</div>
+      )}
+    </div>
+  )
+}
+
+interface WoWBadgeProps {
+  pct: number
+  direction: 'higher-is-good' | 'higher-is-bad'
+}
+
+function WoWBadge({ pct, direction }: WoWBadgeProps) {
+  const up = pct > 0.005
+  const down = pct < -0.005
+  const flat = !up && !down
+  const good = direction === 'higher-is-good' ? up : down
+  const color = flat ? 'text-gray-500' : good ? 'text-emerald-600' : 'text-rose-600'
+  const Icon = up ? ArrowUpRight : down ? ArrowDownRight : null
+  const formatted = `${pct > 0 ? '+' : ''}${(pct * 100).toFixed(1)}%`
+  return (
+    <div className={`mt-1 flex items-center gap-1 text-xs ${color}`}>
+      {Icon && <Icon size={12} />}
+      <span>{formatted}</span>
+      <span className="text-gray-400 font-normal">vs prior 7d</span>
+    </div>
+  )
+}
+
+interface TrendTooltipPayload {
+  date: string
+  cost_usd: number
+  queries: number
+}
+
+function TrendTooltip({ active, payload }: TooltipProps<number, string>) {
+  if (!active || !payload || payload.length === 0) return null
+  const data = payload[0].payload as TrendTooltipPayload
+  return (
+    <div className="bg-white border rounded-lg shadow-md px-3 py-2 text-xs">
+      <div className="font-medium text-gray-900 mb-1">{data.date}</div>
+      <div className="text-gray-700">
+        <span className="text-gray-500">Cost:</span>{' '}
+        <span className="font-medium">${data.cost_usd.toFixed(4)}</span>
+      </div>
+      <div className="text-gray-700">
+        <span className="text-gray-500">Queries:</span>{' '}
+        <span className="font-medium">{data.queries.toLocaleString()}</span>
+      </div>
     </div>
   )
 }

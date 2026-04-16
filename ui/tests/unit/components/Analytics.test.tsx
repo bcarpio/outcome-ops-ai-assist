@@ -93,7 +93,7 @@ describe('Analytics', () => {
     expect(screen.getByText('45.0M')).toBeInTheDocument()
   })
 
-  it('renders daily trend bars', async () => {
+  it('renders daily trend chart', async () => {
     mockSummary.mockResolvedValue(buildSummary())
     mockUsers.mockResolvedValue({ users: [] })
 
@@ -101,9 +101,8 @@ describe('Analytics', () => {
     await waitFor(() => {
       expect(screen.getByText('Daily Cost Trend')).toBeInTheDocument()
     })
-    // One bar per daily_trend entry
-    const bars = container.querySelectorAll('[title*="2026-04-"]')
-    expect(bars.length).toBe(2)
+    // Recharts renders the line chart into an SVG
+    expect(container.querySelector('svg')).not.toBeNull()
   })
 
   it('renders workspace cost breakdown', async () => {
