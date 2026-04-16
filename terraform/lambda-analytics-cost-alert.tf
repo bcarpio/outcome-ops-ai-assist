@@ -75,16 +75,25 @@ module "analytics_cost_alert_lambda" {
     }
   }
 
-  allowed_triggers = {
-    EventBridgeSchedule = {
-      principal  = "events.amazonaws.com"
-      source_arn = aws_cloudwatch_event_rule.analytics_cost_alert_schedule[0].arn
-    }
-  }
+  # Permission for EventBridge to invoke the Lambda. The module's
+  # allowed_triggers shortcut only works when the function is published as a
+  # numbered version; we keep the function on $LATEST, so we attach the
+  # permission directly against the unqualified function ARN.
+  create_current_version_allowed_triggers = false
 
   tags = {
     Purpose = "analytics-cost-alert"
   }
+}
+
+resource "aws_lambda_permission" "analytics_cost_alert_eventbridge" {
+  count = var.cost_alert_enabled ? 1 : 0
+
+  statement_id  = "AllowExecutionFromEventBridge"
+  action        = "lambda:InvokeFunction"
+  function_name = module.analytics_cost_alert_lambda[0].lambda_function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.analytics_cost_alert_schedule[0].arn
 }
 
 resource "aws_cloudwatch_event_rule" "analytics_cost_alert_schedule" {
