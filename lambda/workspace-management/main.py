@@ -578,3 +578,43 @@ async def revoke_api_key_route(key_id: str, request: Request):
     event = _build_event(request, "DELETE", f"/api-keys/{key_id}")
     result = lambda_handler(event, None)
     return _parse_response(result)
+
+
+# ============================================================================
+# Analytics Routes
+# ============================================================================
+
+
+@app.get("/analytics/summary")
+async def analytics_summary_route(request: Request):
+    """Org-level analytics summary for a date range."""
+    from handler import lambda_handler
+
+    event = _build_event(request, "GET", "/analytics/summary")
+    event["queryStringParameters"] = dict(request.query_params)
+    result = lambda_handler(event, None)
+    return _parse_response(result)
+
+
+@app.get("/analytics/users")
+async def analytics_users_route(request: Request):
+    """Top users by query count."""
+    from handler import lambda_handler
+
+    event = _build_event(request, "GET", "/analytics/users")
+    event["queryStringParameters"] = dict(request.query_params)
+    result = lambda_handler(event, None)
+    return _parse_response(result)
+
+
+@app.get("/analytics/workspace/{workspace_id}")
+async def analytics_workspace_route(workspace_id: str, request: Request):
+    """Detailed analytics for a workspace."""
+    from handler import lambda_handler
+
+    event = _build_event(
+        request, "GET", f"/analytics/workspace/{workspace_id}"
+    )
+    event["queryStringParameters"] = dict(request.query_params)
+    result = lambda_handler(event, None)
+    return _parse_response(result)

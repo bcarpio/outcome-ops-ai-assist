@@ -79,14 +79,17 @@ module "workspace_management_lambda" {
       ]
     }
 
-    # DynamoDB for audit logs (system prompt changes)
+    # DynamoDB for audit logs (system prompt changes + analytics reads)
     dynamodb_audit = {
       effect = "Allow"
       actions = [
-        "dynamodb:PutItem"
+        "dynamodb:PutItem",
+        "dynamodb:Query",
+        "dynamodb:Scan"
       ]
       resources = [
-        module.audit_logs_table.dynamodb_table_arn
+        module.audit_logs_table.dynamodb_table_arn,
+        "${module.audit_logs_table.dynamodb_table_arn}/index/*"
       ]
     }
 

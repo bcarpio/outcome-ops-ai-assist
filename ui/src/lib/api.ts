@@ -1912,3 +1912,134 @@ export async function listSharedConversations(workspaceId?: string, limit?: numb
   if (!response.ok) throw new Error('Failed to list shared conversations')
   return response.json()
 }
+
+// ============================================================================
+// Analytics Types and API
+// ============================================================================
+
+export interface AnalyticsModelBreakdown {
+  queries: number
+  cost_usd: number
+}
+
+export interface AnalyticsWorkspaceBreakdown {
+  workspace_id: string
+  name: string
+  queries: number
+  cost_usd: number
+}
+
+export interface AnalyticsDailyPoint {
+  date: string
+  queries: number
+  cost_usd: number
+}
+
+export interface AnalyticsSummary {
+  total_cost_usd: number
+  total_queries: number
+  total_input_tokens: number
+  total_output_tokens: number
+  by_model: Record<string, AnalyticsModelBreakdown>
+  by_workspace: AnalyticsWorkspaceBreakdown[]
+  daily_trend: AnalyticsDailyPoint[]
+  start_date?: string
+  end_date?: string
+}
+
+export interface AnalyticsUser {
+  email: string
+  queries: number
+  cost_usd: number
+  input_tokens: number
+  output_tokens: number
+  last_active: string
+}
+
+export interface AnalyticsWorkspaceUser {
+  email: string
+  queries: number
+  cost_usd: number
+}
+
+export interface AnalyticsWorkspaceDetail {
+  workspace_id: string
+  workspace_name: string
+  total_cost_usd: number
+  total_queries: number
+  avg_duration_ms: number
+  refusal_count: number
+  error_count: number
+  start_date?: string
+  end_date?: string
+  by_user: AnalyticsWorkspaceUser[]
+  by_model: Record<string, AnalyticsModelBreakdown>
+  daily_trend: AnalyticsDailyPoint[]
+}
+
+/**
+ * Get org-level analytics summary for a date range.
+ * Dates are ISO 8601 strings.
+ */
+export async function getAnalyticsSummary(
+  startDate?: string,
+  endDate?: string,
+  workspaceId?: string,
+): Promise<AnalyticsSummary> {
+  const params = new URLSearchParams()
+  if (startDate) params.set('start_date', startDate)
+  if (endDate) params.set('end_date', endDate)
+  if (workspaceId) params.set('workspace_id', workspaceId)
+  const qs = params.toString()
+  const response = await fetch(`${API_BASE}/analytics/summary${qs ? `?${qs}` : ''}`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to get analytics summary: ${response.status}`)
+  }
+  return (await response.json()) as AnalyticsSummary
+}
+
+/**
+ * Get top users by query count (admin only).
+ */
+export async function getAnalyticsUsers(
+  startDate?: string,
+  endDate?: string,
+  workspaceId?: string,
+  limit?: number,
+): Promise<{ users: AnalyticsUser[] }> {
+  const params = new URLSearchParams()
+  if (startDate) params.set('start_date', startDate)
+  if (endDate) params.set('end_date', endDate)
+  if (workspaceId) params.set('workspace_id', workspaceId)
+  if (limit) params.set('limit', String(limit))
+  const qs = params.toString()
+  const response = await fetch(`${API_BASE}/analytics/users${qs ? `?${qs}` : ''}`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to get analytics users: ${response.status}`)
+  }
+  return (await response.json()) as { users: AnalyticsUser[] }
+}
+
+/**
+ * Get detailed analytics for a workspace.
+ */
+export async function getAnalyticsWorkspace(
+  workspaceId: string,
+  startDate?: string,
+  endDate?: string,
+): Promise<AnalyticsWorkspaceDetail> {
+  const params = new URLSearchParams()
+  if (startDate) params.set('start_date', startDate)
+  if (endDate) params.set('end_date', endDate)
+  const qs = params.toString()
+  const response = await fetch(
+    `${API_BASE}/analytics/workspace/${encodeURIComponent(workspaceId)}${qs ? `?${qs}` : ''}`,
+  )
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to get workspace analytics: ${response.status}`)
+  }
+  return (await response.json()) as AnalyticsWorkspaceDetail
+}

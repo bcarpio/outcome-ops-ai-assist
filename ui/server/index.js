@@ -723,6 +723,39 @@ app.post("/api/api-keys", (req, res) => proxyWorkspaceRequest(req, res, "POST", 
 app.get("/api/api-keys", (req, res) => proxyWorkspaceRequest(req, res, "GET", "/api-keys"));
 app.delete("/api/api-keys/:keyId", (req, res) => proxyWorkspaceRequest(req, res, "DELETE", `/api-keys/${req.params.keyId}`));
 
+// ============================================================================
+// Analytics API (proxied to Workspace Lambda)
+// ============================================================================
+app.get("/api/analytics/summary", (req, res) => {
+  const params = new URLSearchParams();
+  if (req.query.start_date) params.set("start_date", req.query.start_date);
+  if (req.query.end_date) params.set("end_date", req.query.end_date);
+  if (req.query.workspace_id) params.set("workspace_id", req.query.workspace_id);
+  const qs = params.toString();
+  const path = qs ? `/analytics/summary?${qs}` : "/analytics/summary";
+  proxyWorkspaceRequest(req, res, "GET", path);
+});
+
+app.get("/api/analytics/users", (req, res) => {
+  const params = new URLSearchParams();
+  if (req.query.start_date) params.set("start_date", req.query.start_date);
+  if (req.query.end_date) params.set("end_date", req.query.end_date);
+  if (req.query.workspace_id) params.set("workspace_id", req.query.workspace_id);
+  if (req.query.limit) params.set("limit", req.query.limit);
+  const qs = params.toString();
+  const path = qs ? `/analytics/users?${qs}` : "/analytics/users";
+  proxyWorkspaceRequest(req, res, "GET", path);
+});
+
+app.get("/api/analytics/workspace/:id", (req, res) => {
+  const params = new URLSearchParams();
+  if (req.query.start_date) params.set("start_date", req.query.start_date);
+  if (req.query.end_date) params.set("end_date", req.query.end_date);
+  const qs = params.toString();
+  const base = `/analytics/workspace/${encodeURIComponent(req.params.id)}`;
+  proxyWorkspaceRequest(req, res, "GET", qs ? `${base}?${qs}` : base);
+});
+
 // Debug: Show current authenticated user identity
 app.get("/api/me", (req, res) => {
   const user = extractUser(req);

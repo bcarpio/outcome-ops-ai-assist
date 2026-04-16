@@ -21,6 +21,7 @@ import {
   List,
   Mic,
   Share2,
+  BarChart3,
 } from 'lucide-react'
 import {
   sendChatMessage,
@@ -563,6 +564,15 @@ export default function Chat() {
             >
               <Folder size={16} />
             </button>
+            {searchableWorkspaces.some(ws => ws.access_type === 'org_admin') && (
+              <button
+                onClick={() => navigate('/analytics')}
+                title="Analytics"
+                className="p-1.5 text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
+              >
+                <BarChart3 size={16} />
+              </button>
+            )}
             <button
               onClick={() => { window.location.href = '/api/logout' }}
               title="Sign out"

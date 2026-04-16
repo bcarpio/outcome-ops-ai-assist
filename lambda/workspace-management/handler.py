@@ -189,6 +189,11 @@ def _get_workspaces_table():
     return _workspaces_table
 
 
+def _get_audit_table() -> str:
+    """Get audit logs table name from AUDIT_TABLE env var."""
+    return AUDIT_TABLE
+
+
 # ============================================================================
 # Request/Response Models
 # ============================================================================
@@ -2771,6 +2776,446 @@ def handle_reset_system_prompt(workspace_id: str, user_email: str) -> Dict:
 # ============================================================================
 
 
+# ============================================================================
+# Analytics Operations
+# ============================================================================
+
+ANALYTICS_MAX_RANGE_DAYS = 90
+ANALYTICS_DEFAULT_RANGE_DAYS = 30
+
+
+def _parse_analytics_date_range(
+    query_params: Dict[str, Any],
+) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """Parse start_date / end_date query params.
+
+    Returns (start_iso, end_iso, error_message). Defaults to last 30 days;
+    enforces the 90-day maximum range.
+    """
+    now = datetime.now(timezone.utc)
+    end_raw = query_params.get("end_date")
+    start_raw = query_params.get("start_date")
+
+    try:
+        if end_raw:
+            end_dt = datetime.fromisoformat(end_raw.replace("Z", "+00:00"))
+            if end_dt.tzinfo is None:
+                end_dt = end_dt.replace(tzinfo=timezone.utc)
+        else:
+            end_dt = now
+
+        if start_raw:
+            start_dt = datetime.fromisoformat(start_raw.replace("Z", "+00:00"))
+            if start_dt.tzinfo is None:
+                start_dt = start_dt.replace(tzinfo=timezone.utc)
+        else:
+            start_dt = end_dt - timedelta(days=ANALYTICS_DEFAULT_RANGE_DAYS)
+    except ValueError as e:
+        return None, None, f"Invalid date format: {e}"
+
+    if start_dt > end_dt:
+        return None, None, "start_date must be before end_date"
+
+    if (end_dt - start_dt).days > ANALYTICS_MAX_RANGE_DAYS:
+        return None, None, f"Date range exceeds max of {ANALYTICS_MAX_RANGE_DAYS} days"
+
+    return start_dt.isoformat(), end_dt.isoformat(), None
+
+
+def _get_user_workspace_ids(table, user_email: str) -> List[str]:
+    """Return the list of workspace IDs the user belongs to."""
+    response = table.query(
+        KeyConditionExpression="PK = :pk AND begins_with(SK, :sk)",
+        ExpressionAttributeValues={
+            ":pk": f"USER#{user_email}",
+            ":sk": "WS_MEMBER#",
+        },
+    )
+    return [m["workspace_id"] for m in response.get("Items", []) if m.get("workspace_id")]
+
+
+def _query_audit_for_workspace(
+    audit_table, workspace_id: str, start_iso: str, end_iso: str
+) -> List[Dict]:
+    """Query audit table for entries in a workspace within a date range."""
+    items = []
+    query_kwargs = {
+        "KeyConditionExpression": "PK = :pk AND SK BETWEEN :start AND :end",
+        "ExpressionAttributeValues": {
+            ":pk": f"WS#{workspace_id}",
+            ":start": start_iso,
+            # Append high char so SK prefix match includes full range
+            ":end": end_iso + "~",
+        },
+    }
+    while True:
+        response = audit_table.query(**query_kwargs)
+        items.extend(response.get("Items", []))
+        if "LastEvaluatedKey" not in response:
+            break
+        query_kwargs["ExclusiveStartKey"] = response["LastEvaluatedKey"]
+    return items
+
+
+def _audit_cost(item: Dict) -> float:
+    """Extract cost_usd as a float (stored as string in DynamoDB)."""
+    raw = item.get("cost_usd", "0")
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _audit_int(item: Dict, key: str) -> int:
+    """Extract an integer field from an audit item (handles Decimal)."""
+    raw = item.get(key, 0)
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _aggregate_audit_items(
+    items: List[Dict], workspace_names: Dict[str, str]
+) -> Dict[str, Any]:
+    """Aggregate a list of audit items into summary metrics."""
+    total_cost = 0.0
+    total_queries = 0
+    total_input_tokens = 0
+    total_output_tokens = 0
+    by_model: Dict[str, Dict[str, float]] = {}
+    by_workspace: Dict[str, Dict[str, Any]] = {}
+    by_date: Dict[str, Dict[str, float]] = {}
+
+    for item in items:
+        cost = _audit_cost(item)
+        in_tokens = _audit_int(item, "input_tokens")
+        out_tokens = _audit_int(item, "output_tokens")
+        model_id = item.get("model_id", "unknown")
+        workspace_id = item.get("workspace_id", "")
+        timestamp = item.get("timestamp", "")
+        date_key = timestamp[:10] if timestamp else ""
+
+        total_cost += cost
+        total_queries += 1
+        total_input_tokens += in_tokens
+        total_output_tokens += out_tokens
+
+        model_bucket = by_model.setdefault(model_id, {"queries": 0, "cost_usd": 0.0})
+        model_bucket["queries"] += 1
+        model_bucket["cost_usd"] += cost
+
+        if workspace_id:
+            ws_bucket = by_workspace.setdefault(
+                workspace_id,
+                {
+                    "workspace_id": workspace_id,
+                    "name": workspace_names.get(workspace_id, workspace_id),
+                    "queries": 0,
+                    "cost_usd": 0.0,
+                },
+            )
+            ws_bucket["queries"] += 1
+            ws_bucket["cost_usd"] += cost
+
+        if date_key:
+            day_bucket = by_date.setdefault(date_key, {"queries": 0, "cost_usd": 0.0})
+            day_bucket["queries"] += 1
+            day_bucket["cost_usd"] += cost
+
+    by_model_out = {
+        model: {"queries": v["queries"], "cost_usd": round(v["cost_usd"], 4)}
+        for model, v in by_model.items()
+    }
+    by_workspace_out = sorted(
+        (
+            {
+                "workspace_id": v["workspace_id"],
+                "name": v["name"],
+                "queries": v["queries"],
+                "cost_usd": round(v["cost_usd"], 4),
+            }
+            for v in by_workspace.values()
+        ),
+        key=lambda x: x["cost_usd"],
+        reverse=True,
+    )
+    daily_trend = sorted(
+        (
+            {"date": d, "queries": v["queries"], "cost_usd": round(v["cost_usd"], 4)}
+            for d, v in by_date.items()
+        ),
+        key=lambda x: x["date"],
+    )
+
+    return {
+        "total_cost_usd": round(total_cost, 4),
+        "total_queries": total_queries,
+        "total_input_tokens": total_input_tokens,
+        "total_output_tokens": total_output_tokens,
+        "by_model": by_model_out,
+        "by_workspace": by_workspace_out,
+        "daily_trend": daily_trend,
+    }
+
+
+def _get_workspace_names(table, workspace_ids: List[str]) -> Dict[str, str]:
+    """Fetch workspace names for a set of workspace IDs."""
+    names: Dict[str, str] = {}
+    for ws_id in set(workspace_ids):
+        try:
+            resp = table.get_item(Key={"PK": f"WS#{ws_id}", "SK": "METADATA"})
+            if "Item" in resp:
+                names[ws_id] = resp["Item"].get("name") or ws_id
+        except ClientError:
+            continue
+    return names
+
+
+def get_analytics_summary(user_email: str, query_params: Dict[str, Any]) -> Dict:
+    """Return org-level aggregated analytics for a date range."""
+    audit_table_name = _get_audit_table()
+    if not audit_table_name:
+        return _error(500, "Audit table not configured")
+
+    start_iso, end_iso, err = _parse_analytics_date_range(query_params)
+    if err:
+        return _error(400, err)
+
+    dynamodb = _get_dynamodb()
+    ws_table = dynamodb.Table(_get_workspaces_table())
+    audit_table = dynamodb.Table(audit_table_name)
+
+    try:
+        is_admin = _is_org_admin(ws_table, user_email)
+        filter_workspace_id = query_params.get("workspace_id")
+
+        if filter_workspace_id:
+            if not _can_access_workspace(ws_table, user_email, filter_workspace_id):
+                return _error(403, "Not a member of this workspace")
+            workspace_ids = [filter_workspace_id]
+        elif is_admin:
+            all_ws = _scan_all_workspaces(ws_table)
+            workspace_ids = [ws["workspace_id"] for ws in all_ws if ws.get("workspace_id")]
+        else:
+            workspace_ids = _get_user_workspace_ids(ws_table, user_email)
+
+        workspace_names = _get_workspace_names(ws_table, workspace_ids)
+
+        items: List[Dict] = []
+        for ws_id in workspace_ids:
+            items.extend(_query_audit_for_workspace(audit_table, ws_id, start_iso, end_iso))
+
+        # Members see only their own usage (non-admin, non-workspace-admin)
+        if not is_admin and not filter_workspace_id:
+            is_ws_admin_anywhere = any(
+                _is_workspace_admin(ws_table, user_email, wid) for wid in workspace_ids
+            )
+            if not is_ws_admin_anywhere:
+                items = [i for i in items if i.get("user_email", "").lower() == user_email]
+
+        summary = _aggregate_audit_items(items, workspace_names)
+        summary["start_date"] = start_iso
+        summary["end_date"] = end_iso
+        return _response(200, summary)
+    except ClientError as e:
+        logger.error(f"Error getting analytics summary: {e}", exc_info=True)
+        return _error(500, "Failed to get analytics summary")
+
+
+def get_analytics_users(user_email: str, query_params: Dict[str, Any]) -> Dict:
+    """Return top users by query count across accessible workspaces."""
+    audit_table_name = _get_audit_table()
+    if not audit_table_name:
+        return _error(500, "Audit table not configured")
+
+    start_iso, end_iso, err = _parse_analytics_date_range(query_params)
+    if err:
+        return _error(400, err)
+
+    try:
+        limit = int(query_params.get("limit", "20"))
+    except (TypeError, ValueError):
+        limit = 20
+    limit = max(1, min(limit, 100))
+
+    dynamodb = _get_dynamodb()
+    ws_table = dynamodb.Table(_get_workspaces_table())
+    audit_table = dynamodb.Table(audit_table_name)
+
+    try:
+        is_admin = _is_org_admin(ws_table, user_email)
+        filter_workspace_id = query_params.get("workspace_id")
+
+        if filter_workspace_id:
+            if not _is_workspace_admin(ws_table, user_email, filter_workspace_id):
+                return _error(403, "Workspace admin access required")
+            workspace_ids = [filter_workspace_id]
+        elif is_admin:
+            all_ws = _scan_all_workspaces(ws_table)
+            workspace_ids = [ws["workspace_id"] for ws in all_ws if ws.get("workspace_id")]
+        else:
+            # Non-admins must be workspace admin of at least one workspace
+            user_ws_ids = _get_user_workspace_ids(ws_table, user_email)
+            workspace_ids = [
+                wid for wid in user_ws_ids
+                if _is_workspace_admin(ws_table, user_email, wid)
+            ]
+            if not workspace_ids:
+                return _error(403, "Admin access required")
+
+        items: List[Dict] = []
+        for ws_id in workspace_ids:
+            items.extend(_query_audit_for_workspace(audit_table, ws_id, start_iso, end_iso))
+
+        users: Dict[str, Dict[str, Any]] = {}
+        for item in items:
+            email = item.get("user_email", "")
+            if not email:
+                continue
+            bucket = users.setdefault(
+                email,
+                {
+                    "email": email,
+                    "queries": 0,
+                    "cost_usd": 0.0,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "last_active": "",
+                },
+            )
+            bucket["queries"] += 1
+            bucket["cost_usd"] += _audit_cost(item)
+            bucket["input_tokens"] += _audit_int(item, "input_tokens")
+            bucket["output_tokens"] += _audit_int(item, "output_tokens")
+            ts = item.get("timestamp", "")
+            if ts > bucket["last_active"]:
+                bucket["last_active"] = ts
+
+        sorted_users = sorted(users.values(), key=lambda u: u["queries"], reverse=True)[:limit]
+        for u in sorted_users:
+            u["cost_usd"] = round(u["cost_usd"], 4)
+
+        return _response(200, {"users": sorted_users})
+    except ClientError as e:
+        logger.error(f"Error getting analytics users: {e}", exc_info=True)
+        return _error(500, "Failed to get analytics users")
+
+
+def get_analytics_workspace(
+    user_email: str, workspace_id: str, query_params: Dict[str, Any]
+) -> Dict:
+    """Return detailed analytics for a single workspace."""
+    audit_table_name = _get_audit_table()
+    if not audit_table_name:
+        return _error(500, "Audit table not configured")
+
+    start_iso, end_iso, err = _parse_analytics_date_range(query_params)
+    if err:
+        return _error(400, err)
+
+    dynamodb = _get_dynamodb()
+    ws_table = dynamodb.Table(_get_workspaces_table())
+    audit_table = dynamodb.Table(audit_table_name)
+
+    try:
+        if not _can_access_workspace(ws_table, user_email, workspace_id):
+            return _error(403, "Not a member of this workspace")
+
+        ws_response = ws_table.get_item(
+            Key={"PK": f"WS#{workspace_id}", "SK": "METADATA"}
+        )
+        if "Item" not in ws_response:
+            return _error(404, "Workspace not found")
+        workspace_name = ws_response["Item"].get("name") or workspace_id
+
+        items = _query_audit_for_workspace(audit_table, workspace_id, start_iso, end_iso)
+
+        total_cost = 0.0
+        total_duration_ms = 0
+        refusal_count = 0
+        error_count = 0
+        by_user: Dict[str, Dict[str, Any]] = {}
+        by_model: Dict[str, Dict[str, float]] = {}
+        by_date: Dict[str, Dict[str, float]] = {}
+
+        for item in items:
+            cost = _audit_cost(item)
+            total_cost += cost
+            total_duration_ms += _audit_int(item, "duration_ms")
+
+            status = item.get("status", "")
+            if status == "refusal":
+                refusal_count += 1
+            elif status == "error":
+                error_count += 1
+
+            model_id = item.get("model_id", "unknown")
+            m_bucket = by_model.setdefault(model_id, {"queries": 0, "cost_usd": 0.0})
+            m_bucket["queries"] += 1
+            m_bucket["cost_usd"] += cost
+
+            email = item.get("user_email", "")
+            if email:
+                u_bucket = by_user.setdefault(
+                    email, {"email": email, "queries": 0, "cost_usd": 0.0}
+                )
+                u_bucket["queries"] += 1
+                u_bucket["cost_usd"] += cost
+
+            ts = item.get("timestamp", "")
+            if ts:
+                date_key = ts[:10]
+                d_bucket = by_date.setdefault(date_key, {"queries": 0, "cost_usd": 0.0})
+                d_bucket["queries"] += 1
+                d_bucket["cost_usd"] += cost
+
+        total_queries = len(items)
+        avg_duration_ms = int(total_duration_ms / total_queries) if total_queries else 0
+
+        by_user_out = sorted(
+            (
+                {
+                    "email": v["email"],
+                    "queries": v["queries"],
+                    "cost_usd": round(v["cost_usd"], 4),
+                }
+                for v in by_user.values()
+            ),
+            key=lambda x: x["cost_usd"],
+            reverse=True,
+        )
+        by_model_out = {
+            model: {"queries": v["queries"], "cost_usd": round(v["cost_usd"], 4)}
+            for model, v in by_model.items()
+        }
+        daily_trend = sorted(
+            (
+                {"date": d, "queries": v["queries"], "cost_usd": round(v["cost_usd"], 4)}
+                for d, v in by_date.items()
+            ),
+            key=lambda x: x["date"],
+        )
+
+        return _response(200, {
+            "workspace_id": workspace_id,
+            "workspace_name": workspace_name,
+            "total_cost_usd": round(total_cost, 4),
+            "total_queries": total_queries,
+            "avg_duration_ms": avg_duration_ms,
+            "refusal_count": refusal_count,
+            "error_count": error_count,
+            "start_date": start_iso,
+            "end_date": end_iso,
+            "by_user": by_user_out,
+            "by_model": by_model_out,
+            "daily_trend": daily_trend,
+        })
+    except ClientError as e:
+        logger.error(f"Error getting workspace analytics: {e}", exc_info=True)
+        return _error(500, "Failed to get workspace analytics")
+
+
 def lambda_handler(event: Dict, context: Any) -> Dict:
     """
     Main Lambda handler for workspace management.
@@ -3166,6 +3611,30 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         # Route: GET /api-keys
         if parts == ("api-keys",) and http_method == "GET":
             return list_api_keys(user_email)
+
+        # ====================================================================
+        # Analytics Routes
+        # ====================================================================
+
+        # Route: GET /analytics/summary
+        if parts == ("analytics", "summary") and http_method == "GET":
+            query_params = event.get("queryStringParameters") or {}
+            return get_analytics_summary(user_email, query_params)
+
+        # Route: GET /analytics/users
+        if parts == ("analytics", "users") and http_method == "GET":
+            query_params = event.get("queryStringParameters") or {}
+            return get_analytics_users(user_email, query_params)
+
+        # Route: GET /analytics/workspace/{id}
+        if (
+            len(parts) == 3
+            and parts[0] == "analytics"
+            and parts[1] == "workspace"
+            and http_method == "GET"
+        ):
+            query_params = event.get("queryStringParameters") or {}
+            return get_analytics_workspace(user_email, parts[2], query_params)
 
         # Route: DELETE /api-keys/{key_id}
         if (

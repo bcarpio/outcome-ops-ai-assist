@@ -5,6 +5,7 @@ import Workspaces from './pages/Workspaces'
 import WorkspaceSettings from './pages/WorkspaceSettings'
 import OrgSettings from './pages/OrgSettings'
 import McpServers from './pages/McpServers'
+import Analytics from './pages/Analytics'
 import Settings from './pages/Settings'
 import AiDisclosureModal from './components/AiDisclosureModal'
 import './index.css'
@@ -23,6 +24,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
       <Route path="/workspaces/:workspaceId/settings" element={<WorkspaceSettings />} />
       <Route path="/org/settings" element={<OrgSettings />} />
       <Route path="/org/mcp-servers" element={<McpServers />} />
+      <Route path="/analytics" element={<Analytics />} />
       <Route path="/settings" element={<Settings />} />
       <Route path="/settings/api-keys" element={<Settings />} />
     </Routes>
