@@ -337,6 +337,43 @@ variable "audit_alert_email" {
 }
 
 # ============================================================================
+# Analytics Cost Alerts
+# Daily scheduled Lambda reads the analytics rollups for the current month to
+# date and publishes an SNS notification the first time a workspace or the
+# organization crosses its budget. Set thresholds to 0 to disable.
+# ============================================================================
+
+variable "cost_alert_enabled" {
+  description = "Enable the daily analytics cost-alert Lambda."
+  type        = bool
+  default     = false
+}
+
+variable "cost_alert_email" {
+  description = "Email address subscribed to the cost-alert SNS topic. Empty = no subscription."
+  type        = string
+  default     = ""
+}
+
+variable "cost_alert_org_monthly_usd" {
+  description = "Org-wide monthly spend threshold in USD. 0 disables the org-level alert."
+  type        = number
+  default     = 0
+}
+
+variable "cost_alert_workspace_monthly_usd" {
+  description = "Per-workspace monthly spend threshold in USD. 0 disables per-workspace alerts."
+  type        = number
+  default     = 0
+}
+
+variable "cost_alert_schedule_expression" {
+  description = "EventBridge schedule expression for the cost-alert Lambda."
+  type        = string
+  default     = "cron(0 13 * * ? *)" # 13:00 UTC daily (~6am PT / 9am ET)
+}
+
+# ============================================================================
 # Security Scanner (AWS Security Agent)
 # ============================================================================
 
