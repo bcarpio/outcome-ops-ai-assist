@@ -12,6 +12,7 @@ import {
   TrendingUp,
   ArrowUpRight,
   ArrowDownRight,
+  DollarSign,
 } from 'lucide-react'
 import {
   ResponsiveContainer,
@@ -231,6 +232,15 @@ export default function Analytics() {
                   </option>
                 ))}
               </select>
+            )}
+            {isOrgAdmin && (
+              <button
+                onClick={() => navigate('/analytics/budgets')}
+                title="Manage budgets"
+                className="p-2 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50 rounded-lg transition-colors"
+              >
+                <DollarSign size={20} />
+              </button>
             )}
             <button
               onClick={() => navigate('/')}

@@ -14,6 +14,7 @@ import {
   Plus,
   Server,
   BarChart3,
+  DollarSign,
 } from 'lucide-react'
 import {
   listOrgMembers,
@@ -140,6 +141,13 @@ export default function OrgSettings() {
               >
                 <BarChart3 size={18} />
                 Analytics
+              </button>
+              <button
+                onClick={() => navigate('/analytics/budgets')}
+                className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
+              >
+                <DollarSign size={18} />
+                Budgets
               </button>
               <button
                 onClick={() => navigate('/org/mcp-servers')}

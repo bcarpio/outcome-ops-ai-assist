@@ -146,16 +146,18 @@ def _make_tables(
     ws_table.query.side_effect = ws_query
 
     def ws_scan(**kwargs):
-        return {
-            "Items": [
-                {
-                    "workspace_id": wid,
-                    "name": workspace_metadata.get(wid, {}).get("name", wid),
-                    "SK": "METADATA",
-                }
-                for wid in (workspace_items or [])
-            ]
-        }
+        items = []
+        for wid in (workspace_items or []):
+            base = {
+                "workspace_id": wid,
+                "name": workspace_metadata.get(wid, {}).get("name", wid),
+                "SK": "METADATA",
+            }
+            # Merge any extra metadata fields (e.g. monthly_budget_usd) onto
+            # the scanned item so budget-aware reads see them.
+            base.update(workspace_metadata.get(wid, {}))
+            items.append(base)
+        return {"Items": items}
 
     ws_table.scan.side_effect = ws_scan
 
@@ -611,19 +613,22 @@ class TestWorkspaceBudget:
 
     @patch.object(handler_module, "_get_workspaces_table")
     @patch.object(handler_module, "_get_dynamodb")
-    def test_update_budget_requires_admin(self, mock_ddb, mock_ws):
+    def test_update_budget_requires_org_admin(self, mock_ddb, mock_ws):
+        # Even a workspace_admin cannot update the budget — budget is a
+        # governance control owned by the org admins.
         ws_table = MagicMock()
-        # _is_workspace_admin: org_admin check, membership check (not admin)
-        ws_table.get_item.side_effect = [{}, {"Item": {"role": "member"}}]
+        ws_table.get_item.side_effect = [{}]  # org_admin check: false
         ddb = MagicMock()
         ddb.Table.return_value = ws_table
         mock_ddb.return_value = ddb
         mock_ws.return_value = "ws"
 
         result = handler_module.update_workspace_budget(
-            "user@x", "ws-1", {"monthly_budget_usd": 100}
+            "ws_admin@x", "ws-1", {"monthly_budget_usd": 100}
         )
         assert result["statusCode"] == 403
+        body = json.loads(result["body"])
+        assert "org admin" in body["error"].lower()
 
     @patch.object(handler_module, "_get_workspaces_table")
     @patch.object(handler_module, "_get_dynamodb")
@@ -687,6 +692,70 @@ class TestWorkspaceBudget:
             "admin@x", "ws-1", {"monthly_budget_usd": -5}
         )
         assert result["statusCode"] == 400
+
+
+class TestAnalyticsBudgets:
+    @patch.object(handler_module, "_get_workspaces_table")
+    @patch.object(handler_module, "_get_analytics_table")
+    @patch.object(handler_module, "_get_dynamodb")
+    def test_budgets_requires_org_admin(
+        self, mock_dynamodb, mock_analytics, mock_ws
+    ):
+        ddb, _, _, ws_name, analytics_name = _make_tables(
+            workspace_items=[], analytics_items=[], org_admin=False,
+        )
+        mock_dynamodb.return_value = ddb
+        mock_analytics.return_value = analytics_name
+        mock_ws.return_value = ws_name
+
+        result = handler_module.get_analytics_budgets("member@x")
+        assert result["statusCode"] == 403
+
+    @patch.object(handler_module, "_get_workspaces_table")
+    @patch.object(handler_module, "_get_analytics_table")
+    @patch.object(handler_module, "_get_dynamodb")
+    def test_budgets_lists_all_workspaces_with_spend(
+        self, mock_dynamodb, mock_analytics, mock_ws
+    ):
+        today = datetime.now(timezone.utc)
+        date_key = today.strftime("%Y-%m-%d")
+        items = [
+            _dt("ws-1", date_key, queries=5, cost="42.50"),
+            _dt("ws-2", date_key, queries=2, cost="10.00"),
+        ]
+        ddb, _, _, ws_name, analytics_name = _make_tables(
+            workspace_items=["ws-1", "ws-2"],
+            analytics_items=items,
+            org_admin=True,
+            workspace_metadata={
+                "ws-1": {
+                    "workspace_id": "ws-1",
+                    "name": "Engineering",
+                    "monthly_budget_usd": Decimal("100"),
+                },
+                "ws-2": {
+                    "workspace_id": "ws-2",
+                    "name": "Data Science",
+                },
+            },
+        )
+        mock_dynamodb.return_value = ddb
+        mock_analytics.return_value = analytics_name
+        mock_ws.return_value = ws_name
+
+        result = handler_module.get_analytics_budgets("admin@x")
+        assert result["statusCode"] == 200
+        body = json.loads(result["body"])
+        # sorted by MTD spend desc
+        assert body["workspaces"][0]["workspace_id"] == "ws-1"
+        assert body["workspaces"][0]["monthly_budget_usd"] == 100.0
+        assert body["workspaces"][0]["is_default"] is False
+        assert body["workspaces"][0]["mtd_spend_usd"] == 42.5
+        # ws-2 has no override -> is_default True
+        assert body["workspaces"][1]["is_default"] is True
+        assert body["workspaces"][1]["monthly_budget_usd"] is None
+        # Month key is present
+        assert body["month"] == today.strftime("%Y-%m")
 
 
 class TestAnalyticsRouting:

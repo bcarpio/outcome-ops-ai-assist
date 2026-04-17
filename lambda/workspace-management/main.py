@@ -613,6 +613,16 @@ async def update_workspace_budget_route(workspace_id: str, request: Request):
 # ============================================================================
 
 
+@app.get("/analytics/budgets")
+async def analytics_budgets_route(request: Request):
+    """Per-workspace budgets + MTD spend (org admin only)."""
+    from handler import lambda_handler
+
+    event = _build_event(request, "GET", "/analytics/budgets")
+    result = lambda_handler(event, None)
+    return _parse_response(result)
+
+
 @app.get("/analytics/summary")
 async def analytics_summary_route(request: Request):
     """Org-level analytics summary for a date range."""

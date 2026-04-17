@@ -2837,7 +2837,10 @@ def get_workspace_budget(user_email: str, workspace_id: str) -> Dict:
 
 
 def update_workspace_budget(user_email: str, workspace_id: str, body: Dict) -> Dict:
-    """Set or clear the per-workspace monthly budget (workspace admin only).
+    """Set or clear the per-workspace monthly budget (org admin only).
+
+    Budgets are a governance control, so edits are restricted to org admins
+    — workspace admins can't silently raise their own spending cap.
 
     Pass ``monthly_budget_usd: 0`` (or null/missing) to clear the override and
     fall back to the org default.
@@ -2846,8 +2849,8 @@ def update_workspace_budget(user_email: str, workspace_id: str, body: Dict) -> D
     table = dynamodb.Table(_get_workspaces_table())
 
     try:
-        if not _is_workspace_admin(table, user_email, workspace_id):
-            return _error(403, "Only workspace admins can update the budget")
+        if not _is_org_admin(table, user_email):
+            return _error(403, "Only org admins can update workspace budgets")
 
         try:
             budget = _coerce_budget(body.get("monthly_budget_usd"))
@@ -3042,6 +3045,88 @@ def _get_workspace_names(table, workspace_ids: List[str]) -> Dict[str, str]:
 
 def _date_only(iso: str) -> str:
     return iso[:10] if iso else ""
+
+
+def get_analytics_budgets(user_email: str) -> Dict:
+    """Return per-workspace budgets alongside month-to-date spend (org admin only).
+
+    Used by the admin budgets management page. Combines workspace metadata
+    (name + current budget override) with the DT# daily-totals rollups for
+    the current calendar month so the UI can show actual vs budget side by
+    side without needing multiple round trips.
+    """
+    analytics_table_name = _get_analytics_table()
+    if not analytics_table_name:
+        return _error(500, "Analytics table not configured")
+
+    dynamodb = _get_dynamodb()
+    ws_table = dynamodb.Table(_get_workspaces_table())
+    analytics_table = dynamodb.Table(analytics_table_name)
+
+    try:
+        if not _is_org_admin(ws_table, user_email):
+            return _error(403, "Org admin access required")
+
+        all_ws = _scan_all_workspaces(ws_table)
+
+        now = datetime.now(timezone.utc)
+        month_start = now.strftime("%Y-%m-01")
+        month_end = now.strftime("%Y-%m-%d")
+        month_key = now.strftime("%Y-%m")
+
+        items = []
+        for ws in all_ws:
+            wid = ws.get("workspace_id")
+            if not wid:
+                continue
+
+            raw_budget = ws.get("monthly_budget_usd")
+            try:
+                budget = float(raw_budget) if raw_budget is not None else None
+            except (TypeError, ValueError):
+                budget = None
+
+            # Sum current-month DT# rollups for this workspace.
+            mtd_spend = 0.0
+            try:
+                resp = analytics_table.query(
+                    KeyConditionExpression="PK = :pk AND SK BETWEEN :s AND :e",
+                    ExpressionAttributeValues={
+                        ":pk": f"WS#{wid}",
+                        ":s": f"DT#{month_start}",
+                        ":e": f"DT#{month_end}~",
+                    },
+                    ProjectionExpression="cost_usd",
+                )
+                for item in resp.get("Items", []):
+                    try:
+                        mtd_spend += float(item.get("cost_usd", 0))
+                    except (TypeError, ValueError):
+                        continue
+            except ClientError as e:
+                logger.warning(
+                    f"[analytics-budgets] failed to read MTD for {wid}: {e}"
+                )
+
+            items.append({
+                "workspace_id": wid,
+                "name": ws.get("name") or wid,
+                "monthly_budget_usd": budget,
+                "is_default": budget is None,
+                "mtd_spend_usd": round(mtd_spend, 4),
+                "updated_at": ws.get("budget_updated_at"),
+                "updated_by": ws.get("budget_updated_by"),
+            })
+
+        items.sort(key=lambda x: x["mtd_spend_usd"], reverse=True)
+
+        return _response(200, {
+            "workspaces": items,
+            "month": month_key,
+        })
+    except ClientError as e:
+        logger.error(f"Error listing workspace budgets: {e}", exc_info=True)
+        return _error(500, "Failed to list workspace budgets")
 
 
 def get_analytics_summary(user_email: str, query_params: Dict[str, Any]) -> Dict:
@@ -3810,6 +3895,10 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         # ====================================================================
         # Analytics Routes
         # ====================================================================
+
+        # Route: GET /analytics/budgets
+        if parts == ("analytics", "budgets") and http_method == "GET":
+            return get_analytics_budgets(user_email)
 
         # Route: GET /analytics/summary
         if parts == ("analytics", "summary") and http_method == "GET":

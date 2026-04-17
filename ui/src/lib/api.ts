@@ -1953,6 +1953,33 @@ export async function setWorkspaceBudget(
   return (await response.json()) as WorkspaceBudget
 }
 
+export interface WorkspaceBudgetSummary {
+  workspace_id: string
+  name: string
+  monthly_budget_usd: number | null
+  is_default: boolean
+  mtd_spend_usd: number
+  updated_at?: string
+  updated_by?: string
+}
+
+export interface WorkspaceBudgetsResponse {
+  workspaces: WorkspaceBudgetSummary[]
+  month: string
+}
+
+/**
+ * Org-admin-only list of all workspace budgets + current-month spend.
+ */
+export async function listWorkspaceBudgets(): Promise<WorkspaceBudgetsResponse> {
+  const response = await fetch(`${API_BASE}/analytics/budgets`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to list budgets: ${response.status}`)
+  }
+  return (await response.json()) as WorkspaceBudgetsResponse
+}
+
 // ============================================================================
 // Analytics Types and API
 // ============================================================================

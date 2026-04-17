@@ -728,6 +728,7 @@ app.delete("/api/api-keys/:keyId", (req, res) => proxyWorkspaceRequest(req, res,
 // ============================================================================
 // Analytics API (proxied to Workspace Lambda)
 // ============================================================================
+app.get("/api/analytics/budgets", (req, res) => proxyWorkspaceRequest(req, res, "GET", "/analytics/budgets"));
 app.get("/api/analytics/summary", (req, res) => {
   const params = new URLSearchParams();
   if (req.query.start_date) params.set("start_date", req.query.start_date);
