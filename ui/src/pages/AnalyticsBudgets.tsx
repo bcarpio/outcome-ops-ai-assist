@@ -6,7 +6,7 @@ import {
   Loader2,
   AlertCircle,
   Check,
-  DollarSign,
+  Wallet,
   Shield,
 } from 'lucide-react'
 import {
@@ -116,7 +116,7 @@ export default function AnalyticsBudgets() {
             >
               <ArrowLeft size={20} />
             </button>
-            <DollarSign className="text-emerald-600" size={24} />
+            <Wallet className="text-blue-600" size={24} />
             <div>
               <h1 className="text-xl font-semibold">Workspace Budgets</h1>
               <p className="text-sm text-gray-500">
