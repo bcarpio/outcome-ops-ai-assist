@@ -2,13 +2,12 @@ import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   ArrowLeft,
-  BarChart3,
   Loader2,
   AlertCircle,
   Check,
   Wallet,
-  Shield,
 } from 'lucide-react'
+import AdminNav from '../components/AdminNav'
 import {
   listWorkspaceBudgets,
   setWorkspaceBudget,
@@ -124,22 +123,7 @@ export default function AnalyticsBudgets() {
               </p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => navigate('/analytics')}
-              title="Analytics"
-              className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
-            >
-              <BarChart3 size={20} />
-            </button>
-            <button
-              onClick={() => navigate('/org/settings')}
-              title="Org Settings"
-              className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
-            >
-              <Shield size={20} />
-            </button>
-          </div>
+          <AdminNav />
         </div>
       </header>
 

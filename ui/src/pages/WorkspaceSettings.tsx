@@ -109,6 +109,7 @@ import {
   resetWorkspaceSystemPrompt,
   type WorkspaceSystemPrompt,
 } from '../lib/api'
+import AdminNav from '../components/AdminNav'
 
 type Tab = 'general' | 'members' | 'integrations' | 'sharing' | 'documents' | 'advanced'
 
@@ -1286,17 +1287,20 @@ export default function WorkspaceSettings() {
       {/* Header */}
       <header className="bg-white border-b">
         <div className="max-w-4xl mx-auto px-4 py-4">
-          <div className="flex items-center gap-3">
-            <button
-              onClick={() => navigate('/workspaces')}
-              className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
-            >
-              <ArrowLeft size={20} />
-            </button>
-            <div>
-              <h1 className="text-xl font-semibold">{workspace.name}</h1>
-              <p className="text-sm text-gray-500">Workspace Settings</p>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => navigate('/workspaces')}
+                className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
+              >
+                <ArrowLeft size={20} />
+              </button>
+              <div>
+                <h1 className="text-xl font-semibold">{workspace.name}</h1>
+                <p className="text-sm text-gray-500">Workspace Settings</p>
+              </div>
             </div>
+            <AdminNav />
           </div>
         </div>
       </header>

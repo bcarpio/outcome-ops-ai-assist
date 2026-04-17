@@ -9,6 +9,7 @@ import {
   Clock,
   TrendingUp,
 } from 'lucide-react'
+import AdminNav from '../components/AdminNav'
 import {
   getAnalyticsWorkspace,
   type AnalyticsWorkspaceDetail,
@@ -116,20 +117,23 @@ export default function WorkspaceAnalytics() {
               <p className="text-sm text-gray-500">Workspace usage breakdown</p>
             </div>
           </div>
-          <div className="inline-flex rounded-lg border bg-white overflow-hidden">
-            {([30, 60, 90] as DateRangeOption[]).map(days => (
-              <button
-                key={days}
-                onClick={() => setRange(days)}
-                className={`px-3 py-1.5 text-sm transition-colors ${
-                  range === days
-                    ? 'bg-blue-600 text-white'
-                    : 'text-gray-700 hover:bg-gray-100'
-                }`}
-              >
-                {days}d
-              </button>
-            ))}
+          <div className="flex items-center gap-3">
+            <div className="inline-flex rounded-lg border bg-white overflow-hidden">
+              {([30, 60, 90] as DateRangeOption[]).map(days => (
+                <button
+                  key={days}
+                  onClick={() => setRange(days)}
+                  className={`px-3 py-1.5 text-sm transition-colors ${
+                    range === days
+                      ? 'bg-blue-600 text-white'
+                      : 'text-gray-700 hover:bg-gray-100'
+                  }`}
+                >
+                  {days}d
+                </button>
+              ))}
+            </div>
+            <AdminNav />
           </div>
         </div>
       </header>

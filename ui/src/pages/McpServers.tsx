@@ -27,6 +27,7 @@ import {
   type Workspace,
   type CreateMcpServerRequest,
 } from '../lib/api'
+import AdminNav from '../components/AdminNav'
 
 interface FormState {
   name: string
@@ -268,13 +269,16 @@ export default function McpServers() {
                 <p className="text-sm text-gray-500">Manage Model Context Protocol servers for your organization</p>
               </div>
             </div>
-            <button
-              onClick={openCreateModal}
-              className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-            >
-              <Plus size={18} />
-              Add MCP Server
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={openCreateModal}
+                className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+              >
+                <Plus size={18} />
+                Add MCP Server
+              </button>
+              <AdminNav />
+            </div>
           </div>
         </div>
       </header>

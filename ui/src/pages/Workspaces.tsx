@@ -5,17 +5,13 @@ import {
   Folder,
   Users,
   Loader2,
-  LogOut,
-  Shield,
-  MessageSquare,
-  Settings,
-  BarChart3,
 } from 'lucide-react'
 import {
   listWorkspaces,
   createWorkspace,
   type Workspace,
 } from '../lib/api'
+import AdminNav from '../components/AdminNav'
 
 export default function Workspaces() {
   const navigate = useNavigate()
@@ -80,51 +76,15 @@ export default function Workspaces() {
           </div>
           <div className="flex items-center gap-3">
             {isOrgAdmin && (
-            <button
-              onClick={() => setShowCreateModal(true)}
-              className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-            >
-              <Plus size={18} />
-              New Workspace
-            </button>
-            )}
-            <button
-              onClick={() => navigate('/')}
-              title="Go to Chat"
-              className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
-            >
-              <MessageSquare size={20} />
-            </button>
-            <button
-              onClick={() => navigate('/settings')}
-              title="Settings"
-              className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
-            >
-              <Settings size={20} />
-            </button>
-            {isOrgAdmin && (
               <button
-                onClick={() => navigate('/analytics')}
-                title="Analytics"
-                className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
+                onClick={() => setShowCreateModal(true)}
+                className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
               >
-                <BarChart3 size={20} />
+                <Plus size={18} />
+                New Workspace
               </button>
             )}
-            <button
-              onClick={() => navigate('/org/settings')}
-              title="Organization Settings"
-              className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
-            >
-              <Shield size={20} />
-            </button>
-            <button
-              onClick={() => { window.location.href = '/api/logout' }}
-              title="Sign out"
-              className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
-            >
-              <LogOut size={20} />
-            </button>
+            <AdminNav />
           </div>
         </div>
       </header>

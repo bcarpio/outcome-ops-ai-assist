@@ -13,9 +13,8 @@ import {
   Check,
   Plus,
   Server,
-  BarChart3,
-  Wallet,
 } from 'lucide-react'
+import AdminNav from '../components/AdminNav'
 import {
   listOrgMembers,
   addOrgMember,
@@ -136,20 +135,6 @@ export default function OrgSettings() {
             </div>
             <div className="flex items-center gap-2">
               <button
-                onClick={() => navigate('/analytics')}
-                className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
-              >
-                <BarChart3 size={18} />
-                Analytics
-              </button>
-              <button
-                onClick={() => navigate('/analytics/budgets')}
-                className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
-              >
-                <Wallet size={18} />
-                Budgets
-              </button>
-              <button
                 onClick={() => navigate('/org/mcp-servers')}
                 className="flex items-center gap-2 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors"
               >
@@ -163,6 +148,7 @@ export default function OrgSettings() {
                 <Plus size={18} />
                 Add Member
               </button>
+              <AdminNav />
             </div>
           </div>
         </div>

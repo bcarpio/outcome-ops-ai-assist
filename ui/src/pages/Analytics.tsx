@@ -3,17 +3,12 @@ import { useNavigate } from 'react-router-dom'
 import {
   BarChart3,
   Loader2,
-  MessageSquare,
-  Folder,
-  Shield,
-  Settings,
-  LogOut,
   AlertCircle,
   TrendingUp,
   ArrowUpRight,
   ArrowDownRight,
-  Wallet,
 } from 'lucide-react'
+import AdminNav from '../components/AdminNav'
 import {
   ResponsiveContainer,
   LineChart,
@@ -233,52 +228,7 @@ export default function Analytics() {
                 ))}
               </select>
             )}
-            {isOrgAdmin && (
-              <button
-                onClick={() => navigate('/analytics/budgets')}
-                title="Manage budgets"
-                className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
-              >
-                <Wallet size={20} />
-              </button>
-            )}
-            <button
-              onClick={() => navigate('/')}
-              title="Chat"
-              className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
-            >
-              <MessageSquare size={20} />
-            </button>
-            <button
-              onClick={() => navigate('/workspaces')}
-              title="Workspaces"
-              className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
-            >
-              <Folder size={20} />
-            </button>
-            <button
-              onClick={() => navigate('/settings')}
-              title="Settings"
-              className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
-            >
-              <Settings size={20} />
-            </button>
-            {isOrgAdmin && (
-              <button
-                onClick={() => navigate('/org/settings')}
-                title="Organization Settings"
-                className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
-              >
-                <Shield size={20} />
-              </button>
-            )}
-            <button
-              onClick={() => { window.location.href = '/api/logout' }}
-              title="Sign out"
-              className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
-            >
-              <LogOut size={20} />
-            </button>
+            <AdminNav />
           </div>
         </div>
       </header>

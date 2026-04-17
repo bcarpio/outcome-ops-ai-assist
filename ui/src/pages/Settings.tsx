@@ -22,6 +22,7 @@ import {
   type UserProfile,
   type ApiKey,
 } from '../lib/api'
+import AdminNav from '../components/AdminNav'
 
 const EXPIRATION_OPTIONS = [
   { label: 'No expiration', value: 0 },
@@ -158,17 +159,20 @@ export default function Settings() {
       {/* Header */}
       <header className="bg-white border-b">
         <div className="max-w-4xl mx-auto px-4 py-4">
-          <div className="flex items-center gap-3">
-            <button
-              onClick={() => navigate('/workspaces')}
-              className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
-            >
-              <ArrowLeft size={20} />
-            </button>
-            <div>
-              <h1 className="text-xl font-semibold">Settings</h1>
-              <p className="text-sm text-gray-500">Your profile and API keys</p>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => navigate('/workspaces')}
+                className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
+              >
+                <ArrowLeft size={20} />
+              </button>
+              <div>
+                <h1 className="text-xl font-semibold">Settings</h1>
+                <p className="text-sm text-gray-500">Your profile and API keys</p>
+              </div>
             </div>
+            <AdminNav />
           </div>
         </div>
       </header>
