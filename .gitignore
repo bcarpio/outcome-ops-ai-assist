@@ -5,7 +5,15 @@ terraform/*.tfstate
 terraform/*.tfstate.*
 terraform/*.out
 terraform/builds/
-terraform/*.tfvars  # Ignore actual tfvars files (use .example files as templates)
+# Ignore actual tfvars files (use .example files as templates)
+terraform/*.tfvars
+!terraform/*.tfvars.example
+
+# Node
+node_modules/
+
+# UI test coverage
+ui/coverage/
 
 # Python
 __pycache__/
