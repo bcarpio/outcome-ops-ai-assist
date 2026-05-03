@@ -91,6 +91,13 @@ import boto3
 from botocore.exceptions import ClientError
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
+from shared.audit_writer import (
+    ACTION_SYSTEM_PROMPT_RESET,
+    ACTION_SYSTEM_PROMPT_UPDATED,
+    extract_request_context,
+    log_admin_action,
+)
+
 # Configure logging
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -2622,34 +2629,6 @@ def validate_api_key(api_key: str) -> Optional[Dict]:
 # ============================================================================
 
 
-def _write_audit_log(
-    workspace_id: str, user_email: str, action: str, details: dict = None
-):
-    """Write an entry to the audit log table."""
-    if not AUDIT_TABLE:
-        return
-    try:
-        table = _get_dynamodb().Table(AUDIT_TABLE)
-        now = datetime.now(timezone.utc).isoformat()
-        request_id = secrets.token_hex(8)
-        item = {
-            "PK": f"WS#{workspace_id}",
-            "SK": f"{now}#{request_id}",
-            "GSI1PK": f"USER#{user_email}",
-            "GSI1SK": f"{now}#{request_id}",
-            "action": action,
-            "workspace_id": workspace_id,
-            "user_email": user_email,
-            "timestamp": now,
-            "ttl": int(time.time()) + (365 * 86400),
-        }
-        if details:
-            item["details"] = details
-        table.put_item(Item=item)
-    except Exception as e:
-        logger.error(f"Error writing audit log: {e}")
-
-
 # ============================================================================
 # System Prompt Management
 # ============================================================================
@@ -2685,7 +2664,10 @@ def handle_get_system_prompt(workspace_id: str, user_email: str) -> Dict:
 
 
 def handle_update_system_prompt(
-    workspace_id: str, user_email: str, body: Dict
+    workspace_id: str,
+    user_email: str,
+    body: Dict,
+    audit_ctx: Optional[Dict[str, str]] = None,
 ) -> Dict:
     """Set a custom system prompt for a workspace (admin only)."""
     dynamodb = _get_dynamodb()
@@ -2727,10 +2709,19 @@ def handle_update_system_prompt(
         )
 
         # Write audit log
-        _write_audit_log(workspace_id, user_email, "SYSTEM_PROMPT_UPDATED", {
-            "prompt_length": len(custom_system_prompt),
-            "prompt_preview": custom_system_prompt[:200],
-        })
+        ctx = audit_ctx or {}
+        log_admin_action(
+            AUDIT_TABLE,
+            ACTION_SYSTEM_PROMPT_UPDATED,
+            workspace_id=workspace_id,
+            user_email=user_email,
+            source_ip=ctx.get("source_ip", ""),
+            user_agent=ctx.get("user_agent", ""),
+            details={
+                "prompt_length": len(custom_system_prompt),
+                "prompt_preview": custom_system_prompt[:200],
+            },
+        )
 
         logger.info(f"Updated system prompt for workspace {workspace_id} by {user_email}")
         return _response(200, {
@@ -2744,7 +2735,11 @@ def handle_update_system_prompt(
         return _error(500, "Failed to update system prompt")
 
 
-def handle_reset_system_prompt(workspace_id: str, user_email: str) -> Dict:
+def handle_reset_system_prompt(
+    workspace_id: str,
+    user_email: str,
+    audit_ctx: Optional[Dict[str, str]] = None,
+) -> Dict:
     """Reset workspace system prompt to default (admin only)."""
     dynamodb = _get_dynamodb()
     table = dynamodb.Table(_get_workspaces_table())
@@ -2769,7 +2764,15 @@ def handle_reset_system_prompt(workspace_id: str, user_email: str) -> Dict:
         )
 
         # Write audit log
-        _write_audit_log(workspace_id, user_email, "SYSTEM_PROMPT_RESET")
+        ctx = audit_ctx or {}
+        log_admin_action(
+            AUDIT_TABLE,
+            ACTION_SYSTEM_PROMPT_RESET,
+            workspace_id=workspace_id,
+            user_email=user_email,
+            source_ip=ctx.get("source_ip", ""),
+            user_agent=ctx.get("user_agent", ""),
+        )
 
         logger.info(f"Reset system prompt for workspace {workspace_id} by {user_email}")
         return _response(200, {"is_default": True})

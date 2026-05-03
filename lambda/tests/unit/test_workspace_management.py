@@ -1498,7 +1498,7 @@ class TestSystemPrompt:
 
         assert result["statusCode"] == 403
 
-    @patch("workspace_management_handler._write_audit_log")
+    @patch("workspace_management_handler.log_admin_action")
     @patch("workspace_management_handler._is_workspace_admin", return_value=True)
     @patch("workspace_management_handler._get_workspaces_table")
     @patch("workspace_management_handler._get_dynamodb")
@@ -1560,7 +1560,7 @@ class TestSystemPrompt:
 
         assert result["statusCode"] == 400
 
-    @patch("workspace_management_handler._write_audit_log")
+    @patch("workspace_management_handler.log_admin_action")
     @patch("workspace_management_handler._is_workspace_admin", return_value=True)
     @patch("workspace_management_handler._get_workspaces_table")
     @patch("workspace_management_handler._get_dynamodb")
@@ -2534,7 +2534,7 @@ class TestLambdaHandlerMoreRoutes:
         result = lambda_handler(event, None)
         assert result["statusCode"] == 200
 
-    @patch("workspace_management_handler._write_audit_log")
+    @patch("workspace_management_handler.log_admin_action")
     @patch("workspace_management_handler._is_workspace_admin", return_value=True)
     @patch("workspace_management_handler._get_workspaces_table")
     @patch("workspace_management_handler._get_dynamodb")
@@ -2555,7 +2555,7 @@ class TestLambdaHandlerMoreRoutes:
         result = lambda_handler(event, None)
         assert result["statusCode"] == 200
 
-    @patch("workspace_management_handler._write_audit_log")
+    @patch("workspace_management_handler.log_admin_action")
     @patch("workspace_management_handler._is_workspace_admin", return_value=True)
     @patch("workspace_management_handler._get_workspaces_table")
     @patch("workspace_management_handler._get_dynamodb")
@@ -2888,7 +2888,7 @@ refresh_mcp_tools = handler_module.refresh_mcp_tools
 get_mcp_server_workspaces = handler_module.get_mcp_server_workspaces
 get_chat_available_mcp_servers = handler_module.get_chat_available_mcp_servers
 validate_api_key = handler_module.validate_api_key
-_write_audit_log = handler_module._write_audit_log
+log_admin_action = handler_module.log_admin_action
 _scan_all_workspaces = handler_module._scan_all_workspaces
 _get_kb_bucket = handler_module._get_kb_bucket
 _get_delete_queue_url = handler_module._get_delete_queue_url
@@ -3166,36 +3166,62 @@ class TestValidateApiKey:
         assert result is None
 
 
-class TestWriteAuditLog:
-    """Test audit log writing."""
+class TestSystemPromptAuditEmission:
+    """Confirm the migrated system-prompt audit emission goes through log_admin_action."""
 
-    @patch("workspace_management_handler.AUDIT_TABLE", "test-audit-table")
+    @patch("workspace_management_handler.log_admin_action")
+    @patch("workspace_management_handler._is_workspace_admin", return_value=True)
+    @patch("workspace_management_handler._get_workspaces_table")
     @patch("workspace_management_handler._get_dynamodb")
-    def test_write_audit_log_success(self, mock_dynamodb):
-        """Test writing audit log entry."""
+    def test_update_emits_system_prompt_updated_with_audit_ctx(
+        self, mock_dynamodb, mock_get_table, mock_ws_admin, mock_audit
+    ):
         mock_table = MagicMock()
         mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+        mock_table.get_item.return_value = {"Item": {"workspace_id": "ws1"}}
 
-        _write_audit_log("ws1", "user@example.com", "TEST_ACTION", {"key": "value"})
+        result = handle_update_system_prompt(
+            "ws1",
+            "admin@example.com",
+            {"custom_system_prompt": "do thing"},
+            audit_ctx={"source_ip": "203.0.113.1", "user_agent": "ua-x"},
+        )
+        assert result["statusCode"] == 200
+        mock_audit.assert_called_once()
+        args, kwargs = mock_audit.call_args
+        # log_admin_action(AUDIT_TABLE, action, workspace_id=..., ...)
+        assert args[1] == "SYSTEM_PROMPT_UPDATED"
+        assert kwargs["workspace_id"] == "ws1"
+        assert kwargs["user_email"] == "admin@example.com"
+        assert kwargs["source_ip"] == "203.0.113.1"
+        assert kwargs["user_agent"] == "ua-x"
+        # Details must NOT include any secret material; just length + preview.
+        assert set(kwargs["details"].keys()) == {"prompt_length", "prompt_preview"}
 
-        mock_table.put_item.assert_called_once()
-
-    @patch("workspace_management_handler.AUDIT_TABLE", "")
-    def test_write_audit_log_no_table(self):
-        """Test audit log skipped when table not configured."""
-        # Should return early without error
-        _write_audit_log("ws1", "user@example.com", "TEST_ACTION")
-
-    @patch("workspace_management_handler.AUDIT_TABLE", "test-audit-table")
+    @patch("workspace_management_handler.log_admin_action")
+    @patch("workspace_management_handler._is_workspace_admin", return_value=True)
+    @patch("workspace_management_handler._get_workspaces_table")
     @patch("workspace_management_handler._get_dynamodb")
-    def test_write_audit_log_error_handled(self, mock_dynamodb):
-        """Test audit log error is swallowed."""
+    def test_reset_emits_system_prompt_reset(
+        self, mock_dynamodb, mock_get_table, mock_ws_admin, mock_audit
+    ):
         mock_table = MagicMock()
         mock_dynamodb.return_value.Table.return_value = mock_table
-        mock_table.put_item.side_effect = Exception("DynamoDB error")
+        mock_get_table.return_value = "test-workspaces"
+        mock_table.get_item.return_value = {"Item": {"workspace_id": "ws1"}}
 
-        # Should not raise
-        _write_audit_log("ws1", "user@example.com", "TEST_ACTION")
+        result = handle_reset_system_prompt(
+            "ws1",
+            "admin@example.com",
+            audit_ctx={"source_ip": "198.51.100.9", "user_agent": "ua-y"},
+        )
+        assert result["statusCode"] == 200
+        mock_audit.assert_called_once()
+        args, kwargs = mock_audit.call_args
+        assert args[1] == "SYSTEM_PROMPT_RESET"
+        assert kwargs["source_ip"] == "198.51.100.9"
+        assert kwargs["user_agent"] == "ua-y"
 
 
 class TestScanAllWorkspaces:
