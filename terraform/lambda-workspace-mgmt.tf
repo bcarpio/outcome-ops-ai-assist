@@ -22,7 +22,9 @@ module "workspace_management_lambda" {
     "arn:aws:lambda:${var.aws_region}:753240598075:layer:LambdaAdapterLayerX86:25"
   ]
 
-  # Source code with pip requirements
+  # Source code with pip requirements (includes shared module so handler.py
+  # can `from shared.audit_writer import ...` at runtime; chunk 02 / 03 / 05
+  # all depend on this).
   source_path = [
     {
       path             = "${path.module}/../lambda/workspace-management"
@@ -35,6 +37,10 @@ module "workspace_management_lambda" {
         "!.*\\.pyc",
         "!\\.pytest_cache/.*",
       ]
+    },
+    {
+      path          = "${path.module}/../lambda/shared"
+      prefix_in_zip = "shared"
     }
   ]
 
@@ -80,14 +86,20 @@ module "workspace_management_lambda" {
       ]
     }
 
-    # DynamoDB for audit logs (system prompt change records)
+    # DynamoDB for audit logs (admin-action writes via shared.audit_writer
+    # plus the new chunk-05 audit-query endpoints which read base table +
+    # GSI1 and may scan as a last-resort org-admin path).
     dynamodb_audit = {
       effect = "Allow"
       actions = [
-        "dynamodb:PutItem"
+        "dynamodb:PutItem",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
       ]
       resources = [
-        module.audit_logs_table.dynamodb_table_arn
+        module.audit_logs_table.dynamodb_table_arn,
+        "${module.audit_logs_table.dynamodb_table_arn}/index/*",
       ]
     }
 
