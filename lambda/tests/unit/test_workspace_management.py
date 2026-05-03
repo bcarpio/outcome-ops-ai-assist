@@ -4030,19 +4030,28 @@ class TestAuditEvents:
     @patch("workspace_management_handler._is_org_admin", return_value=True)
     @patch("workspace_management_handler._get_workspaces_table")
     @patch("workspace_management_handler._get_dynamodb")
-    def test_unfiltered_org_admin_uses_capped_scan(
+    def test_unfiltered_org_admin_uses_gsi2_query(
         self, mock_dynamodb, mock_get_table, mock_org
     ):
+        """The no-filter org-admin path Queries GSI2 (CAT#admin partition)
+        rather than Scan + FilterExpression. Replaces the prior capped-scan
+        path; GSI2 is what makes admin-row visibility O(matches) instead of
+        O(table-size) when bedrock rows dominate."""
         mock_table = MagicMock()
         mock_dynamodb.return_value.Table.return_value = mock_table
         mock_get_table.return_value = "test-workspaces"
-        mock_table.scan.return_value = {"Items": []}
+        mock_table.query.return_value = {"Items": []}
 
         with patch.object(handler_module, "AUDIT_TABLE", "test-audit"):
-            result = get_audit_events("admin@example.com", {"limit": "9999"})
+            result = get_audit_events("admin@example.com", {})
         assert result["statusCode"] == 200
-        scan_kwargs = mock_table.scan.call_args.kwargs
-        assert scan_kwargs["Limit"] == handler_module.AUDIT_EVENTS_NO_FILTER_CAP
+        # The single Query goes against GSI2 with a CAT#admin partition.
+        kwargs = mock_table.query.call_args.kwargs
+        assert kwargs["IndexName"] == "GSI2"
+        assert kwargs["ExpressionAttributeValues"][":gsi2pk"] == "CAT#admin"
+        assert kwargs["ScanIndexForward"] is False
+        # Scan should never be called on this path.
+        mock_table.scan.assert_not_called()
 
     @patch("workspace_management_handler._is_workspace_admin", return_value=True)
     @patch("workspace_management_handler._is_org_admin", return_value=False)
@@ -4086,16 +4095,16 @@ class TestAuditEvents:
     @patch("workspace_management_handler._is_org_admin", return_value=True)
     @patch("workspace_management_handler._get_workspaces_table")
     @patch("workspace_management_handler._get_dynamodb")
-    def test_scan_path_applies_date_filter(
+    def test_gsi2_query_applies_date_range(
         self, mock_dynamodb, mock_get_table, mock_org
     ):
-        """Regression: the no-filter Scan branch must include a timestamp
-        BETWEEN FilterExpression. Earlier the Scan was unbounded and "Last
-        7 days" returned rows from months ago."""
+        """Regression: Last-N-days has to actually narrow the result set.
+        With GSI2 the date range becomes a SK BETWEEN bound on the Query,
+        not a FilterExpression."""
         mock_table = MagicMock()
         mock_dynamodb.return_value.Table.return_value = mock_table
         mock_get_table.return_value = "test-workspaces"
-        mock_table.scan.return_value = {"Items": []}
+        mock_table.query.return_value = {"Items": []}
 
         with patch.object(handler_module, "AUDIT_TABLE", "test-audit"):
             get_audit_events(
@@ -4104,13 +4113,13 @@ class TestAuditEvents:
                  "end_date":   "2026-05-03T00:00:00+00:00"},
             )
 
-        kwargs = mock_table.scan.call_args.kwargs
-        # FilterExpression must reference the timestamp BETWEEN bounds.
-        assert "#ts BETWEEN :s AND :e" in kwargs["FilterExpression"]
+        kwargs = mock_table.query.call_args.kwargs
+        # KeyCondition narrows the partition AND the SK range in one shot.
+        assert "GSI2PK = :gsi2pk" in kwargs["KeyConditionExpression"]
+        assert "GSI2SK BETWEEN :s AND :e" in kwargs["KeyConditionExpression"]
         assert kwargs["ExpressionAttributeValues"][":s"] == "2026-04-26"
-        # End bound has the ~ suffix so the end-of-day row sorts inside.
+        # End bound has the ~ suffix so end-of-day rows sort inside.
         assert kwargs["ExpressionAttributeValues"][":e"].startswith("2026-05-03")
-        assert kwargs["ExpressionAttributeNames"]["#ts"] == "timestamp"
 
     @patch("workspace_management_handler._is_org_admin", return_value=True)
     @patch("workspace_management_handler._get_workspaces_table")
@@ -4118,14 +4127,15 @@ class TestAuditEvents:
     def test_events_returned_newest_first(
         self, mock_dynamodb, mock_get_table, mock_org
     ):
-        """Regression: Scan returns items in DDB physical order, not by SK,
-        so the handler must sort. The bug surfaced as audit rows showing
-        oldest-first in the UI."""
+        """Regression: even though Query with ScanIndexForward=False already
+        returns newest-first, the handler also sorts defensively in case a
+        future caller flips the direction. The bug originally surfaced as
+        audit rows showing oldest-first in the UI."""
         mock_table = MagicMock()
         mock_dynamodb.return_value.Table.return_value = mock_table
         mock_get_table.return_value = "test-workspaces"
         # Deliberately out-of-order to prove the sort happens.
-        mock_table.scan.return_value = {"Items": [
+        mock_table.query.return_value = {"Items": [
             {"request_id": "old", "timestamp": "2026-03-19T19:55:13+00:00"},
             {"request_id": "new", "timestamp": "2026-04-30T18:33:02+00:00"},
             {"request_id": "mid", "timestamp": "2026-04-30T18:32:15+00:00"},
@@ -4141,46 +4151,49 @@ class TestAuditEvents:
     @patch("workspace_management_handler._is_org_admin", return_value=True)
     @patch("workspace_management_handler._get_workspaces_table")
     @patch("workspace_management_handler._get_dynamodb")
-    def test_category_filter_passed_through(
+    def test_category_filter_routes_to_correct_partition(
         self, mock_dynamodb, mock_get_table, mock_org
     ):
-        """The Audit UI sends category=admin by default to keep bedrock
-        rows out of the dashboard. Regression test that the FilterExpression
-        on the Scan path includes the category clause."""
+        """The category query param now picks the GSI2 partition rather
+        than appearing as a FilterExpression. This is the path the Audit
+        UI uses to keep bedrock rows out of the dashboard."""
         mock_table = MagicMock()
         mock_dynamodb.return_value.Table.return_value = mock_table
         mock_get_table.return_value = "test-workspaces"
-        mock_table.scan.return_value = {"Items": []}
+        mock_table.query.return_value = {"Items": []}
 
         with patch.object(handler_module, "AUDIT_TABLE", "test-audit"):
-            get_audit_events("admin@example.com", {"category": "admin"})
+            # Explicitly request bedrock to prove the param controls the
+            # partition (default is admin).
+            get_audit_events("admin@example.com", {"category": "bedrock"})
 
-        kwargs = mock_table.scan.call_args.kwargs
-        assert "category = :category" in kwargs["FilterExpression"]
-        assert kwargs["ExpressionAttributeValues"][":category"] == "admin"
+        kwargs = mock_table.query.call_args.kwargs
+        assert kwargs["IndexName"] == "GSI2"
+        assert kwargs["ExpressionAttributeValues"][":gsi2pk"] == "CAT#bedrock"
+        # And no leftover FilterExpression on category, since the predicate
+        # is now in the key condition.
+        assert "category" not in kwargs.get("FilterExpression", "")
 
 
 class TestAuditSummaryFallback:
-    """Regression: when DA/DC/DCU rollups are empty, fall back to a capped
-    raw-row scan so the dashboard renders something on a fresh deploy and
-    on historical pre-chunk-02 rows."""
+    """Regression: when DA/DC/DCU rollups are empty, fall back to a GSI2
+    Query (CAT#admin) so the dashboard renders something on a fresh deploy.
+    Same JSON shape either way; `source` reports which path produced it."""
 
     @patch("workspace_management_handler._scan_all_workspaces", return_value=[])
     @patch("workspace_management_handler._is_org_admin", return_value=True)
     @patch("workspace_management_handler._get_workspaces_table")
     @patch("workspace_management_handler._get_dynamodb")
-    def test_falls_back_to_raw_scan_when_aggregates_empty(
+    def test_falls_back_to_raw_query_when_aggregates_empty(
         self, mock_dynamodb, mock_get_table, mock_org, mock_scan
     ):
         mock_table = MagicMock()
         mock_dynamodb.return_value.Table.return_value = mock_table
         mock_get_table.return_value = "test-workspaces"
-        # First call (analytics aggregates) returns empty. Second call
-        # (raw audit scan) returns three admin rows. MagicMock returns the
-        # same value each time unless side_effect is set; that's fine here
-        # because _scan_all_workspaces is mocked to [] so the aggregates
-        # loop never queries.
-        mock_table.scan.return_value = {"Items": [
+        # _scan_all_workspaces returns []; the aggregator loop runs zero
+        # iterations so total stays 0 and the fallback fires. The fallback
+        # uses query() against GSI2.
+        mock_table.query.return_value = {"Items": [
             {
                 "action": "API_KEY_CREATED",
                 "workspace_id": "ws-1",
@@ -4208,14 +4221,16 @@ class TestAuditSummaryFallback:
         assert result["statusCode"] == 200
         body = json.loads(result["body"])
         assert body["actions_total"] == 3
-        # Three distinct actions in the raw rows.
         actions = {a["action"] for a in body["actions_by_type"]}
         assert actions == {"API_KEY_CREATED", "WORKSPACE_DELETED", "WORKSPACE_CREATED"}
-        # Two workspaces with counts 2 and 1.
         ws_counts = {w["workspace_id"]: w["count"] for w in body["actions_by_workspace"]}
         assert ws_counts == {"ws-1": 2, "ws-2": 1}
-        # Surfaced via the source field so the UI can label it eventually.
         assert body["source"] == "raw"
+        # Verify the fallback used GSI2 (not a Scan).
+        kwargs = mock_table.query.call_args.kwargs
+        assert kwargs["IndexName"] == "GSI2"
+        assert kwargs["ExpressionAttributeValues"][":pk"] == "CAT#admin"
+        mock_table.scan.assert_not_called()
 
     @patch("workspace_management_handler._scan_all_workspaces", return_value=[])
     @patch("workspace_management_handler._is_org_admin", return_value=True)
@@ -4227,7 +4242,7 @@ class TestAuditSummaryFallback:
         mock_table = MagicMock()
         mock_dynamodb.return_value.Table.return_value = mock_table
         mock_get_table.return_value = "test-workspaces"
-        mock_table.scan.return_value = {"Items": []}
+        mock_table.query.return_value = {"Items": []}
 
         with patch.object(handler_module, "ANALYTICS_TABLE", "test-analytics"), \
              patch.object(handler_module, "AUDIT_TABLE", "test-audit"):

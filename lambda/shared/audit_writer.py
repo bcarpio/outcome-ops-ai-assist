@@ -185,6 +185,12 @@ def log_admin_action(
             "SK": sort_key,
             "GSI1PK": user_key,
             "GSI1SK": sort_key,
+            # GSI2: category-partitioned index that lets the audit dashboard
+            # answer "all admin actions, newest first, across workspaces"
+            # via a single Query (vs. Scan + FilterExpression). See
+            # plan/01-dynamodb-schema.md and terraform/dynamodb-audit.tf.
+            "GSI2PK": f"CAT#{category}",
+            "GSI2SK": sort_key,
             "category": category,
             "action": action,
             "workspace_id": workspace_id or "",

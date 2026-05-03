@@ -170,6 +170,11 @@ class TestLogAdminAction:
         assert item["GSI1PK"] == "USER#brian@example.com"
         assert item["SK"].endswith(item["request_id"])
         assert item["GSI1SK"] == item["SK"]
+        # GSI2: category-partitioned index for org-wide audit-dashboard
+        # queries. Without this, /audit/events would have to Scan + Filter
+        # past every bedrock row to find admin matches.
+        assert item["GSI2PK"] == "CAT#admin"
+        assert item["GSI2SK"] == item["SK"]
         assert item["category"] == CATEGORY_ADMIN
         assert item["action"] == "API_KEY_CREATED"
         assert item["workspace_id"] == "ws_abc"
@@ -256,6 +261,9 @@ class TestLogAdminAction:
         )
         item = mock_table.put_item.call_args.kwargs["Item"]
         assert item["category"] == "auth"
+        # GSI2 partition follows the category, so a future auth dashboard
+        # can Query GSI2 with PK="CAT#auth" the same way the admin one does.
+        assert item["GSI2PK"] == "CAT#auth"
 
 
 # ============================================================================

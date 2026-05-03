@@ -1,11 +1,15 @@
 # ============================================================================
 # DynamoDB Audit Logs Table
-# Stores full plaintext audit records for ALL Bedrock invocations.
-# Enterprise customers get full visibility into AI interactions.
+# Stores full plaintext audit records for ALL Bedrock invocations and
+# admin-action audit rows.
 #
 # Access patterns:
-# - PK: WS#{workspace_id} / SK: {timestamp}#{request_id}  -> by workspace + time
-# - GSI1PK: USER#{email} / GSI1SK: {timestamp}#{request_id} -> by user + time
+# - PK: WS#{workspace_id} / SK: {timestamp}#{request_id}     -> by workspace + time
+# - GSI1PK: USER#{email}  / GSI1SK: {timestamp}#{request_id} -> by user + time
+# - GSI2PK: CAT#{category} / GSI2SK: {timestamp}#{request_id} -> by category + time
+#   (the audit dashboard's "all admin actions across the org" path; without
+#   it, an org-wide query has to Scan + FilterExpression and the bedrock
+#   rows clustered in each PK swamp the limit before any admin row matches)
 # ============================================================================
 
 module "audit_logs_table" {
@@ -35,15 +39,31 @@ module "audit_logs_table" {
     {
       name = "GSI1SK"
       type = "S"
+    },
+    {
+      name = "GSI2PK"
+      type = "S"
+    },
+    {
+      name = "GSI2SK"
+      type = "S"
     }
   ]
 
-  # GSI for querying by user email
   global_secondary_indexes = [
     {
       name            = "GSI1"
       hash_key        = "GSI1PK"
       range_key       = "GSI1SK"
+      projection_type = "ALL"
+    },
+    {
+      # Org-wide "all admin actions in date range" query path. PK is the
+      # category discriminator so a single Query returns admin-only rows
+      # newest-first without scanning bedrock clusters.
+      name            = "GSI2"
+      hash_key        = "GSI2PK"
+      range_key       = "GSI2SK"
       projection_type = "ALL"
     }
   ]

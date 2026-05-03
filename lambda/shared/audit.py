@@ -254,6 +254,13 @@ def log_audit_entry(
             "SK": sort_key,
             "GSI1PK": user_key,
             "GSI1SK": sort_key,
+            # GSI2: category-partitioned index. Bedrock rows go to CAT#bedrock
+            # so they stay out of the admin dashboard's GSI2 Query (which
+            # uses CAT#admin) and also keeps the schema uniform with chunk
+            # 02's audit_writer.
+            "GSI2PK": "CAT#bedrock",
+            "GSI2SK": sort_key,
+            "category": "bedrock",
             "request_id": request_id,
             "lambda_name": lambda_name,
             "model_id": model_id,

@@ -3915,30 +3915,37 @@ def _summarize_admin_events(items: List[Dict]) -> Dict[str, Any]:
     }
 
 
-def _scan_admin_events_for_range(
+def _query_admin_events_for_range(
     audit_table,
     start_date: str,
     end_date: str,
     limit: int = AUDIT_SUMMARY_FALLBACK_SCAN_CAP,
+    category: str = "admin",
 ) -> List[Dict]:
-    """Capped scan of admin-category audit rows in a date range."""
+    """Query GSI2 (CAT#<category>) for admin rows in a date range.
+
+    Uses GSI2 instead of Scan + FilterExpression so the query reads only
+    rows in the requested category — bedrock rows in the same table don't
+    have to be filtered post-read.
+    """
     items: List[Dict] = []
-    scan_kwargs: Dict[str, Any] = {
-        "FilterExpression": "category = :cat AND #ts BETWEEN :s AND :e",
-        "ExpressionAttributeNames": {"#ts": "timestamp"},
+    query_kwargs: Dict[str, Any] = {
+        "IndexName": "GSI2",
+        "KeyConditionExpression": "GSI2PK = :pk AND GSI2SK BETWEEN :s AND :e",
         "ExpressionAttributeValues": {
-            ":cat": "admin",
+            ":pk": f"CAT#{category}",
             ":s": start_date,
             ":e": f"{end_date}~",
         },
         "Limit": limit,
+        "ScanIndexForward": False,  # newest-first
     }
     try:
-        response = audit_table.scan(**scan_kwargs)
+        response = audit_table.query(**query_kwargs)
         items.extend(response.get("Items", []) or [])
     except ClientError as e:
         logger.warning(
-            f"[workspace-management] audit fallback scan failed: {e}"
+            f"[workspace-management] audit GSI2 query failed: {e}"
         )
     return items
 
@@ -4017,7 +4024,7 @@ def get_audit_summary(user_email: str, query_params: Dict[str, Any]) -> Dict:
             audit_table_name = _get_audit_table()
             if audit_table_name:
                 audit_table = dynamodb.Table(audit_table_name)
-                raw_items = _scan_admin_events_for_range(
+                raw_items = _query_admin_events_for_range(
                     audit_table, start_date, end_date
                 )
                 if raw_items:
@@ -4229,28 +4236,35 @@ def get_audit_events(user_email: str, query_params: Dict[str, Any]) -> Dict:
     else:
         if not is_org_admin:
             return _error(403, "Org admin access required for unfiltered audit query")
-        # Capped no-filter scan, last-resort path. Scan does not honor the
-        # SK BETWEEN bounds (no KeyConditionExpression) so the date range is
-        # applied as a FilterExpression on the timestamp attribute below.
-        limit = min(
-            _parse_audit_limit(query_params.get("limit"), AUDIT_EVENTS_NO_FILTER_CAP),
-            AUDIT_EVENTS_NO_FILTER_CAP,
+        # No workspace/user filter: Query GSI2 partitioned by category. With
+        # GSI2 we read only rows in the requested category - no Scan, no
+        # post-filter eviction of bedrock rows clustered before the admin
+        # ones. Default category is "admin" since this is the audit-dashboard
+        # path; bedrock invocations belong on the cost-analytics page.
+        target_category = category_filter or "admin"
+        limit = _parse_audit_limit(
+            query_params.get("limit"), AUDIT_EVENTS_DEFAULT_LIMIT
         )
         query_kwargs = {
-            "Limit": limit,
+            "IndexName": "GSI2",
+            "KeyConditionExpression": (
+                "GSI2PK = :gsi2pk AND GSI2SK BETWEEN :s AND :e"
+            ),
             "ExpressionAttributeValues": {
+                ":gsi2pk": f"CAT#{target_category}",
                 ":s": sk_start,
                 ":e": sk_end,
             },
-            "ExpressionAttributeNames": {"#ts": "timestamp"},
+            "Limit": limit,
+            "ScanIndexForward": False,
         }
+        # category filter is now part of the GSI2 key, not a FilterExpression;
+        # mark it as consumed so the FilterExpression builder below skips it.
+        category_filter = ""
 
-    # Build optional FilterExpression on action / category. The Scan path
-    # also gets a baseline timestamp filter (Query paths already enforce the
-    # date range via KeyConditionExpression).
+    # Build optional FilterExpression on action / category for the Query
+    # paths that didn't fold the predicate into the key condition.
     filters = []
-    if not (workspace_id or user_filter):
-        filters.append("#ts BETWEEN :s AND :e")
     if action_filter:
         query_kwargs["ExpressionAttributeValues"] = {
             **query_kwargs.get("ExpressionAttributeValues", {}),
@@ -4273,15 +4287,13 @@ def get_audit_events(user_email: str, query_params: Dict[str, Any]) -> Dict:
             query_kwargs["ExclusiveStartKey"] = decoded
 
     try:
-        if workspace_id or user_filter:
-            response = audit_table.query(**query_kwargs)
-        else:
-            response = audit_table.scan(**query_kwargs)
+        # Every branch is now a Query (base table, GSI1, or GSI2) - the Scan
+        # path was retired with the addition of GSI2.
+        response = audit_table.query(**query_kwargs)
 
         items = response.get("Items", []) or []
-        # Query paths come back in SK order (newest-first via ScanIndexForward
-        # = False). Scan returns items in DDB physical order, so sort here so
-        # the UI always renders newest-first regardless of branch.
+        # Query with ScanIndexForward=False already returns newest-first in
+        # SK order; sort defensively in case a future caller flips it.
         items.sort(key=lambda i: i.get("timestamp", ""), reverse=True)
         events = [_audit_event_from_item(item) for item in items]
         next_cursor = _encode_audit_cursor(response.get("LastEvaluatedKey"))

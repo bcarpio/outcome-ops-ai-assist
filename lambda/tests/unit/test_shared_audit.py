@@ -482,6 +482,11 @@ class TestLogAuditEntry:
         assert item["GSI1PK"] == "USER#user@example.com"
         assert item["SK"].startswith("20")  # ISO timestamp prefix
         assert "audit_" in item["SK"]
+        # GSI2: bedrock rows go to CAT#bedrock so org-wide audit-dashboard
+        # queries (CAT#admin) don't have to filter past them.
+        assert item["GSI2PK"] == "CAT#bedrock"
+        assert item["GSI2SK"] == item["SK"]
+        assert item["category"] == "bedrock"
 
         # Verify content
         assert item["lambda_name"] == "chat"
