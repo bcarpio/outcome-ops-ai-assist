@@ -189,6 +189,18 @@ variable "bedrock_basic_output_price" {
   default     = 4.0
 }
 
+variable "bedrock_embedding_input_price" {
+  type        = number
+  description = "Price per million input tokens for the embedding model"
+  default     = 0.02
+}
+
+variable "bedrock_embedding_output_price" {
+  type        = number
+  description = "Price per million output tokens for the embedding model (typically 0)"
+  default     = 0.0
+}
+
 variable "rag_max_doc_chars" {
   type        = number
   description = "Maximum characters per document passed to the model during RAG. Larger values give the model more context but use more tokens."

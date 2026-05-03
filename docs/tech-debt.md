@@ -33,3 +33,76 @@ The Teams file sync re-processes ALL files every hourly sync cycle, even if they
 **Fix (two layers):**
 1. **Teams sync (primary):** Use the SharePoint drive delta API for channel files (Teams stores files in SharePoint under the hood) or filter files by `lastModifiedDateTime` >= `last_sync_at`, matching the Confluence/SharePoint pattern
 2. **File ingestion (safety net):** Before uploading to S3, compare the file's etag or content hash against the existing S3 object. Skip upload if unchanged
+
+## Code Maps: Hardcoded `main` Branch in File Listing
+
+**Discovered:** 2026-05-03
+**Severity:** Medium
+**Component:** `process-repo-summary`
+
+`list_repository_files()` in `lambda/process-repo-summary/handler.py:355` hardcodes the branch name in the GitHub trees API URL:
+
+```python
+url = f"{GITHUB_API_URL}/repos/{repo_project}/git/trees/main?recursive=1"
+```
+
+Any repo whose default branch is not `main` (e.g., `master`, `develop`, `trunk`) will 404 here, and `process-repo-summary` will fail to discover files for that repo.
+
+**Impact:** F500 customers commonly have pre-2020 repos still defaulting to `master`. For those repos, code-map generation silently fails at the file-listing step. Affects every backend (Python, Java, TypeScript, React, ABAP, C#) - this is not language-specific.
+
+**Inconsistency:** The per-backend change-detection code already does this correctly. For example, `csharp_backend.py:494` (`_get_default_branch`) and the equivalents in the other backends call `GET /repos/{repo}/` and read `default_branch` before fetching commit/compare data. So one half of the pipeline resolves the branch dynamically and the other half hardcodes `main`.
+
+**Fix:**
+1. Extract the existing `_get_default_branch` logic into a shared helper (or move it onto the base backend) so the handler can call it once per repo.
+2. Replace the hardcoded `main` in `list_repository_files()` with the resolved default branch.
+3. Pass the resolved branch through to `detect_changes()` so the backend doesn't re-resolve it.
+4. Add a unit test covering a repo with `default_branch: "master"`.
+
+**Workaround until fixed:** Only point the platform at repos whose default branch is `main`.
+
+## Audit: Bedrock Pricing Env Vars Wired in Terraform but Ignored by audit.py
+
+**Discovered:** 2026-05-03
+**Severity:** Medium
+**Component:** `lambda/shared/audit.py`, `terraform/lambda-chat.tf`, `terraform/lambda-code-generation.tf`
+
+Pricing is exposed as Terraform variables in `prd.tfvars` and propagated to the relevant Lambdas as env vars:
+
+```hcl
+# terraform/prd.tfvars
+bedrock_advanced_input_price  = 3.0
+bedrock_advanced_output_price = 15.0
+bedrock_basic_input_price     = 1.0
+bedrock_basic_output_price    = 5.0
+
+# terraform/lambda-chat.tf:61-64 (and lambda-code-generation.tf)
+BEDROCK_ADVANCED_INPUT_PRICE  = tostring(var.bedrock_advanced_input_price)
+BEDROCK_ADVANCED_OUTPUT_PRICE = tostring(var.bedrock_advanced_output_price)
+BEDROCK_BASIC_INPUT_PRICE     = tostring(var.bedrock_basic_input_price)
+BEDROCK_BASIC_OUTPUT_PRICE    = tostring(var.bedrock_basic_output_price)
+```
+
+But `lambda/shared/audit.py:61-79` ignores those env vars and uses hardcoded Python constants:
+
+```python
+ADVANCED_PRICING = {"input": 3.00, "output": 15.00}
+BASIC_PRICING    = {"input": 0.80, "output": 4.00}
+EMBEDDING_PRICING= {"input": 0.02, "output": 0.0}
+```
+
+These drive `_calculate_cost()`, which materializes `cost_usd` onto every audit row at write time. Historical rows are not rewritten if pricing changes - that is correct enterprise audit behavior.
+
+**Why this matters:**
+
+1. The Terraform plumbing is dead code from audit.py's perspective. The numbers happen to match for `ADVANCED` today, but `BASIC` already disagrees: tfvars says `input=1.0/output=5.0`, audit.py says `input=0.80/output=4.00`. Whichever invocation path counts the cost, only one of those is actually used, so dashboard numbers depend on which constant table wins.
+2. Updating pricing requires a code change + Lambda deploy, even though the operator already updated `prd.tfvars`.
+3. New Lambdas that import `shared.audit` inherit the hardcoded values silently.
+
+**Fix:**
+
+1. In `audit.py`, read `BEDROCK_ADVANCED_INPUT_PRICE` / `BEDROCK_ADVANCED_OUTPUT_PRICE` / `BEDROCK_BASIC_INPUT_PRICE` / `BEDROCK_BASIC_OUTPUT_PRICE` (and an embedding pair if added) at module load, fall back to current constants if unset, log a warning when falling back.
+2. Reconcile the BASIC mismatch: pick whichever value is actually being charged and update the other source so they agree.
+3. Make sure every Lambda that uses `shared.audit` has these env vars wired in its Terraform module - currently only `lambda-chat.tf` and `lambda-code-generation.tf` set them; modules like `process-batch-summary`, `query-kb`, `process-documents`, `process-repo-summary`, `analytics-cost-alert`, etc. do not.
+4. Add a unit test that verifies `_calculate_cost()` honors the env vars.
+
+**Future enhancement (not part of this debt):** per-org pricing overrides editable from the org-admin UI, since different enterprise customers negotiate different Bedrock rates / EDPs. Track separately if needed.

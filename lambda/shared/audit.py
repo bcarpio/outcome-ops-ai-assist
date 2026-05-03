@@ -57,10 +57,41 @@ EMBEDDING_MODEL_ID = os.environ.get(
     "BEDROCK_EMBEDDING_MODEL_ID", "amazon.titan-embed-text-v2:0"
 )
 
-# Pricing per 1M tokens (USD) — tied to model family, not exact version
-ADVANCED_PRICING = {"input": 3.00, "output": 15.00}
-BASIC_PRICING = {"input": 0.80, "output": 4.00}
-EMBEDDING_PRICING = {"input": 0.02, "output": 0.0}
+# Pricing per 1M tokens (USD) — tied to model family, not exact version.
+# Values are sourced from environment variables wired in by Terraform
+# (BEDROCK_*_INPUT_PRICE / BEDROCK_*_OUTPUT_PRICE), which let operators
+# update rates via terraform/<env>.tfvars without a code change. The
+# fallback constants are used only when an env var is unset, e.g. local
+# development or pre-deploy tests.
+
+
+def _price(env_name: str, fallback: float) -> float:
+    """Read a per-1M-token price from the environment, falling back if unset."""
+    raw = os.environ.get(env_name)
+    if raw is None or raw == "":
+        return fallback
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning(
+            "[audit] %s=%r is not a number; falling back to %.4f",
+            env_name, raw, fallback,
+        )
+        return fallback
+
+
+ADVANCED_PRICING = {
+    "input":  _price("BEDROCK_ADVANCED_INPUT_PRICE",  3.00),
+    "output": _price("BEDROCK_ADVANCED_OUTPUT_PRICE", 15.00),
+}
+BASIC_PRICING = {
+    "input":  _price("BEDROCK_BASIC_INPUT_PRICE",  0.80),
+    "output": _price("BEDROCK_BASIC_OUTPUT_PRICE", 4.00),
+}
+EMBEDDING_PRICING = {
+    "input":  _price("BEDROCK_EMBEDDING_INPUT_PRICE",  0.02),
+    "output": _price("BEDROCK_EMBEDDING_OUTPUT_PRICE", 0.0),
+}
 
 MODEL_PRICING = {
     ADVANCED_MODEL_ID: ADVANCED_PRICING,

@@ -146,14 +146,16 @@ module "query_kb_lambda" {
 
   # Environment variables
   environment_variables = {
-    ENV                        = var.environment
-    APP_NAME                   = var.app_name
-    AUDIT_TABLE                = module.audit_logs_table.dynamodb_table_id
-    BEDROCK_EMBEDDING_MODEL_ID = var.bedrock_embedding_model_id
-    BEDROCK_RERANK_MODEL_ID    = var.bedrock_rerank_model_id
-    RERANK_ENABLED             = "true"
-    RERANK_MAX_FETCH           = tostring(var.rerank_max_fetch)
-    RERANK_MIN_SCORE           = tostring(var.rerank_min_score)
+    ENV                            = var.environment
+    APP_NAME                       = var.app_name
+    AUDIT_TABLE                    = module.audit_logs_table.dynamodb_table_id
+    BEDROCK_EMBEDDING_MODEL_ID     = var.bedrock_embedding_model_id
+    BEDROCK_EMBEDDING_INPUT_PRICE  = tostring(var.bedrock_embedding_input_price)
+    BEDROCK_EMBEDDING_OUTPUT_PRICE = tostring(var.bedrock_embedding_output_price)
+    BEDROCK_RERANK_MODEL_ID        = var.bedrock_rerank_model_id
+    RERANK_ENABLED                 = "true"
+    RERANK_MAX_FETCH               = tostring(var.rerank_max_fetch)
+    RERANK_MIN_SCORE               = tostring(var.rerank_min_score)
   }
 
   # IAM permissions

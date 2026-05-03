@@ -154,6 +154,89 @@ class TestModelPricing:
 # ============================================================================
 
 
+class TestPricingEnvVars:
+    """
+    Test that pricing reads from BEDROCK_*_INPUT_PRICE / OUTPUT_PRICE env vars
+    set by Terraform, with fallback to constants when unset.
+    """
+
+    PRICING_ENV_VARS = (
+        "BEDROCK_ADVANCED_INPUT_PRICE",
+        "BEDROCK_ADVANCED_OUTPUT_PRICE",
+        "BEDROCK_BASIC_INPUT_PRICE",
+        "BEDROCK_BASIC_OUTPUT_PRICE",
+        "BEDROCK_EMBEDDING_INPUT_PRICE",
+        "BEDROCK_EMBEDDING_OUTPUT_PRICE",
+    )
+
+    def _reload_with_env(self, env: dict):
+        """Reload audit module with the given pricing env vars set."""
+        original = {k: os.environ.get(k) for k in self.PRICING_ENV_VARS}
+        try:
+            for k in self.PRICING_ENV_VARS:
+                if k in env:
+                    os.environ[k] = env[k]
+                elif k in os.environ:
+                    del os.environ[k]
+            return _load_audit_module()
+        finally:
+            for k, v in original.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+            _load_audit_module()  # restore default-loaded module for other tests
+
+    def test_advanced_pricing_honors_env_vars(self):
+        mod = self._reload_with_env({
+            "BEDROCK_ADVANCED_INPUT_PRICE":  "2.50",
+            "BEDROCK_ADVANCED_OUTPUT_PRICE": "12.00",
+        })
+        assert mod.ADVANCED_PRICING == {"input": 2.50, "output": 12.00}
+
+    def test_basic_pricing_honors_env_vars(self):
+        # The actual mismatch from prd.tfvars: 1.0 / 5.0 instead of 0.80 / 4.00
+        mod = self._reload_with_env({
+            "BEDROCK_BASIC_INPUT_PRICE":  "1.0",
+            "BEDROCK_BASIC_OUTPUT_PRICE": "5.0",
+        })
+        assert mod.BASIC_PRICING == {"input": 1.0, "output": 5.0}
+
+    def test_embedding_pricing_honors_env_vars(self):
+        mod = self._reload_with_env({
+            "BEDROCK_EMBEDDING_INPUT_PRICE":  "0.05",
+            "BEDROCK_EMBEDDING_OUTPUT_PRICE": "0.0",
+        })
+        assert mod.EMBEDDING_PRICING == {"input": 0.05, "output": 0.0}
+
+    def test_falls_back_to_constants_when_env_vars_unset(self):
+        mod = self._reload_with_env({})  # nothing set
+        assert mod.ADVANCED_PRICING  == {"input": 3.00, "output": 15.00}
+        assert mod.BASIC_PRICING     == {"input": 0.80, "output": 4.00}
+        assert mod.EMBEDDING_PRICING == {"input": 0.02, "output": 0.0}
+
+    def test_invalid_env_var_falls_back_silently(self):
+        mod = self._reload_with_env({
+            "BEDROCK_ADVANCED_INPUT_PRICE": "not-a-number",
+        })
+        # Falls back to default rather than crashing module load
+        assert mod.ADVANCED_PRICING["input"] == 3.00
+
+    def test_calculate_cost_uses_env_var_pricing(self):
+        # Override basic pricing to prd.tfvars values, then bill 1M/1M tokens
+        mod = self._reload_with_env({
+            "BEDROCK_BASIC_INPUT_PRICE":  "1.0",
+            "BEDROCK_BASIC_OUTPUT_PRICE": "5.0",
+        })
+        cost = mod._calculate_cost(
+            "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+            1_000_000,
+            1_000_000,
+        )
+        # 1.0 + 5.0 = 6.0 (not the 0.80 + 4.00 = 4.80 the constants would give)
+        assert cost == 6.0
+
+
 class TestCalculateCost:
     """Test cost calculation from model ID and token counts."""
 

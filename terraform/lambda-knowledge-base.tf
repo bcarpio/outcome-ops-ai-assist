@@ -37,13 +37,19 @@ module "process_batch_summary_lambda" {
 
   # Environment variables
   environment_variables = {
-    ENV                        = var.environment
-    APP_NAME                   = var.app_name
-    EVENT_BUS_NAME             = aws_cloudwatch_event_bus.automation.name
-    ENABLE_BEDROCK_COOLDOWN    = tostring(var.enable_bedrock_cooldown)
-    AUDIT_TABLE                = module.audit_logs_table.dynamodb_table_id
-    BEDROCK_ADVANCED_MODEL_ID  = var.bedrock_advanced_model_id
-    BEDROCK_EMBEDDING_MODEL_ID = var.bedrock_embedding_model_id
+    ENV                            = var.environment
+    APP_NAME                       = var.app_name
+    EVENT_BUS_NAME                 = aws_cloudwatch_event_bus.automation.name
+    ENABLE_BEDROCK_COOLDOWN        = tostring(var.enable_bedrock_cooldown)
+    AUDIT_TABLE                    = module.audit_logs_table.dynamodb_table_id
+    BEDROCK_ADVANCED_MODEL_ID      = var.bedrock_advanced_model_id
+    BEDROCK_EMBEDDING_MODEL_ID     = var.bedrock_embedding_model_id
+    BEDROCK_ADVANCED_INPUT_PRICE   = tostring(var.bedrock_advanced_input_price)
+    BEDROCK_ADVANCED_OUTPUT_PRICE  = tostring(var.bedrock_advanced_output_price)
+    BEDROCK_BASIC_INPUT_PRICE      = tostring(var.bedrock_basic_input_price)
+    BEDROCK_BASIC_OUTPUT_PRICE     = tostring(var.bedrock_basic_output_price)
+    BEDROCK_EMBEDDING_INPUT_PRICE  = tostring(var.bedrock_embedding_input_price)
+    BEDROCK_EMBEDDING_OUTPUT_PRICE = tostring(var.bedrock_embedding_output_price)
   }
 
   # IAM permissions
@@ -218,11 +224,17 @@ module "process_repo_summary_lambda" {
 
   # Environment variables
   environment_variables = {
-    ENV                        = var.environment
-    APP_NAME                   = var.app_name
-    AUDIT_TABLE                = module.audit_logs_table.dynamodb_table_id
-    BEDROCK_ADVANCED_MODEL_ID  = var.bedrock_advanced_model_id
-    BEDROCK_EMBEDDING_MODEL_ID = var.bedrock_embedding_model_id
+    ENV                            = var.environment
+    APP_NAME                       = var.app_name
+    AUDIT_TABLE                    = module.audit_logs_table.dynamodb_table_id
+    BEDROCK_ADVANCED_MODEL_ID      = var.bedrock_advanced_model_id
+    BEDROCK_EMBEDDING_MODEL_ID     = var.bedrock_embedding_model_id
+    BEDROCK_ADVANCED_INPUT_PRICE   = tostring(var.bedrock_advanced_input_price)
+    BEDROCK_ADVANCED_OUTPUT_PRICE  = tostring(var.bedrock_advanced_output_price)
+    BEDROCK_BASIC_INPUT_PRICE      = tostring(var.bedrock_basic_input_price)
+    BEDROCK_BASIC_OUTPUT_PRICE     = tostring(var.bedrock_basic_output_price)
+    BEDROCK_EMBEDDING_INPUT_PRICE  = tostring(var.bedrock_embedding_input_price)
+    BEDROCK_EMBEDDING_OUTPUT_PRICE = tostring(var.bedrock_embedding_output_price)
   }
 
   # IAM permissions

@@ -283,11 +283,13 @@ module "process_documents_lambda" {
   quiet_archive_local_exec = true
 
   environment_variables = {
-    ENV                        = var.environment
-    APP_NAME                   = var.app_name
-    KB_BUCKET                  = module.knowledge_base_bucket.s3_bucket_id
-    AUDIT_TABLE                = module.audit_logs_table.dynamodb_table_id
-    BEDROCK_EMBEDDING_MODEL_ID = var.bedrock_embedding_model_id
+    ENV                            = var.environment
+    APP_NAME                       = var.app_name
+    KB_BUCKET                      = module.knowledge_base_bucket.s3_bucket_id
+    AUDIT_TABLE                    = module.audit_logs_table.dynamodb_table_id
+    BEDROCK_EMBEDDING_MODEL_ID     = var.bedrock_embedding_model_id
+    BEDROCK_EMBEDDING_INPUT_PRICE  = tostring(var.bedrock_embedding_input_price)
+    BEDROCK_EMBEDDING_OUTPUT_PRICE = tostring(var.bedrock_embedding_output_price)
   }
 
   # IAM permissions
