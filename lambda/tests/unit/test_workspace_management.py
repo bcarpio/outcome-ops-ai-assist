@@ -2889,6 +2889,7 @@ get_mcp_server_workspaces = handler_module.get_mcp_server_workspaces
 get_chat_available_mcp_servers = handler_module.get_chat_available_mcp_servers
 validate_api_key = handler_module.validate_api_key
 log_admin_action = handler_module.log_admin_action
+update_workspace_budget = handler_module.update_workspace_budget
 _scan_all_workspaces = handler_module._scan_all_workspaces
 _get_kb_bucket = handler_module._get_kb_bucket
 _get_delete_queue_url = handler_module._get_delete_queue_url
@@ -3537,6 +3538,255 @@ class TestRemoveRepoAudit:
         args, kwargs = _audit_kwargs(mock_audit)
         assert args[1] == "WORKSPACE_REPO_REMOVED"
         assert kwargs["details"] == {"repo_name": "org/repo"}
+
+
+# ============================================================================
+# Chunk 03b: audit emission for org / MCP / API key / budget mutations
+# ============================================================================
+
+
+class TestAddOrgMemberAudit:
+    @patch("workspace_management_handler.log_admin_action")
+    @patch("workspace_management_handler._is_org_admin", return_value=True)
+    @patch("workspace_management_handler._get_org_membership", return_value=None)
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_add_org_member_emits_org_member_added(
+        self, mock_dynamodb, mock_get_table, mock_org_membership, mock_org_admin, mock_audit
+    ):
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+
+        request = AddOrgMemberRequest(email="new@example.com", org_role="member")
+        result = add_org_member("admin@example.com", request, AUDIT_CTX)
+        assert result["statusCode"] == 201
+
+        mock_audit.assert_called_once()
+        args, kwargs = _audit_kwargs(mock_audit)
+        assert args[1] == "ORG_MEMBER_ADDED"
+        assert kwargs["details"] == {"member_email": "new@example.com", "role": "member"}
+
+
+class TestRemoveOrgMemberAudit:
+    @patch("workspace_management_handler.log_admin_action")
+    @patch("workspace_management_handler._is_org_admin", return_value=True)
+    @patch("workspace_management_handler._get_org_membership")
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_remove_org_member_emits_org_member_removed(
+        self, mock_dynamodb, mock_get_table, mock_org_membership, mock_org_admin, mock_audit
+    ):
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+        mock_org_membership.return_value = {"org_role": "member"}
+        mock_table.query.return_value = {"Items": []}
+
+        result = remove_org_member("admin@example.com", "victim@example.com", AUDIT_CTX)
+        assert result["statusCode"] == 200
+
+        mock_audit.assert_called_once()
+        args, kwargs = _audit_kwargs(mock_audit)
+        assert args[1] == "ORG_MEMBER_REMOVED"
+        assert kwargs["details"] == {"member_email": "victim@example.com"}
+
+
+class TestCreateMcpServerAudit:
+    @patch("workspace_management_handler.log_admin_action")
+    @patch("workspace_management_handler._call_mcp_list_tools", return_value=[])
+    @patch("workspace_management_handler._is_org_admin", return_value=True)
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_create_mcp_server_emits_mcp_server_created(
+        self, mock_dynamodb, mock_get_table, mock_org_admin, mock_list_tools, mock_audit
+    ):
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+
+        body = {"name": "Jira", "url": "https://example.com", "auth_type": "none"}
+        result = create_mcp_server("admin@example.com", body, AUDIT_CTX)
+        assert result["statusCode"] == 201
+
+        mock_audit.assert_called_once()
+        args, kwargs = _audit_kwargs(mock_audit)
+        assert args[1] == "MCP_SERVER_CREATED"
+        assert kwargs["details"]["name"] == "Jira"
+        assert kwargs["details"]["auth_type"] == "none"
+        assert "mcp_id" in kwargs["details"]
+
+
+class TestUpdateMcpServerAudit:
+    @patch("workspace_management_handler.log_admin_action")
+    @patch("workspace_management_handler._is_org_admin", return_value=True)
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_update_mcp_server_emits_changed_fields(
+        self, mock_dynamodb, mock_get_table, mock_org_admin, mock_audit
+    ):
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+        mock_table.get_item.return_value = {
+            "Item": {"mcp_id": "mcp_a", "name": "old", "auth_type": "none"}
+        }
+
+        body = {"name": "renamed"}
+        result = update_mcp_server("admin@example.com", "mcp_a", body, AUDIT_CTX)
+        assert result["statusCode"] in (200, 500)  # downstream get_mcp_server may 200 or fail safely
+
+        mock_audit.assert_called_once()
+        args, kwargs = _audit_kwargs(mock_audit)
+        assert args[1] == "MCP_SERVER_UPDATED"
+        assert kwargs["details"]["mcp_id"] == "mcp_a"
+        assert kwargs["details"]["changed_fields"] == ["name"]
+
+
+class TestDeleteMcpServerAudit:
+    @patch("workspace_management_handler.log_admin_action")
+    @patch("workspace_management_handler._is_org_admin", return_value=True)
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_delete_mcp_server_emits_mcp_server_deleted(
+        self, mock_dynamodb, mock_get_table, mock_org_admin, mock_audit
+    ):
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+        mock_table.get_item.return_value = {"Item": {"mcp_id": "mcp_a", "name": "GoneBaby"}}
+        mock_table.batch_writer.return_value.__enter__.return_value = MagicMock()
+        mock_table.query.return_value = {"Items": []}
+
+        result = delete_mcp_server("admin@example.com", "mcp_a", AUDIT_CTX)
+        assert result["statusCode"] == 200
+
+        mock_audit.assert_called_once()
+        args, kwargs = _audit_kwargs(mock_audit)
+        assert args[1] == "MCP_SERVER_DELETED"
+        assert kwargs["details"] == {"mcp_id": "mcp_a", "name": "GoneBaby"}
+
+
+class TestCreateApiKeyAudit:
+    @patch("workspace_management_handler.log_admin_action")
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_create_api_key_emits_api_key_created_without_secret(
+        self, mock_dynamodb, mock_get_table, mock_audit
+    ):
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+
+        body = {"name": "ci-bot", "expires_in_days": 30}
+        result = create_api_key("brian@example.com", body, AUDIT_CTX)
+        assert result["statusCode"] == 201
+
+        # Pull the raw key out of the response so we can assert it never appears
+        # in the audit details (security gate per chunk 03b).
+        response_body = json.loads(result["body"])
+        raw_key = response_body["key"]
+        assert raw_key.startswith("ooa_")
+
+        mock_audit.assert_called_once()
+        args, kwargs = _audit_kwargs(mock_audit)
+        assert args[1] == "API_KEY_CREATED"
+        details = kwargs["details"]
+        assert "key_id" in details
+        assert details["name"] == "ci-bot"
+        assert "expires_at" in details
+        # CRITICAL: the raw secret must not be anywhere in the audit details.
+        for value in details.values():
+            assert raw_key not in str(value), (
+                f"API key secret leaked into audit details: {details}"
+            )
+
+    @patch("workspace_management_handler.log_admin_action")
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_create_api_key_invalid_request_does_not_emit(
+        self, mock_dynamodb, mock_get_table, mock_audit
+    ):
+        result = create_api_key("brian@example.com", {}, AUDIT_CTX)
+        assert result["statusCode"] == 400
+        mock_audit.assert_not_called()
+
+
+class TestRevokeApiKeyAudit:
+    @patch("workspace_management_handler.log_admin_action")
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_revoke_api_key_emits_api_key_revoked(
+        self, mock_dynamodb, mock_get_table, mock_audit
+    ):
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+        mock_table.update_item.return_value = {
+            "Attributes": {"name": "old-name", "key_id": "kid_xyz"}
+        }
+
+        result = revoke_api_key("brian@example.com", "kid_xyz", AUDIT_CTX)
+        assert result["statusCode"] == 200
+
+        mock_audit.assert_called_once()
+        args, kwargs = _audit_kwargs(mock_audit)
+        assert args[1] == "API_KEY_REVOKED"
+        assert kwargs["details"] == {"key_id": "kid_xyz", "name": "old-name"}
+
+
+class TestUpdateWorkspaceBudgetAudit:
+    @patch("workspace_management_handler.log_admin_action")
+    @patch("workspace_management_handler._is_org_admin", return_value=True)
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_update_budget_set_emits_workspace_budget_updated(
+        self, mock_dynamodb, mock_get_table, mock_org_admin, mock_audit
+    ):
+        from decimal import Decimal as _D
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+        mock_table.get_item.return_value = {
+            "Item": {"workspace_id": "ws1", "monthly_budget_usd": _D("50.0")}
+        }
+
+        result = update_workspace_budget(
+            "admin@example.com", "ws1", {"monthly_budget_usd": 250.0}, AUDIT_CTX
+        )
+        assert result["statusCode"] == 200
+
+        mock_audit.assert_called_once()
+        args, kwargs = _audit_kwargs(mock_audit)
+        assert args[1] == "WORKSPACE_BUDGET_UPDATED"
+        # ADR-009: numeric fields are stored as Decimal-safe strings.
+        assert kwargs["details"]["previous_budget_usd"] == "50.0"
+        assert kwargs["details"]["new_budget_usd"] == "250.0"
+
+    @patch("workspace_management_handler.log_admin_action")
+    @patch("workspace_management_handler._is_org_admin", return_value=True)
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_update_budget_clear_emits_empty_new_budget(
+        self, mock_dynamodb, mock_get_table, mock_org_admin, mock_audit
+    ):
+        from decimal import Decimal as _D
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+        mock_table.get_item.return_value = {
+            "Item": {"workspace_id": "ws1", "monthly_budget_usd": _D("100")}
+        }
+
+        result = update_workspace_budget(
+            "admin@example.com", "ws1", {"monthly_budget_usd": None}, AUDIT_CTX
+        )
+        assert result["statusCode"] == 200
+
+        args, kwargs = _audit_kwargs(mock_audit)
+        assert args[1] == "WORKSPACE_BUDGET_UPDATED"
+        assert kwargs["details"]["previous_budget_usd"] == "100"
+        assert kwargs["details"]["new_budget_usd"] == ""
 
 
 class TestLambdaHandlerBootstrap:

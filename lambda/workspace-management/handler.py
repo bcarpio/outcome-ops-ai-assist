@@ -92,8 +92,16 @@ from botocore.exceptions import ClientError
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from shared.audit_writer import (
+    ACTION_API_KEY_CREATED,
+    ACTION_API_KEY_REVOKED,
+    ACTION_MCP_SERVER_CREATED,
+    ACTION_MCP_SERVER_DELETED,
+    ACTION_MCP_SERVER_UPDATED,
+    ACTION_ORG_MEMBER_ADDED,
+    ACTION_ORG_MEMBER_REMOVED,
     ACTION_SYSTEM_PROMPT_RESET,
     ACTION_SYSTEM_PROMPT_UPDATED,
+    ACTION_WORKSPACE_BUDGET_UPDATED,
     ACTION_WORKSPACE_CREATED,
     ACTION_WORKSPACE_DELETED,
     ACTION_WORKSPACE_MEMBER_ADDED,
@@ -1440,7 +1448,11 @@ def list_org_members(user_email: str) -> Dict:
         return _error(500, "Failed to list org members")
 
 
-def add_org_member(user_email: str, request: AddOrgMemberRequest) -> Dict:
+def add_org_member(
+    user_email: str,
+    request: AddOrgMemberRequest,
+    audit_ctx: Optional[Dict[str, str]] = None,
+) -> Dict:
     """Add or invite an org member (org admin only)."""
     dynamodb = _get_dynamodb()
     table = dynamodb.Table(_get_workspaces_table())
@@ -1469,6 +1481,17 @@ def add_org_member(user_email: str, request: AddOrgMemberRequest) -> Dict:
         }
 
         table.put_item(Item=member_item)
+
+        ctx = audit_ctx or {}
+        log_admin_action(
+            AUDIT_TABLE,
+            ACTION_ORG_MEMBER_ADDED,
+            workspace_id="",
+            user_email=user_email,
+            source_ip=ctx.get("source_ip", ""),
+            user_agent=ctx.get("user_agent", ""),
+            details={"member_email": request.email, "role": request.org_role},
+        )
 
         logger.info(f"Added org member {request.email} with role {request.org_role}")
         return _response(201, {"member": member_item})
@@ -1522,7 +1545,11 @@ def update_org_member(
         return _error(500, "Failed to update org member")
 
 
-def remove_org_member(user_email: str, member_email: str) -> Dict:
+def remove_org_member(
+    user_email: str,
+    member_email: str,
+    audit_ctx: Optional[Dict[str, str]] = None,
+) -> Dict:
     """Remove an org member (org admin only)."""
     dynamodb = _get_dynamodb()
     table = dynamodb.Table(_get_workspaces_table())
@@ -1561,6 +1588,17 @@ def remove_org_member(user_email: str, member_email: str) -> Dict:
         )
         for item in ws_response.get("Items", []):
             table.delete_item(Key={"PK": item["PK"], "SK": item["SK"]})
+
+        ctx = audit_ctx or {}
+        log_admin_action(
+            AUDIT_TABLE,
+            ACTION_ORG_MEMBER_REMOVED,
+            workspace_id="",
+            user_email=user_email,
+            source_ip=ctx.get("source_ip", ""),
+            user_agent=ctx.get("user_agent", ""),
+            details={"member_email": member_email},
+        )
 
         logger.info(f"Removed org member {member_email}")
         return _response(200, {"removed": member_email})
@@ -2085,7 +2123,11 @@ def _is_manifest_stale(mcp_metadata: Dict) -> bool:
     return (now - last_dt).days >= refresh_days
 
 
-def create_mcp_server(user_email: str, body: Dict) -> Dict:
+def create_mcp_server(
+    user_email: str,
+    body: Dict,
+    audit_ctx: Optional[Dict[str, str]] = None,
+) -> Dict:
     """Create a new MCP server configuration."""
     dynamodb = _get_dynamodb()
     table = dynamodb.Table(_get_workspaces_table())
@@ -2150,6 +2192,21 @@ def create_mcp_server(user_email: str, body: Dict) -> Dict:
     item.pop("encrypted_credentials", None)
     item["has_credentials"] = encrypted_credentials is not None
 
+    ctx = audit_ctx or {}
+    log_admin_action(
+        AUDIT_TABLE,
+        ACTION_MCP_SERVER_CREATED,
+        workspace_id="",
+        user_email=user_email,
+        source_ip=ctx.get("source_ip", ""),
+        user_agent=ctx.get("user_agent", ""),
+        details={
+            "mcp_id": mcp_id,
+            "name": request.name,
+            "auth_type": request.auth_type,
+        },
+    )
+
     return _response(201, {"mcp_server": item})
 
 
@@ -2207,7 +2264,12 @@ def get_mcp_server(user_email: str, mcp_id: str) -> Dict:
         return _error(500, "Failed to get MCP server")
 
 
-def update_mcp_server(user_email: str, mcp_id: str, body: Dict) -> Dict:
+def update_mcp_server(
+    user_email: str,
+    mcp_id: str,
+    body: Dict,
+    audit_ctx: Optional[Dict[str, str]] = None,
+) -> Dict:
     """Update an MCP server configuration."""
     dynamodb = _get_dynamodb()
     table = dynamodb.Table(_get_workspaces_table())
@@ -2232,33 +2294,40 @@ def update_mcp_server(user_email: str, mcp_id: str, body: Dict) -> Dict:
         update_parts = ["updated_at = :ua"]
         expr_values = {":ua": now}
         expr_names = {}
+        changed_fields: List[str] = []
 
         if request.name is not None:
             update_parts.append("#n = :name")
             expr_values[":name"] = request.name
             expr_names["#n"] = "name"
+            changed_fields.append("name")
         if request.url is not None:
             update_parts.append("#u = :url")
             expr_values[":url"] = request.url
             expr_names["#u"] = "url"
+            changed_fields.append("url")
         if request.auth_type is not None:
             update_parts.append("auth_type = :at")
             expr_values[":at"] = request.auth_type
             if request.auth_type == "none":
                 update_parts.append("encrypted_credentials = :ec")
                 expr_values[":ec"] = None
+            changed_fields.append("auth_type")
         if request.credentials is not None:
             auth = request.auth_type or existing.get("auth_type", "none")
             if auth != "none":
                 encrypted = _encrypt_credentials(request.credentials)
                 update_parts.append("encrypted_credentials = :ec")
                 expr_values[":ec"] = encrypted
+            changed_fields.append("credentials")
         if request.is_global is not None:
             update_parts.append("is_global = :ig")
             expr_values[":ig"] = request.is_global
+            changed_fields.append("is_global")
         if request.refresh_interval_days is not None:
             update_parts.append("refresh_interval_days = :rid")
             expr_values[":rid"] = request.refresh_interval_days
+            changed_fields.append("refresh_interval_days")
 
         update_kwargs = {
             "Key": {"PK": f"MCP#{mcp_id}", "SK": "METADATA"},
@@ -2269,6 +2338,23 @@ def update_mcp_server(user_email: str, mcp_id: str, body: Dict) -> Dict:
             update_kwargs["ExpressionAttributeNames"] = expr_names
 
         table.update_item(**update_kwargs)
+
+        ctx = audit_ctx or {}
+        log_admin_action(
+            AUDIT_TABLE,
+            ACTION_MCP_SERVER_UPDATED,
+            workspace_id="",
+            user_email=user_email,
+            source_ip=ctx.get("source_ip", ""),
+            user_agent=ctx.get("user_agent", ""),
+            details={
+                "mcp_id": mcp_id,
+                "name": request.name if request.name is not None else existing.get("name", ""),
+                "auth_type": request.auth_type if request.auth_type is not None else existing.get("auth_type", ""),
+                "changed_fields": changed_fields,
+            },
+        )
+
         logger.info(f"[workspace_handler] Updated MCP server: {mcp_id}")
         return get_mcp_server(user_email, mcp_id)
     except ClientError as e:
@@ -2276,7 +2362,11 @@ def update_mcp_server(user_email: str, mcp_id: str, body: Dict) -> Dict:
         return _error(500, "Failed to update MCP server")
 
 
-def delete_mcp_server(user_email: str, mcp_id: str) -> Dict:
+def delete_mcp_server(
+    user_email: str,
+    mcp_id: str,
+    audit_ctx: Optional[Dict[str, str]] = None,
+) -> Dict:
     """Delete an MCP server and all its assignments."""
     dynamodb = _get_dynamodb()
     table = dynamodb.Table(_get_workspaces_table())
@@ -2288,6 +2378,8 @@ def delete_mcp_server(user_email: str, mcp_id: str) -> Dict:
     response = table.get_item(Key={"PK": f"MCP#{mcp_id}", "SK": "METADATA"})
     if "Item" not in response:
         return _error(404, "MCP server not found")
+
+    mcp_name = response["Item"].get("name", "")
 
     try:
         # Delete METADATA and TOOLS items
@@ -2306,6 +2398,17 @@ def delete_mcp_server(user_email: str, mcp_id: str) -> Dict:
             with table.batch_writer() as batch:
                 for item in assignments:
                     batch.delete_item(Key={"PK": item["PK"], "SK": item["SK"]})
+
+        ctx = audit_ctx or {}
+        log_admin_action(
+            AUDIT_TABLE,
+            ACTION_MCP_SERVER_DELETED,
+            workspace_id="",
+            user_email=user_email,
+            source_ip=ctx.get("source_ip", ""),
+            user_agent=ctx.get("user_agent", ""),
+            details={"mcp_id": mcp_id, "name": mcp_name},
+        )
 
         logger.info(f"[workspace_handler] Deleted MCP server: {mcp_id} (and {len(assignments)} assignments)")
         return _response(200, {"deleted": mcp_id})
@@ -2576,7 +2679,11 @@ def get_chat_available_mcp_servers(user_email: str) -> Dict:
 # ============================================================================
 
 
-def create_api_key(user_email: str, body: Dict) -> Dict:
+def create_api_key(
+    user_email: str,
+    body: Dict,
+    audit_ctx: Optional[Dict[str, str]] = None,
+) -> Dict:
     """Create a personal API key for MCP client authentication."""
     try:
         request = CreateApiKeyRequest(**body)
@@ -2626,6 +2733,24 @@ def create_api_key(user_email: str, body: Dict) -> Dict:
         if "expires_at" in item:
             response_body["expires_at"] = item["expires_at"]
 
+        # Audit row deliberately excludes the raw key. key_prefix is the
+        # standard identifier for revocation lookups.
+        ctx = audit_ctx or {}
+        log_admin_action(
+            AUDIT_TABLE,
+            ACTION_API_KEY_CREATED,
+            workspace_id="",
+            user_email=user_email,
+            source_ip=ctx.get("source_ip", ""),
+            user_agent=ctx.get("user_agent", ""),
+            details={
+                "key_id": key_id,
+                "name": request.name,
+                "expires_at": item.get("expires_at", ""),
+                "key_prefix": key_prefix,
+            },
+        )
+
         return _response(201, response_body)
     except ClientError as e:
         logger.error(f"[workspace_handler] Error creating API key: {e}", exc_info=True)
@@ -2664,14 +2789,18 @@ def list_api_keys(user_email: str) -> Dict:
         return _error(500, "Failed to list API keys")
 
 
-def revoke_api_key(user_email: str, key_id: str) -> Dict:
+def revoke_api_key(
+    user_email: str,
+    key_id: str,
+    audit_ctx: Optional[Dict[str, str]] = None,
+) -> Dict:
     """Revoke an API key (users can only revoke their own keys)."""
     dynamodb = _get_dynamodb()
     table = dynamodb.Table(_get_workspaces_table())
 
     try:
         now = datetime.now(timezone.utc).isoformat()
-        table.update_item(
+        update_response = table.update_item(
             Key={"PK": f"USER#{user_email}", "SK": f"API_KEY#{key_id}"},
             UpdateExpression="SET #status = :status, revoked_at = :revoked_at",
             ExpressionAttributeNames={"#status": "status"},
@@ -2680,7 +2809,21 @@ def revoke_api_key(user_email: str, key_id: str) -> Dict:
                 ":revoked_at": now,
             },
             ConditionExpression="attribute_exists(PK)",
+            ReturnValues="ALL_OLD",
         )
+        old_item = update_response.get("Attributes") or {}
+
+        ctx = audit_ctx or {}
+        log_admin_action(
+            AUDIT_TABLE,
+            ACTION_API_KEY_REVOKED,
+            workspace_id="",
+            user_email=user_email,
+            source_ip=ctx.get("source_ip", ""),
+            user_agent=ctx.get("user_agent", ""),
+            details={"key_id": key_id, "name": old_item.get("name", "")},
+        )
+
         logger.info(f"[workspace_handler] Revoked API key {key_id} for {user_email}")
         return _response(200, {"message": "API key revoked"})
     except ClientError as e:
@@ -2963,7 +3106,12 @@ def get_workspace_budget(user_email: str, workspace_id: str) -> Dict:
         return _error(500, "Failed to get workspace budget")
 
 
-def update_workspace_budget(user_email: str, workspace_id: str, body: Dict) -> Dict:
+def update_workspace_budget(
+    user_email: str,
+    workspace_id: str,
+    body: Dict,
+    audit_ctx: Optional[Dict[str, str]] = None,
+) -> Dict:
     """Set or clear the per-workspace monthly budget (org admin only).
 
     Budgets are a governance control, so edits are restricted to org admins
@@ -2988,7 +3136,12 @@ def update_workspace_budget(user_email: str, workspace_id: str, body: Dict) -> D
         if "Item" not in resp:
             return _error(404, "Workspace not found")
 
+        previous_budget = resp["Item"].get("monthly_budget_usd")
+        # Decimal -> str for ADR-009 round-trip safety in the audit row.
+        previous_budget_str = str(previous_budget) if previous_budget is not None else ""
+
         now = datetime.now(timezone.utc).isoformat()
+        ctx = audit_ctx or {}
 
         if budget is None:
             table.update_item(
@@ -2998,6 +3151,18 @@ def update_workspace_budget(user_email: str, workspace_id: str, body: Dict) -> D
                     "SET budget_updated_at = :t, updated_at = :t"
                 ),
                 ExpressionAttributeValues={":t": now},
+            )
+            log_admin_action(
+                AUDIT_TABLE,
+                ACTION_WORKSPACE_BUDGET_UPDATED,
+                workspace_id=workspace_id,
+                user_email=user_email,
+                source_ip=ctx.get("source_ip", ""),
+                user_agent=ctx.get("user_agent", ""),
+                details={
+                    "previous_budget_usd": previous_budget_str,
+                    "new_budget_usd": "",
+                },
             )
             logger.info(f"Cleared budget for workspace {workspace_id} by {user_email}")
             return _response(200, {
@@ -3018,6 +3183,18 @@ def update_workspace_budget(user_email: str, workspace_id: str, body: Dict) -> D
                 ":b": Decimal(str(budget)),
                 ":t": now,
                 ":u": user_email,
+            },
+        )
+        log_admin_action(
+            AUDIT_TABLE,
+            ACTION_WORKSPACE_BUDGET_UPDATED,
+            workspace_id=workspace_id,
+            user_email=user_email,
+            source_ip=ctx.get("source_ip", ""),
+            user_agent=ctx.get("user_agent", ""),
+            details={
+                "previous_budget_usd": previous_budget_str,
+                "new_budget_usd": str(budget),
             },
         )
         logger.info(f"Set budget=${budget:.2f} for workspace {workspace_id} by {user_email}")
@@ -3850,7 +4027,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             and parts[2] == "budget"
             and http_method == "PUT"
         ):
-            return update_workspace_budget(user_email, parts[1], body)
+            return update_workspace_budget(user_email, parts[1], body, audit_ctx)
 
         # Route: DELETE /workspaces/{id}/system-prompt
         if (
@@ -3882,7 +4059,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         # Route: POST /org/members
         if parts == ("org", "members") and http_method == "POST":
             request = AddOrgMemberRequest(**body)
-            return add_org_member(user_email, request)
+            return add_org_member(user_email, request, audit_ctx)
 
         # Route: PATCH /org/members/{email}
         if (
@@ -3903,7 +4080,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             and http_method == "DELETE"
         ):
             member_email = unquote(parts[2])
-            return remove_org_member(user_email, member_email)
+            return remove_org_member(user_email, member_email, audit_ctx)
 
         # ====================================================================
         # Chat Workspace Access Routes
@@ -3923,7 +4100,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
 
         # Route: POST /mcp/servers
         if parts == ("mcp", "servers") and http_method == "POST":
-            return create_mcp_server(user_email, body)
+            return create_mcp_server(user_email, body, audit_ctx)
 
         # Route: GET /mcp/servers
         if parts == ("mcp", "servers") and http_method == "GET":
@@ -3945,7 +4122,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             and parts[1] == "servers"
             and http_method == "PATCH"
         ):
-            return update_mcp_server(user_email, parts[2], body)
+            return update_mcp_server(user_email, parts[2], body, audit_ctx)
 
         # Route: DELETE /mcp/servers/{id}
         if (
@@ -3954,7 +4131,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             and parts[1] == "servers"
             and http_method == "DELETE"
         ):
-            return delete_mcp_server(user_email, parts[2])
+            return delete_mcp_server(user_email, parts[2], audit_ctx)
 
         # Route: POST /mcp/servers/{id}/refresh
         if (
@@ -4017,7 +4194,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
 
         # Route: POST /api-keys
         if parts == ("api-keys",) and http_method == "POST":
-            return create_api_key(user_email, body)
+            return create_api_key(user_email, body, audit_ctx)
 
         # Route: GET /api-keys
         if parts == ("api-keys",) and http_method == "GET":
@@ -4057,7 +4234,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             and parts[0] == "api-keys"
             and http_method == "DELETE"
         ):
-            return revoke_api_key(user_email, parts[1])
+            return revoke_api_key(user_email, parts[1], audit_ctx)
 
         return _error(404, "Not found")
 
