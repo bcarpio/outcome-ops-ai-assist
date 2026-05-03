@@ -3334,3 +3334,233 @@ class TestRequestModelValidation:
         """Test CreateMcpServerRequest rejects invalid auth type."""
         with pytest.raises(Exception):
             handler_module.CreateMcpServerRequest(name="test", url="https://example.com", auth_type="invalid")
+
+
+# ============================================================================
+# Chunk 03a: audit emission for the 7 wired mutations
+# ============================================================================
+
+
+AUDIT_CTX = {"source_ip": "203.0.113.7", "user_agent": "ua-test"}
+
+
+def _audit_kwargs(mock_audit):
+    """Pull (positional, kwargs) from the most recent log_admin_action call."""
+    args, kwargs = mock_audit.call_args
+    return args, kwargs
+
+
+class TestCreateWorkspaceAudit:
+    @patch("workspace_management_handler.log_admin_action")
+    @patch("workspace_management_handler._is_org_admin", return_value=True)
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_create_workspace_emits_audit_for_workspace_created(
+        self, mock_dynamodb, mock_get_table, mock_org_admin, mock_audit
+    ):
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+        mock_table.batch_writer.return_value.__enter__.return_value = MagicMock()
+
+        request = CreateWorkspaceRequest(name="My Workspace")
+        result = create_workspace("admin@example.com", request, AUDIT_CTX)
+        assert result["statusCode"] == 201
+
+        mock_audit.assert_called_once()
+        args, kwargs = _audit_kwargs(mock_audit)
+        assert args[1] == "WORKSPACE_CREATED"
+        assert kwargs["user_email"] == "admin@example.com"
+        assert kwargs["source_ip"] == "203.0.113.7"
+        assert kwargs["user_agent"] == "ua-test"
+        assert kwargs["details"] == {"workspace_name": "My Workspace"}
+
+    @patch("workspace_management_handler.log_admin_action")
+    @patch("workspace_management_handler._is_org_admin", return_value=False)
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_create_workspace_does_not_emit_on_403(
+        self, mock_dynamodb, mock_get_table, mock_org_admin, mock_audit
+    ):
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+
+        request = CreateWorkspaceRequest(name="My Workspace")
+        result = create_workspace("user@example.com", request, AUDIT_CTX)
+        assert result["statusCode"] == 403
+        mock_audit.assert_not_called()
+
+
+class TestUpdateWorkspaceAudit:
+    @patch("workspace_management_handler.get_workspace")
+    @patch("workspace_management_handler.log_admin_action")
+    @patch("workspace_management_handler._is_workspace_admin", return_value=True)
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_update_workspace_emits_changed_fields(
+        self, mock_dynamodb, mock_get_table, mock_admin, mock_audit, mock_get_ws
+    ):
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+        mock_get_ws.return_value = {"statusCode": 200, "body": "{}"}
+
+        request = UpdateWorkspaceRequest(name="renamed", description="newer")
+        result = update_workspace("admin@example.com", "ws1", request, AUDIT_CTX)
+        assert result["statusCode"] == 200
+
+        mock_audit.assert_called_once()
+        args, kwargs = _audit_kwargs(mock_audit)
+        assert args[1] == "WORKSPACE_UPDATED"
+        assert kwargs["details"]["changed_fields"] == ["name", "description"]
+
+
+class TestDeleteWorkspaceAudit:
+    @patch("workspace_management_handler.log_admin_action")
+    @patch("workspace_management_handler._is_workspace_admin", return_value=True)
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_delete_workspace_emits_workspace_deleted(
+        self, mock_dynamodb, mock_get_table, mock_admin, mock_audit
+    ):
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+        mock_table.query.side_effect = [
+            {"Items": [{"PK": "WS#ws1", "SK": "METADATA", "name": "Doomed"}]},
+            {"Items": []},
+        ]
+        mock_table.batch_writer.return_value.__enter__.return_value = MagicMock()
+
+        result = delete_workspace("admin@example.com", "ws1", AUDIT_CTX)
+        assert result["statusCode"] == 200
+
+        mock_audit.assert_called_once()
+        args, kwargs = _audit_kwargs(mock_audit)
+        assert args[1] == "WORKSPACE_DELETED"
+        assert kwargs["workspace_id"] == "ws1"
+        assert kwargs["details"] == {"workspace_name": "Doomed"}
+
+
+class TestAddMemberAudit:
+    @patch("workspace_management_handler.log_admin_action")
+    @patch("workspace_management_handler._get_membership", return_value=None)
+    @patch("workspace_management_handler._is_workspace_admin", return_value=True)
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_add_member_emits_workspace_member_added(
+        self, mock_dynamodb, mock_get_table, mock_admin, mock_get_member, mock_audit
+    ):
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+        mock_table.get_item.return_value = {"Item": {"workspace_id": "ws1"}}
+
+        request = AddMemberRequest(email="invitee@example.com", role="member")
+        result = add_member("admin@example.com", "ws1", request, AUDIT_CTX)
+        assert result["statusCode"] == 201
+
+        mock_audit.assert_called_once()
+        args, kwargs = _audit_kwargs(mock_audit)
+        assert args[1] == "WORKSPACE_MEMBER_ADDED"
+        assert kwargs["details"] == {
+            "member_email": "invitee@example.com",
+            "role": "member",
+        }
+
+
+class TestRemoveMemberAudit:
+    @patch("workspace_management_handler.log_admin_action")
+    @patch("workspace_management_handler._get_membership")
+    @patch("workspace_management_handler._is_workspace_admin", return_value=True)
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_remove_member_emits_workspace_member_removed(
+        self, mock_dynamodb, mock_get_table, mock_admin, mock_get_member, mock_audit
+    ):
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+        mock_get_member.return_value = {"role": "member"}
+
+        result = remove_member(
+            "admin@example.com", "ws1", "victim@example.com", AUDIT_CTX
+        )
+        assert result["statusCode"] == 200
+
+        mock_audit.assert_called_once()
+        args, kwargs = _audit_kwargs(mock_audit)
+        assert args[1] == "WORKSPACE_MEMBER_REMOVED"
+        assert kwargs["details"] == {"member_email": "victim@example.com"}
+
+
+class TestAddRepoAudit:
+    @patch("workspace_management_handler.log_admin_action")
+    @patch("workspace_management_handler._is_workspace_admin", return_value=True)
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_add_repo_emits_workspace_repo_added(
+        self, mock_dynamodb, mock_get_table, mock_admin, mock_audit
+    ):
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+
+        request = AddRepoRequest(repo_name="org/repo")
+        result = add_repo("admin@example.com", "ws1", request, AUDIT_CTX)
+        assert result["statusCode"] == 201
+
+        mock_audit.assert_called_once()
+        args, kwargs = _audit_kwargs(mock_audit)
+        assert args[1] == "WORKSPACE_REPO_ADDED"
+        assert kwargs["details"] == {"repo_name": "org/repo"}
+
+
+class TestRemoveRepoAudit:
+    @patch("workspace_management_handler.log_admin_action")
+    @patch("workspace_management_handler._get_delete_queue_url", return_value=None)
+    @patch("workspace_management_handler._is_workspace_admin", return_value=True)
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_remove_repo_emits_workspace_repo_removed(
+        self, mock_dynamodb, mock_get_table, mock_admin, mock_queue, mock_audit
+    ):
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+
+        result = remove_repo("admin@example.com", "ws1", "org/repo", AUDIT_CTX)
+        assert result["statusCode"] == 200
+
+        mock_audit.assert_called_once()
+        args, kwargs = _audit_kwargs(mock_audit)
+        assert args[1] == "WORKSPACE_REPO_REMOVED"
+        assert kwargs["details"] == {"repo_name": "org/repo"}
+
+
+class TestLambdaHandlerBootstrap:
+    """Verify lambda_handler threads audit_ctx into mutating routes."""
+
+    @patch("workspace_management_handler.create_workspace")
+    @patch("workspace_management_handler._is_org_admin", return_value=True)
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_lambda_handler_passes_audit_ctx_to_create(
+        self, mock_dynamodb, mock_get_table, mock_org, mock_create
+    ):
+        mock_create.return_value = {"statusCode": 201, "body": "{}"}
+        event = {
+            "httpMethod": "POST",
+            "path": "/workspaces",
+            "headers": {"x-user-email": "admin@example.com"},
+            "body": json.dumps({"name": "X"}),
+            "requestContext": {
+                "http": {"sourceIp": "203.0.113.99", "userAgent": "ua-x"}
+            },
+        }
+        lambda_handler(event, None)
+        mock_create.assert_called_once()
+        # audit_ctx is the 3rd positional arg
+        args, kwargs = mock_create.call_args
+        assert args[2] == {"source_ip": "203.0.113.99", "user_agent": "ua-x"}

@@ -94,6 +94,13 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 from shared.audit_writer import (
     ACTION_SYSTEM_PROMPT_RESET,
     ACTION_SYSTEM_PROMPT_UPDATED,
+    ACTION_WORKSPACE_CREATED,
+    ACTION_WORKSPACE_DELETED,
+    ACTION_WORKSPACE_MEMBER_ADDED,
+    ACTION_WORKSPACE_MEMBER_REMOVED,
+    ACTION_WORKSPACE_REPO_ADDED,
+    ACTION_WORKSPACE_REPO_REMOVED,
+    ACTION_WORKSPACE_UPDATED,
     extract_request_context,
     log_admin_action,
 )
@@ -475,7 +482,11 @@ def _decrypt_credentials(encrypted: str) -> str:
 # ============================================================================
 
 
-def create_workspace(user_email: str, request: CreateWorkspaceRequest) -> Dict:
+def create_workspace(
+    user_email: str,
+    request: CreateWorkspaceRequest,
+    audit_ctx: Optional[Dict[str, str]] = None,
+) -> Dict:
     """Create a new workspace and add creator as admin (org admin only)."""
     dynamodb = _get_dynamodb()
     table = dynamodb.Table(_get_workspaces_table())
@@ -517,6 +528,17 @@ def create_workspace(user_email: str, request: CreateWorkspaceRequest) -> Dict:
         with table.batch_writer() as batch:
             batch.put_item(Item=workspace_item)
             batch.put_item(Item=member_item)
+
+        ctx = audit_ctx or {}
+        log_admin_action(
+            AUDIT_TABLE,
+            ACTION_WORKSPACE_CREATED,
+            workspace_id=workspace_id,
+            user_email=user_email,
+            source_ip=ctx.get("source_ip", ""),
+            user_agent=ctx.get("user_agent", ""),
+            details={"workspace_name": request.name},
+        )
 
         logger.info(f"Created workspace: {workspace_id} by {user_email}")
         return _response(201, {"workspace": workspace_item})
@@ -604,7 +626,10 @@ def get_workspace(user_email: str, workspace_id: str) -> Dict:
 
 
 def update_workspace(
-    user_email: str, workspace_id: str, request: UpdateWorkspaceRequest
+    user_email: str,
+    workspace_id: str,
+    request: UpdateWorkspaceRequest,
+    audit_ctx: Optional[Dict[str, str]] = None,
 ) -> Dict:
     """Update workspace details (admin only)."""
     dynamodb = _get_dynamodb()
@@ -618,14 +643,17 @@ def update_workspace(
         # Build update expression
         update_parts = []
         expr_values = {}
+        changed_fields = []
         now = datetime.now(timezone.utc).isoformat()
 
         if request.name is not None:
             update_parts.append("#n = :name")
             expr_values[":name"] = request.name
+            changed_fields.append("name")
         if request.description is not None:
             update_parts.append("description = :desc")
             expr_values[":desc"] = request.description
+            changed_fields.append("description")
 
         update_parts.append("updated_at = :ua")
         expr_values[":ua"] = now
@@ -637,6 +665,17 @@ def update_workspace(
             ExpressionAttributeValues=expr_values,
         )
 
+        ctx = audit_ctx or {}
+        log_admin_action(
+            AUDIT_TABLE,
+            ACTION_WORKSPACE_UPDATED,
+            workspace_id=workspace_id,
+            user_email=user_email,
+            source_ip=ctx.get("source_ip", ""),
+            user_agent=ctx.get("user_agent", ""),
+            details={"changed_fields": changed_fields},
+        )
+
         logger.info(f"Updated workspace: {workspace_id}")
         return get_workspace(user_email, workspace_id)
     except ClientError as e:
@@ -644,7 +683,11 @@ def update_workspace(
         return _error(500, "Failed to update workspace")
 
 
-def delete_workspace(user_email: str, workspace_id: str) -> Dict:
+def delete_workspace(
+    user_email: str,
+    workspace_id: str,
+    audit_ctx: Optional[Dict[str, str]] = None,
+) -> Dict:
     """Delete workspace and all associated data (admin only)."""
     dynamodb = _get_dynamodb()
     table = dynamodb.Table(_get_workspaces_table())
@@ -660,6 +703,14 @@ def delete_workspace(user_email: str, workspace_id: str) -> Dict:
             ExpressionAttributeValues={":pk": f"WS#{workspace_id}"},
         ).get("Items", [])
 
+        # Capture the workspace name before deletion so the audit row carries
+        # something human-readable.
+        workspace_name = ""
+        for item in ws_items:
+            if item.get("SK") == "METADATA":
+                workspace_name = item.get("name", "")
+                break
+
         # Get all membership items via GSI
         member_items = table.query(
             IndexName="GSI1",
@@ -673,6 +724,17 @@ def delete_workspace(user_email: str, workspace_id: str) -> Dict:
                 batch.delete_item(Key={"PK": item["PK"], "SK": item["SK"]})
             for item in member_items:
                 batch.delete_item(Key={"PK": item["PK"], "SK": item["SK"]})
+
+        ctx = audit_ctx or {}
+        log_admin_action(
+            AUDIT_TABLE,
+            ACTION_WORKSPACE_DELETED,
+            workspace_id=workspace_id,
+            user_email=user_email,
+            source_ip=ctx.get("source_ip", ""),
+            user_agent=ctx.get("user_agent", ""),
+            details={"workspace_name": workspace_name},
+        )
 
         logger.info(f"Deleted workspace: {workspace_id}")
         return _response(200, {"deleted": workspace_id})
@@ -738,7 +800,10 @@ def _can_access_workspace(table, user_email: str, workspace_id: str) -> bool:
 
 
 def add_member(
-    user_email: str, workspace_id: str, request: AddMemberRequest
+    user_email: str,
+    workspace_id: str,
+    request: AddMemberRequest,
+    audit_ctx: Optional[Dict[str, str]] = None,
 ) -> Dict:
     """Add a member to workspace (admin only)."""
     dynamodb = _get_dynamodb()
@@ -775,6 +840,17 @@ def add_member(
         }
 
         table.put_item(Item=member_item)
+
+        ctx = audit_ctx or {}
+        log_admin_action(
+            AUDIT_TABLE,
+            ACTION_WORKSPACE_MEMBER_ADDED,
+            workspace_id=workspace_id,
+            user_email=user_email,
+            source_ip=ctx.get("source_ip", ""),
+            user_agent=ctx.get("user_agent", ""),
+            details={"member_email": request.email, "role": request.role},
+        )
 
         logger.info(f"Added member {request.email} to workspace {workspace_id}")
         return _response(201, {"member": member_item})
@@ -865,7 +941,12 @@ def update_member(
         return _error(500, "Failed to update member")
 
 
-def remove_member(user_email: str, workspace_id: str, member_email: str) -> Dict:
+def remove_member(
+    user_email: str,
+    workspace_id: str,
+    member_email: str,
+    audit_ctx: Optional[Dict[str, str]] = None,
+) -> Dict:
     """Remove member from workspace (admin only, or self-removal)."""
     dynamodb = _get_dynamodb()
     table = dynamodb.Table(_get_workspaces_table())
@@ -898,6 +979,17 @@ def remove_member(user_email: str, workspace_id: str, member_email: str) -> Dict
 
         table.delete_item(
             Key={"PK": f"USER#{member_email}", "SK": f"WS_MEMBER#{workspace_id}"}
+        )
+
+        ctx = audit_ctx or {}
+        log_admin_action(
+            AUDIT_TABLE,
+            ACTION_WORKSPACE_MEMBER_REMOVED,
+            workspace_id=workspace_id,
+            user_email=user_email,
+            source_ip=ctx.get("source_ip", ""),
+            user_agent=ctx.get("user_agent", ""),
+            details={"member_email": member_email},
         )
 
         logger.info(f"Removed member {member_email} from workspace {workspace_id}")
@@ -939,7 +1031,12 @@ def list_repos(user_email: str, workspace_id: str) -> Dict:
         return _error(500, "Failed to list repos")
 
 
-def add_repo(user_email: str, workspace_id: str, request: AddRepoRequest) -> Dict:
+def add_repo(
+    user_email: str,
+    workspace_id: str,
+    request: AddRepoRequest,
+    audit_ctx: Optional[Dict[str, str]] = None,
+) -> Dict:
     """Add repo to workspace (admin only)."""
     dynamodb = _get_dynamodb()
     table = dynamodb.Table(_get_workspaces_table())
@@ -967,6 +1064,17 @@ def add_repo(user_email: str, workspace_id: str, request: AddRepoRequest) -> Dic
             ConditionExpression="attribute_not_exists(PK)",
         )
 
+        ctx = audit_ctx or {}
+        log_admin_action(
+            AUDIT_TABLE,
+            ACTION_WORKSPACE_REPO_ADDED,
+            workspace_id=workspace_id,
+            user_email=user_email,
+            source_ip=ctx.get("source_ip", ""),
+            user_agent=ctx.get("user_agent", ""),
+            details={"repo_name": request.repo_name},
+        )
+
         logger.info(f"Added repo {request.repo_name} to workspace {workspace_id}")
         return _response(201, {"repo": repo_item})
     except ClientError as e:
@@ -976,7 +1084,12 @@ def add_repo(user_email: str, workspace_id: str, request: AddRepoRequest) -> Dic
         return _error(500, "Failed to add repo")
 
 
-def remove_repo(user_email: str, workspace_id: str, repo_name: str) -> Dict:
+def remove_repo(
+    user_email: str,
+    workspace_id: str,
+    repo_name: str,
+    audit_ctx: Optional[Dict[str, str]] = None,
+) -> Dict:
     """Remove repo from workspace (admin only)."""
     dynamodb = _get_dynamodb()
     table = dynamodb.Table(_get_workspaces_table())
@@ -1004,6 +1117,17 @@ def remove_repo(user_email: str, workspace_id: str, repo_name: str) -> Dict:
                 }),
             )
             logger.info(f"Queued cleanup for {workspace_id}/github/{repo_name}/")
+
+        ctx = audit_ctx or {}
+        log_admin_action(
+            AUDIT_TABLE,
+            ACTION_WORKSPACE_REPO_REMOVED,
+            workspace_id=workspace_id,
+            user_email=user_email,
+            source_ip=ctx.get("source_ip", ""),
+            user_agent=ctx.get("user_agent", ""),
+            details={"repo_name": repo_name},
+        )
 
         logger.info(f"Removed repo {repo_name} from workspace {workspace_id}")
         return _response(200, {"removed": repo_name})
@@ -3500,6 +3624,10 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     if not user_email:
         return _error(401, "User email not provided")
 
+    # Capture source_ip / user_agent once per invocation; threaded to mutating
+    # endpoints so admin audit rows carry attribution data.
+    audit_ctx = extract_request_context(event)
+
     logger.info(f"Workspace API: {http_method} {path} (user: {user_email})")
 
     # Parse path
@@ -3514,7 +3642,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         # Route: POST /workspaces
         if parts == ("workspaces",) and http_method == "POST":
             request = CreateWorkspaceRequest(**body)
-            return create_workspace(user_email, request)
+            return create_workspace(user_email, request, audit_ctx)
 
         # Route: GET /workspaces
         if parts == ("workspaces",) and http_method == "GET":
@@ -3527,11 +3655,11 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         # Route: PATCH /workspaces/{id}
         if len(parts) == 2 and parts[0] == "workspaces" and http_method == "PATCH":
             request = UpdateWorkspaceRequest(**body)
-            return update_workspace(user_email, parts[1], request)
+            return update_workspace(user_email, parts[1], request, audit_ctx)
 
         # Route: DELETE /workspaces/{id}
         if len(parts) == 2 and parts[0] == "workspaces" and http_method == "DELETE":
-            return delete_workspace(user_email, parts[1])
+            return delete_workspace(user_email, parts[1], audit_ctx)
 
         # Route: POST /workspaces/{id}/members
         if (
@@ -3541,7 +3669,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             and http_method == "POST"
         ):
             request = AddMemberRequest(**body)
-            return add_member(user_email, parts[1], request)
+            return add_member(user_email, parts[1], request, audit_ctx)
 
         # Route: GET /workspaces/{id}/members
         if (
@@ -3571,7 +3699,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             and http_method == "DELETE"
         ):
             member_email = unquote(parts[3])
-            return remove_member(user_email, parts[1], member_email)
+            return remove_member(user_email, parts[1], member_email, audit_ctx)
 
         # Route: GET /workspaces/{id}/repos/available
         if (
@@ -3600,7 +3728,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             and http_method == "POST"
         ):
             request = AddRepoRequest(**body)
-            return add_repo(user_email, parts[1], request)
+            return add_repo(user_email, parts[1], request, audit_ctx)
 
         # Route: DELETE /workspaces/{id}/repos/{name}
         if (
@@ -3610,7 +3738,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             and http_method == "DELETE"
         ):
             repo_name = unquote(parts[3])
-            return remove_repo(user_email, parts[1], repo_name)
+            return remove_repo(user_email, parts[1], repo_name, audit_ctx)
 
         # ====================================================================
         # Document Upload Routes
@@ -3704,7 +3832,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             and parts[2] == "system-prompt"
             and http_method == "PUT"
         ):
-            return handle_update_system_prompt(parts[1], user_email, body)
+            return handle_update_system_prompt(parts[1], user_email, body, audit_ctx)
 
         # Route: GET /workspaces/{id}/budget
         if (
@@ -3731,7 +3859,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             and parts[2] == "system-prompt"
             and http_method == "DELETE"
         ):
-            return handle_reset_system_prompt(parts[1], user_email)
+            return handle_reset_system_prompt(parts[1], user_email, audit_ctx)
 
         # ====================================================================
         # User Search Routes
