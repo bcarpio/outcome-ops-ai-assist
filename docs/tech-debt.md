@@ -106,3 +106,11 @@ These drive `_calculate_cost()`, which materializes `cost_usd` onto every audit 
 4. Add a unit test that verifies `_calculate_cost()` honors the env vars.
 
 **Future enhancement (not part of this debt):** per-org pricing overrides editable from the org-admin UI, since different enterprise customers negotiate different Bedrock rates / EDPs. Track separately if needed.
+
+**Resolved 2026-05-03** (commit 5050303 + follow-up):
+
+- `lambda/shared/audit.py` and `lambda/process-pr-check/check_handlers/bedrock_utils.py` both read `BEDROCK_{ADVANCED,BASIC,EMBEDDING}_{INPUT,OUTPUT}_PRICE` env vars at module load.
+- `lambda/chat/handler.py`, `lambda/ask-claude/handler.py`, and `lambda/generate-code/utils.py` were already env-var-driven; verified.
+- New Terraform variables `bedrock_embedding_input_price` / `bedrock_embedding_output_price`.
+- Pricing env vars wired into every Terraform module whose Lambda imports a pricing-aware module: `lambda-knowledge-base.tf`, `lambda-pr-analysis.tf`, `lambda-file-ingestion.tf`, plus embedding-pricing parity on `lambda-chat.tf`, `lambda-code-generation.tf`, `lambda-query.tf`.
+- BASIC mismatch (prd.tfvars 1.0/5.0 vs constants 0.80/4.00) is resolved at deploy time: tfvars wins.

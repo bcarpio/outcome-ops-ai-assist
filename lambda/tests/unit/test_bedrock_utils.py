@@ -36,6 +36,80 @@ HAIKU_MODEL_ID = bedrock_utils.HAIKU_MODEL_ID
 MODEL_PRICING = bedrock_utils.MODEL_PRICING
 
 
+def _reload_bedrock_utils_with_env(env: dict):
+    """Reload bedrock_utils with the given pricing env vars set, then restore."""
+    keys = (
+        "BEDROCK_ADVANCED_INPUT_PRICE",
+        "BEDROCK_ADVANCED_OUTPUT_PRICE",
+        "BEDROCK_BASIC_INPUT_PRICE",
+        "BEDROCK_BASIC_OUTPUT_PRICE",
+    )
+    original = {k: os.environ.get(k) for k in keys}
+    try:
+        for k in keys:
+            if k in env:
+                os.environ[k] = env[k]
+            elif k in os.environ:
+                del os.environ[k]
+        spec_local = importlib.util.spec_from_file_location(
+            "bedrock_utils_test_reload", module_path
+        )
+        reloaded = importlib.util.module_from_spec(spec_local)
+        spec_local.loader.exec_module(reloaded)
+        return reloaded
+    finally:
+        for k, v in original.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+class TestPricingEnvVars:
+    """Test that MODEL_PRICING reads from BEDROCK_*_PRICE env vars."""
+
+    def test_advanced_pricing_honors_env_vars(self):
+        mod = _reload_bedrock_utils_with_env({
+            "BEDROCK_ADVANCED_INPUT_PRICE":  "2.50",
+            "BEDROCK_ADVANCED_OUTPUT_PRICE": "12.00",
+        })
+        assert mod.MODEL_PRICING[mod.SONNET_MODEL_ID]["input"] == 2.50
+        assert mod.MODEL_PRICING[mod.SONNET_MODEL_ID]["output"] == 12.00
+
+    def test_basic_pricing_honors_env_vars(self):
+        # The mismatch from prd.tfvars: 1.0 / 5.0 instead of 0.80 / 4.00
+        mod = _reload_bedrock_utils_with_env({
+            "BEDROCK_BASIC_INPUT_PRICE":  "1.0",
+            "BEDROCK_BASIC_OUTPUT_PRICE": "5.0",
+        })
+        assert mod.MODEL_PRICING[mod.HAIKU_MODEL_ID]["input"] == 1.0
+        assert mod.MODEL_PRICING[mod.HAIKU_MODEL_ID]["output"] == 5.0
+
+    def test_falls_back_to_constants_when_env_vars_unset(self):
+        mod = _reload_bedrock_utils_with_env({})
+        assert mod.MODEL_PRICING[mod.SONNET_MODEL_ID]["input"] == 3.00
+        assert mod.MODEL_PRICING[mod.HAIKU_MODEL_ID]["input"] == 0.80
+
+    def test_invalid_env_var_falls_back_silently(self):
+        mod = _reload_bedrock_utils_with_env({
+            "BEDROCK_ADVANCED_INPUT_PRICE": "not-a-number",
+        })
+        assert mod.MODEL_PRICING[mod.SONNET_MODEL_ID]["input"] == 3.00
+
+    def test_bedrock_usage_cost_uses_env_var_pricing(self):
+        mod = _reload_bedrock_utils_with_env({
+            "BEDROCK_BASIC_INPUT_PRICE":  "1.0",
+            "BEDROCK_BASIC_OUTPUT_PRICE": "5.0",
+        })
+        usage = mod.BedrockUsage(
+            model_id=mod.HAIKU_MODEL_ID,
+            input_tokens=1_000_000,
+            output_tokens=1_000_000,
+        )
+        # 1.0 + 5.0 = 6.0 (not 0.80 + 4.00 = 4.80)
+        assert usage.cost == 6.0
+
+
 class TestBedrockUsage:
     """Test BedrockUsage dataclass"""
 

@@ -41,16 +41,32 @@ HAIKU_MODEL_ID = os.environ.get(
     "BEDROCK_BASIC_MODEL_ID", "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 )
 
-# Pricing per 1M tokens (USD)
+# Pricing per 1M tokens (USD). Sourced from BEDROCK_*_INPUT_PRICE /
+# OUTPUT_PRICE env vars wired in by Terraform from <env>.tfvars, with
+# fallback constants for local dev / pre-deploy tests.
+def _price(env_name: str, fallback: float) -> float:
+    raw = os.environ.get(env_name)
+    if raw is None or raw == "":
+        return fallback
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning(
+            "[bedrock_utils] %s=%r is not a number; falling back to %.4f",
+            env_name, raw, fallback,
+        )
+        return fallback
+
+
 MODEL_PRICING = {
     SONNET_MODEL_ID: {
-        "input": 3.00,
-        "output": 15.00,
+        "input":  _price("BEDROCK_ADVANCED_INPUT_PRICE",  3.00),
+        "output": _price("BEDROCK_ADVANCED_OUTPUT_PRICE", 15.00),
         "display_name": "Advanced Model"
     },
     HAIKU_MODEL_ID: {
-        "input": 0.80,
-        "output": 4.00,
+        "input":  _price("BEDROCK_BASIC_INPUT_PRICE",  0.80),
+        "output": _price("BEDROCK_BASIC_OUTPUT_PRICE", 4.00),
         "display_name": "Basic Model"
     }
 }
