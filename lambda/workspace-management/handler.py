@@ -3861,6 +3861,88 @@ def _query_admin_aggregates(
     )
 
 
+# Cap for the on-demand fallback that scans raw audit rows when aggregates
+# are empty. Keeps the org-admin "I just deployed" experience snappy without
+# letting a multi-month range racks up read units.
+AUDIT_SUMMARY_FALLBACK_SCAN_CAP = 1000
+
+
+def _summarize_admin_events(items: List[Dict]) -> Dict[str, Any]:
+    """Build the get_audit_summary response shape from raw admin-row items.
+
+    Used as a fallback when the analytics-aggregator hasn't emitted any
+    DA/DC/DCU rows yet (fresh deploy, pre-chunk-02 historical rows, or
+    while a stream re-drive is catching up). Always-correct but slower
+    than reading the rollups.
+    """
+    actions_total = 0
+    by_action: Dict[str, int] = {}
+    by_workspace: Dict[str, int] = {}
+    by_actor: Dict[str, Dict[str, Any]] = {}
+    by_date: Dict[str, int] = {}
+
+    for item in items:
+        action = item.get("action") or ""
+        if not action:
+            # Skip rows that aren't admin-shaped (legacy bedrock rows that
+            # slipped through the category filter on a Scan).
+            continue
+        ws_id = item.get("workspace_id") or ""
+        ts = item.get("timestamp") or ""
+        date = ts[:10] if ts else ""
+        email = (item.get("user_email") or "").lower()
+
+        actions_total += 1
+        by_action[action] = by_action.get(action, 0) + 1
+        if ws_id:
+            by_workspace[ws_id] = by_workspace.get(ws_id, 0) + 1
+        if date:
+            by_date[date] = by_date.get(date, 0) + 1
+        if email:
+            bucket = by_actor.setdefault(
+                email, {"user_email": email, "count": 0, "last_active": ""}
+            )
+            bucket["count"] += 1
+            if ts and ts > bucket["last_active"]:
+                bucket["last_active"] = ts
+
+    return {
+        "actions_total": actions_total,
+        "by_action": by_action,
+        "by_workspace": by_workspace,
+        "by_actor": by_actor,
+        "by_date": by_date,
+    }
+
+
+def _scan_admin_events_for_range(
+    audit_table,
+    start_date: str,
+    end_date: str,
+    limit: int = AUDIT_SUMMARY_FALLBACK_SCAN_CAP,
+) -> List[Dict]:
+    """Capped scan of admin-category audit rows in a date range."""
+    items: List[Dict] = []
+    scan_kwargs: Dict[str, Any] = {
+        "FilterExpression": "category = :cat AND #ts BETWEEN :s AND :e",
+        "ExpressionAttributeNames": {"#ts": "timestamp"},
+        "ExpressionAttributeValues": {
+            ":cat": "admin",
+            ":s": start_date,
+            ":e": f"{end_date}~",
+        },
+        "Limit": limit,
+    }
+    try:
+        response = audit_table.scan(**scan_kwargs)
+        items.extend(response.get("Items", []) or [])
+    except ClientError as e:
+        logger.warning(
+            f"[workspace-management] audit fallback scan failed: {e}"
+        )
+    return items
+
+
 def get_audit_summary(user_email: str, query_params: Dict[str, Any]) -> Dict:
     """Aggregated audit counts across all workspaces (org admin only).
 
@@ -3926,6 +4008,27 @@ def get_audit_summary(user_email: str, query_params: Dict[str, Any]) -> Dict:
                     if last_action_at and last_action_at > bucket["last_active"]:
                         bucket["last_active"] = last_action_at
 
+        # Fallback: if the aggregator hasn't produced any rollups yet (fresh
+        # deploy, historical pre-chunk-02 rows, or in-flight stream re-drive)
+        # compute the same shape on-demand from the raw audit table. Capped
+        # scan; bounded cost. Self-healing as new admin actions flow.
+        fallback_used = False
+        if actions_total == 0:
+            audit_table_name = _get_audit_table()
+            if audit_table_name:
+                audit_table = dynamodb.Table(audit_table_name)
+                raw_items = _scan_admin_events_for_range(
+                    audit_table, start_date, end_date
+                )
+                if raw_items:
+                    fallback_used = True
+                    fb = _summarize_admin_events(raw_items)
+                    actions_total = fb["actions_total"]
+                    by_action = fb["by_action"]
+                    by_workspace = fb["by_workspace"]
+                    by_actor = fb["by_actor"]
+                    by_date = fb["by_date"]
+
         actions_by_type = sorted(
             ({"action": a, "count": c} for a, c in by_action.items()),
             key=lambda x: x["count"],
@@ -3957,6 +4060,7 @@ def get_audit_summary(user_email: str, query_params: Dict[str, Any]) -> Dict:
             "trend": trend,
             "start_date": start_iso,
             "end_date": end_iso,
+            "source": "raw" if fallback_used else "aggregates",
         })
     except ClientError as e:
         logger.error(f"[workspace-management] Error in audit summary: {e}", exc_info=True)
@@ -4125,17 +4229,28 @@ def get_audit_events(user_email: str, query_params: Dict[str, Any]) -> Dict:
     else:
         if not is_org_admin:
             return _error(403, "Org admin access required for unfiltered audit query")
-        # Capped no-filter scan, last-resort path.
+        # Capped no-filter scan, last-resort path. Scan does not honor the
+        # SK BETWEEN bounds (no KeyConditionExpression) so the date range is
+        # applied as a FilterExpression on the timestamp attribute below.
         limit = min(
             _parse_audit_limit(query_params.get("limit"), AUDIT_EVENTS_NO_FILTER_CAP),
             AUDIT_EVENTS_NO_FILTER_CAP,
         )
         query_kwargs = {
             "Limit": limit,
+            "ExpressionAttributeValues": {
+                ":s": sk_start,
+                ":e": sk_end,
+            },
+            "ExpressionAttributeNames": {"#ts": "timestamp"},
         }
 
-    # Build optional FilterExpression on action / category.
+    # Build optional FilterExpression on action / category. The Scan path
+    # also gets a baseline timestamp filter (Query paths already enforce the
+    # date range via KeyConditionExpression).
     filters = []
+    if not (workspace_id or user_filter):
+        filters.append("#ts BETWEEN :s AND :e")
     if action_filter:
         query_kwargs["ExpressionAttributeValues"] = {
             **query_kwargs.get("ExpressionAttributeValues", {}),
@@ -4164,6 +4279,10 @@ def get_audit_events(user_email: str, query_params: Dict[str, Any]) -> Dict:
             response = audit_table.scan(**query_kwargs)
 
         items = response.get("Items", []) or []
+        # Query paths come back in SK order (newest-first via ScanIndexForward
+        # = False). Scan returns items in DDB physical order, so sort here so
+        # the UI always renders newest-first regardless of branch.
+        items.sort(key=lambda i: i.get("timestamp", ""), reverse=True)
         events = [_audit_event_from_item(item) for item in items]
         next_cursor = _encode_audit_cursor(response.get("LastEvaluatedKey"))
 

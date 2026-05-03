@@ -81,6 +81,9 @@ export default function Audit() {
         startDate,
         endDate,
         action: actionFilter || undefined,
+        // Audit page is admin-actions-only; bedrock invocations belong on
+        // the cost-analytics page and would render with action="—" here.
+        category: 'admin',
         limit: 50,
       }),
     ])
@@ -112,6 +115,7 @@ export default function Audit() {
         startDate,
         endDate,
         action: actionFilter || undefined,
+        category: 'admin',
         cursor,
         limit: 50,
       })
