@@ -2110,3 +2110,157 @@ export async function getAnalyticsWorkspace(
   }
   return (await response.json()) as AnalyticsWorkspaceDetail
 }
+
+// ============================================================================
+// Audit (chunk 05)
+// ============================================================================
+
+export interface AuditActionCount {
+  action: string
+  count: number
+}
+
+export interface AuditWorkspaceCount {
+  workspace_id: string
+  workspace_name: string
+  count: number
+}
+
+export interface AuditActor {
+  user_email: string
+  count: number
+  last_active: string
+}
+
+export interface AuditTrendPoint {
+  date: string
+  count: number
+}
+
+export interface AuditSummary {
+  actions_total: number
+  actions_by_type: AuditActionCount[]
+  actions_by_workspace: AuditWorkspaceCount[]
+  top_actors: AuditActor[]
+  trend: AuditTrendPoint[]
+  start_date: string
+  end_date: string
+}
+
+export interface AuditWorkspaceSummary {
+  workspace_id: string
+  workspace_name: string
+  actions_total: number
+  actions_by_type: AuditActionCount[]
+  top_actors: AuditActor[]
+  trend: AuditTrendPoint[]
+  start_date: string
+  end_date: string
+}
+
+export interface AuditEvent {
+  request_id: string
+  timestamp: string
+  category: string
+  action: string
+  user_email: string
+  workspace_id: string
+  source_ip: string
+  user_agent: string
+  details: Record<string, unknown>
+}
+
+export interface AuditEventsPage {
+  events: AuditEvent[]
+  next_cursor: string | null
+  limit: number
+  start_date: string
+  end_date: string
+}
+
+export interface AuditEventFilters {
+  startDate?: string
+  endDate?: string
+  workspaceId?: string
+  userEmail?: string
+  action?: string
+  category?: string
+  cursor?: string
+  limit?: number
+}
+
+/** Org-wide audit summary (org admin only). */
+export async function getAuditSummary(
+  startDate?: string,
+  endDate?: string,
+): Promise<AuditSummary> {
+  const params = new URLSearchParams()
+  if (startDate) params.set('start_date', startDate)
+  if (endDate) params.set('end_date', endDate)
+  const qs = params.toString()
+  const response = await fetch(`${API_BASE}/audit/summary${qs ? `?${qs}` : ''}`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to get audit summary: ${response.status}`)
+  }
+  return (await response.json()) as AuditSummary
+}
+
+/** Per-workspace audit summary (org-admin or workspace-admin). */
+export async function getAuditWorkspace(
+  workspaceId: string,
+  startDate?: string,
+  endDate?: string,
+): Promise<AuditWorkspaceSummary> {
+  const params = new URLSearchParams()
+  if (startDate) params.set('start_date', startDate)
+  if (endDate) params.set('end_date', endDate)
+  const qs = params.toString()
+  const response = await fetch(
+    `${API_BASE}/audit/workspace/${encodeURIComponent(workspaceId)}${qs ? `?${qs}` : ''}`,
+  )
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error(
+      (data?.error as string) || `Failed to get workspace audit summary: ${response.status}`,
+    )
+  }
+  return (await response.json()) as AuditWorkspaceSummary
+}
+
+/** Paginated raw audit events. */
+export async function getAuditEvents(
+  filters: AuditEventFilters = {},
+): Promise<AuditEventsPage> {
+  const params = new URLSearchParams()
+  if (filters.startDate) params.set('start_date', filters.startDate)
+  if (filters.endDate) params.set('end_date', filters.endDate)
+  if (filters.workspaceId) params.set('workspace_id', filters.workspaceId)
+  if (filters.userEmail) params.set('user_email', filters.userEmail)
+  if (filters.action) params.set('action', filters.action)
+  if (filters.category) params.set('category', filters.category)
+  if (filters.cursor) params.set('cursor', filters.cursor)
+  if (filters.limit) params.set('limit', String(filters.limit))
+  const qs = params.toString()
+  const response = await fetch(`${API_BASE}/audit/events${qs ? `?${qs}` : ''}`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to list audit events: ${response.status}`)
+  }
+  return (await response.json()) as AuditEventsPage
+}
+
+/** Single audit event detail (drawer). */
+export async function getAuditEvent(
+  workspaceId: string,
+  requestId: string,
+): Promise<{ event: AuditEvent }> {
+  const response = await fetch(
+    `${API_BASE}/audit/event/${encodeURIComponent(workspaceId)}/${encodeURIComponent(requestId)}`,
+  )
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to get audit event: ${response.status}`)
+  }
+  return (await response.json()) as { event: AuditEvent }
+}

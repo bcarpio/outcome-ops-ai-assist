@@ -2890,6 +2890,12 @@ get_chat_available_mcp_servers = handler_module.get_chat_available_mcp_servers
 validate_api_key = handler_module.validate_api_key
 log_admin_action = handler_module.log_admin_action
 update_workspace_budget = handler_module.update_workspace_budget
+get_audit_summary = handler_module.get_audit_summary
+get_audit_workspace = handler_module.get_audit_workspace
+get_audit_events = handler_module.get_audit_events
+get_audit_event = handler_module.get_audit_event
+_encode_audit_cursor = handler_module._encode_audit_cursor
+_decode_audit_cursor = handler_module._decode_audit_cursor
 _scan_all_workspaces = handler_module._scan_all_workspaces
 _get_kb_bucket = handler_module._get_kb_bucket
 _get_delete_queue_url = handler_module._get_delete_queue_url
@@ -3814,3 +3820,320 @@ class TestLambdaHandlerBootstrap:
         # audit_ctx is the 3rd positional arg
         args, kwargs = mock_create.call_args
         assert args[2] == {"source_ip": "203.0.113.99", "user_agent": "ua-x"}
+
+
+# ============================================================================
+# Chunk 05: audit query endpoints
+# ============================================================================
+
+
+class TestAuditCursor:
+    def test_round_trip(self):
+        key = {"PK": "WS#x", "SK": "2026-04-10T12:00:00#abc"}
+        encoded = _encode_audit_cursor(key)
+        assert isinstance(encoded, str) and encoded
+        decoded = _decode_audit_cursor(encoded)
+        assert decoded == key
+
+    def test_decode_garbage_returns_none(self):
+        assert _decode_audit_cursor("notbase64!!!") is None
+
+    def test_encode_none_returns_none(self):
+        assert _encode_audit_cursor(None) is None
+        assert _encode_audit_cursor({}) is None
+
+
+class TestAuditSummary:
+    @patch("workspace_management_handler._scan_all_workspaces")
+    @patch("workspace_management_handler._is_org_admin", return_value=False)
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_non_admin_gets_403(
+        self, mock_dynamodb, mock_get_table, mock_org_admin, mock_scan
+    ):
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+
+        with patch.object(handler_module, "ANALYTICS_TABLE", "test-analytics"):
+            result = get_audit_summary("user@example.com", {})
+        assert result["statusCode"] == 403
+
+    @patch("workspace_management_handler._scan_all_workspaces", return_value=[])
+    @patch("workspace_management_handler._is_org_admin", return_value=True)
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_empty_aggregates_returns_zeros(
+        self, mock_dynamodb, mock_get_table, mock_org_admin, mock_scan
+    ):
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+
+        with patch.object(handler_module, "ANALYTICS_TABLE", "test-analytics"):
+            result = get_audit_summary("admin@example.com", {})
+        assert result["statusCode"] == 200
+        body = json.loads(result["body"])
+        assert body["actions_total"] == 0
+        assert body["actions_by_type"] == []
+        assert body["actions_by_workspace"] == []
+        assert body["top_actors"] == []
+        assert body["trend"] == []
+
+    @patch("workspace_management_handler._scan_all_workspaces")
+    @patch("workspace_management_handler._is_org_admin", return_value=True)
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_aggregates_roll_up(
+        self, mock_dynamodb, mock_get_table, mock_org_admin, mock_scan
+    ):
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+
+        mock_scan.return_value = [{"workspace_id": "ws-1", "name": "Eng"}]
+        # Workspace name lookup
+        mock_table.get_item.return_value = {"Item": {"name": "Eng"}}
+        # Pretend the analytics table returns DA, DC, DCU rows
+        mock_table.query.side_effect = [
+            {"Items": [{"SK": "DA#2026-05-01", "actions_total": 5}]},
+            {"Items": [
+                {"SK": "DC#2026-05-01#API_KEY_CREATED", "actions_total": 2},
+                {"SK": "DC#2026-05-01#WORKSPACE_CREATED", "actions_total": 3},
+            ]},
+            {"Items": [
+                {
+                    "SK": "DCU#2026-05-01#brian@example.com",
+                    "actions_total": 5,
+                    "last_action_at": "2026-05-01T12:00:00+00:00",
+                }
+            ]},
+        ]
+
+        with patch.object(handler_module, "ANALYTICS_TABLE", "test-analytics"):
+            result = get_audit_summary("admin@example.com", {})
+
+        assert result["statusCode"] == 200
+        body = json.loads(result["body"])
+        assert body["actions_total"] == 5
+        assert body["actions_by_type"] == [
+            {"action": "WORKSPACE_CREATED", "count": 3},
+            {"action": "API_KEY_CREATED", "count": 2},
+        ]
+        assert body["top_actors"][0]["user_email"] == "brian@example.com"
+        assert body["top_actors"][0]["count"] == 5
+        assert body["trend"][0] == {"date": "2026-05-01", "count": 5}
+
+
+class TestAuditWorkspace:
+    @patch("workspace_management_handler._is_workspace_admin", return_value=False)
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_non_workspace_admin_gets_403(
+        self, mock_dynamodb, mock_get_table, mock_admin
+    ):
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+
+        with patch.object(handler_module, "ANALYTICS_TABLE", "test-analytics"):
+            result = get_audit_workspace("u@x", "ws-1", {})
+        assert result["statusCode"] == 403
+
+    @patch("workspace_management_handler._is_workspace_admin", return_value=True)
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_workspace_not_found_404(
+        self, mock_dynamodb, mock_get_table, mock_admin
+    ):
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+        mock_table.get_item.return_value = {}
+
+        with patch.object(handler_module, "ANALYTICS_TABLE", "test-analytics"):
+            result = get_audit_workspace("admin@example.com", "ws-missing", {})
+        assert result["statusCode"] == 404
+
+
+class TestAuditEvents:
+    @patch("workspace_management_handler._is_workspace_admin", return_value=True)
+    @patch("workspace_management_handler._is_org_admin", return_value=False)
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_workspace_filter_queries_base_table(
+        self, mock_dynamodb, mock_get_table, mock_org, mock_admin
+    ):
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+        mock_table.query.return_value = {
+            "Items": [{
+                "request_id": "r1",
+                "timestamp": "2026-05-01T12:00:00+00:00",
+                "category": "admin",
+                "action": "API_KEY_CREATED",
+                "workspace_id": "ws-1",
+                "user_email": "brian@example.com",
+                "source_ip": "203.0.113.1",
+                "user_agent": "ua",
+                "details": {"key_id": "k"},
+            }]
+        }
+
+        with patch.object(handler_module, "AUDIT_TABLE", "test-audit"):
+            result = get_audit_events(
+                "admin@example.com",
+                {"workspace_id": "ws-1"},
+            )
+        assert result["statusCode"] == 200
+        body = json.loads(result["body"])
+        assert len(body["events"]) == 1
+        assert body["events"][0]["action"] == "API_KEY_CREATED"
+        assert body["events"][0]["source_ip"] == "203.0.113.1"
+
+    @patch("workspace_management_handler._is_org_admin", return_value=True)
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_user_filter_uses_gsi1(
+        self, mock_dynamodb, mock_get_table, mock_org
+    ):
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+        mock_table.query.return_value = {"Items": []}
+
+        with patch.object(handler_module, "AUDIT_TABLE", "test-audit"):
+            result = get_audit_events(
+                "admin@example.com",
+                {"user_email": "brian@example.com"},
+            )
+        assert result["statusCode"] == 200
+        # query was called against GSI1
+        kwargs = mock_table.query.call_args.kwargs
+        assert kwargs.get("IndexName") == "GSI1"
+
+    @patch("workspace_management_handler._is_org_admin", return_value=False)
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_unfiltered_non_admin_returns_403(
+        self, mock_dynamodb, mock_get_table, mock_org
+    ):
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+
+        with patch.object(handler_module, "AUDIT_TABLE", "test-audit"):
+            result = get_audit_events("user@x", {})
+        assert result["statusCode"] == 403
+
+    @patch("workspace_management_handler._is_org_admin", return_value=True)
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_unfiltered_org_admin_uses_capped_scan(
+        self, mock_dynamodb, mock_get_table, mock_org
+    ):
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+        mock_table.scan.return_value = {"Items": []}
+
+        with patch.object(handler_module, "AUDIT_TABLE", "test-audit"):
+            result = get_audit_events("admin@example.com", {"limit": "9999"})
+        assert result["statusCode"] == 200
+        scan_kwargs = mock_table.scan.call_args.kwargs
+        assert scan_kwargs["Limit"] == handler_module.AUDIT_EVENTS_NO_FILTER_CAP
+
+    @patch("workspace_management_handler._is_workspace_admin", return_value=True)
+    @patch("workspace_management_handler._is_org_admin", return_value=False)
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_cursor_round_trip(
+        self, mock_dynamodb, mock_get_table, mock_org, mock_admin
+    ):
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+
+        last_key = {"PK": "WS#ws-1", "SK": "2026-05-01T12:00:00#abc"}
+        # First call returns one event + LastEvaluatedKey
+        mock_table.query.return_value = {
+            "Items": [{"request_id": "r1"}],
+            "LastEvaluatedKey": last_key,
+        }
+
+        with patch.object(handler_module, "AUDIT_TABLE", "test-audit"):
+            page1 = get_audit_events("admin@example.com", {"workspace_id": "ws-1"})
+        assert page1["statusCode"] == 200
+        body1 = json.loads(page1["body"])
+        cursor = body1["next_cursor"]
+        assert cursor
+
+        # Second call: pass the cursor back in
+        mock_table.query.return_value = {"Items": [{"request_id": "r2"}]}
+        with patch.object(handler_module, "AUDIT_TABLE", "test-audit"):
+            page2 = get_audit_events(
+                "admin@example.com",
+                {"workspace_id": "ws-1", "cursor": cursor},
+            )
+        # The decoded cursor must be passed as ExclusiveStartKey on the second
+        # query call
+        second_call = mock_table.query.call_args
+        assert second_call.kwargs.get("ExclusiveStartKey") == last_key
+        body2 = json.loads(page2["body"])
+        assert body2["next_cursor"] is None
+
+
+class TestAuditEventDetail:
+    @patch("workspace_management_handler._is_workspace_admin", return_value=True)
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_returns_event(self, mock_dynamodb, mock_get_table, mock_admin):
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+        mock_table.query.return_value = {
+            "Items": [{
+                "request_id": "abc",
+                "timestamp": "2026-05-01T12:00:00+00:00",
+                "category": "admin",
+                "action": "API_KEY_CREATED",
+                "workspace_id": "ws-1",
+                "user_email": "brian@example.com",
+                "source_ip": "203.0.113.7",
+                "user_agent": "ua",
+                "details": {"key_id": "k"},
+            }]
+        }
+
+        with patch.object(handler_module, "AUDIT_TABLE", "test-audit"):
+            result = get_audit_event("admin@example.com", "ws-1", "abc")
+        assert result["statusCode"] == 200
+        body = json.loads(result["body"])
+        assert body["event"]["request_id"] == "abc"
+        assert body["event"]["details"] == {"key_id": "k"}
+
+    @patch("workspace_management_handler._is_workspace_admin", return_value=True)
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_not_found(self, mock_dynamodb, mock_get_table, mock_admin):
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+        mock_table.query.return_value = {"Items": []}
+
+        with patch.object(handler_module, "AUDIT_TABLE", "test-audit"):
+            result = get_audit_event("admin@example.com", "ws-1", "missing")
+        assert result["statusCode"] == 404
+
+    @patch("workspace_management_handler._is_workspace_admin", return_value=False)
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_403_for_non_admin(self, mock_dynamodb, mock_get_table, mock_admin):
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+
+        with patch.object(handler_module, "AUDIT_TABLE", "test-audit"):
+            result = get_audit_event("user@x", "ws-1", "abc")
+        assert result["statusCode"] == 403

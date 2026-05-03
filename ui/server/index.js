@@ -759,6 +759,43 @@ app.get("/api/analytics/workspace/:id", (req, res) => {
   proxyWorkspaceRequest(req, res, "GET", qs ? `${base}?${qs}` : base);
 });
 
+// ============================================================================
+// Audit (chunk 05)
+// ============================================================================
+app.get("/api/audit/summary", (req, res) => {
+  const params = new URLSearchParams();
+  if (req.query.start_date) params.set("start_date", req.query.start_date);
+  if (req.query.end_date) params.set("end_date", req.query.end_date);
+  const qs = params.toString();
+  const path = qs ? `/audit/summary?${qs}` : "/audit/summary";
+  proxyWorkspaceRequest(req, res, "GET", path);
+});
+
+app.get("/api/audit/workspace/:id", (req, res) => {
+  const params = new URLSearchParams();
+  if (req.query.start_date) params.set("start_date", req.query.start_date);
+  if (req.query.end_date) params.set("end_date", req.query.end_date);
+  const qs = params.toString();
+  const base = `/audit/workspace/${encodeURIComponent(req.params.id)}`;
+  proxyWorkspaceRequest(req, res, "GET", qs ? `${base}?${qs}` : base);
+});
+
+app.get("/api/audit/events", (req, res) => {
+  const params = new URLSearchParams();
+  for (const k of ["start_date", "end_date", "workspace_id", "user_email",
+                    "action", "category", "cursor", "limit"]) {
+    if (req.query[k]) params.set(k, req.query[k]);
+  }
+  const qs = params.toString();
+  const path = qs ? `/audit/events?${qs}` : "/audit/events";
+  proxyWorkspaceRequest(req, res, "GET", path);
+});
+
+app.get("/api/audit/event/:wsId/:requestId", (req, res) => {
+  const path = `/audit/event/${encodeURIComponent(req.params.wsId)}/${encodeURIComponent(req.params.requestId)}`;
+  proxyWorkspaceRequest(req, res, "GET", path);
+});
+
 // Debug: Show current authenticated user identity
 app.get("/api/me", (req, res) => {
   const user = extractUser(req);

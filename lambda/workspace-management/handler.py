@@ -3782,6 +3782,443 @@ def get_analytics_workspace(
         return _error(500, "Failed to get workspace analytics")
 
 
+# ============================================================================
+# Audit Query Endpoints (chunk 05)
+# ============================================================================
+
+# /audit/events server-side caps. The no-filter org-admin path is the most
+# expensive, so we keep it small to discourage uncapped scans.
+AUDIT_EVENTS_MAX_LIMIT = 200
+AUDIT_EVENTS_DEFAULT_LIMIT = 50
+AUDIT_EVENTS_NO_FILTER_CAP = 50
+
+
+def _decimal_to_native(value: Any) -> Any:
+    """Recursively convert Decimal -> int/float for JSON-friendly output."""
+    if isinstance(value, Decimal):
+        as_int = int(value)
+        return as_int if Decimal(as_int) == value else float(value)
+    if isinstance(value, dict):
+        return {k: _decimal_to_native(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_decimal_to_native(v) for v in value]
+    if isinstance(value, set):
+        return list(value)
+    return value
+
+
+def _encode_audit_cursor(last_evaluated_key: Optional[Dict]) -> Optional[str]:
+    """base64-encode a DDB LastEvaluatedKey so it round-trips through HTTP."""
+    if not last_evaluated_key:
+        return None
+    try:
+        return base64.urlsafe_b64encode(
+            json.dumps(_decimal_to_native(last_evaluated_key)).encode("utf-8")
+        ).decode("ascii")
+    except (TypeError, ValueError):
+        return None
+
+
+def _decode_audit_cursor(cursor: str) -> Optional[Dict]:
+    if not cursor:
+        return None
+    try:
+        return json.loads(
+            base64.urlsafe_b64decode(cursor.encode("ascii")).decode("utf-8")
+        )
+    except (ValueError, TypeError):
+        return None
+
+
+def _audit_event_from_item(item: Dict) -> Dict:
+    """Project a raw audit row into the public event JSON envelope."""
+    return {
+        "request_id": item.get("request_id", ""),
+        "timestamp": item.get("timestamp", ""),
+        "category": item.get("category", "bedrock"),
+        "action": item.get("action", ""),
+        "user_email": item.get("user_email", ""),
+        "workspace_id": item.get("workspace_id", ""),
+        "source_ip": item.get("source_ip", ""),
+        "user_agent": item.get("user_agent", ""),
+        "details": _decimal_to_native(item.get("details") or {}),
+    }
+
+
+def _query_admin_aggregates(
+    analytics_table,
+    workspace_id: str,
+    start_date: str,
+    end_date: str,
+) -> List[Dict]:
+    """Read DA / DC / DCU rollups for one workspace and a date range."""
+    return _query_aggregates(
+        analytics_table,
+        workspace_id,
+        start_date,
+        end_date,
+        ["DA", "DC", "DCU"],
+    )
+
+
+def get_audit_summary(user_email: str, query_params: Dict[str, Any]) -> Dict:
+    """Aggregated audit counts across all workspaces (org admin only).
+
+    Reads DA / DC / DCU rollup rows produced by the analytics-aggregator. An
+    empty range returns zeros and empty arrays - never 500.
+    """
+    analytics_table_name = _get_analytics_table()
+    if not analytics_table_name:
+        return _error(500, "Analytics table not configured")
+
+    start_iso, end_iso, err = _parse_analytics_date_range(query_params)
+    if err:
+        return _error(400, err)
+
+    start_date = _date_only(start_iso)
+    end_date = _date_only(end_iso)
+
+    dynamodb = _get_dynamodb()
+    ws_table = dynamodb.Table(_get_workspaces_table())
+    analytics_table = dynamodb.Table(analytics_table_name)
+
+    try:
+        if not _is_org_admin(ws_table, user_email):
+            return _error(403, "Org admin access required")
+
+        all_ws = _scan_all_workspaces(ws_table)
+        workspace_ids = [w["workspace_id"] for w in all_ws if w.get("workspace_id")]
+        workspace_names = _get_workspace_names(ws_table, workspace_ids)
+
+        actions_total = 0
+        by_action: Dict[str, int] = {}
+        by_workspace: Dict[str, int] = {}
+        by_actor: Dict[str, Dict[str, Any]] = {}
+        by_date: Dict[str, int] = {}
+
+        for ws_id in workspace_ids:
+            items = _query_admin_aggregates(
+                analytics_table, ws_id, start_date, end_date
+            )
+            for item in items:
+                sk = item.get("SK", "")
+                date, suffix = _parse_sk_date_and_suffix(sk)
+                count = _agg_int(item, "actions_total")
+
+                if sk.startswith("DA#"):
+                    actions_total += count
+                    by_workspace[ws_id] = by_workspace.get(ws_id, 0) + count
+                    if date:
+                        by_date[date] = by_date.get(date, 0) + count
+                elif sk.startswith("DC#"):
+                    action = suffix or "UNKNOWN"
+                    by_action[action] = by_action.get(action, 0) + count
+                elif sk.startswith("DCU#"):
+                    email = suffix
+                    if not email:
+                        continue
+                    bucket = by_actor.setdefault(
+                        email,
+                        {"user_email": email, "count": 0, "last_active": ""},
+                    )
+                    bucket["count"] += count
+                    last_action_at = item.get("last_action_at") or ""
+                    if last_action_at and last_action_at > bucket["last_active"]:
+                        bucket["last_active"] = last_action_at
+
+        actions_by_type = sorted(
+            ({"action": a, "count": c} for a, c in by_action.items()),
+            key=lambda x: x["count"],
+            reverse=True,
+        )
+        actions_by_workspace = sorted(
+            (
+                {
+                    "workspace_id": wid,
+                    "workspace_name": workspace_names.get(wid, wid),
+                    "count": c,
+                }
+                for wid, c in by_workspace.items()
+            ),
+            key=lambda x: x["count"],
+            reverse=True,
+        )
+        top_actors = sorted(by_actor.values(), key=lambda x: x["count"], reverse=True)[:25]
+        trend = sorted(
+            ({"date": d, "count": c} for d, c in by_date.items()),
+            key=lambda x: x["date"],
+        )
+
+        return _response(200, {
+            "actions_total": actions_total,
+            "actions_by_type": actions_by_type,
+            "actions_by_workspace": actions_by_workspace,
+            "top_actors": top_actors,
+            "trend": trend,
+            "start_date": start_iso,
+            "end_date": end_iso,
+        })
+    except ClientError as e:
+        logger.error(f"[workspace-management] Error in audit summary: {e}", exc_info=True)
+        return _error(500, "Failed to get audit summary")
+
+
+def get_audit_workspace(
+    user_email: str, workspace_id: str, query_params: Dict[str, Any]
+) -> Dict:
+    """Per-workspace audit summary (org-admin or workspace-admin)."""
+    analytics_table_name = _get_analytics_table()
+    if not analytics_table_name:
+        return _error(500, "Analytics table not configured")
+
+    start_iso, end_iso, err = _parse_analytics_date_range(query_params)
+    if err:
+        return _error(400, err)
+    start_date = _date_only(start_iso)
+    end_date = _date_only(end_iso)
+
+    dynamodb = _get_dynamodb()
+    ws_table = dynamodb.Table(_get_workspaces_table())
+    analytics_table = dynamodb.Table(analytics_table_name)
+
+    try:
+        if not _is_workspace_admin(ws_table, user_email, workspace_id):
+            return _error(403, "Workspace admin access required")
+
+        ws_resp = ws_table.get_item(Key={"PK": f"WS#{workspace_id}", "SK": "METADATA"})
+        if "Item" not in ws_resp:
+            return _error(404, "Workspace not found")
+        workspace_name = ws_resp["Item"].get("name") or workspace_id
+
+        items = _query_admin_aggregates(
+            analytics_table, workspace_id, start_date, end_date
+        )
+
+        actions_total = 0
+        by_action: Dict[str, int] = {}
+        by_actor: Dict[str, Dict[str, Any]] = {}
+        by_date: Dict[str, int] = {}
+
+        for item in items:
+            sk = item.get("SK", "")
+            date, suffix = _parse_sk_date_and_suffix(sk)
+            count = _agg_int(item, "actions_total")
+            if sk.startswith("DA#"):
+                actions_total += count
+                if date:
+                    by_date[date] = by_date.get(date, 0) + count
+            elif sk.startswith("DC#"):
+                action = suffix or "UNKNOWN"
+                by_action[action] = by_action.get(action, 0) + count
+            elif sk.startswith("DCU#"):
+                email = suffix
+                if not email:
+                    continue
+                bucket = by_actor.setdefault(
+                    email,
+                    {"user_email": email, "count": 0, "last_active": ""},
+                )
+                bucket["count"] += count
+                last_action_at = item.get("last_action_at") or ""
+                if last_action_at and last_action_at > bucket["last_active"]:
+                    bucket["last_active"] = last_action_at
+
+        return _response(200, {
+            "workspace_id": workspace_id,
+            "workspace_name": workspace_name,
+            "actions_total": actions_total,
+            "actions_by_type": sorted(
+                ({"action": a, "count": c} for a, c in by_action.items()),
+                key=lambda x: x["count"],
+                reverse=True,
+            ),
+            "top_actors": sorted(
+                by_actor.values(), key=lambda x: x["count"], reverse=True
+            )[:25],
+            "trend": sorted(
+                ({"date": d, "count": c} for d, c in by_date.items()),
+                key=lambda x: x["date"],
+            ),
+            "start_date": start_iso,
+            "end_date": end_iso,
+        })
+    except ClientError as e:
+        logger.error(f"[workspace-management] Error in audit workspace: {e}", exc_info=True)
+        return _error(500, "Failed to get workspace audit summary")
+
+
+def _parse_audit_limit(raw: Optional[str], default: int) -> int:
+    if not raw:
+        return default
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        return default
+    if n <= 0:
+        return default
+    return min(n, AUDIT_EVENTS_MAX_LIMIT)
+
+
+def _audit_sk_range(start_date: str, end_date: str) -> Tuple[str, str]:
+    """SK lexicographic bounds for an inclusive date range. Audit SKs are
+    `<iso_timestamp>#<request_id>`, so prefixing with the date works."""
+    return start_date, f"{end_date}~"
+
+
+def get_audit_events(user_email: str, query_params: Dict[str, Any]) -> Dict:
+    """Paginated raw audit events with optional filters."""
+    audit_table_name = _get_audit_table()
+    if not audit_table_name:
+        return _error(500, "Audit table not configured")
+
+    start_iso, end_iso, err = _parse_analytics_date_range(query_params)
+    if err:
+        return _error(400, err)
+
+    workspace_id = (query_params.get("workspace_id") or "").strip()
+    user_filter = (query_params.get("user_email") or "").strip()
+    action_filter = (query_params.get("action") or "").strip()
+    category_filter = (query_params.get("category") or "").strip()
+    cursor = (query_params.get("cursor") or "").strip()
+
+    sk_start, sk_end = _audit_sk_range(_date_only(start_iso), _date_only(end_iso))
+
+    dynamodb = _get_dynamodb()
+    ws_table = dynamodb.Table(_get_workspaces_table())
+    audit_table = dynamodb.Table(audit_table_name)
+
+    is_org_admin = _is_org_admin(ws_table, user_email)
+
+    if workspace_id:
+        if not _is_workspace_admin(ws_table, user_email, workspace_id):
+            return _error(403, "Workspace admin access required")
+        limit = _parse_audit_limit(query_params.get("limit"), AUDIT_EVENTS_DEFAULT_LIMIT)
+        query_kwargs: Dict[str, Any] = {
+            "KeyConditionExpression": (
+                "PK = :pk AND SK BETWEEN :s AND :e"
+            ),
+            "ExpressionAttributeValues": {
+                ":pk": f"WS#{workspace_id}",
+                ":s": sk_start,
+                ":e": sk_end,
+            },
+            "Limit": limit,
+            "ScanIndexForward": False,
+        }
+    elif user_filter:
+        if not is_org_admin:
+            return _error(403, "Org admin access required to query by user")
+        limit = _parse_audit_limit(query_params.get("limit"), AUDIT_EVENTS_DEFAULT_LIMIT)
+        query_kwargs = {
+            "IndexName": "GSI1",
+            "KeyConditionExpression": (
+                "GSI1PK = :pk AND GSI1SK BETWEEN :s AND :e"
+            ),
+            "ExpressionAttributeValues": {
+                ":pk": f"USER#{user_filter}",
+                ":s": sk_start,
+                ":e": sk_end,
+            },
+            "Limit": limit,
+            "ScanIndexForward": False,
+        }
+    else:
+        if not is_org_admin:
+            return _error(403, "Org admin access required for unfiltered audit query")
+        # Capped no-filter scan, last-resort path.
+        limit = min(
+            _parse_audit_limit(query_params.get("limit"), AUDIT_EVENTS_NO_FILTER_CAP),
+            AUDIT_EVENTS_NO_FILTER_CAP,
+        )
+        query_kwargs = {
+            "Limit": limit,
+        }
+
+    # Build optional FilterExpression on action / category.
+    filters = []
+    if action_filter:
+        query_kwargs["ExpressionAttributeValues"] = {
+            **query_kwargs.get("ExpressionAttributeValues", {}),
+            ":action": action_filter,
+        }
+        filters.append("#a = :action")
+        query_kwargs.setdefault("ExpressionAttributeNames", {})["#a"] = "action"
+    if category_filter:
+        query_kwargs["ExpressionAttributeValues"] = {
+            **query_kwargs.get("ExpressionAttributeValues", {}),
+            ":category": category_filter,
+        }
+        filters.append("category = :category")
+    if filters:
+        query_kwargs["FilterExpression"] = " AND ".join(filters)
+
+    if cursor:
+        decoded = _decode_audit_cursor(cursor)
+        if decoded:
+            query_kwargs["ExclusiveStartKey"] = decoded
+
+    try:
+        if workspace_id or user_filter:
+            response = audit_table.query(**query_kwargs)
+        else:
+            response = audit_table.scan(**query_kwargs)
+
+        items = response.get("Items", []) or []
+        events = [_audit_event_from_item(item) for item in items]
+        next_cursor = _encode_audit_cursor(response.get("LastEvaluatedKey"))
+
+        return _response(200, {
+            "events": events,
+            "next_cursor": next_cursor,
+            "limit": limit,
+            "start_date": start_iso,
+            "end_date": end_iso,
+        })
+    except ClientError as e:
+        logger.error(f"[workspace-management] Error in audit events: {e}", exc_info=True)
+        return _error(500, "Failed to list audit events")
+
+
+def get_audit_event(user_email: str, workspace_id: str, request_id: str) -> Dict:
+    """Single-event detail fetch for the dashboard drawer.
+
+    The audit SK is `<iso_timestamp>#<request_id>`, so we don't have the
+    timestamp from the URL - query the row by PK + ends-with via Query and
+    surface the matching item.
+    """
+    audit_table_name = _get_audit_table()
+    if not audit_table_name:
+        return _error(500, "Audit table not configured")
+
+    dynamodb = _get_dynamodb()
+    ws_table = dynamodb.Table(_get_workspaces_table())
+    audit_table = dynamodb.Table(audit_table_name)
+
+    try:
+        if not _is_workspace_admin(ws_table, user_email, workspace_id):
+            return _error(403, "Workspace admin access required")
+
+        # SK has the request_id as a suffix; we Query by PK and filter.
+        response = audit_table.query(
+            KeyConditionExpression="PK = :pk",
+            FilterExpression="request_id = :rid",
+            ExpressionAttributeValues={
+                ":pk": f"WS#{workspace_id}",
+                ":rid": request_id,
+            },
+            Limit=1,
+        )
+        items = response.get("Items", []) or []
+        if not items:
+            return _error(404, "Audit event not found")
+
+        event = _audit_event_from_item(items[0])
+        return _response(200, {"event": event})
+    except ClientError as e:
+        logger.error(f"[workspace-management] Error in audit event detail: {e}", exc_info=True)
+        return _error(500, "Failed to get audit event")
+
+
 def lambda_handler(event: Dict, context: Any) -> Dict:
     """
     Main Lambda handler for workspace management.
@@ -4227,6 +4664,39 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         ):
             query_params = event.get("queryStringParameters") or {}
             return get_analytics_workspace(user_email, parts[2], query_params)
+
+        # ====================================================================
+        # Audit Routes (chunk 05)
+        # ====================================================================
+
+        # Route: GET /audit/summary
+        if parts == ("audit", "summary") and http_method == "GET":
+            query_params = event.get("queryStringParameters") or {}
+            return get_audit_summary(user_email, query_params)
+
+        # Route: GET /audit/workspace/{id}
+        if (
+            len(parts) == 3
+            and parts[0] == "audit"
+            and parts[1] == "workspace"
+            and http_method == "GET"
+        ):
+            query_params = event.get("queryStringParameters") or {}
+            return get_audit_workspace(user_email, parts[2], query_params)
+
+        # Route: GET /audit/events
+        if parts == ("audit", "events") and http_method == "GET":
+            query_params = event.get("queryStringParameters") or {}
+            return get_audit_events(user_email, query_params)
+
+        # Route: GET /audit/event/{workspace_id}/{request_id}
+        if (
+            len(parts) == 4
+            and parts[0] == "audit"
+            and parts[1] == "event"
+            and http_method == "GET"
+        ):
+            return get_audit_event(user_email, parts[2], parts[3])
 
         # Route: DELETE /api-keys/{key_id}
         if (

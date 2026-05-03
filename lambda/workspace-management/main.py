@@ -656,3 +656,53 @@ async def analytics_workspace_route(workspace_id: str, request: Request):
     event["queryStringParameters"] = dict(request.query_params)
     result = lambda_handler(event, None)
     return _parse_response(result)
+
+
+# ============================================================================
+# Audit Routes (chunk 05)
+# ============================================================================
+
+
+@app.get("/audit/summary")
+async def audit_summary_route(request: Request):
+    """Org-level audit summary for a date range."""
+    from handler import lambda_handler
+
+    event = _build_event(request, "GET", "/audit/summary")
+    event["queryStringParameters"] = dict(request.query_params)
+    result = lambda_handler(event, None)
+    return _parse_response(result)
+
+
+@app.get("/audit/workspace/{workspace_id}")
+async def audit_workspace_route(workspace_id: str, request: Request):
+    """Per-workspace audit summary."""
+    from handler import lambda_handler
+
+    event = _build_event(request, "GET", f"/audit/workspace/{workspace_id}")
+    event["queryStringParameters"] = dict(request.query_params)
+    result = lambda_handler(event, None)
+    return _parse_response(result)
+
+
+@app.get("/audit/events")
+async def audit_events_route(request: Request):
+    """Paginated raw audit events with optional filters."""
+    from handler import lambda_handler
+
+    event = _build_event(request, "GET", "/audit/events")
+    event["queryStringParameters"] = dict(request.query_params)
+    result = lambda_handler(event, None)
+    return _parse_response(result)
+
+
+@app.get("/audit/event/{workspace_id}/{request_id}")
+async def audit_event_route(workspace_id: str, request_id: str, request: Request):
+    """Single audit event detail (drawer)."""
+    from handler import lambda_handler
+
+    event = _build_event(
+        request, "GET", f"/audit/event/{workspace_id}/{request_id}"
+    )
+    result = lambda_handler(event, None)
+    return _parse_response(result)
