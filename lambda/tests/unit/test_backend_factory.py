@@ -384,3 +384,38 @@ class TestIsBackendRegistered:
 
         # Act & Assert - After registration
         assert is_backend_registered(name) is True
+
+
+class TestRealBackendsAutoRegistered:
+    """
+    Smoke tests that real production backends auto-register via the
+    ``backends`` package __init__.py. These tests do NOT clear the registry in
+    setup_method because they verify package-level side effects (the import-time
+    registration triggered by ``import backends``).
+
+    Note: we deliberately use ``import backends`` (the real package) instead of
+    the importlib-loaded ``factory_module`` at module top. The ``backends``
+    package owns its own ``backends.factory`` registry, isolated from
+    ``sys.modules['factory']`` which other test suites
+    (e.g. ``test_run_tests_backends.py``) may overwrite.
+    """
+
+    def test_csharp_backend_registered(self):
+        """The C# / .NET backend auto-registers under the name 'csharp' per ADR-015."""
+        # Ensure the process-repo-summary directory is on sys.path so the real
+        # `backends` package can be imported; other tests typically already did
+        # this, but be defensive.
+        prs_dir = os.path.abspath(os.path.join(
+            os.path.dirname(__file__), '../../process-repo-summary',
+        ))
+        if prs_dir not in sys.path:
+            sys.path.insert(0, prs_dir)
+
+        import backends as real_backends_pkg
+
+        names = [b["name"] for b in real_backends_pkg.list_backends()]
+        assert "csharp" in names, f"csharp not auto-registered, got: {names}"
+
+        backend = real_backends_pkg.get_backend("csharp", {"github_token": "test"})
+        assert backend.get_backend_type() == "csharp"
+        assert backend.get_backend_name() == "C# / .NET Backend"

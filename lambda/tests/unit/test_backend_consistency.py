@@ -54,6 +54,10 @@ EXPECTED_BACKEND_AVAILABILITY = {
 
     # ABAP - currently only in generate-code-maps (code generation backend to be added later)
     "abap": (True, False),
+
+    # C# / .NET - code-maps only for v1 (code generation backend intentionally
+    # out of scope; see plan/overview.md and ADR-015). Mirrors the ABAP pattern.
+    "csharp": (True, False),
 }
 
 

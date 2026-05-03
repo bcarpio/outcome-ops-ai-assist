@@ -7,6 +7,7 @@ This module provides pluggable backends for analyzing different code architectur
 - TypeScript backend (Node.js, serverless)
 - React backend (React/Next.js frontend applications)
 - ABAP backend (SAP ABAP applications)
+- C# backend (.NET Framework + modern .NET)
 
 Each backend discovers code units, detects changes, and generates code maps
 specific to that architecture.
@@ -27,6 +28,7 @@ try:
     from . import typescript_backend  # noqa: F401
     from . import abap_backend  # noqa: F401
     from . import react_backend  # noqa: F401
+    from . import csharp_backend  # noqa: F401
 except ImportError:
     # Add backends directory to path for testing
     backends_dir = os.path.dirname(os.path.abspath(__file__))
@@ -39,6 +41,7 @@ except ImportError:
     import typescript_backend  # noqa: F401
     import abap_backend  # noqa: F401
     import react_backend  # noqa: F401
+    import csharp_backend  # noqa: F401
 
 __all__ = [
     "CodeMapBackend",
