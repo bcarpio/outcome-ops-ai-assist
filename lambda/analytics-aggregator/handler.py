@@ -5,11 +5,18 @@ Produces daily roll-ups in the analytics table so the dashboard can answer
 summary queries with a bounded number of reads instead of scanning raw audit
 rows.
 
-For each audit record with a workspace_id, we emit three atomic ADD updates:
+For each Bedrock audit record with a workspace_id, we emit three atomic ADD
+updates:
 
-  PK=WS#{workspace_id}, SK=DT#{date}              (day totals)
+  PK=WS#{workspace_id}, SK=DT#{date}              (day totals - bedrock)
   PK=WS#{workspace_id}, SK=DM#{date}#{model_id}   (day x model)
   PK=WS#{workspace_id}, SK=DU#{date}#{email}      (day x user)
+
+For each admin audit record (category="admin") we emit three more shapes:
+
+  PK=WS#{workspace_id}, SK=DA#{date}               (day total - actions)
+  PK=WS#{workspace_id}, SK=DC#{date}#{action}      (day x action type)
+  PK=WS#{workspace_id}, SK=DCU#{date}#{email}      (day x user, actions)
 
 ADD is idempotent-friendly under DynamoDB Streams retries only when paired
 with distinct request IDs. To keep counts correct across retries we track the
@@ -211,6 +218,137 @@ def aggregate_item(
     return True
 
 
+# ============================================================================
+# Admin-action rollups (DA / DC / DCU)
+# ============================================================================
+
+# Action vocabulary lives in shared/audit_writer.py. Mirror it here as a
+# sentinel so the aggregator can warn on unknown values without taking a
+# hard dependency on the shared module from a streams consumer that may run
+# without sys.path configured for it. Keep in sync with chunk 02.
+_KNOWN_ADMIN_ACTIONS = frozenset(
+    {
+        "WORKSPACE_CREATED",
+        "WORKSPACE_UPDATED",
+        "WORKSPACE_DELETED",
+        "WORKSPACE_BUDGET_UPDATED",
+        "WORKSPACE_MEMBER_ADDED",
+        "WORKSPACE_MEMBER_REMOVED",
+        "WORKSPACE_REPO_ADDED",
+        "WORKSPACE_REPO_REMOVED",
+        "ORG_MEMBER_ADDED",
+        "ORG_MEMBER_REMOVED",
+        "MCP_SERVER_CREATED",
+        "MCP_SERVER_UPDATED",
+        "MCP_SERVER_DELETED",
+        "API_KEY_CREATED",
+        "API_KEY_REVOKED",
+        "SYSTEM_PROMPT_UPDATED",
+        "SYSTEM_PROMPT_RESET",
+    }
+)
+
+
+def _apply_action_update(
+    table,
+    pk: str,
+    sk: str,
+    request_id: str,
+    last_action_at: Optional[str] = None,
+) -> None:
+    """ADD-update an admin-action rollup row, deduped by request_id.
+
+    Mirrors :func:`_apply_update` but writes the smaller set of fields the
+    DA / DC / DCU shapes carry.
+    """
+    now = int(time.time())
+    expr_values: Dict[str, Any] = {
+        ":one": Decimal("1"),
+        ":rid": {request_id},
+        ":ttl": now + TTL_SECONDS,
+        ":rid_scalar": request_id,
+    }
+    set_parts = ["#ttl = :ttl"]
+    expr_names = {"#ttl": "ttl"}
+    if last_action_at:
+        set_parts.append("last_action_at = :la")
+        expr_values[":la"] = last_action_at
+
+    update_expression = (
+        "ADD actions_total :one, processed_requests :rid SET "
+        + ", ".join(set_parts)
+    )
+
+    try:
+        table.update_item(
+            Key={"PK": pk, "SK": sk},
+            UpdateExpression=update_expression,
+            ConditionExpression="NOT contains(processed_requests, :rid_scalar)",
+            ExpressionAttributeNames=expr_names,
+            ExpressionAttributeValues=expr_values,
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return
+        raise
+
+
+def aggregate_admin_item(
+    table,
+    workspace_id: str,
+    user_email: str,
+    action: str,
+    timestamp: str,
+    request_id: str,
+) -> bool:
+    """Apply DA / DC / DCU rollup updates for a single admin audit record.
+
+    Returns True if aggregated, False if skipped (missing workspace, missing
+    request_id, or system-level row).
+    """
+    if not workspace_id or workspace_id == "SYSTEM":
+        return False
+    date = _date_from_timestamp(timestamp)
+    if not date or not request_id:
+        return False
+    if not action:
+        action = "UNKNOWN"
+    if action not in _KNOWN_ADMIN_ACTIONS:
+        # Unknown action still increments DA so the dashboard total doesn't
+        # under-count, but log a warning so a typo gets noticed.
+        logger.warning(
+            f"[analytics-aggregator] unknown admin action '{action}' for "
+            f"ws={workspace_id} request_id={request_id}"
+        )
+
+    pk = f"WS#{workspace_id}"
+    _apply_action_update(table, pk, f"DA#{date}", request_id, last_action_at=timestamp)
+    _apply_action_update(table, pk, f"DC#{date}#{action}", request_id, last_action_at=timestamp)
+    if user_email:
+        _apply_action_update(
+            table,
+            pk,
+            f"DCU#{date}#{user_email.lower()}",
+            request_id,
+            last_action_at=timestamp,
+        )
+
+    logger.info(
+        f"[analytics-aggregator] admin action {action} ws={workspace_id} "
+        f"user={user_email or '-'}"
+    )
+    return True
+
+
+def _legacy_bedrock_category(image: Dict[str, Any]) -> Optional[str]:
+    """Pre-existing rows lack 'category'; treat presence of cost_usd as the
+    bedrock signal. After a 30-day soak, this fallback can be removed."""
+    cost = image.get("cost_usd")
+    if cost and ("S" in cost or "N" in cost):
+        return "bedrock"
+    return None
+
+
 def _process_record(record: Dict[str, Any]) -> None:
     if record.get("eventName") != "INSERT":
         return
@@ -219,19 +357,32 @@ def _process_record(record: Dict[str, Any]) -> None:
     if not new_image:
         return
 
-    aggregate_item(
-        table=_get_table(),
-        workspace_id=_s(new_image, "workspace_id"),
-        user_email=_s(new_image, "user_email"),
-        model_id=_s(new_image, "model_id"),
-        cost=_cost(new_image),
-        input_tokens=_n(new_image, "input_tokens"),
-        output_tokens=_n(new_image, "output_tokens"),
-        duration_ms=_n(new_image, "duration_ms"),
-        status=_s(new_image, "status"),
-        timestamp=_s(new_image, "timestamp"),
-        request_id=_s(new_image, "request_id"),
-    )
+    category = _s(new_image, "category") or _legacy_bedrock_category(new_image)
+
+    if category == "bedrock":
+        aggregate_item(
+            table=_get_table(),
+            workspace_id=_s(new_image, "workspace_id"),
+            user_email=_s(new_image, "user_email"),
+            model_id=_s(new_image, "model_id"),
+            cost=_cost(new_image),
+            input_tokens=_n(new_image, "input_tokens"),
+            output_tokens=_n(new_image, "output_tokens"),
+            duration_ms=_n(new_image, "duration_ms"),
+            status=_s(new_image, "status"),
+            timestamp=_s(new_image, "timestamp"),
+            request_id=_s(new_image, "request_id"),
+        )
+    elif category == "admin":
+        aggregate_admin_item(
+            table=_get_table(),
+            workspace_id=_s(new_image, "workspace_id"),
+            user_email=_s(new_image, "user_email"),
+            action=_s(new_image, "action"),
+            timestamp=_s(new_image, "timestamp"),
+            request_id=_s(new_image, "request_id"),
+        )
+    # auth: reserved for future
 
 
 def handler(event, context):
