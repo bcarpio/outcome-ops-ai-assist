@@ -6,6 +6,7 @@ import {
   Settings,
   BarChart3,
   Wallet,
+  ShieldAlert,
   Shield,
   LogOut,
 } from 'lucide-react'
@@ -55,6 +56,7 @@ export default function AdminNav() {
   const isSettings = path.startsWith('/settings')
   const isAnalyticsRoot = path === '/analytics'
   const isBudgets = path.startsWith('/analytics/budgets')
+  const isAudit = path.startsWith('/audit')
   const isOrgSettings = path.startsWith('/org/settings')
 
   return (
@@ -67,6 +69,9 @@ export default function AdminNav() {
       )}
       {isOrgAdmin && !isBudgets && (
         <IconButton title="Budgets" onClick={() => navigate('/analytics/budgets')} icon={<Wallet size={20} />} />
+      )}
+      {isOrgAdmin && !isAudit && (
+        <IconButton title="Audit" onClick={() => navigate('/audit')} icon={<ShieldAlert size={20} />} />
       )}
       {!isOrgSettings && (
         <IconButton title="Organization Settings" onClick={() => navigate('/org/settings')} icon={<Shield size={20} />} />
