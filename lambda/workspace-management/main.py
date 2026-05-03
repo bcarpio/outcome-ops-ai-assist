@@ -23,11 +23,49 @@ def health():
 
 
 def _build_event(request: Request, method: str, path: str, body: str = "") -> dict:
-    """Build a Lambda-style event from a FastAPI request."""
+    """Build a Lambda-style event from a FastAPI request.
+
+    Lambda Web Adapter terminates the HTTPS request and presents it to the
+    FastAPI app over a private socket; this function recomposes a Lambda v2
+    event so handler.lambda_handler can reuse its existing extraction code.
+
+    Source IP / User-Agent precedence (most specific first):
+      1. ``x-real-source-ip`` / ``x-real-user-agent`` set by ui/server/index.js
+         on the Express proxy hop. These carry the BROWSER's IP and UA.
+      2. ``x-forwarded-for`` (set by LWA from the Function URL's
+         requestContext.http.sourceIp) and ``user-agent``. This is the
+         Express proxy egress IP and the proxy's HTTP-client UA, which is
+         strictly less useful but better than empty.
+      3. Empty string.
+
+    Without this lookup the synthesized requestContext.http would carry
+    only method + path and admin audit rows would record source_ip="".
+    """
+    headers = dict(request.headers)
+
+    real_ip = headers.get("x-real-source-ip", "").strip()
+    if not real_ip:
+        # x-forwarded-for can be a comma-separated list (oldest first); the
+        # original client is the first hop.
+        xff = headers.get("x-forwarded-for", "")
+        real_ip = xff.split(",")[0].strip() if xff else ""
+
+    real_ua = (
+        headers.get("x-real-user-agent", "").strip()
+        or headers.get("user-agent", "")
+    )
+
     return {
         "body": body,
-        "headers": dict(request.headers),
-        "requestContext": {"http": {"method": method, "path": path}},
+        "headers": headers,
+        "requestContext": {
+            "http": {
+                "method": method,
+                "path": path,
+                "sourceIp": real_ip,
+                "userAgent": real_ua,
+            },
+        },
     }
 
 

@@ -167,6 +167,63 @@ class TestBuildEvent:
         finally:
             _cleanup_handler()
 
+    def test_event_populates_source_ip_from_x_real_source_ip(self):
+        """Audit IP capture: x-real-source-ip wins over x-forwarded-for.
+        The Express proxy sets x-real-source-ip = browser IP. Without this
+        header surfacing into requestContext.http.sourceIp, admin audit
+        rows record source_ip="" (the original chunk-07 deploy bug)."""
+        mock_handler = _setup_mock_handler(
+            _mock_lambda_response(200, {"workspaces": []})
+        )
+        try:
+            client = TestClient(app)
+            client.get(
+                "/workspaces",
+                headers={
+                    "x-real-source-ip": "203.0.113.42",
+                    "x-real-user-agent": "Mozilla/5.0 demo",
+                    "x-forwarded-for": "10.0.0.5",
+                },
+            )
+
+            event = mock_handler.call_args[0][0]
+            assert event["requestContext"]["http"]["sourceIp"] == "203.0.113.42"
+            assert event["requestContext"]["http"]["userAgent"] == "Mozilla/5.0 demo"
+        finally:
+            _cleanup_handler()
+
+    def test_event_falls_back_to_xff_when_no_real_ip(self):
+        """If only x-forwarded-for is present (Lambda invoked outside the
+        Express proxy chain) fall back to it, taking the first hop."""
+        mock_handler = _setup_mock_handler(
+            _mock_lambda_response(200, {"workspaces": []})
+        )
+        try:
+            client = TestClient(app)
+            client.get(
+                "/workspaces",
+                headers={"x-forwarded-for": "198.51.100.7, 10.0.0.1"},
+            )
+
+            event = mock_handler.call_args[0][0]
+            assert event["requestContext"]["http"]["sourceIp"] == "198.51.100.7"
+        finally:
+            _cleanup_handler()
+
+    def test_event_source_ip_empty_when_no_headers(self):
+        """No IP headers => empty string, not crash."""
+        mock_handler = _setup_mock_handler(
+            _mock_lambda_response(200, {"workspaces": []})
+        )
+        try:
+            client = TestClient(app)
+            client.get("/workspaces")
+
+            event = mock_handler.call_args[0][0]
+            assert event["requestContext"]["http"]["sourceIp"] == ""
+        finally:
+            _cleanup_handler()
+
 
 class TestParseResponse:
     """Test _parse_response helper function."""

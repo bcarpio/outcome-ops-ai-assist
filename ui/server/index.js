@@ -22,6 +22,11 @@ import { readFileSync, existsSync } from "fs";
 import { join, extname } from "path";
 
 const app = express();
+// Trust the ALB in front of us so req.ip is the original client IP from
+// X-Forwarded-For rather than the ALB's IP. ALB always replaces XFF on
+// inbound requests, so trusting it here is safe behind ALB and lets us
+// forward the real browser IP to downstream Lambdas for audit logging.
+app.set("trust proxy", true);
 const PORT = process.env.PORT || 3000;
 const LAMBDA_FUNCTION_URL = process.env.LAMBDA_FUNCTION_URL;
 const WORKSPACE_LAMBDA_URL = process.env.WORKSPACE_LAMBDA_URL;
@@ -592,7 +597,15 @@ async function proxyWorkspaceRequest(req, res, method, path) {
 
   try {
     const options = {
-      extraHeaders: { "x-user-email": user.email },
+      extraHeaders: {
+        "x-user-email": user.email,
+        // Forward the real browser IP / UA so the audit table records the
+        // user's origin instead of the Fargate task's egress IP and the
+        // node fetch UA. main.py:_build_event reads these into the
+        // synthesized requestContext.http.
+        "x-real-source-ip": req.ip || "",
+        "x-real-user-agent": req.get("user-agent") || "",
+      },
     };
     if (req.body && Object.keys(req.body).length > 0) {
       options.body = JSON.stringify(req.body);
