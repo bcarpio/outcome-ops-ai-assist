@@ -1,10 +1,15 @@
 import { useEffect } from 'react'
-import { X } from 'lucide-react'
+import { X, History } from 'lucide-react'
 import type { AuditEvent } from '../lib/api'
 
 interface AuditEventDrawerProps {
   event: AuditEvent | null
   onClose: () => void
+  /** Optional: when present, the drawer renders a "View user's chat history"
+   * button that delegates to the parent so the page can scope its Recent
+   * Activity to that user. Used by the InfoSec-drill flow ("system blocked
+   * Joe — let me see what Joe's been doing in the lead-up"). */
+  onViewUserHistory?: (userEmail: string) => void
 }
 
 /**
@@ -13,7 +18,11 @@ interface AuditEventDrawerProps {
  * the InfoSec demo focuses on, so they need to be one click and one copy
  * away from any row.
  */
-export default function AuditEventDrawer({ event, onClose }: AuditEventDrawerProps) {
+export default function AuditEventDrawer({
+  event,
+  onClose,
+  onViewUserHistory,
+}: AuditEventDrawerProps) {
   // Close on Escape so power users don't have to mouse over to the X.
   useEffect(() => {
     if (!event) return
@@ -116,7 +125,12 @@ export default function AuditEventDrawer({ event, onClose }: AuditEventDrawerPro
             multiline
           />
 
-          {isRefusal && event.input_text && (
+          {/* Bedrock rows (chat / RAG / codegen, refusal or not) carry
+              the full prompt + response that shared/audit.py captures.
+              Show them whenever they're present so an admin drilling
+              into a refusal can also pivot to neighboring chat rows
+              from the same user and see what triggered the block. */}
+          {event.input_text && (
             <div>
               <div className="text-xs uppercase text-gray-500 mb-1">User prompt</div>
               <pre className="text-xs font-mono bg-gray-50 border rounded p-2 whitespace-pre-wrap break-words max-h-48 overflow-y-auto">
@@ -124,13 +138,23 @@ export default function AuditEventDrawer({ event, onClose }: AuditEventDrawerPro
               </pre>
             </div>
           )}
-          {isRefusal && event.output_text && (
+          {event.output_text && (
             <div>
               <div className="text-xs uppercase text-gray-500 mb-1">Model response</div>
               <pre className="text-xs font-mono bg-gray-50 border rounded p-2 whitespace-pre-wrap break-words max-h-48 overflow-y-auto">
                 {event.output_text}
               </pre>
             </div>
+          )}
+
+          {onViewUserHistory && event.user_email && (
+            <button
+              onClick={() => onViewUserHistory(event.user_email)}
+              className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 text-sm rounded-lg border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 transition-colors"
+            >
+              <History size={14} />
+              View {event.user_email}'s chat history
+            </button>
           )}
 
           <div>

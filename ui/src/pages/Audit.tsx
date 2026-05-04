@@ -29,6 +29,13 @@ import {
 } from '../lib/api'
 
 type DateRangeOption = 7 | 30 | 90
+type HoursWindow = 1 | 3 | 24
+
+function isoHoursAgo(hours: number): string {
+  const d = new Date()
+  d.setUTCHours(d.getUTCHours() - hours)
+  return d.toISOString()
+}
 
 // Per chunk 07: this set is the InfoSec sound-bite metric on the page.
 // Refusals are layered on top via status="refusal" in the merged feed.
@@ -112,62 +119,103 @@ export default function Audit() {
   const [refusalCount, setRefusalCount] = useState<number>(0)
   const [adminCursor, setAdminCursor] = useState<string | null>(null)
   const [actionFilter, setActionFilter] = useState<string>('')
+  // User-history mode: when set, the page switches from "org-wide admin
+  // + refusals" to a user-scoped chat history view (bedrock rows for
+  // that user in a short time window). Used by the InfoSec drill flow.
+  const [userFilter, setUserFilter] = useState<string>('')
+  const [userHoursWindow, setUserHoursWindow] = useState<HoursWindow>(3)
   const [loading, setLoading] = useState(true)
   const [eventsLoading, setEventsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [drawerEvent, setDrawerEvent] = useState<AuditEvent | null>(null)
 
-  const startDate = useMemo(() => isoDaysAgo(range), [range])
-  const endDate = useMemo(() => new Date().toISOString(), [range])
+  const startDate = useMemo(
+    () => (userFilter ? isoHoursAgo(userHoursWindow) : isoDaysAgo(range)),
+    [range, userFilter, userHoursWindow],
+  )
+  const endDate = useMemo(() => new Date().toISOString(), [range, userFilter, userHoursWindow])
 
-  // Initial summary + first page of admin events + refusals (parallel).
+  // Initial fetch. Two modes:
+  // 1) Default: summary + admin events + refusals merged.
+  // 2) User-history: just bedrock rows for that user, no summary, no
+  //    admin merge (the drill view is single-purpose).
   useEffect(() => {
     let cancelled = false
     setLoading(true)
     setError(null)
 
-    Promise.all([
-      getAuditSummary(startDate, endDate),
+    if (userFilter) {
+      // Drill mode: fetch only the user's bedrock chat rows in the window.
       getAuditEvents({
         startDate,
         endDate,
-        action: actionFilter || undefined,
-        category: 'admin',
-        limit: 50,
-      }),
-      // Refusals live as bedrock rows with status="refusal". One extra
-      // call surfaces them inline with admin actions in the same feed.
-      getAuditEvents({
-        startDate,
-        endDate,
+        userEmail: userFilter,
         category: 'bedrock',
-        status: 'refusal',
-        limit: 25,
-      }),
-    ])
-      .then(([sum, adminPage, refusalPage]: [AuditSummary, AuditEventsPage, AuditEventsPage]) => {
-        if (cancelled) return
-        setSummary(sum)
-        setRefusalCount(refusalPage.events.length)
-        const merged = [...adminPage.events, ...refusalPage.events].sort(
-          (a, b) => (a.timestamp < b.timestamp ? 1 : -1),
-        )
-        setEvents(merged)
-        setAdminCursor(adminPage.next_cursor)
+        limit: 100,
       })
-      .catch((e: unknown) => {
-        if (cancelled) return
-        const msg = e instanceof Error ? e.message : 'Failed to load audit data'
-        setError(msg)
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false)
-      })
+        .then((page: AuditEventsPage) => {
+          if (cancelled) return
+          setSummary(null)
+          setRefusalCount(0)
+          setEvents(
+            [...page.events].sort(
+              (a, b) => (a.timestamp < b.timestamp ? 1 : -1),
+            ),
+          )
+          setAdminCursor(page.next_cursor)
+        })
+        .catch((e: unknown) => {
+          if (cancelled) return
+          const msg = e instanceof Error ? e.message : 'Failed to load chat history'
+          setError(msg)
+        })
+        .finally(() => {
+          if (!cancelled) setLoading(false)
+        })
+    } else {
+      Promise.all([
+        getAuditSummary(startDate, endDate),
+        getAuditEvents({
+          startDate,
+          endDate,
+          action: actionFilter || undefined,
+          category: 'admin',
+          limit: 50,
+        }),
+        // Refusals live as bedrock rows with status="refusal". One extra
+        // call surfaces them inline with admin actions in the same feed.
+        getAuditEvents({
+          startDate,
+          endDate,
+          category: 'bedrock',
+          status: 'refusal',
+          limit: 25,
+        }),
+      ])
+        .then(([sum, adminPage, refusalPage]: [AuditSummary, AuditEventsPage, AuditEventsPage]) => {
+          if (cancelled) return
+          setSummary(sum)
+          setRefusalCount(refusalPage.events.length)
+          const merged = [...adminPage.events, ...refusalPage.events].sort(
+            (a, b) => (a.timestamp < b.timestamp ? 1 : -1),
+          )
+          setEvents(merged)
+          setAdminCursor(adminPage.next_cursor)
+        })
+        .catch((e: unknown) => {
+          if (cancelled) return
+          const msg = e instanceof Error ? e.message : 'Failed to load audit data'
+          setError(msg)
+        })
+        .finally(() => {
+          if (!cancelled) setLoading(false)
+        })
+    }
 
     return () => {
       cancelled = true
     }
-  }, [startDate, endDate, actionFilter])
+  }, [startDate, endDate, actionFilter, userFilter])
 
   const loadMore = async () => {
     if (!adminCursor) return
@@ -177,9 +225,10 @@ export default function Audit() {
         startDate,
         endDate,
         action: actionFilter || undefined,
-        category: 'admin',
+        category: userFilter ? 'bedrock' : 'admin',
+        userEmail: userFilter || undefined,
         cursor: adminCursor,
-        limit: 50,
+        limit: userFilter ? 100 : 50,
       })
       setEvents(prev =>
         [...prev, ...page.events].sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1)),
@@ -225,21 +274,48 @@ export default function Audit() {
 
       <main className="max-w-7xl mx-auto p-4 space-y-6">
         <div className="flex flex-wrap items-center gap-2">
-          <div className="inline-flex rounded-lg border bg-white overflow-hidden">
-            {[7, 30, 90].map(d => (
-              <button
-                key={d}
-                onClick={() => setRange(d as DateRangeOption)}
-                className={`px-3 py-1.5 text-sm transition-colors ${
-                  range === d
-                    ? 'bg-blue-600 text-white'
-                    : 'text-gray-700 hover:bg-gray-100'
-                }`}
-              >
-                Last {d} days
-              </button>
-            ))}
-          </div>
+          {userFilter ? (
+            <div className="inline-flex rounded-lg border bg-white overflow-hidden">
+              {[1, 3, 24].map(h => (
+                <button
+                  key={h}
+                  onClick={() => setUserHoursWindow(h as HoursWindow)}
+                  className={`px-3 py-1.5 text-sm transition-colors ${
+                    userHoursWindow === h
+                      ? 'bg-blue-600 text-white'
+                      : 'text-gray-700 hover:bg-gray-100'
+                  }`}
+                >
+                  Last {h}h
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div className="inline-flex rounded-lg border bg-white overflow-hidden">
+              {[7, 30, 90].map(d => (
+                <button
+                  key={d}
+                  onClick={() => setRange(d as DateRangeOption)}
+                  className={`px-3 py-1.5 text-sm transition-colors ${
+                    range === d
+                      ? 'bg-blue-600 text-white'
+                      : 'text-gray-700 hover:bg-gray-100'
+                  }`}
+                >
+                  Last {d} days
+                </button>
+              ))}
+            </div>
+          )}
+          {userFilter && (
+            <button
+              onClick={() => setUserFilter('')}
+              className="inline-flex items-center gap-1 px-2 py-1 text-xs rounded-full bg-purple-50 border border-purple-200 text-purple-700 hover:bg-purple-100 transition-colors"
+              aria-label={`Clear user filter ${userFilter}`}
+            >
+              <Filter size={12} /> Drilling: {userFilter} ✕
+            </button>
+          )}
           {actionFilter && (
             <button
               onClick={() => setActionFilter('')}
@@ -272,7 +348,7 @@ export default function Audit() {
           </div>
         )}
 
-        {!loading && !error && summary && (
+        {!loading && !error && !userFilter && summary && (
           <>
             <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
               <StatCard
@@ -443,85 +519,103 @@ export default function Audit() {
               )}
             </section>
 
-            <section className="bg-white border rounded-lg shadow-sm p-4">
-              <div className="text-sm font-medium mb-2 text-gray-700">Recent Activity</div>
-              {events.length === 0 ? (
-                <EmptyState
-                  title="No actions yet"
-                  hint="Audit captures workspace, member, repo, MCP, API key changes — and Bedrock refusals."
-                />
-              ) : (
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="text-left text-xs uppercase text-gray-500 border-b">
-                      <th className="py-2">Time</th>
-                      <th className="py-2">Actor</th>
-                      <th className="py-2">Action</th>
-                      <th className="py-2">Workspace</th>
-                      <th className="py-2">IP</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {events.map(ev => {
-                      const t = toneFor({
-                        action: ev.action,
-                        category: ev.category,
-                        status: ev.status,
-                      })
-                      const label = actionLabel(ev)
-                      return (
-                        <tr
-                          key={ev.request_id}
-                          className="border-b last:border-0 hover:bg-gray-50 cursor-pointer"
-                          onClick={() => setDrawerEvent(ev)}
-                        >
-                          <td
-                            className="py-2 text-xs text-gray-500"
-                            title={ev.timestamp}
-                          >
-                            {formatTimestamp(ev.timestamp)}
-                          </td>
-                          <td className="py-2 text-gray-800">{ev.user_email || '—'}</td>
-                          <td className="py-2">
-                            <span
-                              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-mono ring-1 ${t.bg} ${t.text} ${t.ring}`}
-                            >
-                              {label === 'REFUSAL' && <AlertTriangle size={11} />}
-                              {label}
-                            </span>
-                          </td>
-                          <td className="py-2 text-gray-700 text-xs">
-                            {ev.workspace_id || '—'}
-                          </td>
-                          <td className="py-2 font-mono text-xs text-gray-700">
-                            {ev.source_ip || '—'}
-                          </td>
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
-              )}
-
-              {adminCursor && (
-                <div className="mt-3 text-center">
-                  <button
-                    onClick={loadMore}
-                    disabled={eventsLoading}
-                    className="px-3 py-1.5 text-sm border rounded-lg bg-white hover:bg-gray-50 disabled:opacity-50 transition-colors"
-                  >
-                    {eventsLoading ? 'Loading…' : 'Load more'}
-                  </button>
-                </div>
-              )}
-            </section>
           </>
+        )}
+
+        {!loading && !error && (
+          <section className="bg-white border rounded-lg shadow-sm p-4">
+            <div className="text-sm font-medium mb-2 text-gray-700">
+              {userFilter
+                ? `Chat history for ${userFilter} (last ${userHoursWindow}h)`
+                : 'Recent Activity'}
+            </div>
+            {events.length === 0 ? (
+              <EmptyState
+                title={userFilter ? 'No chat activity in this window' : 'No actions yet'}
+                hint={
+                  userFilter
+                    ? 'Try a wider time window above, or clear the filter to return to org-wide activity.'
+                    : 'Audit captures workspace, member, repo, MCP, API key changes — and Bedrock refusals.'
+                }
+              />
+            ) : (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-xs uppercase text-gray-500 border-b">
+                    <th className="py-2">Time</th>
+                    <th className="py-2">Actor</th>
+                    <th className="py-2">Action</th>
+                    <th className="py-2">Workspace</th>
+                    <th className="py-2">IP</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {events.map(ev => {
+                    const t = toneFor({
+                      action: ev.action,
+                      category: ev.category,
+                      status: ev.status,
+                    })
+                    const label = actionLabel(ev)
+                    return (
+                      <tr
+                        key={ev.request_id}
+                        className="border-b last:border-0 hover:bg-gray-50 cursor-pointer"
+                        onClick={() => setDrawerEvent(ev)}
+                      >
+                        <td
+                          className="py-2 text-xs text-gray-500"
+                          title={ev.timestamp}
+                        >
+                          {formatTimestamp(ev.timestamp)}
+                        </td>
+                        <td className="py-2 text-gray-800">{ev.user_email || '—'}</td>
+                        <td className="py-2">
+                          <span
+                            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-mono ring-1 ${t.bg} ${t.text} ${t.ring}`}
+                          >
+                            {label === 'REFUSAL' && <AlertTriangle size={11} />}
+                            {label}
+                          </span>
+                        </td>
+                        <td className="py-2 text-gray-700 text-xs">
+                          {ev.workspace_id || '—'}
+                        </td>
+                        <td className="py-2 font-mono text-xs text-gray-700">
+                          {ev.source_ip || '—'}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            )}
+
+            {adminCursor && (
+              <div className="mt-3 text-center">
+                <button
+                  onClick={loadMore}
+                  disabled={eventsLoading}
+                  className="px-3 py-1.5 text-sm border rounded-lg bg-white hover:bg-gray-50 disabled:opacity-50 transition-colors"
+                >
+                  {eventsLoading ? 'Loading…' : 'Load more'}
+                </button>
+              </div>
+            )}
+          </section>
         )}
       </main>
 
       <AuditEventDrawer
         event={drawerEvent}
         onClose={() => setDrawerEvent(null)}
+        onViewUserHistory={(email) => {
+          setDrawerEvent(null)
+          setUserFilter(email)
+          setUserHoursWindow(3)
+          // Scroll to top so the user sees the new filter pill.
+          window.scrollTo({ top: 0, behavior: 'smooth' })
+        }}
       />
     </div>
   )

@@ -322,6 +322,114 @@ describe('Audit', () => {
     expect(rows[0].textContent).toContain('REFUSAL')
   })
 
+  it('switches to user-history mode when drawer triggers it', async () => {
+    const user = userEvent.setup()
+    mockSummary.mockResolvedValue(buildSummary())
+
+    // Default mode: admin events page contains a refusal (so the drawer
+    // surfaces the "View user's chat history" button).
+    setAdminEvents(
+      buildEventsPage({ events: [] }),
+      buildEventsPage({
+        events: [
+          {
+            request_id: 'refusal-1',
+            timestamp: '2026-05-04T11:00:00+00:00',
+            category: 'bedrock',
+            action: '',
+            user_email: 'joe@example.com',
+            workspace_id: 'ws-1',
+            source_ip: '198.51.100.1',
+            user_agent: 'Mozilla/5.0',
+            details: {},
+            status: 'refusal',
+            flagged_reason: 'tos_violation',
+            lambda_name: 'chat',
+            model_id: 'us.anthropic.claude-sonnet-4-6',
+          },
+        ],
+        next_cursor: null,
+      }),
+    )
+
+    renderWithRouter(<Audit />)
+
+    await waitFor(() => {
+      expect(screen.getByText('REFUSAL')).toBeInTheDocument()
+    })
+
+    // Open the drawer for the refusal.
+    await user.click(screen.getByText('REFUSAL'))
+    expect(screen.getByRole('dialog', { name: /audit event/i })).toBeInTheDocument()
+
+    // Click the "View ... chat history" button. Should narrow the page to
+    // joe@example.com / category=bedrock / 3-hour window.
+    await user.click(screen.getByRole('button', { name: /chat history/i }))
+
+    await waitFor(() => {
+      // Filter pill appears with the user.
+      expect(screen.getByText(/Drilling: joe@example\.com/)).toBeInTheDocument()
+    })
+
+    // The drill request was issued (category=bedrock, userEmail=joe).
+    const drillCalls = mockEvents.mock.calls.filter(
+      ([args]) => args?.userEmail === 'joe@example.com' && args?.category === 'bedrock',
+    )
+    expect(drillCalls.length).toBeGreaterThan(0)
+
+    // Org-wide summary cards are hidden when drilling.
+    expect(screen.queryByText('Total Actions')).not.toBeInTheDocument()
+    expect(screen.queryByText('Critical Actions')).not.toBeInTheDocument()
+  })
+
+  it('clears user filter via the pill and returns to org view', async () => {
+    const user = userEvent.setup()
+    mockSummary.mockResolvedValue(buildSummary())
+
+    // Track refusal call so the drawer button appears.
+    setAdminEvents(
+      buildEventsPage({ events: [] }),
+      buildEventsPage({
+        events: [
+          {
+            request_id: 'refusal-2',
+            timestamp: '2026-05-04T11:00:00+00:00',
+            category: 'bedrock',
+            action: '',
+            user_email: 'joe@example.com',
+            workspace_id: 'ws-1',
+            source_ip: '198.51.100.1',
+            user_agent: 'Mozilla/5.0',
+            details: {},
+            status: 'refusal',
+            flagged_reason: 'tos_violation',
+            lambda_name: 'chat',
+            model_id: 'us.anthropic.claude-sonnet-4-6',
+          },
+        ],
+        next_cursor: null,
+      }),
+    )
+
+    renderWithRouter(<Audit />)
+    await waitFor(() => expect(screen.getByText('REFUSAL')).toBeInTheDocument())
+    await user.click(screen.getByText('REFUSAL'))
+    await user.click(screen.getByRole('button', { name: /chat history/i }))
+
+    await waitFor(() => {
+      expect(screen.getByText(/Drilling: joe@example\.com/)).toBeInTheDocument()
+    })
+
+    // Click the ✕ on the pill.
+    await user.click(screen.getByRole('button', { name: /Clear user filter/i }))
+
+    await waitFor(() => {
+      // Pill gone; org-wide summary back.
+      expect(screen.queryByText(/Drilling:/)).not.toBeInTheDocument()
+      expect(screen.getByText('Total Actions')).toBeInTheDocument()
+    })
+  })
+
   it('refusals roll into the Critical Actions stat', async () => {
     // Build a summary with values that don't collide with the count we
     // expect on the Critical Actions card so getByText is unambiguous.
