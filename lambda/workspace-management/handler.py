@@ -3792,6 +3792,15 @@ AUDIT_EVENTS_MAX_LIMIT = 200
 AUDIT_EVENTS_DEFAULT_LIMIT = 50
 AUDIT_EVENTS_NO_FILTER_CAP = 50
 
+# When a FilterExpression is present (e.g., status=refusal across the
+# CAT#bedrock partition where refusals are < 1% of rows), DDB applies
+# Limit BEFORE the filter, so a small Limit + sparse filter returns 0
+# matches even when many exist. The handler internally paginates with
+# this larger pre-filter page until target_limit results land or the
+# safety cap is hit.
+AUDIT_EVENTS_FILTER_PAGE_LIMIT = 500
+AUDIT_EVENTS_FILTER_MAX_PAGES = 10  # 10 * 500 = 5000 items scanned/req max
+
 
 def _decimal_to_native(value: Any) -> Any:
     """Recursively convert Decimal -> int/float for JSON-friendly output."""
@@ -4196,6 +4205,46 @@ def _audit_sk_range(start_date: str, end_date: str) -> Tuple[str, str]:
     return start_date, f"{end_date}~"
 
 
+def _paginated_filtered_query(
+    table,
+    query_kwargs: Dict[str, Any],
+    target: int,
+    page_limit: int = AUDIT_EVENTS_FILTER_PAGE_LIMIT,
+    max_pages: int = AUDIT_EVENTS_FILTER_MAX_PAGES,
+) -> Tuple[List[Dict], Optional[Dict]]:
+    """Paginate a Query with a sparse FilterExpression until `target`
+    matches accumulate or the safety cap is hit.
+
+    DynamoDB's documented behavior: Limit applies BEFORE FilterExpression,
+    so a tight Limit + a low-density filter (e.g., status=refusal in a
+    chat-heavy partition where < 1% of rows match) silently returns zero.
+    This helper walks pages of `page_limit` pre-filter items each, follows
+    LastEvaluatedKey, and stops once we have what the caller asked for.
+
+    Returns ``(items, last_evaluated_key)``. The returned key is the
+    cursor at which DDB stopped scanning on the LAST page we read, so a
+    caller's "Load more" round-trips correctly even if the current call
+    found exactly ``target`` matches earlier than that.
+    """
+    items: List[Dict] = []
+    base_kwargs = {k: v for k, v in query_kwargs.items() if k != "ExclusiveStartKey"}
+    last_key = query_kwargs.get("ExclusiveStartKey")
+
+    for _ in range(max_pages):
+        kwargs = {**base_kwargs, "Limit": page_limit}
+        if last_key:
+            kwargs["ExclusiveStartKey"] = last_key
+        response = table.query(**kwargs)
+        items.extend(response.get("Items", []) or [])
+        last_key = response.get("LastEvaluatedKey")
+        if len(items) >= target:
+            break
+        if not last_key:
+            break
+
+    return items[:target], last_key
+
+
 def get_audit_events(user_email: str, query_params: Dict[str, Any]) -> Dict:
     """Paginated raw audit events with optional filters."""
     audit_table_name = _get_audit_table()
@@ -4321,14 +4370,27 @@ def get_audit_events(user_email: str, query_params: Dict[str, Any]) -> Dict:
     try:
         # Every branch is now a Query (base table, GSI1, or GSI2) - the Scan
         # path was retired with the addition of GSI2.
-        response = audit_table.query(**query_kwargs)
+        if "FilterExpression" in query_kwargs:
+            # DDB applies Limit BEFORE FilterExpression, so a sparse filter
+            # (e.g., status=refusal across a chat-heavy partition) returns
+            # nothing if the first page of `limit` items happens to be all
+            # non-matches. Paginate internally up to MAX_PAGES of
+            # PAGE_LIMIT items each until we have `limit` matches.
+            items, last_key = _paginated_filtered_query(
+                audit_table, query_kwargs, target=limit,
+            )
+        else:
+            # Unfiltered: Limit applies pre-filter == post-filter, single
+            # page is correct.
+            response = audit_table.query(**{**query_kwargs, "Limit": limit})
+            items = response.get("Items", []) or []
+            last_key = response.get("LastEvaluatedKey")
 
-        items = response.get("Items", []) or []
         # Query with ScanIndexForward=False already returns newest-first in
         # SK order; sort defensively in case a future caller flips it.
         items.sort(key=lambda i: i.get("timestamp", ""), reverse=True)
         events = [_audit_event_from_item(item) for item in items]
-        next_cursor = _encode_audit_cursor(response.get("LastEvaluatedKey"))
+        next_cursor = _encode_audit_cursor(last_key)
 
         return _response(200, {
             "events": events,

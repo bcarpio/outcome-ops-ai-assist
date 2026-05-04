@@ -4178,6 +4178,94 @@ class TestAuditEvents:
     @patch("workspace_management_handler._is_org_admin", return_value=True)
     @patch("workspace_management_handler._get_workspaces_table")
     @patch("workspace_management_handler._get_dynamodb")
+    def test_filtered_query_paginates_to_find_sparse_matches(
+        self, mock_dynamodb, mock_get_table, mock_org
+    ):
+        """Regression for "refusals went away from the audit page": DDB
+        applies Limit BEFORE FilterExpression, so a sparse status=refusal
+        filter returns 0 if the most-recent N items are all non-matches.
+        The handler must paginate internally until target_limit matches
+        accumulate.
+        """
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+
+        # Page 1: 500 non-matches (all chat successes), more pages remain.
+        # Page 2: 1 refusal lurking past the chat backlog, no more pages.
+        mock_table.query.side_effect = [
+            {"Items": [], "LastEvaluatedKey": {"PK": "x", "SK": "y"}},
+            {"Items": [{"request_id": "r1", "timestamp": "2026-05-04T07:27:47+00:00"}]},
+        ]
+
+        with patch.object(handler_module, "AUDIT_TABLE", "test-audit"):
+            result = get_audit_events(
+                "admin@example.com",
+                {"category": "bedrock", "status": "refusal", "limit": "25"},
+            )
+        assert result["statusCode"] == 200
+        body = json.loads(result["body"])
+        assert len(body["events"]) == 1
+        assert body["events"][0]["request_id"] == "r1"
+
+        # Two query calls: handler kept paginating until it found the
+        # match. Each call carries the same FilterExpression with the
+        # bigger PAGE_LIMIT so DDB scans deeper into the partition.
+        assert mock_table.query.call_count == 2
+        for call in mock_table.query.call_args_list:
+            assert call.kwargs["Limit"] == handler_module.AUDIT_EVENTS_FILTER_PAGE_LIMIT
+
+    @patch("workspace_management_handler._is_org_admin", return_value=True)
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_filtered_query_respects_max_pages_safety_cap(
+        self, mock_dynamodb, mock_get_table, mock_org
+    ):
+        """If the filter would scan forever (every page returns LastEvaluatedKey
+        but no matches), the handler bails at MAX_PAGES so a Lambda
+        timeout doesn't bring down the dashboard."""
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+        # Always return empty matches + a cursor; the helper should cap.
+        mock_table.query.return_value = {
+            "Items": [],
+            "LastEvaluatedKey": {"PK": "x", "SK": "y"},
+        }
+
+        with patch.object(handler_module, "AUDIT_TABLE", "test-audit"):
+            get_audit_events(
+                "admin@example.com",
+                {"category": "bedrock", "status": "refusal"},
+            )
+
+        # Capped at MAX_PAGES — no infinite loop.
+        assert mock_table.query.call_count == handler_module.AUDIT_EVENTS_FILTER_MAX_PAGES
+
+    @patch("workspace_management_handler._is_org_admin", return_value=True)
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_unfiltered_query_uses_single_page_with_user_limit(
+        self, mock_dynamodb, mock_get_table, mock_org
+    ):
+        """No FilterExpression == cheap path: one query at the user's
+        limit, no pagination."""
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+        mock_table.query.return_value = {"Items": []}
+
+        with patch.object(handler_module, "AUDIT_TABLE", "test-audit"):
+            get_audit_events("admin@example.com", {"limit": "10"})
+
+        assert mock_table.query.call_count == 1
+        kwargs = mock_table.query.call_args.kwargs
+        assert kwargs["Limit"] == 10
+        assert "FilterExpression" not in kwargs
+
+    @patch("workspace_management_handler._is_org_admin", return_value=True)
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
     def test_refusal_event_envelope_includes_top_level_fields(
         self, mock_dynamodb, mock_get_table, mock_org
     ):
