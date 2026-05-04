@@ -114,15 +114,20 @@ PRICING = {
 SONNET = "us.anthropic.claude-sonnet-4-6"
 HAIKU = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 
-# Query profiles. Sonnet output is 5x the input price, so output tokens
-# drive most of the cost. Token ranges are tuned so the weighted average
-# lands around $0.068/query → 4000 queries → ~$272 over 30 days, matching
-# the demo target. (model, weight, in_range, out_range, lambda_name)
+# Query profiles. The platform's RAG path defaults to Haiku, with Sonnet
+# reserved for explicit "deep analysis" escalations - so the realistic
+# split is ~80% Haiku, ~20% Sonnet. To still hit the $250-300/30d demo
+# target, Haiku queries carry meaningful RAG context (50K-180K tokens)
+# which is normal for codebase-scale retrieval. Token ranges tuned so
+# the weighted average lands around $0.067/query.
+# (model, weight, in_range, out_range, lambda_name)
 PROFILES: List[Tuple[str, float, Tuple[int, int], Tuple[int, int], str]] = [
-    (HAIKU,  0.15, (200, 1500),    (100, 500),    "ask-claude"),
-    (SONNET, 0.40, (800, 3500),    (800, 2500),   "chat"),         # standard chat
-    (SONNET, 0.30, (6000, 15000),  (2500, 5000),  "chat"),         # RAG-heavy
-    (SONNET, 0.15, (20000, 30000), (6000, 10000), "generate-code"), # deep / codegen
+    (HAIKU,  0.20, (200, 1500),      (100, 500),     "ask-claude"),     # quick answers
+    (HAIKU,  0.25, (5000, 20000),    (1000, 2500),   "chat"),           # RAG-medium
+    (HAIKU,  0.35, (100000, 200000), (5000, 8000),   "chat"),           # RAG-large (codebase)
+    (SONNET, 0.12, (800, 3500),      (800, 2500),    "chat"),           # sonnet chat escalation
+    (SONNET, 0.06, (6000, 15000),    (2500, 5000),   "chat"),           # sonnet RAG escalation
+    (SONNET, 0.02, (20000, 30000),   (6000, 10000),  "generate-code"),  # sonnet deep / codegen
 ]
 
 # Refusal patterns from shared/audit.py:detect_refusal — using realistic
@@ -218,14 +223,31 @@ def _workspace_created_details(rng: random.Random) -> Dict:
     return {"workspace_name": name}
 
 
-# (action, count_target, details_builder, primary_user_only)
+# (action, count_target, details_builder)
+# Counts are sized so the dashboard's Recent Activity (newest 50) still
+# shows seeded diversity even when the operator has been hands-on
+# testing the platform recently.
 ADMIN_PLAN = [
-    ("WORKSPACE_BUDGET_UPDATED", 22, lambda rng: _budget_details(),       True),
-    ("SYSTEM_PROMPT_UPDATED",    17, lambda rng: _system_prompt_details(), False),
-    ("WORKSPACE_MEMBER_ADDED",   13, lambda rng: _member_added_details(rng), False),
-    ("API_KEY_CREATED",           7, lambda rng: _api_key_created_details(rng), False),
-    ("API_KEY_REVOKED",           4, lambda rng: _api_key_revoked_details(),    False),
-    ("WORKSPACE_CREATED",         9, lambda rng: _workspace_created_details(rng), True),
+    ("WORKSPACE_BUDGET_UPDATED", 32, lambda rng: _budget_details()),
+    ("SYSTEM_PROMPT_UPDATED",    28, lambda rng: _system_prompt_details()),
+    ("WORKSPACE_MEMBER_ADDED",   30, lambda rng: _member_added_details(rng)),
+    ("API_KEY_CREATED",          14, lambda rng: _api_key_created_details(rng)),
+    ("API_KEY_REVOKED",           8, lambda rng: _api_key_revoked_details()),
+    ("WORKSPACE_CREATED",        18, lambda rng: _workspace_created_details(rng)),
+]
+
+# Admin actor distribution. Demo narrative: a mature multi-admin org where
+# the platform owner (ppatel) does most config, with bcarpio (the
+# operator) and a few others contributing. Tuned so bcarpio is visible
+# but not dominant - if every admin row shows bcarpio the InfoSec story
+# loses the "Top Actors across many users" punch line.
+ADMIN_ACTOR_WEIGHTS = [
+    ("ppatel",     0.30),  # platform / workspace owner
+    ("rsilva",     0.22),
+    ("bcarpio",    0.18),  # the operator
+    ("akumar",     0.12),
+    ("mferreira",  0.10),
+    ("snguyen",    0.08),
 ]
 
 # ============================================================================
@@ -558,14 +580,24 @@ def _build_plan(
         rows.append(_refusal_row(ts, email, user_ips[email], ws_id, rng))
         counts["bedrock_refusal"] += 1
 
-    # Admin actions - mostly the operator, with a couple of other admins.
-    admin_actor_pool = [primary_email] * 8 + user_emails[1:4]  # ~70% bcarpio
-    for action, n, builder, primary_only in ADMIN_PLAN:
+    # Admin actions - distributed across multiple admins per
+    # ADMIN_ACTOR_WEIGHTS so the Recent Activity table shows diversity.
+    admin_actors = [
+        f"{handle}@{DOMAIN}" for handle, _ in ADMIN_ACTOR_WEIGHTS
+    ]
+    admin_actor_w = [w for _, w in ADMIN_ACTOR_WEIGHTS]
+    for action, n, builder in ADMIN_PLAN:
         admin_ts = _generate_timestamps(start_dt, n, rng)
         for ts in admin_ts:
-            actor = primary_email if primary_only else rng.choice(admin_actor_pool)
-            actor_ip = user_ips[actor]
-            ws_id = _weighted_choice(ws_choices, ws_weights, rng) if action != "WORKSPACE_CREATED" else ""
+            actor = _weighted_choice(admin_actors, admin_actor_w, rng)
+            actor_ip = user_ips.get(actor, primary_ip)
+            # WORKSPACE_CREATED is a system-level event (no workspace_id);
+            # everything else binds to a specific workspace.
+            ws_id = (
+                ""
+                if action == "WORKSPACE_CREATED"
+                else _weighted_choice(ws_choices, ws_weights, rng)
+            )
             rows.append(_admin_row(ts, actor, actor_ip, ws_id, action, builder(rng)))
             counts["admin"] += 1
 
@@ -610,6 +642,57 @@ def _delete_demo_rows(audit_table) -> int:
     return deleted
 
 
+def _clear_analytics_rollups(
+    analytics_table,
+    workspace_ids: List[str],
+    days: int,
+) -> int:
+    """Delete DA / DC / DCU / DT / DM / DU rollup rows for the seed
+    workspaces in the demo window.
+
+    The aggregator's ADD-based rollup math doesn't reverse on source-row
+    deletion, so deleting demo audit rows alone leaves stale counts in
+    the rollups. Re-running --apply would then double-count. Wiping the
+    rollups in the window forces the streams aggregator to re-emit them
+    cleanly from whatever audit rows remain (real + new seed).
+
+    Note: this also drops rollups produced from REAL audit rows in the
+    window. Acceptable for demo prep where the seed dominates anyway.
+    Run scripts/backfill-analytics.py afterward to recompute from real
+    audit history if you need it back.
+    """
+    start_date = (
+        datetime.now(timezone.utc) - timedelta(days=days)
+    ).strftime("%Y-%m-%d")
+    prefixes = ("DA#", "DC#", "DCU#", "DT#", "DM#", "DU#")
+    deleted = 0
+    for ws_id in workspace_ids:
+        scan_kwargs = {
+            "KeyConditionExpression": "PK = :pk",
+            "ExpressionAttributeValues": {":pk": f"WS#{ws_id}"},
+            "ProjectionExpression": "PK, SK",
+        }
+        while True:
+            resp = analytics_table.query(**scan_kwargs)
+            with analytics_table.batch_writer() as batch:
+                for item in resp.get("Items", []):
+                    sk = item["SK"]
+                    if not any(sk.startswith(p) for p in prefixes):
+                        continue
+                    # SK shape is "<prefix><date>" or "<prefix><date>#<suffix>".
+                    parts = sk.split("#", 2)
+                    date_part = parts[1] if len(parts) > 1 else ""
+                    if date_part >= start_date:
+                        batch.delete_item(
+                            Key={"PK": item["PK"], "SK": sk}
+                        )
+                        deleted += 1
+            if "LastEvaluatedKey" not in resp:
+                break
+            scan_kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
+    return deleted
+
+
 # ============================================================================
 # Main
 # ============================================================================
@@ -642,19 +725,32 @@ def main() -> int:
     log.info("audit table:      %s", audit_name)
     log.info("workspaces table: %s", workspaces_name)
 
+    analytics_name = _resolve_table_name(ssm, args.env, args.app_name, "analytics-table")
+    log.info("analytics table:  %s", analytics_name)
+
     audit_table = dynamodb.Table(audit_name)
     workspaces_table = dynamodb.Table(workspaces_name)
+    analytics_table = dynamodb.Table(analytics_name)
+
+    workspaces = _list_workspaces(workspaces_table)
 
     if args.clear_demo:
         log.info("scanning for existing demo rows to delete...")
         if args.apply:
             count = _delete_demo_rows(audit_table)
             log.info("deleted %d demo rows", count)
+            # Source-row deletion alone leaves stale ADD-rolled counts in
+            # the analytics table; nuke the relevant rollups too so the
+            # next --apply produces a clean dashboard via streams.
+            ws_ids = [w["workspace_id"] for w in workspaces]
+            cleared = _clear_analytics_rollups(
+                analytics_table, ws_ids, args.days,
+            )
+            log.info("deleted %d analytics rollup rows in seed window", cleared)
         else:
             count = sum(1 for _ in _scan_demo_rows(audit_table))
-            log.info("[dry-run] would delete %d demo rows", count)
-
-    workspaces = _list_workspaces(workspaces_table)
+            log.info("[dry-run] would delete %d demo rows + analytics "
+                     "rollups in the %dd window", count, args.days)
     log.info("workspaces detected: %d", len(workspaces))
     for w in workspaces:
         log.info("  - %s (%s)", w["name"], w["workspace_id"])
