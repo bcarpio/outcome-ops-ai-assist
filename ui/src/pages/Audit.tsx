@@ -285,6 +285,7 @@ export default function Audit() {
                 label="Most Common Action"
                 value={mostCommon}
                 accent="indigo"
+                kind="action"
               />
               <StatCard
                 label="Active Actors"
@@ -531,9 +532,13 @@ interface StatCardProps {
   value: string
   icon?: React.ReactNode
   accent?: 'neutral' | 'danger' | 'blue' | 'indigo' | 'emerald'
+  /** "number" cards use the big 2xl numeral; "action" cards render the
+   *  value as a smaller monospace identifier so long action names like
+   *  WORKSPACE_BUDGET_UPDATED don't blow out the card height. */
+  kind?: 'number' | 'action'
 }
 
-function StatCard({ label, value, icon, accent = 'neutral' }: StatCardProps) {
+function StatCard({ label, value, icon, accent = 'neutral', kind = 'number' }: StatCardProps) {
   const accentClass = {
     neutral:  'border-gray-200 bg-white',
     danger:   'border-rose-300 bg-rose-50',
@@ -541,13 +546,17 @@ function StatCard({ label, value, icon, accent = 'neutral' }: StatCardProps) {
     indigo:   'border-indigo-200 bg-indigo-50',
     emerald:  'border-emerald-200 bg-emerald-50',
   }[accent]
+  const valueClass =
+    kind === 'action'
+      ? 'text-sm font-mono font-medium mt-2 break-all text-indigo-700'
+      : 'text-2xl font-semibold mt-1 break-all text-gray-900'
   return (
     <div className={`border rounded-lg shadow-sm p-3 ${accentClass}`}>
       <div className="flex items-center justify-between text-xs uppercase text-gray-600 font-medium">
         <span>{label}</span>
         {icon}
       </div>
-      <div className="text-2xl font-semibold mt-1 break-all text-gray-900">{value}</div>
+      <div className={valueClass}>{value}</div>
     </div>
   )
 }
