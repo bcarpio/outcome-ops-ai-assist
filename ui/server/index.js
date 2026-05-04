@@ -178,6 +178,21 @@ function extractUser(req) {
 }
 
 /**
+ * Build the standard set of headers we forward to every signed Lambda
+ * call: the user's email plus the browser's real IP / user-agent (the
+ * latter two are read by the Lambda's main.py shim and surface into
+ * audit rows so we capture *who*, *what*, and *from where* on every
+ * chat / RAG / admin call). All chat & workspace-mgmt proxies use this.
+ */
+function userHeaders(req, user) {
+  return {
+    "x-user-email": user.email,
+    "x-real-source-ip": req.ip || "",
+    "x-real-user-agent": req.get("user-agent") || "",
+  };
+}
+
+/**
  * Sign and send a request to a Lambda Function URL.
  * Returns the fetch Response object.
  */
@@ -307,7 +322,7 @@ app.post("/api/chat", async (req, res) => {
 
     const response = await signedChatFetch("POST", "/", {
       body,
-      extraHeaders: { "x-user-email": user.email },
+      extraHeaders: userHeaders(req, user),
     });
 
     if (!response.ok) {
@@ -359,7 +374,7 @@ app.put("/api/conversations/:id/share", async (req, res) => {
     const user = extractUser(req);
     const response = await signedChatFetch("PUT", `/conversations/${req.params.id}/share`, {
       body: JSON.stringify(req.body),
-      extraHeaders: { "x-user-email": user.email },
+      extraHeaders: userHeaders(req, user),
     });
     const data = await response.json();
     res.status(response.status).json(data);
@@ -388,7 +403,7 @@ app.get("/api/conversations", async (req, res) => {
     const path = qs ? `/conversations?${qs}` : "/conversations";
 
     const response = await signedChatFetch("GET", path, {
-      extraHeaders: { "x-user-email": user.email },
+      extraHeaders: userHeaders(req, user),
     });
     const data = await response.json();
     res.status(response.status).json(data);
@@ -410,7 +425,7 @@ app.get("/api/conversations/:id", async (req, res) => {
 
   try {
     const response = await signedChatFetch("GET", `/conversations/${req.params.id}`, {
-      extraHeaders: { "x-user-email": user.email },
+      extraHeaders: userHeaders(req, user),
     });
     const data = await response.json();
     res.status(response.status).json(data);
@@ -432,7 +447,7 @@ app.delete("/api/conversations/:id", async (req, res) => {
 
   try {
     const response = await signedChatFetch("DELETE", `/conversations/${req.params.id}`, {
-      extraHeaders: { "x-user-email": user.email },
+      extraHeaders: userHeaders(req, user),
     });
     const data = await response.json();
     res.status(response.status).json(data);
@@ -456,7 +471,7 @@ app.get("/api/shared", async (req, res) => {
     if (req.query.cursor) params.set("cursor", req.query.cursor);
     const path = `/shared?${params.toString()}`;
     const response = await signedChatFetch("GET", path, {
-      extraHeaders: { "x-user-email": user.email },
+      extraHeaders: userHeaders(req, user),
     });
     const data = await response.json();
     res.status(response.status).json(data);
@@ -596,17 +611,7 @@ async function proxyWorkspaceRequest(req, res, method, path) {
   console.log(`[proxy] Workspace ${method} ${path} for: ${user.email}`);
 
   try {
-    const options = {
-      extraHeaders: {
-        "x-user-email": user.email,
-        // Forward the real browser IP / UA so the audit table records the
-        // user's origin instead of the Fargate task's egress IP and the
-        // node fetch UA. main.py:_build_event reads these into the
-        // synthesized requestContext.http.
-        "x-real-source-ip": req.ip || "",
-        "x-real-user-agent": req.get("user-agent") || "",
-      },
-    };
+    const options = { extraHeaders: userHeaders(req, user) };
     if (req.body && Object.keys(req.body).length > 0) {
       options.body = JSON.stringify(req.body);
     }
@@ -990,7 +995,7 @@ async function proxyConfluenceRequest(req, res, method, path) {
 
   try {
     const options = {
-      extraHeaders: { "x-user-email": user.email },
+      extraHeaders: userHeaders(req, user),
     };
     if (req.body && Object.keys(req.body).length > 0) {
       options.body = JSON.stringify(req.body);
@@ -1119,7 +1124,7 @@ async function proxyJiraRequest(req, res, method, path) {
 
   try {
     const options = {
-      extraHeaders: { "x-user-email": user.email },
+      extraHeaders: userHeaders(req, user),
     };
     if (req.body && Object.keys(req.body).length > 0) {
       options.body = JSON.stringify(req.body);
@@ -1252,7 +1257,7 @@ async function proxyGitHubRequest(req, res, method, path) {
 
   try {
     const options = {
-      extraHeaders: { "x-user-email": user.email },
+      extraHeaders: userHeaders(req, user),
     };
     if (req.body && Object.keys(req.body).length > 0) {
       options.body = JSON.stringify(req.body);
@@ -1395,7 +1400,7 @@ async function proxyOutlookRequest(req, res, method, path) {
 
   try {
     const options = {
-      extraHeaders: { "x-user-email": user.email },
+      extraHeaders: userHeaders(req, user),
     };
     if (req.body && Object.keys(req.body).length > 0) {
       options.body = JSON.stringify(req.body);
@@ -1528,7 +1533,7 @@ async function proxyTeamsRequest(req, res, method, path) {
 
   try {
     const options = {
-      extraHeaders: { "x-user-email": user.email },
+      extraHeaders: userHeaders(req, user),
     };
     if (req.body && Object.keys(req.body).length > 0) {
       options.body = JSON.stringify(req.body);
@@ -1662,7 +1667,7 @@ async function proxySharePointRequest(req, res, method, path) {
 
   try {
     const options = {
-      extraHeaders: { "x-user-email": user.email },
+      extraHeaders: userHeaders(req, user),
     };
     if (req.body && Object.keys(req.body).length > 0) {
       options.body = JSON.stringify(req.body);

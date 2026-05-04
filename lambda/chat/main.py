@@ -16,6 +16,24 @@ from fastapi.responses import JSONResponse, StreamingResponse
 app = FastAPI()
 
 
+def _extract_browser_ctx(headers: dict) -> tuple[str, str]:
+    """Pull the browser's source IP / user-agent forwarded by the Express
+    proxy as ``x-real-source-ip`` / ``x-real-user-agent``, falling back to
+    ``x-forwarded-for`` (LWA-injected from the Function URL's
+    requestContext.http.sourceIp) and the standard ``user-agent`` header.
+    Without this lookup the audit row records source_ip="" and user_agent
+    is whatever Node's fetch defaults to ("node")."""
+    real_ip = headers.get("x-real-source-ip", "").strip()
+    if not real_ip:
+        xff = headers.get("x-forwarded-for", "")
+        real_ip = xff.split(",")[0].strip() if xff else ""
+    real_ua = (
+        headers.get("x-real-user-agent", "").strip()
+        or headers.get("user-agent", "")
+    )
+    return real_ip, real_ua
+
+
 @app.get("/health")
 def health():
     """Health check endpoint for LWA readiness probe."""
@@ -30,10 +48,19 @@ async def chat_stream(request: Request):
     body = await request.body()
     body_str = body.decode("utf-8")
 
+    headers = dict(request.headers)
+    source_ip, user_agent = _extract_browser_ctx(headers)
     event = {
         "body": body_str,
-        "headers": dict(request.headers),
-        "requestContext": {"http": {"method": "POST", "path": "/"}},
+        "headers": headers,
+        "requestContext": {
+            "http": {
+                "method": "POST",
+                "path": "/",
+                "sourceIp": source_ip,
+                "userAgent": user_agent,
+            },
+        },
     }
 
     def generate():
@@ -56,9 +83,18 @@ async def chat_stream(request: Request):
 
 def _build_rest_event(request: Request, method: str, path: str) -> dict:
     """Build a Lambda-style event from a FastAPI request."""
+    headers = dict(request.headers)
+    source_ip, user_agent = _extract_browser_ctx(headers)
     return {
-        "headers": dict(request.headers),
-        "requestContext": {"http": {"method": method, "path": path}},
+        "headers": headers,
+        "requestContext": {
+            "http": {
+                "method": method,
+                "path": path,
+                "sourceIp": source_ip,
+                "userAgent": user_agent,
+            },
+        },
     }
 
 

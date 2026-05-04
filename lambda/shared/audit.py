@@ -200,6 +200,8 @@ def log_audit_entry(
     workspace_id: str = "",
     workspace_ids: Optional[List[str]] = None,
     sources: Optional[List] = None,
+    source_ip: str = "",
+    user_agent: str = "",
 ) -> None:
     """
     Log a Bedrock invocation to the audit table.
@@ -275,6 +277,11 @@ def log_audit_entry(
             "user_email": user_email,
             "workspace_id": workspace_id,
             "workspace_ids": workspace_ids or ([workspace_id] if workspace_id else []),
+            # Browser IP + UA captured by the calling Lambda from the
+            # request context. Both empty for invocations that don't
+            # have a request context (stream consumers, batch jobs).
+            "source_ip": source_ip or "",
+            "user_agent": user_agent or "",
             "timestamp": timestamp,
             "ttl": ttl,
         }

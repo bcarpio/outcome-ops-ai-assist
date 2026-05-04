@@ -1346,6 +1346,15 @@ def handle_chat_stream(event: Dict) -> Generator[str, None, None]:
     if request.user:
         user_id = request.user.get("email")
 
+    # Pull source_ip / user_agent off the synthesized requestContext so
+    # bedrock audit rows can record the browser IP. main.py:_extract_browser_ctx
+    # already populated these from x-real-source-ip / x-real-user-agent
+    # (with x-forwarded-for fallback).
+    _rc = event.get("requestContext", {}) or {}
+    _http = _rc.get("http", {}) or {}
+    source_ip = _http.get("sourceIp", "") or ""
+    user_agent = _http.get("userAgent", "") or ""
+
     # Get or create conversation
     conversation = None
     # Support both workspace_ids (new) and workspace_id (deprecated)
@@ -1461,6 +1470,8 @@ def handle_chat_stream(event: Dict) -> Generator[str, None, None]:
             flagged_reason="test_refusal_trigger",
             user_email=user_id or "",
             workspace_id=primary_workspace_id or "",
+            source_ip=source_ip,
+            user_agent=user_agent,
         )
         message_id = save_message(conversation_id, "assistant", test_answer, [])
         message_count += 1
@@ -1567,6 +1578,8 @@ def handle_chat_stream(event: Dict) -> Generator[str, None, None]:
         input_tokens=audit_input_tokens,
         output_tokens=audit_output_tokens,
         duration_ms=bedrock_duration_ms,
+        source_ip=source_ip,
+        user_agent=user_agent,
         user_email=user_id or "",
         workspace_id=primary_workspace_id or "",
         workspace_ids=workspace_ids,

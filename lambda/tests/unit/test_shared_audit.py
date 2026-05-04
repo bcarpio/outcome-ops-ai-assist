@@ -500,6 +500,42 @@ class TestLogAuditEntry:
         assert item["user_email"] == "user@example.com"
         assert item["workspace_id"] == "ws_123"
 
+    def test_log_audit_entry_records_source_ip_and_user_agent(self, mock_table):
+        """Bedrock audit rows must record the browser IP / UA forwarded by
+        the calling Lambda. Without this, the audit dashboard shows '—' for
+        every chat / RAG / refusal row even though the InfoSec story
+        depends on attributing each call to an origin."""
+        log_audit_entry(
+            audit_table_name="audit-table",
+            lambda_name="chat",
+            model_id="us.anthropic.claude-sonnet-4-6",
+            input_text="hi",
+            output_text="hello",
+            user_email="brian@example.com",
+            workspace_id="ws_1",
+            source_ip="24.253.92.153",
+            user_agent="Mozilla/5.0 (Macintosh)",
+        )
+
+        item = mock_table.put_item.call_args[1]["Item"]
+        assert item["source_ip"] == "24.253.92.153"
+        assert item["user_agent"] == "Mozilla/5.0 (Macintosh)"
+
+    def test_log_audit_entry_source_ip_defaults_to_empty(self, mock_table):
+        """Older callers (or stream/batch invocations with no request
+        context) don't pass source_ip; the row should record '' and not
+        crash."""
+        log_audit_entry(
+            audit_table_name="audit-table",
+            lambda_name="process-batch-summary",
+            model_id="us.anthropic.claude-haiku-4-5-20251001-v1:0",
+            input_text="x",
+            output_text="y",
+        )
+        item = mock_table.put_item.call_args[1]["Item"]
+        assert item["source_ip"] == ""
+        assert item["user_agent"] == ""
+
     def test_log_audit_entry_system_partition_key_without_workspace(self, mock_table):
         """Test uses WS#SYSTEM when no workspace_id provided."""
         log_audit_entry(
