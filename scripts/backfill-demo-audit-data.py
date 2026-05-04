@@ -108,13 +108,22 @@ BROWSER_UA = (
     "(KHTML, like Gecko) Version/17.0 Safari/605.1.15"
 )
 
-# Audit.py's authoritative pricing (per 1M tokens).
+# Audit.py's authoritative pricing (per 1M tokens for token-based;
+# per-call for rerank).
 PRICING = {
     "us.anthropic.claude-sonnet-4-6": (3.00, 15.00),
     "us.anthropic.claude-haiku-4-5-20251001-v1:0": (0.80, 4.00),
 }
 SONNET = "us.anthropic.claude-sonnet-4-6"
 HAIKU = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+RERANK_MODEL = "cohere.rerank-v3-5:0"
+RERANK_PRICE_PER_CALL = 0.002  # $2.00 / 1k search queries
+
+# Fraction of chat queries that fire a rerank call. Real-world: rerank
+# only runs when search returns >1 doc and RERANK_ENABLED is true. For
+# the demo, mirror what production does: ~70% of chat queries trigger
+# rerank, so the cost-by-model chart shows Cohere as a meaningful slice.
+RERANK_FRACTION = 0.70
 
 # Query profiles. The platform's RAG path defaults to Haiku, with Sonnet
 # reserved for explicit "deep analysis" escalations - so the realistic
@@ -420,6 +429,51 @@ def _bedrock_row(
     }
 
 
+def _rerank_row(
+    ts: datetime,
+    user_email: str,
+    source_ip: str,
+    workspace_id: str,
+    rng: random.Random,
+    docs_seen: int = 40,
+    docs_kept: int = 10,
+) -> Dict:
+    """Build a Cohere Rerank audit row that mirrors what chat/handler.py
+    writes after a real rerank: zero tokens, flat per-call cost, the
+    workspace and user the chat originated from."""
+    request_id = _make_request_id()
+    timestamp = ts.isoformat()
+    sk = f"{timestamp}#{request_id}"
+    return {
+        "PK": f"WS#{workspace_id}",
+        "SK": sk,
+        "GSI1PK": f"USER#{user_email}",
+        "GSI1SK": sk,
+        "GSI2PK": "CAT#bedrock",
+        "GSI2SK": sk,
+        "category": "bedrock",
+        "request_id": request_id,
+        "lambda_name": "chat",
+        "model_id": RERANK_MODEL,
+        "input_text": "",
+        "output_text": f"reranked {docs_kept} of {docs_seen} docs",
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cost_usd": str(RERANK_PRICE_PER_CALL),
+        "duration_ms": rng.randint(80, 350),
+        "status": "success",
+        "flagged_reason": "",
+        "user_email": user_email,
+        "workspace_id": workspace_id,
+        "workspace_ids": [workspace_id],
+        "source_ip": source_ip,
+        "user_agent": BROWSER_UA,
+        "timestamp": timestamp,
+        "ttl": _ttl(ts),
+        DEMO_MARKER: True,
+    }
+
+
 def _refusal_row(
     ts: datetime,
     user_email: str,
@@ -562,15 +616,25 @@ def _build_plan(
 
     start_dt = datetime.now(timezone.utc) - timedelta(days=days)
     rows: List[Dict] = []
-    counts = {"bedrock_success": 0, "bedrock_refusal": 0, "admin": 0}
+    counts = {"bedrock_success": 0, "bedrock_refusal": 0, "rerank": 0, "admin": 0}
 
-    # Bedrock queries
+    # Bedrock queries. For each chat-style row, optionally pair it with a
+    # Cohere rerank row at a slightly earlier timestamp to mirror real
+    # request flow (rerank fires inside the chat call, before the answer
+    # logs its audit row).
     bedrock_ts = _generate_timestamps(start_dt, bedrock_target, rng)
     for ts in bedrock_ts:
         email = _weighted_choice(user_emails, user_weights, rng)
         ws_id = _weighted_choice(ws_choices, ws_weights, rng)
         rows.append(_bedrock_row(ts, email, user_ips[email], ws_id, rng))
         counts["bedrock_success"] += 1
+        if rng.random() < RERANK_FRACTION:
+            # Rerank ran a few hundred ms before the chat audit log.
+            rerank_ts = ts - timedelta(milliseconds=rng.randint(150, 800))
+            rows.append(
+                _rerank_row(rerank_ts, email, user_ips[email], ws_id, rng)
+            )
+            counts["rerank"] += 1
 
     # Refusals - a bit more concentrated to a few users (noisy security
     # incident look) but not all from one person.
@@ -779,6 +843,7 @@ def main() -> int:
              len(rows), args.days, args.seed)
     log.info("  bedrock success: %d", counts["bedrock_success"])
     log.info("  refusals:        %d", counts["bedrock_refusal"])
+    log.info("  rerank calls:    %d (cohere)", counts["rerank"])
     log.info("  admin actions:   %d", counts["admin"])
     log.info("  estimated cost:  $%.2f", total_cost)
 

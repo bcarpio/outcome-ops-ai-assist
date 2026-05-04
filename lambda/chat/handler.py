@@ -812,11 +812,20 @@ def search_kb(
 def rerank_results(
     query: str,
     documents: List[Dict],
-    top_n: Optional[int] = None
+    top_n: Optional[int] = None,
+    user_email: str = "",
+    workspace_id: str = "",
+    source_ip: str = "",
+    user_agent: str = "",
 ) -> List[Dict]:
     """Rerank documents using Bedrock Rerank API (Cohere Rerank 3.5).
 
     Falls back to original order if reranking fails.
+
+    Caller should pass user_email + workspace_id + source_ip + user_agent
+    so the rerank audit row gets attributed correctly. Without these the
+    row lands at PK=WS#SYSTEM and the analytics aggregator skips it,
+    making rerank invisible in cost-by-workspace / cost-by-user views.
     """
     if not documents:
         return documents
@@ -875,6 +884,10 @@ def rerank_results(
             input_text=f"rerank:{query}",
             output_text=f"reranked {len(reranked)} of {len(documents)} docs",
             duration_ms=rerank_duration_ms,
+            user_email=user_email,
+            workspace_id=workspace_id,
+            source_ip=source_ip,
+            user_agent=user_agent,
         )
 
         return reranked
@@ -1493,9 +1506,20 @@ def handle_chat_stream(event: Dict) -> Generator[str, None, None]:
         fetch_k = min(request.top_k * 4, RERANK_MAX_FETCH) if RERANK_ENABLED else request.top_k
         search_results = search_kb(search_query, top_k=fetch_k, workspace_ids=workspace_ids)
 
-        # Rerank results if enabled
+        # Rerank results if enabled. Thread the request context so the
+        # rerank audit row is attributed to the workspace + user that
+        # caused it - otherwise it lands on WS#SYSTEM and the analytics
+        # aggregator skips it.
         if RERANK_ENABLED and len(search_results) > 1:
-            search_results = rerank_results(search_query, search_results, top_n=request.top_k)
+            search_results = rerank_results(
+                search_query,
+                search_results,
+                top_n=request.top_k,
+                user_email=user_id or "",
+                workspace_id=primary_workspace_id or "",
+                source_ip=source_ip,
+                user_agent=user_agent,
+            )
             # Log score distribution for threshold tuning (print for LWA/CloudWatch visibility)
             has_rerank_scores = any("rerank_score" in r for r in search_results)
             if has_rerank_scores:
