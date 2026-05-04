@@ -548,7 +548,7 @@ function StatCard({ label, value, icon, accent = 'neutral', kind = 'number' }: S
   }[accent]
   const valueClass =
     kind === 'action'
-      ? 'text-sm font-mono font-medium mt-2 break-all text-indigo-700'
+      ? 'text-lg font-mono font-semibold mt-1 break-all text-indigo-700'
       : 'text-2xl font-semibold mt-1 break-all text-gray-900'
   return (
     <div className={`border rounded-lg shadow-sm p-3 ${accentClass}`}>
