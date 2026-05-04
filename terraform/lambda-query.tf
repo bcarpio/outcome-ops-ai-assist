@@ -153,6 +153,7 @@ module "query_kb_lambda" {
     BEDROCK_EMBEDDING_INPUT_PRICE  = tostring(var.bedrock_embedding_input_price)
     BEDROCK_EMBEDDING_OUTPUT_PRICE = tostring(var.bedrock_embedding_output_price)
     BEDROCK_RERANK_MODEL_ID        = var.bedrock_rerank_model_id
+    BEDROCK_RERANK_PRICE_PER_1K    = tostring(var.bedrock_rerank_price_per_1k)
     RERANK_ENABLED                 = "true"
     RERANK_MAX_FETCH               = tostring(var.rerank_max_fetch)
     RERANK_MIN_SCORE               = tostring(var.rerank_min_score)

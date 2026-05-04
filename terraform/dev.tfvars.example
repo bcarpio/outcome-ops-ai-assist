@@ -43,9 +43,10 @@ enable_jira_integration = false
 # ============================================================================
 
 # Model for post-retrieval reranking (improves search precision)
-# bedrock_rerank_model_id = "cohere.rerank-v3-5:0"
-# rerank_max_fetch        = 50   # Max documents to over-fetch for reranking
-# rerank_min_score        = 0.3  # Min relevance score (0-1) to include in results
+# bedrock_rerank_model_id      = "cohere.rerank-v3-5:0"
+# bedrock_rerank_price_per_1k  = 2.00  # USD per 1,000 search queries
+# rerank_max_fetch             = 50    # Max documents to over-fetch for reranking
+# rerank_min_score             = 0.3   # Min relevance score (0-1) to include in results
 
 # ============================================================================
 # Bedrock Model Pricing (USD per million tokens)

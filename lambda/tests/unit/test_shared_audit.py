@@ -137,11 +137,16 @@ class TestModelPricing:
         """Test Titan embeddings model is in pricing table."""
         assert "amazon.titan-embed-text-v2:0" in MODEL_PRICING
 
-    def test_model_pricing_has_input_output_keys(self):
-        """Test each pricing entry has input and output keys."""
+    def test_model_pricing_has_known_shape(self):
+        """Each pricing entry must be either token-based ({input, output})
+        or per-call ({per_call}). Mixed/ad-hoc shapes would silently make
+        _calculate_cost fall through and return 0."""
         for model_id, pricing in MODEL_PRICING.items():
-            assert "input" in pricing, f"Missing 'input' key for {model_id}"
-            assert "output" in pricing, f"Missing 'output' key for {model_id}"
+            has_token_shape = "input" in pricing and "output" in pricing
+            has_per_call_shape = "per_call" in pricing
+            assert has_token_shape or has_per_call_shape, (
+                f"Unknown pricing shape for {model_id}: {pricing}"
+            )
 
     def test_model_pricing_titan_zero_output_cost(self):
         """Test Titan embeddings has zero output cost."""
@@ -302,6 +307,60 @@ class TestCalculateCost:
         cost_us = _calculate_cost("us.anthropic.claude-sonnet-4-5-20250929-v1:0", 5000, 2000)
         cost_no_prefix = _calculate_cost("anthropic.claude-sonnet-4-5-20250929-v1:0", 5000, 2000)
         assert cost_us == cost_no_prefix
+
+    def test_calculate_cost_rerank_per_call(self):
+        """Cohere Rerank uses a per-call price, not token math. Token args
+        are ignored; cost = $/1k / 1000 regardless of input/output sizes."""
+        # Default $2.00 / 1k = $0.002 per invocation.
+        cost = _calculate_cost("cohere.rerank-v3-5:0", 0, 0)
+        assert cost == 0.002
+        # Token counts must NOT affect rerank cost.
+        cost_with_tokens = _calculate_cost("cohere.rerank-v3-5:0", 50000, 1000)
+        assert cost_with_tokens == 0.002
+
+    def test_calculate_cost_rerank_uses_env_override(self):
+        """BEDROCK_RERANK_PRICE_PER_1K overrides the default at module-load
+        time. Reload the module under a custom value to confirm."""
+        import importlib.util
+        import os
+        import sys
+        with patch.dict(os.environ, {"BEDROCK_RERANK_PRICE_PER_1K": "5.00"}):
+            # Reload the audit module so the env var is picked up.
+            if "shared_audit" in sys.modules:
+                del sys.modules["shared_audit"]
+            shared_dir = os.path.join(os.path.dirname(__file__), "../../shared")
+            audit_path = os.path.join(shared_dir, "audit.py")
+            spec = importlib.util.spec_from_file_location("shared_audit", audit_path)
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules["shared_audit"] = mod
+            spec.loader.exec_module(mod)
+            try:
+                # $5.00 / 1k = $0.005 per call.
+                cost = mod._calculate_cost("cohere.rerank-v3-5:0", 0, 0)
+                assert cost == 0.005
+            finally:
+                # Restore the default-loaded module so other tests aren't poisoned.
+                _load_audit_module()
+
+
+class TestRerankAuditEntry:
+    """Verify rerank rows actually get a non-zero cost when log_audit_entry
+    auto-calculates. The original symptom was every rerank row landing at
+    cost_usd='0' because the auto-calc had a (input_tokens or output_tokens)
+    guard that skipped per-call models."""
+
+    def test_log_audit_entry_auto_prices_rerank_with_zero_tokens(self, mock_table):
+        log_audit_entry(
+            audit_table_name="audit-table",
+            lambda_name="chat",
+            model_id="cohere.rerank-v3-5:0",
+            input_text="rerank:query",
+            output_text="reranked 40 of 40 docs",
+        )
+        item = mock_table.put_item.call_args[1]["Item"]
+        # Default pricing: $2.00/1k = $0.002 per call.
+        assert item["cost_usd"] == "0.002"
+        assert item["model_id"] == "cohere.rerank-v3-5:0"
 
 
 # ============================================================================

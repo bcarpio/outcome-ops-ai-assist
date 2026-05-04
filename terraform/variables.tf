@@ -201,6 +201,12 @@ variable "bedrock_embedding_output_price" {
   default     = 0.0
 }
 
+variable "bedrock_rerank_price_per_1k" {
+  type        = number
+  description = "Price per 1,000 search queries for the Cohere rerank model. Cohere Rerank 3.5 on Bedrock is billed per search query (one rerank invocation regardless of doc count up to platform limits), not per token. Default matches the AWS public price."
+  default     = 2.00
+}
+
 variable "rag_max_doc_chars" {
   type        = number
   description = "Maximum characters per document passed to the model during RAG. Larger values give the model more context but use more tokens."

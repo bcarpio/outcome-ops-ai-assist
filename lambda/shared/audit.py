@@ -56,6 +56,9 @@ BASIC_MODEL_ID = os.environ.get(
 EMBEDDING_MODEL_ID = os.environ.get(
     "BEDROCK_EMBEDDING_MODEL_ID", "amazon.titan-embed-text-v2:0"
 )
+RERANK_MODEL_ID = os.environ.get(
+    "BEDROCK_RERANK_MODEL_ID", "cohere.rerank-v3-5:0"
+)
 
 # Pricing per 1M tokens (USD) — tied to model family, not exact version.
 # Values are sourced from environment variables wired in by Terraform
@@ -92,11 +95,20 @@ EMBEDDING_PRICING = {
     "input":  _price("BEDROCK_EMBEDDING_INPUT_PRICE",  0.02),
     "output": _price("BEDROCK_EMBEDDING_OUTPUT_PRICE", 0.0),
 }
+# Cohere Rerank on Bedrock prices per "search query" (one rerank call =
+# one search query, regardless of doc count up to ~100 docs / 500 tokens
+# per doc). Public price ~$2.00 / 1,000 search queries; expressed here as
+# a per-call USD figure so _calculate_cost can apply it without a token
+# multiplier. Override via BEDROCK_RERANK_PRICE_PER_1K in tfvars.
+RERANK_PRICING = {
+    "per_call": _price("BEDROCK_RERANK_PRICE_PER_1K", 2.00) / 1000.0,
+}
 
 MODEL_PRICING = {
     ADVANCED_MODEL_ID: ADVANCED_PRICING,
     BASIC_MODEL_ID: BASIC_PRICING,
     EMBEDDING_MODEL_ID: EMBEDDING_PRICING,
+    RERANK_MODEL_ID: RERANK_PRICING,
 }
 # Auto-register non-prefixed variants for audit compatibility
 for _id, _pricing in list(MODEL_PRICING.items()):
@@ -111,10 +123,19 @@ MODEL_PRICING["anthropic.claude-3-5-haiku-20241022-v1:0"] = BASIC_PRICING
 
 
 def _calculate_cost(model_id: str, input_tokens: int, output_tokens: int) -> float:
-    """Calculate cost in USD from model ID and token counts."""
+    """Calculate cost in USD from model ID and token counts.
+
+    Two pricing shapes are supported:
+      * Token-based (Claude / Titan Embed): ``{"input": $/1M, "output": $/1M}``
+        - cost scales linearly with token counts.
+      * Per-call (Cohere Rerank): ``{"per_call": $/invocation}``
+        - cost is a flat fee per audit row, token counts ignored.
+    """
     pricing = MODEL_PRICING.get(model_id)
     if not pricing:
         return 0.0
+    if "per_call" in pricing:
+        return round(pricing["per_call"], 6)
     input_cost = (input_tokens / 1_000_000) * pricing["input"]
     output_cost = (output_tokens / 1_000_000) * pricing["output"]
     return round(input_cost + output_cost, 6)
@@ -227,8 +248,11 @@ def log_audit_entry(
         return
 
     try:
-        # Auto-calculate cost from model pricing if not provided
-        if cost_usd == 0.0 and (input_tokens or output_tokens):
+        # Auto-calculate cost from model pricing if not provided. Drop the
+        # "tokens > 0" guard so per-call models (Cohere Rerank) price
+        # correctly - rerank rows carry zero tokens but a flat per-call fee.
+        # Token-based models with zero tokens still return 0.0.
+        if cost_usd == 0.0:
             cost_usd = _calculate_cost(model_id, input_tokens, output_tokens)
 
         # Run refusal detection on output before writing
