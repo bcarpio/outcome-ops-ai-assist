@@ -3831,8 +3831,17 @@ def _decode_audit_cursor(cursor: str) -> Optional[Dict]:
 
 
 def _audit_event_from_item(item: Dict) -> Dict:
-    """Project a raw audit row into the public event JSON envelope."""
-    return {
+    """Project a raw audit row into the public event JSON envelope.
+
+    Bedrock rows carry refusal context as top-level attributes
+    (``status``, ``flagged_reason``, ``lambda_name``, ``model_id``) plus
+    full ``input_text``/``output_text``. Surfacing them on the envelope
+    lets the audit dashboard render a refusal's prompt + reason in the
+    same drawer it uses for admin actions, no separate API needed.
+    Truncate input/output here so the page payload stays small even when
+    the source rows hold ~50KB strings.
+    """
+    out = {
         "request_id": item.get("request_id", ""),
         "timestamp": item.get("timestamp", ""),
         "category": item.get("category", "bedrock"),
@@ -3843,6 +3852,17 @@ def _audit_event_from_item(item: Dict) -> Dict:
         "user_agent": item.get("user_agent", ""),
         "details": _decimal_to_native(item.get("details") or {}),
     }
+    # Optional bedrock-only fields. Skip when empty so admin-row payloads
+    # stay clean.
+    for key in ("status", "flagged_reason", "lambda_name", "model_id"):
+        val = item.get(key)
+        if val:
+            out[key] = val
+    for key in ("input_text", "output_text"):
+        val = item.get(key)
+        if val:
+            out[key] = (val[:2000] if isinstance(val, str) else val)
+    return out
 
 
 def _query_admin_aggregates(
@@ -4190,6 +4210,7 @@ def get_audit_events(user_email: str, query_params: Dict[str, Any]) -> Dict:
     user_filter = (query_params.get("user_email") or "").strip()
     action_filter = (query_params.get("action") or "").strip()
     category_filter = (query_params.get("category") or "").strip()
+    status_filter = (query_params.get("status") or "").strip()
     cursor = (query_params.get("cursor") or "").strip()
 
     sk_start, sk_end = _audit_sk_range(_date_only(start_iso), _date_only(end_iso))
@@ -4278,6 +4299,17 @@ def get_audit_events(user_email: str, query_params: Dict[str, Any]) -> Dict:
             ":category": category_filter,
         }
         filters.append("category = :category")
+    if status_filter:
+        # Refusals live on bedrock rows with status="refusal"; the audit
+        # dashboard surfaces them inline with admin actions, so the
+        # endpoint accepts ?status=refusal as a filter against the
+        # standard audit row attribute.
+        query_kwargs["ExpressionAttributeValues"] = {
+            **query_kwargs.get("ExpressionAttributeValues", {}),
+            ":status": status_filter,
+        }
+        filters.append("#st = :status")
+        query_kwargs.setdefault("ExpressionAttributeNames", {})["#st"] = "status"
     if filters:
         query_kwargs["FilterExpression"] = " AND ".join(filters)
 

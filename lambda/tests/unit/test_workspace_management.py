@@ -4151,6 +4151,111 @@ class TestAuditEvents:
     @patch("workspace_management_handler._is_org_admin", return_value=True)
     @patch("workspace_management_handler._get_workspaces_table")
     @patch("workspace_management_handler._get_dynamodb")
+    def test_status_filter_appears_in_filter_expression(
+        self, mock_dynamodb, mock_get_table, mock_org
+    ):
+        """The Audit dashboard fetches refusals via category=bedrock +
+        status=refusal. Regression test that the status param surfaces as
+        a FilterExpression on the audit-events Query."""
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+        mock_table.query.return_value = {"Items": []}
+
+        with patch.object(handler_module, "AUDIT_TABLE", "test-audit"):
+            get_audit_events(
+                "admin@example.com",
+                {"category": "bedrock", "status": "refusal"},
+            )
+
+        kwargs = mock_table.query.call_args.kwargs
+        assert kwargs["IndexName"] == "GSI2"
+        assert kwargs["ExpressionAttributeValues"][":gsi2pk"] == "CAT#bedrock"
+        assert "#st = :status" in kwargs["FilterExpression"]
+        assert kwargs["ExpressionAttributeValues"][":status"] == "refusal"
+        assert kwargs["ExpressionAttributeNames"]["#st"] == "status"
+
+    @patch("workspace_management_handler._is_org_admin", return_value=True)
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_refusal_event_envelope_includes_top_level_fields(
+        self, mock_dynamodb, mock_get_table, mock_org
+    ):
+        """Refusal rows carry status / flagged_reason / lambda_name /
+        model_id at the top level of the audit table item; the projection
+        must surface them on the public envelope so the drawer can render
+        the refusal reason and the prompt that triggered it."""
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+        mock_table.query.return_value = {"Items": [{
+            "request_id": "audit_xyz",
+            "timestamp": "2026-05-04T00:55:21+00:00",
+            "category": "bedrock",
+            "user_email": "brian@example.com",
+            "workspace_id": "",
+            "source_ip": "24.253.92.153",
+            "user_agent": "Mozilla/5.0",
+            "status": "refusal",
+            "flagged_reason": "test_refusal_trigger",
+            "lambda_name": "chat",
+            "model_id": "us.anthropic.claude-sonnet-4-6",
+            "input_text": "...prompt...",
+            "output_text": "...refusal response...",
+        }]}
+
+        with patch.object(handler_module, "AUDIT_TABLE", "test-audit"):
+            result = get_audit_events(
+                "admin@example.com",
+                {"category": "bedrock", "status": "refusal"},
+            )
+
+        assert result["statusCode"] == 200
+        body = json.loads(result["body"])
+        ev = body["events"][0]
+        assert ev["status"] == "refusal"
+        assert ev["flagged_reason"] == "test_refusal_trigger"
+        assert ev["lambda_name"] == "chat"
+        assert ev["model_id"] == "us.anthropic.claude-sonnet-4-6"
+        assert ev["input_text"] == "...prompt..."
+        assert ev["output_text"] == "...refusal response..."
+
+    @patch("workspace_management_handler._is_org_admin", return_value=True)
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_admin_event_envelope_omits_bedrock_fields(
+        self, mock_dynamodb, mock_get_table, mock_org
+    ):
+        """Admin rows don't have status / flagged_reason / lambda_name /
+        model_id. The projection must omit those keys (rather than emit
+        empty strings) so admin payloads stay clean."""
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+        mock_table.query.return_value = {"Items": [{
+            "request_id": "abc",
+            "timestamp": "2026-05-04T01:00:00+00:00",
+            "category": "admin",
+            "action": "WORKSPACE_CREATED",
+            "user_email": "brian@example.com",
+            "workspace_id": "ws-1",
+            "source_ip": "24.253.92.153",
+            "user_agent": "Mozilla/5.0",
+            "details": {"workspace_name": "X"},
+        }]}
+
+        with patch.object(handler_module, "AUDIT_TABLE", "test-audit"):
+            result = get_audit_events("admin@example.com", {})
+
+        body = json.loads(result["body"])
+        ev = body["events"][0]
+        for key in ("status", "flagged_reason", "lambda_name", "model_id",
+                     "input_text", "output_text"):
+            assert key not in ev, f"unexpected {key} on admin envelope: {ev}"
+
+    @patch("workspace_management_handler._is_org_admin", return_value=True)
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
     def test_category_filter_routes_to_correct_partition(
         self, mock_dynamodb, mock_get_table, mock_org
     ):

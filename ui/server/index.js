@@ -796,7 +796,7 @@ app.get("/api/audit/workspace/:id", (req, res) => {
 app.get("/api/audit/events", (req, res) => {
   const params = new URLSearchParams();
   for (const k of ["start_date", "end_date", "workspace_id", "user_email",
-                    "action", "category", "cursor", "limit"]) {
+                    "action", "category", "status", "cursor", "limit"]) {
     if (req.query[k]) params.set(k, req.query[k]);
   }
   const qs = params.toString();

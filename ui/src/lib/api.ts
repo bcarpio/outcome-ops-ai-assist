@@ -2168,6 +2168,13 @@ export interface AuditEvent {
   source_ip: string
   user_agent: string
   details: Record<string, unknown>
+  // Bedrock-only fields, present on refusal rows. Empty on admin events.
+  status?: string
+  flagged_reason?: string
+  lambda_name?: string
+  model_id?: string
+  input_text?: string
+  output_text?: string
 }
 
 export interface AuditEventsPage {
@@ -2185,6 +2192,9 @@ export interface AuditEventFilters {
   userEmail?: string
   action?: string
   category?: string
+  /** Filter by row status. Used to fetch refusals (status="refusal"
+   * on bedrock-category rows) for the audit dashboard's inline view. */
+  status?: string
   cursor?: string
   limit?: number
 }
@@ -2239,6 +2249,7 @@ export async function getAuditEvents(
   if (filters.userEmail) params.set('user_email', filters.userEmail)
   if (filters.action) params.set('action', filters.action)
   if (filters.category) params.set('category', filters.category)
+  if (filters.status) params.set('status', filters.status)
   if (filters.cursor) params.set('cursor', filters.cursor)
   if (filters.limit) params.set('limit', String(filters.limit))
   const qs = params.toString()

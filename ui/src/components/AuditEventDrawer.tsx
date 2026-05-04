@@ -38,6 +38,16 @@ export default function AuditEventDrawer({ event, onClose }: AuditEventDrawerPro
     copyToClipboard(JSON.stringify(event, null, 2))
   }
 
+  const isRefusal = event.status === 'refusal'
+  const headerLabel = isRefusal
+    ? 'REFUSAL'
+    : (event.action || (event.category === 'bedrock' ? 'BEDROCK_CALL' : 'UNKNOWN'))
+  const headerAccent = isRefusal
+    ? 'text-rose-700'
+    : event.category === 'bedrock'
+      ? 'text-purple-700'
+      : 'text-gray-900'
+
   return (
     <div
       role="dialog"
@@ -52,7 +62,7 @@ export default function AuditEventDrawer({ event, onClose }: AuditEventDrawerPro
         <div className="flex items-start justify-between p-4 border-b">
           <div>
             <div className="text-xs uppercase text-gray-500">{event.category || 'admin'}</div>
-            <div className="text-lg font-semibold">{event.action || 'UNKNOWN'}</div>
+            <div className={`text-lg font-semibold ${headerAccent}`}>{headerLabel}</div>
             <div className="text-xs text-gray-500" title={event.timestamp}>
               {event.timestamp}
             </div>
@@ -68,6 +78,27 @@ export default function AuditEventDrawer({ event, onClose }: AuditEventDrawerPro
         </div>
 
         <div className="p-4 space-y-4">
+          {isRefusal && event.flagged_reason && (
+            <div className="rounded-lg border border-rose-200 bg-rose-50 p-3">
+              <div className="text-xs uppercase text-rose-700 font-medium mb-1">
+                Refusal reason
+              </div>
+              <div className="text-sm text-rose-900 break-words">
+                {event.flagged_reason}
+              </div>
+              {event.model_id && (
+                <div className="text-xs text-rose-700 mt-2">
+                  Model: <span className="font-mono">{event.model_id}</span>
+                </div>
+              )}
+              {event.lambda_name && (
+                <div className="text-xs text-rose-700">
+                  Source: <span className="font-mono">{event.lambda_name}</span>
+                </div>
+              )}
+            </div>
+          )}
+
           <DetailField label="Workspace" value={event.workspace_id || '—'} />
           <DetailField
             label="Request ID"
@@ -84,6 +115,23 @@ export default function AuditEventDrawer({ event, onClose }: AuditEventDrawerPro
             value={event.user_agent || '—'}
             multiline
           />
+
+          {isRefusal && event.input_text && (
+            <div>
+              <div className="text-xs uppercase text-gray-500 mb-1">User prompt</div>
+              <pre className="text-xs font-mono bg-gray-50 border rounded p-2 whitespace-pre-wrap break-words max-h-48 overflow-y-auto">
+                {event.input_text}
+              </pre>
+            </div>
+          )}
+          {isRefusal && event.output_text && (
+            <div>
+              <div className="text-xs uppercase text-gray-500 mb-1">Model response</div>
+              <pre className="text-xs font-mono bg-gray-50 border rounded p-2 whitespace-pre-wrap break-words max-h-48 overflow-y-auto">
+                {event.output_text}
+              </pre>
+            </div>
+          )}
 
           <div>
             <div className="flex items-center justify-between mb-1">
