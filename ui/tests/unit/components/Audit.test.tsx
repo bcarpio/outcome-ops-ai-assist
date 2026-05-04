@@ -382,6 +382,55 @@ describe('Audit', () => {
     expect(screen.queryByText('Critical Actions')).not.toBeInTheDocument()
   })
 
+  it('shows Export CSV / JSON buttons in user-history mode', async () => {
+    const user = userEvent.setup()
+    mockSummary.mockResolvedValue(buildSummary())
+    setAdminEvents(
+      buildEventsPage({ events: [] }),
+      buildEventsPage({
+        events: [
+          {
+            request_id: 'refusal-export',
+            timestamp: '2026-05-04T11:00:00+00:00',
+            category: 'bedrock',
+            action: '',
+            user_email: 'joe@example.com',
+            workspace_id: 'ws-1',
+            source_ip: '198.51.100.1',
+            user_agent: 'Mozilla/5.0',
+            details: {},
+            status: 'refusal',
+            flagged_reason: 'tos_violation',
+            lambda_name: 'chat',
+            model_id: 'us.anthropic.claude-sonnet-4-6',
+          },
+        ],
+        next_cursor: null,
+      }),
+    )
+
+    renderWithRouter(<Audit />)
+    await waitFor(() => expect(screen.getByText('REFUSAL')).toBeInTheDocument())
+    await user.click(screen.getByText('REFUSAL'))
+    await user.click(screen.getByRole('button', { name: /chat history/i }))
+
+    await waitFor(() => {
+      // Export buttons surface only in drill mode.
+      expect(screen.getByRole('button', { name: 'Export as CSV' })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Export as JSON' })).toBeInTheDocument()
+    })
+  })
+
+  it('does not show Export buttons in default org-wide mode', async () => {
+    mockSummary.mockResolvedValue(buildSummary())
+    setAdminEvents(buildEventsPage())
+
+    renderWithRouter(<Audit />)
+    await waitFor(() => expect(screen.getByText('Total Actions')).toBeInTheDocument())
+    expect(screen.queryByRole('button', { name: 'Export as CSV' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Export as JSON' })).not.toBeInTheDocument()
+  })
+
   it('clears user filter via the pill and returns to org view', async () => {
     const user = userEvent.setup()
     mockSummary.mockResolvedValue(buildSummary())

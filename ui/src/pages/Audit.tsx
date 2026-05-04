@@ -8,6 +8,7 @@ import {
   Users,
   Filter,
   AlertTriangle,
+  Download,
 } from 'lucide-react'
 import {
   ResponsiveContainer,
@@ -27,6 +28,13 @@ import {
   type AuditEvent,
   type AuditEventsPage,
 } from '../lib/api'
+import {
+  fetchAllAuditEvents,
+  eventsToCsv,
+  eventsToJson,
+  buildExportFilename,
+  downloadFile,
+} from '../lib/auditExport'
 
 type DateRangeOption = 7 | 30 | 90
 type HoursWindow = 1 | 3 | 24
@@ -126,6 +134,7 @@ export default function Audit() {
   const [userHoursWindow, setUserHoursWindow] = useState<HoursWindow>(3)
   const [loading, setLoading] = useState(true)
   const [eventsLoading, setEventsLoading] = useState(false)
+  const [exporting, setExporting] = useState<false | 'csv' | 'json'>(false)
   const [error, setError] = useState<string | null>(null)
   const [drawerEvent, setDrawerEvent] = useState<AuditEvent | null>(null)
 
@@ -242,6 +251,36 @@ export default function Audit() {
     }
   }
 
+  const handleExport = async (format: 'csv' | 'json') => {
+    if (!userFilter) return
+    setExporting(format)
+    setError(null)
+    try {
+      const { events: all, truncated } = await fetchAllAuditEvents({
+        startDate,
+        endDate,
+        userEmail: userFilter,
+        category: 'bedrock',
+      })
+      const content = format === 'csv' ? eventsToCsv(all) : eventsToJson(all)
+      const mime = format === 'csv' ? 'text/csv;charset=utf-8' : 'application/json'
+      downloadFile(
+        content,
+        buildExportFilename(userFilter, startDate, endDate, format),
+        mime,
+      )
+      if (truncated) {
+        setError(
+          'Export hit the safety cap (5,000 events). Narrow the time window for a complete capture.',
+        )
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Export failed')
+    } finally {
+      setExporting(false)
+    }
+  }
+
   const criticalCount = useMemo(() => {
     if (!summary) return refusalCount
     const adminCritical = summary.actions_by_type
@@ -315,6 +354,28 @@ export default function Audit() {
             >
               <Filter size={12} /> Drilling: {userFilter} ✕
             </button>
+          )}
+          {userFilter && (
+            <div className="ml-auto flex items-center gap-1">
+              <Download size={14} className="text-gray-500" />
+              <span className="text-xs text-gray-500 mr-1">Export:</span>
+              <button
+                onClick={() => handleExport('csv')}
+                disabled={exporting !== false}
+                className="px-2 py-1 text-xs rounded border border-gray-300 bg-white hover:bg-gray-50 disabled:opacity-50 transition-colors"
+                aria-label="Export as CSV"
+              >
+                {exporting === 'csv' ? 'Exporting…' : 'CSV'}
+              </button>
+              <button
+                onClick={() => handleExport('json')}
+                disabled={exporting !== false}
+                className="px-2 py-1 text-xs rounded border border-gray-300 bg-white hover:bg-gray-50 disabled:opacity-50 transition-colors"
+                aria-label="Export as JSON"
+              >
+                {exporting === 'json' ? 'Exporting…' : 'JSON'}
+              </button>
+            </div>
           )}
           {actionFilter && (
             <button
