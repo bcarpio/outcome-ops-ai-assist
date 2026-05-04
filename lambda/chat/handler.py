@@ -1460,10 +1460,14 @@ def handle_chat_stream(event: Dict) -> Generator[str, None, None]:
         }
         yield json.dumps(metadata) + "\n"
         yield json.dumps({"type": "token", "text": test_answer}) + "\n"
+        # model_id is set to the basic model so the row looks like a real
+        # refusal in cost-by-model analytics (zero tokens/cost still get
+        # attributed, so this doesn't inflate haiku spend). flagged_reason
+        # still says test_refusal_trigger so QA tooling can distinguish.
         log_audit_entry(
             audit_table_name=os.environ.get("AUDIT_TABLE", ""),
             lambda_name="chat",
-            model_id="test",
+            model_id=BASIC_MODEL_ID,
             input_text=request.message,
             output_text=test_answer,
             status="refusal",
