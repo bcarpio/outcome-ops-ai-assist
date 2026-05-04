@@ -20,19 +20,21 @@ Targets (matches the InfoSec / FinOps demo narrative):
 
 Usage:
     source venv/bin/activate
-    python scripts/backfill-demo-audit-data.py --env prd --dry-run
-    python scripts/backfill-demo-audit-data.py --env prd --apply
-    python scripts/backfill-demo-audit-data.py --env prd --clear-demo
-    python scripts/backfill-demo-audit-data.py --env prd --clear-demo --apply
+    python scripts/backfill-demo-audit-data.py --env prd                 # dry-run
+    python scripts/backfill-demo-audit-data.py --env prd --apply         # refresh demo data
+    python scripts/backfill-demo-audit-data.py --env prd --clear-demo    # tear down only
 
 The streams aggregator processes each new write asynchronously; expect a
 ~1-2 minute delay before the analytics + audit dashboards reflect the
 seeded data.
 
-Idempotency: re-running ``--apply`` adds MORE rows (each gets a unique
-request_id). To reset, use ``--clear-demo`` first; the seeder writes a
-``demo_seed`` attribute on every row it creates, and the cleanup path
-matches on that attribute so it never touches real audit history.
+Re-runnable by design: ``--apply`` is idempotent in effect even though
+it produces fresh content each call. The script auto-deletes the prior
+demo rows (matched on the ``demo_seed`` attribute, so real audit history
+is never touched) and the corresponding analytics rollups in the seed
+window before writing a new 30-day batch anchored to "now". Run it on
+whatever cadence keeps the demo fresh - e.g., before a customer call,
+or as a weekly cron.
 """
 
 import argparse
@@ -711,9 +713,13 @@ def main() -> int:
     parser.add_argument("--seed", type=int, default=42,
                         help="Random seed for reproducible demos")
     parser.add_argument("--apply", action="store_true",
-                        help="Actually write rows (default is dry-run)")
+                        help="Actually write rows (default is dry-run). "
+                             "Implies a clean-first pass so the script is "
+                             "safe to re-run on a cadence.")
     parser.add_argument("--clear-demo", action="store_true",
-                        help="First delete every row tagged demo_seed=true")
+                        help="Delete prior demo rows + analytics rollups in "
+                             "the seed window. Implied by --apply; useful "
+                             "on its own only for teardown without re-seed.")
     args = parser.parse_args()
 
     session = boto3.session.Session()
@@ -734,14 +740,20 @@ def main() -> int:
 
     workspaces = _list_workspaces(workspaces_table)
 
-    if args.clear_demo:
+    # Apply implies clean-first so the script is safe to re-run on a
+    # cadence (e.g., refresh demo data every Monday before customer calls).
+    # Each --apply invocation produces a fresh 30-day window anchored to
+    # "now". --clear-demo stays as the explicit "just clean, don't write"
+    # mode for teardown.
+    should_clean = args.clear_demo or args.apply
+    if should_clean:
         log.info("scanning for existing demo rows to delete...")
         if args.apply:
             count = _delete_demo_rows(audit_table)
             log.info("deleted %d demo rows", count)
             # Source-row deletion alone leaves stale ADD-rolled counts in
             # the analytics table; nuke the relevant rollups too so the
-            # next --apply produces a clean dashboard via streams.
+            # next aggregator pass produces clean numbers via streams.
             ws_ids = [w["workspace_id"] for w in workspaces]
             cleared = _clear_analytics_rollups(
                 analytics_table, ws_ids, args.days,
