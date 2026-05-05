@@ -174,6 +174,25 @@ class TestRequestModels:
         with pytest.raises(Exception):  # Pydantic ValidationError
             CreateWorkspaceRequest(name="")
 
+    def test_create_workspace_request_privacy_mode_optional(self):
+        """privacy_mode is optional; default None lets the handler apply
+        the org-default of STRICT."""
+        request = CreateWorkspaceRequest(name="W")
+        assert request.privacy_mode is None
+
+    def test_create_workspace_request_privacy_mode_strict(self):
+        request = CreateWorkspaceRequest(name="W", privacy_mode="STRICT")
+        assert request.privacy_mode == "STRICT"
+
+    def test_create_workspace_request_privacy_mode_none(self):
+        request = CreateWorkspaceRequest(name="W", privacy_mode="NONE")
+        assert request.privacy_mode == "NONE"
+
+    def test_create_workspace_request_privacy_mode_invalid(self):
+        """Anything other than STRICT / NONE rejects at validation."""
+        with pytest.raises(Exception):
+            CreateWorkspaceRequest(name="W", privacy_mode="LOOSE")
+
     def test_add_member_request_valid_roles(self):
         """Test valid member roles."""
         request = AddMemberRequest(email="user@example.com", role="workspace_admin")
@@ -256,6 +275,56 @@ class TestCreateWorkspace:
 
         # Assert
         assert result["statusCode"] == 500
+
+    @patch("workspace_management_handler._is_org_admin", return_value=True)
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_create_workspace_defaults_privacy_mode_strict(
+        self, mock_dynamodb, mock_get_table, mock_is_admin,
+    ):
+        """When the request omits privacy_mode, the workspace METADATA row
+        is created with privacy_mode='STRICT' (the safe default)."""
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+
+        mock_batch_writer = MagicMock()
+        mock_table.batch_writer.return_value.__enter__ = lambda s: mock_batch_writer
+        mock_table.batch_writer.return_value.__exit__ = MagicMock(return_value=False)
+
+        request = CreateWorkspaceRequest(name="W")
+        result = create_workspace("admin@example.com", request)
+        assert result["statusCode"] == 201
+
+        # The first put_item is the workspace METADATA row.
+        first_put = mock_batch_writer.put_item.call_args_list[0]
+        item = first_put.kwargs["Item"]
+        assert item["SK"] == "METADATA"
+        assert item["privacy_mode"] == "STRICT"
+
+    @patch("workspace_management_handler._is_org_admin", return_value=True)
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_create_workspace_honors_explicit_privacy_mode_none(
+        self, mock_dynamodb, mock_get_table, mock_is_admin,
+    ):
+        """When the request specifies privacy_mode='NONE', that lands in DDB."""
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+
+        mock_batch_writer = MagicMock()
+        mock_table.batch_writer.return_value.__enter__ = lambda s: mock_batch_writer
+        mock_table.batch_writer.return_value.__exit__ = MagicMock(return_value=False)
+
+        request = CreateWorkspaceRequest(name="W", privacy_mode="NONE")
+        result = create_workspace("admin@example.com", request)
+        assert result["statusCode"] == 201
+
+        first_put = mock_batch_writer.put_item.call_args_list[0]
+        item = first_put.kwargs["Item"]
+        assert item["SK"] == "METADATA"
+        assert item["privacy_mode"] == "NONE"
 
 
 class TestListWorkspaces:

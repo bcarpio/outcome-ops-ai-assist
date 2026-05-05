@@ -233,11 +233,23 @@ class CreateWorkspaceRequest(BaseModel):
 
     name: str = Field(..., min_length=1, max_length=100)
     description: Optional[str] = Field(default="", max_length=500)
+    # Optional in the request so the handler defaults to "STRICT" when
+    # absent. Validated below if provided. Plan/ chunk 03.
+    privacy_mode: Optional[str] = Field(default=None)
 
     @field_validator("name")
     @classmethod
     def strip_name(cls, v: str) -> str:
         return v.strip()
+
+    @field_validator("privacy_mode")
+    @classmethod
+    def validate_privacy_mode(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        if v not in ("STRICT", "NONE"):
+            raise ValueError("privacy_mode must be 'STRICT' or 'NONE'")
+        return v
 
 
 class UpdateWorkspaceRequest(BaseModel):
@@ -517,6 +529,11 @@ def create_workspace(
         "updated_at": now,
         "created_by": user_email,
         "search_allowed_workspaces": [],  # No sharing by default
+        # PII redaction posture for ingests into this workspace. STRICT
+        # is the safe default; admins can opt out per-workspace via the
+        # privacy endpoints (chunk 04). Org-level kill switch lives in
+        # the pii_redaction_enabled tfvar (chunk 07).
+        "privacy_mode": request.privacy_mode or "STRICT",
     }
 
     # Create membership for creator (admin)

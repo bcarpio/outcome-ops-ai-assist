@@ -165,3 +165,15 @@ enable_jira_integration = false
 # When false (default), services use AWS-managed encryption (no cost)
 # When true, creates a shared KMS key (~$1/month) for all data services
 # enable_cmk_encryption = true
+
+# ============================================================================
+# PII Redaction
+# ============================================================================
+
+# Org-level kill switch. true = redact PII on ingest in STRICT
+# workspaces. false = no redaction anywhere, even STRICT workspaces.
+# Default is true; only flip when you've intentionally moved
+# redaction out-of-band or are deploying to a region without
+# Comprehend Detect-PII (terraform plan will fail loudly if you
+# enable redaction in an unsupported region).
+# pii_redaction_enabled = true
