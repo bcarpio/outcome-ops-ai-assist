@@ -104,11 +104,23 @@ RERANK_PRICING = {
     "per_call": _price("BEDROCK_RERANK_PRICE_PER_1K", 2.00) / 1000.0,
 }
 
+# Comprehend Detect-PII (chunk 02 of plan/) prices per character scanned
+# rather than per token or per call. Public price ~$0.0001 per 100 chars
+# = $1.00 per 1M chars. Synthetic model_id ("comprehend.detect-pii-entities")
+# is what ingest Lambdas pass to log_audit_entry so cost rolls into the
+# same DT/DM/DU rollups Sonnet / Haiku / Cohere use. Override via
+# COMPREHEND_PII_PRICE_PER_1M_CHARS in tfvars.
+COMPREHEND_MODEL_ID = "comprehend.detect-pii-entities"
+COMPREHEND_PRICING = {
+    "per_char": _price("COMPREHEND_PII_PRICE_PER_1M_CHARS", 1.00) / 1_000_000.0,
+}
+
 MODEL_PRICING = {
     ADVANCED_MODEL_ID: ADVANCED_PRICING,
     BASIC_MODEL_ID: BASIC_PRICING,
     EMBEDDING_MODEL_ID: EMBEDDING_PRICING,
     RERANK_MODEL_ID: RERANK_PRICING,
+    COMPREHEND_MODEL_ID: COMPREHEND_PRICING,
 }
 # Auto-register non-prefixed variants for audit compatibility
 for _id, _pricing in list(MODEL_PRICING.items()):
@@ -122,20 +134,29 @@ MODEL_PRICING["us.anthropic.claude-3-5-haiku-20241022-v1:0"] = BASIC_PRICING
 MODEL_PRICING["anthropic.claude-3-5-haiku-20241022-v1:0"] = BASIC_PRICING
 
 
-def _calculate_cost(model_id: str, input_tokens: int, output_tokens: int) -> float:
-    """Calculate cost in USD from model ID and token counts.
+def _calculate_cost(
+    model_id: str,
+    input_tokens: int,
+    output_tokens: int,
+    char_count: int = 0,
+) -> float:
+    """Calculate cost in USD from model ID and unit counts.
 
-    Two pricing shapes are supported:
+    Three pricing shapes are supported:
       * Token-based (Claude / Titan Embed): ``{"input": $/1M, "output": $/1M}``
-        - cost scales linearly with token counts.
+        - cost scales linearly with token counts; ``char_count`` ignored.
       * Per-call (Cohere Rerank): ``{"per_call": $/invocation}``
-        - cost is a flat fee per audit row, token counts ignored.
+        - flat fee per audit row; token + char counts ignored.
+      * Per-character (Comprehend Detect-PII): ``{"per_char": $/char}``
+        - cost = char_count * per_char; token counts ignored.
     """
     pricing = MODEL_PRICING.get(model_id)
     if not pricing:
         return 0.0
     if "per_call" in pricing:
         return round(pricing["per_call"], 6)
+    if "per_char" in pricing:
+        return round(pricing["per_char"] * char_count, 6)
     input_cost = (input_tokens / 1_000_000) * pricing["input"]
     output_cost = (output_tokens / 1_000_000) * pricing["output"]
     return round(input_cost + output_cost, 6)
@@ -223,6 +244,7 @@ def log_audit_entry(
     sources: Optional[List] = None,
     source_ip: str = "",
     user_agent: str = "",
+    char_count: int = 0,
 ) -> None:
     """
     Log a Bedrock invocation to the audit table.
@@ -243,17 +265,22 @@ def log_audit_entry(
         flagged_reason: Reason for flagging (if refusal detected)
         user_email: User email (empty for pipeline/internal calls)
         workspace_id: Workspace ID (empty for system-level calls)
+        char_count: Character count for per-char-priced models (e.g.,
+            Comprehend Detect-PII). Ignored for token / per-call models.
     """
     if not audit_table_name:
         return
 
     try:
         # Auto-calculate cost from model pricing if not provided. Drop the
-        # "tokens > 0" guard so per-call models (Cohere Rerank) price
-        # correctly - rerank rows carry zero tokens but a flat per-call fee.
-        # Token-based models with zero tokens still return 0.0.
+        # "tokens > 0" guard so per-call models (Cohere Rerank) and per-char
+        # models (Comprehend Detect-PII) price correctly - those rows carry
+        # zero tokens but still incur cost. Token-based models with zero
+        # tokens still return 0.0.
         if cost_usd == 0.0:
-            cost_usd = _calculate_cost(model_id, input_tokens, output_tokens)
+            cost_usd = _calculate_cost(
+                model_id, input_tokens, output_tokens, char_count=char_count
+            )
 
         # Run refusal detection on output before writing
         if status == "success" and output_text:
@@ -314,6 +341,11 @@ def log_audit_entry(
         if sources:
             item["sources"] = sources
             item["source_count"] = len(sources)
+
+        # Per-char models (Comprehend Detect-PII) carry char_count. Persist
+        # only when set so existing token-based rows stay schema-stable.
+        if char_count:
+            item["char_count"] = char_count
 
         table = _get_dynamodb_table(audit_table_name)
         table.put_item(Item=item)
