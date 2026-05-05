@@ -42,6 +42,7 @@ log_admin_action = audit_writer.log_admin_action
 ADMIN_ACTIONS = audit_writer.ADMIN_ACTIONS
 ACTION_API_KEY_CREATED = audit_writer.ACTION_API_KEY_CREATED
 ACTION_SYSTEM_PROMPT_UPDATED = audit_writer.ACTION_SYSTEM_PROMPT_UPDATED
+ACTION_PRIVACY_MODE_UPDATED = audit_writer.ACTION_PRIVACY_MODE_UPDATED
 CATEGORY_ADMIN = audit_writer.CATEGORY_ADMIN
 CATEGORY_AUTH = audit_writer.CATEGORY_AUTH
 
@@ -277,10 +278,13 @@ class TestActionConstants:
             assert action == action.upper(), action
             assert " " not in action
 
-    def test_seventeen_actions_per_chunk_01(self):
-        # plan/01-dynamodb-schema.md ships 17 admin actions for v1.
-        assert len(ADMIN_ACTIONS) == 17
+    def test_eighteen_actions_after_pii_chunk_04(self):
+        # 17 admin actions from plan/01-dynamodb-schema.md +
+        # PRIVACY_MODE_UPDATED added in plan/04-workspace-mgmt-crud.md
+        # for the PII redaction feature.
+        assert len(ADMIN_ACTIONS) == 18
 
     def test_known_action_in_set(self):
         assert ACTION_API_KEY_CREATED in ADMIN_ACTIONS
         assert ACTION_SYSTEM_PROMPT_UPDATED in ADMIN_ACTIONS
+        assert ACTION_PRIVACY_MODE_UPDATED in ADMIN_ACTIONS

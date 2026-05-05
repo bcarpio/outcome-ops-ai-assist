@@ -2959,6 +2959,8 @@ get_chat_available_mcp_servers = handler_module.get_chat_available_mcp_servers
 validate_api_key = handler_module.validate_api_key
 log_admin_action = handler_module.log_admin_action
 update_workspace_budget = handler_module.update_workspace_budget
+get_workspace_privacy = handler_module.get_workspace_privacy
+update_workspace_privacy = handler_module.update_workspace_privacy
 get_audit_summary = handler_module.get_audit_summary
 get_audit_workspace = handler_module.get_audit_workspace
 get_audit_events = handler_module.get_audit_events
@@ -3862,6 +3864,143 @@ class TestUpdateWorkspaceBudgetAudit:
         assert args[1] == "WORKSPACE_BUDGET_UPDATED"
         assert kwargs["details"]["previous_budget_usd"] == "100"
         assert kwargs["details"]["new_budget_usd"] == ""
+
+
+class TestPrivacyMode:
+    """GET / PUT /workspaces/{id}/privacy. Plan/ chunk 04."""
+
+    @patch("workspace_management_handler._can_access_workspace", return_value=True)
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_get_returns_strict_for_legacy_workspace(
+        self, mock_dynamodb, mock_get_table, mock_can_access,
+    ):
+        """Workspaces created before chunk 03 lack the privacy_mode
+        attribute. Reader must default to 'STRICT' (the safe default)."""
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+        # Legacy row: no privacy_mode attribute.
+        mock_table.get_item.return_value = {
+            "Item": {"workspace_id": "ws1", "name": "Legacy"}
+        }
+        with patch.object(handler_module, "PII_REDACTION_ENABLED", True):
+            result = get_workspace_privacy("u@example.com", "ws1")
+        assert result["statusCode"] == 200
+        body = json.loads(result["body"])
+        assert body["privacy_mode"] == "STRICT"
+        assert body["redaction_enabled_at_org_level"] is True
+        assert body["is_effective"] is True
+
+    @patch("workspace_management_handler._can_access_workspace", return_value=True)
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_get_is_effective_combinations(
+        self, mock_dynamodb, mock_get_table, mock_can_access,
+    ):
+        """is_effective = redaction_enabled_at_org_level AND mode==STRICT.
+        Verify all four combinations of (env on/off, mode STRICT/NONE)."""
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+
+        cases = [
+            (True, "STRICT", True),
+            (True, "NONE", False),
+            (False, "STRICT", False),
+            (False, "NONE", False),
+        ]
+        for env_on, mode, expected in cases:
+            mock_table.get_item.return_value = {
+                "Item": {"workspace_id": "ws1", "privacy_mode": mode}
+            }
+            with patch.object(handler_module, "PII_REDACTION_ENABLED", env_on):
+                result = get_workspace_privacy("u@example.com", "ws1")
+            body = json.loads(result["body"])
+            assert body["is_effective"] is expected, (env_on, mode)
+            assert body["redaction_enabled_at_org_level"] is env_on
+            assert body["privacy_mode"] == mode
+
+    @patch("workspace_management_handler._can_access_workspace", return_value=False)
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_get_403_for_non_member(
+        self, mock_dynamodb, mock_get_table, mock_can_access,
+    ):
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+        result = get_workspace_privacy("u@example.com", "ws1")
+        assert result["statusCode"] == 403
+
+    @patch("workspace_management_handler.log_admin_action")
+    @patch("workspace_management_handler._is_workspace_admin", return_value=True)
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_put_strict_to_none_emits_audit(
+        self, mock_dynamodb, mock_get_table, mock_is_admin, mock_audit,
+    ):
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+        mock_table.get_item.return_value = {
+            "Item": {"workspace_id": "ws1", "privacy_mode": "STRICT"}
+        }
+
+        with patch.object(handler_module, "PII_REDACTION_ENABLED", True):
+            result = update_workspace_privacy(
+                "admin@example.com", "ws1",
+                {"privacy_mode": "NONE"}, AUDIT_CTX,
+            )
+        assert result["statusCode"] == 200
+        body = json.loads(result["body"])
+        assert body["privacy_mode"] == "NONE"
+        assert body["is_effective"] is False  # tfvar on, mode NONE
+
+        mock_audit.assert_called_once()
+        args, kwargs = _audit_kwargs(mock_audit)
+        assert args[1] == "PRIVACY_MODE_UPDATED"
+        assert kwargs["details"] == {
+            "previous_mode": "STRICT", "new_mode": "NONE",
+        }
+        assert kwargs["source_ip"] == "203.0.113.7"
+
+    @patch("workspace_management_handler.log_admin_action")
+    @patch("workspace_management_handler._is_workspace_admin", return_value=True)
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_put_invalid_mode_400(
+        self, mock_dynamodb, mock_get_table, mock_is_admin, mock_audit,
+    ):
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+        result = update_workspace_privacy(
+            "admin@example.com", "ws1",
+            {"privacy_mode": "BOGUS"}, AUDIT_CTX,
+        )
+        assert result["statusCode"] == 400
+        # No audit emit for rejected request.
+        mock_audit.assert_not_called()
+        # No update_item either.
+        mock_table.update_item.assert_not_called()
+
+    @patch("workspace_management_handler.log_admin_action")
+    @patch("workspace_management_handler._is_workspace_admin", return_value=False)
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_put_403_for_non_admin(
+        self, mock_dynamodb, mock_get_table, mock_is_admin, mock_audit,
+    ):
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+        result = update_workspace_privacy(
+            "user@example.com", "ws1",
+            {"privacy_mode": "NONE"}, AUDIT_CTX,
+        )
+        assert result["statusCode"] == 403
+        mock_audit.assert_not_called()
 
 
 class TestLambdaHandlerBootstrap:
