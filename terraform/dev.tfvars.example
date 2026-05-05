@@ -177,3 +177,8 @@ enable_jira_integration = false
 # Comprehend Detect-PII (terraform plan will fail loudly if you
 # enable redaction in an unsupported region).
 # pii_redaction_enabled = true
+
+# USD per 1,000,000 characters scanned by Comprehend Detect-PII.
+# Default matches the AWS public price ($1.00 / 1M chars). Override
+# only if you have a negotiated rate.
+# comprehend_pii_price_per_1m_chars = 1.00

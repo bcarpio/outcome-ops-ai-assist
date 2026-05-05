@@ -437,3 +437,9 @@ variable "pii_redaction_enabled" {
   EOT
   default     = true
 }
+
+variable "comprehend_pii_price_per_1m_chars" {
+  type        = number
+  description = "USD per 1,000,000 characters scanned by Comprehend Detect-PII. Default matches the AWS public price ($1.00 / 1M chars). Override only if you have a negotiated rate."
+  default     = 1.00
+}
