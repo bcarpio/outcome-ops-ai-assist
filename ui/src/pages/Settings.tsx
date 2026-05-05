@@ -409,8 +409,30 @@ export default function Settings() {
                     <li><strong>URL:</strong> <code className="text-xs bg-gray-100 px-1 py-0.5 rounded">{window.location.origin}/mcp/v1</code></li>
                     <li><strong>Headers:</strong> <code className="text-xs bg-gray-100 px-1 py-0.5 rounded">Authorization: Bearer ooa_your_key_here</code></li>
                   </ul>
-                  <p className="text-sm text-gray-600">
+                  <p className="text-sm text-gray-600 mb-4">
                     Or add a <code className="text-xs bg-gray-100 px-1 py-0.5 rounded">.cursor/mcp.json</code> file in your project root using the same format as the VS Code config above.
+                  </p>
+
+                  {/* Claude Desktop */}
+                  <h4 className="font-medium text-sm mb-2">Claude Desktop</h4>
+                  <p className="text-sm text-gray-600 mb-2">
+                    Open <strong>Settings &gt; Developer &gt; Edit Config</strong> and add the following to <code className="text-xs bg-gray-100 px-1 py-0.5 rounded">claude_desktop_config.json</code>. Claude Desktop&apos;s MCP client speaks stdio, so this uses <code className="text-xs bg-gray-100 px-1 py-0.5 rounded">mcp-remote</code> as a bridge to the streamable HTTP endpoint:
+                  </p>
+                  <pre className="bg-gray-900 text-gray-100 text-sm p-4 rounded-lg overflow-x-auto mb-2">{`{
+  "mcpServers": {
+    "outcomeops": {
+      "command": "npx.cmd",
+      "args": [
+        "mcp-remote@latest",
+        "${window.location.origin}/mcp/v1",
+        "--header",
+        "Authorization: Bearer ooa_your_key_here"
+      ]
+    }
+  }
+}`}</pre>
+                  <p className="text-sm text-gray-600">
+                    On macOS / Linux, replace <code className="text-xs bg-gray-100 px-1 py-0.5 rounded">npx.cmd</code> with <code className="text-xs bg-gray-100 px-1 py-0.5 rounded">npx</code>. Restart Claude Desktop after saving.
                   </p>
                 </div>
               )}
