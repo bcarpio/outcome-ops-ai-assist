@@ -85,4 +85,69 @@ describe('AuditEventDrawer', () => {
     await user.keyboard('{Escape}')
     expect(onClose).toHaveBeenCalled()
   })
+
+  it('renders the PII redaction summary panel for ingest rows', () => {
+    const event = buildEvent({
+      action: 'DOCUMENT_INGESTED',
+      details: {
+        source: 'github',
+        document_id: 'docs/decision.md',
+        char_count: 1234,
+        redaction_summary: { EMAIL: 3, PHONE: 1 },
+        skipped_reason: '',
+        mode: 'STRICT',
+      },
+    })
+    render(<AuditEventDrawer event={event} onClose={vi.fn()} />)
+    expect(screen.getByText('PII redacted on ingest')).toBeInTheDocument()
+    expect(screen.getByText('EMAIL')).toBeInTheDocument()
+    expect(screen.getByText('3')).toBeInTheDocument()
+    expect(screen.getByText('PHONE')).toBeInTheDocument()
+  })
+
+  it('hides the redaction panel when summary is empty (no PII found)', () => {
+    const event = buildEvent({
+      action: 'DOCUMENT_INGESTED',
+      details: {
+        source: 'github',
+        document_id: 'README.md',
+        char_count: 500,
+        redaction_summary: {},
+        skipped_reason: '',
+        mode: 'STRICT',
+      },
+    })
+    render(<AuditEventDrawer event={event} onClose={vi.fn()} />)
+    expect(
+      screen.queryByText('PII redacted on ingest'),
+    ).not.toBeInTheDocument()
+  })
+
+  it('renders the skipped reason for ingest rows where redaction was bypassed', () => {
+    const event = buildEvent({
+      action: 'DOCUMENT_INGESTED',
+      details: {
+        source: 'github',
+        document_id: 'docs/x.md',
+        char_count: 800,
+        redaction_summary: {},
+        skipped_reason: 'workspace_none',
+        mode: 'NONE',
+      },
+    })
+    render(<AuditEventDrawer event={event} onClose={vi.fn()} />)
+    expect(screen.getByText(/Redaction skipped/)).toBeInTheDocument()
+    expect(screen.getByText('workspace_none')).toBeInTheDocument()
+  })
+
+  it('does not render the redaction panel for non-ingest rows even with a redaction_summary in details', () => {
+    const event = buildEvent({
+      action: 'API_KEY_CREATED',
+      details: { redaction_summary: { EMAIL: 99 } },
+    })
+    render(<AuditEventDrawer event={event} onClose={vi.fn()} />)
+    expect(
+      screen.queryByText('PII redacted on ingest'),
+    ).not.toBeInTheDocument()
+  })
 })

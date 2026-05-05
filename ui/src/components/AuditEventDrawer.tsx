@@ -48,6 +48,12 @@ export default function AuditEventDrawer({
   }
 
   const isRefusal = event.status === 'refusal'
+  const isIngest = event.action === 'DOCUMENT_INGESTED'
+  const details = (event.details ?? {}) as Record<string, unknown>
+  const redactionSummary = details.redaction_summary as
+    | Record<string, number>
+    | undefined
+  const skippedReason = details.skipped_reason as string | undefined
   const headerLabel = isRefusal
     ? 'REFUSAL'
     : (event.action || (event.category === 'bedrock' ? 'BEDROCK_CALL' : 'UNKNOWN'))
@@ -105,6 +111,32 @@ export default function AuditEventDrawer({
                   Source: <span className="font-mono">{event.lambda_name}</span>
                 </div>
               )}
+            </div>
+          )}
+
+          {isIngest && redactionSummary && Object.keys(redactionSummary).length > 0 && (
+            <div className="rounded-lg border border-teal-200 bg-teal-50 p-3">
+              <div className="text-xs uppercase text-teal-700 font-medium mb-1">
+                PII redacted on ingest
+              </div>
+              <div className="space-y-1 mt-2">
+                {Object.entries(redactionSummary).map(([type, count]) => (
+                  <div
+                    key={type}
+                    className="flex items-center justify-between text-xs text-teal-900"
+                  >
+                    <span className="font-mono">{type}</span>
+                    <span>{count}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {isIngest && skippedReason && (
+            <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs text-gray-700">
+              Redaction skipped:{' '}
+              <span className="font-mono">{skippedReason}</span>
             </div>
           )}
 
