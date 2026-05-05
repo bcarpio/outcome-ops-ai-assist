@@ -404,6 +404,99 @@ class TestProcessBatchRecord:
             process_batch_record(record)
 
 
+class TestPiiRedactionWiring:
+    """plan/ chunk 05 - verify the redact -> embed pipeline wiring for
+    workspace-scoped batch summaries."""
+
+    @patch("process_batch_summary_handler.store_batch_summary")
+    @patch("process_batch_summary_handler.generate_embedding")
+    @patch("process_batch_summary_handler.generate_batch_summary")
+    @patch("process_batch_summary_handler._emit_ingest_audit")
+    @patch("process_batch_summary_handler._get_workspaces_table")
+    def test_workspace_scoped_summary_is_redacted_before_embedding(
+        self, mock_ws_table, mock_audit,
+        mock_summary, mock_embedding, mock_store,
+    ):
+        """For batches that carry a workspace_id, generated summaries
+        must run through redact() before being embedded."""
+        from shared.pii import RedactionResult
+
+        record = {
+            "body": json.dumps({
+                "repo": "test",
+                "repo_project": "owner/test",
+                "batch_type": "shared",
+                "group_name": "utils",
+                "workspace_id": "ws_abc",
+                "file_paths": ["x.py"],
+                "storage_key": "summary#utils",
+            })
+        }
+        mock_summary.return_value = "summary with brian@example.com"
+        mock_embedding.return_value = [0.1] * 1024
+        mock_store.return_value = True
+        mock_ws_table.return_value = MagicMock()
+
+        with patch(
+            "process_batch_summary_handler.read_workspace_mode",
+            return_value="STRICT",
+        ), patch(
+            "process_batch_summary_handler.redact",
+            return_value=RedactionResult(
+                text="summary with [REDACTED:EMAIL]",
+                char_count=29,
+                summary={"EMAIL": 1},
+            ),
+        ) as mock_redact, patch.dict(
+            os.environ, {"PII_REDACTION_ENABLED": "true"},
+        ):
+            process_batch_record(record)
+
+        mock_redact.assert_called_once()
+        # Embedding receives the redacted text, not the raw summary.
+        embed_arg = mock_embedding.call_args.args[0]
+        assert "brian@example.com" not in embed_arg
+        assert "[REDACTED:EMAIL]" in embed_arg
+        # Audit was emitted with the redaction context.
+        mock_audit.assert_called_once()
+        kwargs = mock_audit.call_args.kwargs
+        assert kwargs["workspace_id"] == "ws_abc"
+        assert kwargs["mode"] == "STRICT"
+
+    @patch("process_batch_summary_handler.store_batch_summary")
+    @patch("process_batch_summary_handler.generate_embedding")
+    @patch("process_batch_summary_handler.generate_batch_summary")
+    @patch("process_batch_summary_handler._emit_ingest_audit")
+    def test_legacy_batch_without_workspace_id_skips_redaction(
+        self, mock_audit, mock_summary, mock_embedding, mock_store,
+    ):
+        """Legacy code-map batches lack a workspace_id; redact path is
+        skipped entirely (no workspace context => no privacy_mode)."""
+        record = {
+            "body": json.dumps({
+                "repo": "legacy",
+                "repo_project": "owner/legacy",
+                "batch_type": "shared",
+                "group_name": "utils",
+                "file_paths": ["x.py"],
+                "storage_key": "summary#utils",
+            })
+        }
+        mock_summary.return_value = "raw summary with brian@example.com"
+        mock_embedding.return_value = [0.1] * 1024
+        mock_store.return_value = True
+
+        with patch(
+            "process_batch_summary_handler.redact",
+        ) as mock_redact:
+            process_batch_record(record)
+
+        mock_redact.assert_not_called()
+        mock_audit.assert_not_called()
+        # Embedding receives the raw text unchanged.
+        assert mock_embedding.call_args.args[0] == "raw summary with brian@example.com"
+
+
 class TestHandler:
     """Test Lambda handler."""
 
