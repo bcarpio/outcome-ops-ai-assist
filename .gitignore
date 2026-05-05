@@ -77,3 +77,8 @@ lambda/terraform-layer/bin/
 
 # Scratch/working directory
 .scratch/
+
+# Local-only planning notes (chunked design specs handed to autonomous
+# agents; per the EXECUTE.md convention they stay out of git so the
+# repo doesn't accumulate stale plans next to shipped code).
+plan/
