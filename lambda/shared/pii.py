@@ -84,6 +84,35 @@ def replacement_for(entity_type: str) -> str:
     return f"[REDACTED:{entity_type}]"
 
 
+def read_workspace_mode(table, workspace_id: str) -> str:
+    """Read the workspace's ``privacy_mode`` from its METADATA row.
+
+    Returns ``"STRICT"`` for any workspace whose row lacks the
+    attribute (defensible default - workspaces created before
+    plan/ chunk 03 shipped do, and the safe default matches the
+    new-create behavior).
+
+    Lives here, alongside ``redact()``, so ingest Lambdas don't have
+    to import the workspace-management package. Coupling pii.py to
+    the workspace-table schema is acceptable for v1; if a second
+    feature needs the same lookup we'll factor out to
+    ``shared/workspaces.py`` (plan/ chunk 05 spec).
+    """
+    try:
+        resp = table.get_item(
+            Key={"PK": f"WS#{workspace_id}", "SK": "METADATA"}
+        )
+    except ClientError as e:
+        # Non-fatal: a transient DDB read shouldn't break ingest.
+        # Default to STRICT so we err on the safe side.
+        logger.warning(
+            f"[pii] read_workspace_mode failed for {workspace_id}: {e}"
+        )
+        return MODE_STRICT
+    item = resp.get("Item") or {}
+    return item.get("privacy_mode", MODE_STRICT)
+
+
 def _split_for_comprehend(text: str) -> List[str]:
     """Split text into <100KB UTF-8 chunks at paragraph boundaries.
 

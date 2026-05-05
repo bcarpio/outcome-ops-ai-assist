@@ -40,6 +40,7 @@ def _load_pii_module():
 
 pii_module = _load_pii_module()
 redact = pii_module.redact
+read_workspace_mode = pii_module.read_workspace_mode
 RedactionResult = pii_module.RedactionResult
 replacement_for = pii_module.replacement_for
 MODE_STRICT = pii_module.MODE_STRICT
@@ -333,3 +334,47 @@ class TestLanguageCode:
         redact("hola", mode=MODE_STRICT, org_enabled=True, language_code="es")
         kwargs = mock_comprehend_client.detect_pii_entities.call_args.kwargs
         assert kwargs.get("LanguageCode") == "es"
+
+
+# ============================================================================
+# read_workspace_mode helper
+# ============================================================================
+
+
+class TestReadWorkspaceMode:
+    def test_returns_strict_for_legacy_workspace_missing_attr(self):
+        """Workspaces created before chunk 03 lack privacy_mode -
+        reader must default to STRICT (the safe default)."""
+        table = MagicMock()
+        table.get_item.return_value = {"Item": {"workspace_id": "ws1"}}
+        assert read_workspace_mode(table, "ws1") == "STRICT"
+
+    def test_returns_explicit_none(self):
+        table = MagicMock()
+        table.get_item.return_value = {
+            "Item": {"workspace_id": "ws1", "privacy_mode": "NONE"}
+        }
+        assert read_workspace_mode(table, "ws1") == "NONE"
+
+    def test_returns_explicit_strict(self):
+        table = MagicMock()
+        table.get_item.return_value = {
+            "Item": {"workspace_id": "ws1", "privacy_mode": "STRICT"}
+        }
+        assert read_workspace_mode(table, "ws1") == "STRICT"
+
+    def test_missing_item_returns_strict(self):
+        table = MagicMock()
+        table.get_item.return_value = {}  # no Item key at all
+        assert read_workspace_mode(table, "ws1") == "STRICT"
+
+    def test_clienterror_returns_strict_non_fatal(self):
+        """A transient DDB ClientError must not break ingest. The reader
+        defaults to STRICT (err on the side of redacting)."""
+        table = MagicMock()
+        table.get_item.side_effect = ClientError(
+            {"Error": {"Code": "ProvisionedThroughputExceededException",
+                       "Message": "rate"}},
+            "GetItem",
+        )
+        assert read_workspace_mode(table, "ws1") == "STRICT"
