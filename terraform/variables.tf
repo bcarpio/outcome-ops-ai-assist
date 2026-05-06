@@ -152,6 +152,19 @@ variable "bedrock_rerank_model_id" {
   default     = "cohere.rerank-v3-5:0"
 }
 
+variable "bedrock_rerank_enabled" {
+  type        = bool
+  description = <<-EOT
+    Toggle Cohere-Rerank-on-Bedrock for RAG retrieval. When true (default),
+    chat + query Lambdas over-fetch candidates and rerank them via
+    cohere.rerank-v3-5:0 before answering. When false, the rerank pass is
+    skipped and we use the raw vector-similarity ordering. Set to false in
+    regions where Cohere Rerank isn't in Bedrock, or for customers who don't
+    want the marketplace billing relationship.
+  EOT
+  default     = true
+}
+
 variable "rerank_max_fetch" {
   type        = number
   description = "Maximum number of documents to over-fetch for reranking (caps topK * 4)"

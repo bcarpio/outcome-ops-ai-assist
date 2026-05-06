@@ -39,6 +39,12 @@ enable_jira_integration = false
 # Bedrock Reranking
 # ============================================================================
 
+# Toggle Cohere-Rerank-on-Bedrock entirely. Default true. Set to false in
+# regions without Cohere Rerank availability or to skip the marketplace
+# billing relationship; chat / query fall back to raw vector-similarity
+# ordering when disabled.
+# bedrock_rerank_enabled       = true
+
 # Model for post-retrieval reranking (improves search precision)
 # bedrock_rerank_model_id      = "cohere.rerank-v3-5:0"
 # bedrock_rerank_price_per_1k  = 2.00  # USD per 1,000 search queries
