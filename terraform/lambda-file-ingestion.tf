@@ -283,13 +283,16 @@ module "process_documents_lambda" {
   quiet_archive_local_exec = true
 
   environment_variables = {
-    ENV                            = var.environment
-    APP_NAME                       = var.app_name
-    KB_BUCKET                      = module.knowledge_base_bucket.s3_bucket_id
-    AUDIT_TABLE                    = module.audit_logs_table.dynamodb_table_id
-    BEDROCK_EMBEDDING_MODEL_ID     = var.bedrock_embedding_model_id
-    BEDROCK_EMBEDDING_INPUT_PRICE  = tostring(var.bedrock_embedding_input_price)
-    BEDROCK_EMBEDDING_OUTPUT_PRICE = tostring(var.bedrock_embedding_output_price)
+    ENV                               = var.environment
+    APP_NAME                          = var.app_name
+    KB_BUCKET                         = module.knowledge_base_bucket.s3_bucket_id
+    AUDIT_TABLE                       = module.audit_logs_table.dynamodb_table_id
+    WORKSPACES_TABLE                  = module.workspaces_table[0].dynamodb_table_id
+    BEDROCK_EMBEDDING_MODEL_ID        = var.bedrock_embedding_model_id
+    BEDROCK_EMBEDDING_INPUT_PRICE     = tostring(var.bedrock_embedding_input_price)
+    BEDROCK_EMBEDDING_OUTPUT_PRICE    = tostring(var.bedrock_embedding_output_price)
+    PII_REDACTION_ENABLED             = tostring(var.pii_redaction_enabled)
+    COMPREHEND_PII_PRICE_PER_1M_CHARS = tostring(var.comprehend_pii_price_per_1m_chars)
   }
 
   # IAM permissions
@@ -360,6 +363,28 @@ module "process_documents_lambda" {
       resources = [
         module.audit_logs_table.dynamodb_table_arn
       ]
+    }
+
+    # Read workspace METADATA rows for privacy_mode lookups (PII redaction)
+    workspaces_read = {
+      effect = "Allow"
+      actions = [
+        "dynamodb:GetItem"
+      ]
+      resources = [
+        module.workspaces_table[0].dynamodb_table_arn
+      ]
+    }
+
+    # Comprehend Detect-PII for ingest-time PII redaction (plan/ chunk 07).
+    # AWS does not support resource-level scoping for this action; "*" is
+    # the only valid value per the Comprehend service auth documentation.
+    comprehend_pii = {
+      effect = "Allow"
+      actions = [
+        "comprehend:DetectPiiEntities"
+      ]
+      resources = ["*"]
     }
   }
 

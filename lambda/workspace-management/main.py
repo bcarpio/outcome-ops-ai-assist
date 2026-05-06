@@ -646,6 +646,29 @@ async def update_workspace_budget_route(workspace_id: str, request: Request):
     return _parse_response(result)
 
 
+@app.get("/workspaces/{workspace_id}/privacy")
+async def get_workspace_privacy_route(workspace_id: str, request: Request):
+    """Get the per-workspace PII redaction posture."""
+    from handler import lambda_handler
+
+    event = _build_event(request, "GET", f"/workspaces/{workspace_id}/privacy")
+    result = lambda_handler(event, None)
+    return _parse_response(result)
+
+
+@app.put("/workspaces/{workspace_id}/privacy")
+async def update_workspace_privacy_route(workspace_id: str, request: Request):
+    """Set the per-workspace PII redaction posture (STRICT|NONE)."""
+    from handler import lambda_handler
+
+    body = await request.body()
+    event = _build_event(
+        request, "PUT", f"/workspaces/{workspace_id}/privacy", body.decode("utf-8")
+    )
+    result = lambda_handler(event, None)
+    return _parse_response(result)
+
+
 # ============================================================================
 # Analytics Routes
 # ============================================================================

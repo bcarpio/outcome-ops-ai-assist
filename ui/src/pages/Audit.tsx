@@ -75,6 +75,8 @@ const TONES: Record<string, Tone> = {
   apikey:    { bg: 'bg-amber-50',   text: 'text-amber-800',   ring: 'ring-amber-200',   stroke: '#f59e0b' },
   budget:    { bg: 'bg-teal-50',    text: 'text-teal-700',    ring: 'ring-teal-200',    stroke: '#14b8a6' },
   prompt:    { bg: 'bg-fuchsia-50', text: 'text-fuchsia-700', ring: 'ring-fuchsia-200', stroke: '#d946ef' },
+  privacy:   { bg: 'bg-cyan-50',    text: 'text-cyan-700',    ring: 'ring-cyan-200',    stroke: '#06b6d4' },
+  ingest:    { bg: 'bg-sky-50',     text: 'text-sky-700',     ring: 'ring-sky-200',     stroke: '#0284c7' },
   refusal:   { bg: 'bg-rose-50',    text: 'text-rose-700',    ring: 'ring-rose-300',    stroke: '#e11d48' },
   unknown:   { bg: 'bg-gray-50',    text: 'text-gray-700',    ring: 'ring-gray-200',    stroke: '#6b7280' },
 }
@@ -89,6 +91,8 @@ function toneFor(ev: { action?: string; category?: string; status?: string }): T
   if (a.startsWith('WORKSPACE_')) return TONES.workspace
   if (a.startsWith('MCP_SERVER')) return TONES.mcp
   if (a.startsWith('SYSTEM_PROMPT')) return TONES.prompt
+  if (a === 'PRIVACY_MODE_UPDATED') return TONES.privacy
+  if (a === 'DOCUMENT_INGESTED') return TONES.ingest
   return TONES.unknown
 }
 

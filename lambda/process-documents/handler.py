@@ -39,7 +39,9 @@ from botocore.exceptions import ClientError
 
 # Add shared module to path for Lambda deployment
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from shared.audit import log_audit_entry
+from shared.audit import COMPREHEND_MODEL_ID, log_audit_entry
+from shared.audit_writer import ACTION_DOCUMENT_INGESTED, log_admin_action
+from shared.pii import MODE_STRICT, read_workspace_mode, redact
 
 # Bedrock model configuration
 EMBEDDING_MODEL_ID = os.environ.get(
@@ -61,9 +63,18 @@ ssm_client = boto3.client("ssm")
 bedrock_client = boto3.client("bedrock-runtime")
 s3vectors_client = boto3.client("s3vectors")
 sts_client = boto3.client("sts")
+dynamodb_resource = boto3.resource("dynamodb")
 
 # Cached account ID
 _account_id = None
+
+
+def _get_workspaces_table():
+    """Lazy-init DDB table handle for workspace lookups (privacy_mode)."""
+    name = os.environ.get("WORKSPACES_TABLE", "")
+    if not name:
+        return None
+    return dynamodb_resource.Table(name)
 
 
 def _get_account_id() -> str:
@@ -709,6 +720,56 @@ def delete_vectors_for_document(workspace_id: str, source: str, folder_path: str
 # ============================================================================
 
 
+def _emit_ingest_audit(
+    workspace_id: str,
+    source: str,
+    filename: str,
+    redaction,
+    mode: str,
+) -> None:
+    """Emit two audit rows for one ingest: an admin DOCUMENT_INGESTED row
+    that surfaces in the audit dashboard, and a Comprehend bedrock row
+    that rolls into cost-by-model. Skipped runs (workspace_none /
+    org_disabled / empty_text) emit only the admin row.
+
+    Non-fatal: audit writes never raise. Mirrors plan/ chunk 05 spec.
+    """
+    audit_table = os.environ.get("AUDIT_TABLE", "")
+    if not audit_table:
+        return
+
+    log_admin_action(
+        audit_table,
+        ACTION_DOCUMENT_INGESTED,
+        workspace_id=workspace_id,
+        user_email="",  # S3-triggered; no user context.
+        source_ip="",
+        user_agent="",
+        details={
+            "source": source,
+            "document_id": filename,
+            "char_count": redaction.char_count,
+            "redaction_summary": redaction.summary,
+            "skipped_reason": redaction.skipped_reason,
+            "mode": mode,
+        },
+    )
+
+    # Cost row only when Comprehend actually ran (or attempted to).
+    # Never log the raw input/output - char_count alone is what cost
+    # rollups need.
+    if redaction.skipped_reason in ("", "comprehend_error"):
+        log_audit_entry(
+            audit_table_name=audit_table,
+            lambda_name="process-documents",
+            model_id=COMPREHEND_MODEL_ID,
+            input_text="",
+            output_text="",
+            char_count=redaction.char_count,
+            workspace_id=workspace_id,
+        )
+
+
 def process_document(bucket: str, key: str) -> Dict[str, Any]:
     """
     Process a single document from S3.
@@ -748,6 +809,32 @@ def process_document(bucket: str, key: str) -> Dict[str, Any]:
         if not text or len(text) < 50:
             logger.warning(f"Insufficient text content in {filename}")
             return {"status": "skipped", "reason": "Insufficient content", "key": key}
+
+        # PII redaction (plan/ chunk 05). Scrub PII from `text` BEFORE
+        # chunking + embedding so neither S3 Vectors nor Bedrock ever see
+        # raw identifiers. Honors the workspace's privacy_mode and the
+        # org-level PII_REDACTION_ENABLED kill switch. The audit rows
+        # below capture char_count + summary so operators can see what
+        # was protected without ever logging the raw PII.
+        ws_table = _get_workspaces_table()
+        org_enabled = (
+            os.environ.get("PII_REDACTION_ENABLED", "true").lower() == "true"
+        )
+        mode = (
+            read_workspace_mode(ws_table, workspace_id)
+            if ws_table is not None
+            else MODE_STRICT
+        )
+        redaction = redact(text, mode=mode, org_enabled=org_enabled)
+        text = redaction.text
+
+        _emit_ingest_audit(
+            workspace_id=workspace_id,
+            source=source,
+            filename=filename,
+            redaction=redaction,
+            mode=mode,
+        )
 
         # Chunk text
         chunks = chunk_text(text)

@@ -45,7 +45,9 @@ GENERATE_CODE_MAPS_DIR = os.path.join(_PARENT_DIR, "generate-code-maps")
 if GENERATE_CODE_MAPS_DIR not in sys.path:
     sys.path.insert(0, GENERATE_CODE_MAPS_DIR)
 
-from shared.audit import log_audit_entry
+from shared.audit import COMPREHEND_MODEL_ID, log_audit_entry
+from shared.audit_writer import ACTION_DOCUMENT_INGESTED, log_admin_action
+from shared.pii import MODE_STRICT, read_workspace_mode, redact
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -68,12 +70,65 @@ bedrock_config = Config(
 )
 
 dynamodb_client = boto3.client("dynamodb")
+dynamodb_resource = boto3.resource("dynamodb")
 bedrock_client = boto3.client("bedrock-runtime", config=bedrock_config)
 s3_client = boto3.client("s3")
 sqs_client = boto3.client("sqs")
 ssm_client = boto3.client("ssm")
 s3vectors_client = boto3.client("s3vectors")
 sts_client = boto3.client("sts")
+
+
+def _get_workspaces_table():
+    """Lazy-init DDB table handle for workspace privacy_mode lookups."""
+    name = os.environ.get("WORKSPACES_TABLE", "")
+    if not name:
+        return None
+    return dynamodb_resource.Table(name)
+
+
+def _emit_ingest_audit(
+    workspace_id: str,
+    source: str,
+    document_id: str,
+    redaction,
+    mode: str,
+) -> None:
+    """Emit two audit rows for one ingest: an admin DOCUMENT_INGESTED
+    row that surfaces in the audit dashboard, and a Comprehend bedrock
+    row that rolls into cost-by-model. Skipped runs (workspace_none /
+    org_disabled) emit only the admin row. Non-fatal."""
+    audit_table = os.environ.get("AUDIT_TABLE", "")
+    if not audit_table:
+        return
+
+    log_admin_action(
+        audit_table,
+        ACTION_DOCUMENT_INGESTED,
+        workspace_id=workspace_id,
+        user_email="",  # SQS-driven; no user context.
+        source_ip="",
+        user_agent="",
+        details={
+            "source": source,
+            "document_id": document_id,
+            "char_count": redaction.char_count,
+            "redaction_summary": redaction.summary,
+            "skipped_reason": redaction.skipped_reason,
+            "mode": mode,
+        },
+    )
+
+    if redaction.skipped_reason in ("", "comprehend_error"):
+        log_audit_entry(
+            audit_table_name=audit_table,
+            lambda_name="process-repo-summary",
+            model_id=COMPREHEND_MODEL_ID,
+            input_text="",
+            output_text="",
+            char_count=redaction.char_count,
+            workspace_id=workspace_id,
+        )
 
 # Cached account ID
 _account_id = None
@@ -703,6 +758,35 @@ def handler(event, context):
 
             # Generate architectural summary
             arch_summary = generate_architectural_summary(repo, repo_type, all_files)
+
+            # PII redaction (plan/ chunk 05). Architectural summaries can
+            # echo back inline comments / repo metadata that occasionally
+            # carry credentials or customer data. Redact BEFORE both the
+            # vector embed and the S3 upload so neither path stores the
+            # raw text. Only attempt for workspace-scoped repos (legacy
+            # global code-maps run unredacted - no workspace context).
+            if workspace_id:
+                ws_table = _get_workspaces_table()
+                org_enabled = (
+                    os.environ.get("PII_REDACTION_ENABLED", "true").lower()
+                    == "true"
+                )
+                mode = (
+                    read_workspace_mode(ws_table, workspace_id)
+                    if ws_table is not None
+                    else MODE_STRICT
+                )
+                redaction = redact(
+                    arch_summary, mode=mode, org_enabled=org_enabled,
+                )
+                arch_summary = redaction.text
+                _emit_ingest_audit(
+                    workspace_id=workspace_id,
+                    source="github",
+                    document_id=f"{repo}/code-map",
+                    redaction=redaction,
+                    mode=mode,
+                )
 
             # Store architectural summary with embedding
             summary_doc_id = f"{repo}/code-map"

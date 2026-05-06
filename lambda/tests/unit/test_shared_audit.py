@@ -138,15 +138,27 @@ class TestModelPricing:
         assert "amazon.titan-embed-text-v2:0" in MODEL_PRICING
 
     def test_model_pricing_has_known_shape(self):
-        """Each pricing entry must be either token-based ({input, output})
-        or per-call ({per_call}). Mixed/ad-hoc shapes would silently make
-        _calculate_cost fall through and return 0."""
+        """Each pricing entry must be one of:
+          - token-based ({input, output})
+          - per-call ({per_call})
+          - per-char ({per_char})
+        Mixed/ad-hoc shapes would silently make _calculate_cost fall
+        through and return 0."""
         for model_id, pricing in MODEL_PRICING.items():
             has_token_shape = "input" in pricing and "output" in pricing
             has_per_call_shape = "per_call" in pricing
-            assert has_token_shape or has_per_call_shape, (
-                f"Unknown pricing shape for {model_id}: {pricing}"
-            )
+            has_per_char_shape = "per_char" in pricing
+            assert (
+                has_token_shape or has_per_call_shape or has_per_char_shape
+            ), f"Unknown pricing shape for {model_id}: {pricing}"
+
+    def test_model_pricing_contains_comprehend(self):
+        """Comprehend Detect-PII registered for per-char cost rollups."""
+        assert "comprehend.detect-pii-entities" in MODEL_PRICING
+        pricing = MODEL_PRICING["comprehend.detect-pii-entities"]
+        assert "per_char" in pricing
+        # Default $1.00 / 1M chars = $0.000001 / char.
+        assert pricing["per_char"] == 1.00 / 1_000_000.0
 
     def test_model_pricing_titan_zero_output_cost(self):
         """Test Titan embeddings has zero output cost."""
@@ -361,6 +373,96 @@ class TestRerankAuditEntry:
         # Default pricing: $2.00/1k = $0.002 per call.
         assert item["cost_usd"] == "0.002"
         assert item["model_id"] == "cohere.rerank-v3-5:0"
+
+
+class TestComprehendPerCharPricing:
+    """Comprehend Detect-PII is priced per character scanned. Mirrors the
+    rerank tests but for the per_char shape introduced in chunk 02 of the
+    PII redaction plan."""
+
+    def test_calculate_cost_comprehend_known_chars(self):
+        # 5,000 chars * ($1.00 / 1,000,000) = $0.005
+        cost = _calculate_cost(
+            "comprehend.detect-pii-entities", 0, 0, char_count=5000,
+        )
+        assert cost == 0.005
+
+    def test_calculate_cost_comprehend_zero_chars(self):
+        cost = _calculate_cost(
+            "comprehend.detect-pii-entities", 0, 0, char_count=0,
+        )
+        assert cost == 0.0
+
+    def test_calculate_cost_comprehend_ignores_tokens(self):
+        # Token counts must not influence per-char cost.
+        cost = _calculate_cost(
+            "comprehend.detect-pii-entities", 50_000, 10_000, char_count=1000,
+        )
+        # 1000 * $0.000001 = $0.001 regardless of tokens.
+        assert cost == 0.001
+
+    def test_calculate_cost_token_models_ignore_char_count(self):
+        # char_count must NOT bleed into token-based pricing.
+        cost = _calculate_cost(
+            "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            1000, 500, char_count=1_000_000,
+        )
+        assert cost == round(0.003 + 0.0075, 6)
+
+    def test_log_audit_entry_auto_prices_comprehend_with_char_count(self, mock_table):
+        log_audit_entry(
+            audit_table_name="audit-table",
+            lambda_name="github-ingest",
+            model_id="comprehend.detect-pii-entities",
+            input_text="raw email thread",
+            output_text="redacted",
+            char_count=5000,
+        )
+        item = mock_table.put_item.call_args[1]["Item"]
+        # 5000 * $0.000001 = $0.005, written as a string per the existing
+        # convention for cost_usd in audit rows.
+        assert item["cost_usd"] == "0.005"
+        assert item["model_id"] == "comprehend.detect-pii-entities"
+        # char_count is persisted on per-char rows for downstream rollups.
+        assert item["char_count"] == 5000
+
+    def test_log_audit_entry_omits_char_count_for_token_rows(self, mock_table):
+        log_audit_entry(
+            audit_table_name="audit-table",
+            lambda_name="chat",
+            model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            input_text="hi",
+            output_text="hello",
+            input_tokens=10,
+            output_tokens=20,
+        )
+        item = mock_table.put_item.call_args[1]["Item"]
+        # Token-based rows stay schema-stable: no char_count attr.
+        assert "char_count" not in item
+
+    def test_log_audit_entry_comprehend_env_override(self, mock_table):
+        # COMPREHEND_PII_PRICE_PER_1M_CHARS overrides at module-load time.
+        import importlib.util
+        import sys
+        with patch.dict(
+            os.environ, {"COMPREHEND_PII_PRICE_PER_1M_CHARS": "5.00"}
+        ):
+            if "shared_audit" in sys.modules:
+                del sys.modules["shared_audit"]
+            shared_dir = os.path.join(os.path.dirname(__file__), "../../shared")
+            audit_path = os.path.join(shared_dir, "audit.py")
+            spec = importlib.util.spec_from_file_location("shared_audit", audit_path)
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules["shared_audit"] = mod
+            spec.loader.exec_module(mod)
+            try:
+                # $5.00 / 1M = $0.000005 per char. 5000 chars = $0.025.
+                cost = mod._calculate_cost(
+                    "comprehend.detect-pii-entities", 0, 0, char_count=5000,
+                )
+                assert cost == 0.025
+            finally:
+                _load_audit_module()
 
 
 # ============================================================================
@@ -654,7 +756,10 @@ class TestLogAuditEntry:
         assert item["cost_usd"] == str(99.99)
 
     def test_log_audit_entry_does_not_auto_calculate_cost_with_zero_tokens(self, mock_table):
-        """Test does not auto-calculate cost when both tokens are zero."""
+        """Token-based models with both tokens zero still yield 0.0 cost.
+        (The "guard" was removed in chunk 02 of the PII redaction plan to
+        let per-call / per-char models price correctly with zero tokens;
+        token-based pricing math at 0/0 naturally returns 0.0.)"""
         log_audit_entry(
             audit_table_name="audit-table",
             lambda_name="chat",

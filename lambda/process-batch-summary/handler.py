@@ -31,7 +31,9 @@ from botocore.exceptions import ClientError
 
 # Add shared module to path for Lambda deployment
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from shared.audit import log_audit_entry
+from shared.audit import COMPREHEND_MODEL_ID, log_audit_entry
+from shared.audit_writer import ACTION_DOCUMENT_INGESTED, log_admin_action
+from shared.pii import MODE_STRICT, read_workspace_mode, redact
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -54,9 +56,18 @@ bedrock_config = Config(
 )
 
 dynamodb_client = boto3.client("dynamodb")
+dynamodb_resource = boto3.resource("dynamodb")
 bedrock_client = boto3.client("bedrock-runtime", config=bedrock_config)
 ssm_client = boto3.client("ssm")
 s3vectors_client = boto3.client("s3vectors")
+
+
+def _get_workspaces_table():
+    """Lazy-init DDB table handle for workspace privacy_mode lookups."""
+    name = os.environ.get("WORKSPACES_TABLE", "")
+    if not name:
+        return None
+    return dynamodb_resource.Table(name)
 
 # Configuration (loaded from SSM at container startup)
 ENVIRONMENT = os.environ.get("ENV", "dev")
@@ -958,6 +969,50 @@ def store_batch_summary(
         return False
 
 
+def _emit_ingest_audit(
+    workspace_id: str,
+    source: str,
+    document_id: str,
+    redaction,
+    mode: str,
+) -> None:
+    """Emit two audit rows for one ingest: an admin DOCUMENT_INGESTED
+    row that surfaces in the audit dashboard, and a Comprehend bedrock
+    row that rolls into cost-by-model. Skipped runs (workspace_none /
+    org_disabled) emit only the admin row. Non-fatal."""
+    audit_table = os.environ.get("AUDIT_TABLE", "")
+    if not audit_table:
+        return
+
+    log_admin_action(
+        audit_table,
+        ACTION_DOCUMENT_INGESTED,
+        workspace_id=workspace_id,
+        user_email="",  # SQS-driven; no user context.
+        source_ip="",
+        user_agent="",
+        details={
+            "source": source,
+            "document_id": document_id,
+            "char_count": redaction.char_count,
+            "redaction_summary": redaction.summary,
+            "skipped_reason": redaction.skipped_reason,
+            "mode": mode,
+        },
+    )
+
+    if redaction.skipped_reason in ("", "comprehend_error"):
+        log_audit_entry(
+            audit_table_name=audit_table,
+            lambda_name="process-batch-summary",
+            model_id=COMPREHEND_MODEL_ID,
+            input_text="",
+            output_text="",
+            char_count=redaction.char_count,
+            workspace_id=workspace_id,
+        )
+
+
 def process_batch_record(record: Dict[str, Any]) -> None:
     """
     Process a single SQS record.
@@ -979,6 +1034,32 @@ def process_batch_record(record: Dict[str, Any]) -> None:
 
     # Generate batch summary
     batch_summary = generate_batch_summary(batch)
+
+    # PII redaction (plan/ chunk 05). Code summaries occasionally include
+    # accidentally-pasted credentials / customer data from inline
+    # comments; redact before embedding so neither S3 Vectors nor the
+    # downstream RAG flow sees raw identifiers. Honors the workspace's
+    # privacy_mode and the org-level kill switch.
+    workspace_id = batch.get("workspace_id") or ""
+    if workspace_id:
+        ws_table = _get_workspaces_table()
+        org_enabled = (
+            os.environ.get("PII_REDACTION_ENABLED", "true").lower() == "true"
+        )
+        mode = (
+            read_workspace_mode(ws_table, workspace_id)
+            if ws_table is not None
+            else MODE_STRICT
+        )
+        redaction = redact(batch_summary, mode=mode, org_enabled=org_enabled)
+        batch_summary = redaction.text
+        _emit_ingest_audit(
+            workspace_id=workspace_id,
+            source="github",
+            document_id=f"{batch['repo']}#{batch['group_name']}",
+            redaction=redaction,
+            mode=mode,
+        )
 
     # Generate embedding for batch summary
     batch_embedding = generate_embedding(batch_summary)

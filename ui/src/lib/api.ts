@@ -1953,6 +1953,59 @@ export async function setWorkspaceBudget(
   return (await response.json()) as WorkspaceBudget
 }
 
+// ============================================================================
+// Workspace Privacy (PII Redaction) API
+// ============================================================================
+
+export type PrivacyMode = 'STRICT' | 'NONE'
+
+export interface WorkspacePrivacy {
+  workspace_id: string
+  privacy_mode: PrivacyMode
+  redaction_enabled_at_org_level: boolean
+  is_effective: boolean
+  updated_at?: string
+  updated_by?: string
+}
+
+export async function getWorkspacePrivacy(
+  workspaceId: string,
+): Promise<WorkspacePrivacy> {
+  const response = await fetch(
+    `${API_BASE}/workspaces/${encodeURIComponent(workspaceId)}/privacy`,
+  )
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error(
+      (data?.error as string) ||
+        `Failed to get privacy mode: ${response.status}`,
+    )
+  }
+  return (await response.json()) as WorkspacePrivacy
+}
+
+export async function updateWorkspacePrivacy(
+  workspaceId: string,
+  privacy_mode: PrivacyMode,
+): Promise<WorkspacePrivacy> {
+  const response = await fetch(
+    `${API_BASE}/workspaces/${encodeURIComponent(workspaceId)}/privacy`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ privacy_mode }),
+    },
+  )
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error(
+      (data?.error as string) ||
+        `Failed to update privacy mode: ${response.status}`,
+    )
+  }
+  return (await response.json()) as WorkspacePrivacy
+}
+
 export interface WorkspaceBudgetSummary {
   workspace_id: string
   name: string

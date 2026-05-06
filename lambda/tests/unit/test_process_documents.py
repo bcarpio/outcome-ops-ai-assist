@@ -36,6 +36,10 @@ os.environ["ENV"] = "test"
 os.environ.setdefault("APP_NAME", "outcome-ops-ai-assist")
 os.environ.setdefault("KB_BUCKET", "test-kb-bucket")
 os.environ.setdefault("AUDIT_TABLE", "")
+# Default the org-level PII kill switch to off in tests so existing
+# end-to-end tests don't try to reach Comprehend. Specific tests can
+# flip it on with patch.dict (plan/ chunk 05).
+os.environ.setdefault("PII_REDACTION_ENABLED", "false")
 
 
 def _load_handler_module():
@@ -1607,6 +1611,205 @@ class TestProcessDocument:
         # Should complete but with 0 vectors stored
         assert result["status"] == "success"
         assert result["vectors_stored"] == 0
+
+
+# ============================================================================
+# PII Redaction wiring (plan/ chunk 05)
+# ============================================================================
+
+
+class TestPiiRedactionWiring:
+    """Verify the redact -> embed pipeline wiring."""
+
+    def _make_body(self, content: bytes):
+        body_mock = MagicMock()
+        body_mock.read.return_value = content
+        mock_s3_client.get_object.return_value = {
+            "Body": body_mock, "Metadata": {},
+        }
+
+    def test_strict_mode_redacts_before_embedding(
+        self, vector_config, mock_bedrock_embedding,
+    ):
+        """When org_enabled AND mode=STRICT, the Comprehend mock is hit
+        and the chunked text is the redacted text (raw PII never reaches
+        chunk_text or generate_embedding)."""
+        raw = b"Email me at brian@example.com for more details. " + b"x" * 100
+        self._make_body(raw)
+
+        # Mock the workspace metadata read + Comprehend response.
+        ws_table = MagicMock()
+        ws_table.get_item.return_value = {
+            "Item": {"workspace_id": "ws_abc", "privacy_mode": "STRICT"}
+        }
+        mock_comprehend = MagicMock()
+        mock_comprehend.detect_pii_entities.return_value = {
+            "Entities": [
+                {"Type": "EMAIL", "BeginOffset": 12, "EndOffset": 29,
+                 "Score": 0.99},
+            ],
+        }
+        with patch.object(
+            handler_module, "_get_workspaces_table", return_value=ws_table,
+        ), patch.dict(os.environ, {"PII_REDACTION_ENABLED": "true"}), \
+                patch("shared.pii._comprehend", mock_comprehend):
+            result = process_document(
+                "test-kb-bucket",
+                "workspaces/ws_abc/confluence/space/page.html",
+            )
+
+        assert result["status"] == "success"
+        mock_comprehend.detect_pii_entities.assert_called()
+        # The text passed to bedrock for embedding should not contain
+        # the raw email - it's been replaced with [REDACTED:EMAIL].
+        embed_call = mock_bedrock_client.invoke_model.call_args
+        body_str = embed_call.kwargs.get("body", embed_call.args[0] if embed_call.args else b"")
+        if isinstance(body_str, (bytes, bytearray)):
+            body_str = body_str.decode("utf-8")
+        assert "brian@example.com" not in body_str
+        assert "[REDACTED:EMAIL]" in body_str
+
+    def test_workspace_none_skips_comprehend(
+        self, vector_config, mock_bedrock_embedding,
+    ):
+        """privacy_mode=NONE means Comprehend is never called."""
+        raw = b"Email brian@example.com here. " + b"x" * 100
+        self._make_body(raw)
+
+        ws_table = MagicMock()
+        ws_table.get_item.return_value = {
+            "Item": {"workspace_id": "ws_abc", "privacy_mode": "NONE"}
+        }
+        mock_comprehend = MagicMock()
+        with patch.object(
+            handler_module, "_get_workspaces_table", return_value=ws_table,
+        ), patch.dict(os.environ, {"PII_REDACTION_ENABLED": "true"}), \
+                patch("shared.pii._comprehend", mock_comprehend):
+            result = process_document(
+                "test-kb-bucket",
+                "workspaces/ws_abc/confluence/space/page.html",
+            )
+
+        assert result["status"] == "success"
+        mock_comprehend.detect_pii_entities.assert_not_called()
+
+    def test_org_disabled_skips_comprehend(
+        self, vector_config, mock_bedrock_embedding,
+    ):
+        """PII_REDACTION_ENABLED=false short-circuits even STRICT
+        workspaces."""
+        raw = b"Email brian@example.com here. " + b"x" * 100
+        self._make_body(raw)
+
+        ws_table = MagicMock()
+        ws_table.get_item.return_value = {
+            "Item": {"workspace_id": "ws_abc", "privacy_mode": "STRICT"}
+        }
+        mock_comprehend = MagicMock()
+        with patch.object(
+            handler_module, "_get_workspaces_table", return_value=ws_table,
+        ), patch.dict(os.environ, {"PII_REDACTION_ENABLED": "false"}), \
+                patch("shared.pii._comprehend", mock_comprehend):
+            result = process_document(
+                "test-kb-bucket",
+                "workspaces/ws_abc/confluence/space/page.html",
+            )
+
+        assert result["status"] == "success"
+        mock_comprehend.detect_pii_entities.assert_not_called()
+
+    def test_strict_emits_admin_and_bedrock_audit_rows(
+        self, vector_config, mock_bedrock_embedding,
+    ):
+        """Successful Comprehend run writes both an admin
+        DOCUMENT_INGESTED row AND a bedrock Comprehend cost row."""
+        raw = b"Email brian@example.com here. " + b"x" * 100
+        self._make_body(raw)
+
+        ws_table = MagicMock()
+        ws_table.get_item.return_value = {
+            "Item": {"workspace_id": "ws_abc", "privacy_mode": "STRICT"}
+        }
+        mock_comprehend = MagicMock()
+        mock_comprehend.detect_pii_entities.return_value = {
+            "Entities": [
+                {"Type": "EMAIL", "BeginOffset": 6, "EndOffset": 23,
+                 "Score": 0.99},
+            ],
+        }
+        with patch.object(
+            handler_module, "_get_workspaces_table", return_value=ws_table,
+        ), patch.dict(
+            os.environ, {"PII_REDACTION_ENABLED": "true",
+                         "AUDIT_TABLE": "audit"},
+        ), patch("shared.pii._comprehend", mock_comprehend), \
+                patch.object(handler_module, "log_admin_action") as mock_admin, \
+                patch.object(handler_module, "log_audit_entry") as mock_bedrock:
+            process_document(
+                "test-kb-bucket",
+                "workspaces/ws_abc/confluence/space/page.html",
+            )
+
+        # Admin row is written exactly once with redaction summary.
+        mock_admin.assert_called_once()
+        admin_args, admin_kwargs = mock_admin.call_args
+        assert admin_args[1] == "DOCUMENT_INGESTED"
+        details = admin_kwargs["details"]
+        assert details["mode"] == "STRICT"
+        assert details["redaction_summary"] == {"EMAIL": 1}
+        assert details["skipped_reason"] == ""
+        assert details["char_count"] > 0
+
+        # Bedrock cost row uses the synthetic Comprehend model_id.
+        # generate_embedding (Titan) also calls log_audit_entry, so the
+        # Comprehend row is the one with model_id=comprehend.detect-...
+        comprehend_calls = [
+            c for c in mock_bedrock.call_args_list
+            if c.kwargs.get("model_id") == "comprehend.detect-pii-entities"
+        ]
+        assert len(comprehend_calls) == 1
+        c = comprehend_calls[0].kwargs
+        assert c["char_count"] > 0
+        assert c["workspace_id"] == "ws_abc"
+        # Never log raw PII.
+        assert c["input_text"] == ""
+        assert c["output_text"] == ""
+
+    def test_skipped_run_emits_admin_only(
+        self, vector_config, mock_bedrock_embedding,
+    ):
+        """workspace_none skip: admin row is written with skipped_reason
+        but no Comprehend bedrock cost row."""
+        raw = b"Email brian@example.com here. " + b"x" * 100
+        self._make_body(raw)
+
+        ws_table = MagicMock()
+        ws_table.get_item.return_value = {
+            "Item": {"workspace_id": "ws_abc", "privacy_mode": "NONE"}
+        }
+        with patch.object(
+            handler_module, "_get_workspaces_table", return_value=ws_table,
+        ), patch.dict(
+            os.environ, {"PII_REDACTION_ENABLED": "true",
+                         "AUDIT_TABLE": "audit"},
+        ), patch.object(handler_module, "log_admin_action") as mock_admin, \
+                patch.object(handler_module, "log_audit_entry") as mock_bedrock:
+            process_document(
+                "test-kb-bucket",
+                "workspaces/ws_abc/confluence/space/page.html",
+            )
+
+        mock_admin.assert_called_once()
+        details = mock_admin.call_args.kwargs["details"]
+        assert details["skipped_reason"] == "workspace_none"
+        assert details["redaction_summary"] == {}
+
+        # No Comprehend bedrock row (skipped).
+        comprehend_calls = [
+            c for c in mock_bedrock.call_args_list
+            if c.kwargs.get("model_id") == "comprehend.detect-pii-entities"
+        ]
+        assert len(comprehend_calls) == 0
 
 
 # ============================================================================

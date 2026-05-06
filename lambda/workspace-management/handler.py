@@ -99,6 +99,7 @@ from shared.audit_writer import (
     ACTION_MCP_SERVER_UPDATED,
     ACTION_ORG_MEMBER_ADDED,
     ACTION_ORG_MEMBER_REMOVED,
+    ACTION_PRIVACY_MODE_UPDATED,
     ACTION_SYSTEM_PROMPT_RESET,
     ACTION_SYSTEM_PROMPT_UPDATED,
     ACTION_WORKSPACE_BUDGET_UPDATED,
@@ -122,6 +123,13 @@ ENV = os.environ.get("ENV", "dev")
 APP_NAME = os.environ.get("APP_NAME", "outcome-ops-ai-assist")
 AUDIT_TABLE = os.environ.get("AUDIT_TABLE", "")
 ANALYTICS_TABLE = os.environ.get("ANALYTICS_TABLE", "")
+
+# Org-level kill switch for PII redaction. Wired via terraform (chunk 07
+# of plan/). Read at request time (not module load) so tests can patch
+# it; chunk 04 also exposes the flag via GET /workspaces/{id}/privacy.
+PII_REDACTION_ENABLED = (
+    os.environ.get("PII_REDACTION_ENABLED", "true").lower() == "true"
+)
 
 # Cached clients and config
 _dynamodb = None
@@ -233,11 +241,23 @@ class CreateWorkspaceRequest(BaseModel):
 
     name: str = Field(..., min_length=1, max_length=100)
     description: Optional[str] = Field(default="", max_length=500)
+    # Optional in the request so the handler defaults to "STRICT" when
+    # absent. Validated below if provided. Plan/ chunk 03.
+    privacy_mode: Optional[str] = Field(default=None)
 
     @field_validator("name")
     @classmethod
     def strip_name(cls, v: str) -> str:
         return v.strip()
+
+    @field_validator("privacy_mode")
+    @classmethod
+    def validate_privacy_mode(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        if v not in ("STRICT", "NONE"):
+            raise ValueError("privacy_mode must be 'STRICT' or 'NONE'")
+        return v
 
 
 class UpdateWorkspaceRequest(BaseModel):
@@ -517,6 +537,11 @@ def create_workspace(
         "updated_at": now,
         "created_by": user_email,
         "search_allowed_workspaces": [],  # No sharing by default
+        # PII redaction posture for ingests into this workspace. STRICT
+        # is the safe default; admins can opt out per-workspace via the
+        # privacy endpoints (chunk 04). Org-level kill switch lives in
+        # the pii_redaction_enabled tfvar (chunk 07).
+        "privacy_mode": request.privacy_mode or "STRICT",
     }
 
     # Create membership for creator (admin)
@@ -3211,6 +3236,137 @@ def update_workspace_budget(
 
 
 # ============================================================================
+# Privacy Mode Operations (PII redaction posture per workspace)
+# ============================================================================
+
+
+def _get_workspace_privacy_mode(table, workspace_id: str) -> str:
+    """Read the workspace's privacy_mode. Returns "STRICT" for any
+    workspace whose METADATA row lacks the attribute - workspaces
+    created before plan/ chunk 03 shipped do, and the safe default
+    matches the new-create behavior."""
+    resp = table.get_item(Key={"PK": f"WS#{workspace_id}", "SK": "METADATA"})
+    item = resp.get("Item") or {}
+    return item.get("privacy_mode", "STRICT")
+
+
+def get_workspace_privacy(user_email: str, workspace_id: str) -> Dict:
+    """GET /workspaces/{id}/privacy.
+
+    Returns the workspace's privacy_mode, the org-level kill-switch
+    flag (so the UI can render the right copy without a second fetch),
+    and the derived is_effective flag.
+    """
+    dynamodb = _get_dynamodb()
+    table = dynamodb.Table(_get_workspaces_table())
+
+    try:
+        if not _can_access_workspace(table, user_email, workspace_id):
+            return _error(403, "Not a member of this workspace")
+
+        resp = table.get_item(
+            Key={"PK": f"WS#{workspace_id}", "SK": "METADATA"}
+        )
+        if "Item" not in resp:
+            return _error(404, "Workspace not found")
+
+        ws = resp["Item"]
+        mode = ws.get("privacy_mode", "STRICT")
+        is_effective = bool(PII_REDACTION_ENABLED) and mode == "STRICT"
+        return _response(200, {
+            "workspace_id": workspace_id,
+            "privacy_mode": mode,
+            "redaction_enabled_at_org_level": bool(PII_REDACTION_ENABLED),
+            "is_effective": is_effective,
+            "updated_at": ws.get("privacy_mode_updated_at"),
+            "updated_by": ws.get("privacy_mode_updated_by"),
+        })
+    except ClientError as e:
+        logger.error(f"Error getting workspace privacy: {e}")
+        return _error(500, "Failed to get workspace privacy")
+
+
+def update_workspace_privacy(
+    user_email: str,
+    workspace_id: str,
+    body: Dict,
+    audit_ctx: Optional[Dict[str, str]] = None,
+) -> Dict:
+    """PUT /workspaces/{id}/privacy.
+
+    Workspace-admin gated. Body: ``{"privacy_mode": "STRICT" | "NONE"}``.
+    Emits a PRIVACY_MODE_UPDATED admin audit row capturing the prior
+    and new mode for the InfoSec paper trail.
+    """
+    dynamodb = _get_dynamodb()
+    table = dynamodb.Table(_get_workspaces_table())
+
+    try:
+        if not _is_workspace_admin(table, user_email, workspace_id):
+            return _error(
+                403, "Only workspace admins can update privacy mode"
+            )
+
+        new_mode = (body or {}).get("privacy_mode")
+        if new_mode not in ("STRICT", "NONE"):
+            return _error(400, "privacy_mode must be 'STRICT' or 'NONE'")
+
+        resp = table.get_item(
+            Key={"PK": f"WS#{workspace_id}", "SK": "METADATA"}
+        )
+        if "Item" not in resp:
+            return _error(404, "Workspace not found")
+
+        previous_mode = resp["Item"].get("privacy_mode", "STRICT")
+
+        now = datetime.now(timezone.utc).isoformat()
+        ctx = audit_ctx or {}
+
+        table.update_item(
+            Key={"PK": f"WS#{workspace_id}", "SK": "METADATA"},
+            UpdateExpression=(
+                "SET privacy_mode = :m, privacy_mode_updated_at = :t, "
+                "privacy_mode_updated_by = :u, updated_at = :t"
+            ),
+            ExpressionAttributeValues={
+                ":m": new_mode,
+                ":t": now,
+                ":u": user_email,
+            },
+        )
+
+        log_admin_action(
+            AUDIT_TABLE,
+            ACTION_PRIVACY_MODE_UPDATED,
+            workspace_id=workspace_id,
+            user_email=user_email,
+            source_ip=ctx.get("source_ip", ""),
+            user_agent=ctx.get("user_agent", ""),
+            details={
+                "previous_mode": previous_mode,
+                "new_mode": new_mode,
+            },
+        )
+
+        is_effective = bool(PII_REDACTION_ENABLED) and new_mode == "STRICT"
+        logger.info(
+            f"Set privacy_mode={new_mode} for workspace {workspace_id} "
+            f"by {user_email}"
+        )
+        return _response(200, {
+            "workspace_id": workspace_id,
+            "privacy_mode": new_mode,
+            "redaction_enabled_at_org_level": bool(PII_REDACTION_ENABLED),
+            "is_effective": is_effective,
+            "updated_at": now,
+            "updated_by": user_email,
+        })
+    except ClientError as e:
+        logger.error(f"Error updating workspace privacy: {e}")
+        return _error(500, "Failed to update workspace privacy")
+
+
+# ============================================================================
 # Main Handler
 # ============================================================================
 
@@ -4690,6 +4846,26 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             and http_method == "PUT"
         ):
             return update_workspace_budget(user_email, parts[1], body, audit_ctx)
+
+        # Route: GET /workspaces/{id}/privacy
+        if (
+            len(parts) == 3
+            and parts[0] == "workspaces"
+            and parts[2] == "privacy"
+            and http_method == "GET"
+        ):
+            return get_workspace_privacy(user_email, parts[1])
+
+        # Route: PUT /workspaces/{id}/privacy
+        if (
+            len(parts) == 3
+            and parts[0] == "workspaces"
+            and parts[2] == "privacy"
+            and http_method == "PUT"
+        ):
+            return update_workspace_privacy(
+                user_email, parts[1], body, audit_ctx,
+            )
 
         # Route: DELETE /workspaces/{id}/system-prompt
         if (

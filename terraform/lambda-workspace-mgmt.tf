@@ -63,6 +63,9 @@ module "workspace_management_lambda" {
     OAUTH_KMS_KEY_ARN            = aws_kms_key.oauth_tokens[0].arn
     AUDIT_TABLE                  = module.audit_logs_table.dynamodb_table_id
     ANALYTICS_TABLE              = module.analytics_table.dynamodb_table_id
+    # PII redaction posture (read for GET /workspaces/{id}/privacy so the
+    # UI knows whether to render the toggle). plan/ chunk 07.
+    PII_REDACTION_ENABLED = tostring(var.pii_redaction_enabled)
   }
 
   # IAM permissions

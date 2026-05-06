@@ -429,3 +429,30 @@ variable "enable_cmk_encryption" {
   description = "Use a Customer Managed KMS Key (CMK) for data-at-rest encryption on S3, DynamoDB, SQS, SNS, and ECR. When false, services use AWS-managed encryption (AES256/SSE-SQS/aws/sns)."
   default     = false
 }
+
+# ============================================================================
+# PII Redaction
+# ============================================================================
+
+variable "pii_redaction_enabled" {
+  type        = bool
+  description = <<-EOT
+    Org-level kill switch for PII redaction at ingest time. When true
+    (default), workspaces with privacy_mode=STRICT scrub PII via Amazon
+    Comprehend before embedding documents. When false, every workspace
+    behaves as privacy_mode=NONE regardless of its setting - useful for
+    regions where Comprehend isn't available, or for customers who handle
+    PII redaction in a separate pipeline.
+
+    Comprehend availability check happens in the comprehend region-guard
+    precondition. If you set this true in a region that doesn't support
+    Comprehend Detect-PII, terraform plan fails fast.
+  EOT
+  default     = true
+}
+
+variable "comprehend_pii_price_per_1m_chars" {
+  type        = number
+  description = "USD per 1,000,000 characters scanned by Comprehend Detect-PII. Default matches the AWS public price ($1.00 / 1M chars). Override only if you have a negotiated rate."
+  default     = 1.00
+}

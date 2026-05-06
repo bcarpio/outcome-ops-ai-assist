@@ -63,6 +63,8 @@ vi.mock('../../../src/lib/api', () => ({
   getWorkspaceSystemPrompt: vi.fn(),
   updateWorkspaceSystemPrompt: vi.fn(),
   resetWorkspaceSystemPrompt: vi.fn(),
+  getWorkspacePrivacy: vi.fn(),
+  updateWorkspacePrivacy: vi.fn(),
 }))
 
 import {
@@ -81,6 +83,7 @@ import {
   listSharePointSites, updateSharePointSites,
   searchUsers,
   getWorkspaceSystemPrompt, updateWorkspaceSystemPrompt, resetWorkspaceSystemPrompt,
+  getWorkspacePrivacy, updateWorkspacePrivacy,
 } from '../../../src/lib/api'
 
 const mockGetWorkspace = vi.mocked(getWorkspace)
@@ -121,6 +124,8 @@ const mockSearchUsers = vi.mocked(searchUsers)
 const mockGetWorkspaceSystemPrompt = vi.mocked(getWorkspaceSystemPrompt)
 const mockUpdateWorkspaceSystemPrompt = vi.mocked(updateWorkspaceSystemPrompt)
 const mockResetWorkspaceSystemPrompt = vi.mocked(resetWorkspaceSystemPrompt)
+const mockGetWorkspacePrivacy = vi.mocked(getWorkspacePrivacy)
+const mockUpdateWorkspacePrivacy = vi.mocked(updateWorkspacePrivacy)
 
 function setupDefaultMocks() {
   const ws = createWorkspace({ workspace_id: 'ws-1', name: 'Test WS', role: 'workspace_admin' })
@@ -136,6 +141,12 @@ function setupDefaultMocks() {
   mockListGitHubRepos.mockResolvedValue([])
   mockListTeamsConnections.mockResolvedValue([])
   mockListSharePointConnections.mockResolvedValue([])
+  mockGetWorkspacePrivacy.mockResolvedValue({
+    workspace_id: 'ws-1',
+    privacy_mode: 'STRICT',
+    redaction_enabled_at_org_level: true,
+    is_effective: true,
+  })
 }
 
 beforeEach(() => {
@@ -2011,6 +2022,117 @@ describe('WorkspaceSettings', () => {
 
     await waitFor(() => {
       expect(mockGetOutlookAuthUrl).toHaveBeenCalledWith('ws-1')
+    })
+  })
+
+  describe('Privacy section (PII redaction)', () => {
+    it('renders the radio group when org-level redaction is enabled', async () => {
+      mockGetWorkspacePrivacy.mockResolvedValue({
+        workspace_id: 'ws-1',
+        privacy_mode: 'STRICT',
+        redaction_enabled_at_org_level: true,
+        is_effective: true,
+      })
+      renderSettings('general')
+      await waitFor(() => {
+        expect(screen.getByText('Privacy')).toBeInTheDocument()
+      })
+      expect(screen.getByText('Redact PII (recommended)')).toBeInTheDocument()
+      expect(screen.getByText('No redaction')).toBeInTheDocument()
+      // STRICT radio is checked.
+      const strictRadio = screen.getByRole('radio', {
+        name: /Redact PII \(recommended\)/i,
+      })
+      expect(strictRadio).toBeChecked()
+    })
+
+    it('switches to NONE mode and shows the rose warning panel', async () => {
+      mockGetWorkspacePrivacy.mockResolvedValue({
+        workspace_id: 'ws-1',
+        privacy_mode: 'STRICT',
+        redaction_enabled_at_org_level: true,
+        is_effective: true,
+      })
+      mockUpdateWorkspacePrivacy.mockResolvedValue({
+        workspace_id: 'ws-1',
+        privacy_mode: 'NONE',
+        redaction_enabled_at_org_level: true,
+        is_effective: false,
+      })
+      renderSettings('general')
+      await waitFor(() => {
+        expect(screen.getByText('Privacy')).toBeInTheDocument()
+      })
+      const noneRadio = screen.getByRole('radio', { name: /No redaction/i })
+      const user = userEvent.setup()
+      await user.click(noneRadio)
+
+      await waitFor(() => {
+        expect(mockUpdateWorkspacePrivacy).toHaveBeenCalledWith('ws-1', 'NONE')
+      })
+      // Rose warning shown.
+      expect(
+        screen.getByText('PII redaction is disabled for this workspace.'),
+      ).toBeInTheDocument()
+    })
+
+    it('hides the toggle entirely when org-level redaction is disabled', async () => {
+      mockGetWorkspacePrivacy.mockResolvedValue({
+        workspace_id: 'ws-1',
+        privacy_mode: 'STRICT',
+        redaction_enabled_at_org_level: false,
+        is_effective: false,
+      })
+      renderSettings('general')
+      await waitFor(() => {
+        expect(
+          screen.getByText('PII redaction is disabled organization-wide.'),
+        ).toBeInTheDocument()
+      })
+      // No radios in the org-disabled branch.
+      expect(
+        screen.queryByRole('radio', { name: /Redact PII/i }),
+      ).not.toBeInTheDocument()
+      expect(
+        screen.queryByRole('radio', { name: /No redaction/i }),
+      ).not.toBeInTheDocument()
+    })
+
+    it('does not call updateWorkspacePrivacy when org-level disabled', async () => {
+      mockGetWorkspacePrivacy.mockResolvedValue({
+        workspace_id: 'ws-1',
+        privacy_mode: 'STRICT',
+        redaction_enabled_at_org_level: false,
+        is_effective: false,
+      })
+      renderSettings('general')
+      await waitFor(() => {
+        expect(
+          screen.getByText('PII redaction is disabled organization-wide.'),
+        ).toBeInTheDocument()
+      })
+      expect(mockUpdateWorkspacePrivacy).not.toHaveBeenCalled()
+    })
+
+    it('surfaces an inline error when the PUT fails', async () => {
+      mockGetWorkspacePrivacy.mockResolvedValue({
+        workspace_id: 'ws-1',
+        privacy_mode: 'STRICT',
+        redaction_enabled_at_org_level: true,
+        is_effective: true,
+      })
+      mockUpdateWorkspacePrivacy.mockRejectedValue(new Error('Network down'))
+      renderSettings('general')
+      await waitFor(() => {
+        expect(screen.getByText('Privacy')).toBeInTheDocument()
+      })
+      const noneRadio = screen.getByRole('radio', { name: /No redaction/i })
+      const user = userEvent.setup()
+      await user.click(noneRadio)
+
+      await waitFor(() => {
+        expect(screen.getByText('Network down')).toBeInTheDocument()
+      })
     })
   })
 })

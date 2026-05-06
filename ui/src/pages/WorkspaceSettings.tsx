@@ -26,6 +26,7 @@ import {
   Globe,
   AlertTriangle,
   RotateCcw,
+  ShieldAlert,
 } from 'lucide-react'
 import {
   getWorkspace,
@@ -108,6 +109,10 @@ import {
   updateWorkspaceSystemPrompt,
   resetWorkspaceSystemPrompt,
   type WorkspaceSystemPrompt,
+  getWorkspacePrivacy,
+  updateWorkspacePrivacy,
+  type WorkspacePrivacy,
+  type PrivacyMode,
 } from '../lib/api'
 import AdminNav from '../components/AdminNav'
 
@@ -250,6 +255,11 @@ export default function WorkspaceSettings() {
   const [resettingSystemPrompt, setResettingSystemPrompt] = useState(false)
   const [showResetPromptConfirm, setShowResetPromptConfirm] = useState(false)
 
+  // Privacy state (PII redaction posture)
+  const [privacy, setPrivacy] = useState<WorkspacePrivacy | null>(null)
+  const [savingPrivacy, setSavingPrivacy] = useState(false)
+  const [privacyError, setPrivacyError] = useState<string | null>(null)
+
 
   useEffect(() => {
     if (workspaceId) {
@@ -298,6 +308,29 @@ export default function WorkspaceSettings() {
       setError(err instanceof Error ? err.message : 'Failed to load workspace')
     } finally {
       setLoading(false)
+    }
+    // Load privacy mode in parallel; fail silently to not block the page.
+    try {
+      const p = await getWorkspacePrivacy(workspaceId)
+      setPrivacy(p)
+    } catch {
+      /* keep null; section just won't render */
+    }
+  }
+
+  async function handlePrivacyChange(mode: PrivacyMode) {
+    if (!workspaceId || !privacy || privacy.privacy_mode === mode) return
+    setSavingPrivacy(true)
+    setPrivacyError(null)
+    try {
+      const updated = await updateWorkspacePrivacy(workspaceId, mode)
+      setPrivacy(updated)
+    } catch (e) {
+      setPrivacyError(
+        e instanceof Error ? e.message : 'Failed to update privacy mode',
+      )
+    } finally {
+      setSavingPrivacy(false)
     }
   }
 
@@ -1395,6 +1428,108 @@ export default function WorkspaceSettings() {
                 </div>
               )}
             </div>
+
+            {/* Privacy section (PII redaction). Hidden if the org-level
+                kill switch is off - per spec, an inert toggle is worse
+                than no toggle (admins click and nothing happens). */}
+            {privacy && (
+              <div className="border-t p-6">
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-lg font-medium text-gray-900">Privacy</h3>
+                  <ShieldAlert size={20} className="text-gray-500" />
+                </div>
+
+                {!privacy.redaction_enabled_at_org_level ? (
+                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-sm text-gray-700">
+                    <div className="font-medium mb-1">
+                      PII redaction is disabled organization-wide.
+                    </div>
+                    An organization administrator has set
+                    <code className="font-mono mx-1">pii_redaction_enabled = false</code>
+                    in the platform configuration. Per-workspace privacy
+                    settings are unavailable until that's enabled.
+                  </div>
+                ) : (
+                  <>
+                    <p className="text-sm text-gray-600 mb-3">
+                      Controls whether the platform scrubs personally-identifiable
+                      information (emails, phone numbers, names, addresses, etc.)
+                      from documents before they're embedded into this workspace's
+                      knowledge base.
+                    </p>
+
+                    <div className="space-y-2">
+                      <label className="flex items-start gap-2 cursor-pointer p-2 rounded border hover:bg-gray-50">
+                        <input
+                          type="radio"
+                          name="privacy-mode"
+                          value="STRICT"
+                          checked={privacy.privacy_mode === 'STRICT'}
+                          onChange={() => handlePrivacyChange('STRICT')}
+                          disabled={!isAdmin || savingPrivacy}
+                          className="mt-0.5"
+                        />
+                        <span>
+                          <span className="font-medium text-gray-900">
+                            Redact PII (recommended)
+                          </span>
+                          <span className="block text-xs text-gray-600">
+                            Default. Documents are scanned via Amazon Comprehend
+                            and any PII is replaced with type tags (e.g.,
+                            {' '}<code className="font-mono">[REDACTED:EMAIL]</code>)
+                            before embedding.
+                          </span>
+                        </span>
+                      </label>
+
+                      <label className="flex items-start gap-2 cursor-pointer p-2 rounded border hover:bg-gray-50">
+                        <input
+                          type="radio"
+                          name="privacy-mode"
+                          value="NONE"
+                          checked={privacy.privacy_mode === 'NONE'}
+                          onChange={() => handlePrivacyChange('NONE')}
+                          disabled={!isAdmin || savingPrivacy}
+                          className="mt-0.5"
+                        />
+                        <span>
+                          <span className="font-medium text-gray-900">No redaction</span>
+                          <span className="block text-xs text-gray-600">
+                            Use only for workspaces containing purely technical
+                            content (e.g., source code) where PII isn't expected.
+                            Document the justification in the workspace description
+                            for audit.
+                          </span>
+                        </span>
+                      </label>
+                    </div>
+
+                    {privacy.privacy_mode === 'NONE' && (
+                      <div className="rounded-lg border border-rose-200 bg-rose-50 p-3 mt-3 text-sm text-rose-900">
+                        <div className="font-medium mb-1">
+                          PII redaction is disabled for this workspace.
+                        </div>
+                        Raw email addresses, names, and other identifiers will be
+                        stored in the knowledge base. Only use this setting for
+                        workspaces that contain purely technical content. Consider
+                        noting the justification in the workspace description so
+                        InfoSec audits have the paper trail.
+                      </div>
+                    )}
+
+                    {privacyError && (
+                      <div className="text-sm text-rose-600 mt-2">{privacyError}</div>
+                    )}
+
+                    {privacy.updated_at && (
+                      <div className="text-xs text-gray-500 mt-2">
+                        Last changed by {privacy.updated_by} at {privacy.updated_at}
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
 
             {isAdmin && (
               <div className="border-t p-6">
