@@ -11,7 +11,7 @@ from diagrams.aws.network import ALB, Route53, APIGateway
 from diagrams.aws.database import Dynamodb
 from diagrams.aws.storage import S3
 from diagrams.aws.integration import SQS, Eventbridge
-from diagrams.aws.ml import Sagemaker
+from diagrams.aws.ml import Sagemaker, Comprehend
 from diagrams.aws.security import KMS, ACM
 from diagrams.aws.management import SSM, Cloudwatch
 from diagrams.saas.identity import Auth0
@@ -115,6 +115,9 @@ with Diagram(
             bedrock_titan = Sagemaker("Titan Embeddings v2")
             bedrock_rerank = Sagemaker("Cohere Rerank 3.5")
 
+        with Cluster("Amazon Comprehend"):
+            comprehend_pii = Comprehend("Detect-PII\n(ingest-time redaction)")
+
         # --- Security ---
         with Cluster("Security & Config"):
             kms = KMS("KMS")
@@ -168,8 +171,11 @@ with Diagram(
 
     # Document processing
     s3_kb >> Edge(label="S3 Trigger") >> process_docs
+    process_docs >> Edge(label="Redact PII\n(STRICT only)") >> comprehend_pii
     process_docs >> bedrock_titan
     process_docs >> s3_vectors
+    process_batch >> Edge(label="Redact summary", style="dashed") >> comprehend_pii
+    process_repo >> Edge(label="Redact summary", style="dashed") >> comprehend_pii
 
     # Event-driven automation
     generate_code >> eventbus

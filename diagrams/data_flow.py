@@ -10,7 +10,7 @@ from diagrams.aws.compute import Lambda
 from diagrams.aws.storage import S3
 from diagrams.aws.database import Dynamodb
 from diagrams.aws.integration import SQS, Eventbridge
-from diagrams.aws.ml import Sagemaker
+from diagrams.aws.ml import Sagemaker, Comprehend
 from diagrams.aws.network import ALB
 from diagrams.aws.compute import Fargate
 from diagrams.aws.network import APIGateway as Apigw
@@ -55,6 +55,7 @@ with Diagram(
 
         with Cluster("1c. Document Processing"):
             process_docs = Lambda("process-\ndocuments")
+            comprehend_pii = Comprehend("Comprehend\nDetect-PII\n(STRICT mode)")
             titan_embed = Sagemaker("Titan\nEmbeddings v2")
             s3_vectors = S3("S3 Vectors\n(1024-dim)")
 
@@ -77,7 +78,10 @@ with Diagram(
     gh_sync_std >> Edge(label="Direct upload") >> s3_kb
 
     s3_kb >> Edge(label="S3 ObjectCreated\ntrigger") >> process_docs
-    process_docs >> titan_embed
+    process_docs >> Edge(label="Redact PII\n(STRICT only)") >> comprehend_pii
+    comprehend_pii >> Edge(label="Redacted text") >> titan_embed
+    process_batch >> Edge(label="Redact summary\n(STRICT only)", style="dashed") >> comprehend_pii
+    process_repo >> Edge(label="Redact summary\n(STRICT only)", style="dashed") >> comprehend_pii
     titan_embed >> Edge(label="Embeddings") >> s3_vectors
 
     confluence >> file_ingest
