@@ -1202,7 +1202,9 @@ KNOWLEDGE BASE CONTEXT:
 USER QUESTION:
 {question}
 
-Remember: code maps ARE the source code. Quote exact method signatures and trace complete call chains. Never hedge."""
+Remember: code maps ARE the source code. Quote exact method signatures and trace complete call chains. Never hedge.
+
+When the user's question builds on something you said earlier in this conversation (e.g., "based on the gaps you just identified", "from the list above", "the items you mentioned"), treat your prior assistant turns as a valid source of facts and answer the follow-up directly. Do not refuse a follow-up simply because the current knowledge base excerpt doesn't repeat what was already established earlier in the thread."""
 
     messages.append({"role": "user", "content": [{"text": user_prompt}]})
 
