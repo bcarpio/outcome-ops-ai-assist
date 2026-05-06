@@ -53,6 +53,7 @@ module "process_batch_summary_lambda" {
     BEDROCK_EMBEDDING_OUTPUT_PRICE    = tostring(var.bedrock_embedding_output_price)
     PII_REDACTION_ENABLED             = tostring(var.pii_redaction_enabled)
     COMPREHEND_PII_PRICE_PER_1M_CHARS = tostring(var.comprehend_pii_price_per_1m_chars)
+    PII_REDACTION_SKIP_TYPES          = join(",", var.pii_redaction_skip_types)
   }
 
   # IAM permissions
@@ -263,6 +264,7 @@ module "process_repo_summary_lambda" {
     BEDROCK_EMBEDDING_OUTPUT_PRICE    = tostring(var.bedrock_embedding_output_price)
     PII_REDACTION_ENABLED             = tostring(var.pii_redaction_enabled)
     COMPREHEND_PII_PRICE_PER_1M_CHARS = tostring(var.comprehend_pii_price_per_1m_chars)
+    PII_REDACTION_SKIP_TYPES          = join(",", var.pii_redaction_skip_types)
   }
 
   # IAM permissions

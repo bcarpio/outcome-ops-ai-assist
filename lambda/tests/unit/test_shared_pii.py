@@ -43,6 +43,8 @@ redact = pii_module.redact
 read_workspace_mode = pii_module.read_workspace_mode
 RedactionResult = pii_module.RedactionResult
 replacement_for = pii_module.replacement_for
+skip_types_from_env = pii_module.skip_types_from_env
+DEFAULT_SKIP_TYPES = pii_module.DEFAULT_SKIP_TYPES
 MODE_STRICT = pii_module.MODE_STRICT
 MODE_NONE = pii_module.MODE_NONE
 VALID_MODES = pii_module.VALID_MODES
@@ -59,6 +61,10 @@ def reset_mocks():
     """Reset the Comprehend mock between tests; keep the module pinned
     to our mock client even if a test reloads the module."""
     mock_comprehend_client.reset_mock()
+    # reset_mock() preserves side_effect across tests, which leaks state
+    # from error-path tests into happy-path tests. Clear explicitly.
+    mock_comprehend_client.detect_pii_entities.side_effect = None
+    mock_comprehend_client.detect_pii_entities.return_value = None
     pii_module._comprehend = mock_comprehend_client
     yield
 
@@ -183,6 +189,8 @@ class TestRedaction:
     def test_back_to_front_replacement_keeps_offsets_valid(self):
         # Three entities; replacement must preserve offsets even though
         # the replacement string is a different length than the entity.
+        # Pass skip_types=frozenset() to disable the default skip list -
+        # this test is about offset arithmetic, not skip-list semantics.
         text = "A brian@example.com B 555-0100 C 192.168.1.1 D"
         mock_comprehend_client.detect_pii_entities.return_value = (
             _comprehend_response([
@@ -194,7 +202,10 @@ class TestRedaction:
                  "Score": 0.99},
             ])
         )
-        result = redact(text, mode=MODE_STRICT, org_enabled=True)
+        result = redact(
+            text, mode=MODE_STRICT, org_enabled=True,
+            skip_types=frozenset(),
+        )
         assert result.text == (
             "A [REDACTED:EMAIL] B [REDACTED:PHONE] C "
             "[REDACTED:IP_ADDRESS] D"
@@ -378,3 +389,144 @@ class TestReadWorkspaceMode:
             "GetItem",
         )
         assert read_workspace_mode(table, "ws1") == "STRICT"
+
+
+# ============================================================================
+# Skip-types feature (developer-KB-friendly default)
+# ============================================================================
+
+
+class TestDefaultSkipTypes:
+    def test_default_skip_set_contents(self):
+        """The default skip list is the developer-KB tuned set: URL,
+        IP_ADDRESS, MAC_ADDRESS, DATE_TIME. Names / emails / phones /
+        addresses / SSNs / cards stay redacted by default."""
+        assert DEFAULT_SKIP_TYPES == frozenset({
+            "URL", "IP_ADDRESS", "MAC_ADDRESS", "DATE_TIME",
+        })
+
+
+class TestSkipTypesFromEnv:
+    def test_env_unset_returns_default(self, monkeypatch):
+        monkeypatch.delenv("PII_REDACTION_SKIP_TYPES", raising=False)
+        assert skip_types_from_env() == DEFAULT_SKIP_TYPES
+
+    def test_env_explicit_empty_means_redact_all(self):
+        # Operator-deliberate: empty string => no skips, redact every type.
+        assert skip_types_from_env("") == frozenset()
+
+    def test_env_custom_list(self):
+        result = skip_types_from_env("URL,IP_ADDRESS")
+        assert result == frozenset({"URL", "IP_ADDRESS"})
+
+    def test_env_strips_whitespace(self):
+        result = skip_types_from_env(" URL , IP_ADDRESS ,  MAC_ADDRESS")
+        assert result == frozenset({"URL", "IP_ADDRESS", "MAC_ADDRESS"})
+
+    def test_env_drops_empty_segments(self):
+        result = skip_types_from_env("URL,,IP_ADDRESS,,")
+        assert result == frozenset({"URL", "IP_ADDRESS"})
+
+
+class TestRedactWithSkipTypes:
+    def test_default_skip_keeps_url_ip_mac_date(self):
+        """STRICT mode with default skip list: URL / IP_ADDRESS /
+        MAC_ADDRESS / DATE_TIME pass through unredacted; EMAIL still
+        redacted."""
+        text = "Email brian@example.com on 2025-01-15 at 192.168.1.1"
+        mock_comprehend_client.detect_pii_entities.return_value = (
+            _comprehend_response([
+                {"Type": "EMAIL", "BeginOffset": 6, "EndOffset": 23,
+                 "Score": 0.99},
+                {"Type": "DATE_TIME", "BeginOffset": 27, "EndOffset": 37,
+                 "Score": 0.99},
+                {"Type": "IP_ADDRESS", "BeginOffset": 41, "EndOffset": 52,
+                 "Score": 0.99},
+            ])
+        )
+        result = redact(text, mode=MODE_STRICT, org_enabled=True)
+        assert "[REDACTED:EMAIL]" in result.text
+        # IP and DATE_TIME stay raw under the default skip list.
+        assert "192.168.1.1" in result.text
+        assert "2025-01-15" in result.text
+        # Skipped types do NOT appear in the summary count.
+        assert result.summary == {"EMAIL": 1}
+
+    def test_explicit_empty_skip_redacts_everything(self):
+        """Operator override: skip_types=frozenset() => redact every
+        type Comprehend detects, including the developer-friendly ones."""
+        text = "Visit https://internal.example.com on 192.168.1.1"
+        mock_comprehend_client.detect_pii_entities.return_value = (
+            _comprehend_response([
+                {"Type": "URL", "BeginOffset": 6, "EndOffset": 34,
+                 "Score": 0.99},
+                {"Type": "IP_ADDRESS", "BeginOffset": 38, "EndOffset": 49,
+                 "Score": 0.99},
+            ])
+        )
+        result = redact(
+            text, mode=MODE_STRICT, org_enabled=True,
+            skip_types=frozenset(),
+        )
+        assert "https://internal.example.com" not in result.text
+        assert "192.168.1.1" not in result.text
+        assert result.summary == {"URL": 1, "IP_ADDRESS": 1}
+
+    def test_custom_skip_list_overrides_default(self):
+        """Caller can provide an arbitrary skip set; URL gets redacted
+        when it's not in the override."""
+        text = "Visit https://internal.example.com on 192.168.1.1"
+        mock_comprehend_client.detect_pii_entities.return_value = (
+            _comprehend_response([
+                {"Type": "URL", "BeginOffset": 6, "EndOffset": 34,
+                 "Score": 0.99},
+                {"Type": "IP_ADDRESS", "BeginOffset": 38, "EndOffset": 49,
+                 "Score": 0.99},
+            ])
+        )
+        result = redact(
+            text, mode=MODE_STRICT, org_enabled=True,
+            skip_types=frozenset({"IP_ADDRESS"}),  # only IP skipped
+        )
+        assert "[REDACTED:URL]" in result.text
+        assert "192.168.1.1" in result.text
+        assert result.summary == {"URL": 1}
+
+    def test_skip_does_not_affect_offset_arithmetic(self):
+        """A skipped entity sandwiched between two redacted ones must
+        not corrupt the offsets of either neighbor."""
+        text = "Email brian@example.com from 192.168.1.1 cell 555-0100"
+        mock_comprehend_client.detect_pii_entities.return_value = (
+            _comprehend_response([
+                {"Type": "EMAIL", "BeginOffset": 6, "EndOffset": 23,
+                 "Score": 0.99},
+                {"Type": "IP_ADDRESS", "BeginOffset": 29, "EndOffset": 40,
+                 "Score": 0.99},
+                {"Type": "PHONE", "BeginOffset": 46, "EndOffset": 54,
+                 "Score": 0.99},
+            ])
+        )
+        result = redact(text, mode=MODE_STRICT, org_enabled=True)
+        # IP_ADDRESS in the middle is in the default skip list.
+        assert "192.168.1.1" in result.text
+        # EMAIL and PHONE on either side both got redacted at correct offsets.
+        assert "[REDACTED:EMAIL]" in result.text
+        assert "[REDACTED:PHONE]" in result.text
+        assert "brian@example.com" not in result.text
+        assert "555-0100" not in result.text
+
+    def test_env_var_drives_default_when_skip_types_none(self, monkeypatch):
+        """When the caller passes skip_types=None (the default),
+        PII_REDACTION_SKIP_TYPES env var picks the policy. Empty string
+        env var => redact every type."""
+        monkeypatch.setenv("PII_REDACTION_SKIP_TYPES", "")
+        text = "Visit https://internal.example.com"
+        mock_comprehend_client.detect_pii_entities.return_value = (
+            _comprehend_response([
+                {"Type": "URL", "BeginOffset": 6, "EndOffset": 34,
+                 "Score": 0.99},
+            ])
+        )
+        result = redact(text, mode=MODE_STRICT, org_enabled=True)
+        assert "[REDACTED:URL]" in result.text
+        assert result.summary == {"URL": 1}

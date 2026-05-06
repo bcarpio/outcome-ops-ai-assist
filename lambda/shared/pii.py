@@ -31,7 +31,7 @@ The caller writes the audit row that records ``char_count`` +
 
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import boto3
 from botocore.exceptions import ClientError
@@ -59,6 +59,17 @@ VALID_MODES = frozenset({MODE_STRICT, MODE_NONE})
 # Chunk above that ceiling so a 200KB email thread doesn't blow up.
 COMPREHEND_MAX_BYTES = 100_000
 
+# Default skip list for STRICT mode. Comprehend's "Technical security" and
+# "Other" categories include URL, IP_ADDRESS, MAC_ADDRESS, and DATE_TIME -
+# all load-bearing references in a developer knowledge base (runbooks,
+# infra docs, release notes, cert-expiry trackers). Redacting them turns
+# the KB into useless soup. The platform team can override this via the
+# PII_REDACTION_SKIP_TYPES env var (comma-separated list) when an operator
+# disagrees with the default for their content mix.
+DEFAULT_SKIP_TYPES = frozenset({
+    "URL", "IP_ADDRESS", "MAC_ADDRESS", "DATE_TIME",
+})
+
 
 @dataclass
 class RedactionResult:
@@ -82,6 +93,30 @@ def replacement_for(entity_type: str) -> str:
     """Format helper. ``EMAIL`` -> ``[REDACTED:EMAIL]``. Public so
     tests + cost-tracking sums can reference the exact format."""
     return f"[REDACTED:{entity_type}]"
+
+
+def skip_types_from_env(
+    env_value: Optional[str] = None,
+) -> "frozenset[str]":
+    """Parse the ``PII_REDACTION_SKIP_TYPES`` env var (or any
+    comma-separated string) into a frozenset of Comprehend entity-type
+    names. Empty string / None returns ``DEFAULT_SKIP_TYPES`` so an
+    operator who doesn't override anything still gets the
+    developer-KB-friendly default. Pass an explicit ``""`` (empty
+    string) to mean "redact every type" - that takes a deliberate
+    tfvar override, never a default-falls-through."""
+    import os
+
+    raw = (
+        env_value
+        if env_value is not None
+        else os.environ.get("PII_REDACTION_SKIP_TYPES")
+    )
+    if raw is None:
+        # Env var not set at all - use the platform default.
+        return DEFAULT_SKIP_TYPES
+    parts = [p.strip() for p in raw.split(",") if p.strip()]
+    return frozenset(parts)
 
 
 def read_workspace_mode(table, workspace_id: str) -> str:
@@ -167,10 +202,14 @@ def _split_for_comprehend(text: str) -> List[str]:
 
 
 def _redact_chunk(
-    chunk: str, language_code: str
+    chunk: str,
+    language_code: str,
+    skip_types: "frozenset[str]",
 ) -> "tuple[str, Dict[str, int]]":
     """Call Comprehend on one <100KB chunk and apply replacements
-    back-to-front so offsets stay valid."""
+    back-to-front so offsets stay valid. Entities whose ``Type`` is in
+    ``skip_types`` pass through unredacted and are not counted in the
+    returned summary."""
     client = _get_client()
     response = client.detect_pii_entities(
         Text=chunk, LanguageCode=language_code
@@ -192,6 +231,10 @@ def _redact_chunk(
         ent_type = ent.get("Type", "PII")
         if begin is None or end is None:
             continue
+        if ent_type in skip_types:
+            # Operator policy: this entity type is load-bearing for the
+            # developer KB use case. Leave the value in place.
+            continue
         out = out[:begin] + replacement_for(ent_type) + out[end:]
         summary[ent_type] = summary.get(ent_type, 0) + 1
     return out, summary
@@ -203,6 +246,7 @@ def redact(
     mode: str = MODE_NONE,
     org_enabled: bool = True,
     language_code: str = "en",
+    skip_types: "Optional[frozenset[str]]" = None,
 ) -> RedactionResult:
     """Detect and replace PII in ``text``.
 
@@ -225,10 +269,18 @@ def redact(
         language_code: ISO 639-1; defaults to English. Comprehend
             supports ``en``, ``es``, ``fr``, ``de``, ``it``, ``pt``,
             ``ar``, ``hi``, ``ja``, ``ko``, ``zh``, ``zh-TW``.
+        skip_types: Comprehend entity types that should pass through
+            unredacted even in STRICT mode. ``None`` (the default)
+            uses ``DEFAULT_SKIP_TYPES``. Pass ``frozenset()`` to redact
+            absolutely everything Comprehend detects.
 
     Returns:
         RedactionResult.
     """
+    if skip_types is None:
+        # Honor the operator's PII_REDACTION_SKIP_TYPES env var if set;
+        # otherwise fall back to the developer-KB-friendly default.
+        skip_types = skip_types_from_env()
     char_count = len(text) if text else 0
 
     if not text or not text.strip():
@@ -258,7 +310,7 @@ def redact(
         merged_summary: Dict[str, int] = {}
         for chunk in chunks:
             redacted_chunk, chunk_summary = _redact_chunk(
-                chunk, language_code
+                chunk, language_code, skip_types
             )
             merged_text_parts.append(redacted_chunk)
             for k, v in chunk_summary.items():

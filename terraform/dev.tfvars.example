@@ -188,3 +188,12 @@ enable_jira_integration = false
 # Default matches the AWS public price ($1.00 / 1M chars). Override
 # only if you have a negotiated rate.
 # comprehend_pii_price_per_1m_chars = 1.00
+
+# Comprehend entity types that pass through unredacted even in STRICT
+# mode. The default tunes the platform for a developer / engineering
+# knowledge base, where URL, IP_ADDRESS, MAC_ADDRESS, and DATE_TIME are
+# load-bearing references in runbooks, infra docs, release notes, and
+# cert-expiry trackers - not personally-identifying. Override with []
+# to redact everything Comprehend detects (right call for HR-content
+# or customer-support workspaces).
+# pii_redaction_skip_types = ["URL", "IP_ADDRESS", "MAC_ADDRESS", "DATE_TIME"]

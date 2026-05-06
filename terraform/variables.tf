@@ -456,3 +456,18 @@ variable "comprehend_pii_price_per_1m_chars" {
   description = "USD per 1,000,000 characters scanned by Comprehend Detect-PII. Default matches the AWS public price ($1.00 / 1M chars). Override only if you have a negotiated rate."
   default     = 1.00
 }
+
+variable "pii_redaction_skip_types" {
+  type        = list(string)
+  description = <<-EOT
+    Comprehend entity types that pass through unredacted even in STRICT
+    mode. The default tunes the platform for a developer / engineering
+    knowledge base, where URL / IP_ADDRESS / MAC_ADDRESS / DATE_TIME are
+    load-bearing references in runbooks, infra docs, release notes, and
+    cert-expiry trackers - not personally-identifying. Override with []
+    to redact everything Comprehend detects (right call for HR-content
+    or customer-support workspaces). Override with a custom list to
+    tighten or relax for your content mix.
+  EOT
+  default     = ["URL", "IP_ADDRESS", "MAC_ADDRESS", "DATE_TIME"]
+}
