@@ -280,17 +280,29 @@ class TestActionConstants:
             assert action == action.upper(), action
             assert " " not in action
 
-    def test_nineteen_actions_after_pii_chunk_05(self):
-        # 17 from plan/01-dynamodb-schema.md +
-        # PRIVACY_MODE_UPDATED (chunk 04) + DOCUMENT_INGESTED (chunk 05)
-        # for the PII redaction feature.
-        assert len(ADMIN_ACTIONS) == 19
+    def test_action_count_after_audit_completeness_expansion(self):
+        # Original 17 (plan/01-dynamodb-schema.md) + 2 from PII redaction
+        # (PRIVACY_MODE_UPDATED, DOCUMENT_INGESTED) + 23 from
+        # plan/audit-completeness Tier 1 + Tier 2 = 42.
+        assert len(ADMIN_ACTIONS) == 42
 
     def test_known_action_in_set(self):
         assert ACTION_API_KEY_CREATED in ADMIN_ACTIONS
         assert ACTION_SYSTEM_PROMPT_UPDATED in ADMIN_ACTIONS
         assert ACTION_PRIVACY_MODE_UPDATED in ADMIN_ACTIONS
         assert ACTION_DOCUMENT_INGESTED in ADMIN_ACTIONS
+
+    def test_audit_completeness_actions_in_set(self):
+        # Spot-check one constant from each grouping in
+        # plan/audit-completeness so a future ADMIN_ACTIONS edit that
+        # accidentally drops a category gets caught.
+        assert audit_writer.ACTION_LOGIN_SUCCEEDED in ADMIN_ACTIONS
+        assert audit_writer.ACTION_REPO_SYNCED in ADMIN_ACTIONS
+        assert audit_writer.ACTION_OAUTH_CONNECTION_ESTABLISHED in ADMIN_ACTIONS
+        assert audit_writer.ACTION_DOCUMENT_DELETED in ADMIN_ACTIONS
+        assert audit_writer.ACTION_WORKSPACE_SHARING_UPDATED in ADMIN_ACTIONS
+        assert audit_writer.ACTION_PR_ANALYZED in ADMIN_ACTIONS
+        assert audit_writer.ACTION_BUDGET_THRESHOLD_CROSSED in ADMIN_ACTIONS
 
     def test_hidden_dashboard_actions_includes_document_ingested(self):
         # DOCUMENT_INGESTED audit rows are written for forensic provenance
