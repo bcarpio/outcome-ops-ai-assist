@@ -4,7 +4,7 @@ import importlib.util
 import os
 import sys
 import time
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -291,6 +291,64 @@ class TestActionConstants:
         assert ACTION_SYSTEM_PROMPT_UPDATED in ADMIN_ACTIONS
         assert ACTION_PRIVACY_MODE_UPDATED in ADMIN_ACTIONS
         assert ACTION_DOCUMENT_INGESTED in ADMIN_ACTIONS
+
+    def test_log_source_sync_helper_exists_and_dispatches(self):
+        """The log_source_sync helper maps source name -> action constant
+        and forwards to log_admin_action with the right payload shape."""
+        with patch.object(audit_writer, "log_admin_action") as mock_admin:
+            audit_writer.log_source_sync(
+                audit_table_name="test-audit",
+                source="github",
+                workspace_id="ws-1",
+                target="bcarpio/test-repo",
+                trigger="scheduled",
+                files_synced=42,
+                duration_ms=1234,
+                extra_details={"commit_sha": "abc123"},
+            )
+        mock_admin.assert_called_once()
+        args, kwargs = mock_admin.call_args
+        assert args[1] == "REPO_SYNCED"
+        assert kwargs["workspace_id"] == "ws-1"
+        details = kwargs["details"]
+        assert details["source"] == "github"
+        assert details["target"] == "bcarpio/test-repo"
+        assert details["trigger"] == "scheduled"
+        assert details["files_synced"] == 42
+        assert details["success"] is True
+        assert details["duration_ms"] == 1234
+        assert details["commit_sha"] == "abc123"
+
+    def test_log_source_sync_dispatches_each_source(self):
+        cases = [
+            ("github", "REPO_SYNCED"),
+            ("confluence", "CONFLUENCE_SYNCED"),
+            ("jira", "JIRA_SYNCED"),
+            ("outlook", "OUTLOOK_SYNCED"),
+            ("teams", "TEAMS_SYNCED"),
+            ("sharepoint", "SHAREPOINT_SYNCED"),
+        ]
+        for source, expected_action in cases:
+            with patch.object(audit_writer, "log_admin_action") as mock_admin:
+                audit_writer.log_source_sync(
+                    audit_table_name="test-audit",
+                    source=source,
+                    workspace_id="ws-1",
+                    target="t",
+                    trigger="webhook",
+                )
+            assert mock_admin.call_args.args[1] == expected_action, source
+
+    def test_log_source_sync_unknown_source_is_noop(self):
+        with patch.object(audit_writer, "log_admin_action") as mock_admin:
+            audit_writer.log_source_sync(
+                audit_table_name="test-audit",
+                source="bitbucket",  # not in the map
+                workspace_id="ws-1",
+                target="t",
+                trigger="webhook",
+            )
+        mock_admin.assert_not_called()
 
     def test_audit_completeness_actions_in_set(self):
         # Spot-check one constant from each grouping in

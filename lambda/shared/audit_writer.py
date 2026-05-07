@@ -164,6 +164,19 @@ CATEGORY_ADMIN = "admin"
 CATEGORY_AUTH = "auth"
 
 
+# Map source names to the corresponding sync-trigger action constant.
+# Used by log_source_sync() so each *-sync Lambda doesn't have to know
+# the constant name itself - just pass its source.
+_SOURCE_SYNC_ACTIONS = {
+    "github":     "REPO_SYNCED",
+    "confluence": "CONFLUENCE_SYNCED",
+    "jira":       "JIRA_SYNCED",
+    "outlook":    "OUTLOOK_SYNCED",
+    "teams":      "TEAMS_SYNCED",
+    "sharepoint": "SHAREPOINT_SYNCED",
+}
+
+
 # Admin actions that are written to the audit table for forensic /
 # per-document provenance, but are hidden from the audit dashboard UI
 # and excluded from analytics rollups so they don't dominate the
@@ -301,3 +314,73 @@ def log_admin_action(
         logger.warning(
             f"[audit_writer] Failed to log admin action {action}: {e}"
         )
+
+
+def log_source_sync(
+    audit_table_name: str,
+    source: str,
+    workspace_id: str,
+    target: str,
+    trigger: str,
+    files_synced: int = 0,
+    skipped_no_change: bool = False,
+    duration_ms: int = 0,
+    success: bool = True,
+    error: str = "",
+    extra_details: Optional[Dict] = None,
+) -> None:
+    """Convenience wrapper that emits a per-source SYNC audit row.
+
+    Each *-sync Lambda calls this at the end of a sync run (success or
+    failure). The corresponding ACTION_* constant is looked up from the
+    source name, so the Lambdas don't have to import 6 constants - they
+    just pass ``source="github"`` etc.
+
+    Non-fatal: catches all exceptions, logs a warning, never raises.
+
+    Args:
+        audit_table_name: DynamoDB table name (typically ``AUDIT_TABLE``).
+        source: One of ``"github"``, ``"confluence"``, ``"jira"``,
+            ``"outlook"``, ``"teams"``, ``"sharepoint"``.
+        workspace_id: Workspace this sync was scoped to.
+        target: Source-specific target identifier (repo name, space
+            key, project key, mailbox, channel, site, etc.).
+        trigger: ``"scheduled"`` (cron), ``"webhook"``, or ``"manual"``.
+        files_synced: Count of items pulled.
+        skipped_no_change: True when a no-op sync (e.g., commit SHA
+            unchanged for github).
+        duration_ms: Wall-clock time for the sync run.
+        success: True for successful runs; False writes the same row
+            with ``"success": False`` plus an ``"error"`` field.
+        error: Error message when ``success=False``.
+        extra_details: Optional source-specific extra fields merged
+            into ``details`` (e.g., commit_sha for github).
+    """
+    action = _SOURCE_SYNC_ACTIONS.get(source)
+    if not action:
+        logger.warning(f"[audit_writer] Unknown source for sync audit: {source}")
+        return
+
+    details: Dict = {
+        "source": source,
+        "target": target,
+        "trigger": trigger,
+        "files_synced": files_synced,
+        "skipped_no_change": skipped_no_change,
+        "duration_ms": duration_ms,
+        "success": success,
+    }
+    if error:
+        details["error"] = error
+    if extra_details:
+        details.update(extra_details)
+
+    log_admin_action(
+        audit_table_name,
+        action,
+        workspace_id=workspace_id,
+        user_email="",  # Sync Lambdas are SQS / cron driven, no human caller.
+        source_ip="",
+        user_agent="",
+        details=details,
+    )
