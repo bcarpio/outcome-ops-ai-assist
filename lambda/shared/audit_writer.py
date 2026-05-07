@@ -96,6 +96,19 @@ CATEGORY_ADMIN = "admin"
 CATEGORY_AUTH = "auth"
 
 
+# Admin actions that are written to the audit table for forensic /
+# per-document provenance, but are hidden from the audit dashboard UI
+# and excluded from analytics rollups so they don't dominate the
+# "most common action" / "total actions" cards. DOCUMENT_INGESTED
+# fires once per ingested document - in a workspace with even a
+# moderate sync cadence, it would drown out every other admin action.
+# Operators who need the underlying rows can query the audit table
+# directly via DynamoDB.
+HIDDEN_DASHBOARD_ACTIONS = frozenset({
+    ACTION_DOCUMENT_INGESTED,
+})
+
+
 # ============================================================================
 # Request-context extraction
 # ============================================================================

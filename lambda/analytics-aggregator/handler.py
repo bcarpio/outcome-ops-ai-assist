@@ -245,8 +245,19 @@ _KNOWN_ADMIN_ACTIONS = frozenset(
         "API_KEY_REVOKED",
         "SYSTEM_PROMPT_UPDATED",
         "SYSTEM_PROMPT_RESET",
+        "PRIVACY_MODE_UPDATED",
+        "DOCUMENT_INGESTED",
     }
 )
+
+# Actions whose audit rows are written for forensic / per-document
+# provenance but are NOT rolled up into DA / DC / DCU - they would
+# dominate the dashboard otherwise (one per ingested doc). Mirrors
+# shared/audit_writer.HIDDEN_DASHBOARD_ACTIONS; kept local so the
+# streams consumer doesn't import from the shared module.
+_HIDDEN_DASHBOARD_ACTIONS = frozenset({
+    "DOCUMENT_INGESTED",
+})
 
 
 def _apply_action_update(
@@ -313,6 +324,12 @@ def aggregate_admin_item(
         return False
     if not action:
         action = "UNKNOWN"
+    if action in _HIDDEN_DASHBOARD_ACTIONS:
+        # Skip rollup contributions for actions hidden from the dashboard
+        # by policy (e.g., DOCUMENT_INGESTED). The audit row itself stays
+        # in the audit table for forensics; we just don't let it dominate
+        # the dashboard cards.
+        return False
     if action not in _KNOWN_ADMIN_ACTIONS:
         # Unknown action still increments DA so the dashboard total doesn't
         # under-count, but log a warning so a typo gets noticed.

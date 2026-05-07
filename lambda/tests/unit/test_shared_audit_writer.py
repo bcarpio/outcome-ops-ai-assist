@@ -44,6 +44,7 @@ ACTION_API_KEY_CREATED = audit_writer.ACTION_API_KEY_CREATED
 ACTION_SYSTEM_PROMPT_UPDATED = audit_writer.ACTION_SYSTEM_PROMPT_UPDATED
 ACTION_PRIVACY_MODE_UPDATED = audit_writer.ACTION_PRIVACY_MODE_UPDATED
 ACTION_DOCUMENT_INGESTED = audit_writer.ACTION_DOCUMENT_INGESTED
+HIDDEN_DASHBOARD_ACTIONS = audit_writer.HIDDEN_DASHBOARD_ACTIONS
 CATEGORY_ADMIN = audit_writer.CATEGORY_ADMIN
 CATEGORY_AUTH = audit_writer.CATEGORY_AUTH
 
@@ -290,3 +291,14 @@ class TestActionConstants:
         assert ACTION_SYSTEM_PROMPT_UPDATED in ADMIN_ACTIONS
         assert ACTION_PRIVACY_MODE_UPDATED in ADMIN_ACTIONS
         assert ACTION_DOCUMENT_INGESTED in ADMIN_ACTIONS
+
+    def test_hidden_dashboard_actions_includes_document_ingested(self):
+        # DOCUMENT_INGESTED audit rows are written for forensic provenance
+        # but hidden from the dashboard so they don't dominate the
+        # "most common action" / "total actions" cards.
+        assert ACTION_DOCUMENT_INGESTED in HIDDEN_DASHBOARD_ACTIONS
+
+    def test_hidden_dashboard_actions_subset_of_admin_actions(self):
+        # Hidden actions must be valid admin actions (otherwise the hide
+        # rule references a typo).
+        assert HIDDEN_DASHBOARD_ACTIONS.issubset(ADMIN_ACTIONS)

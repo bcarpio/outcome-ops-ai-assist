@@ -110,6 +110,7 @@ from shared.audit_writer import (
     ACTION_WORKSPACE_REPO_ADDED,
     ACTION_WORKSPACE_REPO_REMOVED,
     ACTION_WORKSPACE_UPDATED,
+    HIDDEN_DASHBOARD_ACTIONS,
     extract_request_context,
     log_admin_action,
 )
@@ -4072,6 +4073,11 @@ def _summarize_admin_events(items: List[Dict]) -> Dict[str, Any]:
             # Skip rows that aren't admin-shaped (legacy bedrock rows that
             # slipped through the category filter on a Scan).
             continue
+        if action in HIDDEN_DASHBOARD_ACTIONS:
+            # Mirror the aggregator policy: dashboard-suppressed actions
+            # (DOCUMENT_INGESTED) don't contribute to summary cards even
+            # via the on-demand fallback.
+            continue
         ws_id = item.get("workspace_id") or ""
         ts = item.get("timestamp") or ""
         date = ts[:10] if ts else ""
@@ -4498,6 +4504,29 @@ def get_audit_events(user_email: str, query_params: Dict[str, Any]) -> Dict:
         }
         filters.append("#a = :action")
         query_kwargs.setdefault("ExpressionAttributeNames", {})["#a"] = "action"
+    elif HIDDEN_DASHBOARD_ACTIONS:
+        # When the caller hasn't asked for a specific action, hide the
+        # dashboard-suppressed actions (DOCUMENT_INGESTED) from the list
+        # view. attribute_not_exists handles bedrock rows on the
+        # workspace + GSI1 paths that have no action attr; admin rows
+        # are kept iff their action isn't in the hidden set. Operators
+        # who want to see the hidden rows can filter with ?action=...
+        # explicitly to bypass this branch.
+        query_kwargs.setdefault("ExpressionAttributeNames", {})["#a"] = "action"
+        not_clauses = []
+        for i, hidden in enumerate(sorted(HIDDEN_DASHBOARD_ACTIONS)):
+            ph = f":hidden_action_{i}"
+            query_kwargs["ExpressionAttributeValues"] = {
+                **query_kwargs.get("ExpressionAttributeValues", {}),
+                ph: hidden,
+            }
+            not_clauses.append(f"#a <> {ph}")
+        hide_expr = (
+            "(attribute_not_exists(#a) OR ("
+            + " AND ".join(not_clauses)
+            + "))"
+        )
+        filters.append(hide_expr)
     if category_filter:
         query_kwargs["ExpressionAttributeValues"] = {
             **query_kwargs.get("ExpressionAttributeValues", {}),

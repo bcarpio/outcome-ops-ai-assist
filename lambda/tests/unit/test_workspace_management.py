@@ -4453,23 +4453,26 @@ class TestAuditEvents:
     @patch("workspace_management_handler._is_org_admin", return_value=True)
     @patch("workspace_management_handler._get_workspaces_table")
     @patch("workspace_management_handler._get_dynamodb")
-    def test_unfiltered_query_uses_single_page_with_user_limit(
+    def test_default_unfiltered_query_uses_paginated_path(
         self, mock_dynamodb, mock_get_table, mock_org
     ):
-        """No FilterExpression == cheap path: one query at the user's
-        limit, no pagination."""
+        """The default GSI2 admin query carries the hide-clause
+        FilterExpression for DOCUMENT_INGESTED, so it routes through
+        the paginated helper (Limit becomes PAGE_LIMIT=500 internally)
+        rather than the cheap single-shot path. Replaces the previous
+        "no FilterExpression" invariant which is no longer true now
+        that we always exclude dashboard-hidden actions."""
         mock_table = MagicMock()
         mock_dynamodb.return_value.Table.return_value = mock_table
         mock_get_table.return_value = "test-workspaces"
-        mock_table.query.return_value = {"Items": []}
+        mock_table.query.return_value = {"Items": [], "LastEvaluatedKey": None}
 
         with patch.object(handler_module, "AUDIT_TABLE", "test-audit"):
             get_audit_events("admin@example.com", {"limit": "10"})
 
-        assert mock_table.query.call_count == 1
         kwargs = mock_table.query.call_args.kwargs
-        assert kwargs["Limit"] == 10
-        assert "FilterExpression" not in kwargs
+        assert "FilterExpression" in kwargs
+        assert "attribute_not_exists" in kwargs["FilterExpression"]
 
     @patch("workspace_management_handler._is_org_admin", return_value=True)
     @patch("workspace_management_handler._get_workspaces_table")
@@ -4575,6 +4578,69 @@ class TestAuditEvents:
         # is now in the key condition.
         assert "category" not in kwargs.get("FilterExpression", "")
 
+    @patch("workspace_management_handler._is_org_admin", return_value=True)
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_default_query_hides_document_ingested(
+        self, mock_dynamodb, mock_get_table, mock_org
+    ):
+        """When no action filter is supplied, DOCUMENT_INGESTED rows are
+        excluded from the list view via FilterExpression so they don't
+        flood the dashboard's Recent Activity feed."""
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+        mock_table.query.return_value = {
+            "Items": [], "LastEvaluatedKey": None,
+        }
+
+        with patch.object(handler_module, "AUDIT_TABLE", "test-audit"):
+            get_audit_events("admin@example.com", {})
+
+        kwargs = mock_table.query.call_args.kwargs
+        # The hide clause is part of FilterExpression and the literal
+        # DOCUMENT_INGESTED string is in the placeholder values.
+        assert "FilterExpression" in kwargs
+        hidden_values = [
+            v for k, v in kwargs["ExpressionAttributeValues"].items()
+            if k.startswith(":hidden_action_")
+        ]
+        assert "DOCUMENT_INGESTED" in hidden_values
+        # The expression uses attribute_not_exists OR <> per the spec.
+        assert "attribute_not_exists" in kwargs["FilterExpression"]
+        assert kwargs["ExpressionAttributeNames"].get("#a") == "action"
+
+    @patch("workspace_management_handler._is_org_admin", return_value=True)
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_explicit_action_filter_bypasses_hide_rule(
+        self, mock_dynamodb, mock_get_table, mock_org
+    ):
+        """An operator who explicitly requests ?action=DOCUMENT_INGESTED
+        for forensic drill-down gets exactly that - the hide rule does
+        NOT also hide what was just requested."""
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+        mock_table.query.return_value = {
+            "Items": [], "LastEvaluatedKey": None,
+        }
+
+        with patch.object(handler_module, "AUDIT_TABLE", "test-audit"):
+            get_audit_events(
+                "admin@example.com",
+                {"action": "DOCUMENT_INGESTED"},
+            )
+
+        kwargs = mock_table.query.call_args.kwargs
+        # action filter is on; hide-clause placeholders are not added.
+        assert kwargs["ExpressionAttributeValues"][":action"] == "DOCUMENT_INGESTED"
+        hidden_values = [
+            v for k, v in kwargs["ExpressionAttributeValues"].items()
+            if k.startswith(":hidden_action_")
+        ]
+        assert hidden_values == []
+
 
 class TestAuditSummaryFallback:
     """Regression: when DA/DC/DCU rollups are empty, fall back to a GSI2
@@ -4652,6 +4718,50 @@ class TestAuditSummaryFallback:
         body = json.loads(result["body"])
         assert body["actions_total"] == 0
         assert body["source"] == "aggregates"
+
+    @patch("workspace_management_handler._scan_all_workspaces", return_value=[])
+    @patch("workspace_management_handler._is_org_admin", return_value=True)
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_fallback_skips_document_ingested(
+        self, mock_dynamodb, mock_get_table, mock_org, mock_scan
+    ):
+        """The fallback summary path mirrors the aggregator's hide rule:
+        DOCUMENT_INGESTED rows are present in the audit table but must
+        NOT contribute to actions_total / actions_by_type so the dashboard
+        cards don't get polluted even on a fresh-deploy fallback render."""
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+        mock_table.query.return_value = {"Items": [
+            {
+                "action": "API_KEY_CREATED",
+                "workspace_id": "ws-1",
+                "user_email": "brian@example.com",
+                "timestamp": "2026-05-01T12:00:00+00:00",
+            },
+            # 5 ingest rows that should be IGNORED:
+            *[
+                {
+                    "action": "DOCUMENT_INGESTED",
+                    "workspace_id": "ws-1",
+                    "user_email": "",
+                    "timestamp": f"2026-05-0{d}T12:00:00+00:00",
+                }
+                for d in range(2, 7)
+            ],
+        ]}
+
+        with patch.object(handler_module, "ANALYTICS_TABLE", "test-analytics"), \
+             patch.object(handler_module, "AUDIT_TABLE", "test-audit"):
+            result = get_audit_summary("admin@example.com", {})
+
+        body = json.loads(result["body"])
+        assert body["actions_total"] == 1  # only API_KEY_CREATED counted
+        actions = {a["action"] for a in body["actions_by_type"]}
+        assert actions == {"API_KEY_CREATED"}
+        assert "DOCUMENT_INGESTED" not in actions
+        assert body["source"] == "raw"  # fallback path triggered (no rollups)
 
 
 class TestAuditEventDetail:

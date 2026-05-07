@@ -178,6 +178,21 @@ class TestAggregateAdminItem:
         warnings = [r for r in caplog.records if r.levelname == "WARNING"]
         assert any("WIDGET_FROBBED" in r.getMessage() for r in warnings)
 
+    def test_document_ingested_skipped_no_rollup_writes(self):
+        """DOCUMENT_INGESTED rows are written to the audit table for
+        forensic provenance but must NOT contribute to the dashboard
+        rollups (one per ingested doc would dominate every other admin
+        action). Aggregator returns False and emits zero update_item
+        calls."""
+        table = MagicMock()
+        ok = aggregate_admin_item(
+            table=table, workspace_id="ws-1", user_email="ingest@x",
+            action="DOCUMENT_INGESTED",
+            timestamp="2026-05-07T12:00:00+00:00", request_id="r-doc-1",
+        )
+        assert ok is False
+        assert table.update_item.call_count == 0
+
     def test_action_count_uses_decimal(self):
         """ADR-009: numeric ADD operands round-trip through Decimal so future
         arithmetic doesn't drift on float."""
