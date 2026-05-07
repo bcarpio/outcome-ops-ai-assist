@@ -94,6 +94,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 from shared.audit_writer import (
     ACTION_API_KEY_CREATED,
     ACTION_API_KEY_REVOKED,
+    ACTION_API_KEY_USED,
     ACTION_MCP_SERVER_CREATED,
     ACTION_MCP_SERVER_DELETED,
     ACTION_MCP_SERVER_UPDATED,
@@ -2859,10 +2860,17 @@ def revoke_api_key(
         return _error(500, "Failed to revoke API key")
 
 
-def validate_api_key(api_key: str) -> Optional[Dict]:
+def validate_api_key(
+    api_key: str,
+    audit_ctx: Optional[Dict[str, str]] = None,
+) -> Optional[Dict]:
     """Validate an API key and return the user info, or None if invalid.
 
     This is an internal helper used by the MCP server, not an HTTP endpoint.
+
+    Emits an ACTION_API_KEY_USED audit row on every validation attempt
+    (success or failure) so InfoSec can answer "show me programmatic-
+    access activity for this key" from the audit table directly.
     """
     dynamodb = _get_dynamodb()
     table = dynamodb.Table(_get_workspaces_table())
@@ -2878,25 +2886,44 @@ def validate_api_key(api_key: str) -> Optional[Dict]:
         )
 
         items = response.get("Items", [])
+        ctx = audit_ctx or {}
         if not items:
+            _emit_api_key_used(
+                key_id="", key_name="", email="",
+                success=False, reason="key_not_found", ctx=ctx,
+            )
             return None
 
         item = items[0]
+        key_id = item.get("key_id", "")
+        key_name = item.get("name", "")
 
         # Check status
         if item.get("status") != "active":
+            _emit_api_key_used(
+                key_id=key_id, key_name=key_name, email="",
+                success=False, reason="key_revoked", ctx=ctx,
+            )
             return None
 
         # Check expiration
         expires_at = item.get("expires_at")
         if expires_at:
             if datetime.fromisoformat(expires_at) < datetime.now(timezone.utc):
+                _emit_api_key_used(
+                    key_id=key_id, key_name=key_name, email="",
+                    success=False, reason="key_expired", ctx=ctx,
+                )
                 return None
 
         # Extract email from PK (USER#{email})
         pk = item.get("PK", "")
         email = pk.replace("USER#", "") if pk.startswith("USER#") else None
         if not email:
+            _emit_api_key_used(
+                key_id=key_id, key_name=key_name, email="",
+                success=False, reason="key_missing_owner", ctx=ctx,
+            )
             return None
 
         # Update last_used_at (best-effort)
@@ -2911,10 +2938,48 @@ def validate_api_key(api_key: str) -> Optional[Dict]:
         except Exception:
             pass  # Non-blocking
 
-        return {"email": email, "key_id": item.get("key_id")}
+        _emit_api_key_used(
+            key_id=key_id, key_name=key_name, email=email,
+            success=True, reason="", ctx=ctx,
+        )
+        return {"email": email, "key_id": key_id}
     except ClientError as e:
         logger.error(f"[workspace_handler] Error validating API key: {e}", exc_info=True)
         return None
+
+
+def _emit_api_key_used(
+    key_id: str,
+    key_name: str,
+    email: str,
+    success: bool,
+    reason: str,
+    ctx: Dict[str, str],
+) -> None:
+    """Emit an ACTION_API_KEY_USED audit row. Non-fatal: never raises.
+
+    Includes both success and failure validations so InfoSec can spot
+    brute-force / credential-stuffing patterns in the audit dashboard.
+    """
+    if not AUDIT_TABLE:
+        return
+    try:
+        log_admin_action(
+            AUDIT_TABLE,
+            ACTION_API_KEY_USED,
+            workspace_id="",  # API keys are user-scoped, not workspace-scoped
+            user_email=email,
+            source_ip=ctx.get("source_ip", ""),
+            user_agent=ctx.get("user_agent", ""),
+            details={
+                "key_id": key_id,
+                "key_name": key_name,
+                "success": success,
+                "reason": reason,
+            },
+        )
+    except Exception as e:
+        logger.warning(f"[workspace_handler] Failed to emit API_KEY_USED: {e}")
 
 
 # ============================================================================

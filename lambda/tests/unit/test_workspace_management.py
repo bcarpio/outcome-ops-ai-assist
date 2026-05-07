@@ -3244,6 +3244,124 @@ class TestValidateApiKey:
         assert result is None
 
 
+class TestApiKeyUsedAudit:
+    """plan/audit-completeness chunk 02 — every validate_api_key call
+    (success or failure) emits an ACTION_API_KEY_USED audit row so
+    InfoSec can track programmatic-access activity."""
+
+    @patch("workspace_management_handler.log_admin_action")
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_validate_success_emits_api_key_used(
+        self, mock_dynamodb, mock_get_table, mock_audit,
+    ):
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+        mock_table.query.return_value = {
+            "Items": [{
+                "PK": "USER#user@example.com",
+                "SK": "API_KEY#k1",
+                "key_id": "k1",
+                "name": "ci-bot",
+                "status": "active",
+            }]
+        }
+
+        with patch.object(handler_module, "AUDIT_TABLE", "test-audit"):
+            validate_api_key(
+                "ooa_test123",
+                audit_ctx={"source_ip": "203.0.113.7", "user_agent": "ci/1.0"},
+            )
+
+        mock_audit.assert_called_once()
+        args, kwargs = mock_audit.call_args
+        assert args[1] == "API_KEY_USED"
+        assert kwargs["user_email"] == "user@example.com"
+        assert kwargs["details"]["success"] is True
+        assert kwargs["details"]["key_id"] == "k1"
+        assert kwargs["details"]["key_name"] == "ci-bot"
+        assert kwargs["details"]["reason"] == ""
+        assert kwargs["source_ip"] == "203.0.113.7"
+        assert kwargs["user_agent"] == "ci/1.0"
+
+    @patch("workspace_management_handler.log_admin_action")
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_validate_unknown_key_emits_failure(
+        self, mock_dynamodb, mock_get_table, mock_audit,
+    ):
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+        mock_table.query.return_value = {"Items": []}
+
+        with patch.object(handler_module, "AUDIT_TABLE", "test-audit"):
+            validate_api_key("ooa_unknown")
+
+        mock_audit.assert_called_once()
+        args, kwargs = mock_audit.call_args
+        assert args[1] == "API_KEY_USED"
+        assert kwargs["details"]["success"] is False
+        assert kwargs["details"]["reason"] == "key_not_found"
+        # Failed lookup leaves user_email empty
+        assert kwargs["user_email"] == ""
+
+    @patch("workspace_management_handler.log_admin_action")
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_validate_revoked_key_emits_failure(
+        self, mock_dynamodb, mock_get_table, mock_audit,
+    ):
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+        mock_table.query.return_value = {
+            "Items": [{
+                "PK": "USER#user@example.com",
+                "SK": "API_KEY#k1",
+                "key_id": "k1",
+                "name": "old-key",
+                "status": "revoked",
+            }]
+        }
+
+        with patch.object(handler_module, "AUDIT_TABLE", "test-audit"):
+            validate_api_key("ooa_revoked")
+
+        args, kwargs = mock_audit.call_args
+        assert kwargs["details"]["success"] is False
+        assert kwargs["details"]["reason"] == "key_revoked"
+        assert kwargs["details"]["key_id"] == "k1"
+
+    @patch("workspace_management_handler.log_admin_action")
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_validate_expired_key_emits_failure(
+        self, mock_dynamodb, mock_get_table, mock_audit,
+    ):
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+        mock_table.query.return_value = {
+            "Items": [{
+                "PK": "USER#user@example.com",
+                "SK": "API_KEY#k1",
+                "key_id": "k1",
+                "name": "expired",
+                "status": "active",
+                "expires_at": "2020-01-01T00:00:00+00:00",
+            }]
+        }
+
+        with patch.object(handler_module, "AUDIT_TABLE", "test-audit"):
+            validate_api_key("ooa_expired")
+
+        args, kwargs = mock_audit.call_args
+        assert kwargs["details"]["success"] is False
+        assert kwargs["details"]["reason"] == "key_expired"
+
+
 class TestSystemPromptAuditEmission:
     """Confirm the migrated system-prompt audit emission goes through log_admin_action."""
 
