@@ -143,9 +143,10 @@ See `docs/audit-dashboard.md` and ADR-018 for full details.
 
 - **Single audit table, three categories** (`bedrock`, `admin`, `auth`)
   partitioned by workspace (base), user (GSI1), and category (GSI2).
-- **17 admin action constants** — workspace / member / repo / MCP /
-  API key / budget / system-prompt CRUD, all wired through
-  `shared/audit_writer.log_admin_action`.
+- **19 admin action constants** — workspace / member / repo / MCP /
+  API key / budget / system-prompt CRUD, plus `PRIVACY_MODE_UPDATED`
+  and `DOCUMENT_INGESTED` from the PII-redaction feature, all wired
+  through `shared/audit_writer.log_admin_action`.
 - **Refusal capture** — chat Lambda's `detect_refusal` flags ToS
   refusals into audit; `audit-alert` Lambda SNSes on each one.
 - **InfoSec drill** — click a refusal → "View user's chat history"
@@ -161,9 +162,11 @@ See `docs/audit-dashboard.md` and ADR-018 for full details.
   `DT#<date>` (daily total), `DM#<date>#<model>`,
   `DU#<date>#<user>` for bedrock; `DA#<date>`,
   `DC#<date>#<action>`, `DCU#<date>#<user>` for admin.
-- **Per-call vs per-token pricing** — Cohere Rerank prices per
-  invocation, Claude / Titan price per million tokens; both shapes
-  live in `MODEL_PRICING`.
+- **Three pricing shapes** — Claude / Titan price per million tokens,
+  Cohere Rerank prices per invocation, Comprehend Detect-PII prices
+  per character scanned. All three live in `MODEL_PRICING`; per-char
+  rows carry `char_count` so the analytics aggregator rolls them into
+  the same DT / DM / DU shape as token-priced rows.
 - **Workspace / Analytics / Budgets pages** —
   `ui/src/pages/Analytics.tsx`, `WorkspaceAnalytics.tsx`,
   `AnalyticsBudgets.tsx`. Cost by model, by workspace, by user;
@@ -173,12 +176,39 @@ See `docs/audit-dashboard.md` and ADR-018 for full details.
   threshold to SNS so finance / org-admin see it on day-of, not
   end-of-month.
 - **Operator-tunable pricing** — every model price (Sonnet input /
-  output, Haiku input / output, Embedding, Rerank-per-1k) is a
-  tfvar so customers on negotiated AWS pricing override without
-  a code change.
+  output, Haiku input / output, Embedding, Rerank-per-1k,
+  Comprehend-per-1M-chars) is a tfvar so customers on negotiated AWS
+  pricing override without a code change.
 
 ## Security and compliance
 
+- **PII redaction at ingest** — every document going into a workspace's
+  vector store runs through Amazon Comprehend Detect-PII first. Names,
+  emails, phones, addresses, SSNs, passport / driver-license numbers,
+  bank routing / account / PIN, all four major credit-card brands' card
+  numbers / CVVs / expiries, passwords, and AWS access / secret keys
+  get replaced with `[REDACTED:TYPE]` placeholders before embedding —
+  so the LLM physically cannot reveal the raw value, by design.
+  Verified end-to-end via MCP query against the live S3 Vectors index;
+  see `docs/pii-redaction-verification.md`.
+- **Per-workspace privacy mode** — workspace admins choose `STRICT`
+  (default, redact) or `NONE` (raw text in vectors, for HR / customer-
+  support workspaces where redaction would defeat the point) via
+  Settings → General → Privacy. Audited via `PRIVACY_MODE_UPDATED`.
+- **Org-level redaction skip list** — `pii_redaction_skip_types` tfvar
+  tunes what STRICT means for the whole deployment. Default exempts
+  `URL / IP_ADDRESS / MAC_ADDRESS / DATE_TIME` (load-bearing in dev /
+  infra docs). Override to `[]` to redact everything Comprehend
+  detects.
+- **Org-level kill switch** — `pii_redaction_enabled` tfvar disables
+  Comprehend invocations entirely; useful in regions without
+  Comprehend Detect-PII or when redaction is handled out-of-band. A
+  plan-time `terraform apply` precondition fails fast if redaction is
+  enabled in an unsupported region.
+- **Per-document audit receipt** — every `DOCUMENT_INGESTED` audit row
+  carries a `redaction_summary` (`{"EMAIL": 3, "PHONE": 1, ...}`),
+  the `mode`, and a `skipped_reason` when bypassed. Drawer panel on
+  the audit dashboard surfaces the per-type counts for InfoSec.
 - **AI Disclosure Modal** — required first-time disclosure capture
   per `docs/ai-disclosure-modal.md`. Tracks who consented, when,
   what version of the disclosure they saw.
