@@ -185,3 +185,15 @@ enable_jira_integration = false
 # to redact everything Comprehend detects (right call for HR-content
 # or customer-support workspaces).
 # pii_redaction_skip_types = ["URL", "IP_ADDRESS", "MAC_ADDRESS", "DATE_TIME"]
+
+# ============================================================================
+# Audit Stream Export (SIEM hook)
+# ============================================================================
+
+# Provision a Kinesis Data Stream and a publisher Lambda that re-emits
+# every audit-log INSERT as an OCSF v1.3.0 envelope. Customers' security
+# teams attach their own consumer (Splunk, Datadog, Sumo, AWS Security
+# Lake, or a Firehose to S3). On-demand Kinesis, 24h retention, CMK
+# flows from enable_cmk_encryption automatically. See
+# docs/audit-stream-export.md for OCSF schema + FilterCriteria patterns.
+# audit_stream_export_enabled = false

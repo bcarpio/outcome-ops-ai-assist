@@ -471,3 +471,23 @@ variable "pii_redaction_skip_types" {
   EOT
   default     = ["URL", "IP_ADDRESS", "MAC_ADDRESS", "DATE_TIME"]
 }
+
+# ============================================================================
+# Audit Stream Export (SIEM hook)
+# ============================================================================
+
+variable "audit_stream_export_enabled" {
+  type        = bool
+  description = <<-EOT
+    Provision a Kinesis Data Stream and a publisher Lambda that re-emits
+    every audit-log INSERT as an OCSF v1.3.0 envelope. Customers' security
+    teams point their own consumer (Splunk, Datadog, Sumo, Security Lake,
+    or a Firehose to S3) at the stream and decide which events they want
+    via FilterCriteria on their consumer. Stream is on-demand mode, 24h
+    retention. CMK flows from enable_cmk_encryption automatically.
+
+    See docs/audit-stream-export.md for the OCSF schema reference and
+    consumer FilterCriteria patterns.
+  EOT
+  default     = false
+}

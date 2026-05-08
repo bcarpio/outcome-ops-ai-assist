@@ -277,14 +277,25 @@ no scans, no cross-table joins.
 
 ## Export for SIEM / GRC tooling
 
-The `/audit/events` endpoint accepts `start_date`, `end_date`,
-`workspace_id`, `user_email`, `action`, `category`, `status`,
-`cursor`, `limit`. Pagination follows the standard cursor pattern.
+Two paths, depending on whether the customer wants point-in-time
+queries or a continuous feed.
 
-The Audit dashboard offers CSV / JSON download (5,000-row safety cap)
-when drilled into a single user. For larger pulls into a SIEM (Splunk,
-Datadog, Sumo) or GRC tooling (Drata, Vanta, Hyperproof), drive the
-endpoint directly with a service account API key + cursor pagination.
+**Continuous feed (Kinesis + OCSF) — preferred for SIEM.** Set
+`audit_stream_export_enabled = true` to provision a Kinesis Data
+Stream that receives every audit-log INSERT as an OCSF v1.3.0
+envelope. Customer attaches their own Splunk / Datadog / Sumo / AWS
+Security Lake / Firehose-to-S3 consumer and applies FilterCriteria to
+pick which events to ingest. Full schema, FilterCriteria patterns, and
+consumer IAM in [`audit-stream-export.md`](audit-stream-export.md).
+
+**Point-in-time pull (REST endpoint).** The `/audit/events` endpoint
+accepts `start_date`, `end_date`, `workspace_id`, `user_email`,
+`action`, `category`, `status`, `cursor`, `limit`. Pagination follows
+the standard cursor pattern. The Audit dashboard offers CSV / JSON
+download (5,000-row safety cap) when drilled into a single user. For
+larger pulls — into a GRC tool (Drata, Vanta, Hyperproof) or for an
+ad-hoc compliance pull — drive the endpoint directly with a service-
+account API key + cursor pagination.
 
 ---
 
@@ -292,6 +303,8 @@ endpoint directly with a service account API key + cursor pagination.
 
 - [`audit-dashboard.md`](audit-dashboard.md) — operator's guide to the
   `/audit` page (drill flow, drawer, export, demo seeder).
+- [`audit-stream-export.md`](audit-stream-export.md) — SIEM export
+  over Kinesis (OCSF schema + FilterCriteria patterns + consumer IAM).
 - [ADR-018](adr/ADR-018-audit-logging-design.md) — schema design,
   GSI2 rationale, writer split, per-call pricing.
 - `lambda/shared/audit.py` — bedrock-row writer (per-call pricing).

@@ -221,6 +221,15 @@ to the `/audit` page, and ADR-018 for schema design.
   enterprise InfoSec sign-off.
 - **Audit-driven SOC 2 / FedRAMP narrative** — every admin action +
   every model invocation captured with timestamp, actor, IP. ADR-018.
+- **SIEM export via Kinesis (OCSF v1.3.0)** — opt-in tfvar
+  (`audit_stream_export_enabled`) provisions a Kinesis Data Stream and
+  publisher Lambda that re-emits every audit-log INSERT as an OCSF
+  hybrid envelope (standard fields populated for Security Lake / Splunk
+  OCSF apps, full raw payload preserved under `unmapped`). Customer
+  security teams attach their own Splunk / Datadog / Sumo / Security
+  Lake / Firehose consumer and filter via standard event-source-mapping
+  FilterCriteria. CMK flows from `enable_cmk_encryption`. See
+  `docs/audit-stream-export.md`.
 - **Vulnerability scanning** — `mcp-snyk` integration scans
   generated code for known CVEs / supply-chain risks.
 - **Code-quality gates** — SonarQube MCP integration scans new code
@@ -283,6 +292,7 @@ to the `/audit` page, and ADR-018 for schema design.
 - `docs/deployment-guide.md` — full deployment runbook.
 - `docs/audit-coverage.md` — every event the platform records.
 - `docs/audit-dashboard.md` — audit page operator guide.
+- `docs/audit-stream-export.md` — SIEM export over Kinesis (OCSF).
 - `docs/adr/` — architectural decisions, including ADR-018 (audit),
   ADR-014 to 017 (code maps).
 - `docs/roadmap.md` — what's coming next.
