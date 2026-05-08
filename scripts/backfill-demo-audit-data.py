@@ -11,6 +11,7 @@ removed for the next demo run.
 Targets (matches the InfoSec / FinOps demo narrative):
   - Total cost:          ~$250-$300 over 30 days
   - Bedrock queries:     ~4,000 (Sonnet 4.6 ~70%, Haiku 4.5 ~30%)
+  - Comprehend docs:     ~1,500 ingest-time PII redactions (~$10-$20)
   - Refusals:            ~15 (rendered in red on the audit page)
   - Admin actions:       ~80 (workspace/member/budget/api-key/system-prompt)
   - Daily pattern:       $12-$18/day weekday peaks, $2-$5/day weekends
@@ -124,6 +125,28 @@ RERANK_PRICE_PER_CALL = 0.002  # $2.00 / 1k search queries
 # the demo, mirror what production does: ~70% of chat queries trigger
 # rerank, so the cost-by-model chart shows Cohere as a meaningful slice.
 RERANK_FRACTION = 0.70
+
+# Comprehend Detect-PII per-char pricing (matches shared/audit.py).
+# $1.00 per 1M characters scanned at ingest time when privacy_mode=STRICT.
+COMPREHEND_MODEL = "comprehend.detect-pii-entities"
+COMPREHEND_PRICE_PER_CHAR = 1.00 / 1_000_000  # $1.00 / 1M chars
+
+# Synthetic ingest workload: how many "documents redacted" per day.
+# Distributed across workspaces. ~50/day average over 30d = ~1,500 rows
+# carrying realistic char_counts that roll up into the cost-by-model
+# Comprehend slice on the analytics page.
+TARGET_COMPREHEND_DOCS = 1500
+
+# Per-document character count distribution (mix of README / ADR / code
+# map chunks / Confluence pages / email threads). Tuned so the 30-day
+# Comprehend total lands in the $9-$25 range - a meaningful but minor
+# slice next to the $250-300 total demo spend.
+COMPREHEND_CHAR_RANGES: List[Tuple[float, Tuple[int, int]]] = [
+    (0.40, (500, 4000)),     # README, short ADR, code-map chunk
+    (0.35, (4000, 12000)),   # mid-size doc / ADR / Confluence page
+    (0.20, (12000, 30000)),  # long Confluence page / email thread
+    (0.05, (30000, 80000)),  # outlier large doc
+]
 
 # Query profiles. The platform's RAG path defaults to Haiku, with Sonnet
 # reserved for explicit "deep analysis" escalations - so the realistic
@@ -474,6 +497,56 @@ def _rerank_row(
     }
 
 
+def _comprehend_row(
+    ts: datetime,
+    workspace_id: str,
+    rng: random.Random,
+) -> Dict:
+    """Build a Comprehend Detect-PII audit row that mirrors what
+    process-documents writes during ingestion when privacy_mode=STRICT.
+    Per-char pricing, no tokens, system-attributed (matching prod where
+    log_audit_entry is called without user_email - ingestion is cron- /
+    integration-driven, not user-triggered)."""
+    weights = [w for w, _ in COMPREHEND_CHAR_RANGES]
+    ranges = [r for _, r in COMPREHEND_CHAR_RANGES]
+    char_range = _weighted_choice(ranges, weights, rng)
+    char_count = rng.randint(*char_range)
+    cost = round(char_count * COMPREHEND_PRICE_PER_CHAR, 6)
+
+    request_id = _make_request_id()
+    timestamp = ts.isoformat()
+    sk = f"{timestamp}#{request_id}"
+    return {
+        "PK": f"WS#{workspace_id}",
+        "SK": sk,
+        "GSI1PK": "USER#",  # ingest is system-attributed in production
+        "GSI1SK": sk,
+        "GSI2PK": "CAT#bedrock",
+        "GSI2SK": sk,
+        "category": "bedrock",
+        "request_id": request_id,
+        "lambda_name": "process-documents",
+        "model_id": COMPREHEND_MODEL,
+        "input_text": "",   # never log raw doc content for cost rows
+        "output_text": "",
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "char_count": char_count,
+        "cost_usd": str(cost),
+        "duration_ms": rng.randint(120, 600),
+        "status": "success",
+        "flagged_reason": "",
+        "user_email": "",   # system-triggered ingestion
+        "workspace_id": workspace_id,
+        "workspace_ids": [workspace_id],
+        "source_ip": "",    # no browser session for cron-driven ingest
+        "user_agent": "",
+        "timestamp": timestamp,
+        "ttl": _ttl(ts),
+        DEMO_MARKER: True,
+    }
+
+
 def _refusal_row(
     ts: datetime,
     user_email: str,
@@ -567,6 +640,7 @@ def _build_plan(
     days: int,
     bedrock_target: int,
     refusal_target: int,
+    comprehend_target: int,
 ) -> Tuple[List[Dict], Dict[str, int]]:
     """Build the full row list and a category breakdown for reporting."""
     if not workspaces:
@@ -616,7 +690,13 @@ def _build_plan(
 
     start_dt = datetime.now(timezone.utc) - timedelta(days=days)
     rows: List[Dict] = []
-    counts = {"bedrock_success": 0, "bedrock_refusal": 0, "rerank": 0, "admin": 0}
+    counts = {
+        "bedrock_success": 0,
+        "bedrock_refusal": 0,
+        "rerank": 0,
+        "comprehend": 0,
+        "admin": 0,
+    }
 
     # Bedrock queries. For each chat-style row, optionally pair it with a
     # Cohere rerank row at a slightly earlier timestamp to mirror real
@@ -635,6 +715,17 @@ def _build_plan(
                 _rerank_row(rerank_ts, email, user_ips[email], ws_id, rng)
             )
             counts["rerank"] += 1
+
+    # Comprehend Detect-PII rows - one per "document ingested" during the
+    # 30-day window. System-attributed (no user_email / source_ip), spread
+    # across workspaces by the same weighted distribution as queries.
+    # These show as a Comprehend slice on the cost-by-model chart and roll
+    # up into per-workspace ingest cost.
+    comprehend_ts = _generate_timestamps(start_dt, comprehend_target, rng)
+    for ts in comprehend_ts:
+        ws_id = _weighted_choice(ws_choices, ws_weights, rng)
+        rows.append(_comprehend_row(ts, ws_id, rng))
+        counts["comprehend"] += 1
 
     # Refusals - a bit more concentrated to a few users (noisy security
     # incident look) but not all from one person.
@@ -774,6 +865,10 @@ def main() -> int:
     parser.add_argument("--days", type=int, default=DEFAULT_DAYS)
     parser.add_argument("--queries", type=int, default=TARGET_BEDROCK_QUERIES)
     parser.add_argument("--refusals", type=int, default=TARGET_REFUSALS)
+    parser.add_argument("--comprehend-docs", type=int,
+                        default=TARGET_COMPREHEND_DOCS,
+                        help="Number of synthetic Comprehend Detect-PII "
+                             "rows to seed (one per 'document ingested').")
     parser.add_argument("--seed", type=int, default=42,
                         help="Random seed for reproducible demos")
     parser.add_argument("--apply", action="store_true",
@@ -834,16 +929,22 @@ def main() -> int:
     rng = random.Random(args.seed)
     rows, counts = _build_plan(
         workspaces, rng, args.days, args.queries, args.refusals,
+        args.comprehend_docs,
     )
 
     # Summarize the plan
     total_cost = sum(float(r["cost_usd"]) for r in rows if "cost_usd" in r)
+    comprehend_cost = sum(
+        float(r["cost_usd"]) for r in rows
+        if r.get("model_id") == COMPREHEND_MODEL
+    )
     log.info("---")
     log.info("plan: %d total rows over %d days (seed=%d)",
              len(rows), args.days, args.seed)
     log.info("  bedrock success: %d", counts["bedrock_success"])
     log.info("  refusals:        %d", counts["bedrock_refusal"])
     log.info("  rerank calls:    %d (cohere)", counts["rerank"])
+    log.info("  comprehend docs: %d ($%.2f)", counts["comprehend"], comprehend_cost)
     log.info("  admin actions:   %d", counts["admin"])
     log.info("  estimated cost:  $%.2f", total_cost)
 
