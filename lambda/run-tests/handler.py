@@ -27,6 +27,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import boto3
+
+# Make shared/ importable; deploy package includes lambda/shared/ at
+# zip root via terraform source_path.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from shared.audit_writer import ACTION_TESTS_RAN, log_admin_action  # noqa: E402
 import requests
 from botocore.config import Config
 from botocore.exceptions import ClientError
@@ -1237,6 +1242,38 @@ def handler(event: Dict[str, Any], _context: Any) -> Dict[str, Any]:
         )
 
         emit_result_event(result_detail)
+
+        # plan/audit-completeness chunk 08: emit ACTION_TESTS_RAN as a
+        # parent event for the per-step Bedrock rows that auto-fix paths
+        # write. Operators can answer "every test run we did, with cost
+        # and pass/fail attribution" via a single Query.
+        try:
+            audit_table = os.environ.get("AUDIT_TABLE", "")
+            autofix = get_autofix_cost()
+            if audit_table:
+                log_admin_action(
+                    audit_table,
+                    ACTION_TESTS_RAN,
+                    workspace_id="",
+                    user_email="",
+                    source_ip="",
+                    user_agent="",
+                    details={
+                        "repo": detail.repoFullName,
+                        "branch": detail.branchName,
+                        "issue_number": detail.issueNumber,
+                        "pr_number": detail.prNumber,
+                        "pr_url": detail.prUrl or "",
+                        "test_command": test_command_used,
+                        "tests_passed": bool(tests_passed),
+                        "failure_reason": failure_reason or "",
+                        "failure_type": failure_type or "",
+                        "duration_seconds": round(duration, 2),
+                        "autofix_cost_usd": str(autofix.get("cost_usd", 0)),
+                    },
+                )
+        except Exception as exc:
+            logger.warning("[run-tests] Failed to emit TESTS_RAN audit row: %s", exc)
 
         # Get accumulated auto-fix cost and update plan file before cleanup
         autofix_cost = get_autofix_cost()

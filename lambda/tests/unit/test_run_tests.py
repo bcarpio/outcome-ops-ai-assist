@@ -155,6 +155,48 @@ def test_handler_runs_tests_and_publishes_results(mock_ssm, mock_s3, mock_events
     assert not workspace.exists()
 
 
+@patch.object(handler_module, "log_admin_action")
+@patch.object(handler_module, "events_client")
+@patch.object(handler_module, "s3_client")
+@patch.object(handler_module, "ssm_client")
+def test_handler_emits_tests_ran_audit_row(
+    mock_ssm, mock_s3, mock_events, mock_audit, tmp_path, monkeypatch,
+):
+    """plan/audit-completeness chunk 08 — handler emits ACTION_TESTS_RAN
+    in the finally block, regardless of test pass/fail outcome."""
+    mock_ssm.get_parameter.return_value = {"Parameter": {"Value": "ghp_test_token"}}
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    fake_run, repo_dir, junit_path = fake_subprocess_run_factory(workspace)
+    monkeypatch.setattr(handler_module.tempfile, "mkdtemp", lambda prefix: str(workspace))
+    original_subprocess = handler_module.subprocess
+    monkeypatch.setattr(
+        handler_module,
+        "subprocess",
+        SimpleNamespace(run=fake_run, TimeoutExpired=original_subprocess.TimeoutExpired),
+    )
+    import test_backend_base
+    monkeypatch.setattr(
+        test_backend_base,
+        "subprocess",
+        SimpleNamespace(run=fake_run, TimeoutExpired=original_subprocess.TimeoutExpired, PIPE=original_subprocess.PIPE),
+    )
+    monkeypatch.setenv("AUDIT_TABLE", "test-audit")
+
+    handler_module.handler(build_event(), None)
+
+    mock_audit.assert_called_once()
+    args, kwargs = mock_audit.call_args
+    assert args[1] == "TESTS_RAN"
+    d = kwargs["details"]
+    # repo comes from build_event() - just confirm it's populated
+    assert d["repo"]
+    assert d["tests_passed"] is True
+    assert "duration_seconds" in d
+    assert "test_command" in d
+
+
 @patch("requests.post")
 @patch.object(handler_module, "events_client")
 @patch.object(handler_module, "s3_client")
