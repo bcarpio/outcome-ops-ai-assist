@@ -1,57 +1,14 @@
 # ============================================================================
-# Audit Stream Export (SIEM hook)
+# Audit Stream Publisher Lambda
 #
-# Optional Kinesis Data Stream + publisher Lambda that re-emits audit-log
-# INSERT events as OCSF v1.3.0 envelopes. Customers' security teams attach
-# their own consumer (Splunk, Datadog, Sumo, AWS Security Lake, or a
-# Firehose to S3) at the stream. They choose which events they want via
-# FilterCriteria on their consumer event source mapping; we publish all of
-# them.
+# DynamoDB Streams consumer for the audit-logs table that re-emits every
+# INSERT as an OCSF v1.3.0 envelope to the audit-export Kinesis stream
+# (kinesis-audit-export.tf). Customers' SIEM consumers read from Kinesis;
+# we don't prescribe a downstream pattern.
 #
-# Stream config: on-demand mode, 24h retention, CMK flows from
-# enable_cmk_encryption when on. See docs/audit-stream-export.md.
+# Gated on the same audit_stream_export_enabled tfvar that gates the
+# Kinesis stream itself - never publish without a target.
 # ============================================================================
-
-locals {
-  audit_export_enabled     = var.audit_stream_export_enabled ? 1 : 0
-  audit_export_stream_name = "${var.environment}-${var.app_name}-audit-export"
-}
-
-module "audit_export_stream" {
-  source  = "cloudposse/kinesis-stream/aws"
-  version = "0.4.0"
-
-  count = local.audit_export_enabled
-
-  name = local.audit_export_stream_name
-
-  shard_count               = 0 # on-demand mode ignores shard_count
-  retention_period          = 24
-  enforce_consumer_deletion = false
-  shard_level_metrics       = []
-  stream_mode               = "ON_DEMAND"
-
-  # Always KMS-encrypted; choose CMK when the customer has enabled the
-  # platform CMK toggle, fall back to AWS-managed alias/aws/kinesis otherwise.
-  encryption_type = "KMS"
-  kms_key_id      = var.enable_cmk_encryption ? local.data_cmk_arn : "alias/aws/kinesis"
-
-  tags = {
-    Purpose = "audit-stream-export"
-  }
-}
-
-resource "aws_ssm_parameter" "audit_export_stream_arn" {
-  count = local.audit_export_enabled
-
-  name  = "/${var.environment}/${var.app_name}/audit-export/stream-arn"
-  type  = "String"
-  value = module.audit_export_stream[0].stream_arn
-}
-
-# ----------------------------------------------------------------------------
-# Publisher Lambda (DynamoDB Streams -> OCSF transform -> Kinesis)
-# ----------------------------------------------------------------------------
 
 module "audit_stream_publisher_lambda" {
   source  = "terraform-aws-modules/lambda/aws"
@@ -152,9 +109,7 @@ resource "aws_lambda_event_source_mapping" "audit_stream_publisher" {
   # redelivered when one record fails. Matches what handler.py returns.
   function_response_types = ["ReportBatchItemFailures"]
 
-  # Same INSERT + workspace_id filter the analytics-aggregator uses, so
-  # SYSTEM-level rows that don't apply to a workspace stay out of the SIEM
-  # feed.
+  # INSERTs only - skip MODIFY / REMOVE noise.
   filter_criteria {
     filter {
       pattern = jsonencode({
@@ -162,14 +117,4 @@ resource "aws_lambda_event_source_mapping" "audit_stream_publisher" {
       })
     }
   }
-}
-
-output "audit_export_stream_arn" {
-  description = "ARN of the audit-export Kinesis stream (null when disabled)"
-  value       = local.audit_export_enabled == 1 ? module.audit_export_stream[0].stream_arn : null
-}
-
-output "audit_export_stream_name" {
-  description = "Name of the audit-export Kinesis stream (null when disabled)"
-  value       = local.audit_export_enabled == 1 ? local.audit_export_stream_name : null
 }

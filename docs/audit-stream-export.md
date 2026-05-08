@@ -349,4 +349,6 @@ keep working — only the SIEM hook goes away.
   and writer split.
 - `lambda/shared/ocsf_mapper.py` — the mapping logic.
 - `lambda/audit-stream-publisher/handler.py` — the publisher itself.
-- `terraform/audit-stream-export.tf` — the infra.
+- `terraform/kinesis-audit-export.tf` — the Kinesis stream.
+- `terraform/lambda-audit-stream-publisher.tf` — the publisher Lambda
+  + IAM + DDB-streams event source mapping.
