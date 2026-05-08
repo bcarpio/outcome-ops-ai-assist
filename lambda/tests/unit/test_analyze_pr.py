@@ -728,6 +728,60 @@ class TestHandler:
         assert mock_post_comment.call_count == 1
         mock_queue_jobs.assert_called_once()
 
+    @patch('analyze_pr_handler.log_admin_action')
+    @patch('analyze_pr_handler.queue_check_jobs')
+    @patch('analyze_pr_handler.post_pr_comment')
+    @patch('analyze_pr_handler.fetch_pr_files')
+    @patch('analyze_pr_handler.fetch_repo_config')
+    @patch('analyze_pr_handler.fetch_pull_request')
+    @patch('analyze_pr_handler.get_github_token')
+    def test_handler_emits_pr_analyzed_audit_row(
+        self,
+        mock_get_token,
+        mock_fetch_pr,
+        mock_fetch_config,
+        mock_fetch_files,
+        mock_post_comment,
+        mock_queue_jobs,
+        mock_audit,
+    ):
+        """plan/audit-completeness chunk 07 - analyze-pr emits
+        ACTION_PR_ANALYZED with repo / pr_number / pr_title / shas /
+        backend / checks_run / duration. This is the parent event for
+        the per-check Bedrock rows that process-pr-check writes."""
+        event = {"pr_number": 142, "repository": "boeing/avionics"}
+        mock_get_token.return_value = "tok"
+        mock_fetch_pr.return_value = GitHubPullRequest(
+            number=142,
+            title="Bump cert chain handling",
+            html_url="https://github.com/boeing/avionics/pull/142",
+            base={"ref": "main", "sha": "9f8e7d"},
+            head={"ref": "feature", "sha": "a1b2c3"},
+        )
+        mock_fetch_config.return_value = None
+        mock_fetch_files.return_value = [
+            GitHubFile(filename="lambda/handler/handler.py",
+                       status="modified", additions=10, deletions=5, changes=15),
+        ]
+        mock_post_comment.return_value = {"id": 1}
+        mock_queue_jobs.return_value = 3
+
+        with patch.dict(os.environ, {"AUDIT_TABLE": "test-audit"}):
+            handler(event, None)
+
+        mock_audit.assert_called_once()
+        args, kwargs = mock_audit.call_args
+        assert args[1] == "PR_ANALYZED"
+        d = kwargs["details"]
+        assert d["repo"] == "boeing/avionics"
+        assert d["pr_number"] == 142
+        assert d["pr_title"] == "Bump cert chain handling"
+        assert d["head_sha"] == "a1b2c3"
+        assert d["base_sha"] == "9f8e7d"
+        assert d["checks_queued_count"] == len(d["checks_run"])
+        assert d["no_checks_needed"] is False
+        assert d["duration_ms"] >= 0
+
     @patch('analyze_pr_handler.post_pr_comment')
     @patch('analyze_pr_handler.fetch_pr_files')
     @patch('analyze_pr_handler.fetch_repo_config')

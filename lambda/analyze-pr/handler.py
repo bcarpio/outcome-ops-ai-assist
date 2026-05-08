@@ -19,6 +19,8 @@ import base64
 import json
 import logging
 import os
+import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set
@@ -26,6 +28,11 @@ from enum import Enum
 
 import boto3
 import requests
+
+# Make shared/ importable when running as a Lambda; the deploy package
+# includes lambda/shared/ at zip root via terraform source_path.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from shared.audit_writer import ACTION_PR_ANALYZED, log_admin_action
 import yaml
 from botocore.exceptions import ClientError
 from pydantic import BaseModel, Field, field_validator
@@ -575,6 +582,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     Raises:
         Exception: For validation or API errors
     """
+    start_time = time.time()
     try:
         # Validate request
         request = AnalyzePrRequest(**event)
@@ -611,6 +619,17 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 *Powered by [OutcomeOps AI Assist](https://outcomeops.ai)*"""
             post_pr_comment(request.repository, request.pr_number, comment_body, token)
 
+            _emit_pr_analyzed(
+                repository=request.repository,
+                pr_number=request.pr_number,
+                pr=pr,
+                backend=backend,
+                checks_run=[],
+                changed_file_count=len(changed_files),
+                duration_ms=int((time.time() - start_time) * 1000),
+                no_checks_needed=True,
+            )
+
             response = AnalyzePrResponse(
                 message="No checks needed for this PR",
                 pr_number=request.pr_number,
@@ -641,9 +660,66 @@ Results will be posted as comments when complete.
             checks_queued=jobs_queued
         )
 
+        _emit_pr_analyzed(
+            repository=request.repository,
+            pr_number=request.pr_number,
+            pr=pr,
+            backend=backend,
+            checks_run=checks_to_run,
+            changed_file_count=len(changed_files),
+            duration_ms=int((time.time() - start_time) * 1000),
+            no_checks_needed=False,
+        )
+
         logger.info(f"Successfully queued {jobs_queued} checks for PR #{request.pr_number}")
         return response.dict()
 
     except Exception as e:
         logger.error(f"Error analyzing PR: {str(e)}", exc_info=True)
         raise
+
+
+def _emit_pr_analyzed(
+    repository: str,
+    pr_number: int,
+    pr: Any,
+    backend: str,
+    checks_run: List[str],
+    changed_file_count: int,
+    duration_ms: int,
+    no_checks_needed: bool,
+) -> None:
+    """Emit ACTION_PR_ANALYZED audit row. Non-fatal.
+
+    This is the parent event that ties together the per-check Bedrock
+    rows that process-pr-check writes. Carries enough context that an
+    auditor can answer "every PR your AI reviewed against this repo
+    in Q3" with a single Query.
+    """
+    audit_table = os.environ.get("AUDIT_TABLE", "")
+    if not audit_table:
+        return
+    try:
+        log_admin_action(
+            audit_table,
+            ACTION_PR_ANALYZED,
+            workspace_id="",  # PR analysis is repo-scoped, not workspace-scoped
+            user_email="",     # Webhook-driven, no human caller
+            source_ip="",
+            user_agent="",
+            details={
+                "repo": repository,
+                "pr_number": pr_number,
+                "pr_title": getattr(pr, "title", ""),
+                "head_sha": (getattr(pr, "head", {}) or {}).get("sha", ""),
+                "base_sha": (getattr(pr, "base", {}) or {}).get("sha", ""),
+                "backend": backend,
+                "checks_run": list(checks_run),
+                "checks_queued_count": len(checks_run),
+                "changed_file_count": changed_file_count,
+                "no_checks_needed": no_checks_needed,
+                "duration_ms": duration_ms,
+            },
+        )
+    except Exception as e:
+        logger.warning(f"Failed to emit PR_ANALYZED: {e}")
