@@ -139,14 +139,19 @@ without re-deploying the platform.
 
 ## Audit dashboard
 
-See `docs/audit-dashboard.md` and ADR-018 for full details.
+See `docs/audit-coverage.md` for the full list of every event the
+platform records, `docs/audit-dashboard.md` for the operator's guide
+to the `/audit` page, and ADR-018 for schema design.
 
 - **Single audit table, three categories** (`bedrock`, `admin`, `auth`)
   partitioned by workspace (base), user (GSI1), and category (GSI2).
-- **19 admin action constants** — workspace / member / repo / MCP /
-  API key / budget / system-prompt CRUD, plus `PRIVACY_MODE_UPDATED`
-  and `DOCUMENT_INGESTED` from the PII-redaction feature, all wired
-  through `shared/audit_writer.log_admin_action`.
+- **42 admin / auth action constants** spanning workspace lifecycle,
+  member / repo / MCP management, API keys, system prompts, privacy
+  mode, document + conversation lifecycle, source-sync triggers,
+  OAuth lifecycle, code-gen pipeline events, and budget thresholds.
+  28 surface on the dashboard; 14 are queryable but hidden from
+  rollup cards by policy (high-volume drumbeats like sync crons /
+  per-document ingest / per-PR review).
 - **Refusal capture** — chat Lambda's `detect_refusal` flags ToS
   refusals into audit; `audit-alert` Lambda SNSes on each one.
 - **InfoSec drill** — click a refusal → "View user's chat history"
@@ -276,6 +281,7 @@ See `docs/audit-dashboard.md` and ADR-018 for full details.
 - `docs/architecture.md` — high-level system diagram.
 - `docs/getting-started.md` — first deploy walkthrough.
 - `docs/deployment-guide.md` — full deployment runbook.
+- `docs/audit-coverage.md` — every event the platform records.
 - `docs/audit-dashboard.md` — audit page operator guide.
 - `docs/adr/` — architectural decisions, including ADR-018 (audit),
   ADR-014 to 017 (code maps).

@@ -187,33 +187,24 @@ for filesystem-safety.
 
 ## Action constants
 
-The 17 action values that may appear in `Recent Activity`, with
-where each is emitted from:
+The platform emits 42 admin / auth action constants today, organized
+into workspace lifecycle, member / repo / MCP management, API keys,
+system prompts, privacy mode, document + conversation lifecycle,
+source-sync triggers, OAuth lifecycle, code-gen pipeline events, and
+budget thresholds.
 
-| Constant                  | Source endpoint                              |
-|---------------------------|----------------------------------------------|
-| `WORKSPACE_CREATED`       | `POST /workspaces`                           |
-| `WORKSPACE_UPDATED`       | `PATCH /workspaces/{id}`                     |
-| `WORKSPACE_DELETED`       | `DELETE /workspaces/{id}`                    |
-| `WORKSPACE_BUDGET_UPDATED`| `PUT /workspaces/{id}/budget`                |
-| `WORKSPACE_MEMBER_ADDED`  | `POST /workspaces/{id}/members`              |
-| `WORKSPACE_MEMBER_REMOVED`| `DELETE /workspaces/{id}/members/{email}`    |
-| `WORKSPACE_REPO_ADDED`    | `POST /workspaces/{id}/repos`                |
-| `WORKSPACE_REPO_REMOVED`  | `DELETE /workspaces/{id}/repos/{name}`       |
-| `ORG_MEMBER_ADDED`        | `POST /org/members`                          |
-| `ORG_MEMBER_REMOVED`      | `DELETE /org/members/{email}`                |
-| `MCP_SERVER_CREATED`      | `POST /mcp/servers`                          |
-| `MCP_SERVER_UPDATED`      | `PATCH /mcp/servers/{id}`                    |
-| `MCP_SERVER_DELETED`      | `DELETE /mcp/servers/{id}`                   |
-| `API_KEY_CREATED`         | `POST /api-keys`                             |
-| `API_KEY_REVOKED`         | `DELETE /api-keys/{key_id}`                  |
-| `SYSTEM_PROMPT_UPDATED`   | `PUT /workspaces/{id}/system-prompt`         |
-| `SYSTEM_PROMPT_RESET`     | `DELETE /workspaces/{id}/system-prompt`      |
+For the full categorized list — including which actions are hidden
+from dashboard rollups by policy, which are deliberately not emitted
+(and why), and the standard auditor-question → query mapping — see
+**[audit-coverage.md](audit-coverage.md)**.
 
 Adding a new action: append to `lambda/shared/audit_writer.py`'s
 `ADMIN_ACTIONS` set + add the matching `ACTION_*` constant + emit
 from the new handler. The UI will render it with the `unknown`
 gray tone until you add it to the `toneFor()` map in `Audit.tsx`.
+If the action is high-volume (per-record / cron drumbeat), also add
+it to `HIDDEN_DASHBOARD_ACTIONS` in both `lambda/shared/audit_writer.py`
+and `lambda/analytics-aggregator/handler.py`.
 
 ---
 
