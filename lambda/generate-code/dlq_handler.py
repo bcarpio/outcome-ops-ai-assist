@@ -14,9 +14,18 @@ This ensures we don't lose partial work and always track usage.
 import json
 import logging
 import os
+import sys
 from typing import Any, Dict, List, Optional
 
 import requests
+
+# Make shared/ importable; the deploy package includes lambda/shared/
+# at zip root via terraform source_path.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from shared.audit_writer import (  # noqa: E402
+    ACTION_CODE_GEN_DLQ_SALVAGE_PR_CREATED,
+    log_admin_action,
+)
 
 from github_api import (
     create_pull_request,
@@ -206,6 +215,33 @@ This PR contains whatever code was successfully generated before the failure.
         pr_number = pr_result.get("number")
 
         logger.info(f"[dlq] Created salvage PR: {pr_url}")
+
+        # Emit ACTION_CODE_GEN_DLQ_SALVAGE_PR_CREATED audit row.
+        # plan/audit-completeness chunk 07. Salvage PRs only appear after
+        # 4 retries failed; flagging them as a distinct action lets
+        # operators monitor codegen reliability.
+        try:
+            audit_table = os.environ.get("AUDIT_TABLE", "")
+            if audit_table:
+                log_admin_action(
+                    audit_table,
+                    ACTION_CODE_GEN_DLQ_SALVAGE_PR_CREATED,
+                    workspace_id="",
+                    user_email="",
+                    source_ip="",
+                    user_agent="",
+                    details={
+                        "repo": message.repo_full_name,
+                        "issue_number": message.issue_number,
+                        "branch": message.branch_name,
+                        "salvage_pr_url": pr_url or "",
+                        "salvage_pr_number": pr_number,
+                        "failed_step": message.current_step,
+                        "total_steps": message.total_steps,
+                    },
+                )
+        except Exception as e:
+            logger.warning(f"[dlq] Failed to emit CODE_GEN_DLQ_SALVAGE_PR_CREATED: {e}")
 
         # Track usage - we count this as a PR generated even though it failed
         # This is fair because we consumed resources attempting the generation

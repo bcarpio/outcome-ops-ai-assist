@@ -683,6 +683,32 @@ class TestPublishCodeGenerationCompletedEvent:
 
             # Assert - no exception raised
 
+    def test_emits_code_generated_audit_row(self, basic_plan, step_message):
+        """plan/audit-completeness chunk 07 — publish_code_generation_completed_event
+        also emits ACTION_CODE_GENERATED via log_admin_action."""
+        with patch('step_executor.events_client'), \
+             patch('step_executor.log_admin_action') as mock_audit, \
+             patch.dict(os.environ, {"AUDIT_TABLE": "test-audit"}):
+            publish_code_generation_completed_event(
+                plan=basic_plan,
+                step_message=step_message,
+                pr_url="https://github.com/owner/repo/pull/1",
+                pr_number=1,
+                plan_file_path="issues/123-plan.md",
+                commit_sha="abc123",
+            )
+
+        mock_audit.assert_called_once()
+        args, kwargs = mock_audit.call_args
+        assert args[1] == "CODE_GENERATED"
+        details = kwargs["details"]
+        assert details["repo"] == "owner/repo"
+        assert details["issue_number"] == 123
+        assert details["pr_url"] == "https://github.com/owner/repo/pull/1"
+        assert details["pr_number"] == 1
+        assert details["commit_sha"] == "abc123"
+        assert details["backend"] == basic_plan.backend_name
+
 
 # ============================================================================
 # Test finalize_and_publish_event

@@ -5,6 +5,7 @@ Tests the dead letter queue handler that processes failed code generation steps.
 """
 
 import json
+import os
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -219,6 +220,44 @@ class TestHandleDlqMessage:
         assert result["reason"] == "pr_created"
         assert result["pr_number"] == 42
         mock_create_pr.assert_called_once()
+
+    @patch("dlq_handler.log_admin_action")
+    @patch("dlq_handler.add_issue_comment")
+    @patch("dlq_handler.create_pull_request")
+    @patch("dlq_handler.get_open_pr_for_branch")
+    @patch("dlq_handler.get_branch_head_sha")
+    @patch("dlq_handler.get_github_token")
+    def test_emits_dlq_salvage_pr_audit(
+        self,
+        mock_token,
+        mock_branch_sha,
+        mock_get_pr,
+        mock_create_pr,
+        mock_comment,
+        mock_audit,
+        sample_message,
+    ):
+        """plan/audit-completeness chunk 07 — successful salvage PR
+        creation emits ACTION_CODE_GEN_DLQ_SALVAGE_PR_CREATED."""
+        mock_token.return_value = "test-token"
+        mock_branch_sha.return_value = "abc123"
+        mock_get_pr.return_value = None
+        mock_create_pr.return_value = {
+            "html_url": "https://github.com/owner/repo/pull/99",
+            "number": 99,
+        }
+        mock_comment.return_value = True
+
+        with patch.dict(os.environ, {"AUDIT_TABLE": "test-audit"}):
+            handle_dlq_message(sample_message)
+
+        mock_audit.assert_called_once()
+        args, kwargs = mock_audit.call_args
+        assert args[1] == "CODE_GEN_DLQ_SALVAGE_PR_CREATED"
+        d = kwargs["details"]
+        assert d["repo"] == sample_message.repo_full_name
+        assert d["salvage_pr_url"] == "https://github.com/owner/repo/pull/99"
+        assert d["salvage_pr_number"] == 99
 
     @patch("dlq_handler.get_branch_head_sha")
     @patch("dlq_handler.get_github_token")

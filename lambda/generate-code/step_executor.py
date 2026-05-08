@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -18,6 +19,11 @@ from typing import Any, Dict, List, Optional, Union
 
 import boto3
 from botocore.exceptions import ClientError
+
+# Make shared/ importable; the deploy package includes lambda/shared/
+# at zip root via terraform source_path.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from shared.audit_writer import ACTION_CODE_GENERATED, log_admin_action  # noqa: E402
 
 from codegen_backends import CodeGeneratorBackend, get_backend
 from bedrock_client import invoke_claude
@@ -1246,6 +1252,53 @@ def publish_code_generation_completed_event(
         )
     except ClientError as exc:
         logger.error("[step-exec] Failed to publish completion event: %s", exc)
+
+    # Emit ACTION_CODE_GENERATED audit row — the parent event for the
+    # per-step Bedrock rows that bedrock_client wrote during the
+    # generation cycle. plan/audit-completeness chunk 07.
+    _emit_code_generated_audit(
+        plan=plan,
+        step_message=step_message,
+        pr_url=pr_url,
+        pr_number=pr_number,
+        commit_sha=commit_sha,
+    )
+
+
+def _emit_code_generated_audit(
+    plan: ExecutionPlan,
+    step_message: StepExecutionMessage,
+    pr_url: Optional[str],
+    pr_number: Optional[int],
+    commit_sha: Optional[str],
+) -> None:
+    """Emit ACTION_CODE_GENERATED. Non-fatal."""
+    audit_table = os.environ.get("AUDIT_TABLE", "")
+    if not audit_table:
+        return
+    try:
+        log_admin_action(
+            audit_table,
+            ACTION_CODE_GENERATED,
+            workspace_id="",  # SQS-driven; no workspace_id on the message today
+            user_email="",     # webhook / Jira-driven, no human caller in moment
+            source_ip="",
+            user_agent="",
+            details={
+                "repo": plan.repo_full_name,
+                "issue_number": plan.issue_number,
+                "issue_title": plan.issue_title,
+                "branch": plan.branch_name,
+                "base_branch": step_message.base_branch,
+                "backend": plan.backend_name,
+                "pr_url": pr_url or "",
+                "pr_number": pr_number,
+                "commit_sha": commit_sha or "",
+                "step_count": len(plan.steps),
+            },
+        )
+    except Exception as exc:
+        logger.warning("[step-exec] Failed to emit CODE_GENERATED audit row: %s", exc)
 
 
 # ============================================================================
