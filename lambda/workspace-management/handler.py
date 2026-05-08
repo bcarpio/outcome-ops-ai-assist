@@ -95,9 +95,14 @@ from shared.audit_writer import (
     ACTION_API_KEY_CREATED,
     ACTION_API_KEY_REVOKED,
     ACTION_API_KEY_USED,
+    ACTION_DOCUMENT_DELETED,
+    ACTION_DOCUMENT_DOWNLOADED,
+    ACTION_MCP_SERVER_ASSIGNED,
     ACTION_MCP_SERVER_CREATED,
     ACTION_MCP_SERVER_DELETED,
+    ACTION_MCP_SERVER_UNASSIGNED,
     ACTION_MCP_SERVER_UPDATED,
+    ACTION_WORKSPACE_SHARING_UPDATED,
     ACTION_ORG_MEMBER_ADDED,
     ACTION_ORG_MEMBER_REMOVED,
     ACTION_PRIVACY_MODE_UPDATED,
@@ -1935,13 +1940,22 @@ def list_documents(user_email: str, workspace_id: str, prefix: str = "") -> Dict
         return _error(500, "Failed to list documents")
 
 
-def delete_document(user_email: str, workspace_id: str, document_path: str) -> Dict:
+def delete_document(
+    user_email: str,
+    workspace_id: str,
+    document_path: str,
+    audit_ctx: Optional[Dict[str, str]] = None,
+) -> Dict:
     """Delete an uploaded document (admin only).
 
     Sends a message to the delete queue for async processing.
     The delete worker will:
     1. Delete the S3 object
     2. Delete associated vectors from S3 Vectors
+
+    Emits an ACTION_DOCUMENT_DELETED audit row on successful queue/delete
+    so the right-to-deletion compliance trail is preserved even if the
+    async cleanup partially fails downstream.
     """
     dynamodb = _get_dynamodb()
     table = dynamodb.Table(_get_workspaces_table())
@@ -1959,10 +1973,11 @@ def delete_document(user_email: str, workspace_id: str, document_path: str) -> D
         s3_key = f"workspaces/{workspace_id}/uploads/{document_path}"
         bucket = _get_kb_bucket()
 
-        # Verify document exists
+        # Verify document exists + capture size for audit before delete.
         s3_client = _get_s3_client()
         try:
-            s3_client.head_object(Bucket=bucket, Key=s3_key)
+            head = s3_client.head_object(Bucket=bucket, Key=s3_key)
+            file_size = head.get("ContentLength", 0)
         except ClientError as e:
             if e.response["Error"]["Code"] == "404":
                 return _error(404, "Document not found")
@@ -1970,6 +1985,7 @@ def delete_document(user_email: str, workspace_id: str, document_path: str) -> D
 
         # Get delete queue URL
         queue_url = _get_delete_queue_url()
+        ctx = audit_ctx or {}
 
         if queue_url:
             # Send delete message to queue for async processing
@@ -1986,16 +2002,55 @@ def delete_document(user_email: str, workspace_id: str, document_path: str) -> D
                 }),
             )
             logger.info(f"Queued deletion of {s3_key} by {user_email}")
+            _emit_document_deleted(
+                workspace_id, user_email, document_path, s3_key,
+                file_size, vectors_purged="queued", ctx=ctx,
+            )
             return _response(200, {"message": "Document deletion queued", "path": document_path})
         else:
             # If no queue configured, delete directly
             s3_client.delete_object(Bucket=bucket, Key=s3_key)
             logger.info(f"Deleted {s3_key} directly by {user_email}")
+            _emit_document_deleted(
+                workspace_id, user_email, document_path, s3_key,
+                file_size, vectors_purged="not_purged", ctx=ctx,
+            )
             return _response(200, {"message": "Document deleted", "path": document_path})
 
     except ClientError as e:
         logger.error(f"Error deleting document: {e}")
         return _error(500, "Failed to delete document")
+
+
+def _emit_document_deleted(
+    workspace_id: str,
+    user_email: str,
+    document_path: str,
+    s3_key: str,
+    file_size: int,
+    vectors_purged: str,
+    ctx: Dict[str, str],
+) -> None:
+    """Emit ACTION_DOCUMENT_DELETED. Non-fatal."""
+    if not AUDIT_TABLE:
+        return
+    try:
+        log_admin_action(
+            AUDIT_TABLE,
+            ACTION_DOCUMENT_DELETED,
+            workspace_id=workspace_id,
+            user_email=user_email,
+            source_ip=ctx.get("source_ip", ""),
+            user_agent=ctx.get("user_agent", ""),
+            details={
+                "document_id": document_path,
+                "file_path": s3_key,
+                "file_size": int(file_size or 0),
+                "vectors_purged": vectors_purged,
+            },
+        )
+    except Exception as e:
+        logger.warning(f"[workspace_handler] Failed to emit DOCUMENT_DELETED: {e}")
 
 
 # ============================================================================
@@ -4866,7 +4921,9 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         ):
             # Reconstruct the document path (everything after 'documents')
             document_path = "/".join(unquote(p) for p in parts[3:])
-            return delete_document(user_email, parts[1], document_path)
+            return delete_document(
+                user_email, parts[1], document_path, audit_ctx,
+            )
 
         # ====================================================================
         # Workspace Sharing Routes

@@ -1894,6 +1894,48 @@ class TestDocumentOperations:
         assert result["statusCode"] == 200
         mock_sqs_client.send_message.assert_called_once()
 
+    @patch("workspace_management_handler.log_admin_action")
+    @patch("workspace_management_handler._get_sqs_client")
+    @patch("workspace_management_handler._get_delete_queue_url", return_value="https://sqs.example.com/queue")
+    @patch("workspace_management_handler._get_s3_client")
+    @patch("workspace_management_handler._get_kb_bucket", return_value="test-kb-bucket")
+    @patch("workspace_management_handler._is_workspace_admin", return_value=True)
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_delete_document_emits_audit_row(
+        self, mock_dynamodb, mock_get_table, mock_ws_admin,
+        mock_bucket, mock_s3, mock_queue, mock_sqs, mock_audit,
+    ):
+        """plan/audit-completeness chunk 05 — delete_document emits
+        ACTION_DOCUMENT_DELETED with file_path + file_size + queue marker."""
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+
+        mock_s3_client = MagicMock()
+        mock_s3.return_value = mock_s3_client
+        mock_s3_client.head_object.return_value = {"ContentLength": 12345}
+
+        mock_sqs_client = MagicMock()
+        mock_sqs.return_value = mock_sqs_client
+
+        with patch.object(handler_module, "AUDIT_TABLE", "test-audit"):
+            result = delete_document(
+                "admin@example.com", "ws1", "readme.md",
+                audit_ctx={"source_ip": "203.0.113.7", "user_agent": "ua"},
+            )
+
+        assert result["statusCode"] == 200
+        mock_audit.assert_called_once()
+        args, kwargs = mock_audit.call_args
+        assert args[1] == "DOCUMENT_DELETED"
+        assert kwargs["user_email"] == "admin@example.com"
+        assert kwargs["details"]["document_id"] == "readme.md"
+        assert kwargs["details"]["file_path"] == "workspaces/ws1/uploads/readme.md"
+        assert kwargs["details"]["file_size"] == 12345
+        assert kwargs["details"]["vectors_purged"] == "queued"
+        assert kwargs["source_ip"] == "203.0.113.7"
+
     @pytest.mark.skip(reason="Skipped due to mock interference in full test suite - works in isolation")
     @patch("workspace_management_handler._get_s3_client")
     @patch("workspace_management_handler._get_kb_bucket", return_value="test-kb-bucket")

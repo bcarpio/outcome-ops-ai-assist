@@ -34,6 +34,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 # Add shared module to path for Lambda deployment
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared.audit import log_audit_entry
+from shared.audit_writer import ACTION_CONVERSATION_DELETED, log_admin_action
 from shared.prompts import build_chat_system_prompt
 
 # Configure logging
@@ -1664,6 +1665,15 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     headers = event.get("headers") or {}
     user_id = headers.get("x-user-email")
 
+    # Browser-context for audit emissions (same shape main.py threads
+    # into the streaming chat path).
+    _rc = event.get("requestContext", {}) or {}
+    _http = _rc.get("http", {}) or {}
+    audit_ctx = {
+        "source_ip": _http.get("sourceIp", "") or "",
+        "user_agent": _http.get("userAgent", "") or "",
+    }
+
     logger.info(f"REST API: {http_method} {path} (user: {user_id})")
 
     # Parse query string parameters
@@ -1694,7 +1704,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         return get_conversation_with_messages(conv_id, user_id=user_id)
     elif path.startswith("/conversations/") and not path.endswith("/share") and http_method == "DELETE":
         conv_id = path.split("/")[-1]
-        return delete_conversation(conv_id, user_id=user_id)
+        return delete_conversation(conv_id, user_id=user_id, audit_ctx=audit_ctx)
     else:
         return {
             "statusCode": 404,
@@ -2193,12 +2203,21 @@ def get_conversation_with_messages(conversation_id: str, user_id: str = None) ->
     }
 
 
-def delete_conversation(conversation_id: str, user_id: str = None) -> Dict:
-    """Delete a conversation, all its messages, and memory chunks (verifies ownership)."""
+def delete_conversation(
+    conversation_id: str,
+    user_id: str = None,
+    audit_ctx: Dict = None,
+) -> Dict:
+    """Delete a conversation, all its messages, and memory chunks (verifies ownership).
+
+    Emits ACTION_CONVERSATION_DELETED on successful delete so the
+    right-to-deletion audit trail is preserved.
+    """
     dynamodb = _get_dynamodb()
     table = dynamodb.Table(_get_chat_table())
 
     try:
+        conversation = None
         # Verify ownership before deleting
         if user_id:
             conversation = get_conversation(conversation_id)
@@ -2221,13 +2240,47 @@ def delete_conversation(conversation_id: str, user_id: str = None) -> Dict:
             KeyConditionExpression="PK = :pk",
             ExpressionAttributeValues={":pk": f"CONV#{conversation_id}"},
         )
+        items = response.get("Items", []) or []
+
+        # Capture summary stats for the audit row before deleting.
+        message_items = [i for i in items if str(i.get("SK", "")).startswith("MSG#")]
+        message_count = len(message_items)
+        oldest_message_at = ""
+        if message_items:
+            oldest_message_at = min(
+                (str(i.get("created_at", "")) for i in message_items),
+                default="",
+            )
 
         # Delete all items (messages, metadata, SHARE# items)
         with table.batch_writer() as batch:
-            for item in response.get("Items", []):
+            for item in items:
                 batch.delete_item(Key={"PK": item["PK"], "SK": item["SK"]})
 
         logger.info(f"Deleted conversation: {conversation_id}")
+
+        # Emit audit row (non-fatal). workspace_id may be carried on the
+        # conversation METADATA item; pull from the cached conversation
+        # record if available.
+        ctx = audit_ctx or {}
+        try:
+            workspace_id = (conversation or {}).get("workspace_id", "") if conversation else ""
+            log_admin_action(
+                os.environ.get("AUDIT_TABLE", ""),
+                ACTION_CONVERSATION_DELETED,
+                workspace_id=workspace_id,
+                user_email=user_id or "",
+                source_ip=ctx.get("source_ip", ""),
+                user_agent=ctx.get("user_agent", ""),
+                details={
+                    "conversation_id": conversation_id,
+                    "message_count": message_count,
+                    "oldest_message_at": oldest_message_at,
+                },
+            )
+        except Exception as e:
+            logger.warning(f"Failed to emit CONVERSATION_DELETED audit row: {e}")
+
         return {
             "statusCode": 200,
             "body": json.dumps({"deleted": conversation_id}),

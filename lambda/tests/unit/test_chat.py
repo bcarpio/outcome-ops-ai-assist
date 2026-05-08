@@ -1785,3 +1785,48 @@ class TestEdgeCases:
         mock_s3vectors_client.delete_vectors.assert_called_once()
         delete_call = mock_s3vectors_client.delete_vectors.call_args[1]
         assert "memory#conv_del#0001" in delete_call["keys"]
+
+    @patch("chat_handler.log_admin_action")
+    @patch("chat_handler.get_conversation")
+    def test_delete_conversation_emits_audit_row(
+        self, mock_get_conversation, mock_audit, mock_table,
+    ):
+        """plan/audit-completeness chunk 05 — delete_conversation emits
+        ACTION_CONVERSATION_DELETED with message_count + oldest_message_at."""
+        mock_s3vectors_client.list_vectors.return_value = {"vectors": []}
+        # Ownership-verification probe returns the conversation row.
+        mock_get_conversation.return_value = {
+            "conversation_id": "conv_aud",
+            "user_id": "brian@example.com",
+            "workspace_id": "ws-1",
+        }
+        # The actual items-to-delete query.
+        mock_table.query.return_value = {
+            "Items": [
+                {"PK": "CONV#conv_aud", "SK": "METADATA"},
+                {"PK": "CONV#conv_aud", "SK": "MSG#2026-04-01T10:00:00#m1",
+                 "created_at": "2026-04-01T10:00:00+00:00"},
+                {"PK": "CONV#conv_aud", "SK": "MSG#2026-05-07T12:00:00#m2",
+                 "created_at": "2026-05-07T12:00:00+00:00"},
+            ]
+        }
+        batch_writer = MagicMock()
+        mock_table.batch_writer.return_value.__enter__ = MagicMock(return_value=batch_writer)
+        mock_table.batch_writer.return_value.__exit__ = MagicMock(return_value=False)
+
+        with patch.dict(os.environ, {"AUDIT_TABLE": "test-audit"}):
+            delete_conversation(
+                "conv_aud",
+                user_id="brian@example.com",
+                audit_ctx={"source_ip": "203.0.113.7", "user_agent": "ua"},
+            )
+
+        mock_audit.assert_called_once()
+        args, kwargs = mock_audit.call_args
+        assert args[1] == "CONVERSATION_DELETED"
+        assert kwargs["user_email"] == "brian@example.com"
+        assert kwargs["workspace_id"] == "ws-1"
+        assert kwargs["details"]["conversation_id"] == "conv_aud"
+        assert kwargs["details"]["message_count"] == 2
+        assert kwargs["details"]["oldest_message_at"] == "2026-04-01T10:00:00+00:00"
+        assert kwargs["source_ip"] == "203.0.113.7"
