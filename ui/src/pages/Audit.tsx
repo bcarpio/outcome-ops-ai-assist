@@ -75,7 +75,7 @@ const TONES: Record<string, Tone> = {
   apikey:    { bg: 'bg-amber-50',   text: 'text-amber-800',   ring: 'ring-amber-200',   stroke: '#f59e0b' },
   budget:    { bg: 'bg-teal-50',    text: 'text-teal-700',    ring: 'ring-teal-200',    stroke: '#14b8a6' },
   prompt:    { bg: 'bg-fuchsia-50', text: 'text-fuchsia-700', ring: 'ring-fuchsia-200', stroke: '#d946ef' },
-  privacy:   { bg: 'bg-cyan-50',    text: 'text-cyan-700',    ring: 'ring-cyan-200',    stroke: '#06b6d4' },
+  privacy:   { bg: 'bg-violet-50',  text: 'text-violet-700',  ring: 'ring-violet-300',  stroke: '#8b5cf6' },
   ingest:    { bg: 'bg-sky-50',     text: 'text-sky-700',     ring: 'ring-sky-200',     stroke: '#0284c7' },
   refusal:   { bg: 'bg-rose-50',    text: 'text-rose-700',    ring: 'ring-rose-300',    stroke: '#e11d48' },
   unknown:   { bg: 'bg-gray-50',    text: 'text-gray-700',    ring: 'ring-gray-200',    stroke: '#6b7280' },
