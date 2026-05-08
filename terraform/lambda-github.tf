@@ -29,6 +29,10 @@ module "github_integration_lambda" {
         "!.*\\.pyc",
         "!\\.pytest_cache/.*",
       ]
+    },
+    {
+      path          = "${path.module}/../lambda/shared"
+      prefix_in_zip = "shared"
     }
   ]
 
@@ -45,6 +49,7 @@ module "github_integration_lambda" {
     WORKSPACES_TABLE  = module.workspaces_table[0].dynamodb_table_id
     GITHUB_SYNC_QUEUE = aws_sqs_queue.github_sync[0].url
     DELETE_QUEUE      = aws_sqs_queue.delete_queue[0].url
+    AUDIT_TABLE       = module.audit_logs_table.dynamodb_table_id
   }
 
   # IAM permissions
@@ -98,6 +103,17 @@ module "github_integration_lambda" {
       resources = [
         aws_sqs_queue.github_sync[0].arn,
         aws_sqs_queue.delete_queue[0].arn
+      ]
+    }
+
+    # DynamoDB audit log writes (plan/audit-completeness)
+    dynamodb_audit = {
+      effect = "Allow"
+      actions = [
+        "dynamodb:PutItem"
+      ]
+      resources = [
+        module.audit_logs_table.dynamodb_table_arn
       ]
     }
   }
@@ -209,6 +225,10 @@ module "github_sync_lambda" {
         "!.*\\.pyc",
         "!\\.pytest_cache/.*",
       ]
+    },
+    {
+      path          = "${path.module}/../lambda/shared"
+      prefix_in_zip = "shared"
     }
   ]
 
@@ -227,6 +247,7 @@ module "github_sync_lambda" {
     REPO_SUMMARIES_QUEUE = module.repo_summaries_queue.queue_url
     DELETE_QUEUE         = aws_sqs_queue.delete_queue[0].url
     KB_BUCKET            = module.knowledge_base_bucket.s3_bucket_id
+    AUDIT_TABLE          = module.audit_logs_table.dynamodb_table_id
   }
 
   # IAM permissions
@@ -304,6 +325,17 @@ module "github_sync_lambda" {
       ]
       resources = [
         "${module.knowledge_base_bucket.s3_bucket_arn}/workspaces/*"
+      ]
+    }
+
+    # DynamoDB audit log writes (plan/audit-completeness)
+    dynamodb_audit = {
+      effect = "Allow"
+      actions = [
+        "dynamodb:PutItem"
+      ]
+      resources = [
+        module.audit_logs_table.dynamodb_table_arn
       ]
     }
   }

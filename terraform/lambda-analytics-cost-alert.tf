@@ -25,7 +25,16 @@ module "analytics_cost_alert_lambda" {
   cloudwatch_logs_retention_in_days = 7
   cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs.arn
 
-  source_path = "${path.module}/../lambda/analytics-cost-alert"
+  source_path = [
+    {
+      path             = "${path.module}/../lambda/analytics-cost-alert"
+      pip_requirements = true
+    },
+    {
+      path          = "${path.module}/../lambda/shared"
+      prefix_in_zip = "shared"
+    }
+  ]
 
   quiet_archive_local_exec = true
 
@@ -37,6 +46,7 @@ module "analytics_cost_alert_lambda" {
     SNS_TOPIC_ARN         = module.cost_alerts_sns[0].topic_arn
     ORG_MONTHLY_USD       = tostring(var.cost_alert_org_monthly_usd)
     WORKSPACE_MONTHLY_USD = tostring(var.cost_alert_workspace_monthly_usd)
+    AUDIT_TABLE           = module.audit_logs_table.dynamodb_table_id
   }
 
   attach_policy_statements = true
@@ -71,6 +81,17 @@ module "analytics_cost_alert_lambda" {
       ]
       resources = [
         module.cost_alerts_sns[0].topic_arn
+      ]
+    }
+
+    # DynamoDB audit log writes (plan/audit-completeness)
+    dynamodb_audit = {
+      effect = "Allow"
+      actions = [
+        "dynamodb:PutItem"
+      ]
+      resources = [
+        module.audit_logs_table.dynamodb_table_arn
       ]
     }
   }

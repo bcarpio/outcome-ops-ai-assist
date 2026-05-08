@@ -29,6 +29,10 @@ module "outlook_integration_lambda" {
         "!.*\\.pyc",
         "!\\.pytest_cache/.*",
       ]
+    },
+    {
+      path          = "${path.module}/../lambda/shared"
+      prefix_in_zip = "shared"
     }
   ]
 
@@ -46,6 +50,7 @@ module "outlook_integration_lambda" {
     OAUTH_KMS_KEY_ARN  = aws_kms_key.oauth_tokens[0].arn
     OUTLOOK_SYNC_QUEUE = aws_sqs_queue.outlook_sync[0].url
     DELETE_QUEUE       = aws_sqs_queue.delete_queue[0].url
+    AUDIT_TABLE        = module.audit_logs_table.dynamodb_table_id
   }
 
   # IAM permissions
@@ -112,6 +117,17 @@ module "outlook_integration_lambda" {
       resources = [
         aws_sqs_queue.outlook_sync[0].arn,
         aws_sqs_queue.delete_queue[0].arn
+      ]
+    }
+
+    # DynamoDB audit log writes (plan/audit-completeness)
+    dynamodb_audit = {
+      effect = "Allow"
+      actions = [
+        "dynamodb:PutItem"
+      ]
+      resources = [
+        module.audit_logs_table.dynamodb_table_arn
       ]
     }
   }
@@ -223,6 +239,10 @@ module "outlook_sync_lambda" {
         "!.*\\.pyc",
         "!\\.pytest_cache/.*",
       ]
+    },
+    {
+      path          = "${path.module}/../lambda/shared"
+      prefix_in_zip = "shared"
     }
   ]
 
@@ -241,6 +261,7 @@ module "outlook_sync_lambda" {
     FILE_INGESTION_QUEUE = aws_sqs_queue.file_ingestion[0].url
     OUTLOOK_SYNC_QUEUE   = aws_sqs_queue.outlook_sync[0].url
     DELETE_QUEUE         = aws_sqs_queue.delete_queue[0].url
+    AUDIT_TABLE          = module.audit_logs_table.dynamodb_table_id
   }
 
   # IAM permissions
@@ -322,6 +343,17 @@ module "outlook_sync_lambda" {
         aws_sqs_queue.delete_queue[0].arn
       ]
     }
+
+    # DynamoDB audit log writes (plan/audit-completeness)
+    dynamodb_audit = {
+      effect = "Allow"
+      actions = [
+        "dynamodb:PutItem"
+      ]
+      resources = [
+        module.audit_logs_table.dynamodb_table_arn
+      ]
+    }
   }
 
   tags = {
@@ -373,6 +405,10 @@ module "outlook_scheduler_lambda" {
         "!\\.venv/.*",
         "!.*\\.pyc",
       ]
+    },
+    {
+      path          = "${path.module}/../lambda/shared"
+      prefix_in_zip = "shared"
     }
   ]
 
@@ -388,6 +424,7 @@ module "outlook_scheduler_lambda" {
     APP_NAME           = var.app_name
     WORKSPACES_TABLE   = module.workspaces_table[0].dynamodb_table_id
     OUTLOOK_SYNC_QUEUE = aws_sqs_queue.outlook_sync[0].url
+    AUDIT_TABLE        = module.audit_logs_table.dynamodb_table_id
   }
 
   # IAM permissions
@@ -412,6 +449,17 @@ module "outlook_scheduler_lambda" {
       ]
       resources = [
         aws_sqs_queue.outlook_sync[0].arn
+      ]
+    }
+
+    # DynamoDB audit log writes (plan/audit-completeness)
+    dynamodb_audit = {
+      effect = "Allow"
+      actions = [
+        "dynamodb:PutItem"
+      ]
+      resources = [
+        module.audit_logs_table.dynamodb_table_arn
       ]
     }
   }
