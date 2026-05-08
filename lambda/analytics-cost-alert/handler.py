@@ -17,6 +17,7 @@ of how many times the Lambda is invoked.
 
 import logging
 import os
+import sys
 import time
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -24,6 +25,13 @@ from typing import Dict, Iterable, List, Tuple
 
 import boto3
 from botocore.exceptions import ClientError
+
+# Make shared/ importable; deploy package now bundles lambda/shared/.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from shared.audit_writer import (  # noqa: E402
+    ACTION_BUDGET_THRESHOLD_CROSSED,
+    log_admin_action,
+)
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -156,6 +164,40 @@ def _publish(subject: str, message: str) -> None:
     )
 
 
+def _emit_threshold_audit(
+    scope: str,
+    threshold_usd: float,
+    mtd_spend_usd: float,
+    workspace_id: str = "",
+    workspace_name: str = "",
+    source: str = "",
+) -> None:
+    """Emit ACTION_BUDGET_THRESHOLD_CROSSED. Non-fatal."""
+    audit_table = os.environ.get("AUDIT_TABLE", "")
+    if not audit_table:
+        return
+    try:
+        details = {
+            "scope": scope,
+            "threshold_usd": str(round(threshold_usd, 2)),
+            "mtd_spend_usd": str(round(mtd_spend_usd, 2)),
+        }
+        if workspace_id:
+            details["workspace_name"] = workspace_name
+            details["threshold_source"] = source
+        log_admin_action(
+            audit_table,
+            ACTION_BUDGET_THRESHOLD_CROSSED,
+            workspace_id=workspace_id,
+            user_email="",  # cron-driven, no user
+            source_ip="",
+            user_agent="",
+            details=details,
+        )
+    except Exception as e:
+        logger.warning("[cost-alert] Failed to emit BUDGET_THRESHOLD_CROSSED: %s", e)
+
+
 def handler(event, context):
     if not ANALYTICS_TABLE or not WORKSPACES_TABLE:
         logger.warning("[cost-alert] Tables not configured; skipping")
@@ -209,6 +251,14 @@ def handler(event, context):
                 )
                 _publish(subject, message)
                 alerts_sent.append(sk)
+                _emit_threshold_audit(
+                    scope="workspace",
+                    threshold_usd=threshold,
+                    mtd_spend_usd=cost,
+                    workspace_id=wid,
+                    workspace_name=wname,
+                    source=source,
+                )
                 logger.info(
                     "[cost-alert] published workspace alert for %s (%s) threshold=$%.2f source=%s",
                     wname, wid, threshold, source,
@@ -229,6 +279,11 @@ def handler(event, context):
             )
             _publish(subject, message)
             alerts_sent.append(sk)
+            _emit_threshold_audit(
+                scope="org",
+                threshold_usd=ORG_MONTHLY_USD,
+                mtd_spend_usd=org_total,
+            )
             logger.info("[cost-alert] published org alert ($%.2f)", org_total)
 
     logger.info(
