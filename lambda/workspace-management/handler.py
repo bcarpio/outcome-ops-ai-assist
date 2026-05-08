@@ -1273,9 +1273,17 @@ def get_search_access(user_email: str, workspace_id: str) -> Dict:
 
 
 def update_search_access(
-    user_email: str, workspace_id: str, request: UpdateSharingRequest
+    user_email: str,
+    workspace_id: str,
+    request: UpdateSharingRequest,
+    audit_ctx: Optional[Dict[str, str]] = None,
 ) -> Dict:
-    """Update which workspaces can search this workspace's content."""
+    """Update which workspaces can search this workspace's content.
+
+    Emits ACTION_WORKSPACE_SHARING_UPDATED with the previous and new
+    allowed lists plus a computed diff (added / removed) so an auditor
+    can see exactly which cross-workspace data-access grants changed.
+    """
     dynamodb = _get_dynamodb()
     table = dynamodb.Table(_get_workspaces_table())
 
@@ -1283,6 +1291,14 @@ def update_search_access(
         # Must be workspace admin to update sharing
         if not _is_workspace_admin(table, user_email, workspace_id):
             return _error(403, "Only workspace admins can update sharing settings")
+
+        # Capture the previous list before we mutate.
+        prev_resp = table.get_item(
+            Key={"PK": f"WS#{workspace_id}", "SK": "METADATA"}
+        )
+        prev_allowed = list(
+            (prev_resp.get("Item") or {}).get("search_allowed_workspaces", []) or []
+        )
 
         # Validate all workspace IDs exist
         for ws_id in request.search_allowed_workspaces:
@@ -1292,16 +1308,42 @@ def update_search_access(
 
         # Update workspace metadata
         now = datetime.now(timezone.utc).isoformat()
+        new_allowed = list(request.search_allowed_workspaces)
         table.update_item(
             Key={"PK": f"WS#{workspace_id}", "SK": "METADATA"},
             UpdateExpression="SET search_allowed_workspaces = :saw, updated_at = :ua",
             ExpressionAttributeValues={
-                ":saw": request.search_allowed_workspaces,
+                ":saw": new_allowed,
                 ":ua": now,
             },
         )
 
-        logger.info(f"Updated sharing for {workspace_id}: {request.search_allowed_workspaces}")
+        logger.info(f"Updated sharing for {workspace_id}: {new_allowed}")
+
+        # Emit audit row with the diff (non-fatal).
+        ctx = audit_ctx or {}
+        try:
+            prev_set = set(prev_allowed)
+            new_set = set(new_allowed)
+            log_admin_action(
+                AUDIT_TABLE,
+                ACTION_WORKSPACE_SHARING_UPDATED,
+                workspace_id=workspace_id,
+                user_email=user_email,
+                source_ip=ctx.get("source_ip", ""),
+                user_agent=ctx.get("user_agent", ""),
+                details={
+                    "previous_allowed": prev_allowed,
+                    "new_allowed": new_allowed,
+                    "added": sorted(new_set - prev_set),
+                    "removed": sorted(prev_set - new_set),
+                },
+            )
+        except Exception as e:
+            logger.warning(
+                f"[workspace_handler] Failed to emit WORKSPACE_SHARING_UPDATED: {e}"
+            )
+
         return get_search_access(user_email, workspace_id)
     except ClientError as e:
         logger.error(f"Error updating search access: {e}")
@@ -2545,8 +2587,18 @@ def refresh_mcp_tools(user_email: str, mcp_id: str) -> Dict:
 # ============================================================================
 
 
-def assign_mcp_to_workspace(user_email: str, workspace_id: str, body: Dict) -> Dict:
-    """Assign an MCP server to a workspace."""
+def assign_mcp_to_workspace(
+    user_email: str,
+    workspace_id: str,
+    body: Dict,
+    audit_ctx: Optional[Dict[str, str]] = None,
+) -> Dict:
+    """Assign an MCP server to a workspace.
+
+    Emits ACTION_MCP_SERVER_ASSIGNED on success - this is a permission
+    grant (the workspace's chat / generate-code paths will now see this
+    MCP's tools), so it warrants a dedicated audit row.
+    """
     dynamodb = _get_dynamodb()
     table = dynamodb.Table(_get_workspaces_table())
 
@@ -2562,6 +2614,7 @@ def assign_mcp_to_workspace(user_email: str, workspace_id: str, body: Dict) -> D
         mcp_resp = table.get_item(Key={"PK": f"MCP#{mcp_id}", "SK": "METADATA"})
         if "Item" not in mcp_resp:
             return _error(404, "MCP server not found")
+        mcp_name = mcp_resp["Item"].get("name", "")
 
         # Verify workspace exists
         ws_resp = table.get_item(Key={"PK": f"WS#{workspace_id}", "SK": "METADATA"})
@@ -2589,14 +2642,39 @@ def assign_mcp_to_workspace(user_email: str, workspace_id: str, body: Dict) -> D
 
         table.put_item(Item=item)
         logger.info("[workspace_handler] Assigned MCP %s to workspace %s", mcp_id, workspace_id)
+
+        ctx = audit_ctx or {}
+        try:
+            log_admin_action(
+                AUDIT_TABLE,
+                ACTION_MCP_SERVER_ASSIGNED,
+                workspace_id=workspace_id,
+                user_email=user_email,
+                source_ip=ctx.get("source_ip", ""),
+                user_agent=ctx.get("user_agent", ""),
+                details={"mcp_id": mcp_id, "mcp_name": mcp_name},
+            )
+        except Exception as e:
+            logger.warning(
+                f"[workspace_handler] Failed to emit MCP_SERVER_ASSIGNED: {e}"
+            )
+
         return _response(201, {"assignment": item})
     except ClientError as e:
         logger.error(f"[workspace_handler] Error assigning MCP to workspace: {e}", exc_info=True)
         return _error(500, "Failed to assign MCP server")
 
 
-def remove_mcp_from_workspace(user_email: str, workspace_id: str, mcp_id: str) -> Dict:
-    """Remove an MCP server assignment from a workspace."""
+def remove_mcp_from_workspace(
+    user_email: str,
+    workspace_id: str,
+    mcp_id: str,
+    audit_ctx: Optional[Dict[str, str]] = None,
+) -> Dict:
+    """Remove an MCP server assignment from a workspace.
+
+    Emits ACTION_MCP_SERVER_UNASSIGNED on success - permission revocation.
+    """
     dynamodb = _get_dynamodb()
     table = dynamodb.Table(_get_workspaces_table())
 
@@ -2604,8 +2682,33 @@ def remove_mcp_from_workspace(user_email: str, workspace_id: str, mcp_id: str) -
         return _error(403, "Only workspace admins can manage MCP assignments")
 
     try:
+        # Capture mcp name before deletion (best-effort).
+        mcp_name = ""
+        try:
+            mcp_resp = table.get_item(Key={"PK": f"MCP#{mcp_id}", "SK": "METADATA"})
+            mcp_name = (mcp_resp.get("Item") or {}).get("name", "")
+        except ClientError:
+            pass
+
         table.delete_item(Key={"PK": f"WS#{workspace_id}", "SK": f"MCP_SERVER#{mcp_id}"})
         logger.info(f"[workspace_handler] Removed MCP {mcp_id} from workspace {workspace_id}")
+
+        ctx = audit_ctx or {}
+        try:
+            log_admin_action(
+                AUDIT_TABLE,
+                ACTION_MCP_SERVER_UNASSIGNED,
+                workspace_id=workspace_id,
+                user_email=user_email,
+                source_ip=ctx.get("source_ip", ""),
+                user_agent=ctx.get("user_agent", ""),
+                details={"mcp_id": mcp_id, "mcp_name": mcp_name},
+            )
+        except Exception as e:
+            logger.warning(
+                f"[workspace_handler] Failed to emit MCP_SERVER_UNASSIGNED: {e}"
+            )
+
         return _response(200, {"removed": mcp_id})
     except ClientError as e:
         logger.error(f"[workspace_handler] Error removing MCP from workspace: {e}", exc_info=True)
@@ -4946,7 +5049,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             and http_method == "PUT"
         ):
             request = UpdateSharingRequest(**body)
-            return update_search_access(user_email, parts[1], request)
+            return update_search_access(user_email, parts[1], request, audit_ctx)
 
         # Route: GET /workspaces/{id}/sharing/available
         if (
@@ -5153,7 +5256,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             and parts[2] == "mcp-servers"
             and http_method == "POST"
         ):
-            return assign_mcp_to_workspace(user_email, parts[1], body)
+            return assign_mcp_to_workspace(user_email, parts[1], body, audit_ctx)
 
         # Route: GET /workspaces/{id}/mcp-servers
         if (
@@ -5171,7 +5274,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             and parts[2] == "mcp-servers"
             and http_method == "DELETE"
         ):
-            return remove_mcp_from_workspace(user_email, parts[1], parts[3])
+            return remove_mcp_from_workspace(user_email, parts[1], parts[3], audit_ctx)
 
         # Route: GET /chat/mcp-servers
         if parts == ("chat", "mcp-servers") and http_method == "GET":

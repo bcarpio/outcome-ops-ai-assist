@@ -1211,11 +1211,17 @@ class TestSearchAccess:
         mock_dynamodb.return_value.Table.return_value = mock_table
         mock_get_table.return_value = "test-workspaces"
 
-        # For validate: workspace exists. For get_search_access after update.
+        # The audit-emit refactor adds an upfront get_item to capture
+        # the previous allowed list before the mutation.
         mock_table.get_item.side_effect = [
-            {"Item": {"workspace_id": "ws2"}},  # validate ws2 exists
-            {"Item": {"workspace_id": "ws1", "search_allowed_workspaces": ["ws2"]}},  # get_search_access
-            {"Item": {"workspace_id": "ws2", "name": "Workspace 2"}},  # fetch allowed ws name
+            # 1. capture prev_allowed (ws1 starts with no sharing)
+            {"Item": {"workspace_id": "ws1", "search_allowed_workspaces": []}},
+            # 2. validate ws2 exists
+            {"Item": {"workspace_id": "ws2"}},
+            # 3. get_search_access read after update
+            {"Item": {"workspace_id": "ws1", "search_allowed_workspaces": ["ws2"]}},
+            # 4. fetch allowed ws name for the response payload
+            {"Item": {"workspace_id": "ws2", "name": "Workspace 2"}},
         ]
 
         request = UpdateSharingRequest(search_allowed_workspaces=["ws2"])
@@ -1238,6 +1244,55 @@ class TestSearchAccess:
         result = update_search_access("admin@example.com", "ws1", request)
 
         assert result["statusCode"] == 400
+
+    @patch("workspace_management_handler.log_admin_action")
+    @patch("workspace_management_handler._is_workspace_admin", return_value=True)
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_update_search_access_emits_audit_with_diff(
+        self, mock_dynamodb, mock_get_table, mock_ws_admin, mock_audit,
+    ):
+        """plan/audit-completeness chunk 06 — emit
+        ACTION_WORKSPACE_SHARING_UPDATED with previous + new + diff."""
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+
+        mock_table.get_item.side_effect = [
+            # prev_allowed: ws was sharing with ws_old1, ws_old2
+            {"Item": {
+                "workspace_id": "ws1",
+                "search_allowed_workspaces": ["ws_old1", "ws_old2"],
+            }},
+            # validate ws_old1 exists
+            {"Item": {"workspace_id": "ws_old1"}},
+            # validate ws_new exists
+            {"Item": {"workspace_id": "ws_new"}},
+            # get_search_access read after update
+            {"Item": {
+                "workspace_id": "ws1",
+                "search_allowed_workspaces": ["ws_old1", "ws_new"],
+            }},
+            # fetch each allowed ws name (best-effort)
+            {"Item": {"workspace_id": "ws_old1", "name": "Old1"}},
+            {"Item": {"workspace_id": "ws_new", "name": "New"}},
+        ]
+
+        with patch.object(handler_module, "AUDIT_TABLE", "test-audit"):
+            req = UpdateSharingRequest(search_allowed_workspaces=["ws_old1", "ws_new"])
+            update_search_access(
+                "admin@example.com", "ws1", req,
+                audit_ctx={"source_ip": "203.0.113.7", "user_agent": "ua"},
+            )
+
+        mock_audit.assert_called_once()
+        args, kwargs = mock_audit.call_args
+        assert args[1] == "WORKSPACE_SHARING_UPDATED"
+        d = kwargs["details"]
+        assert d["previous_allowed"] == ["ws_old1", "ws_old2"]
+        assert d["new_allowed"] == ["ws_old1", "ws_new"]
+        assert d["added"] == ["ws_new"]
+        assert d["removed"] == ["ws_old2"]
 
 
 class TestListAllWorkspacesForSharing:
@@ -2126,6 +2181,63 @@ class TestMcpWorkspaceAssignment:
         result = assign_mcp_to_workspace("admin@example.com", "ws1", {"mcp_id": "m1"})
 
         assert result["statusCode"] == 201
+
+    @patch("workspace_management_handler.log_admin_action")
+    @patch("workspace_management_handler._is_workspace_admin", return_value=True)
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_assign_mcp_emits_audit_row(
+        self, mock_dynamodb, mock_get_table, mock_ws_admin, mock_audit,
+    ):
+        """plan/audit-completeness chunk 06 — emit MCP_SERVER_ASSIGNED."""
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+
+        mock_table.get_item.side_effect = [
+            {"Item": {"mcp_id": "m1", "name": "SonarQube"}},
+            {"Item": {"workspace_id": "ws1"}},
+            {},  # not yet assigned
+        ]
+
+        with patch.object(handler_module, "AUDIT_TABLE", "test-audit"):
+            assign_mcp_to_workspace(
+                "admin@example.com", "ws1", {"mcp_id": "m1"},
+                audit_ctx={"source_ip": "203.0.113.7", "user_agent": "ua"},
+            )
+
+        mock_audit.assert_called_once()
+        args, kwargs = mock_audit.call_args
+        assert args[1] == "MCP_SERVER_ASSIGNED_TO_WORKSPACE"
+        assert kwargs["details"] == {"mcp_id": "m1", "mcp_name": "SonarQube"}
+        assert kwargs["source_ip"] == "203.0.113.7"
+
+    @patch("workspace_management_handler.log_admin_action")
+    @patch("workspace_management_handler._is_workspace_admin", return_value=True)
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_remove_mcp_emits_audit_row(
+        self, mock_dynamodb, mock_get_table, mock_ws_admin, mock_audit,
+    ):
+        """plan/audit-completeness chunk 06 — emit MCP_SERVER_UNASSIGNED."""
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+        # MCP name lookup before delete (best-effort).
+        mock_table.get_item.return_value = {
+            "Item": {"mcp_id": "m1", "name": "SonarQube"},
+        }
+
+        with patch.object(handler_module, "AUDIT_TABLE", "test-audit"):
+            remove_mcp_from_workspace(
+                "admin@example.com", "ws1", "m1",
+                audit_ctx={"source_ip": "203.0.113.7", "user_agent": "ua"},
+            )
+
+        mock_audit.assert_called_once()
+        args, kwargs = mock_audit.call_args
+        assert args[1] == "MCP_SERVER_UNASSIGNED_FROM_WORKSPACE"
+        assert kwargs["details"] == {"mcp_id": "m1", "mcp_name": "SonarQube"}
 
     @patch("workspace_management_handler._is_workspace_admin", return_value=True)
     @patch("workspace_management_handler._get_workspaces_table")
