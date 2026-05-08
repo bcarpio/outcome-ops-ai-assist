@@ -97,6 +97,7 @@ from shared.audit_writer import (
     ACTION_API_KEY_USED,
     ACTION_DOCUMENT_DELETED,
     ACTION_DOCUMENT_DOWNLOADED,
+    ACTION_LOGIN_SUCCEEDED,
     ACTION_MCP_SERVER_ASSIGNED,
     ACTION_MCP_SERVER_CREATED,
     ACTION_MCP_SERVER_DELETED,
@@ -147,6 +148,17 @@ _github_client = None
 _workspaces_table = None
 _kb_bucket = None
 _delete_queue_url = None
+
+# Module-level LRU cache for LOGIN_SUCCEEDED dedup. Key: (email, date_str).
+# Survives across warm Lambda invocations within the same container, resets
+# on cold start (which is fine - at most one extra LOGIN_SUCCEEDED row per
+# cold start per active user, and a fresh container is itself a meaningful
+# event worth recording).
+_login_seen_today: Dict[tuple, bool] = {}
+# Cap the dict so a runaway warm container doesn't grow unbounded. 10k
+# entries is ~10k unique users active per Lambda container per day; well
+# beyond realistic load.
+_LOGIN_CACHE_MAX = 10_000
 
 
 def _get_dynamodb():
@@ -3106,6 +3118,49 @@ def validate_api_key(
         return None
 
 
+def _maybe_emit_login_succeeded(
+    user_email: str,
+    audit_ctx: Dict[str, str],
+) -> None:
+    """Emit ACTION_LOGIN_SUCCEEDED once per (user, day) per Lambda container.
+
+    First HTTP request from a given user on a given day fires this; all
+    subsequent same-day requests no-op. Container cold start resets the
+    cache, so an active user may produce multiple rows per day across
+    cold starts - that's fine, each row still carries source_ip + UA
+    and proves the session was active.
+    """
+    if not user_email or not AUDIT_TABLE:
+        return
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    key = (user_email.lower(), today)
+    if _login_seen_today.get(key):
+        return
+
+    # Trim cache if it grows too large. Naive eviction (clear all) is fine
+    # because the worst case is a few extra emissions for the next request
+    # per active user.
+    if len(_login_seen_today) >= _LOGIN_CACHE_MAX:
+        _login_seen_today.clear()
+
+    _login_seen_today[key] = True
+    try:
+        log_admin_action(
+            AUDIT_TABLE,
+            ACTION_LOGIN_SUCCEEDED,
+            workspace_id="",  # session-level, not workspace-level
+            user_email=user_email,
+            source_ip=audit_ctx.get("source_ip", ""),
+            user_agent=audit_ctx.get("user_agent", ""),
+            details={
+                "session_first_seen_at": datetime.now(timezone.utc).isoformat(),
+            },
+            category="auth",  # CATEGORY_AUTH - first user of this category
+        )
+    except Exception as e:
+        logger.warning(f"[workspace_handler] Failed to emit LOGIN_SUCCEEDED: {e}")
+
+
 def _emit_api_key_used(
     key_id: str,
     key_name: str,
@@ -4874,6 +4929,12 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     # Capture source_ip / user_agent once per invocation; threaded to mutating
     # endpoints so admin audit rows carry attribution data.
     audit_ctx = extract_request_context(event)
+
+    # plan/audit-completeness chunk 02: emit ACTION_LOGIN_SUCCEEDED once per
+    # user per day per Lambda container. Cheap fire-and-forget; this is the
+    # auth-category-row pattern the audit dashboard uses for "who logged in
+    # when" without instrumenting Express.
+    _maybe_emit_login_succeeded(user_email, audit_ctx)
 
     logger.info(f"Workspace API: {http_method} {path} (user: {user_email})")
 

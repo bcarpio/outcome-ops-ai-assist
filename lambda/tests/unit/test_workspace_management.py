@@ -799,6 +799,70 @@ class TestRepoOperations:
         mock_table.delete_item.assert_called_once()
 
 
+class TestLoginSucceededAudit:
+    """plan/audit-completeness chunk 02 LOGIN_SUCCEEDED — fires once per
+    (user, day) per Lambda container; subsequent requests no-op."""
+
+    @patch("workspace_management_handler.log_admin_action")
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_first_request_fires_login_succeeded(
+        self, mock_dynamodb, mock_get_table, mock_audit,
+    ):
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+        mock_table.get_item.return_value = {}
+        mock_table.query.return_value = {"Items": []}
+        # Reset module cache between tests so we always hit the "first" path.
+        handler_module._login_seen_today.clear()
+
+        event = {
+            "httpMethod": "GET",
+            "path": "/workspaces",
+            "headers": {"x-user-email": "freshuser@example.com"},
+        }
+        with patch.object(handler_module, "AUDIT_TABLE", "test-audit"):
+            lambda_handler(event, None)
+
+        # log_admin_action gets called for LOGIN_SUCCEEDED. Other paths in
+        # this request (list_workspaces) do not emit.
+        login_calls = [c for c in mock_audit.call_args_list
+                       if c.args[1] == "LOGIN_SUCCEEDED"]
+        assert len(login_calls) == 1
+        kwargs = login_calls[0].kwargs
+        assert kwargs["user_email"] == "freshuser@example.com"
+        assert kwargs["category"] == "auth"
+
+    @patch("workspace_management_handler.log_admin_action")
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_second_request_does_not_re_emit(
+        self, mock_dynamodb, mock_get_table, mock_audit,
+    ):
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+        mock_table.get_item.return_value = {}
+        mock_table.query.return_value = {"Items": []}
+        handler_module._login_seen_today.clear()
+
+        event = {
+            "httpMethod": "GET",
+            "path": "/workspaces",
+            "headers": {"x-user-email": "repeatuser@example.com"},
+        }
+        with patch.object(handler_module, "AUDIT_TABLE", "test-audit"):
+            lambda_handler(event, None)
+            # Reset call history to isolate the second invocation.
+            mock_audit.reset_mock()
+            lambda_handler(event, None)
+
+        login_calls = [c for c in mock_audit.call_args_list
+                       if c.args[1] == "LOGIN_SUCCEEDED"]
+        assert login_calls == []
+
+
 class TestLambdaHandler:
     """Test main Lambda handler routing."""
 
