@@ -19,12 +19,20 @@ import json
 import logging
 import os
 import secrets
+import sys
 import urllib.parse
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 import boto3
 from botocore.exceptions import ClientError
+
+# Make shared/ importable; deploy package now bundles lambda/shared/.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from shared.audit_writer import (  # noqa: E402
+    ACTION_OAUTH_CONNECTION_ESTABLISHED,
+    log_admin_action,
+)
 
 from outlook_api import (
     OutlookAPIError,
@@ -338,6 +346,24 @@ def handle_callback(event: Dict, body: Dict = None) -> Dict:
         save_tokens(connection_id, access_token, refresh_token, expires_in)
 
         logger.info(f"Created Outlook connection {connection_id} for workspace {workspace_id}")
+
+        try:
+            log_admin_action(
+                os.environ.get("AUDIT_TABLE", ""),
+                ACTION_OAUTH_CONNECTION_ESTABLISHED,
+                workspace_id=workspace_id,
+                user_email=user_email or "",
+                source_ip="",
+                user_agent="",
+                details={
+                    "provider": "outlook",
+                    "connection_id": connection_id,
+                    "account_label": display_name,
+                    "user_email_external": user_email,
+                },
+            )
+        except Exception as e:
+            logger.warning(f"Failed to emit OAUTH_CONNECTION_ESTABLISHED: {e}")
 
         return _response(200, {"redirect": f"/workspaces/{workspace_id}/settings?tab=integrations&configure_outlook={connection_id}"})
 

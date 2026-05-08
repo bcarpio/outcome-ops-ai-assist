@@ -19,12 +19,20 @@ import json
 import logging
 import os
 import secrets
+import sys
 import urllib.parse
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import boto3
 from botocore.exceptions import ClientError
+
+# Make shared/ importable; deploy package now bundles lambda/shared/.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from shared.audit_writer import (  # noqa: E402
+    ACTION_OAUTH_CONNECTION_ESTABLISHED,
+    log_admin_action,
+)
 
 from jira_api import (
     JiraAPIError,
@@ -454,6 +462,7 @@ def handle_callback(event: Dict) -> Dict:
             # Update existing connection's tokens
             connection_id = existing_for_site[0]["connection_id"]
             save_tokens(connection_id, access_token, refresh_token, expires_in)
+            new_connection = False
         else:
             # Create new connection
             connection_id = _generate_connection_id()
@@ -466,6 +475,30 @@ def handle_callback(event: Dict) -> Dict:
                 created_by=user_email,
             )
             save_tokens(connection_id, access_token, refresh_token, expires_in)
+            new_connection = True
+
+        # Emit OAUTH_CONNECTION_ESTABLISHED on new connections only
+        # (token refresh on an existing connection is captured by the
+        # OAUTH_TOKEN_REFRESHED event in the refresh path).
+        if new_connection:
+            try:
+                log_admin_action(
+                    os.environ.get("AUDIT_TABLE", ""),
+                    ACTION_OAUTH_CONNECTION_ESTABLISHED,
+                    workspace_id=workspace_id,
+                    user_email=user_email or "",
+                    source_ip="",
+                    user_agent="",
+                    details={
+                        "provider": "jira",
+                        "connection_id": connection_id,
+                        "account_label": site_name,
+                        "site_url": site_url,
+                        "cloud_id": cloud_id,
+                    },
+                )
+            except Exception as e:
+                logger.warning(f"Failed to emit OAUTH_CONNECTION_ESTABLISHED: {e}")
 
         # Redirect to workspace settings
         return _redirect(f"{base_url}/workspaces/{workspace_id}/settings?tab=jira&connection={connection_id}")
