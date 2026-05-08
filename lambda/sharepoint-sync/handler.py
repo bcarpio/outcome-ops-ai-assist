@@ -14,10 +14,16 @@ import json
 import logging
 import os
 import re
+import sys
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import boto3
+
+# Make shared/ importable; deploy package now bundles lambda/shared/.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from shared.audit_writer import log_source_sync  # noqa: E402
 from botocore.exceptions import ClientError
 
 from sharepoint_api import (
@@ -235,6 +241,8 @@ def queue_page_ingestion(
 
 def process_sync_request(message: Dict) -> Dict[str, Any]:
     """Process a sync request for a SharePoint connection."""
+    sync_start = time.time()
+    trigger = message.get("trigger", "scheduled")
     workspace_id = message.get("workspace_id")
     connection_id = message.get("connection_id")
     sync_id = message.get("sync_id") or f"sync_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{connection_id[:8]}"
@@ -390,6 +398,20 @@ def process_sync_request(message: Dict) -> Dict[str, Any]:
             delta_tokens=delta_tokens,
         )
 
+        log_source_sync(
+            audit_table_name=os.environ.get("AUDIT_TABLE", ""),
+            source="sharepoint",
+            workspace_id=workspace_id,
+            target=connection_id,
+            trigger=trigger,
+            files_synced=total_files + total_pages,
+            duration_ms=int((time.time() - sync_start) * 1000),
+            extra_details={
+                "sync_id": sync_id,
+                "files_queued": total_files,
+                "pages_queued": total_pages,
+            },
+        )
         return {
             "status": "success",
             "sync_id": sync_id,

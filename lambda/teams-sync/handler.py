@@ -16,8 +16,14 @@ import json
 import logging
 import os
 import re
+import sys
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+
+# Make shared/ importable; deploy package now bundles lambda/shared/.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from shared.audit_writer import log_source_sync  # noqa: E402
 
 import boto3
 from botocore.exceptions import ClientError
@@ -298,6 +304,8 @@ def queue_file_ingestion(
 
 def process_sync_request(message: Dict) -> Dict[str, Any]:
     """Process a sync request for a Teams connection."""
+    sync_start = time.time()
+    trigger = message.get("trigger", "scheduled")
     workspace_id = message.get("workspace_id")
     connection_id = message.get("connection_id")
     sync_id = message.get("sync_id") or f"sync_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{connection_id[:8]}"
@@ -406,6 +414,20 @@ def process_sync_request(message: Dict) -> Dict[str, Any]:
             delta_links=delta_links,
         )
 
+        log_source_sync(
+            audit_table_name=os.environ.get("AUDIT_TABLE", ""),
+            source="teams",
+            workspace_id=workspace_id,
+            target=connection_id,
+            trigger=trigger,
+            files_synced=total_messages + total_files,
+            duration_ms=int((time.time() - sync_start) * 1000),
+            extra_details={
+                "sync_id": sync_id,
+                "messages_queued": total_messages,
+                "files_queued": total_files,
+            },
+        )
         return {
             "status": "success",
             "sync_id": sync_id,

@@ -15,11 +15,17 @@ import json
 import logging
 import os
 import secrets
+import sys
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import boto3
 from botocore.exceptions import ClientError
+
+# Make shared/ importable; deploy package now bundles lambda/shared/.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from shared.audit_writer import log_source_sync  # noqa: E402
 
 from jira_api import (
     JiraAPIError,
@@ -255,6 +261,8 @@ def process_sync_request(message: Dict) -> Dict[str, Any]:
     Returns:
         Result dict
     """
+    sync_start = time.time()
+    trigger = message.get("trigger", "scheduled")
     workspace_id = message.get("workspace_id")
     connection_id = message.get("connection_id")
     sync_id = f"jira_sync_{secrets.token_urlsafe(8)}"
@@ -392,6 +400,16 @@ def process_sync_request(message: Dict) -> Dict[str, Any]:
             issue_count=total_files
         )
 
+        log_source_sync(
+            audit_table_name=os.environ.get("AUDIT_TABLE", ""),
+            source="jira",
+            workspace_id=workspace_id,
+            target=",".join(projects_processed),
+            trigger=trigger,
+            files_synced=total_files,
+            duration_ms=int((time.time() - sync_start) * 1000),
+            extra_details={"sync_id": sync_id, "sync_type": sync_type},
+        )
         return {
             "status": "success",
             "sync_id": sync_id,

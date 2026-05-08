@@ -14,11 +14,18 @@ This is the orchestrator layer - actual page fetching is done by file-ingestion.
 import json
 import logging
 import os
+import sys
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set
 
 import boto3
 from botocore.exceptions import ClientError
+
+# Make shared/ importable; deploy package now bundles lambda/shared/
+# at zip root via terraform source_path (see lambda-confluence.tf).
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from shared.audit_writer import log_source_sync  # noqa: E402
 
 from confluence_api import (
     ConfluenceAPIError,
@@ -240,8 +247,10 @@ def process_sync_request(message: Dict) -> Dict[str, Any]:
     Returns:
         Result dict
     """
+    sync_start = time.time()
     workspace_id = message.get("workspace_id")
     connection_id = message.get("connection_id")
+    trigger = message.get("trigger", "scheduled")
     sync_id = f"sync_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{connection_id[:8]}"
 
     logger.info(f"Processing sync request for {workspace_id}/{connection_id} [{sync_id}]")
@@ -410,6 +419,21 @@ def process_sync_request(message: Dict) -> Dict[str, Any]:
         }
         if attachment_count:
             result["attachments_queued"] = attachment_count
+
+        log_source_sync(
+            audit_table_name=os.environ.get("AUDIT_TABLE", ""),
+            source="confluence",
+            workspace_id=workspace_id,
+            target=",".join(spaces_processed),
+            trigger=trigger,
+            files_synced=total_files,
+            duration_ms=int((time.time() - sync_start) * 1000),
+            extra_details={
+                "sync_id": sync_id,
+                "sync_type": sync_type,
+                "attachments_queued": attachment_count,
+            },
+        )
         return result
 
     except ConfluenceAuthError:

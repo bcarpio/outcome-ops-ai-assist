@@ -19,12 +19,18 @@ Triggered by: SQS github-sync queue (messages from github-integration Lambda or 
 import json
 import logging
 import os
+import sys
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import boto3
 import yaml
 from botocore.exceptions import ClientError
+
+# Make shared/ importable; deploy package now bundles lambda/shared/.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from shared.audit_writer import log_source_sync  # noqa: E402
 
 # Configure logging
 logger = logging.getLogger()
@@ -677,6 +683,8 @@ def process_sync_request(message: Dict) -> Dict:
     Returns:
         Result dict with status and counts
     """
+    sync_start = time.time()
+    trigger = message.get("trigger", "scheduled")
     workspace_id = message["workspace_id"]
     repo_name = message["repo_name"]
     installation_id = message["installation_id"]
@@ -718,6 +726,20 @@ def process_sync_request(message: Dict) -> Dict:
         if last_sha == current_sha:
             logger.info(f"No changes since last sync ({current_sha[:7]})")
             update_sync_status(workspace_id, repo_name, "success", commit_sha=current_sha)
+            log_source_sync(
+                audit_table_name=os.environ.get("AUDIT_TABLE", ""),
+                source="github",
+                workspace_id=workspace_id,
+                target=repo_name,
+                trigger=trigger,
+                files_synced=0,
+                skipped_no_change=True,
+                duration_ms=int((time.time() - sync_start) * 1000),
+                extra_details={
+                    "commit_sha": current_sha,
+                    "repo_type": repo_type,
+                },
+            )
             return {"status": "no_changes", "commit_sha": current_sha}
 
         # Get repo file tree
@@ -727,7 +749,7 @@ def process_sync_request(message: Dict) -> Dict:
         # Route based on repo type
         if repo_type == "standards":
             # Standards repos: Upload files directly to S3 for indexing
-            return _process_standards_repo(
+            result = _process_standards_repo(
                 workspace_id=workspace_id,
                 repo_name=repo_name,
                 repo_type=repo_type,
@@ -740,7 +762,7 @@ def process_sync_request(message: Dict) -> Dict:
             )
         else:
             # Application repos: Discover code units and queue to repo-summaries queue
-            return _process_application_repo(
+            result = _process_application_repo(
                 workspace_id=workspace_id,
                 repo_name=repo_name,
                 repo_type=repo_type,
@@ -754,9 +776,46 @@ def process_sync_request(message: Dict) -> Dict:
                 last_commit_sha=last_sha,
             )
 
+        # Emit REPO_SYNCED parent audit row covering both repo types.
+        # The per-doc DOCUMENT_INGESTED rows (process-documents +
+        # process-batch-summary) are still emitted downstream; this row
+        # is the parent that ties them to the sync trigger.
+        log_source_sync(
+            audit_table_name=os.environ.get("AUDIT_TABLE", ""),
+            source="github",
+            workspace_id=workspace_id,
+            target=repo_name,
+            trigger=trigger,
+            files_synced=int(
+                result.get("files_uploaded")
+                or result.get("files_queued")
+                or result.get("docs_uploaded")
+                or 0
+            ),
+            duration_ms=int((time.time() - sync_start) * 1000),
+            success=(result.get("status") == "success"),
+            extra_details={
+                "commit_sha": current_sha,
+                "repo_type": repo_type,
+            },
+        )
+        return result
+
     except Exception as e:
         logger.exception(f"Sync failed for {repo_name}")
         update_sync_status(workspace_id, repo_name, "failed", str(e))
+        log_source_sync(
+            audit_table_name=os.environ.get("AUDIT_TABLE", ""),
+            source="github",
+            workspace_id=workspace_id,
+            target=repo_name,
+            trigger=trigger,
+            files_synced=0,
+            duration_ms=int((time.time() - sync_start) * 1000),
+            success=False,
+            error=str(e),
+            extra_details={"repo_type": repo_type},
+        )
         return {"status": "error", "error": str(e)}
 
 

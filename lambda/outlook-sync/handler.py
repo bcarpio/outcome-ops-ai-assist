@@ -15,10 +15,16 @@ import json
 import logging
 import os
 import re
+import sys
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import boto3
+
+# Make shared/ importable; deploy package now bundles lambda/shared/.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from shared.audit_writer import log_source_sync  # noqa: E402
 from botocore.exceptions import ClientError
 
 from outlook_api import (
@@ -268,6 +274,8 @@ def process_sync_request(message: Dict) -> Dict[str, Any]:
     Returns:
         Result dict
     """
+    sync_start = time.time()
+    trigger = message.get("trigger", "scheduled")
     workspace_id = message.get("workspace_id")
     connection_id = message.get("connection_id")
     is_continuation = message.get("continuation", False)
@@ -369,6 +377,20 @@ def process_sync_request(message: Dict) -> Dict[str, Any]:
         }
         if attachment_count:
             result["attachments_queued"] = attachment_count
+
+        log_source_sync(
+            audit_table_name=os.environ.get("AUDIT_TABLE", ""),
+            source="outlook",
+            workspace_id=workspace_id,
+            target=connection_id,
+            trigger=trigger,
+            files_synced=total_queued,
+            duration_ms=int((time.time() - sync_start) * 1000),
+            extra_details={
+                "sync_id": sync_id,
+                "attachments_queued": attachment_count,
+            },
+        )
         return result
 
     except OutlookAuthError:
