@@ -180,13 +180,25 @@ _SOURCE_SYNC_ACTIONS = {
 # Admin actions that are written to the audit table for forensic /
 # per-document provenance, but are hidden from the audit dashboard UI
 # and excluded from analytics rollups so they don't dominate the
-# "most common action" / "total actions" cards. DOCUMENT_INGESTED
-# fires once per ingested document - in a workspace with even a
-# moderate sync cadence, it would drown out every other admin action.
-# Operators who need the underlying rows can query the audit table
-# directly via DynamoDB.
+# "most common action" / "total actions" cards. These fire on routine
+# automation and would drown out every other admin action - operators
+# who need them can filter by ?action=... explicitly to bypass the hide
+# rule, or query DynamoDB directly. Order: high-frequency first.
 HIDDEN_DASHBOARD_ACTIONS = frozenset({
+    # Per-document ingest - one row per file synced.
     ACTION_DOCUMENT_INGESTED,
+    # Per-API-call - hundreds per MCP session.
+    ACTION_API_KEY_USED,
+    ACTION_MCP_TOOL_INVOKED,
+    # Per-active-user-per-day - moderate but adds up.
+    ACTION_LOGIN_SUCCEEDED,
+    # Hourly cron drumbeat × N connections per source.
+    ACTION_REPO_SYNCED,
+    ACTION_CONFLUENCE_SYNCED,
+    ACTION_JIRA_SYNCED,
+    ACTION_OUTLOOK_SYNCED,
+    ACTION_TEAMS_SYNCED,
+    ACTION_SHAREPOINT_SYNCED,
 })
 
 

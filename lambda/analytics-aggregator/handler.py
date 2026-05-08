@@ -276,11 +276,20 @@ _KNOWN_ADMIN_ACTIONS = frozenset(
 
 # Actions whose audit rows are written for forensic / per-document
 # provenance but are NOT rolled up into DA / DC / DCU - they would
-# dominate the dashboard otherwise (one per ingested doc). Mirrors
+# dominate the dashboard otherwise. Mirrors
 # shared/audit_writer.HIDDEN_DASHBOARD_ACTIONS; kept local so the
 # streams consumer doesn't import from the shared module.
 _HIDDEN_DASHBOARD_ACTIONS = frozenset({
     "DOCUMENT_INGESTED",
+    "API_KEY_USED",
+    "MCP_TOOL_INVOKED",
+    "LOGIN_SUCCEEDED",
+    "REPO_SYNCED",
+    "CONFLUENCE_SYNCED",
+    "JIRA_SYNCED",
+    "OUTLOOK_SYNCED",
+    "TEAMS_SYNCED",
+    "SHAREPOINT_SYNCED",
 })
 
 
