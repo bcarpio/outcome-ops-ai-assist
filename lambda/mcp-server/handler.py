@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import secrets
+import sys
 import threading
 import time
 import urllib.request
@@ -22,6 +23,19 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 
 import boto3
 from botocore.exceptions import ClientError
+
+# Make shared/ importable. Image is built with context=lambda/ so
+# shared/ is COPYed alongside this file at /app/shared/.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    from shared.audit_writer import (  # type: ignore
+        ACTION_API_KEY_USED,
+        ACTION_MCP_TOOL_INVOKED,
+        log_admin_action,
+    )
+    _AUDIT_AVAILABLE = True
+except ImportError:  # pragma: no cover - older image without shared/
+    _AUDIT_AVAILABLE = False
 
 # Configure logging
 logging.basicConfig(
@@ -184,8 +198,12 @@ MCP_TOOLS = [
 # ============================================================================
 
 
-def validate_api_key(api_key):
-    """Validate an API key against DynamoDB. Returns user email or None."""
+def validate_api_key(api_key, source_ip=""):
+    """Validate an API key against DynamoDB. Returns user email or None.
+
+    Emits ACTION_API_KEY_USED audit row on every validation attempt so
+    InfoSec can see programmatic-access patterns from MCP clients.
+    """
     if not api_key or not DYNAMODB_TABLE:
         return None
 
@@ -204,21 +222,27 @@ def validate_api_key(api_key):
 
         items = response.get("Items", [])
         if not items:
+            _emit_api_key_used("", "", "", False, "key_not_found", source_ip)
             return None
 
         item = items[0]
+        key_id = item.get("key_id", "")
+        key_name = item.get("name", "")
 
         if item.get("status") != "active":
+            _emit_api_key_used(key_id, key_name, "", False, "key_revoked", source_ip)
             return None
 
         expires_at = item.get("expires_at")
         if expires_at:
             if datetime.fromisoformat(expires_at) < datetime.now(timezone.utc):
+                _emit_api_key_used(key_id, key_name, "", False, "key_expired", source_ip)
                 return None
 
         pk = item.get("PK", "")
         email = pk.replace("USER#", "") if pk.startswith("USER#") else None
         if not email:
+            _emit_api_key_used(key_id, key_name, "", False, "key_missing_owner", source_ip)
             return None
 
         # Update last_used_at (best-effort)
@@ -233,10 +257,64 @@ def validate_api_key(api_key):
         except Exception:
             pass
 
+        _emit_api_key_used(key_id, key_name, email, True, "", source_ip)
         return email
     except ClientError as e:
         logger.error(f"Error validating API key: {e}")
         return None
+
+
+def _emit_api_key_used(key_id, key_name, email, success, reason, source_ip):
+    """Mirror of workspace-mgmt _emit_api_key_used. Non-fatal."""
+    if not _AUDIT_AVAILABLE:
+        return
+    audit_table = os.environ.get("AUDIT_TABLE", "")
+    if not audit_table:
+        return
+    try:
+        log_admin_action(
+            audit_table,
+            ACTION_API_KEY_USED,
+            workspace_id="",
+            user_email=email,
+            source_ip=source_ip or "",
+            user_agent="mcp-server",
+            details={
+                "key_id": key_id,
+                "key_name": key_name,
+                "success": success,
+                "reason": reason,
+                "via": "mcp-server",
+            },
+        )
+    except Exception as e:
+        logger.warning(f"Failed to emit API_KEY_USED: {e}")
+
+
+def _emit_mcp_tool_invoked(tool_name, server_name, email, success, duration_ms, source_ip):
+    """Emit ACTION_MCP_TOOL_INVOKED. Non-fatal."""
+    if not _AUDIT_AVAILABLE:
+        return
+    audit_table = os.environ.get("AUDIT_TABLE", "")
+    if not audit_table:
+        return
+    try:
+        log_admin_action(
+            audit_table,
+            ACTION_MCP_TOOL_INVOKED,
+            workspace_id="",
+            user_email=email or "",
+            source_ip=source_ip or "",
+            user_agent="mcp-server",
+            details={
+                "tool_name": tool_name,
+                "server_name": server_name,
+                "success": success,
+                "duration_ms": duration_ms,
+            },
+        )
+    except Exception as e:
+        logger.warning(f"Failed to emit MCP_TOOL_INVOKED: {e}")
 
 
 # ============================================================================
@@ -888,7 +966,10 @@ class McpHandler(BaseHTTPRequestHandler):
             auth_header = self.headers.get("Authorization", "")
             if auth_header.startswith("Bearer "):
                 api_key = auth_header[7:]
-                email = validate_api_key(api_key)
+                email = validate_api_key(
+                    api_key,
+                    source_ip=getattr(self, "client_address", ("",))[0] if getattr(self, "client_address", None) else "",
+                )
 
         if not email:
             self._send_json(
@@ -922,7 +1003,10 @@ class McpHandler(BaseHTTPRequestHandler):
         email = None
         if auth_header.startswith("Bearer "):
             api_key = auth_header[7:]
-            email = validate_api_key(api_key)
+            email = validate_api_key(
+                api_key,
+                source_ip=getattr(self, "client_address", ("",))[0] if getattr(self, "client_address", None) else "",
+            )
 
         if not email:
             self._send_json(
@@ -997,6 +1081,11 @@ class McpHandler(BaseHTTPRequestHandler):
         """Handle tools/call request. Routes to native handler or proxied server."""
         tool_name = params.get("name", "")
         tool_args = params.get("arguments", {})
+        source_ip = (
+            getattr(self, "client_address", ("",))[0]
+            if getattr(self, "client_address", None) else ""
+        )
+        invoke_start = time.time()
 
         # Check native tools first
         handler = TOOL_HANDLERS.get(tool_name)
@@ -1018,12 +1107,24 @@ class McpHandler(BaseHTTPRequestHandler):
                     jsonrpc_response(request_id, response_result),
                     session_id=session_id,
                 )
+                _emit_mcp_tool_invoked(
+                    tool_name, "outcomeops-native", email,
+                    success=not is_error,
+                    duration_ms=int((time.time() - invoke_start) * 1000),
+                    source_ip=source_ip,
+                )
             except Exception as e:
                 logger.error(f"Error executing tool {tool_name}: {e}", exc_info=True)
                 self._send_json(
                     200,
                     jsonrpc_error(request_id, -32603, f"Internal error: {type(e).__name__}"),
                     session_id=session_id,
+                )
+                _emit_mcp_tool_invoked(
+                    tool_name, "outcomeops-native", email,
+                    success=False,
+                    duration_ms=int((time.time() - invoke_start) * 1000),
+                    source_ip=source_ip,
                 )
             return
 
@@ -1074,12 +1175,24 @@ class McpHandler(BaseHTTPRequestHandler):
                 jsonrpc_response(request_id, result),
                 session_id=session_id,
             )
+            _emit_mcp_tool_invoked(
+                tool_name, route["config"].get("name", ""), email,
+                success=True,
+                duration_ms=int((time.time() - invoke_start) * 1000),
+                source_ip=source_ip,
+            )
         except Exception as e:
             logger.error(f"Error proxying tool {tool_name}: {e}", exc_info=True)
             self._send_json(
                 200,
                 jsonrpc_error(request_id, -32603, f"Proxy error: {type(e).__name__}"),
                 session_id=session_id,
+            )
+            _emit_mcp_tool_invoked(
+                tool_name, route["config"].get("name", ""), email,
+                success=False,
+                duration_ms=int((time.time() - invoke_start) * 1000),
+                source_ip=source_ip,
             )
 
 

@@ -56,6 +56,9 @@ module "mcp_outcomeops" {
     KB_BUCKET          = module.knowledge_base_bucket.s3_bucket_id
     ENVIRONMENT        = var.environment
     MCP_BASE_URL       = local.mcp_base_url
+    # plan/audit-completeness chunk 02 + 08: MCP server emits
+    # ACTION_API_KEY_USED + ACTION_MCP_TOOL_INVOKED audit rows.
+    AUDIT_TABLE = module.audit_logs_table.dynamodb_table_id
   }
 
   ecs_cluster_arn    = module.ui_ecs.cluster_arn
@@ -144,6 +147,18 @@ resource "aws_iam_role_policy" "mcp_outcomeops" {
         ]
         Resource = [
           "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/mcp/*"
+        ]
+      },
+      {
+        # plan/audit-completeness: emit ACTION_API_KEY_USED +
+        # ACTION_MCP_TOOL_INVOKED audit rows.
+        Sid    = "DynamoDBAuditWrite"
+        Effect = "Allow"
+        Action = [
+          "dynamodb:PutItem"
+        ]
+        Resource = [
+          module.audit_logs_table.dynamodb_table_arn
         ]
       }
     ]

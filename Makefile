@@ -242,7 +242,10 @@ build-mcp-server-image:
 	$(eval ECR_REPO := $(shell cd terraform && terraform output -raw mcp_server_ecr_url 2>/dev/null))
 	$(eval AWS_ACCOUNT := $(shell aws sts get-caller-identity --query Account --output text))
 	aws ecr get-login-password --region $(AWS_REGION) | docker login --username AWS --password-stdin $(AWS_ACCOUNT).dkr.ecr.$(AWS_REGION).amazonaws.com
-	docker build -t $(ECR_REPO):latest lambda/mcp-server/
+	# Build context is `lambda/` so the image can also COPY shared/
+	# for audit-writer access. Dockerfile path is relative to the
+	# new context.
+	docker build -f lambda/mcp-server/Dockerfile -t $(ECR_REPO):latest lambda/
 	docker push $(ECR_REPO):latest
 
 # Build Snyk MCP server container image
