@@ -89,6 +89,76 @@ lifecycle policy.
 
 ---
 
+## Verify after deploy
+
+Production consumers (KCL, Firehose, the Splunk Add-on for AWS, a
+Lambda event-source mapping) all handle multi-shard fan-out
+transparently. **One-off `aws kinesis get-records` calls do not** —
+they target one shard at a time, and on-demand mode silently scales
+the stream to N shards as traffic grows. If you sample the stream by
+hand, fan across every shard or you'll quietly see only ~1/N of the
+traffic.
+
+Set env once:
+
+```bash
+export ENV=prd
+export APP=outcome-ops-ai-assist
+export STREAM=$ENV-$APP-audit-export
+```
+
+Confirm the stream + publisher are healthy:
+
+```bash
+aws kinesis describe-stream-summary --stream-name "$STREAM" \
+  --query 'StreamDescriptionSummary.{Status:StreamStatus, Mode:StreamModeDetails.StreamMode, Shards:OpenShardCount, EncType:EncryptionType}'
+
+aws lambda list-event-source-mappings \
+  --function-name "$ENV-$APP-audit-stream-publisher" \
+  --query 'EventSourceMappings[].{State:State, Source:EventSourceArn}'
+```
+
+Sample every record on the stream right now (TRIM_HORIZON, all
+shards):
+
+```bash
+for SHARD in $(aws kinesis list-shards --stream-name "$STREAM" \
+                  --query 'Shards[].ShardId' --output text); do
+  echo "--- $SHARD ---"
+  ITER=$(aws kinesis get-shard-iterator --stream-name "$STREAM" \
+           --shard-id "$SHARD" --shard-iterator-type TRIM_HORIZON \
+           --query ShardIterator --output text)
+  for _ in 1 2 3 4 5; do
+    RESP=$(aws kinesis get-records --shard-iterator "$ITER" --limit 100)
+    echo "$RESP" | jq -r '.Records[].Data' | while read -r b64; do
+      echo "$b64" | base64 -d | jq -c '
+        {class_uid, class_name, severity_id, status_id, status_detail,
+         actor: .actor.user.email_addr,
+         action: .activity_name,
+         model: .unmapped.model_id,
+         ts: .unmapped.timestamp}'
+    done
+    NEXT=$(echo "$RESP" | jq -r '.NextShardIterator // empty')
+    [ -z "$NEXT" ] && break
+    [ "$(echo "$RESP" | jq '.Records | length')" -eq 0 ] && break
+    ITER="$NEXT"
+  done
+done
+```
+
+Operational signals to watch (CloudWatch Metrics):
+
+- `AWS/Lambda IteratorAge` on `$ENV-$APP-audit-stream-publisher` —
+  should stay near zero. Spikes mean the publisher is falling behind
+  the audit DDB stream.
+- `AWS/Kinesis IncomingRecords` on the export stream — non-zero
+  during periods of platform activity.
+- `AWS/Kinesis WriteProvisionedThroughputExceeded` — should be 0.
+  On-demand mode auto-scales, but during traffic doublings you can
+  see brief throttles before the new shards activate.
+
+---
+
 ## OCSF wire format
 
 Every record on the stream is a JSON object conforming to OCSF
