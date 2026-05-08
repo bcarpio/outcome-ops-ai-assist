@@ -77,6 +77,10 @@ const TONES: Record<string, Tone> = {
   prompt:    { bg: 'bg-fuchsia-50', text: 'text-fuchsia-700', ring: 'ring-fuchsia-200', stroke: '#d946ef' },
   privacy:   { bg: 'bg-violet-50',  text: 'text-violet-700',  ring: 'ring-violet-300',  stroke: '#8b5cf6' },
   ingest:    { bg: 'bg-sky-50',     text: 'text-sky-700',     ring: 'ring-sky-200',     stroke: '#0284c7' },
+  oauth:     { bg: 'bg-orange-50',  text: 'text-orange-700',  ring: 'ring-orange-200',  stroke: '#f97316' },
+  budget_alert: { bg: 'bg-lime-50', text: 'text-lime-700',    ring: 'ring-lime-200',    stroke: '#84cc16' },
+  codegen:   { bg: 'bg-cyan-50',    text: 'text-cyan-700',    ring: 'ring-cyan-200',    stroke: '#06b6d4' },
+  codegen_failure: { bg: 'bg-red-50', text: 'text-red-700',   ring: 'ring-red-300',     stroke: '#dc2626' },
   refusal:   { bg: 'bg-rose-50',    text: 'text-rose-700',    ring: 'ring-rose-300',    stroke: '#e11d48' },
   unknown:   { bg: 'bg-gray-50',    text: 'text-gray-700',    ring: 'ring-gray-200',    stroke: '#6b7280' },
 }
@@ -93,6 +97,10 @@ function toneFor(ev: { action?: string; category?: string; status?: string }): T
   if (a.startsWith('SYSTEM_PROMPT')) return TONES.prompt
   if (a === 'PRIVACY_MODE_UPDATED') return TONES.privacy
   if (a === 'DOCUMENT_INGESTED') return TONES.ingest
+  if (a === 'OAUTH_CONNECTION_ESTABLISHED') return TONES.oauth
+  if (a === 'BUDGET_THRESHOLD_CROSSED') return TONES.budget_alert
+  if (a === 'CODE_GENERATED') return TONES.codegen
+  if (a === 'CODE_GEN_DLQ_SALVAGE_PR_CREATED') return TONES.codegen_failure
   return TONES.unknown
 }
 

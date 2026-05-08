@@ -199,6 +199,15 @@ HIDDEN_DASHBOARD_ACTIONS = frozenset({
     ACTION_OUTLOOK_SYNCED,
     ACTION_TEAMS_SYNCED,
     ACTION_SHAREPOINT_SYNCED,
+    # Operator preference: keep these queryable but off the dashboard
+    # cards. They write the audit row for forensic / right-to-deletion
+    # / per-PR provenance, but the volume + nature isn't dashboard-
+    # interesting at a glance. Operators filter ?action=... explicitly
+    # to drill in.
+    ACTION_DOCUMENT_DELETED,
+    ACTION_CONVERSATION_DELETED,
+    ACTION_PR_ANALYZED,
+    ACTION_TESTS_RAN,
 })
 
 
