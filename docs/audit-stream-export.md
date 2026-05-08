@@ -415,6 +415,9 @@ keep working — only the SIEM hook goes away.
   records, organized by category.
 - [`audit-dashboard.md`](audit-dashboard.md) — operator's guide to
   the in-platform dashboard.
+- [`refusal-detection.md`](refusal-detection.md) — why the refusal
+  events on this stream have a meaningful signal-to-noise ratio
+  (the four-part classification contract).
 - [ADR-018](adr/ADR-018-audit-logging-design.md) — schema design
   and writer split.
 - `lambda/shared/ocsf_mapper.py` — the mapping logic.

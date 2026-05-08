@@ -392,6 +392,8 @@ so cost still calculates correctly for any straggler audit rows.
 
 - [ADR-018: Audit Logging Design](adr/ADR-018-audit-logging-design.md)
   — schema, GSI2 rationale, writer split, per-call pricing.
+- [`refusal-detection.md`](refusal-detection.md) — the four-part
+  contract behind the red refusal rows on the dashboard.
 - `lambda/shared/audit.py` / `lambda/shared/audit_writer.py` — writer
   modules.
 - `lambda/workspace-management/handler.py` — admin emission +

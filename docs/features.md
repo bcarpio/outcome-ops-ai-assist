@@ -239,6 +239,10 @@ to the `/audit` page, and ADR-018 for schema design.
 - **Refusal alerting** — `audit-alert` Lambda publishes ToS refusals
   to SNS, special-cases `flagged_reason=test_refusal_trigger` with
   a `[TEST]` SNS subject prefix so on-call distinguishes drills.
+  Refusal classification itself is a four-part contract (system-prompt
+  guidance + counter-balance + regex pattern + length cap) so the
+  `status=refusal` count stays meaningful at scale; see
+  `docs/refusal-detection.md`.
 - **KMS encryption** — SSM (GitHub token, OAuth refresh tokens,
   webhook secrets) all KMS-encrypted; tables (audit, analytics,
   workspaces, chat) optionally use a customer-managed CMK.
@@ -293,6 +297,8 @@ to the `/audit` page, and ADR-018 for schema design.
 - `docs/audit-coverage.md` — every event the platform records.
 - `docs/audit-dashboard.md` — audit page operator guide.
 - `docs/audit-stream-export.md` — SIEM export over Kinesis (OCSF).
+- `docs/refusal-detection.md` — how the four-part refusal-classification
+  contract works and why it's hard to do well.
 - `docs/adr/` — architectural decisions, including ADR-018 (audit),
   ADR-014 to 017 (code maps).
 - `docs/roadmap.md` — what's coming next.

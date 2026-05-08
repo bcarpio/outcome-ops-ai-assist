@@ -305,6 +305,9 @@ account API key + cursor pagination.
   `/audit` page (drill flow, drawer, export, demo seeder).
 - [`audit-stream-export.md`](audit-stream-export.md) — SIEM export
   over Kinesis (OCSF schema + FilterCriteria patterns + consumer IAM).
+- [`refusal-detection.md`](refusal-detection.md) — four-part refusal-
+  classification contract that makes the `status=refusal` count
+  meaningful at scale.
 - [ADR-018](adr/ADR-018-audit-logging-design.md) — schema design,
   GSI2 rationale, writer split, per-call pricing.
 - `lambda/shared/audit.py` — bedrock-row writer (per-call pricing).
