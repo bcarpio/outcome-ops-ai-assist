@@ -125,6 +125,19 @@ def reset_mocks():
     yield
 
 
+@pytest.fixture(autouse=True)
+def stub_license_layer():
+    """Inject a passing outcomeops_license stub into sys.modules so the
+    ADR-019 license guard at the top of lambda_handler / handle_chat_stream
+    succeeds by default. Tests that exercise the regression-detector or
+    invalid-license paths override this with their own patch.dict.
+    """
+    license_mock = MagicMock()
+    license_mock.validate_license.return_value = {"sub": "test-customer"}
+    with patch.dict(sys.modules, {"outcomeops_license": license_mock}):
+        yield license_mock
+
+
 @pytest.fixture
 def mock_table():
     """Create mock DynamoDB table."""
@@ -1467,6 +1480,65 @@ class TestLambdaHandler:
         result = lambda_handler(event, None)
         assert result["statusCode"] == 200
 
+    # ------------------------------------------------------------------
+    # ADR-019 license guard
+    # ------------------------------------------------------------------
+
+    def test_lambda_handler_license_valid(self, mock_table, stub_license_layer):
+        """validate_license success: handler proceeds past the license guard."""
+        mock_table.query.return_value = {"Items": []}
+        event = {
+            "httpMethod": "GET",
+            "path": "/conversations",
+            "headers": {"x-user-email": "u@x.com"},
+        }
+        result = lambda_handler(event, None)
+        assert result["statusCode"] != 403
+        stub_license_layer.validate_license.assert_called_once()
+
+    def test_lambda_handler_license_import_error(self, monkeypatch):
+        """No layer attached: regression detector fires, 403 returned."""
+        # Drop the autouse stub so the inline `from outcomeops_license import
+        # validate_license` raises ImportError.
+        monkeypatch.delitem(sys.modules, "outcomeops_license", raising=False)
+        # Block re-import of the real package by inserting a None entry
+        # (Python treats this as "import failed").
+        monkeypatch.setitem(sys.modules, "outcomeops_license", None)
+
+        mock_log = MagicMock()
+        monkeypatch.setattr(handler_module, "log_license_fail_open", mock_log)
+
+        event = {
+            "httpMethod": "GET",
+            "path": "/conversations",
+            "headers": {"x-user-email": "u@x.com"},
+        }
+        result = lambda_handler(event, None)
+
+        assert result["statusCode"] == 403
+        body = json.loads(result["body"])
+        assert "License validation unavailable" in body["error"]
+        mock_log.assert_called_once()
+        # Second positional arg is the lambda_name short label.
+        assert mock_log.call_args[0][1] == "chat"
+
+    def test_lambda_handler_license_invalid(self, monkeypatch):
+        """validate_license raises (expired/signature mismatch): 403 returned."""
+        license_mock = MagicMock()
+        license_mock.validate_license.side_effect = Exception("license expired")
+        monkeypatch.setitem(sys.modules, "outcomeops_license", license_mock)
+
+        event = {
+            "httpMethod": "GET",
+            "path": "/conversations",
+            "headers": {"x-user-email": "u@x.com"},
+        }
+        result = lambda_handler(event, None)
+
+        assert result["statusCode"] == 403
+        body = json.loads(result["body"])
+        assert "license expired" in body.get("message", "").lower()
+
 
 # ============================================================================
 # Streaming Handler
@@ -1498,6 +1570,39 @@ class TestStreamingHandler:
         # Last chunks should contain error
         all_output = b"".join(chunks)
         assert b"error" in all_output
+
+    # ------------------------------------------------------------------
+    # ADR-019 license guard on the streaming entry point
+    # ------------------------------------------------------------------
+
+    def test_handle_chat_stream_license_import_error(self, monkeypatch):
+        """No layer attached on streaming path: NDJSON 403 error, regression detector fires."""
+        monkeypatch.delitem(sys.modules, "outcomeops_license", raising=False)
+        monkeypatch.setitem(sys.modules, "outcomeops_license", None)
+
+        mock_log = MagicMock()
+        monkeypatch.setattr(handler_module, "log_license_fail_open", mock_log)
+
+        chunks = list(handle_chat_stream({"body": json.dumps({"message": "hi"})}))
+        assert len(chunks) >= 1
+        first = json.loads(chunks[0].strip())
+        assert first["type"] == "error"
+        assert first["status_code"] == 403
+        mock_log.assert_called_once()
+        assert mock_log.call_args[0][1] == "chat"
+
+    def test_handle_chat_stream_license_invalid(self, monkeypatch):
+        """validate_license raises on streaming path: NDJSON 403, no further yield."""
+        license_mock = MagicMock()
+        license_mock.validate_license.side_effect = Exception("license expired")
+        monkeypatch.setitem(sys.modules, "outcomeops_license", license_mock)
+
+        chunks = list(handle_chat_stream({"body": json.dumps({"message": "hi"})}))
+        assert len(chunks) == 1
+        first = json.loads(chunks[0].strip())
+        assert first["type"] == "error"
+        assert first["status_code"] == 403
+        assert "license expired" in first["error"].lower()
 
 
 # ============================================================================

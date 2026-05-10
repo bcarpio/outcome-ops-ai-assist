@@ -34,7 +34,11 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 # Add shared module to path for Lambda deployment
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared.audit import log_audit_entry
-from shared.audit_writer import ACTION_CONVERSATION_DELETED, log_admin_action
+from shared.audit_writer import (
+    ACTION_CONVERSATION_DELETED,
+    log_admin_action,
+    log_license_fail_open,
+)
 from shared.prompts import build_chat_system_prompt
 
 # Configure logging
@@ -1349,6 +1353,26 @@ def handle_chat_stream(event: Dict) -> Generator[str, None, None]:
     Generator for streaming chat responses.
     Yields NDJSON strings for each event.
     """
+    # License validation (ADR-019). Fail-closed; any error yields an NDJSON
+    # error event with status_code=403 and stops the stream. This is the
+    # user-facing streaming path (Function URL) so the gate matters even
+    # more than for the REST conversation-management endpoints.
+    try:
+        from outcomeops_license import validate_license
+
+        claims = validate_license()
+        logger.info(f"[chat] License validated (stream): {claims.get('sub')}")
+    except ImportError:
+        # Regression detector - layer not attached, this is a deploy bug.
+        logger.error("[chat] License layer not attached - deploy bug (ADR-019)")
+        log_license_fail_open(os.environ.get("AUDIT_TABLE", ""), "chat")
+        yield _stream_error("License validation unavailable", 403) + "\n"
+        return
+    except Exception as e:
+        logger.error(f"[chat] License validation failed (stream): {e}")
+        yield _stream_error(f"License validation failed: {e}", 403) + "\n"
+        return
+
     # Parse request
     try:
         body = json.loads(event.get("body") or "{}")
@@ -1656,6 +1680,32 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         PUT /conversations/{id}/share - Set sharing (non-empty workspace_ids = share, empty = unshare)
         GET /shared - List shared conversations
     """
+    # License validation (ADR-019). Fail-closed; any error returns 403.
+    # Chat is API Gateway / Function URL only (no SQS event source) so 403
+    # is always an appropriate response.
+    try:
+        from outcomeops_license import validate_license
+
+        claims = validate_license()
+        logger.info(f"[chat] License validated: {claims.get('sub')}")
+    except ImportError:
+        # Regression detector. The license layer should be attached at
+        # deploy time (terraform variable validation rejects an empty
+        # ARN). Reaching this path means a deploy bug; emit the audit
+        # row and 403.
+        logger.error("[chat] License layer not attached - deploy bug (ADR-019)")
+        log_license_fail_open(os.environ.get("AUDIT_TABLE", ""), "chat")
+        return {
+            "statusCode": 403,
+            "body": json.dumps({"error": "License validation unavailable"}),
+        }
+    except Exception as e:
+        logger.error(f"[chat] License validation failed: {e}")
+        return {
+            "statusCode": 403,
+            "body": json.dumps({"error": "License validation failed", "message": str(e)}),
+        }
+
     http_method = event.get("httpMethod") or event.get("requestContext", {}).get("http", {}).get("method", "GET")
     raw_path = event.get("path") or event.get("requestContext", {}).get("http", {}).get("path", "/")
     # Strip query string from path (Function URL may include it)

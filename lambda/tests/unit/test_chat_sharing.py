@@ -79,6 +79,18 @@ def reset_mocks():
     mock_dynamodb_resource.Table.side_effect = None
 
 
+@pytest.fixture(autouse=True)
+def stub_license_layer():
+    """Inject a passing outcomeops_license stub so the ADR-019 license
+    guard at the top of lambda_handler / handle_chat_stream succeeds by
+    default. Mirrors the fixture in test_chat.py.
+    """
+    license_mock = MagicMock()
+    license_mock.validate_license.return_value = {"sub": "test-customer"}
+    with patch.dict(sys.modules, {"outcomeops_license": license_mock}):
+        yield license_mock
+
+
 @pytest.fixture
 def mock_table():
     """Create mock DynamoDB table."""
