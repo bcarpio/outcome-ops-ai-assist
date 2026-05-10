@@ -1434,7 +1434,12 @@ class TestLambdaHandler:
 
 
 class TestIsCodeMapKey:
-    """Helper that distinguishes code-map summary keys from per-doc chunks."""
+    """Helper that distinguishes code-map summary keys from per-doc chunks.
+
+    The disambiguation is the absence of `_chunk_` (per-doc chunks always
+    have it; code-map summaries never do). The prefix-shape filter
+    happens in the caller; this helper is just the chunk check.
+    """
 
     def test_handler_group_summary_is_code_map(self):
         assert _is_code_map_key("ws#github#repo#handler-group-summary#chat") is True
@@ -1446,18 +1451,28 @@ class TestIsCodeMapKey:
         assert _is_code_map_key("ws#github#repo#code-map#group") is True
 
     def test_per_doc_chunk_is_not_code_map(self):
-        # Per-doc chunks have _chunk_N suffix - they go through the docs orphan path,
-        # not this one. Misclassifying would race with the docs cleanup.
+        # Per-doc chunks have _chunk_N suffix and a different prefix shape
+        # (extra owner segment). Both checks defend against accidentally
+        # including them in the code-map orphan set.
         assert _is_code_map_key("ws#github#owner#repo#docs#README.md_chunk_0") is False
 
-    def test_unknown_doc_type_is_not_code_map(self):
-        # Defensive: only known types count as code-maps. Unknown 4th segment
-        # indicates either a per-doc key (different shape) or a typo.
-        assert _is_code_map_key("ws#github#repo#mystery-type#group") is False
+    def test_unknown_doc_type_accepted_as_code_map(self):
+        # No allowlist of doc_types - the platform supports many backends
+        # (Java source-module-summary, C# csharp-*, Frontend
+        # frontend-components-summary, build-summary, kubernetes-summary,
+        # etc.). Anything in the repo's prefix scope without _chunk_ is
+        # a code-map summary. Future-proof against new backends.
+        assert _is_code_map_key("ws#github#repo#source-module-summary#api") is True
+        assert _is_code_map_key("ws#github#repo#csharp-services-summary#auth") is True
+        assert _is_code_map_key("ws#github#repo#frontend-components-summary#x") is True
+        assert _is_code_map_key("ws#github#repo#kubernetes-summary#manifests") is True
+        assert _is_code_map_key("ws#github#repo#some-future-type#group") is True
 
-    def test_too_few_segments_is_not_code_map(self):
-        assert _is_code_map_key("ws#github#repo") is False
-        assert _is_code_map_key("just-some-key") is False
+    def test_chunk_suffix_anywhere_excludes_key(self):
+        # _chunk_ check is substring not suffix - defensive against
+        # any future per-doc shape variants.
+        assert _is_code_map_key("ws#github#owner#repo#path_chunk_0") is False
+        assert _is_code_map_key("anything_chunk_anything_else") is False
 
 
 # ============================================================================

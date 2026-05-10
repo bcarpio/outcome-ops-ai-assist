@@ -471,38 +471,26 @@ def handle_delete_prefix(message: Dict) -> Dict[str, Any]:
     }
 
 
-# Vector key segments that identify code-map / summary keys (not per-doc chunks).
-# Per-doc chunk keys end with `_chunk_N`; summary keys are written by
-# process-batch-summary (handler.py:936) and process-repo-summary (handler.py:604)
-# with the doc_type as the 4th `#`-separated segment.
-_CODE_MAP_DOC_TYPES = frozenset({
-    "handler-group-summary",
-    "docs-summary",
-    "frontend-tests-summary",
-    "infrastructure-summary",
-    "schemas-summary",
-    "shared-summary",
-    "tests-summary",
-    "code-map",
-})
-
-
 def _is_code_map_key(key: str) -> bool:
     """True if the vector key is a code-map / summary key (not a per-doc chunk).
 
-    Code-map keys: {ws}#github#{repo}#{doc_type}#{group_name}     (5 segments)
+    Code-map keys: {ws}#github#{repo}#{doc_type}#{group_name}     (no _chunk_)
     Per-doc keys:  {ws}#github#{owner}#{repo}#{path}#{file}_chunk_N
 
-    Per-doc keys end with `_chunk_N`; code-map keys do not. For belt+suspenders
-    also check the doc_type segment against the known set.
+    The CALLER is responsible for filtering by the repo-prefix
+    `{ws}#github#{repo}#`. Per-doc keys carry an extra `{owner}` segment
+    so they never match that prefix shape - the prefix filter alone is
+    sufficient to exclude them. This helper is the belt+suspenders chunk
+    check.
+
+    No allowlist of doc_types: the platform supports many backends
+    (Python handlers, Java source-module, C# csharp-*, Frontend
+    components/utils/types, Kubernetes, build, etc.) each with their own
+    summary doc_type. A static allowlist drifts and silently leaks
+    orphans for any new doc_type. The prefix shape + chunk check is
+    future-proof.
     """
-    if "_chunk_" in key:
-        return False
-    parts = key.split("#")
-    # {ws}#github#{repo}#{doc_type}#{group_name} → 5 parts, doc_type at index 3
-    if len(parts) < 5:
-        return False
-    return parts[3] in _CODE_MAP_DOC_TYPES
+    return "_chunk_" not in key
 
 
 def handle_delete_orphan_code_maps(message: Dict) -> Dict[str, Any]:
