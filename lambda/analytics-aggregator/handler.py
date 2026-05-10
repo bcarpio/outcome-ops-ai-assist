@@ -271,6 +271,8 @@ _KNOWN_ADMIN_ACTIONS = frozenset(
         "DOCUMENT_DOWNLOADED",
         "MCP_TOOL_INVOKED",
         "TESTS_RAN",
+        # ADR-019 license-layer regression detector
+        "LICENSE_FAIL_OPEN",
     }
 )
 

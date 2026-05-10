@@ -283,8 +283,9 @@ class TestActionConstants:
     def test_action_count_after_audit_completeness_expansion(self):
         # Original 17 (plan/01-dynamodb-schema.md) + 2 from PII redaction
         # (PRIVACY_MODE_UPDATED, DOCUMENT_INGESTED) + 23 from
-        # plan/audit-completeness Tier 1 + Tier 2 = 42.
-        assert len(ADMIN_ACTIONS) == 42
+        # plan/audit-completeness Tier 1 + Tier 2 + 1 from ADR-019
+        # license-layer regression detector = 43.
+        assert len(ADMIN_ACTIONS) == 43
 
     def test_known_action_in_set(self):
         assert ACTION_API_KEY_CREATED in ADMIN_ACTIONS
@@ -372,3 +373,62 @@ class TestActionConstants:
         # Hidden actions must be valid admin actions (otherwise the hide
         # rule references a typo).
         assert HIDDEN_DASHBOARD_ACTIONS.issubset(ADMIN_ACTIONS)
+
+
+# ============================================================================
+# log_license_fail_open (ADR-019 regression detector)
+# ============================================================================
+
+
+class TestLogLicenseFailOpen:
+    """LICENSE_FAIL_OPEN audit row writer - regression detector for the
+    license layer being unattached at deploy time."""
+
+    def test_log_license_fail_open_writes_row(self, mock_table):
+        audit_writer.log_license_fail_open("audit-table", "chat")
+
+        mock_table.put_item.assert_called_once()
+        item = mock_table.put_item.call_args.kwargs["Item"]
+
+        assert item["action"] == "LICENSE_FAIL_OPEN"
+        assert item["category"] == "auth"
+        assert item["GSI2PK"] == "CAT#auth"
+        assert item["details"] == {"lambda": "chat", "reason": "import_error"}
+        assert item["user_email"] == ""
+        assert item["PK"] == "WS#SYSTEM"
+
+    def test_log_license_fail_open_custom_reason(self, mock_table):
+        audit_writer.log_license_fail_open(
+            "audit-table",
+            "process-repo-summary",
+            reason="ssm_param_missing",
+        )
+
+        item = mock_table.put_item.call_args.kwargs["Item"]
+        assert item["details"] == {
+            "lambda": "process-repo-summary",
+            "reason": "ssm_param_missing",
+        }
+
+    def test_log_license_fail_open_with_workspace(self, mock_table):
+        audit_writer.log_license_fail_open(
+            "audit-table",
+            "chat",
+            workspace_id="ws_123",
+        )
+
+        item = mock_table.put_item.call_args.kwargs["Item"]
+        assert item["PK"] == "WS#ws_123"
+        assert item["workspace_id"] == "ws_123"
+
+    def test_action_license_fail_open_in_admin_actions(self):
+        # ADMIN_ACTIONS gates the audit-query API filters; without this the
+        # constant would be silently ignored from ?action=LICENSE_FAIL_OPEN.
+        assert audit_writer.ACTION_LICENSE_FAIL_OPEN in ADMIN_ACTIONS
+
+    def test_action_license_fail_open_not_hidden(self):
+        # Per ADR-019: this event must appear prominently on the audit
+        # dashboard - any occurrence is a deploy bug worth surfacing.
+        assert (
+            audit_writer.ACTION_LICENSE_FAIL_OPEN not in HIDDEN_DASHBOARD_ACTIONS
+        )
