@@ -61,6 +61,8 @@ find_orphaned_documents = handler_module.find_orphaned_documents
 handle_delete_document = handler_module.handle_delete_document
 handle_delete_prefix = handler_module.handle_delete_prefix
 handle_delete_orphans = handler_module.handle_delete_orphans
+handle_delete_orphan_code_maps = handler_module.handle_delete_orphan_code_maps
+_is_code_map_key = handler_module._is_code_map_key
 _load_vector_config = handler_module._load_vector_config
 
 
@@ -1363,3 +1365,164 @@ class TestLambdaHandler:
         assert "message" in body
         assert "results" in body
         assert isinstance(body["results"], list)
+
+
+# ============================================================================
+# _is_code_map_key
+# ============================================================================
+
+
+class TestIsCodeMapKey:
+    """Helper that distinguishes code-map summary keys from per-doc chunks."""
+
+    def test_handler_group_summary_is_code_map(self):
+        assert _is_code_map_key("ws#github#repo#handler-group-summary#chat") is True
+
+    def test_docs_summary_is_code_map(self):
+        assert _is_code_map_key("ws#github#repo#docs-summary#documentation") is True
+
+    def test_code_map_type_is_code_map(self):
+        assert _is_code_map_key("ws#github#repo#code-map#group") is True
+
+    def test_per_doc_chunk_is_not_code_map(self):
+        # Per-doc chunks have _chunk_N suffix - they go through the docs orphan path,
+        # not this one. Misclassifying would race with the docs cleanup.
+        assert _is_code_map_key("ws#github#owner#repo#docs#README.md_chunk_0") is False
+
+    def test_unknown_doc_type_is_not_code_map(self):
+        # Defensive: only known types count as code-maps. Unknown 4th segment
+        # indicates either a per-doc key (different shape) or a typo.
+        assert _is_code_map_key("ws#github#repo#mystery-type#group") is False
+
+    def test_too_few_segments_is_not_code_map(self):
+        assert _is_code_map_key("ws#github#repo") is False
+        assert _is_code_map_key("just-some-key") is False
+
+
+# ============================================================================
+# handle_delete_orphan_code_maps
+# ============================================================================
+
+
+class TestHandleDeleteOrphanCodeMaps:
+    """Code-map orphan cleanup: diff against expected, delete leftovers."""
+
+    def test_deletes_orphan_summary_vector(self, vector_config):
+        """Orphan handler-group-summary key (not in expected) gets deleted."""
+        mock_s3vectors_client.list_vectors.return_value = {
+            "vectors": [
+                # Expected (current tree)
+                {"key": "ws#github#repo#handler-group-summary#chat"},
+                {"key": "ws#github#repo#handler-group-summary#github-sync"},
+                # Orphan (deleted from tree)
+                {"key": "ws#github#repo#handler-group-summary#slack-integration"},
+                # Per-doc chunk - must be ignored (different cleanup path)
+                {"key": "ws#github#owner#repo#docs#README.md_chunk_0"},
+                # Other repo - must be ignored
+                {"key": "ws#github#other-repo#handler-group-summary#chat"},
+            ],
+        }
+
+        result = handle_delete_orphan_code_maps({
+            "workspace_id": "ws",
+            "repo": "repo",
+            "expected_keys": [
+                "ws#github#repo#handler-group-summary#chat",
+                "ws#github#repo#handler-group-summary#github-sync",
+            ],
+        })
+
+        assert result["status"] == "success"
+        assert result["orphans_found"] == 1
+        assert result["vectors_deleted"] == 1
+        deleted_keys = mock_s3vectors_client.delete_vectors.call_args[1]["keys"]
+        assert deleted_keys == ["ws#github#repo#handler-group-summary#slack-integration"]
+
+    def test_refuses_empty_expected_keys(self, vector_config):
+        """Defensive: empty expected_keys must NOT wipe everything."""
+        result = handle_delete_orphan_code_maps({
+            "workspace_id": "ws",
+            "repo": "repo",
+            "expected_keys": [],
+        })
+        assert result["status"] == "skipped"
+        mock_s3vectors_client.delete_vectors.assert_not_called()
+        # Also must not even list - skip the work entirely
+        mock_s3vectors_client.list_vectors.assert_not_called()
+
+    def test_no_orphans_no_delete(self, vector_config):
+        """All current keys match expected → no delete call."""
+        mock_s3vectors_client.list_vectors.return_value = {
+            "vectors": [{"key": "ws#github#repo#handler-group-summary#chat"}],
+        }
+        result = handle_delete_orphan_code_maps({
+            "workspace_id": "ws",
+            "repo": "repo",
+            "expected_keys": ["ws#github#repo#handler-group-summary#chat"],
+        })
+        assert result["orphans_found"] == 0
+        mock_s3vectors_client.delete_vectors.assert_not_called()
+
+    def test_ignores_per_doc_chunk_keys(self, vector_config):
+        """Per-doc chunk keys (with _chunk_N) are NOT considered orphans here -
+        they're cleaned by the docs orphan path. Misclassifying them would
+        double-delete or race with the docs cleanup."""
+        mock_s3vectors_client.list_vectors.return_value = {
+            "vectors": [
+                {"key": "ws#github#owner#repo#docs#deleted-doc.md_chunk_0"},
+            ],
+        }
+        result = handle_delete_orphan_code_maps({
+            "workspace_id": "ws",
+            "repo": "repo",
+            "expected_keys": ["ws#github#repo#handler-group-summary#chat"],
+        })
+        assert result["orphans_found"] == 0
+        mock_s3vectors_client.delete_vectors.assert_not_called()
+
+    def test_paginated_list_vectors(self, vector_config):
+        """Multi-page list_vectors handled correctly."""
+        mock_s3vectors_client.list_vectors.side_effect = [
+            {
+                "vectors": [{"key": "ws#github#repo#handler-group-summary#a"}],
+                "nextToken": "tok",
+            },
+            {
+                "vectors": [{"key": "ws#github#repo#handler-group-summary#orphan"}],
+            },
+        ]
+        result = handle_delete_orphan_code_maps({
+            "workspace_id": "ws",
+            "repo": "repo",
+            "expected_keys": ["ws#github#repo#handler-group-summary#a"],
+        })
+        assert result["orphans_found"] == 1
+        assert mock_s3vectors_client.list_vectors.call_count == 2
+
+    def test_missing_workspace_or_repo_is_error(self, vector_config):
+        """Producer must provide both."""
+        result = handle_delete_orphan_code_maps({
+            "workspace_id": "",
+            "repo": "repo",
+            "expected_keys": ["k"],
+        })
+        assert result["status"] == "error"
+
+    def test_dispatch_via_lambda_handler(self, vector_config):
+        """SQS event with action=delete_orphan_code_maps routes correctly."""
+        mock_s3vectors_client.list_vectors.return_value = {"vectors": []}
+        event = {
+            "Records": [{
+                "body": json.dumps({
+                    "action": "delete_orphan_code_maps",
+                    "workspace_id": "ws",
+                    "repo": "repo",
+                    "expected_keys": ["ws#github#repo#handler-group-summary#chat"],
+                }),
+            }],
+        }
+        result = lambda_handler(event, None)
+        assert result["statusCode"] == 200
+        body = json.loads(result["body"])
+        assert body["results"][0]["action"] == "delete_orphan_code_maps"
+        assert body["results"][0]["status"] == "success"

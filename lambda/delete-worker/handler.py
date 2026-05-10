@@ -10,13 +10,15 @@ Triggered by SQS DELETE_QUEUE messages.
 
 Message Format:
 {
-    "action": "delete_document" | "delete_prefix" | "delete_orphans",
+    "action": "delete_document" | "delete_prefix" | "delete_orphans" | "delete_orphan_code_maps",
     "workspace_id": "ws_xxx",
     "source": "confluence",
     "connection_id": "conn_xxx",      # For connection-scoped operations
     "s3_key": "workspaces/...",       # For single document
     "prefix": "space_key/",           # For prefix deletion
-    "current_ids": ["id1", "id2"],    # For orphan detection
+    "current_ids": ["id1", "id2"],    # For orphan detection (docs)
+    "repo": "owner/repo",             # For code-map orphan detection
+    "expected_keys": ["k1", "k2"],    # For code-map orphan detection
 }
 """
 
@@ -451,6 +453,150 @@ def handle_delete_prefix(message: Dict) -> Dict[str, Any]:
     }
 
 
+# Vector key segments that identify code-map / summary keys (not per-doc chunks).
+# Per-doc chunk keys end with `_chunk_N`; summary keys are written by
+# process-batch-summary (handler.py:936) and process-repo-summary (handler.py:604)
+# with the doc_type as the 4th `#`-separated segment.
+_CODE_MAP_DOC_TYPES = frozenset({
+    "handler-group-summary",
+    "docs-summary",
+    "frontend-tests-summary",
+    "infrastructure-summary",
+    "schemas-summary",
+    "shared-summary",
+    "tests-summary",
+    "code-map",
+})
+
+
+def _is_code_map_key(key: str) -> bool:
+    """True if the vector key is a code-map / summary key (not a per-doc chunk).
+
+    Code-map keys: {ws}#github#{repo}#{doc_type}#{group_name}     (5 segments)
+    Per-doc keys:  {ws}#github#{owner}#{repo}#{path}#{file}_chunk_N
+
+    Per-doc keys end with `_chunk_N`; code-map keys do not. For belt+suspenders
+    also check the doc_type segment against the known set.
+    """
+    if "_chunk_" in key:
+        return False
+    parts = key.split("#")
+    # {ws}#github#{repo}#{doc_type}#{group_name} → 5 parts, doc_type at index 3
+    if len(parts) < 5:
+        return False
+    return parts[3] in _CODE_MAP_DOC_TYPES
+
+
+def handle_delete_orphan_code_maps(message: Dict) -> Dict[str, Any]:
+    """
+    Delete orphaned code-map summary vectors not present in the writer's
+    expected key set.
+
+    Code-map summary vectors live ONLY in the vector index (no S3 backing),
+    so the docs-style "list S3 keys, diff, delete" pattern doesn't apply.
+    Instead: list vector keys for the repo prefix, filter to summary/code-map
+    key types via _is_code_map_key, diff against the expected_keys set
+    provided by the producer (process-repo-summary), delete the difference.
+
+    Args:
+        message: Must contain workspace_id, repo, expected_keys (List[str]).
+            expected_keys is the full set of vector keys the producer will
+            write or has written for this repo's current tree. An empty
+            expected_keys is refused (would wipe all code-maps for the repo).
+
+    Returns:
+        Result dict with orphans_found and vectors_deleted counts.
+    """
+    workspace_id = message.get("workspace_id")
+    repo = message.get("repo")
+    expected_keys = set(message.get("expected_keys", []))
+
+    if not workspace_id or not repo:
+        return {"status": "error", "error": "Missing workspace_id or repo"}
+
+    if not expected_keys:
+        # Defensive: empty expected_keys would delete EVERYTHING for this repo.
+        # Refuse rather than risk wiping a healthy repo's code-maps if the
+        # producer mis-computed.
+        logger.warning(
+            f"[delete_orphan_code_maps] Refusing to run with empty "
+            f"expected_keys for {workspace_id}/{repo} (would wipe all)"
+        )
+        return {"status": "skipped", "reason": "empty expected_keys"}
+
+    repo_prefix = f"{workspace_id}#github#{repo}#"
+    logger.info(
+        f"Detecting code-map orphans for {repo_prefix} "
+        f"(expected={len(expected_keys)} keys)"
+    )
+
+    config = _load_vector_config()
+    all_keys: List[str] = []
+    try:
+        next_token = None
+        while True:
+            params = {
+                "vectorBucketName": config["bucket"],
+                "indexName": config["index"],
+                "maxResults": 100,
+            }
+            if next_token:
+                params["nextToken"] = next_token
+
+            response = s3vectors_client.list_vectors(**params)
+
+            for vector in response.get("vectors", []):
+                key = vector.get("key", "")
+                if key.startswith(repo_prefix) and _is_code_map_key(key):
+                    all_keys.append(key)
+
+            next_token = response.get("nextToken")
+            if not next_token:
+                break
+    except ClientError as e:
+        logger.error(f"Error listing vectors for {repo_prefix}: {e}")
+        return {"status": "error", "error": str(e)}
+
+    orphan_keys = [k for k in all_keys if k not in expected_keys]
+    logger.info(
+        f"Found {len(orphan_keys)} orphan code-map vectors "
+        f"(of {len(all_keys)} total for repo)"
+    )
+
+    if not orphan_keys:
+        return {
+            "status": "success",
+            "action": "delete_orphan_code_maps",
+            "orphans_found": 0,
+            "vectors_deleted": 0,
+        }
+
+    # Delete in batches (delete_vectors API limit ~100 per call)
+    deleted = 0
+    for i in range(0, len(orphan_keys), 100):
+        batch = orphan_keys[i:i + 100]
+        try:
+            s3vectors_client.delete_vectors(
+                vectorBucketName=config["bucket"],
+                indexName=config["index"],
+                keys=batch,
+            )
+            deleted += len(batch)
+        except ClientError as e:
+            logger.error(f"Error deleting orphan code-map batch: {e}")
+
+    logger.info(
+        f"[delete_orphan_code_maps] Deleted {deleted} orphan vectors "
+        f"for {workspace_id}/{repo}"
+    )
+    return {
+        "status": "success",
+        "action": "delete_orphan_code_maps",
+        "orphans_found": len(orphan_keys),
+        "vectors_deleted": deleted,
+    }
+
+
 def handle_delete_orphans(message: Dict) -> Dict[str, Any]:
     """
     Delete orphaned documents not present in current source.
@@ -536,6 +682,8 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
                 result = handle_delete_prefix(message)
             elif action == "delete_orphans":
                 result = handle_delete_orphans(message)
+            elif action == "delete_orphan_code_maps":
+                result = handle_delete_orphan_code_maps(message)
             else:
                 logger.warning(f"Unknown action: {action}")
                 result = {"status": "skipped", "reason": f"Unknown action: {action}"}
