@@ -253,108 +253,119 @@ module "sharepoint_sync_lambda" {
   # Suppress verbose archive output
   quiet_archive_local_exec = true
 
-  environment_variables = {
-    ENV                   = var.environment
-    APP_NAME              = var.app_name
-    WORKSPACES_TABLE      = module.workspaces_table[0].dynamodb_table_id
-    OAUTH_KMS_KEY_ARN     = aws_kms_key.oauth_tokens[0].arn
-    FILE_INGESTION_QUEUE  = aws_sqs_queue.file_ingestion[0].url
-    SHAREPOINT_SYNC_QUEUE = aws_sqs_queue.sharepoint_sync[0].url
-    DELETE_QUEUE          = aws_sqs_queue.delete_queue[0].url
-    AUDIT_TABLE           = module.audit_logs_table.dynamodb_table_id
-  }
+  # ADR-019: attach OutcomeOps license validator layer.
+  layers = [
+    var.outcomeops_license_layer_arn,
+  ]
+
+  environment_variables = merge(
+    {
+      ENV                   = var.environment
+      APP_NAME              = var.app_name
+      WORKSPACES_TABLE      = module.workspaces_table[0].dynamodb_table_id
+      OAUTH_KMS_KEY_ARN     = aws_kms_key.oauth_tokens[0].arn
+      FILE_INGESTION_QUEUE  = aws_sqs_queue.file_ingestion[0].url
+      SHAREPOINT_SYNC_QUEUE = aws_sqs_queue.sharepoint_sync[0].url
+      DELETE_QUEUE          = aws_sqs_queue.delete_queue[0].url
+      AUDIT_TABLE           = module.audit_logs_table.dynamodb_table_id
+    },
+    local.outcomeops_license_env,
+  )
 
   # IAM permissions
   attach_policy_statements = true
-  policy_statements = {
-    # DynamoDB for connections and tokens
-    dynamodb = {
-      effect = "Allow"
-      actions = [
-        "dynamodb:GetItem",
-        "dynamodb:PutItem",
-        "dynamodb:UpdateItem",
-        "dynamodb:Query"
-      ]
-      resources = [
-        module.workspaces_table[0].dynamodb_table_arn,
-        "${module.workspaces_table[0].dynamodb_table_arn}/index/*"
-      ]
-    }
+  policy_statements = merge(
+    {
+      # DynamoDB for connections and tokens
+      dynamodb = {
+        effect = "Allow"
+        actions = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:Query"
+        ]
+        resources = [
+          module.workspaces_table[0].dynamodb_table_arn,
+          "${module.workspaces_table[0].dynamodb_table_arn}/index/*"
+        ]
+      }
 
-    # SSM for configuration
-    ssm_read = {
-      effect = "Allow"
-      actions = [
-        "ssm:GetParameter",
-        "ssm:GetParameters"
-      ]
-      resources = [
-        "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/*"
-      ]
-    }
+      # SSM for configuration
+      ssm_read = {
+        effect = "Allow"
+        actions = [
+          "ssm:GetParameter",
+          "ssm:GetParameters"
+        ]
+        resources = [
+          "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/*"
+        ]
+      }
 
-    # KMS for token encryption/decryption
-    kms_oauth = {
-      effect = "Allow"
-      actions = [
-        "kms:Encrypt",
-        "kms:Decrypt",
-        "kms:GenerateDataKey*"
-      ]
-      resources = [
-        aws_kms_key.oauth_tokens[0].arn
-      ]
-    }
+      # KMS for token encryption/decryption
+      kms_oauth = {
+        effect = "Allow"
+        actions = [
+          "kms:Encrypt",
+          "kms:Decrypt",
+          "kms:GenerateDataKey*"
+        ]
+        resources = [
+          aws_kms_key.oauth_tokens[0].arn
+        ]
+      }
 
-    # KMS for SSM parameter decryption
-    kms_ssm = {
-      effect = "Allow"
-      actions = [
-        "kms:Decrypt"
-      ]
-      resources = [
-        "arn:aws:kms:${var.aws_region}:${data.aws_caller_identity.current.account_id}:alias/aws/ssm"
-      ]
-    }
+      # KMS for SSM parameter decryption
+      kms_ssm = {
+        effect = "Allow"
+        actions = [
+          "kms:Decrypt"
+        ]
+        resources = [
+          "arn:aws:kms:${var.aws_region}:${data.aws_caller_identity.current.account_id}:alias/aws/ssm"
+        ]
+      }
 
-    # SQS for receiving sync requests
-    sqs_receive = {
-      effect = "Allow"
-      actions = [
-        "sqs:ReceiveMessage",
-        "sqs:DeleteMessage",
-        "sqs:GetQueueAttributes"
-      ]
-      resources = [
-        aws_sqs_queue.sharepoint_sync[0].arn
-      ]
-    }
+      # SQS for receiving sync requests
+      sqs_receive = {
+        effect = "Allow"
+        actions = [
+          "sqs:ReceiveMessage",
+          "sqs:DeleteMessage",
+          "sqs:GetQueueAttributes"
+        ]
+        resources = [
+          aws_sqs_queue.sharepoint_sync[0].arn
+        ]
+      }
 
-    # SQS for sending to file ingestion, sync continuation, and delete queues
-    sqs_send = {
-      effect = "Allow"
-      actions = [
-        "sqs:SendMessage"
-      ]
-      resources = [
-        aws_sqs_queue.file_ingestion[0].arn,
-        aws_sqs_queue.sharepoint_sync[0].arn,
-        aws_sqs_queue.delete_queue[0].arn
-      ]
-    }
+      # SQS for sending to file ingestion, sync continuation, and delete queues
+      sqs_send = {
+        effect = "Allow"
+        actions = [
+          "sqs:SendMessage"
+        ]
+        resources = [
+          aws_sqs_queue.file_ingestion[0].arn,
+          aws_sqs_queue.sharepoint_sync[0].arn,
+          aws_sqs_queue.delete_queue[0].arn
+        ]
+      }
 
-    # DynamoDB audit log writes (plan/audit-completeness)
-    dynamodb_audit = {
-      effect = "Allow"
-      actions = [
-        "dynamodb:PutItem"
-      ]
-      resources = [
-        module.audit_logs_table.dynamodb_table_arn
-      ]
-    }
-  }
+      # DynamoDB audit log writes (plan/audit-completeness)
+      dynamodb_audit = {
+        effect = "Allow"
+        actions = [
+          "dynamodb:PutItem"
+        ]
+        resources = [
+          module.audit_logs_table.dynamodb_table_arn
+        ]
+      }
+    },
+    local.outcomeops_license_iam,
+  )
 
   tags = {
     Purpose = "sharepoint-sync"
