@@ -735,16 +735,20 @@ def send_code_units_to_sqs(
     workspace_id: Optional[str] = None
 ):
     """
-    Send code units to SQS for detailed batch processing, then queue
-    a code-map orphan-cleanup job to delete-worker so any stale vectors
-    from previous syncs (e.g., for handlers that have since been removed)
-    get cleaned up.
+    Send code units to SQS for detailed batch processing.
 
     Args:
-        code_units: List of code unit dicts
+        code_units: List of code unit dicts (may be filtered to changed
+            units in incremental mode - that's fine for processing).
         repo: Repository name
         repo_project: Repository project (owner/repo)
         workspace_id: Optional workspace ID for workspace-scoped storage
+
+    Note: orphan cleanup is NOT queued from here. The caller must invoke
+    _queue_orphan_code_map_cleanup() separately with the FULL current
+    tree's code units (not the incremental subset) so the cleanup's
+    expected_keys reflects every handler that should remain - otherwise
+    incremental sync would treat all unchanged handlers as orphans.
     """
     for code_unit in code_units:
         try:
@@ -771,13 +775,6 @@ def send_code_units_to_sqs(
         except ClientError as e:
             logger.error(f"Failed to send code unit to SQS: {e}")
             raise
-
-    # After all batches are queued, queue the orphan-cleanup job. This runs
-    # in parallel with the batch regeneration: delete-worker reads the
-    # expected_keys, lists current vectors for the repo, deletes anything
-    # not in expected_keys (i.e., handlers / groups that no longer exist).
-    expected_keys = _expected_code_map_vector_keys(code_units, repo, workspace_id)
-    _queue_orphan_code_map_cleanup(repo, expected_keys, workspace_id)
 
 
 def handler(event, context):
@@ -880,6 +877,11 @@ def handler(event, context):
                 )
                 continue
 
+            # full_code_units captures the COMPLETE current tree (pre-incremental-filter).
+            # Used for code-map orphan cleanup so we don't accidentally
+            # delete vectors for unchanged handlers.
+            full_code_units: List[Dict[str, Any]] = []
+
             if should_discover and installation_id:
                 # Workspace repo: Get installation token and discover code units
                 logger.info(f"Workspace repo {repo_project}: discovering code units")
@@ -887,6 +889,8 @@ def handler(event, context):
                     token = get_installation_token(installation_id)
                     code_units = discover_code_units(token, repo_project, repo, all_files)
                     logger.info(f"Discovered {len(code_units)} code units for {repo_project}")
+                    # Snapshot the full set BEFORE any incremental filter.
+                    full_code_units = list(code_units)
 
                     # Incremental filtering: only process code units with changed files
                     if last_commit_sha and current_commit_sha and code_units:
@@ -923,9 +927,11 @@ def handler(event, context):
                 except Exception as e:
                     logger.warning(f"Failed to discover code units for {repo_project}: {e}")
                     code_units = []
+                    full_code_units = []
             else:
                 # Legacy mode: code_units provided in message
                 code_units = message_body.get("code_units", [])
+                full_code_units = list(code_units)
 
             logger.info(f"Processing {repo} ({len(all_files)} files, {len(code_units)} code units)")
 
@@ -998,6 +1004,18 @@ def handler(event, context):
             if code_units:
                 send_code_units_to_sqs(code_units, repo, repo_project, workspace_id)
                 logger.info(f"Queued {len(code_units)} code units for {repo}")
+
+            # Queue code-map orphan cleanup using the FULL tree's code units
+            # (pre-incremental-filter). This way the expected_keys reflects
+            # every handler that should remain in the index, not just the
+            # ones being regenerated this invocation. Skipping when
+            # full_code_units is empty defends against wiping a healthy repo
+            # if discover_code_units fell over.
+            if full_code_units:
+                expected_keys = _expected_code_map_vector_keys(
+                    full_code_units, repo, workspace_id
+                )
+                _queue_orphan_code_map_cleanup(repo, expected_keys, workspace_id)
 
             # Usage tracking (ADR-019). Non-blocking: returns bool, never
             # raises. License-server dedupes track_repo_active by repo

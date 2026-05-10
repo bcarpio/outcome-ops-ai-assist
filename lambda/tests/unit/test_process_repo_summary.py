@@ -615,12 +615,14 @@ class TestQueueOrphanCodeMapCleanup:
         )
 
 
-class TestSendCodeUnitsAlsoQueuesCleanup:
-    """Integration: send_code_units_to_sqs must (a) queue each unit to
-    code-maps-queue (existing behavior) AND (b) queue the orphan cleanup
-    to delete-worker (new behavior)."""
+class TestSendCodeUnitsToSqs:
+    """send_code_units_to_sqs ONLY does the fan-out. Cleanup queueing is
+    the caller's responsibility (separated to support the
+    full-set-vs-incremental-set distinction)."""
 
-    def test_fanout_then_cleanup(self, monkeypatch):
+    def test_fanout_no_cleanup_call(self, monkeypatch):
+        """send_code_units_to_sqs must NOT enqueue cleanup. The handler
+        does that with the full pre-incremental code_units."""
         mock_sqs = MagicMock()
         monkeypatch.setattr(repo_summary_handler, "sqs_client", mock_sqs)
         monkeypatch.setattr(
@@ -649,44 +651,9 @@ class TestSendCodeUnitsAlsoQueuesCleanup:
             units, "myrepo", "owner/myrepo", workspace_id="ws_abc"
         )
 
-        # 2 unit messages + 1 cleanup = 3 sends total
-        assert mock_sqs.send_message.call_count == 3
-
-        # Last call is the cleanup
-        last_call = mock_sqs.send_message.call_args_list[-1]
-        assert last_call[1]["QueueUrl"] == "https://sqs/delete"
-        cleanup_body = json.loads(last_call[1]["MessageBody"])
-        assert cleanup_body["action"] == "delete_orphan_code_maps"
-        assert cleanup_body["workspace_id"] == "ws_abc"
-        assert cleanup_body["repo"] == "myrepo"
-        assert cleanup_body["expected_keys"] == [
-            "ws_abc#github#myrepo#handler-group-summary#chat",
-            "ws_abc#github#myrepo#handler-group-summary#github-sync",
-        ]
-
-    def test_no_workspace_skips_cleanup_only(self, monkeypatch):
-        """Non-workspace mode: per-unit fan-out still happens, cleanup skipped."""
-        mock_sqs = MagicMock()
-        monkeypatch.setattr(repo_summary_handler, "sqs_client", mock_sqs)
-        monkeypatch.setattr(
-            repo_summary_handler, "CODE_MAPS_QUEUE_URL", "https://sqs/codemaps"
-        )
-        monkeypatch.setattr(
-            repo_summary_handler, "DELETE_QUEUE", "https://sqs/delete"
-        )
-
-        units = [{
-            "batch_type": "handler-group-summary",
-            "group_name": "chat",
-            "file_paths": ["x.py"],
-            "storage_key": "k",
-        }]
-
-        repo_summary_handler.send_code_units_to_sqs(
-            units, "myrepo", "owner/myrepo", workspace_id=None
-        )
-
-        # 1 unit message, NO cleanup
-        assert mock_sqs.send_message.call_count == 1
-        sent_url = mock_sqs.send_message.call_args[1]["QueueUrl"]
-        assert sent_url == "https://sqs/codemaps"
+        # 2 unit messages, NO cleanup message
+        assert mock_sqs.send_message.call_count == 2
+        for call in mock_sqs.send_message.call_args_list:
+            assert call[1]["QueueUrl"] == "https://sqs/codemaps"
+            body = json.loads(call[1]["MessageBody"])
+            assert body.get("action") != "delete_orphan_code_maps"
