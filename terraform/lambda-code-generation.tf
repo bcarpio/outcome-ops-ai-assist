@@ -45,11 +45,11 @@ module "generate_code_lambda" {
   quiet_archive_local_exec = true
 
   # Attach layers: terraform fmt, git (for terraform formatting), license validator
-  layers = compact([
+  layers = [
     module.terraform_tools_layer.lambda_layer_arn,
     module.runtime_tools_layer.lambda_layer_arn,
-    var.outcomeops_license_layer_arn
-  ])
+    var.outcomeops_license_layer_arn,
+  ]
 
   # Environment variables
   environment_variables = merge(
@@ -73,11 +73,7 @@ module "generate_code_lambda" {
       # Shared libraries for git
       LD_LIBRARY_PATH = "/opt/lib:/var/lang/lib:/lib64:/usr/lib64"
     },
-    var.outcomeops_license_layer_arn != "" ? {
-      OUTCOMEOPS_LICENSE_PARAM      = var.outcomeops_license_ssm_param
-      OUTCOMEOPS_LICENSE_SERVER_URL = var.outcomeops_license_server_url
-      OUTCOMEOPS_USAGE_ENABLED      = "true"
-    } : {}
+    local.outcomeops_license_env,
   )
 
   # API Gateway trigger permission (only when GitHub Issue integration is enabled)
@@ -90,134 +86,121 @@ module "generate_code_lambda" {
 
   # IAM permissions
   attach_policy_statements = true
-  policy_statements = {
-    # Read SSM parameters (GitHub token, webhook secret, SQS queue URL, license)
-    ssm_read = {
-      effect = "Allow"
-      actions = [
-        "ssm:GetParameter"
-      ]
-      resources = compact([
-        "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/*",
-        var.outcomeops_license_layer_arn != "" ? "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${var.outcomeops_license_ssm_param}" : ""
-      ])
-    }
+  policy_statements = merge(
+    {
+      # Read SSM parameters (GitHub token, webhook secret, SQS queue URL)
+      ssm_read = {
+        effect    = "Allow"
+        actions   = ["ssm:GetParameter"]
+        resources = ["arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/*"]
+      }
 
-    # Decrypt SSM parameters encrypted with AWS managed KMS key
-    kms_decrypt = {
-      effect = "Allow"
-      actions = [
-        "kms:Decrypt"
-      ]
-      resources = [
-        "arn:aws:kms:${var.aws_region}:${data.aws_caller_identity.current.account_id}:alias/aws/ssm"
-      ]
-    }
+      # SQS permissions for code generation queue
+      sqs_send = {
+        effect = "Allow"
+        actions = [
+          "sqs:SendMessage",
+          "sqs:GetQueueUrl",
+          "sqs:GetQueueAttributes"
+        ]
+        resources = [
+          module.code_generation_queue.queue_arn
+        ]
+      }
 
-    # SQS permissions for code generation queue
-    sqs_send = {
-      effect = "Allow"
-      actions = [
-        "sqs:SendMessage",
-        "sqs:GetQueueUrl",
-        "sqs:GetQueueAttributes"
-      ]
-      resources = [
-        module.code_generation_queue.queue_arn
-      ]
-    }
+      # SQS permissions for event source mapping
+      sqs_receive = {
+        effect = "Allow"
+        actions = [
+          "sqs:ReceiveMessage",
+          "sqs:DeleteMessage",
+          "sqs:GetQueueAttributes"
+        ]
+        resources = [
+          module.code_generation_queue.queue_arn
+        ]
+      }
 
-    # SQS permissions for event source mapping
-    sqs_receive = {
-      effect = "Allow"
-      actions = [
-        "sqs:ReceiveMessage",
-        "sqs:DeleteMessage",
-        "sqs:GetQueueAttributes"
-      ]
-      resources = [
-        module.code_generation_queue.queue_arn
-      ]
-    }
+      # DynamoDB audit logging
+      dynamodb_audit = {
+        effect = "Allow"
+        actions = [
+          "dynamodb:PutItem"
+        ]
+        resources = [
+          module.audit_logs_table.dynamodb_table_arn
+        ]
+      }
 
-    # DynamoDB audit logging
-    dynamodb_audit = {
-      effect = "Allow"
-      actions = [
-        "dynamodb:PutItem"
-      ]
-      resources = [
-        module.audit_logs_table.dynamodb_table_arn
-      ]
-    }
+      # Bedrock Claude (for plan generation and code generation)
+      # Cross-region inference profiles route to available regions
+      bedrock_claude = {
+        effect = "Allow"
+        actions = [
+          "bedrock:InvokeModel"
+        ]
+        resources = [
+          "arn:aws:bedrock:*::foundation-model/*",
+          "arn:aws:bedrock:*:*:inference-profile/*"
+        ]
+      }
 
-    # Bedrock Claude (for plan generation and code generation)
-    # Cross-region inference profiles route to available regions
-    bedrock_claude = {
-      effect = "Allow"
-      actions = [
-        "bedrock:InvokeModel"
-      ]
-      resources = [
-        "arn:aws:bedrock:*::foundation-model/*",
-        "arn:aws:bedrock:*:*:inference-profile/*"
-      ]
-    }
+      # AWS Marketplace permissions for Anthropic Claude models
+      aws_marketplace = {
+        effect = "Allow"
+        actions = [
+          "aws-marketplace:ViewSubscriptions",
+          "aws-marketplace:Subscribe"
+        ]
+        resources = ["*"]
+      }
 
-    # AWS Marketplace permissions for Anthropic Claude models
-    aws_marketplace = {
-      effect = "Allow"
-      actions = [
-        "aws-marketplace:ViewSubscriptions",
-        "aws-marketplace:Subscribe"
-      ]
-      resources = ["*"]
-    }
+      # Invoke query-kb Lambda for knowledge base queries
+      invoke_query_kb = {
+        effect = "Allow"
+        actions = [
+          "lambda:InvokeFunction"
+        ]
+        resources = [
+          module.query_kb_lambda.lambda_function_arn
+        ]
+      }
 
-    # Invoke query-kb Lambda for knowledge base queries
-    invoke_query_kb = {
-      effect = "Allow"
-      actions = [
-        "lambda:InvokeFunction"
-      ]
-      resources = [
-        module.query_kb_lambda.lambda_function_arn
-      ]
-    }
+      # Invoke ask-claude Lambda for Haiku summarization of KB results
+      invoke_ask_claude = {
+        effect = "Allow"
+        actions = [
+          "lambda:InvokeFunction"
+        ]
+        resources = [
+          module.ask_claude_lambda.lambda_function_arn
+        ]
+      }
 
-    # Invoke ask-claude Lambda for Haiku summarization of KB results
-    invoke_ask_claude = {
-      effect = "Allow"
-      actions = [
-        "lambda:InvokeFunction"
-      ]
-      resources = [
-        module.ask_claude_lambda.lambda_function_arn
-      ]
-    }
+      # Invoke run-tests Lambda for fix-tests command
+      invoke_run_tests = {
+        effect = "Allow"
+        actions = [
+          "lambda:InvokeFunction"
+        ]
+        resources = [
+          module.run_tests_lambda.lambda_function_arn
+        ]
+      }
 
-    # Invoke run-tests Lambda for fix-tests command
-    invoke_run_tests = {
-      effect = "Allow"
-      actions = [
-        "lambda:InvokeFunction"
-      ]
-      resources = [
-        module.run_tests_lambda.lambda_function_arn
-      ]
-    }
-
-    # Publish completion events to EventBridge automation bus
-    eventbridge_publish = {
-      effect = "Allow"
-      actions = [
-        "events:PutEvents"
-      ]
-      resources = [
-        aws_cloudwatch_event_bus.automation.arn
-      ]
-    }
-  }
+      # Publish completion events to EventBridge automation bus
+      eventbridge_publish = {
+        effect = "Allow"
+        actions = [
+          "events:PutEvents"
+        ]
+        resources = [
+          aws_cloudwatch_event_bus.automation.arn
+        ]
+      }
+    },
+    local.outcomeops_license_iam,
+  )
 
   tags = {
     Purpose = "generate-code"
@@ -292,9 +275,9 @@ module "generate_code_dlq_lambda" {
   quiet_archive_local_exec = true
 
   # Attach license layer for usage tracking
-  layers = compact([
-    var.outcomeops_license_layer_arn
-  ])
+  layers = [
+    var.outcomeops_license_layer_arn,
+  ]
 
   # Environment variables
   environment_variables = merge(
@@ -303,63 +286,46 @@ module "generate_code_dlq_lambda" {
       APP_NAME    = var.app_name
       AUDIT_TABLE = module.audit_logs_table.dynamodb_table_id
     },
-    var.outcomeops_license_layer_arn != "" ? {
-      OUTCOMEOPS_LICENSE_PARAM      = var.outcomeops_license_ssm_param
-      OUTCOMEOPS_LICENSE_SERVER_URL = var.outcomeops_license_server_url
-      OUTCOMEOPS_USAGE_ENABLED      = "true"
-    } : {}
+    local.outcomeops_license_env,
   )
 
   # IAM permissions
   attach_policy_statements = true
-  policy_statements = {
-    # Read SSM parameters (GitHub token, license)
-    ssm_read = {
-      effect = "Allow"
-      actions = [
-        "ssm:GetParameter"
-      ]
-      resources = compact([
-        "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/*",
-        var.outcomeops_license_layer_arn != "" ? "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${var.outcomeops_license_ssm_param}" : ""
-      ])
-    }
+  policy_statements = merge(
+    {
+      # Read SSM parameters (GitHub token)
+      ssm_read = {
+        effect    = "Allow"
+        actions   = ["ssm:GetParameter"]
+        resources = ["arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/*"]
+      }
 
-    # Decrypt SSM parameters
-    kms_decrypt = {
-      effect = "Allow"
-      actions = [
-        "kms:Decrypt"
-      ]
-      resources = [
-        "arn:aws:kms:${var.aws_region}:${data.aws_caller_identity.current.account_id}:alias/aws/ssm"
-      ]
-    }
+      # SQS permissions to read from DLQ
+      sqs_receive = {
+        effect = "Allow"
+        actions = [
+          "sqs:ReceiveMessage",
+          "sqs:DeleteMessage",
+          "sqs:GetQueueAttributes"
+        ]
+        resources = [
+          module.code_generation_dlq.queue_arn
+        ]
+      }
 
-    # SQS permissions to read from DLQ
-    sqs_receive = {
-      effect = "Allow"
-      actions = [
-        "sqs:ReceiveMessage",
-        "sqs:DeleteMessage",
-        "sqs:GetQueueAttributes"
-      ]
-      resources = [
-        module.code_generation_dlq.queue_arn
-      ]
-    }
-
-    # DynamoDB audit logging
-    dynamodb_audit = {
-      effect = "Allow"
-      actions = [
-        "dynamodb:PutItem"
-      ]
-      resources = [
-        module.audit_logs_table.dynamodb_table_arn
-      ]
-    }
-  }
+      # DynamoDB audit logging
+      dynamodb_audit = {
+        effect = "Allow"
+        actions = [
+          "dynamodb:PutItem"
+        ]
+        resources = [
+          module.audit_logs_table.dynamodb_table_arn
+        ]
+      }
+    },
+    local.outcomeops_license_iam,
+  )
 
   tags = {
     Purpose = "generate-code-dlq"
@@ -641,8 +607,10 @@ module "handle_command_lambda" {
   # Suppress verbose archive output
   quiet_archive_local_exec = true
 
-  # OutcomeOps license validator layer (if configured)
-  layers = var.outcomeops_license_layer_arn != "" ? [var.outcomeops_license_layer_arn] : []
+  # OutcomeOps license validator layer
+  layers = [
+    var.outcomeops_license_layer_arn,
+  ]
 
   # Environment variables
   environment_variables = merge(
@@ -654,85 +622,68 @@ module "handle_command_lambda" {
       BEDROCK_BASIC_INPUT_PRICE  = tostring(var.bedrock_basic_input_price)
       BEDROCK_BASIC_OUTPUT_PRICE = tostring(var.bedrock_basic_output_price)
     },
-    var.outcomeops_license_layer_arn != "" ? {
-      OUTCOMEOPS_LICENSE_PARAM      = var.outcomeops_license_ssm_param
-      OUTCOMEOPS_LICENSE_SERVER_URL = var.outcomeops_license_server_url
-      OUTCOMEOPS_USAGE_ENABLED      = "true"
-    } : {}
+    local.outcomeops_license_env,
   )
 
   # IAM permissions
   attach_policy_statements = true
-  policy_statements = {
-    # Read SSM parameters (GitHub token and license)
-    ssm_read = {
-      effect = "Allow"
-      actions = [
-        "ssm:GetParameter"
-      ]
-      resources = compact([
-        "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/*",
-        var.outcomeops_license_layer_arn != "" ? "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${var.outcomeops_license_ssm_param}" : ""
-      ])
-    }
+  policy_statements = merge(
+    {
+      # Read SSM parameters (GitHub token)
+      ssm_read = {
+        effect    = "Allow"
+        actions   = ["ssm:GetParameter"]
+        resources = ["arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/*"]
+      }
 
-    # Decrypt SSM parameters encrypted with AWS managed KMS key
-    kms_decrypt = {
-      effect = "Allow"
-      actions = [
-        "kms:Decrypt"
-      ]
-      resources = [
-        "arn:aws:kms:${var.aws_region}:${data.aws_caller_identity.current.account_id}:alias/aws/ssm"
-      ]
-    }
+      # Send messages to SQS code generation queue (for async PR commands)
+      sqs_send = {
+        effect = "Allow"
+        actions = [
+          "sqs:SendMessage",
+          "sqs:GetQueueUrl",
+          "sqs:GetQueueAttributes"
+        ]
+        resources = [
+          module.code_generation_queue.queue_arn
+        ]
+      }
 
-    # Send messages to SQS code generation queue (for async PR commands)
-    sqs_send = {
-      effect = "Allow"
-      actions = [
-        "sqs:SendMessage",
-        "sqs:GetQueueUrl",
-        "sqs:GetQueueAttributes"
-      ]
-      resources = [
-        module.code_generation_queue.queue_arn
-      ]
-    }
+      # Bedrock Claude for test failure analysis
+      bedrock_claude = {
+        effect = "Allow"
+        actions = [
+          "bedrock:InvokeModel"
+        ]
+        resources = [
+          "arn:aws:bedrock:*::foundation-model/*",
+          "arn:aws:bedrock:*:*:inference-profile/*"
+        ]
+      }
 
-    # Bedrock Claude for test failure analysis
-    bedrock_claude = {
-      effect = "Allow"
-      actions = [
-        "bedrock:InvokeModel"
-      ]
-      resources = [
-        "arn:aws:bedrock:*::foundation-model/*",
-        "arn:aws:bedrock:*:*:inference-profile/*"
-      ]
-    }
+      # AWS Marketplace permissions for Anthropic Claude models
+      aws_marketplace = {
+        effect = "Allow"
+        actions = [
+          "aws-marketplace:ViewSubscriptions",
+          "aws-marketplace:Subscribe"
+        ]
+        resources = ["*"]
+      }
 
-    # AWS Marketplace permissions for Anthropic Claude models
-    aws_marketplace = {
-      effect = "Allow"
-      actions = [
-        "aws-marketplace:ViewSubscriptions",
-        "aws-marketplace:Subscribe"
-      ]
-      resources = ["*"]
-    }
-
-    # DynamoDB audit logging
-    dynamodb_audit = {
-      effect = "Allow"
-      actions = [
-        "dynamodb:PutItem"
-      ]
-      resources = [
-        module.audit_logs_table.dynamodb_table_arn
-      ]
-    }
-  }
+      # DynamoDB audit logging
+      dynamodb_audit = {
+        effect = "Allow"
+        actions = [
+          "dynamodb:PutItem"
+        ]
+        resources = [
+          module.audit_logs_table.dynamodb_table_arn
+        ]
+      }
+    },
+    local.outcomeops_license_iam,
+  )
 
   tags = {
     Purpose = "handle-command"

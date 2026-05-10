@@ -98,8 +98,12 @@ variable "jira_external_id" {
 
 variable "outcomeops_license_layer_arn" {
   type        = string
-  description = "ARN of the OutcomeOps license validator Lambda layer"
-  default     = ""
+  description = "ARN of the OutcomeOps license validator Lambda layer (required - ADR-019)"
+
+  validation {
+    condition     = length(var.outcomeops_license_layer_arn) > 0
+    error_message = "outcomeops_license_layer_arn is required (ADR-019). Set it in dev.tfvars / prd.tfvars."
+  }
 }
 
 variable "outcomeops_license_ssm_param" {
