@@ -46,8 +46,28 @@ if GENERATE_CODE_MAPS_DIR not in sys.path:
     sys.path.insert(0, GENERATE_CODE_MAPS_DIR)
 
 from shared.audit import COMPREHEND_MODEL_ID, log_audit_entry
-from shared.audit_writer import ACTION_DOCUMENT_INGESTED, log_admin_action
+from shared.audit_writer import (
+    ACTION_DOCUMENT_INGESTED,
+    log_admin_action,
+    log_license_fail_open,
+)
 from shared.pii import MODE_STRICT, read_workspace_mode, redact
+
+# License layer imports (ADR-019). The layer is attached at deploy time;
+# absence is a deploy bug detected on first invocation and surfaced via
+# log_license_fail_open + a batchItemFailures response so SQS retries.
+try:
+    from outcomeops_license import (
+        check_repo_limit,
+        track_code_map_updated,
+        track_repo_active,
+        validate_license,
+    )
+except ImportError:
+    validate_license = None  # type: ignore[assignment]
+    check_repo_limit = None  # type: ignore[assignment]
+    track_repo_active = None  # type: ignore[assignment]
+    track_code_map_updated = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -679,9 +699,38 @@ def handler(event, context):
         "discover_code_units": true
     }
     """
+    # License validation (ADR-019). SQS-driven entry: on validation
+    # failure we mark every record in the batch as failed so SQS retries
+    # / DLQs them rather than silently dropping.
+    records = event.get("Records", [])
+    if validate_license is None:
+        logger.error(
+            "[process-repo-summary] License layer not attached - "
+            "deploy bug (ADR-019)"
+        )
+        log_license_fail_open(
+            os.environ.get("AUDIT_TABLE", ""), "process-repo-summary"
+        )
+        return {
+            "batchItemFailures": [
+                {"itemIdentifier": r.get("messageId")} for r in records
+            ]
+        }
+    try:
+        claims = validate_license()
+        logger.info(
+            f"[process-repo-summary] License validated: {claims.get('sub')}"
+        )
+    except Exception as e:
+        logger.error(f"[process-repo-summary] License validation failed: {e}")
+        return {
+            "batchItemFailures": [
+                {"itemIdentifier": r.get("messageId")} for r in records
+            ]
+        }
+
     load_config()
 
-    records = event.get("Records", [])
     logger.info(f"Processing {len(records)} repository summary requests")
 
     batch_item_failures = []
@@ -706,6 +755,25 @@ def handler(event, context):
             # Read commit SHAs for incremental processing
             last_commit_sha = message_body.get("last_commit_sha")
             current_commit_sha = message_body.get("current_commit_sha")
+
+            # Repo branch (used for usage tracking; defaults to "main"
+            # when github-sync did not include it in the message body).
+            branch = message_body.get("branch", "main")
+
+            # Repo limit check (ADR-019). check_repo_limit returns
+            # allowed=True when the repo is already tracked, so this is
+            # a no-op for previously-processed repos. allowed=False only
+            # when adding a new repo would exceed the tier limit. We
+            # skip the message (not added to batch_item_failures)
+            # because limit-blocked is not a retryable failure.
+            limit_result = check_repo_limit(repo=repo_project)
+            if not limit_result.allowed:
+                logger.warning(
+                    f"[process-repo-summary] Repo limit reached for "
+                    f"{repo_project}: {limit_result.reason} "
+                    f"(current={limit_result.current}/{limit_result.limit})"
+                )
+                continue
 
             if should_discover and installation_id:
                 # Workspace repo: Get installation token and discover code units
@@ -825,6 +893,16 @@ def handler(event, context):
             if code_units:
                 send_code_units_to_sqs(code_units, repo, repo_project, workspace_id)
                 logger.info(f"Queued {len(code_units)} code units for {repo}")
+
+            # Usage tracking (ADR-019). Non-blocking: returns bool, never
+            # raises. License-server dedupes track_repo_active by repo
+            # string match, so re-emitting on every code-map run is fine.
+            track_repo_active(repo=repo_project)
+            track_code_map_updated(repo=repo_project, branch=branch)
+            logger.info(
+                f"[process-repo-summary] Tracked code map update for "
+                f"{repo_project} (branch={branch})"
+            )
 
         except Exception as e:
             logger.error(f"Error processing record {message_id}: {e}")

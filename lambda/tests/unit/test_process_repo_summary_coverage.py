@@ -386,6 +386,25 @@ class TestRetryBedrockCall:
 class TestHandlerExtended:
     """Extended handler tests for workspace mode and code units."""
 
+    @pytest.fixture(autouse=True)
+    def _license_layer_mocks(self, monkeypatch):
+        """Patch ADR-019 license layer calls so existing handler tests
+        run as if the layer were attached and validation succeeded."""
+        monkeypatch.setattr(
+            rsh, "validate_license",
+            MagicMock(return_value={"sub": "test-customer"}),
+        )
+        monkeypatch.setattr(
+            rsh, "check_repo_limit",
+            MagicMock(return_value=MagicMock(allowed=True)),
+        )
+        monkeypatch.setattr(
+            rsh, "track_repo_active", MagicMock(return_value=True),
+        )
+        monkeypatch.setattr(
+            rsh, "track_code_map_updated", MagicMock(return_value=True),
+        )
+
     @patch.object(rsh, 'load_config')
     @patch.object(rsh, 'generate_architectural_summary')
     @patch.object(rsh, 'generate_embedding')
