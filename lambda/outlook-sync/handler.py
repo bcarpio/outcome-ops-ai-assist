@@ -24,7 +24,7 @@ import boto3
 
 # Make shared/ importable; deploy package now bundles lambda/shared/.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from shared.audit_writer import log_source_sync  # noqa: E402
+from shared.audit_writer import log_license_fail_open, log_source_sync  # noqa: E402
 from botocore.exceptions import ClientError
 
 from outlook_api import (
@@ -34,6 +34,22 @@ from outlook_api import (
     list_attachments,
 )
 from token_manager import refresh_access_token
+
+# License layer imports (ADR-019). The layer is attached at deploy time;
+# absence is a deploy bug (caught in lambda_handler and surfaces as a
+# LICENSE_FAIL_OPEN audit row + raise so SQS retries / DLQs the message).
+try:
+    from outcomeops_license import (
+        check_repo_limit,
+        track_repo_active,
+        validate_license,
+    )
+except ImportError:
+    # Module symbols left None intentionally - lambda_handler detects this
+    # and emits the LICENSE_FAIL_OPEN audit row before raising.
+    validate_license = None  # type: ignore[assignment]
+    check_repo_limit = None  # type: ignore[assignment]
+    track_repo_active = None  # type: ignore[assignment]
 
 # Configure logging
 logger = logging.getLogger()
@@ -297,6 +313,27 @@ def process_sync_request(message: Dict) -> Dict[str, Any]:
         update_connection_status(workspace_id, connection_id, "no_folders_selected")
         return {"status": "skipped", "reason": "No folders selected"}
 
+    # Per-source repo-limit enforcement (ADR-019). Outlook is one mailbox
+    # per connection per invocation, so the check runs once at entry. We
+    # use the connection_id (stable, opaque) as the mailbox identifier;
+    # this matches what log_source_sync writes as `target`. Skipped on
+    # continuation messages: those re-enter the same already-counted
+    # mailbox and the limit was already evaluated on the parent message.
+    repo_project = f"outlook:{connection_id}"
+    if not is_continuation:
+        limit_result = check_repo_limit(repo=repo_project)
+        if not limit_result.allowed:
+            logger.warning(
+                f"[outlook-sync] Repo limit reached for {repo_project}: "
+                f"{limit_result.reason} "
+                f"(current={limit_result.current}/{limit_result.limit})"
+            )
+            update_connection_status(
+                workspace_id, connection_id, "blocked_license_limit",
+                error=limit_result.reason,
+            )
+            return {"status": "skipped", "reason": "repo_limit"}
+
     # Update status to syncing
     if not is_continuation:
         update_connection_status(workspace_id, connection_id, "syncing")
@@ -369,6 +406,11 @@ def process_sync_request(message: Dict) -> Dict[str, Any]:
             email_count=total_queued,
             delta_links=delta_links,
         )
+
+        # Per-source usage tracking (ADR-019). Non-blocking; returns bool,
+        # never raises. License-server dedupes by metadata.repo string
+        # match, so re-tracking the same mailbox is safe.
+        track_repo_active(repo=repo_project)
 
         result = {
             "status": "success",
@@ -516,6 +558,24 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     Receives sync requests and queues individual emails.
     """
     logger.info(f"Outlook sync handler invoked with {len(event.get('Records', []))} records")
+
+    # License validation (ADR-019). SQS-driven entry: raise on failure so
+    # the message is retried / DLQ'd rather than silently dropped. OAuth
+    # token failures elsewhere log "Authentication error during sync"; the
+    # "[outlook-sync] License validation failed: ..." prefix below keeps
+    # the two failure modes distinguishable in CloudWatch.
+    if validate_license is None:
+        logger.error(
+            "[outlook-sync] License layer not attached - deploy bug (ADR-019)"
+        )
+        log_license_fail_open(os.environ.get("AUDIT_TABLE", ""), "outlook-sync")
+        raise ImportError("outcomeops_license layer not attached")
+    try:
+        claims = validate_license()
+        logger.info(f"[outlook-sync] License validated: {claims.get('sub')}")
+    except Exception as e:
+        logger.error(f"[outlook-sync] License validation failed: {e}")
+        raise
 
     if "Records" not in event:
         logger.error("No SQS records in event")
