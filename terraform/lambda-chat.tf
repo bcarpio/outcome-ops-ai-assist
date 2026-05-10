@@ -15,9 +15,11 @@ module "chat_streaming_lambda" {
   timeout       = 900 # 15 minutes max for streaming responses
   memory_size   = 1024
 
-  # Lambda Web Adapter layer for HTTP streaming
+  # Lambda Web Adapter layer for HTTP streaming + OutcomeOps license validator
+  # (ADR-019: license layer is required on every customer-facing Lambda).
   layers = [
-    "arn:aws:lambda:${var.aws_region}:753240598075:layer:LambdaAdapterLayerX86:25"
+    "arn:aws:lambda:${var.aws_region}:753240598075:layer:LambdaAdapterLayerX86:25",
+    var.outcomeops_license_layer_arn,
   ]
 
   # Source code with pip requirements (includes shared module)
@@ -47,37 +49,44 @@ module "chat_streaming_lambda" {
   # Suppress verbose archive output
   quiet_archive_local_exec = true
 
-  # Environment variables for LWA
-  environment_variables = {
-    ENV                            = var.environment
-    APP_NAME                       = var.app_name
-    AWS_LAMBDA_EXEC_WRAPPER        = "/opt/bootstrap"
-    AWS_LWA_INVOKE_MODE            = "RESPONSE_STREAM"
-    AWS_LWA_READINESS_CHECK_PATH   = "/health"
-    PORT                           = "8000"
-    AUDIT_TABLE                    = module.audit_logs_table.dynamodb_table_id
-    BEDROCK_ADVANCED_MODEL_ID      = var.bedrock_advanced_model_id
-    BEDROCK_BASIC_MODEL_ID         = var.bedrock_basic_model_id
-    BEDROCK_ADVANCED_INPUT_PRICE   = tostring(var.bedrock_advanced_input_price)
-    BEDROCK_ADVANCED_OUTPUT_PRICE  = tostring(var.bedrock_advanced_output_price)
-    BEDROCK_BASIC_INPUT_PRICE      = tostring(var.bedrock_basic_input_price)
-    BEDROCK_BASIC_OUTPUT_PRICE     = tostring(var.bedrock_basic_output_price)
-    BEDROCK_EMBEDDING_MODEL_ID     = var.bedrock_embedding_model_id
-    BEDROCK_EMBEDDING_INPUT_PRICE  = tostring(var.bedrock_embedding_input_price)
-    BEDROCK_EMBEDDING_OUTPUT_PRICE = tostring(var.bedrock_embedding_output_price)
-    BEDROCK_RERANK_MODEL_ID        = var.bedrock_rerank_model_id
-    BEDROCK_RERANK_PRICE_PER_1K    = tostring(var.bedrock_rerank_price_per_1k)
-    RERANK_ENABLED                 = tostring(var.bedrock_rerank_enabled)
-    RERANK_MAX_FETCH               = tostring(var.rerank_max_fetch)
-    RERANK_MIN_SCORE               = tostring(var.rerank_min_score)
-    RAG_MAX_DOC_CHARS              = tostring(var.rag_max_doc_chars)
-    WORKSPACES_TABLE               = module.workspaces_table[0].dynamodb_table_id
-    OAUTH_KMS_KEY_ARN              = aws_kms_key.oauth_tokens[0].arn
-  }
+  # Environment variables for LWA. Merged with the shared license-layer env
+  # block (OUTCOMEOPS_LICENSE_PARAM / SERVER_URL / USAGE_ENABLED) from
+  # local.outcomeops_license_env -- see locals.tf and ADR-019.
+  environment_variables = merge(
+    {
+      ENV                            = var.environment
+      APP_NAME                       = var.app_name
+      AWS_LAMBDA_EXEC_WRAPPER        = "/opt/bootstrap"
+      AWS_LWA_INVOKE_MODE            = "RESPONSE_STREAM"
+      AWS_LWA_READINESS_CHECK_PATH   = "/health"
+      PORT                           = "8000"
+      AUDIT_TABLE                    = module.audit_logs_table.dynamodb_table_id
+      BEDROCK_ADVANCED_MODEL_ID      = var.bedrock_advanced_model_id
+      BEDROCK_BASIC_MODEL_ID         = var.bedrock_basic_model_id
+      BEDROCK_ADVANCED_INPUT_PRICE   = tostring(var.bedrock_advanced_input_price)
+      BEDROCK_ADVANCED_OUTPUT_PRICE  = tostring(var.bedrock_advanced_output_price)
+      BEDROCK_BASIC_INPUT_PRICE      = tostring(var.bedrock_basic_input_price)
+      BEDROCK_BASIC_OUTPUT_PRICE     = tostring(var.bedrock_basic_output_price)
+      BEDROCK_EMBEDDING_MODEL_ID     = var.bedrock_embedding_model_id
+      BEDROCK_EMBEDDING_INPUT_PRICE  = tostring(var.bedrock_embedding_input_price)
+      BEDROCK_EMBEDDING_OUTPUT_PRICE = tostring(var.bedrock_embedding_output_price)
+      BEDROCK_RERANK_MODEL_ID        = var.bedrock_rerank_model_id
+      BEDROCK_RERANK_PRICE_PER_1K    = tostring(var.bedrock_rerank_price_per_1k)
+      RERANK_ENABLED                 = tostring(var.bedrock_rerank_enabled)
+      RERANK_MAX_FETCH               = tostring(var.rerank_max_fetch)
+      RERANK_MIN_SCORE               = tostring(var.rerank_min_score)
+      RAG_MAX_DOC_CHARS              = tostring(var.rag_max_doc_chars)
+      WORKSPACES_TABLE               = module.workspaces_table[0].dynamodb_table_id
+      OAUTH_KMS_KEY_ARN              = aws_kms_key.oauth_tokens[0].arn
+    },
+    local.outcomeops_license_env,
+  )
 
-  # IAM permissions
+  # IAM permissions. Merged with the shared license-layer IAM block
+  # (SSM read on the license SSM param + KMS decrypt for aws/ssm) from
+  # local.outcomeops_license_iam -- see locals.tf and ADR-019.
   attach_policy_statements = true
-  policy_statements = {
+  policy_statements = merge({
     # DynamoDB for conversations and messages
     dynamodb = {
       effect = "Allow"
@@ -202,7 +211,9 @@ module "chat_streaming_lambda" {
         "arn:aws:s3vectors:${var.aws_region}:${data.aws_caller_identity.current.account_id}:bucket/${var.environment}-${var.app_name}-vectors/*"
       ]
     }
-  }
+    },
+    local.outcomeops_license_iam,
+  )
 
   tags = {
     Purpose = "chat-streaming"
