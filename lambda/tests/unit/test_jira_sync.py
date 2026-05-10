@@ -19,10 +19,37 @@ mock_dynamodb_resource = MagicMock()
 mock_sqs_client = MagicMock()
 
 
+def _make_license_module_stub():
+    """Stand-in for the outcomeops_license layer in unit tests.
+
+    The handler imports validate_license / check_repo_limit /
+    track_repo_active at module scope. The layer is mounted at /opt/python
+    in the Lambda runtime; in unit tests we inject a MagicMock module so
+    the imports succeed and individual tests can monkeypatch behaviour.
+    """
+    stub = MagicMock()
+    stub.validate_license.return_value = {"sub": "test-customer"}
+
+    class _Result:
+        def __init__(self, allowed=True, reason=None, current=0, limit=100):
+            self.allowed = allowed
+            self.reason = reason
+            self.current = current
+            self.limit = limit
+
+    stub.check_repo_limit.side_effect = lambda **_: _Result()
+    stub.track_repo_active.return_value = True
+    return stub
+
+
 def _load_handler_module():
     """Load or reload the jira-sync handler module."""
     if 'jira_sync_handler' in sys.modules:
         del sys.modules['jira_sync_handler']
+
+    # Inject a stub outcomeops_license layer so the handler's top-level
+    # `from outcomeops_license import ...` succeeds in the test environment.
+    sys.modules['outcomeops_license'] = _make_license_module_stub()
 
     # Add jira-sync dir to path so handler can resolve its sibling imports
     sync_dir = os.path.join(os.path.dirname(__file__), '../../jira-sync')
@@ -1400,3 +1427,168 @@ class TestLambdaHandler:
         assert result["statusCode"] == 200
         body = json.loads(result["body"])
         assert body["results"] == []
+
+
+# ============================================================================
+# License layer integration (ADR-019)
+# ============================================================================
+
+
+class _LimitResult:
+    """Lightweight stand-in for outcomeops_license.EnforcementResult."""
+
+    def __init__(self, allowed=True, reason=None, current=0, limit=100):
+        self.allowed = allowed
+        self.reason = reason
+        self.current = current
+        self.limit = limit
+
+
+class TestLicenseValidation:
+    """Test license validation in lambda_handler entry path (ADR-019)."""
+
+    def test_lambda_handler_license_valid(self, monkeypatch):
+        """Valid license claims allow processing to continue."""
+        monkeypatch.setattr(
+            handler_module,
+            "validate_license",
+            lambda: {"sub": "acme-customer", "license": {"tier": "team"}},
+        )
+        monkeypatch.setattr(
+            handler_module, "process_sync_request", lambda msg: {"status": "success"}
+        )
+
+        event = {
+            "Records": [
+                {"body": json.dumps({"workspace_id": "ws_test", "connection_id": "conn_test"})}
+            ]
+        }
+        result = lambda_handler(event, None)
+
+        assert result["statusCode"] == 200
+        body = json.loads(result["body"])
+        assert "results" in body
+
+    def test_lambda_handler_license_import_error(self, monkeypatch):
+        """Missing layer (ImportError) emits LICENSE_FAIL_OPEN and re-raises."""
+
+        def raise_import(*args, **kwargs):
+            raise ImportError("No module named 'outcomeops_license'")
+
+        monkeypatch.setattr(handler_module, "validate_license", raise_import)
+        mock_log = MagicMock()
+        monkeypatch.setattr(handler_module, "log_license_fail_open", mock_log)
+
+        event = {
+            "Records": [
+                {"body": json.dumps({"workspace_id": "ws_test", "connection_id": "conn_test"})}
+            ]
+        }
+        with pytest.raises(ImportError):
+            lambda_handler(event, None)
+
+        mock_log.assert_called_once()
+        args, _ = mock_log.call_args
+        assert args[1] == "jira-sync"
+
+    def test_lambda_handler_license_invalid(self, monkeypatch):
+        """Other license errors (expired/invalid) re-raise without fail-open log."""
+
+        def raise_invalid(*args, **kwargs):
+            raise RuntimeError("license expired")
+
+        monkeypatch.setattr(handler_module, "validate_license", raise_invalid)
+        mock_log = MagicMock()
+        monkeypatch.setattr(handler_module, "log_license_fail_open", mock_log)
+
+        event = {
+            "Records": [
+                {"body": json.dumps({"workspace_id": "ws_test", "connection_id": "conn_test"})}
+            ]
+        }
+        with pytest.raises(RuntimeError, match="license expired"):
+            lambda_handler(event, None)
+
+        mock_log.assert_not_called()
+
+
+class TestRepoLimitEnforcement:
+    """Test per-project check_repo_limit + track_repo_active (ADR-019)."""
+
+    @patch.object(handler_module, 'queue_orphan_detection')
+    @patch.object(handler_module, 'queue_issue_for_ingestion')
+    @patch.object(handler_module, 'list_all_issues_in_project')
+    @patch.object(handler_module, 'refresh_access_token')
+    @patch.object(handler_module, 'update_sync_status')
+    @patch.object(handler_module, 'get_connection')
+    def test_check_repo_limit_blocked_skips_source(
+        self, mock_get_conn, mock_update, mock_refresh,
+        mock_list_issues, mock_queue, mock_orphan, monkeypatch,
+    ):
+        """When check_repo_limit returns allowed=False, the project is
+        skipped and never makes an upstream API call."""
+        mock_get_conn.return_value = {
+            "cloud_id": "cloud_abc",
+            "selected_projects": [{"key": "PROJ", "name": "My Project"}],
+            "include_attachments": True,
+            "include_comments": True,
+        }
+        mock_refresh.return_value = "access_token"
+        monkeypatch.setattr(
+            handler_module,
+            "check_repo_limit",
+            lambda **_: _LimitResult(
+                allowed=False, reason="repo limit reached", current=10, limit=10
+            ),
+        )
+
+        result = process_sync_request({
+            "workspace_id": "ws_test",
+            "connection_id": "conn_test",
+        })
+
+        # Blocked project skipped means no issues were listed or queued.
+        mock_list_issues.assert_not_called()
+        mock_queue.assert_not_called()
+        # Result records the blocked project.
+        assert result.get("projects_blocked") == ["My Project"] or result.get(
+            "issues_queued", 1
+        ) == 0
+
+    @patch.object(handler_module, 'queue_orphan_detection')
+    @patch.object(handler_module, 'queue_issue_for_ingestion')
+    @patch.object(handler_module, 'get_issue_comments')
+    @patch.object(handler_module, 'list_all_issues_in_project')
+    @patch.object(handler_module, 'refresh_access_token')
+    @patch.object(handler_module, 'update_sync_status')
+    @patch.object(handler_module, 'get_connection')
+    def test_track_repo_active_called_on_successful_sync(
+        self, mock_get_conn, mock_update, mock_refresh, mock_list_issues,
+        mock_get_comments, mock_queue, mock_orphan, monkeypatch,
+    ):
+        """After a successful sync, track_repo_active is called once with
+        the namespaced jira:{project_key} identifier per processed
+        project."""
+        mock_get_conn.return_value = {
+            "cloud_id": "cloud_abc",
+            "selected_projects": [{"key": "PROJ", "name": "My Project"}],
+            "include_attachments": True,
+            "include_comments": False,
+        }
+        mock_refresh.return_value = "access_token"
+        mock_list_issues.return_value = [
+            {"id": "10001", "key": "PROJ-1", "fields": {}},
+        ]
+        monkeypatch.setattr(
+            handler_module, "check_repo_limit", lambda **_: _LimitResult()
+        )
+        mock_track = MagicMock(return_value=True)
+        monkeypatch.setattr(handler_module, "track_repo_active", mock_track)
+
+        result = process_sync_request({
+            "workspace_id": "ws_test",
+            "connection_id": "conn_test",
+        })
+
+        assert result["status"] == "success"
+        mock_track.assert_called_once_with(repo="jira:PROJ")

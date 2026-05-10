@@ -239,106 +239,117 @@ module "github_sync_lambda" {
   # Suppress verbose archive output
   quiet_archive_local_exec = true
 
-  environment_variables = {
-    ENV                  = var.environment
-    APP_NAME             = var.app_name
-    WORKSPACES_TABLE     = module.workspaces_table[0].dynamodb_table_id
-    FILE_INGESTION_QUEUE = aws_sqs_queue.file_ingestion[0].url
-    REPO_SUMMARIES_QUEUE = module.repo_summaries_queue.queue_url
-    DELETE_QUEUE         = aws_sqs_queue.delete_queue[0].url
-    KB_BUCKET            = module.knowledge_base_bucket.s3_bucket_id
-    AUDIT_TABLE          = module.audit_logs_table.dynamodb_table_id
-  }
+  # ADR-019: license validator layer required for every customer-facing Lambda.
+  layers = [
+    var.outcomeops_license_layer_arn,
+  ]
+
+  environment_variables = merge(
+    {
+      ENV                  = var.environment
+      APP_NAME             = var.app_name
+      WORKSPACES_TABLE     = module.workspaces_table[0].dynamodb_table_id
+      FILE_INGESTION_QUEUE = aws_sqs_queue.file_ingestion[0].url
+      REPO_SUMMARIES_QUEUE = module.repo_summaries_queue.queue_url
+      DELETE_QUEUE         = aws_sqs_queue.delete_queue[0].url
+      KB_BUCKET            = module.knowledge_base_bucket.s3_bucket_id
+      AUDIT_TABLE          = module.audit_logs_table.dynamodb_table_id
+    },
+    local.outcomeops_license_env,
+  )
 
   # IAM permissions
   attach_policy_statements = true
-  policy_statements = {
-    # DynamoDB for connections and state
-    dynamodb = {
-      effect = "Allow"
-      actions = [
-        "dynamodb:GetItem",
-        "dynamodb:PutItem",
-        "dynamodb:UpdateItem",
-        "dynamodb:Query"
-      ]
-      resources = [
-        module.workspaces_table[0].dynamodb_table_arn,
-        "${module.workspaces_table[0].dynamodb_table_arn}/index/*"
-      ]
-    }
+  policy_statements = merge(
+    {
+      # DynamoDB for connections and state
+      dynamodb = {
+        effect = "Allow"
+        actions = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:Query"
+        ]
+        resources = [
+          module.workspaces_table[0].dynamodb_table_arn,
+          "${module.workspaces_table[0].dynamodb_table_arn}/index/*"
+        ]
+      }
 
-    # SSM for GitHub App configuration
-    ssm_read = {
-      effect = "Allow"
-      actions = [
-        "ssm:GetParameter",
-        "ssm:GetParameters"
-      ]
-      resources = [
-        "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/*"
-      ]
-    }
+      # SSM for GitHub App configuration
+      ssm_read = {
+        effect = "Allow"
+        actions = [
+          "ssm:GetParameter",
+          "ssm:GetParameters"
+        ]
+        resources = [
+          "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/*"
+        ]
+      }
 
-    # KMS for SSM parameter decryption
-    kms_ssm = {
-      effect = "Allow"
-      actions = [
-        "kms:Decrypt"
-      ]
-      resources = [
-        "arn:aws:kms:${var.aws_region}:${data.aws_caller_identity.current.account_id}:alias/aws/ssm"
-      ]
-    }
+      # KMS for SSM parameter decryption
+      kms_ssm = {
+        effect = "Allow"
+        actions = [
+          "kms:Decrypt"
+        ]
+        resources = [
+          "arn:aws:kms:${var.aws_region}:${data.aws_caller_identity.current.account_id}:alias/aws/ssm"
+        ]
+      }
 
-    # SQS for receiving sync requests
-    sqs_receive = {
-      effect = "Allow"
-      actions = [
-        "sqs:ReceiveMessage",
-        "sqs:DeleteMessage",
-        "sqs:GetQueueAttributes"
-      ]
-      resources = [
-        aws_sqs_queue.github_sync[0].arn
-      ]
-    }
+      # SQS for receiving sync requests
+      sqs_receive = {
+        effect = "Allow"
+        actions = [
+          "sqs:ReceiveMessage",
+          "sqs:DeleteMessage",
+          "sqs:GetQueueAttributes"
+        ]
+        resources = [
+          aws_sqs_queue.github_sync[0].arn
+        ]
+      }
 
-    # SQS for sending to file ingestion, repo summaries, and delete queues
-    sqs_send = {
-      effect = "Allow"
-      actions = [
-        "sqs:SendMessage"
-      ]
-      resources = [
-        aws_sqs_queue.file_ingestion[0].arn,
-        module.repo_summaries_queue.queue_arn,
-        aws_sqs_queue.delete_queue[0].arn
-      ]
-    }
+      # SQS for sending to file ingestion, repo summaries, and delete queues
+      sqs_send = {
+        effect = "Allow"
+        actions = [
+          "sqs:SendMessage"
+        ]
+        resources = [
+          aws_sqs_queue.file_ingestion[0].arn,
+          module.repo_summaries_queue.queue_arn,
+          aws_sqs_queue.delete_queue[0].arn
+        ]
+      }
 
-    # S3 for uploading standards repo files to knowledge base
-    s3_kb = {
-      effect = "Allow"
-      actions = [
-        "s3:PutObject"
-      ]
-      resources = [
-        "${module.knowledge_base_bucket.s3_bucket_arn}/workspaces/*"
-      ]
-    }
+      # S3 for uploading standards repo files to knowledge base
+      s3_kb = {
+        effect = "Allow"
+        actions = [
+          "s3:PutObject"
+        ]
+        resources = [
+          "${module.knowledge_base_bucket.s3_bucket_arn}/workspaces/*"
+        ]
+      }
 
-    # DynamoDB audit log writes (plan/audit-completeness)
-    dynamodb_audit = {
-      effect = "Allow"
-      actions = [
-        "dynamodb:PutItem"
-      ]
-      resources = [
-        module.audit_logs_table.dynamodb_table_arn
-      ]
-    }
-  }
+      # DynamoDB audit log writes (plan/audit-completeness)
+      dynamodb_audit = {
+        effect = "Allow"
+        actions = [
+          "dynamodb:PutItem"
+        ]
+        resources = [
+          module.audit_logs_table.dynamodb_table_arn
+        ]
+      }
+    },
+    local.outcomeops_license_iam,
+  )
 
   tags = {
     Purpose = "github-sync"
