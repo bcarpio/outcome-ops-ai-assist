@@ -28,11 +28,18 @@ import json
 import logging
 import os
 import re
+import sys
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 import boto3
 from botocore.exceptions import ClientError
+
+# Add the lambda root to sys.path so the bundled `shared/` package
+# resolves both at Lambda runtime (zip layout) and under pytest from the
+# repo root. Mirrors process-documents/handler.py.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from shared.audit_writer import log_license_fail_open
 
 # Configure logging
 logger = logging.getLogger()
@@ -1156,13 +1163,68 @@ def process_sharepoint_page(
 # ============================================================================
 
 
+def _build_repo_identifier(source: str, workspace_id: str, body: Dict, file_info: Dict) -> str:
+    """Build the per-source composite repo identifier used by
+    check_repo_limit() / track_repo_active() (ADR-019).
+
+    file-ingestion is the upstream entry: it picks the source identifier
+    out of the SQS message and composes ``{workspace_id}:{source}:{ident}``
+    so the license server has a stable, low-cardinality string per
+    customer source. process-documents then derives the same composite
+    from the S3 key path so dedup works across the boundary.
+    """
+    if source in ("confluence", "confluence_attachment"):
+        ident = file_info.get("space_key") or file_info.get("space_name") or ""
+    elif source in ("jira", "jira_attachment"):
+        ident = file_info.get("project_key") or file_info.get("project_name") or ""
+    elif source in ("outlook", "outlook_attachment"):
+        ident = file_info.get("folder_name") or "Inbox"
+    elif source in ("teams", "teams_file"):
+        ident = file_info.get("channel_name") or "General"
+    elif source in ("sharepoint", "sharepoint_page"):
+        ident = file_info.get("site_name") or ""
+    else:
+        ident = ""
+    # Strip slashes/colons from ident so the composite stays parseable.
+    ident = (ident or "").replace(":", "_").replace("/", "_")
+    return f"{workspace_id}:{source}:{ident}"
+
+
 def lambda_handler(event: Dict, context: Any) -> Dict:
     """
     SQS-triggered handler for file ingestion.
 
     Routes messages to source-specific handlers based on 'source' field.
+
+    ADR-019 (license-layer-rollout chunk 04):
+    - validate_license() runs once per invocation (fail-closed; raises
+      to let SQS DLQ the batch on hard failures).
+    - check_repo_limit(repo=composite) runs per-source at this upstream
+      entry boundary; blocked sources are skipped in this batch.
+    - track_repo_active() is intentionally NOT called here -- it fires
+      at the completion boundary in process-documents/handler.py once
+      the document has actually been embedded.
     """
     logger.info(f"File ingestion handler invoked with {len(event.get('Records', []))} records")
+
+    # ADR-019 fail-closed license validation. SQS-driven: raise on failure
+    # so the batch is retried / DLQ'd rather than silently dropped.
+    try:
+        from outcomeops_license import validate_license
+
+        claims = validate_license()
+        logger.info(
+            f"[file-ingestion] License validated: {claims.get('sub')}"
+        )
+    except ImportError:
+        logger.error(
+            "[file-ingestion] License layer not attached - deploy bug (ADR-019)"
+        )
+        log_license_fail_open(os.environ.get("AUDIT_TABLE", ""), "file-ingestion")
+        raise
+    except Exception as e:
+        logger.error(f"[file-ingestion] License validation failed: {e}")
+        raise
 
     if "Records" not in event:
         logger.error("No SQS records in event")
@@ -1191,6 +1253,48 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
                 logger.error(f"Invalid message - missing source or workspace_id")
                 results.append({"status": "error", "error": "Invalid message"})
                 continue
+
+            # ADR-019 per-source repo-limit enforcement. Composite avoids
+            # collisions across customers and across sources within one
+            # workspace. check_repo_limit returns allowed=True for sources
+            # already tracked, so this is safe on every message.
+            repo_project = _build_repo_identifier(source, workspace_id, body, file_info)
+            try:
+                from outcomeops_license import check_repo_limit
+
+                limit_result = check_repo_limit(repo=repo_project)
+                if not limit_result.allowed:
+                    logger.warning(
+                        f"{log_prefix} Repo limit reached for {repo_project}: "
+                        f"{limit_result.reason} "
+                        f"(current={limit_result.current}/{limit_result.limit})"
+                    )
+                    results.append({
+                        "status": "skipped",
+                        "source": source,
+                        "reason": "repo_limit",
+                        "repo": repo_project,
+                    })
+                    continue
+            except ImportError:
+                # Reached only if this point is hit before the top-level
+                # validate_license import resolved (shouldn't happen) -
+                # log and continue rather than DLQ the entire batch.
+                logger.error(
+                    "[file-ingestion] License layer not attached during check_repo_limit"
+                )
+                log_license_fail_open(
+                    os.environ.get("AUDIT_TABLE", ""), "file-ingestion"
+                )
+                raise
+            except Exception as e:
+                # Network errors fall through here -- the layer's
+                # internal fail-closed/fail-open logic on hard tiers
+                # already wrapped check_repo_limit. Log and proceed
+                # rather than block the entire ingest.
+                logger.warning(
+                    f"{log_prefix} check_repo_limit failed for {repo_project}: {e}"
+                )
 
             s3_key = None
 
