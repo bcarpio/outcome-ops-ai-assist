@@ -165,6 +165,10 @@ def _get_account_id() -> str:
 ENVIRONMENT = os.environ.get("ENV", "dev")
 APP_NAME = os.environ.get("APP_NAME", "outcome-ops-ai-assist")
 
+# Delete-worker queue URL (env var). Used to enqueue per-sync code-map
+# orphan cleanup messages once batch fan-out is complete.
+DELETE_QUEUE = os.environ.get("DELETE_QUEUE")
+
 CODE_MAPS_TABLE = None
 KB_BUCKET = None
 CODE_MAPS_QUEUE_URL = None
@@ -633,6 +637,97 @@ def store_code_map_embedding(
         raise
 
 
+def _expected_code_map_vector_keys(
+    code_units: List[Dict[str, Any]],
+    repo: str,
+    workspace_id: Optional[str],
+) -> List[str]:
+    """Compute the deterministic vector keys process-batch-summary will write
+    for the given code units. Mirrors process-batch-summary/handler.py:936.
+
+    The expected key set is what delete-worker compares against to find
+    orphans for this repo's current tree.
+
+    Args:
+        code_units: Output of discover_code_units() - each dict has
+            batch_type and group_name.
+        repo: Short repo name (matches batch["repo"] in the writer).
+        workspace_id: Workspace ID, or None for non-workspace repos.
+
+    Returns:
+        List of expected vector keys (one per unit).
+    """
+    keys = []
+    for unit in code_units:
+        if workspace_id:
+            keys.append(
+                f"{workspace_id}#github#{repo}#{unit['batch_type']}#{unit['group_name']}"
+            )
+        else:
+            keys.append(f"{repo}#{unit['batch_type']}#{unit['group_name']}")
+    return keys
+
+
+def _queue_orphan_code_map_cleanup(
+    repo: str,
+    expected_keys: List[str],
+    workspace_id: Optional[str],
+) -> None:
+    """Queue a delete_orphan_code_maps job to delete-worker.
+
+    Non-fatal: if the queue isn't configured or the send fails, log and
+    continue. The cleanup is best-effort - missing it leaves stale
+    vectors but doesn't break the regen.
+
+    No-op for non-workspace repos (workspace_id == None) since the
+    delete-worker action only handles workspace-scoped key shapes today.
+
+    Args:
+        repo: Short repo name (matches the writer's batch messages).
+        expected_keys: Full set of vector keys to retain.
+        workspace_id: Workspace ID. Required - cleanup is skipped if None.
+    """
+    if not workspace_id:
+        return
+
+    if not DELETE_QUEUE:
+        logger.warning(
+            "[orphan-cleanup] DELETE_QUEUE not configured; skipping "
+            f"code-map orphan cleanup for {workspace_id}/{repo}"
+        )
+        return
+
+    if not expected_keys:
+        # Belt+suspenders: delete-worker also defends, but skip the
+        # SQS round-trip when there's nothing to compare against.
+        logger.warning(
+            "[orphan-cleanup] No expected_keys for "
+            f"{workspace_id}/{repo}; skipping (would wipe everything)"
+        )
+        return
+
+    payload = {
+        "action": "delete_orphan_code_maps",
+        "workspace_id": workspace_id,
+        "repo": repo,
+        "expected_keys": expected_keys,
+    }
+    try:
+        sqs_client.send_message(
+            QueueUrl=DELETE_QUEUE,
+            MessageBody=json.dumps(payload),
+        )
+        logger.info(
+            f"[orphan-cleanup] Queued code-map orphan cleanup for "
+            f"{workspace_id}/{repo} (expected={len(expected_keys)} keys)"
+        )
+    except ClientError as e:
+        logger.error(
+            f"[orphan-cleanup] Failed to queue cleanup for "
+            f"{workspace_id}/{repo}: {e}"
+        )
+
+
 def send_code_units_to_sqs(
     code_units: List[Dict[str, Any]],
     repo: str,
@@ -640,7 +735,10 @@ def send_code_units_to_sqs(
     workspace_id: Optional[str] = None
 ):
     """
-    Send code units to SQS for detailed batch processing.
+    Send code units to SQS for detailed batch processing, then queue
+    a code-map orphan-cleanup job to delete-worker so any stale vectors
+    from previous syncs (e.g., for handlers that have since been removed)
+    get cleaned up.
 
     Args:
         code_units: List of code unit dicts
@@ -673,6 +771,13 @@ def send_code_units_to_sqs(
         except ClientError as e:
             logger.error(f"Failed to send code unit to SQS: {e}")
             raise
+
+    # After all batches are queued, queue the orphan-cleanup job. This runs
+    # in parallel with the batch regeneration: delete-worker reads the
+    # expected_keys, lists current vectors for the repo, deletes anything
+    # not in expected_keys (i.e., handlers / groups that no longer exist).
+    expected_keys = _expected_code_map_vector_keys(code_units, repo, workspace_id)
+    _queue_orphan_code_map_cleanup(repo, expected_keys, workspace_id)
 
 
 def handler(event, context):

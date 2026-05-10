@@ -493,3 +493,200 @@ class TestLicenseLayerIntegration:
         mock_track_map.assert_called_once_with(
             repo="owner/repo-a", branch="main",
         )
+
+
+# ============================================================================
+# Code-map orphan cleanup emit (chunk 02)
+# ============================================================================
+
+
+class TestExpectedCodeMapVectorKeys:
+    """The deterministic key computation must match what
+    process-batch-summary actually writes (handler.py:936)."""
+
+    def test_workspace_keys_include_workspace_prefix(self):
+        units = [
+            {"batch_type": "handler-group-summary", "group_name": "chat"},
+            {"batch_type": "handler-group-summary", "group_name": "github-sync"},
+            {"batch_type": "docs-summary", "group_name": "documentation"},
+        ]
+        keys = repo_summary_handler._expected_code_map_vector_keys(
+            units, "myrepo", "ws_abc"
+        )
+        assert keys == [
+            "ws_abc#github#myrepo#handler-group-summary#chat",
+            "ws_abc#github#myrepo#handler-group-summary#github-sync",
+            "ws_abc#github#myrepo#docs-summary#documentation",
+        ]
+
+    def test_no_workspace_uses_short_key_shape(self):
+        """Mirrors the workspace_id-less branch in
+        process-batch-summary/handler.py:938."""
+        units = [{"batch_type": "handler-group-summary", "group_name": "chat"}]
+        keys = repo_summary_handler._expected_code_map_vector_keys(
+            units, "myrepo", None
+        )
+        assert keys == ["myrepo#handler-group-summary#chat"]
+
+    def test_empty_units_returns_empty(self):
+        keys = repo_summary_handler._expected_code_map_vector_keys(
+            [], "myrepo", "ws"
+        )
+        assert keys == []
+
+
+class TestQueueOrphanCodeMapCleanup:
+    """The producer-side: process-repo-summary queues the cleanup job after
+    fan-out so any handler/group dropped from the tree gets cleaned up."""
+
+    def test_sends_correct_payload(self, monkeypatch):
+        mock_sqs = MagicMock()
+        monkeypatch.setattr(repo_summary_handler, "sqs_client", mock_sqs)
+        monkeypatch.setattr(
+            repo_summary_handler, "DELETE_QUEUE", "https://sqs/delete"
+        )
+
+        repo_summary_handler._queue_orphan_code_map_cleanup(
+            "myrepo", ["k1", "k2"], "ws_abc"
+        )
+
+        mock_sqs.send_message.assert_called_once()
+        body = json.loads(mock_sqs.send_message.call_args[1]["MessageBody"])
+        assert body["action"] == "delete_orphan_code_maps"
+        assert body["workspace_id"] == "ws_abc"
+        assert body["repo"] == "myrepo"
+        assert body["expected_keys"] == ["k1", "k2"]
+        # Sent to the delete queue, NOT the code-maps queue
+        assert mock_sqs.send_message.call_args[1]["QueueUrl"] == "https://sqs/delete"
+
+    def test_skips_when_no_workspace(self, monkeypatch):
+        """Non-workspace repos: the delete-worker action only handles
+        workspace-scoped key shapes; skip the round-trip entirely."""
+        mock_sqs = MagicMock()
+        monkeypatch.setattr(repo_summary_handler, "sqs_client", mock_sqs)
+        monkeypatch.setattr(
+            repo_summary_handler, "DELETE_QUEUE", "https://sqs/delete"
+        )
+
+        repo_summary_handler._queue_orphan_code_map_cleanup(
+            "myrepo", ["k1"], None
+        )
+        mock_sqs.send_message.assert_not_called()
+
+    def test_skips_when_no_delete_queue_configured(self, monkeypatch):
+        mock_sqs = MagicMock()
+        monkeypatch.setattr(repo_summary_handler, "sqs_client", mock_sqs)
+        monkeypatch.setattr(repo_summary_handler, "DELETE_QUEUE", None)
+
+        repo_summary_handler._queue_orphan_code_map_cleanup(
+            "myrepo", ["k1"], "ws_abc"
+        )
+        mock_sqs.send_message.assert_not_called()
+
+    def test_refuses_empty_expected_keys(self, monkeypatch):
+        """Belt+suspenders: delete-worker also defends, but skip the
+        round-trip when there's nothing to compare against."""
+        mock_sqs = MagicMock()
+        monkeypatch.setattr(repo_summary_handler, "sqs_client", mock_sqs)
+        monkeypatch.setattr(
+            repo_summary_handler, "DELETE_QUEUE", "https://sqs/delete"
+        )
+
+        repo_summary_handler._queue_orphan_code_map_cleanup(
+            "myrepo", [], "ws_abc"
+        )
+        mock_sqs.send_message.assert_not_called()
+
+    def test_sqs_send_failure_is_swallowed(self, monkeypatch):
+        """Cleanup is best-effort. If the SQS send fails, log and continue -
+        don't break the regen path."""
+        mock_sqs = MagicMock()
+        mock_sqs.send_message.side_effect = ClientError(
+            {"Error": {"Code": "Throttle", "Message": "x"}}, "SendMessage"
+        )
+        monkeypatch.setattr(repo_summary_handler, "sqs_client", mock_sqs)
+        monkeypatch.setattr(
+            repo_summary_handler, "DELETE_QUEUE", "https://sqs/delete"
+        )
+
+        # Must not raise
+        repo_summary_handler._queue_orphan_code_map_cleanup(
+            "myrepo", ["k1"], "ws_abc"
+        )
+
+
+class TestSendCodeUnitsAlsoQueuesCleanup:
+    """Integration: send_code_units_to_sqs must (a) queue each unit to
+    code-maps-queue (existing behavior) AND (b) queue the orphan cleanup
+    to delete-worker (new behavior)."""
+
+    def test_fanout_then_cleanup(self, monkeypatch):
+        mock_sqs = MagicMock()
+        monkeypatch.setattr(repo_summary_handler, "sqs_client", mock_sqs)
+        monkeypatch.setattr(
+            repo_summary_handler, "CODE_MAPS_QUEUE_URL", "https://sqs/codemaps"
+        )
+        monkeypatch.setattr(
+            repo_summary_handler, "DELETE_QUEUE", "https://sqs/delete"
+        )
+
+        units = [
+            {
+                "batch_type": "handler-group-summary",
+                "group_name": "chat",
+                "file_paths": ["lambda/chat/handler.py"],
+                "storage_key": "k1",
+            },
+            {
+                "batch_type": "handler-group-summary",
+                "group_name": "github-sync",
+                "file_paths": ["lambda/github-sync/handler.py"],
+                "storage_key": "k2",
+            },
+        ]
+
+        repo_summary_handler.send_code_units_to_sqs(
+            units, "myrepo", "owner/myrepo", workspace_id="ws_abc"
+        )
+
+        # 2 unit messages + 1 cleanup = 3 sends total
+        assert mock_sqs.send_message.call_count == 3
+
+        # Last call is the cleanup
+        last_call = mock_sqs.send_message.call_args_list[-1]
+        assert last_call[1]["QueueUrl"] == "https://sqs/delete"
+        cleanup_body = json.loads(last_call[1]["MessageBody"])
+        assert cleanup_body["action"] == "delete_orphan_code_maps"
+        assert cleanup_body["workspace_id"] == "ws_abc"
+        assert cleanup_body["repo"] == "myrepo"
+        assert cleanup_body["expected_keys"] == [
+            "ws_abc#github#myrepo#handler-group-summary#chat",
+            "ws_abc#github#myrepo#handler-group-summary#github-sync",
+        ]
+
+    def test_no_workspace_skips_cleanup_only(self, monkeypatch):
+        """Non-workspace mode: per-unit fan-out still happens, cleanup skipped."""
+        mock_sqs = MagicMock()
+        monkeypatch.setattr(repo_summary_handler, "sqs_client", mock_sqs)
+        monkeypatch.setattr(
+            repo_summary_handler, "CODE_MAPS_QUEUE_URL", "https://sqs/codemaps"
+        )
+        monkeypatch.setattr(
+            repo_summary_handler, "DELETE_QUEUE", "https://sqs/delete"
+        )
+
+        units = [{
+            "batch_type": "handler-group-summary",
+            "group_name": "chat",
+            "file_paths": ["x.py"],
+            "storage_key": "k",
+        }]
+
+        repo_summary_handler.send_code_units_to_sqs(
+            units, "myrepo", "owner/myrepo", workspace_id=None
+        )
+
+        # 1 unit message, NO cleanup
+        assert mock_sqs.send_message.call_count == 1
+        sent_url = mock_sqs.send_message.call_args[1]["QueueUrl"]
+        assert sent_url == "https://sqs/codemaps"

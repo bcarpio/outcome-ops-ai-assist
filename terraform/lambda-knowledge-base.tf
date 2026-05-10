@@ -260,6 +260,7 @@ module "process_repo_summary_lambda" {
       APP_NAME                          = var.app_name
       AUDIT_TABLE                       = module.audit_logs_table.dynamodb_table_id
       WORKSPACES_TABLE                  = module.workspaces_table[0].dynamodb_table_id
+      DELETE_QUEUE                      = aws_sqs_queue.delete_queue[0].url
       BEDROCK_ADVANCED_MODEL_ID         = var.bedrock_advanced_model_id
       BEDROCK_EMBEDDING_MODEL_ID        = var.bedrock_embedding_model_id
       BEDROCK_ADVANCED_INPUT_PRICE      = tostring(var.bedrock_advanced_input_price)
@@ -304,7 +305,7 @@ module "process_repo_summary_lambda" {
       ]
     }
 
-    # Send messages to code maps queue
+    # Send messages to code maps queue + delete queue (for orphan cleanup)
     sqs_send = {
       effect = "Allow"
       actions = [
@@ -312,7 +313,8 @@ module "process_repo_summary_lambda" {
         "sqs:GetQueueAttributes"
       ]
       resources = [
-        module.code_maps_queue.queue_arn
+        module.code_maps_queue.queue_arn,
+        aws_sqs_queue.delete_queue[0].arn
       ]
     }
 
