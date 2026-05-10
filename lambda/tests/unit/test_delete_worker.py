@@ -958,12 +958,15 @@ class TestHandleDeletePrefix:
     @patch.object(handler_module, 'delete_vectors_by_key_prefix')
     @patch.object(handler_module, 'delete_vectors_for_s3_key')
     @patch.object(handler_module, 'list_s3_keys_with_prefix')
-    def test_delete_prefix_github_includes_vector_key_prefix(
+    def test_delete_prefix_github_uses_both_per_doc_and_code_map_prefixes(
         self, mock_list, mock_del_vec, mock_del_vec_prefix, mock_del_s3
     ):
-        """Test that GitHub prefix deletion also uses delete_vectors_by_key_prefix."""
+        """GitHub prefix deletion calls delete_vectors_by_key_prefix TWICE:
+        once for per-doc chunks (with owner segment) and once for code-map
+        summaries (without owner segment). Repo-removal via the UI sends
+        the prefix as 'owner/repo/' so the two prefixes are different."""
         mock_list.return_value = [
-            "workspaces/ws_123/github/my-repo/code-map.json",
+            "workspaces/ws_123/github/owner/my-repo/code-map.json",
         ]
         mock_del_vec.return_value = 100
         mock_del_vec_prefix.return_value = 25
@@ -972,12 +975,70 @@ class TestHandleDeletePrefix:
         result = handle_delete_prefix({
             "workspace_id": "ws_123",
             "source": "github",
-            "prefix": "my-repo",
+            "prefix": "owner/my-repo/",
         })
 
         assert result["status"] == "success"
-        mock_del_vec_prefix.assert_called_once_with("ws_123#github#my-repo#")
-        assert result["vectors_deleted"] == 125  # 100 + 25
+        # Two distinct prefix calls expected
+        assert mock_del_vec_prefix.call_count == 2
+        called_prefixes = [c.args[0] for c in mock_del_vec_prefix.call_args_list]
+        # Per-doc chunk shape: {ws}#github#{owner}#{repo}#
+        assert "ws_123#github#owner#my-repo#" in called_prefixes
+        # Code-map summary shape: {ws}#github#{repo}# (no owner)
+        assert "ws_123#github#my-repo#" in called_prefixes
+        # 100 per-doc + 25 per-doc-prefix + 25 code-map-prefix
+        assert result["vectors_deleted"] == 150
+
+    @patch.object(handler_module, 'delete_s3_objects_batch')
+    @patch.object(handler_module, 'delete_vectors_by_key_prefix')
+    @patch.object(handler_module, 'delete_vectors_for_s3_key')
+    @patch.object(handler_module, 'list_s3_keys_with_prefix')
+    def test_delete_prefix_confluence_skips_code_map_prefix(
+        self, mock_list, mock_del_vec, mock_del_vec_prefix, mock_del_s3
+    ):
+        """Non-github sources don't have code-map summary vectors, so the
+        second prefix call is skipped. Saves an extra list_vectors round-trip."""
+        mock_list.return_value = ["workspaces/ws_123/confluence/space/p1.html"]
+        mock_del_vec.return_value = 100
+        mock_del_vec_prefix.return_value = 50
+        mock_del_s3.return_value = 1
+
+        handle_delete_prefix({
+            "workspace_id": "ws_123",
+            "source": "confluence",
+            "prefix": "space/",
+        })
+
+        # Only one prefix call (the per-doc one) - no code-map prefix call
+        assert mock_del_vec_prefix.call_count == 1
+        assert mock_del_vec_prefix.call_args.args[0] == "ws_123#confluence#space#"
+
+    @patch.object(handler_module, 'delete_s3_objects_batch')
+    @patch.object(handler_module, 'delete_vectors_by_key_prefix')
+    @patch.object(handler_module, 'delete_vectors_for_s3_key')
+    @patch.object(handler_module, 'list_s3_keys_with_prefix')
+    def test_delete_prefix_repo_removal_cleans_handler_summaries(
+        self, mock_list, mock_del_vec, mock_del_vec_prefix, mock_del_s3
+    ):
+        """Real-world scenario: workspace-management.remove_repo() sends
+        a delete_prefix with prefix='owner/repo/'. The new code-map prefix
+        call must use just 'repo' (last segment), not the full owner/repo path."""
+        mock_list.return_value = []
+        mock_del_vec_prefix.return_value = 0
+        mock_del_s3.return_value = 0
+
+        handle_delete_prefix({
+            "workspace_id": "B1MgdLzM1j0YeyAqCWbyxg",
+            "source": "github",
+            "prefix": "bcarpio/outcome-ops-ai-assist-private/",
+        })
+
+        called_prefixes = [c.args[0] for c in mock_del_vec_prefix.call_args_list]
+        # The code-map prefix uses just the repo name (last segment)
+        assert (
+            "B1MgdLzM1j0YeyAqCWbyxg#github#outcome-ops-ai-assist-private#"
+            in called_prefixes
+        )
 
     @patch.object(handler_module, 'delete_s3_objects_batch')
     @patch.object(handler_module, 'delete_vectors_by_key_prefix')

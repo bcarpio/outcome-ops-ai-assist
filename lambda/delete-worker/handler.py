@@ -432,14 +432,32 @@ def handle_delete_prefix(message: Dict) -> Dict[str, Any]:
     for key in s3_keys:
         vectors_deleted += delete_vectors_for_s3_key(key)
 
-    # Also delete vectors by key prefix pattern (works for GitHub-style keys
-    # like {workspace_id}#github#{repo}#code-map#... and
-    # {workspace_id}#github#{repo}#handler-group-summary#...)
+    # Per-doc chunk vectors: keys like {ws}#{source}#{owner}#{repo}#{path}#{file}_chunk_N
+    # Translates the path-shaped prefix to the # separator. Strip trailing
+    # `/` before splitting so a caller passing "owner/repo/" produces
+    # "ws#source#owner#repo#" (single trailing #) rather than "...##".
     if workspace_id and source and prefix:
-        # Vector keys use # as separator, not /
-        safe_prefix = prefix.replace("/", "#")
-        vector_key_prefix = f"{workspace_id}#{source}#{safe_prefix}#"
-        vectors_deleted += delete_vectors_by_key_prefix(vector_key_prefix)
+        safe_prefix = prefix.rstrip("/").replace("/", "#")
+        if safe_prefix:
+            vector_key_prefix = f"{workspace_id}#{source}#{safe_prefix}#"
+            vectors_deleted += delete_vectors_by_key_prefix(vector_key_prefix)
+
+    # GitHub-only: code-map summary vectors have a different shape than
+    # per-doc chunks. Keys are {ws}#github#{repo}#{batch_type}#{group}
+    # (no owner segment), so the per-doc prefix above misses them.
+    # Without this second pass, removing a repo from a workspace via the UI
+    # leaves all handler-group-summary / *-summary / code-map vectors as
+    # queryable orphans. Repo name = last non-empty path segment of the
+    # source prefix (e.g., "owner/repo/" → "repo").
+    # Note: two GitHub repos in the same workspace sharing a final segment
+    # (e.g., alice/myrepo and bob/myrepo) would collide on this prefix.
+    # Acceptable for single-customer workspaces today; document if it
+    # surfaces.
+    if workspace_id and source == "github" and prefix:
+        repo_only = prefix.rstrip("/").split("/")[-1]
+        if repo_only:
+            code_map_prefix = f"{workspace_id}#{source}#{repo_only}#"
+            vectors_deleted += delete_vectors_by_key_prefix(code_map_prefix)
 
     # Delete S3 objects
     s3_deleted = delete_s3_objects_batch(s3_keys)
