@@ -107,7 +107,7 @@ module "file_ingestion_lambda" {
   timeout       = 300 # 5 minutes
   memory_size   = 512
 
-  # Source code with pip requirements
+  # Source code with pip requirements; bundle shared/ for audit_writer
   source_path = [
     {
       path             = "${path.module}/../lambda/file-ingestion"
@@ -120,6 +120,10 @@ module "file_ingestion_lambda" {
         "!.*\\.pyc",
         "!\\.pytest_cache/.*",
       ]
+    },
+    {
+      path          = "${path.module}/../lambda/shared"
+      prefix_in_zip = "shared"
     }
   ]
 
@@ -130,93 +134,118 @@ module "file_ingestion_lambda" {
   # Suppress verbose archive output
   quiet_archive_local_exec = true
 
-  environment_variables = {
-    ENV               = var.environment
-    APP_NAME          = var.app_name
-    WORKSPACES_TABLE  = module.workspaces_table[0].dynamodb_table_id
-    KB_BUCKET         = module.knowledge_base_bucket.s3_bucket_id
-    OAUTH_KMS_KEY_ARN = aws_kms_key.oauth_tokens[0].arn
-  }
+  # ADR-019: outcomeops_license layer for fail-closed license validation
+  # plus per-source repo-limit enforcement at the upstream ingest boundary.
+  layers = [
+    var.outcomeops_license_layer_arn,
+  ]
+
+  environment_variables = merge(
+    {
+      ENV               = var.environment
+      APP_NAME          = var.app_name
+      WORKSPACES_TABLE  = module.workspaces_table[0].dynamodb_table_id
+      KB_BUCKET         = module.knowledge_base_bucket.s3_bucket_id
+      OAUTH_KMS_KEY_ARN = aws_kms_key.oauth_tokens[0].arn
+      # AUDIT_TABLE for log_license_fail_open() regression detector (ADR-019)
+      AUDIT_TABLE = module.audit_logs_table.dynamodb_table_id
+    },
+    local.outcomeops_license_env,
+  )
 
   # IAM permissions
   attach_policy_statements = true
-  policy_statements = {
-    # S3 for knowledge base uploads
-    s3_kb = {
-      effect = "Allow"
-      actions = [
-        "s3:PutObject",
-        "s3:PutObjectTagging"
-      ]
-      resources = [
-        "${module.knowledge_base_bucket.s3_bucket_arn}/workspaces/*"
-      ]
-    }
+  policy_statements = merge(
+    {
+      # S3 for knowledge base uploads
+      s3_kb = {
+        effect = "Allow"
+        actions = [
+          "s3:PutObject",
+          "s3:PutObjectTagging"
+        ]
+        resources = [
+          "${module.knowledge_base_bucket.s3_bucket_arn}/workspaces/*"
+        ]
+      }
 
-    # DynamoDB for connection lookup and token updates
-    dynamodb = {
-      effect = "Allow"
-      actions = [
-        "dynamodb:GetItem",
-        "dynamodb:PutItem",
-        "dynamodb:UpdateItem",
-        "dynamodb:Query"
-      ]
-      resources = [
-        module.workspaces_table[0].dynamodb_table_arn,
-        "${module.workspaces_table[0].dynamodb_table_arn}/index/*"
-      ]
-    }
+      # DynamoDB for connection lookup and token updates
+      dynamodb = {
+        effect = "Allow"
+        actions = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:Query"
+        ]
+        resources = [
+          module.workspaces_table[0].dynamodb_table_arn,
+          "${module.workspaces_table[0].dynamodb_table_arn}/index/*"
+        ]
+      }
 
-    # SSM for OAuth configuration
-    ssm_read = {
-      effect = "Allow"
-      actions = [
-        "ssm:GetParameter",
-        "ssm:GetParameters"
-      ]
-      resources = [
-        "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/oauth/*"
-      ]
-    }
+      # SSM for OAuth configuration
+      ssm_read = {
+        effect = "Allow"
+        actions = [
+          "ssm:GetParameter",
+          "ssm:GetParameters"
+        ]
+        resources = [
+          "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/oauth/*"
+        ]
+      }
 
-    # KMS for token encryption/decryption (rolling refresh tokens)
-    kms_oauth = {
-      effect = "Allow"
-      actions = [
-        "kms:Encrypt",
-        "kms:Decrypt",
-        "kms:GenerateDataKey*"
-      ]
-      resources = [
-        aws_kms_key.oauth_tokens[0].arn
-      ]
-    }
+      # KMS for token encryption/decryption (rolling refresh tokens)
+      kms_oauth = {
+        effect = "Allow"
+        actions = [
+          "kms:Encrypt",
+          "kms:Decrypt",
+          "kms:GenerateDataKey*"
+        ]
+        resources = [
+          aws_kms_key.oauth_tokens[0].arn
+        ]
+      }
 
-    # KMS for SSM parameter decryption
-    kms_ssm = {
-      effect = "Allow"
-      actions = [
-        "kms:Decrypt"
-      ]
-      resources = [
-        "arn:aws:kms:${var.aws_region}:${data.aws_caller_identity.current.account_id}:alias/aws/ssm"
-      ]
-    }
+      # KMS for SSM parameter decryption
+      kms_ssm = {
+        effect = "Allow"
+        actions = [
+          "kms:Decrypt"
+        ]
+        resources = [
+          "arn:aws:kms:${var.aws_region}:${data.aws_caller_identity.current.account_id}:alias/aws/ssm"
+        ]
+      }
 
-    # SQS for receiving messages
-    sqs_receive = {
-      effect = "Allow"
-      actions = [
-        "sqs:ReceiveMessage",
-        "sqs:DeleteMessage",
-        "sqs:GetQueueAttributes"
-      ]
-      resources = [
-        aws_sqs_queue.file_ingestion[0].arn
-      ]
-    }
-  }
+      # SQS for receiving messages
+      sqs_receive = {
+        effect = "Allow"
+        actions = [
+          "sqs:ReceiveMessage",
+          "sqs:DeleteMessage",
+          "sqs:GetQueueAttributes"
+        ]
+        resources = [
+          aws_sqs_queue.file_ingestion[0].arn
+        ]
+      }
+
+      # DynamoDB audit logging for LICENSE_FAIL_OPEN regression-detector rows
+      dynamodb_audit = {
+        effect = "Allow"
+        actions = [
+          "dynamodb:PutItem"
+        ]
+        resources = [
+          module.audit_logs_table.dynamodb_table_arn
+        ]
+      }
+    },
+    local.outcomeops_license_iam,
+  )
 
   tags = {
     Purpose = "file-ingestion"
@@ -282,23 +311,32 @@ module "process_documents_lambda" {
   # Suppress verbose archive output
   quiet_archive_local_exec = true
 
-  environment_variables = {
-    ENV                               = var.environment
-    APP_NAME                          = var.app_name
-    KB_BUCKET                         = module.knowledge_base_bucket.s3_bucket_id
-    AUDIT_TABLE                       = module.audit_logs_table.dynamodb_table_id
-    WORKSPACES_TABLE                  = module.workspaces_table[0].dynamodb_table_id
-    BEDROCK_EMBEDDING_MODEL_ID        = var.bedrock_embedding_model_id
-    BEDROCK_EMBEDDING_INPUT_PRICE     = tostring(var.bedrock_embedding_input_price)
-    BEDROCK_EMBEDDING_OUTPUT_PRICE    = tostring(var.bedrock_embedding_output_price)
-    PII_REDACTION_ENABLED             = tostring(var.pii_redaction_enabled)
-    COMPREHEND_PII_PRICE_PER_1M_CHARS = tostring(var.comprehend_pii_price_per_1m_chars)
-    PII_REDACTION_SKIP_TYPES          = join(",", var.pii_redaction_skip_types)
-  }
+  # ADR-019: outcomeops_license layer for fail-closed license validation
+  # plus track_repo_active() at the completion (vector-write) boundary.
+  layers = [
+    var.outcomeops_license_layer_arn,
+  ]
+
+  environment_variables = merge(
+    {
+      ENV                               = var.environment
+      APP_NAME                          = var.app_name
+      KB_BUCKET                         = module.knowledge_base_bucket.s3_bucket_id
+      AUDIT_TABLE                       = module.audit_logs_table.dynamodb_table_id
+      WORKSPACES_TABLE                  = module.workspaces_table[0].dynamodb_table_id
+      BEDROCK_EMBEDDING_MODEL_ID        = var.bedrock_embedding_model_id
+      BEDROCK_EMBEDDING_INPUT_PRICE     = tostring(var.bedrock_embedding_input_price)
+      BEDROCK_EMBEDDING_OUTPUT_PRICE    = tostring(var.bedrock_embedding_output_price)
+      PII_REDACTION_ENABLED             = tostring(var.pii_redaction_enabled)
+      COMPREHEND_PII_PRICE_PER_1M_CHARS = tostring(var.comprehend_pii_price_per_1m_chars)
+      PII_REDACTION_SKIP_TYPES          = join(",", var.pii_redaction_skip_types)
+    },
+    local.outcomeops_license_env,
+  )
 
   # IAM permissions
   attach_policy_statements = true
-  policy_statements = {
+  policy_statements = merge({
     # S3 for reading documents
     s3_read = {
       effect = "Allow"
@@ -387,7 +425,9 @@ module "process_documents_lambda" {
       ]
       resources = ["*"]
     }
-  }
+    },
+    local.outcomeops_license_iam,
+  )
 
   tags = {
     Purpose = "process-documents"

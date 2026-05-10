@@ -130,6 +130,27 @@ def reset_mocks():
     yield
 
 
+@pytest.fixture(autouse=True)
+def stub_outcomeops_license():
+    """Inject a permissive outcomeops_license stub for every test (ADR-019).
+
+    process-documents lambda_handler does an inline
+    `from outcomeops_license import validate_license` so the module
+    must exist in sys.modules before each invocation. Tests that want
+    to assert specific license behavior override this with patch.dict.
+    """
+    stub = MagicMock()
+    stub.validate_license.return_value = {"sub": "test-customer"}
+    stub.track_repo_active.return_value = True
+    saved = sys.modules.get("outcomeops_license")
+    sys.modules["outcomeops_license"] = stub
+    yield stub
+    if saved is not None:
+        sys.modules["outcomeops_license"] = saved
+    else:
+        sys.modules.pop("outcomeops_license", None)
+
+
 @pytest.fixture
 def vector_config():
     """Set up SSM responses for vector config loading."""
@@ -2097,3 +2118,112 @@ class TestLambdaHandlerEdgeCases:
         mock_process.assert_not_called()
         body = json.loads(result["body"])
         assert len(body["results"]) == 0
+
+
+# ============================================================================
+# License layer enforcement (ADR-019, plan/license-layer-rollout chunk 04)
+# ============================================================================
+
+
+class TestLicenseEnforcement:
+    """Validate the ADR-019 fail-closed license + usage-tracking contract
+    for process-documents (the completion boundary in the unified ingest
+    pipeline). track_repo_active runs here per successful document;
+    check_repo_limit is intentionally NOT called - it runs upstream in
+    file-ingestion before we ever reach S3."""
+
+    @patch.object(handler_module, "process_document")
+    def test_lambda_handler_license_valid(
+        self, mock_process, stub_outcomeops_license, s3_event
+    ):
+        """Happy path: valid license -> handler proceeds, validate_license
+        is called exactly once per invocation."""
+        mock_process.return_value = {"status": "success", "key": "k"}
+
+        result = lambda_handler(s3_event, None)
+
+        assert result["statusCode"] == 200
+        stub_outcomeops_license.validate_license.assert_called_once()
+
+    def test_lambda_handler_license_import_error(self, s3_event):
+        """Regression detector: missing layer -> log_license_fail_open
+        fires and the handler raises so the S3/SQS event is retried /
+        DLQ'd. Steady-state count of LICENSE_FAIL_OPEN is zero per
+        ADR-019 v2.0."""
+        with patch.dict(sys.modules, {"outcomeops_license": None}):
+            with patch.object(
+                handler_module, "log_license_fail_open"
+            ) as mock_audit:
+                with pytest.raises(ImportError):
+                    lambda_handler(s3_event, None)
+                mock_audit.assert_called()
+                args, _ = mock_audit.call_args
+                assert args[1] == "process-documents"
+
+    def test_lambda_handler_license_invalid(
+        self, stub_outcomeops_license, s3_event
+    ):
+        """Invalid license -> validate_license raises -> handler raises
+        (fail-closed). S3-driven Lambdas must never silently 200-OK the
+        batch on license failure."""
+        stub_outcomeops_license.validate_license.side_effect = RuntimeError(
+            "license expired"
+        )
+        with pytest.raises(RuntimeError, match="license expired"):
+            lambda_handler(s3_event, None)
+
+    @patch.object(handler_module, "process_document")
+    def test_repo_limit_not_called_at_completion_boundary(
+        self, mock_process, stub_outcomeops_license, s3_event
+    ):
+        """Defense-in-depth boundary check: process-documents must NEVER
+        call check_repo_limit. The limit is enforced once upstream in
+        file-ingestion. Calling it again here would be a wasteful round
+        trip to the license server (and risks double-billing the
+        request as a check)."""
+        mock_process.return_value = {"status": "success", "key": "k"}
+
+        lambda_handler(s3_event, None)
+
+        # Assert the symbol was never even accessed on the stub.
+        stub_outcomeops_license.check_repo_limit.assert_not_called()
+
+    @patch.object(handler_module, "process_document")
+    def test_tracking_called_on_success(
+        self, mock_process, stub_outcomeops_license
+    ):
+        """track_repo_active fires once per successful document with a
+        composite repo identifier matching file-ingestion's shape:
+        '{workspace_id}:{source}:{folder_path[0]}'. Failed documents
+        (status != 'success') do NOT trigger tracking."""
+        mock_process.side_effect = [
+            {"status": "success", "key": "ok"},
+            {"status": "error", "key": "bad"},
+        ]
+        event = {
+            "Records": [
+                {
+                    "s3": {
+                        "bucket": {"name": "test-kb-bucket"},
+                        "object": {
+                            "key": "workspaces/ws_q/confluence/ENG/page.html"
+                        },
+                    }
+                },
+                {
+                    "s3": {
+                        "bucket": {"name": "test-kb-bucket"},
+                        "object": {
+                            "key": "workspaces/ws_q/jira/PROJ/PROJ-1.html"
+                        },
+                    }
+                },
+            ]
+        }
+
+        lambda_handler(event, None)
+
+        # Only one call - the failed document is skipped.
+        stub_outcomeops_license.track_repo_active.assert_called_once_with(
+            repo="ws_q:confluence:ENG"
+        )

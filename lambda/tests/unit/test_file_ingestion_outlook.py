@@ -75,6 +75,32 @@ def reset_mocks():
     yield
 
 
+@pytest.fixture(autouse=True)
+def stub_outcomeops_license():
+    """Inject a permissive outcomeops_license stub for every test (ADR-019).
+
+    Mirrors the stub in test_file_ingestion_confluence.py - the handler
+    imports validate_license / check_repo_limit inside lambda_handler so
+    the license module must exist in sys.modules before each invocation.
+    """
+    stub = MagicMock()
+    stub.validate_license.return_value = {"sub": "test-customer"}
+    allowed = MagicMock()
+    allowed.allowed = True
+    allowed.reason = None
+    allowed.current = 0
+    allowed.limit = 100
+    stub.check_repo_limit.return_value = allowed
+    stub.track_repo_active.return_value = True
+    saved = sys.modules.get("outcomeops_license")
+    sys.modules["outcomeops_license"] = stub
+    yield stub
+    if saved is not None:
+        sys.modules["outcomeops_license"] = saved
+    else:
+        sys.modules.pop("outcomeops_license", None)
+
+
 @pytest.fixture
 def email_file_info():
     """Sample email file info from outlook-sync queue."""

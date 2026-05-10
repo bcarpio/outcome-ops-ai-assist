@@ -75,6 +75,33 @@ def reset_mocks():
     yield
 
 
+@pytest.fixture(autouse=True)
+def stub_outcomeops_license():
+    """Inject a permissive outcomeops_license stub for every test (ADR-019).
+
+    The handler imports validate_license / check_repo_limit inside
+    lambda_handler. Tests that don't care about license behavior get a
+    happy-path stub here; tests that DO care override sys.modules
+    themselves with patch.dict to assert specific behaviors.
+    """
+    stub = MagicMock()
+    stub.validate_license.return_value = {"sub": "test-customer"}
+    allowed = MagicMock()
+    allowed.allowed = True
+    allowed.reason = None
+    allowed.current = 0
+    allowed.limit = 100
+    stub.check_repo_limit.return_value = allowed
+    stub.track_repo_active.return_value = True
+    saved = sys.modules.get("outcomeops_license")
+    sys.modules["outcomeops_license"] = stub
+    yield stub
+    if saved is not None:
+        sys.modules["outcomeops_license"] = saved
+    else:
+        sys.modules.pop("outcomeops_license", None)
+
+
 @pytest.fixture
 def confluence_page_file_info():
     """Sample Confluence page file info from queue message."""
@@ -1864,3 +1891,132 @@ class TestLambdaHandlerConfluenceJiraRouting:
         result = lambda_handler(event, None)
         body = json.loads(result["body"])
         assert body["results"][0]["status"] == "success"
+
+
+# ============================================================================
+# License layer enforcement (ADR-019, plan/license-layer-rollout chunk 04)
+# ============================================================================
+
+
+class TestLicenseEnforcement:
+    """Validate the ADR-019 fail-closed license + repo-limit contract for
+    file-ingestion (the upstream entry boundary in the unified ingest
+    pipeline). check_repo_limit runs here per source; track_repo_active
+    runs at the completion boundary in process-documents instead."""
+
+    @patch.object(handler_module, 'process_confluence_page')
+    def test_lambda_handler_license_valid(
+        self, mock_process, stub_outcomeops_license
+    ):
+        """Happy path: valid license -> handler proceeds, validate_license
+        is called exactly once per invocation."""
+        mock_process.return_value = "workspaces/ws_x/confluence/space/page.html"
+        event = {
+            "Records": [{
+                "body": json.dumps({
+                    "source": "confluence",
+                    "workspace_id": "ws_x",
+                    "connection_id": "conn_x",
+                    "cloud_id": "cloud_x",
+                    "file": {"page_id": "p1", "space_key": "ENG"},
+                })
+            }]
+        }
+
+        result = lambda_handler(event, None)
+
+        assert result["statusCode"] == 200
+        stub_outcomeops_license.validate_license.assert_called_once()
+        body = json.loads(result["body"])
+        assert body["results"][0]["status"] == "success"
+
+    def test_lambda_handler_license_import_error(self):
+        """Regression detector: missing layer -> log_license_fail_open
+        fires and the handler raises so SQS DLQs the batch."""
+        event = {"Records": [{"body": json.dumps({"source": "confluence"})}]}
+        with patch.dict(sys.modules, {"outcomeops_license": None}):
+            with patch.object(
+                handler_module, "log_license_fail_open"
+            ) as mock_audit:
+                with pytest.raises(ImportError):
+                    lambda_handler(event, None)
+                mock_audit.assert_called_once()
+                args, _ = mock_audit.call_args
+                # Second positional arg is the lambda short name.
+                assert args[1] == "file-ingestion"
+
+    def test_lambda_handler_license_invalid(self, stub_outcomeops_license):
+        """Invalid license -> validate_license raises -> handler raises
+        (fail-closed) so the SQS message is retried / DLQ'd. SQS-driven
+        Lambdas must never silently 403 the batch."""
+        stub_outcomeops_license.validate_license.side_effect = RuntimeError(
+            "license expired"
+        )
+        event = {"Records": [{"body": json.dumps({"source": "confluence"})}]}
+
+        with pytest.raises(RuntimeError, match="license expired"):
+            lambda_handler(event, None)
+
+    @patch.object(handler_module, 'process_confluence_page')
+    def test_repo_limit_blocked_skips_source(
+        self, mock_process, stub_outcomeops_license
+    ):
+        """When check_repo_limit returns allowed=False, the source is
+        skipped (status='skipped', reason='repo_limit') and the source
+        handler is NOT invoked - we don't waste an API call to the
+        upstream system on a source that won't be ingested."""
+        blocked = MagicMock()
+        blocked.allowed = False
+        blocked.reason = "repo_limit_reached"
+        blocked.current = 50
+        blocked.limit = 50
+        stub_outcomeops_license.check_repo_limit.return_value = blocked
+
+        event = {
+            "Records": [{
+                "body": json.dumps({
+                    "source": "confluence",
+                    "workspace_id": "ws_y",
+                    "connection_id": "conn_y",
+                    "cloud_id": "cloud_y",
+                    "file": {"page_id": "p2", "space_key": "OPS"},
+                })
+            }]
+        }
+
+        result = lambda_handler(event, None)
+
+        body = json.loads(result["body"])
+        assert body["results"][0]["status"] == "skipped"
+        assert body["results"][0]["reason"] == "repo_limit"
+        assert body["results"][0]["repo"] == "ws_y:confluence:OPS"
+        mock_process.assert_not_called()
+
+    @patch.object(handler_module, 'process_confluence_page')
+    def test_check_repo_limit_called_per_source(
+        self, mock_process, stub_outcomeops_license
+    ):
+        """check_repo_limit fires per record at the upstream boundary.
+        track_repo_active is intentionally NOT called here - it runs at
+        the completion boundary in process-documents."""
+        mock_process.return_value = "workspaces/ws_z/confluence/space/page.html"
+        event = {
+            "Records": [{
+                "body": json.dumps({
+                    "source": "confluence",
+                    "workspace_id": "ws_z",
+                    "connection_id": "conn_z",
+                    "cloud_id": "cloud_z",
+                    "file": {"page_id": "p3", "space_key": "FIN"},
+                })
+            }]
+        }
+
+        lambda_handler(event, None)
+
+        stub_outcomeops_license.check_repo_limit.assert_called_once_with(
+            repo="ws_z:confluence:FIN"
+        )
+        # Defense-in-depth: file-ingestion never tracks usage; that
+        # belongs to the completion boundary (process-documents).
+        stub_outcomeops_license.track_repo_active.assert_not_called()

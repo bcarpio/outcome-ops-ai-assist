@@ -40,7 +40,11 @@ from botocore.exceptions import ClientError
 # Add shared module to path for Lambda deployment
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared.audit import COMPREHEND_MODEL_ID, log_audit_entry
-from shared.audit_writer import ACTION_DOCUMENT_INGESTED, log_admin_action
+from shared.audit_writer import (
+    ACTION_DOCUMENT_INGESTED,
+    log_admin_action,
+    log_license_fail_open,
+)
 from shared.pii import MODE_STRICT, read_workspace_mode, redact
 
 # Bedrock model configuration
@@ -874,13 +878,81 @@ def process_document(bucket: str, key: str) -> Dict[str, Any]:
         return {"status": "error", "key": key, "error": str(e)}
 
 
+def _track_repo_active_for_key(s3_key: str) -> None:
+    """Fire track_repo_active() for the source identified by an S3 key.
+
+    process-documents owns the completion boundary in the unified ingest
+    pipeline (ADR-019 chunk 04 defense-in-depth note): file-ingestion
+    enforces check_repo_limit upstream, this Lambda emits the
+    track_repo_active signal once embeddings have actually been written.
+
+    Composite shape mirrors file-ingestion._build_repo_identifier so the
+    license server's server-side dedup matches.
+    """
+    key_info = parse_s3_key(s3_key)
+    if not key_info:
+        return
+    workspace_id = key_info.get("workspace_id", "")
+    source = key_info.get("source", "")
+    folder_path = key_info.get("folder_path", "") or ""
+    # First folder segment is the source identifier (space_key, project_key,
+    # folder_name, channel_name, site_name, etc.). For attachments the path
+    # has nested segments; the first one is still the parent source ident.
+    ident = folder_path.split("/")[0] if folder_path else ""
+    ident = (ident or "").replace(":", "_").replace("/", "_")
+    repo = f"{workspace_id}:{source}:{ident}"
+    try:
+        from outcomeops_license import track_repo_active
+
+        track_repo_active(repo=repo)
+    except ImportError:
+        logger.error(
+            "[process-documents] License layer not attached during track_repo_active"
+        )
+        log_license_fail_open(
+            os.environ.get("AUDIT_TABLE", ""), "process-documents"
+        )
+    except Exception as e:
+        logger.warning(
+            f"[process-documents] track_repo_active failed for {repo}: {e}"
+        )
+
+
 def lambda_handler(event: Dict, context: Any) -> Dict:
     """
     S3-triggered handler for document processing.
 
     Triggered by ObjectCreated events on the knowledge base bucket.
+
+    ADR-019 (license-layer-rollout chunk 04):
+    - validate_license() runs once per invocation (fail-closed; raises
+      to let S3/SQS DLQ the batch on hard failures).
+    - track_repo_active() fires once per successful document at this
+      completion boundary; check_repo_limit is intentionally NOT called
+      here (it ran upstream in file-ingestion).
     """
     logger.info(f"Process documents handler invoked")
+
+    # ADR-019 fail-closed license validation. S3/SQS-driven: raise on
+    # failure so the event is retried / DLQ'd rather than silently dropped.
+    try:
+        from outcomeops_license import validate_license
+
+        claims = validate_license()
+        logger.info(
+            f"[process-documents] License validated: {claims.get('sub')}"
+        )
+    except ImportError:
+        logger.error(
+            "[process-documents] License layer not attached - deploy bug (ADR-019)"
+        )
+        log_license_fail_open(
+            os.environ.get("AUDIT_TABLE", ""), "process-documents"
+        )
+        raise
+    except Exception as e:
+        logger.error(f"[process-documents] License validation failed: {e}")
+        raise
 
     results = []
 
@@ -897,6 +969,8 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
 
             result = process_document(bucket, key)
             results.append(result)
+            if result.get("status") == "success":
+                _track_repo_active_for_key(key)
 
         # Handle SQS event (for reprocessing)
         elif "body" in record:
@@ -908,6 +982,8 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
                 if key:
                     result = process_document(bucket, key)
                     results.append(result)
+                    if result.get("status") == "success":
+                        _track_repo_active_for_key(key)
             except json.JSONDecodeError:
                 logger.error(f"Invalid JSON in SQS message")
 
