@@ -502,13 +502,23 @@ class TestLicenseLayerIntegration:
 
 class TestExpectedCodeMapVectorKeys:
     """The deterministic key computation must match what
-    process-batch-summary actually writes (handler.py:936)."""
+    process-batch-summary actually writes
+    (process-batch-summary/handler.py:929-938).
 
-    def test_workspace_keys_include_workspace_prefix(self):
+    Critical detail: process-batch-summary appends '-summary' to
+    batch_type. Backends return raw batch_types (handler-group,
+    csharp-project, source-module, components, ...). The helper must
+    apply the same suffix or expected_keys will never match stored
+    keys and orphan cleanup will wipe everything as 'orphans'.
+    """
+
+    def test_workspace_keys_include_workspace_prefix_and_suffix(self):
+        # Backends return raw batch_types WITHOUT -summary suffix; the
+        # helper must append it to match stored key shape.
         units = [
-            {"batch_type": "handler-group-summary", "group_name": "chat"},
-            {"batch_type": "handler-group-summary", "group_name": "github-sync"},
-            {"batch_type": "docs-summary", "group_name": "documentation"},
+            {"batch_type": "handler-group", "group_name": "chat"},
+            {"batch_type": "handler-group", "group_name": "github-sync"},
+            {"batch_type": "docs", "group_name": "documentation"},
         ]
         keys = repo_summary_handler._expected_code_map_vector_keys(
             units, "myrepo", "ws_abc"
@@ -522,7 +532,7 @@ class TestExpectedCodeMapVectorKeys:
     def test_no_workspace_uses_short_key_shape(self):
         """Mirrors the workspace_id-less branch in
         process-batch-summary/handler.py:938."""
-        units = [{"batch_type": "handler-group-summary", "group_name": "chat"}]
+        units = [{"batch_type": "handler-group", "group_name": "chat"}]
         keys = repo_summary_handler._expected_code_map_vector_keys(
             units, "myrepo", None
         )
@@ -533,6 +543,32 @@ class TestExpectedCodeMapVectorKeys:
             [], "myrepo", "ws"
         )
         assert keys == []
+
+    def test_multi_backend_batch_types_get_summary_suffix(self):
+        """Different backends produce different raw batch_types - all
+        must get the same -summary suffix treatment, matching what
+        process-batch-summary writes for any backend."""
+        units = [
+            {"batch_type": "handler-group", "group_name": "chat"},          # python
+            {"batch_type": "csharp-project", "group_name": "Web"},          # csharp
+            {"batch_type": "csharp-services", "group_name": "Auth"},        # csharp
+            {"batch_type": "source-module", "group_name": "api"},           # java
+            {"batch_type": "components", "group_name": "navbar"},           # react
+            {"batch_type": "build", "group_name": "maven"},                 # java/build
+            {"batch_type": "kubernetes", "group_name": "manifests"},        # k8s
+        ]
+        keys = repo_summary_handler._expected_code_map_vector_keys(
+            units, "myrepo", "ws"
+        )
+        assert keys == [
+            "ws#github#myrepo#handler-group-summary#chat",
+            "ws#github#myrepo#csharp-project-summary#Web",
+            "ws#github#myrepo#csharp-services-summary#Auth",
+            "ws#github#myrepo#source-module-summary#api",
+            "ws#github#myrepo#components-summary#navbar",
+            "ws#github#myrepo#build-summary#maven",
+            "ws#github#myrepo#kubernetes-summary#manifests",
+        ]
 
 
 class TestQueueOrphanCodeMapCleanup:
@@ -634,13 +670,13 @@ class TestSendCodeUnitsToSqs:
 
         units = [
             {
-                "batch_type": "handler-group-summary",
+                "batch_type": "handler-group",
                 "group_name": "chat",
                 "file_paths": ["lambda/chat/handler.py"],
                 "storage_key": "k1",
             },
             {
-                "batch_type": "handler-group-summary",
+                "batch_type": "handler-group",
                 "group_name": "github-sync",
                 "file_paths": ["lambda/github-sync/handler.py"],
                 "storage_key": "k2",

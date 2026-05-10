@@ -643,14 +643,27 @@ def _expected_code_map_vector_keys(
     workspace_id: Optional[str],
 ) -> List[str]:
     """Compute the deterministic vector keys process-batch-summary will write
-    for the given code units. Mirrors process-batch-summary/handler.py:936.
+    for the given code units. Mirrors process-batch-summary/handler.py:929-938
+    EXACTLY:
 
-    The expected key set is what delete-worker compares against to find
-    orphans for this repo's current tree.
+        doc_type = f"{batch['batch_type']}-summary"     # appends -summary
+        key      = f"{ws}#github#{repo}#{doc_type}#{group_name}"
+
+    The `-summary` suffix is what differentiates raw batch_types
+    (handler-group, csharp-project, source-module, components, ...) as
+    returned by the per-backend discover_code_units from the doc_type
+    segment that lands in the vector key (handler-group-summary,
+    csharp-project-summary, source-module-summary, components-summary).
+
+    Without this suffix, every expected_key would be off-by-`-summary`
+    and the orphan cleanup would treat every legitimately-stored vector
+    as an orphan and delete it. (This was the bug in the first
+    deployment of this code; tests caught the absence of -summary in
+    the live prd index.)
 
     Args:
         code_units: Output of discover_code_units() - each dict has
-            batch_type and group_name.
+            batch_type (raw, no -summary suffix) and group_name.
         repo: Short repo name (matches batch["repo"] in the writer).
         workspace_id: Workspace ID, or None for non-workspace repos.
 
@@ -659,12 +672,13 @@ def _expected_code_map_vector_keys(
     """
     keys = []
     for unit in code_units:
+        doc_type = f"{unit['batch_type']}-summary"
         if workspace_id:
             keys.append(
-                f"{workspace_id}#github#{repo}#{unit['batch_type']}#{unit['group_name']}"
+                f"{workspace_id}#github#{repo}#{doc_type}#{unit['group_name']}"
             )
         else:
-            keys.append(f"{repo}#{unit['batch_type']}#{unit['group_name']}")
+            keys.append(f"{repo}#{doc_type}#{unit['group_name']}")
     return keys
 
 
