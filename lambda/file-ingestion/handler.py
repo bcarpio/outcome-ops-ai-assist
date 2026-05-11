@@ -1160,6 +1160,87 @@ def process_onedrive_file(
         return None
 
 
+def process_onenote_page(
+    workspace_id: str,
+    connection_id: str,
+    file_info: Dict[str, Any],
+    sync_id: Optional[str] = None,
+) -> Optional[str]:
+    """
+    Process a OneNote page and upload to S3.
+
+    Unlike OneDrive (download from pre-authenticated URL), OneNote
+    page content arrives inline in the SQS message body as HTML.
+    onenote-sync already fetched it from Graph - this just uploads.
+
+    S3 key shape:
+      workspaces/{ws}/onenote/{conn_id}/{notebook_id}/{section_id}/{page_id}.html
+
+    Per-connection prefix + page_id in the filename so orphan
+    detection (delete-worker, source=onenote) can identify pages
+    by parsing the key directly - no HeadObject needed like OneDrive.
+    """
+    page_id = file_info.get("page_id", "")
+    title = file_info.get("title", "Untitled")
+    notebook_id = file_info.get("notebook_id", "")
+    notebook_name = file_info.get("notebook_name", "")
+    section_id = file_info.get("section_id", "")
+    section_name = file_info.get("section_name", "")
+    last_modified = file_info.get("last_modified", "")
+    content_html = file_info.get("content_html", "")
+
+    logger.info(f"Processing OneNote page: {notebook_name}/{section_name}/{title}")
+
+    if not page_id:
+        logger.error(f"OneNote page missing page_id: {title}")
+        return None
+
+    if not content_html or len(content_html.strip()) < 10:
+        logger.warning(f"OneNote page {page_id} has empty content; skipping")
+        return None
+
+    # Sanitize ID segments: Graph returns IDs that occasionally contain
+    # URL-unsafe chars (=, +, /). Keep them readable but S3-safe.
+    safe_notebook = sanitize_filename(notebook_id) or "_default"
+    safe_section = sanitize_filename(section_id) or "_default"
+    safe_page = sanitize_filename(page_id)
+
+    s3_key = f"workspaces/{workspace_id}/onenote/{connection_id}/{safe_notebook}/{safe_section}/{safe_page}.html"
+
+    metadata = {
+        "source": "onenote",
+        "workspace_id": workspace_id,
+        "connection_id": connection_id,
+        "onenote_page_id": page_id[:128] if page_id else "",
+        "onenote_notebook_id": notebook_id[:128] if notebook_id else "",
+        "onenote_section_id": section_id[:128] if section_id else "",
+        "onenote_notebook_name": (notebook_name or "")[:128],
+        "onenote_section_name": (section_name or "")[:128],
+        "onenote_title": (title or "")[:128],
+        "onenote_last_modified": last_modified or "",
+    }
+    if sync_id:
+        metadata["sync_id"] = sync_id
+
+    try:
+        s3_client.put_object(
+            Bucket=KB_BUCKET,
+            Key=s3_key,
+            Body=content_html.encode("utf-8"),
+            ContentType="text/html",
+            Metadata=metadata,
+            ExpectedBucketOwner=_get_account_id(),
+        )
+        logger.info(f"Uploaded OneNote page to s3://{KB_BUCKET}/{s3_key}")
+        return s3_key
+    except ClientError as e:
+        logger.error(f"S3 error uploading OneNote page {page_id}: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"Error processing OneNote page {page_id}: {e}")
+        return None
+
+
 def process_sharepoint_page(
     workspace_id: str,
     connection_id: str,
@@ -1270,6 +1351,13 @@ def _build_repo_identifier(source: str, workspace_id: str, body: Dict, file_info
         # identity. Different folders within the same OneDrive drive share
         # the same identifier - they're the same licensable repo.
         ident = file_info.get("drive_id") or ""
+    elif source == "onenote":
+        # OneNote scope is /me-wide, so one user = one licensable repo
+        # regardless of which notebooks they pick. Use the notebook_id
+        # as a stable per-page identifier; license-server dedups by
+        # string match so re-emitting the same notebook_id per page
+        # is fine.
+        ident = file_info.get("notebook_id") or ""
     else:
         ident = ""
     # Strip slashes/colons from ident so the composite stays parseable.
@@ -1466,6 +1554,13 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
                 )
             elif source == "onedrive":
                 s3_key = process_onedrive_file(
+                    workspace_id=workspace_id,
+                    connection_id=connection_id,
+                    file_info=file_info,
+                    sync_id=sync_id,
+                )
+            elif source == "onenote":
+                s3_key = process_onenote_page(
                     workspace_id=workspace_id,
                     connection_id=connection_id,
                     file_info=file_info,

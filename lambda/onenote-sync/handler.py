@@ -24,6 +24,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import sys
 import time
 from datetime import datetime, timezone
@@ -95,6 +96,16 @@ def _load_oauth_config() -> Dict[str, str]:
     except ClientError as e:
         logger.error(f"Failed to load OAuth config: {e}")
         raise
+
+
+def sanitize_filename(name: str) -> str:
+    """Mirror file-ingestion.sanitize_filename exactly. Used to produce
+    the page_id form that ends up as the S3 key filename stem, so
+    delete-worker's orphan-membership check works with a direct match."""
+    name = re.sub(r'[<>:"/\\|?*]', '_', name)
+    name = re.sub(r'\s+', '_', name)
+    name = name.strip('._')
+    return name[:200]
 
 
 def get_connection(workspace_id: str, connection_id: str) -> Optional[Dict]:
@@ -375,7 +386,11 @@ def process_sync_request(message: Dict) -> Dict[str, Any]:
                         continue
                     last_modified = page.get("lastModifiedDateTime", "")
 
-                    current_page_ids.append(page_id)
+                    # Sanitize the page_id to the same form file-ingestion
+                    # uses when building the S3 key filename, so the orphan
+                    # check is a direct string match.
+                    safe_page_id = sanitize_filename(page_id)
+                    current_page_ids.append(safe_page_id)
                     new_page_timestamps[page_id] = last_modified
 
                     # Change-detection: only fetch content + queue if

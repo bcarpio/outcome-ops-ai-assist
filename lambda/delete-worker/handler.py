@@ -372,6 +372,14 @@ def find_orphaned_documents(
                 # Skip rather than treat as orphan - missing metadata
                 # shouldn't trigger an accidental delete
                 continue
+        elif source == "onenote":
+            # OneNote S3 keys: workspaces/{ws}/onenote/{conn_id}/{nb_id}/{sec_id}/{page_id}.html
+            # The page_id is the filename stem (sanitized at write time
+            # by file-ingestion.sanitize_filename). onenote-sync sends
+            # current_ids using the SAME sanitization so the membership
+            # check is a direct stem match.
+            filename = key.split("/")[-1]
+            item_id = filename.rsplit(".", 1)[0] if "." in filename else filename
         else:
             item_id = key.split("/")[-1].split("_")[0]
 
