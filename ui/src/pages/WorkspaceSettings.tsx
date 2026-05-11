@@ -74,6 +74,12 @@ import {
   updateSharePointSites,
   triggerSharePointSync,
   deleteSharePointConnection,
+  listOneDriveConnections,
+  getOneDriveAuthUrl,
+  listOneDriveFolders,
+  updateOneDriveFolders,
+  triggerOneDriveSync,
+  deleteOneDriveConnection,
   getGitHubInstallUrl,
   listGitHubInstallations,
   listGitHubInstallationRepos,
@@ -103,6 +109,9 @@ import {
   type SharePointConnection,
   type SharePointSite,
   type SharePointSiteConfig,
+  type OneDriveConnection,
+  type OneDriveFolder,
+  type OneDriveFolderConfig,
   searchUsers,
   type SearchUser,
   getWorkspaceSystemPrompt,
@@ -213,6 +222,16 @@ export default function WorkspaceSettings() {
   const [selectedSPSites, setSelectedSPSites] = useState<Set<string>>(new Set())
   const [spIncludePages, setSpIncludePages] = useState(true)
   const [savingSPSites, setSavingSPSites] = useState(false)
+
+  // OneDrive integration state
+  const [oneDriveConnections, setOneDriveConnections] = useState<OneDriveConnection[]>([])
+  const [connectingOneDrive, setConnectingOneDrive] = useState(false)
+  const [syncingOneDrive, setSyncingOneDrive] = useState<string | null>(null)
+  const [configuringOneDriveConnection, setConfiguringOneDriveConnection] = useState<OneDriveConnection | null>(null)
+  const [availableODFolders, setAvailableODFolders] = useState<OneDriveFolder[]>([])
+  const [loadingODFolders, setLoadingODFolders] = useState(false)
+  const [selectedODFolders, setSelectedODFolders] = useState<Set<string>>(new Set())
+  const [savingODFolders, setSavingODFolders] = useState(false)
 
   // Legacy repo state removed - now using GitHub App integration
 
@@ -351,18 +370,20 @@ export default function WorkspaceSettings() {
     if (!workspaceId) return
     setLoadingConnections(true)
     try {
-      const [confluenceData, jiraData, outlookData, teamsData, sharePointData] = await Promise.all([
+      const [confluenceData, jiraData, outlookData, teamsData, sharePointData, oneDriveData] = await Promise.all([
         listConfluenceConnections(workspaceId),
         listJiraConnections(workspaceId),
         listOutlookConnections(workspaceId).catch(() => []),
         listTeamsConnections(workspaceId).catch(() => []),
         listSharePointConnections(workspaceId).catch(() => []),
+        listOneDriveConnections(workspaceId).catch(() => []),
       ])
       setConfluenceConnections(confluenceData)
       setJiraConnections(jiraData)
       setOutlookConnections(outlookData)
       setTeamsConnections(teamsData)
       setSharePointConnections(sharePointData)
+      setOneDriveConnections(oneDriveData)
     } catch (err) {
       console.error('Failed to load connections:', err)
     } finally {
@@ -1035,6 +1056,95 @@ export default function WorkspaceSettings() {
     }
   }
 
+  // OneDrive handlers
+  async function handleConnectOneDrive() {
+    if (!workspaceId) return
+    setConnectingOneDrive(true)
+    setError(null)
+    try {
+      const authUrl = await getOneDriveAuthUrl(workspaceId)
+      window.location.href = authUrl
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to start OneDrive connection')
+      setConnectingOneDrive(false)
+    }
+  }
+
+  async function openOneDriveConfiguration(connection: OneDriveConnection) {
+    if (!workspaceId) return
+    setConfiguringOneDriveConnection(connection)
+    setLoadingODFolders(true)
+    setError(null)
+    try {
+      const folders = await listOneDriveFolders(workspaceId, connection.connection_id)
+      setAvailableODFolders(folders)
+      const selected = new Set((connection.selected_folders || []).map(f => f.folder_id))
+      setSelectedODFolders(selected)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load folders')
+      setConfiguringOneDriveConnection(null)
+    } finally {
+      setLoadingODFolders(false)
+    }
+  }
+
+  async function handleSaveODFolders() {
+    if (!workspaceId || !configuringOneDriveConnection) return
+    setSavingODFolders(true)
+    setError(null)
+    try {
+      const foldersToSave: OneDriveFolderConfig[] = availableODFolders
+        .filter(f => selectedODFolders.has(f.folder_id))
+        .map(f => ({
+          folder_id: f.folder_id,
+          folder_name: f.folder_name,
+          folder_path: f.folder_path,
+        }))
+      await updateOneDriveFolders(
+        workspaceId,
+        configuringOneDriveConnection.connection_id,
+        foldersToSave
+      )
+      setConfiguringOneDriveConnection(null)
+      setSuccess('Folders updated and sync queued')
+      loadConnections()
+      setTimeout(() => setSuccess(null), 3000)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save folders')
+    } finally {
+      setSavingODFolders(false)
+    }
+  }
+
+  async function handleTriggerOneDriveSync(connectionId: string) {
+    if (!workspaceId) return
+    setSyncingOneDrive(connectionId)
+    setError(null)
+    try {
+      await triggerOneDriveSync(workspaceId, connectionId)
+      setSuccess('OneDrive sync queued')
+      loadConnections()
+      setTimeout(() => setSuccess(null), 3000)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to trigger sync')
+    } finally {
+      setSyncingOneDrive(null)
+    }
+  }
+
+  async function handleDeleteOneDriveConnection(connectionId: string) {
+    if (!workspaceId) return
+    setError(null)
+    try {
+      await deleteOneDriveConnection(workspaceId, connectionId)
+      setOneDriveConnections(prev => prev.filter(c => c.connection_id !== connectionId))
+      setSuccess('OneDrive connection deleted')
+      setTimeout(() => setSuccess(null), 3000)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to delete connection')
+    }
+  }
+
   function toggleSPSite(siteId: string) {
     setSelectedSPSites(prev => {
       const next = new Set(prev)
@@ -1042,6 +1152,18 @@ export default function WorkspaceSettings() {
         next.delete(siteId)
       } else {
         next.add(siteId)
+      }
+      return next
+    })
+  }
+
+  function toggleODFolder(folderId: string) {
+    setSelectedODFolders(prev => {
+      const next = new Set(prev)
+      if (next.has(folderId)) {
+        next.delete(folderId)
+      } else {
+        next.add(folderId)
       }
       return next
     })
@@ -2322,6 +2444,115 @@ export default function WorkspaceSettings() {
                 </ul>
               )}
             </div>
+
+            {/* OneDrive Section */}
+            <div className="bg-white rounded-lg border shadow-sm">
+              <div className="p-4 border-b flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <svg className="w-6 h-6 text-blue-600" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M14.5 9C14.5 6.79 12.71 5 10.5 5c-1.83 0-3.36 1.24-3.85 2.91C5.16 8.04 4 9.39 4 11c0 1.66 1.34 3 3 3h7.5c1.38 0 2.5-1.12 2.5-2.5S15.88 9 14.5 9zM19 15h-2v3h-2v-3h-2v-2h2v-3h2v3h2v2z"/>
+                  </svg>
+                  <div>
+                    <h3 className="font-medium">OneDrive</h3>
+                    <p className="text-sm text-gray-500">Sync files from your personal OneDrive folders</p>
+                  </div>
+                </div>
+                {isAdmin && oneDriveConnections.length === 0 && (
+                  <button
+                    onClick={handleConnectOneDrive}
+                    disabled={connectingOneDrive}
+                    className="flex items-center gap-2 px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
+                  >
+                    {connectingOneDrive ? (
+                      <Loader2 size={16} className="animate-spin" />
+                    ) : (
+                      <Plus size={16} />
+                    )}
+                    Connect
+                  </button>
+                )}
+              </div>
+              {loadingConnections ? (
+                <div className="p-8 flex items-center justify-center">
+                  <Loader2 className="animate-spin text-gray-400" size={24} />
+                </div>
+              ) : oneDriveConnections.length === 0 ? (
+                <div className="p-8 text-center text-gray-500">
+                  No OneDrive connections yet
+                </div>
+              ) : (
+                <ul className="divide-y">
+                  {oneDriveConnections.map(conn => (
+                    <li key={conn.connection_id} className="p-4">
+                      <div className="flex items-start justify-between">
+                        <div className="flex-1">
+                          <div className="flex items-center gap-2">
+                            <p className="font-medium text-gray-900">{conn.display_name}</p>
+                          </div>
+                          <p className="text-sm text-gray-500 mt-0.5">{conn.user_email}</p>
+                          <p className="text-sm text-gray-500 mt-1">
+                            {(conn.selected_folders || []).length === 0 ? (
+                              <span className="text-amber-600">No folders selected - click Configure</span>
+                            ) : (
+                              <>
+                                {conn.selected_folders.length} folder{conn.selected_folders.length !== 1 ? 's' : ''} selected
+                                {' | '}
+                                {conn.file_count || 0} files
+                              </>
+                            )}
+                          </p>
+                          <p className="text-xs text-gray-400 mt-1">
+                            Status: <span className={
+                              conn.last_sync_status === 'completed' ? 'text-green-600' :
+                              conn.last_sync_status === 'failed' || conn.last_sync_status === 'auth_error' ? 'text-red-600' :
+                              conn.last_sync_status === 'syncing' || conn.last_sync_status === 'queued' ? 'text-blue-600' :
+                              'text-gray-500'
+                            }>
+                              {conn.last_sync_status || 'pending'}
+                            </span>
+                            {conn.last_sync_at && (
+                              <> | Last sync: {new Date(conn.last_sync_at).toLocaleDateString()}</>
+                            )}
+                            {conn.last_sync_error && (
+                              <span className="text-red-500"> | {conn.last_sync_error}</span>
+                            )}
+                          </p>
+                        </div>
+                        {isAdmin && (
+                          <div className="flex items-center gap-2 ml-4">
+                            <button
+                              onClick={() => openOneDriveConfiguration(conn)}
+                              className="px-3 py-1.5 text-sm text-blue-600 hover:bg-blue-50 rounded transition-colors"
+                            >
+                              Configure
+                            </button>
+                            <button
+                              onClick={() => handleTriggerOneDriveSync(conn.connection_id)}
+                              disabled={syncingOneDrive === conn.connection_id || (conn.selected_folders || []).length === 0}
+                              className="p-1.5 text-gray-500 hover:bg-gray-100 rounded transition-colors disabled:opacity-50"
+                              title="Sync now"
+                            >
+                              {syncingOneDrive === conn.connection_id ? (
+                                <Loader2 size={16} className="animate-spin" />
+                              ) : (
+                                <RefreshCw size={16} />
+                              )}
+                            </button>
+                            <button
+                              onClick={() => handleDeleteOneDriveConnection(conn.connection_id)}
+                              className="p-1.5 text-red-500 hover:bg-red-50 rounded transition-colors"
+                              title="Disconnect"
+                            >
+                              <Trash2 size={16} />
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           </div>
         )}
 
@@ -3226,6 +3457,73 @@ export default function WorkspaceSettings() {
                   className="px-4 py-2 bg-teal-600 text-white rounded-lg hover:bg-teal-700 disabled:opacity-50 transition-colors flex items-center gap-2"
                 >
                   {savingSPSites && <Loader2 size={16} className="animate-spin" />}
+                  Save & Sync
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* OneDrive Folder Configuration Modal */}
+      {configuringOneDriveConnection && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-lg mx-4 max-h-[80vh] flex flex-col">
+            <div className="p-6 border-b">
+              <h2 className="text-lg font-semibold">Configure OneDrive Folders</h2>
+              <p className="text-sm text-gray-500 mt-1">
+                Select which folders to sync from {configuringOneDriveConnection.user_email}
+              </p>
+            </div>
+            <div className="flex-1 overflow-y-auto p-6">
+              {loadingODFolders ? (
+                <div className="py-8 flex items-center justify-center">
+                  <Loader2 className="animate-spin text-gray-400" size={24} />
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {availableODFolders.map(folder => (
+                    <label
+                      key={folder.folder_id}
+                      className="flex items-center gap-3 p-3 rounded-lg border cursor-pointer hover:bg-gray-50 transition-colors"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selectedODFolders.has(folder.folder_id)}
+                        onChange={() => toggleODFolder(folder.folder_id)}
+                        className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
+                      />
+                      <div className="flex-1">
+                        <p className="font-medium text-gray-900">{folder.folder_name}</p>
+                        {folder.folder_path && folder.folder_path !== '/' && (
+                          <p className="text-sm text-gray-500 truncate">{folder.folder_path}</p>
+                        )}
+                      </div>
+                    </label>
+                  ))}
+                  {availableODFolders.length === 0 && (
+                    <p className="text-center text-gray-500 py-4">No OneDrive folders found</p>
+                  )}
+                </div>
+              )}
+            </div>
+            <div className="px-6 py-4 bg-gray-50 rounded-b-lg flex items-center justify-between border-t">
+              <p className="text-sm text-gray-500">
+                {selectedODFolders.size} folder{selectedODFolders.size !== 1 ? 's' : ''} selected
+              </p>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setConfiguringOneDriveConnection(null)}
+                  className="px-4 py-2 text-gray-700 hover:bg-gray-200 rounded-lg transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleSaveODFolders}
+                  disabled={savingODFolders || selectedODFolders.size === 0}
+                  className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors flex items-center gap-2"
+                >
+                  {savingODFolders && <Loader2 size={16} className="animate-spin" />}
                   Save & Sync
                 </button>
               </div>

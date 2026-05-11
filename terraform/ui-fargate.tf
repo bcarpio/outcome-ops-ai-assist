@@ -392,6 +392,10 @@ module "ui_ecs" {
               {
                 name  = "SHAREPOINT_LAMBDA_URL"
                 value = aws_lambda_function_url.sharepoint_integration[0].function_url
+              },
+              {
+                name  = "ONEDRIVE_LAMBDA_URL"
+                value = aws_lambda_function_url.onedrive_integration[0].function_url
               }
             ] : [],
             # Add scanner JWT secret SSM path when security scanner is enabled
@@ -474,6 +478,13 @@ module "ui_ecs" {
               "lambda:InvokeFunctionUrl"
             ]
             resources = [module.sharepoint_integration_lambda[0].lambda_function_arn]
+          },
+          {
+            effect = "Allow"
+            actions = [
+              "lambda:InvokeFunctionUrl"
+            ]
+            resources = [module.onedrive_integration_lambda[0].lambda_function_arn]
           }
         ] : [],
         # SSM read for scanner JWT secret when security scanner is enabled

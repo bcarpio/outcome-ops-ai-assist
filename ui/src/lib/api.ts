@@ -1392,6 +1392,118 @@ export async function deleteSharePointConnection(workspaceId: string, connection
 }
 
 // ============================================================================
+// OneDrive Integration Types and API
+// ============================================================================
+
+export interface OneDriveConnection {
+  connection_id: string
+  workspace_id: string
+  user_email: string
+  display_name: string
+  drive_id: string
+  drive_name: string
+  selected_folders: OneDriveFolderConfig[]
+  last_sync_at: string | null
+  last_sync_status:
+    | 'needs_configuration'
+    | 'queued'
+    | 'syncing'
+    | 'completed'
+    | 'failed'
+    | 'auth_error'
+    | 'no_folders_selected'
+    | 'blocked_license_limit'
+  last_sync_error?: string | null
+  file_count: number
+  created_at: string
+  updated_at: string
+}
+
+export interface OneDriveFolderConfig {
+  folder_id: string
+  folder_name: string
+  folder_path: string
+}
+
+export interface OneDriveFolder {
+  folder_id: string
+  folder_name: string
+  folder_path: string
+  selected?: boolean
+}
+
+export async function getOneDriveAuthUrl(workspaceId: string): Promise<string> {
+  const response = await fetch(`${API_BASE}/onedrive/authorize?workspace_id=${encodeURIComponent(workspaceId)}`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to get auth URL: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return data?.auth_url as string
+}
+
+export async function listOneDriveConnections(workspaceId: string): Promise<OneDriveConnection[]> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/onedrive/connections`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to list OneDrive connections: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return (data?.connections as OneDriveConnection[]) || []
+}
+
+export async function listOneDriveFolders(
+  workspaceId: string,
+  connectionId: string
+): Promise<OneDriveFolder[]> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/onedrive/connections/${connectionId}/folders`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to list folders: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return (data?.folders as OneDriveFolder[]) || []
+}
+
+export async function updateOneDriveFolders(
+  workspaceId: string,
+  connectionId: string,
+  selectedFolders: OneDriveFolderConfig[]
+): Promise<void> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/onedrive/connections/${connectionId}/folders`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      selected_folders: selectedFolders,
+    }),
+  })
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to update folders: ${response.status}`)
+  }
+}
+
+export async function triggerOneDriveSync(workspaceId: string, connectionId: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/onedrive/connections/${connectionId}/sync`, {
+    method: 'POST',
+  })
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to trigger sync: ${response.status}`)
+  }
+}
+
+export async function deleteOneDriveConnection(workspaceId: string, connectionId: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/onedrive/connections/${connectionId}`, {
+    method: 'DELETE',
+  })
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to delete connection: ${response.status}`)
+  }
+}
+
+// ============================================================================
 // GitHub Integration Types and API
 // ============================================================================
 

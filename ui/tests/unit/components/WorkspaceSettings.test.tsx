@@ -59,6 +59,12 @@ vi.mock('../../../src/lib/api', () => ({
   updateSharePointSites: vi.fn(),
   triggerSharePointSync: vi.fn(),
   deleteSharePointConnection: vi.fn(),
+  listOneDriveConnections: vi.fn(),
+  getOneDriveAuthUrl: vi.fn(),
+  listOneDriveFolders: vi.fn(),
+  updateOneDriveFolders: vi.fn(),
+  triggerOneDriveSync: vi.fn(),
+  deleteOneDriveConnection: vi.fn(),
   searchUsers: vi.fn(),
   getWorkspaceSystemPrompt: vi.fn(),
   updateWorkspaceSystemPrompt: vi.fn(),
@@ -81,6 +87,8 @@ import {
   getSharePointAuthUrl, deleteSharePointConnection, triggerSharePointSync,
   listTeamsTeams, listTeamsChannels, saveTeamsConfig,
   listSharePointSites, updateSharePointSites,
+  listOneDriveConnections, getOneDriveAuthUrl, listOneDriveFolders,
+  updateOneDriveFolders, triggerOneDriveSync, deleteOneDriveConnection,
   searchUsers,
   getWorkspaceSystemPrompt, updateWorkspaceSystemPrompt, resetWorkspaceSystemPrompt,
   getWorkspacePrivacy, updateWorkspacePrivacy,
@@ -120,6 +128,12 @@ const mockListTeamsChannels = vi.mocked(listTeamsChannels)
 const mockSaveTeamsConfig = vi.mocked(saveTeamsConfig)
 const mockListSharePointSites = vi.mocked(listSharePointSites)
 const mockUpdateSharePointSites = vi.mocked(updateSharePointSites)
+const mockListOneDriveConnections = vi.mocked(listOneDriveConnections)
+const mockGetOneDriveAuthUrl = vi.mocked(getOneDriveAuthUrl)
+const mockListOneDriveFolders = vi.mocked(listOneDriveFolders)
+const mockUpdateOneDriveFolders = vi.mocked(updateOneDriveFolders)
+const mockTriggerOneDriveSync = vi.mocked(triggerOneDriveSync)
+const mockDeleteOneDriveConnection = vi.mocked(deleteOneDriveConnection)
 const mockSearchUsers = vi.mocked(searchUsers)
 const mockGetWorkspaceSystemPrompt = vi.mocked(getWorkspaceSystemPrompt)
 const mockUpdateWorkspaceSystemPrompt = vi.mocked(updateWorkspaceSystemPrompt)
@@ -141,6 +155,7 @@ function setupDefaultMocks() {
   mockListGitHubRepos.mockResolvedValue([])
   mockListTeamsConnections.mockResolvedValue([])
   mockListSharePointConnections.mockResolvedValue([])
+  mockListOneDriveConnections.mockResolvedValue([])
   mockGetWorkspacePrivacy.mockResolvedValue({
     workspace_id: 'ws-1',
     privacy_mode: 'STRICT',

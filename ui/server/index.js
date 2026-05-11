@@ -36,6 +36,7 @@ const GITHUB_LAMBDA_URL = process.env.GITHUB_LAMBDA_URL;
 const OUTLOOK_LAMBDA_URL = process.env.OUTLOOK_LAMBDA_URL;
 const TEAMS_LAMBDA_URL = process.env.TEAMS_LAMBDA_URL;
 const SHAREPOINT_LAMBDA_URL = process.env.SHAREPOINT_LAMBDA_URL;
+const ONEDRIVE_LAMBDA_URL = process.env.ONEDRIVE_LAMBDA_URL;
 const AWS_REGION = process.env.AWS_REGION || "us-west-2";
 const STATIC_DIR = process.env.STATIC_DIR || "/app/static";
 const LOCAL_DEV_MODE = process.env.LOCAL_DEV_MODE === "true";
@@ -303,6 +304,13 @@ async function signedTeamsFetch(method, path, options = {}) {
  */
 async function signedSharePointFetch(method, path, options = {}) {
   return signedFetch(SHAREPOINT_LAMBDA_URL, method, path, options);
+}
+
+/**
+ * Sign and send a request to the OneDrive Lambda Function URL.
+ */
+async function signedOneDriveFetch(method, path, options = {}) {
+  return signedFetch(ONEDRIVE_LAMBDA_URL, method, path, options);
 }
 
 // Streaming chat proxy endpoint with SigV4 auth
@@ -1778,6 +1786,134 @@ app.post("/api/workspaces/:id/sharepoint/connections/:connId/sync", (req, res) =
 // Delete SharePoint connection
 app.delete("/api/workspaces/:id/sharepoint/connections/:connId", (req, res) => {
   proxySharePointRequest(req, res, "DELETE", `/workspaces/${req.params.id}/sharepoint/connections/${req.params.connId}`);
+});
+
+// ============================================================================
+// OneDrive Integration Routes
+// ============================================================================
+
+// Helper to proxy OneDrive requests
+async function proxyOneDriveRequest(req, res, method, path) {
+  if (!ONEDRIVE_LAMBDA_URL) {
+    console.log("[proxy] ONEDRIVE_LAMBDA_URL not configured - OneDrive integration disabled");
+    res.status(404).json({ error: "OneDrive integration not enabled. Set ONEDRIVE_LAMBDA_URL." });
+    return;
+  }
+
+  const user = extractUser(req);
+  console.log(`[proxy] OneDrive ${method} ${path} for: ${user.email}`);
+
+  try {
+    const options = {
+      extraHeaders: userHeaders(req, user),
+    };
+    if (req.body && Object.keys(req.body).length > 0) {
+      options.body = JSON.stringify(req.body);
+    }
+
+    const response = await signedOneDriveFetch(method, path, options);
+
+    if (response.status === 302) {
+      const location = response.headers.get("location");
+      return res.redirect(location);
+    }
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`[proxy] OneDrive Lambda error: ${response.status} - ${errorText}`);
+      res.status(response.status).json({ error: errorText || "OneDrive request failed" });
+      return;
+    }
+
+    const text = await response.text();
+    if (!text) {
+      console.error("[proxy] Empty response from OneDrive Lambda");
+      res.status(500).json({ error: "Empty response from OneDrive service" });
+      return;
+    }
+
+    try {
+      const data = JSON.parse(text);
+      res.status(response.status).json(data);
+    } catch (parseError) {
+      console.error(`[proxy] Failed to parse OneDrive response: ${text}`);
+      res.status(500).json({ error: "Invalid response from OneDrive service" });
+    }
+  } catch (error) {
+    console.error(`[proxy] OneDrive error: ${error.message}`);
+    if (error.message.includes("credentials") || error.message.includes("Credential")) {
+      res.status(500).json({ error: "AWS credentials not configured." });
+    } else {
+      res.status(500).json({ error: `Failed to process OneDrive request: ${error.message}` });
+    }
+  }
+}
+
+// OneDrive OAuth routes
+app.get("/api/onedrive/authorize", (req, res) => {
+  const workspaceId = req.query.workspace_id;
+  proxyOneDriveRequest(req, res, "GET", `/onedrive/authorize?workspace_id=${encodeURIComponent(workspaceId)}`);
+});
+app.get("/api/onedrive/callback", async (req, res) => {
+  const { code, state, error } = req.query;
+
+  if (error) {
+    return res.redirect(`/?error=${encodeURIComponent(error)}`);
+  }
+
+  if (!ONEDRIVE_LAMBDA_URL) {
+    return res.redirect(`/?error=onedrive_not_configured`);
+  }
+
+  try {
+    const response = await signedOneDriveFetch("POST", "/onedrive/callback", {
+      body: JSON.stringify({ code, state }),
+    });
+
+    if (response.status === 302) {
+      const location = response.headers.get("location");
+      return res.redirect(location);
+    }
+
+    const text = await response.text();
+    try {
+      const data = JSON.parse(text);
+      if (data.redirect) {
+        return res.redirect(data.redirect);
+      }
+      res.status(response.status).json(data);
+    } catch {
+      res.status(response.status).send(text);
+    }
+  } catch (error) {
+    console.error(`[proxy] OneDrive callback error: ${error.message}`);
+    res.redirect(`/?error=onedrive_callback_failed`);
+  }
+});
+
+// OneDrive connections
+app.get("/api/workspaces/:id/onedrive/connections", (req, res) => {
+  proxyOneDriveRequest(req, res, "GET", `/workspaces/${req.params.id}/onedrive/connections`);
+});
+
+// OneDrive - list folders
+app.get("/api/workspaces/:id/onedrive/connections/:connId/folders", (req, res) => {
+  proxyOneDriveRequest(req, res, "GET", `/workspaces/${req.params.id}/onedrive/connections/${req.params.connId}/folders`);
+});
+
+// OneDrive - update folders
+app.put("/api/workspaces/:id/onedrive/connections/:connId/folders", (req, res) => {
+  proxyOneDriveRequest(req, res, "PUT", `/workspaces/${req.params.id}/onedrive/connections/${req.params.connId}/folders`);
+});
+
+// OneDrive sync
+app.post("/api/workspaces/:id/onedrive/connections/:connId/sync", (req, res) => {
+  proxyOneDriveRequest(req, res, "POST", `/workspaces/${req.params.id}/onedrive/connections/${req.params.connId}/sync`);
+});
+
+// Delete OneDrive connection
+app.delete("/api/workspaces/:id/onedrive/connections/:connId", (req, res) => {
+  proxyOneDriveRequest(req, res, "DELETE", `/workspaces/${req.params.id}/onedrive/connections/${req.params.connId}`);
 });
 
 // ============================================================================
