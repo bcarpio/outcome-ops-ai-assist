@@ -70,13 +70,9 @@ In your App Registration > **API permissions** > **Add a permission** > **Micros
 | `Team.ReadBasic.All` | Teams | List the user's teams |
 | `Channel.ReadBasic.All` | Teams | List channels in a team |
 | `ChannelMessage.Read.All` | Teams | Read channel message content |
+| `Notes.Read.All` | OneNote | Read OneNote notebooks, sections, pages |
 
 After adding all permissions, click **Grant admin consent for {tenant}** — this lets your tenant's users consent without an admin block.
-
-Future integrations to anticipate when planning permission grants:
-
-- **OneNote**: `Notes.Read.All` (planned follow-up)
-- **Calendar**: `Calendars.Read` (not planned)
 
 ## Step 3: Create Client Secret
 
@@ -150,12 +146,7 @@ https://{fqdn}/api/sharepoint/callback
 https://{fqdn}/api/outlook/callback
 https://{fqdn}/api/teams/callback
 https://{fqdn}/api/onedrive/callback
-```
-
-Future integrations (registered as the work lands):
-
-```
-https://{fqdn}/api/onenote/callback   # planned follow-up
+https://{fqdn}/api/onenote/callback
 ```
 
 Each integration's auth flow uses **only its own callback URL**. They don't share endpoints. If you forget to add one of these, the OAuth consent screen for that integration will throw `AADSTS50011: Reply URL mismatch`.
