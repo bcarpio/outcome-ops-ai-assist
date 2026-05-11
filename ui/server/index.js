@@ -37,6 +37,7 @@ const OUTLOOK_LAMBDA_URL = process.env.OUTLOOK_LAMBDA_URL;
 const TEAMS_LAMBDA_URL = process.env.TEAMS_LAMBDA_URL;
 const SHAREPOINT_LAMBDA_URL = process.env.SHAREPOINT_LAMBDA_URL;
 const ONEDRIVE_LAMBDA_URL = process.env.ONEDRIVE_LAMBDA_URL;
+const ONENOTE_LAMBDA_URL = process.env.ONENOTE_LAMBDA_URL;
 const AWS_REGION = process.env.AWS_REGION || "us-west-2";
 const STATIC_DIR = process.env.STATIC_DIR || "/app/static";
 const LOCAL_DEV_MODE = process.env.LOCAL_DEV_MODE === "true";
@@ -311,6 +312,13 @@ async function signedSharePointFetch(method, path, options = {}) {
  */
 async function signedOneDriveFetch(method, path, options = {}) {
   return signedFetch(ONEDRIVE_LAMBDA_URL, method, path, options);
+}
+
+/**
+ * Sign and send a request to the OneNote Lambda Function URL.
+ */
+async function signedOneNoteFetch(method, path, options = {}) {
+  return signedFetch(ONENOTE_LAMBDA_URL, method, path, options);
 }
 
 // Streaming chat proxy endpoint with SigV4 auth
@@ -1914,6 +1922,133 @@ app.post("/api/workspaces/:id/onedrive/connections/:connId/sync", (req, res) => 
 // Delete OneDrive connection
 app.delete("/api/workspaces/:id/onedrive/connections/:connId", (req, res) => {
   proxyOneDriveRequest(req, res, "DELETE", `/workspaces/${req.params.id}/onedrive/connections/${req.params.connId}`);
+});
+
+// ============================================================================
+// OneNote Integration Routes
+// ============================================================================
+
+async function proxyOneNoteRequest(req, res, method, path) {
+  if (!ONENOTE_LAMBDA_URL) {
+    console.log("[proxy] ONENOTE_LAMBDA_URL not configured - OneNote integration disabled");
+    res.status(404).json({ error: "OneNote integration not enabled. Set ONENOTE_LAMBDA_URL." });
+    return;
+  }
+
+  const user = extractUser(req);
+  console.log(`[proxy] OneNote ${method} ${path} for: ${user.email}`);
+
+  try {
+    const options = {
+      extraHeaders: userHeaders(req, user),
+    };
+    if (req.body && Object.keys(req.body).length > 0) {
+      options.body = JSON.stringify(req.body);
+    }
+
+    const response = await signedOneNoteFetch(method, path, options);
+
+    if (response.status === 302) {
+      const location = response.headers.get("location");
+      return res.redirect(location);
+    }
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`[proxy] OneNote Lambda error: ${response.status} - ${errorText}`);
+      res.status(response.status).json({ error: errorText || "OneNote request failed" });
+      return;
+    }
+
+    const text = await response.text();
+    if (!text) {
+      console.error("[proxy] Empty response from OneNote Lambda");
+      res.status(500).json({ error: "Empty response from OneNote service" });
+      return;
+    }
+
+    try {
+      const data = JSON.parse(text);
+      res.status(response.status).json(data);
+    } catch (parseError) {
+      console.error(`[proxy] Failed to parse OneNote response: ${text}`);
+      res.status(500).json({ error: "Invalid response from OneNote service" });
+    }
+  } catch (error) {
+    console.error(`[proxy] OneNote error: ${error.message}`);
+    if (error.message.includes("credentials") || error.message.includes("Credential")) {
+      res.status(500).json({ error: "AWS credentials not configured." });
+    } else {
+      res.status(500).json({ error: `Failed to process OneNote request: ${error.message}` });
+    }
+  }
+}
+
+// OneNote OAuth routes
+app.get("/api/onenote/authorize", (req, res) => {
+  const workspaceId = req.query.workspace_id;
+  proxyOneNoteRequest(req, res, "GET", `/onenote/authorize?workspace_id=${encodeURIComponent(workspaceId)}`);
+});
+app.get("/api/onenote/callback", async (req, res) => {
+  const { code, state, error } = req.query;
+
+  if (error) {
+    return res.redirect(`/?error=${encodeURIComponent(error)}`);
+  }
+
+  if (!ONENOTE_LAMBDA_URL) {
+    return res.redirect(`/?error=onenote_not_configured`);
+  }
+
+  try {
+    const response = await signedOneNoteFetch("POST", "/onenote/callback", {
+      body: JSON.stringify({ code, state }),
+    });
+
+    if (response.status === 302) {
+      const location = response.headers.get("location");
+      return res.redirect(location);
+    }
+
+    const text = await response.text();
+    try {
+      const data = JSON.parse(text);
+      if (data.redirect) {
+        return res.redirect(data.redirect);
+      }
+      res.status(response.status).json(data);
+    } catch {
+      res.status(response.status).send(text);
+    }
+  } catch (error) {
+    console.error(`[proxy] OneNote callback error: ${error.message}`);
+    res.redirect(`/?error=onenote_callback_failed`);
+  }
+});
+
+// OneNote connections
+app.get("/api/workspaces/:id/onenote/connections", (req, res) => {
+  proxyOneNoteRequest(req, res, "GET", `/workspaces/${req.params.id}/onenote/connections`);
+});
+
+// OneNote - list notebooks
+app.get("/api/workspaces/:id/onenote/connections/:connId/notebooks", (req, res) => {
+  proxyOneNoteRequest(req, res, "GET", `/workspaces/${req.params.id}/onenote/connections/${req.params.connId}/notebooks`);
+});
+
+// OneNote - update notebooks
+app.put("/api/workspaces/:id/onenote/connections/:connId/notebooks", (req, res) => {
+  proxyOneNoteRequest(req, res, "PUT", `/workspaces/${req.params.id}/onenote/connections/${req.params.connId}/notebooks`);
+});
+
+// OneNote sync
+app.post("/api/workspaces/:id/onenote/connections/:connId/sync", (req, res) => {
+  proxyOneNoteRequest(req, res, "POST", `/workspaces/${req.params.id}/onenote/connections/${req.params.connId}/sync`);
+});
+
+// Delete OneNote connection
+app.delete("/api/workspaces/:id/onenote/connections/:connId", (req, res) => {
+  proxyOneNoteRequest(req, res, "DELETE", `/workspaces/${req.params.id}/onenote/connections/${req.params.connId}`);
 });
 
 // ============================================================================

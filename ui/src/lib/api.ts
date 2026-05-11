@@ -1504,6 +1504,117 @@ export async function deleteOneDriveConnection(workspaceId: string, connectionId
 }
 
 // ============================================================================
+// OneNote Integration Types and API
+// ============================================================================
+
+export interface OneNoteConnection {
+  connection_id: string
+  workspace_id: string
+  user_email: string
+  display_name: string
+  user_id: string
+  selected_notebooks: OneNoteNotebookConfig[]
+  last_sync_at: string | null
+  last_sync_status:
+    | 'needs_configuration'
+    | 'queued'
+    | 'syncing'
+    | 'completed'
+    | 'failed'
+    | 'auth_error'
+    | 'no_notebooks_selected'
+    | 'blocked_license_limit'
+  last_sync_error?: string | null
+  page_count: number
+  created_at: string
+  updated_at: string
+}
+
+export interface OneNoteNotebookConfig {
+  notebook_id: string
+  notebook_name: string
+}
+
+export interface OneNoteNotebook {
+  notebook_id: string
+  notebook_name: string
+  is_default?: boolean
+  is_shared?: boolean
+  selected?: boolean
+}
+
+export async function getOneNoteAuthUrl(workspaceId: string): Promise<string> {
+  const response = await fetch(`${API_BASE}/onenote/authorize?workspace_id=${encodeURIComponent(workspaceId)}`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to get auth URL: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return data?.auth_url as string
+}
+
+export async function listOneNoteConnections(workspaceId: string): Promise<OneNoteConnection[]> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/onenote/connections`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to list OneNote connections: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return (data?.connections as OneNoteConnection[]) || []
+}
+
+export async function listOneNoteNotebooks(
+  workspaceId: string,
+  connectionId: string
+): Promise<OneNoteNotebook[]> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/onenote/connections/${connectionId}/notebooks`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to list notebooks: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return (data?.notebooks as OneNoteNotebook[]) || []
+}
+
+export async function updateOneNoteNotebooks(
+  workspaceId: string,
+  connectionId: string,
+  selectedNotebooks: OneNoteNotebookConfig[]
+): Promise<void> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/onenote/connections/${connectionId}/notebooks`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      selected_notebooks: selectedNotebooks,
+    }),
+  })
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to update notebooks: ${response.status}`)
+  }
+}
+
+export async function triggerOneNoteSync(workspaceId: string, connectionId: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/onenote/connections/${connectionId}/sync`, {
+    method: 'POST',
+  })
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to trigger sync: ${response.status}`)
+  }
+}
+
+export async function deleteOneNoteConnection(workspaceId: string, connectionId: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/onenote/connections/${connectionId}`, {
+    method: 'DELETE',
+  })
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to delete connection: ${response.status}`)
+  }
+}
+
+// ============================================================================
 // GitHub Integration Types and API
 // ============================================================================
 
