@@ -89,6 +89,7 @@ ACTION_JIRA_SYNCED = "JIRA_SYNCED"
 ACTION_OUTLOOK_SYNCED = "OUTLOOK_SYNCED"
 ACTION_TEAMS_SYNCED = "TEAMS_SYNCED"
 ACTION_SHAREPOINT_SYNCED = "SHAREPOINT_SYNCED"
+ACTION_ONEDRIVE_SYNCED = "ONEDRIVE_SYNCED"
 
 # OAuth lifecycle — credential establishment + rotation evidence.
 ACTION_OAUTH_CONNECTION_ESTABLISHED = "OAUTH_CONNECTION_ESTABLISHED"
@@ -148,6 +149,7 @@ ADMIN_ACTIONS = frozenset(
         ACTION_OUTLOOK_SYNCED,
         ACTION_TEAMS_SYNCED,
         ACTION_SHAREPOINT_SYNCED,
+        ACTION_ONEDRIVE_SYNCED,
         ACTION_OAUTH_CONNECTION_ESTABLISHED,
         ACTION_OAUTH_TOKEN_REFRESHED,
         ACTION_DOCUMENT_DELETED,
@@ -180,6 +182,7 @@ _SOURCE_SYNC_ACTIONS = {
     "outlook":    "OUTLOOK_SYNCED",
     "teams":      "TEAMS_SYNCED",
     "sharepoint": "SHAREPOINT_SYNCED",
+    "onedrive":   "ONEDRIVE_SYNCED",
 }
 
 
@@ -205,6 +208,7 @@ HIDDEN_DASHBOARD_ACTIONS = frozenset({
     ACTION_OUTLOOK_SYNCED,
     ACTION_TEAMS_SYNCED,
     ACTION_SHAREPOINT_SYNCED,
+    ACTION_ONEDRIVE_SYNCED,
     # Operator preference: keep these queryable but off the dashboard
     # cards. They write the audit row for forensic / right-to-deletion
     # / per-PR provenance, but the volume + nature isn't dashboard-
@@ -368,7 +372,7 @@ def log_source_sync(
     Args:
         audit_table_name: DynamoDB table name (typically ``AUDIT_TABLE``).
         source: One of ``"github"``, ``"confluence"``, ``"jira"``,
-            ``"outlook"``, ``"teams"``, ``"sharepoint"``.
+            ``"outlook"``, ``"teams"``, ``"sharepoint"``, ``"onedrive"``.
         workspace_id: Workspace this sync was scoped to.
         target: Source-specific target identifier (repo name, space
             key, project key, mailbox, channel, site, etc.).
