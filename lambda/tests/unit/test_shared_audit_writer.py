@@ -284,9 +284,9 @@ class TestActionConstants:
         # Original 17 (plan/01-dynamodb-schema.md) + 2 from PII redaction
         # (PRIVACY_MODE_UPDATED, DOCUMENT_INGESTED) + 23 from
         # plan/audit-completeness Tier 1 + Tier 2 + 1 from ADR-019
-        # license-layer regression detector + 1 from OneDrive
-        # integration = 44.
-        assert len(ADMIN_ACTIONS) == 44
+        # license-layer regression detector + 1 from OneDrive +
+        # 1 from OneNote = 45.
+        assert len(ADMIN_ACTIONS) == 45
 
     def test_known_action_in_set(self):
         assert ACTION_API_KEY_CREATED in ADMIN_ACTIONS
@@ -330,6 +330,7 @@ class TestActionConstants:
             ("teams", "TEAMS_SYNCED"),
             ("sharepoint", "SHAREPOINT_SYNCED"),
             ("onedrive", "ONEDRIVE_SYNCED"),
+            ("onenote", "ONENOTE_SYNCED"),
         ]
         for source, expected_action in cases:
             with patch.object(audit_writer, "log_admin_action") as mock_admin:
