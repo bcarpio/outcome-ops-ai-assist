@@ -3779,26 +3779,45 @@ export default function WorkspaceSettings() {
                 </div>
               ) : (
                 <div className="space-y-2">
-                  {availableONNotebooks.map(nb => (
-                    <label
-                      key={nb.notebook_id}
-                      className="flex items-center gap-3 p-3 rounded-lg border cursor-pointer hover:bg-gray-50 transition-colors"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={selectedONNotebooks.has(nb.notebook_id)}
-                        onChange={() => toggleONNotebook(nb.notebook_id)}
-                        className="w-4 h-4 text-purple-600 rounded focus:ring-purple-500"
-                      />
-                      <div className="flex-1">
-                        <p className="font-medium text-gray-900">{nb.notebook_name}</p>
-                        <div className="flex items-center gap-2 text-xs text-gray-500 mt-0.5">
-                          {nb.is_default && <span>default</span>}
-                          {nb.is_shared && <span>shared</span>}
+                  {availableONNotebooks.map(nb => {
+                    const friendlyLabel = nb.is_default
+                      ? 'Personal Notebook'
+                      : nb.is_shared
+                      ? 'Shared Notebook'
+                      : nb.notebook_name
+                    const showRawName = friendlyLabel !== nb.notebook_name
+                    return (
+                      <label
+                        key={nb.notebook_id}
+                        className="flex items-center gap-3 p-3 rounded-lg border cursor-pointer hover:bg-gray-50 transition-colors"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={selectedONNotebooks.has(nb.notebook_id)}
+                          onChange={() => toggleONNotebook(nb.notebook_id)}
+                          className="w-4 h-4 text-purple-600 rounded focus:ring-purple-500"
+                        />
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <p className="font-medium text-gray-900 truncate">{friendlyLabel}</p>
+                            {nb.is_default && (
+                              <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-700">
+                                Default
+                              </span>
+                            )}
+                            {nb.is_shared && (
+                              <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-700">
+                                Shared
+                              </span>
+                            )}
+                          </div>
+                          {showRawName && (
+                            <p className="text-xs text-gray-500 mt-0.5 truncate">{nb.notebook_name}</p>
+                          )}
                         </div>
-                      </div>
-                    </label>
-                  ))}
+                      </label>
+                    )
+                  })}
                   {availableONNotebooks.length === 0 && (
                     <p className="text-center text-gray-500 py-4">No OneNote notebooks found</p>
                   )}
