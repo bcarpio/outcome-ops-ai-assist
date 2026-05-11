@@ -1,0 +1,557 @@
+# ============================================================================
+# OneNote Integration Lambda
+# Handles OAuth flow and connection management for Microsoft OneNote
+# ============================================================================
+
+module "onenote_integration_lambda" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "8.1.2"
+
+  count = var.enable_workspaces ? 1 : 0
+
+  function_name = "${var.environment}-${var.app_name}-onenote-integration"
+  description   = "Microsoft OneNote OAuth and connection management for OutcomeOps AI Assist"
+  handler       = "handler.lambda_handler"
+  runtime       = "python3.12"
+  timeout       = 60
+  memory_size   = 512
+
+  # Source code with pip requirements
+  source_path = [
+    {
+      path             = "${path.module}/../lambda/onenote-integration"
+      pip_requirements = true
+      patterns = [
+        "!tests/.*",
+        "!__pycache__/.*",
+        "!\\.venv/.*",
+        "!requirements-dev\\.txt",
+        "!.*\\.pyc",
+        "!\\.pytest_cache/.*",
+      ]
+    },
+    {
+      path          = "${path.module}/../lambda/shared"
+      prefix_in_zip = "shared"
+    }
+  ]
+
+  # CloudWatch Logs retention and encryption
+  cloudwatch_logs_retention_in_days = 7
+  cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs.arn
+
+  # Suppress verbose archive output
+  quiet_archive_local_exec = true
+
+  environment_variables = {
+    ENV                = var.environment
+    APP_NAME           = var.app_name
+    WORKSPACES_TABLE   = module.workspaces_table[0].dynamodb_table_id
+    OAUTH_KMS_KEY_ARN  = aws_kms_key.oauth_tokens[0].arn
+    ONENOTE_SYNC_QUEUE = aws_sqs_queue.onenote_sync[0].url
+    DELETE_QUEUE       = aws_sqs_queue.delete_queue[0].url
+    AUDIT_TABLE        = module.audit_logs_table.dynamodb_table_id
+  }
+
+  # IAM permissions
+  attach_policy_statements = true
+  policy_statements = {
+    # DynamoDB for connections and tokens
+    dynamodb = {
+      effect = "Allow"
+      actions = [
+        "dynamodb:GetItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:Query"
+      ]
+      resources = [
+        module.workspaces_table[0].dynamodb_table_arn,
+        "${module.workspaces_table[0].dynamodb_table_arn}/index/*"
+      ]
+    }
+
+    # SSM for OAuth configuration
+    ssm_read = {
+      effect = "Allow"
+      actions = [
+        "ssm:GetParameter",
+        "ssm:GetParameters"
+      ]
+      resources = [
+        "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/oauth/microsoft/*"
+      ]
+    }
+
+    # KMS for token encryption/decryption
+    kms_oauth = {
+      effect = "Allow"
+      actions = [
+        "kms:Encrypt",
+        "kms:Decrypt",
+        "kms:GenerateDataKey*"
+      ]
+      resources = [
+        aws_kms_key.oauth_tokens[0].arn
+      ]
+    }
+
+    # KMS for SSM parameter decryption
+    kms_ssm = {
+      effect = "Allow"
+      actions = [
+        "kms:Decrypt"
+      ]
+      resources = [
+        "arn:aws:kms:${var.aws_region}:${data.aws_caller_identity.current.account_id}:alias/aws/ssm"
+      ]
+    }
+
+    # SQS for sync and delete queues
+    sqs_send = {
+      effect = "Allow"
+      actions = [
+        "sqs:SendMessage"
+      ]
+      resources = [
+        aws_sqs_queue.onenote_sync[0].arn,
+        aws_sqs_queue.delete_queue[0].arn
+      ]
+    }
+
+    # DynamoDB audit log writes (plan/audit-completeness)
+    dynamodb_audit = {
+      effect = "Allow"
+      actions = [
+        "dynamodb:PutItem"
+      ]
+      resources = [
+        module.audit_logs_table.dynamodb_table_arn
+      ]
+    }
+  }
+
+  tags = {
+    Purpose = "onenote-integration"
+  }
+}
+
+# Lambda Function URL with IAM auth
+resource "aws_lambda_function_url" "onenote_integration" {
+  count = var.enable_workspaces ? 1 : 0
+
+  function_name      = module.onenote_integration_lambda[0].lambda_function_name
+  authorization_type = "AWS_IAM"
+
+  cors {
+    allow_origins     = ["*"]
+    allow_methods     = ["GET", "POST", "PUT", "DELETE"]
+    allow_headers     = ["content-type", "authorization", "x-amz-date", "x-amz-security-token", "x-user-email"]
+    allow_credentials = false
+    max_age           = 300
+  }
+}
+
+# Store URL in SSM for Fargate proxy
+resource "aws_ssm_parameter" "onenote_integration_url" {
+  count = var.enable_workspaces ? 1 : 0
+
+  name        = "/${var.environment}/${var.app_name}/api/onenote-integration-url"
+  description = "Lambda Function URL for OneNote integration (IAM auth required)"
+  type        = "String"
+  value       = aws_lambda_function_url.onenote_integration[0].function_url
+
+  tags = {
+    Purpose = "onenote-integration-url"
+  }
+}
+
+# ============================================================================
+# SQS Queue for OneNote Sync Jobs
+# ============================================================================
+
+resource "aws_sqs_queue" "onenote_sync" {
+  count = var.enable_workspaces ? 1 : 0
+
+  name                       = "${var.environment}-${var.app_name}-onenote-sync"
+  visibility_timeout_seconds = 900   # 15 minutes for long-running syncs
+  message_retention_seconds  = 86400 # 1 day
+  receive_wait_time_seconds  = 20    # Long polling
+
+  # Dead letter queue
+  redrive_policy = jsonencode({
+    deadLetterTargetArn = aws_sqs_queue.onenote_sync_dlq[0].arn
+    maxReceiveCount     = 3
+  })
+
+  # Encryption at rest
+  sqs_managed_sse_enabled = var.enable_cmk_encryption ? null : true
+  kms_master_key_id       = local.data_cmk_arn
+
+  tags = {
+    Purpose = "onenote-sync-queue"
+  }
+}
+
+resource "aws_sqs_queue" "onenote_sync_dlq" {
+  count = var.enable_workspaces ? 1 : 0
+
+  name                      = "${var.environment}-${var.app_name}-onenote-sync-dlq"
+  message_retention_seconds = 1209600 # 14 days
+
+  sqs_managed_sse_enabled = var.enable_cmk_encryption ? null : true
+  kms_master_key_id       = local.data_cmk_arn
+
+  tags = {
+    Purpose = "onenote-sync-dlq"
+  }
+}
+
+# ============================================================================
+# OneNote Sync Lambda
+# Processes SQS messages to sync OneNote files to knowledge base
+# ============================================================================
+
+module "onenote_sync_lambda" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "8.1.2"
+
+  count = var.enable_workspaces ? 1 : 0
+
+  function_name = "${var.environment}-${var.app_name}-onenote-sync"
+  description   = "Syncs OneNote files to knowledge base for OutcomeOps AI Assist"
+  handler       = "handler.lambda_handler"
+  runtime       = "python3.12"
+  timeout       = 900 # 15 minutes for large syncs
+  memory_size   = 1024
+
+  # Source code with pip requirements
+  source_path = [
+    {
+      path             = "${path.module}/../lambda/onenote-sync"
+      pip_requirements = true
+      patterns = [
+        "!tests/.*",
+        "!__pycache__/.*",
+        "!\\.venv/.*",
+        "!requirements-dev\\.txt",
+        "!.*\\.pyc",
+        "!\\.pytest_cache/.*",
+      ]
+    },
+    {
+      path          = "${path.module}/../lambda/shared"
+      prefix_in_zip = "shared"
+    }
+  ]
+
+  # CloudWatch Logs retention and encryption
+  cloudwatch_logs_retention_in_days = 7
+  cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs.arn
+
+  # Suppress verbose archive output
+  quiet_archive_local_exec = true
+
+  # ADR-019: attach OutcomeOps license validator layer.
+  layers = [
+    var.outcomeops_license_layer_arn,
+  ]
+
+  environment_variables = merge(
+    {
+      ENV                  = var.environment
+      APP_NAME             = var.app_name
+      WORKSPACES_TABLE     = module.workspaces_table[0].dynamodb_table_id
+      OAUTH_KMS_KEY_ARN    = aws_kms_key.oauth_tokens[0].arn
+      FILE_INGESTION_QUEUE = aws_sqs_queue.file_ingestion[0].url
+      ONENOTE_SYNC_QUEUE   = aws_sqs_queue.onenote_sync[0].url
+      DELETE_QUEUE         = aws_sqs_queue.delete_queue[0].url
+      AUDIT_TABLE          = module.audit_logs_table.dynamodb_table_id
+    },
+    local.outcomeops_license_env,
+  )
+
+  # IAM permissions
+  attach_policy_statements = true
+  policy_statements = merge(
+    {
+      # DynamoDB for connections and tokens
+      dynamodb = {
+        effect = "Allow"
+        actions = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:Query"
+        ]
+        resources = [
+          module.workspaces_table[0].dynamodb_table_arn,
+          "${module.workspaces_table[0].dynamodb_table_arn}/index/*"
+        ]
+      }
+
+      # SSM for configuration
+      ssm_read = {
+        effect = "Allow"
+        actions = [
+          "ssm:GetParameter",
+          "ssm:GetParameters"
+        ]
+        resources = [
+          "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/*"
+        ]
+      }
+
+      # KMS for token encryption/decryption
+      kms_oauth = {
+        effect = "Allow"
+        actions = [
+          "kms:Encrypt",
+          "kms:Decrypt",
+          "kms:GenerateDataKey*"
+        ]
+        resources = [
+          aws_kms_key.oauth_tokens[0].arn
+        ]
+      }
+
+      # KMS for SSM parameter decryption
+      kms_ssm = {
+        effect = "Allow"
+        actions = [
+          "kms:Decrypt"
+        ]
+        resources = [
+          "arn:aws:kms:${var.aws_region}:${data.aws_caller_identity.current.account_id}:alias/aws/ssm"
+        ]
+      }
+
+      # SQS for receiving sync requests
+      sqs_receive = {
+        effect = "Allow"
+        actions = [
+          "sqs:ReceiveMessage",
+          "sqs:DeleteMessage",
+          "sqs:GetQueueAttributes"
+        ]
+        resources = [
+          aws_sqs_queue.onenote_sync[0].arn
+        ]
+      }
+
+      # SQS for sending to file ingestion, sync continuation, and delete queues
+      sqs_send = {
+        effect = "Allow"
+        actions = [
+          "sqs:SendMessage"
+        ]
+        resources = [
+          aws_sqs_queue.file_ingestion[0].arn,
+          aws_sqs_queue.onenote_sync[0].arn,
+          aws_sqs_queue.delete_queue[0].arn
+        ]
+      }
+
+      # DynamoDB audit log writes (plan/audit-completeness)
+      dynamodb_audit = {
+        effect = "Allow"
+        actions = [
+          "dynamodb:PutItem"
+        ]
+        resources = [
+          module.audit_logs_table.dynamodb_table_arn
+        ]
+      }
+    },
+    local.outcomeops_license_iam,
+  )
+
+  tags = {
+    Purpose = "onenote-sync"
+  }
+}
+
+# SQS trigger for sync Lambda
+resource "aws_lambda_event_source_mapping" "onenote_sync" {
+  count = var.enable_workspaces ? 1 : 0
+
+  event_source_arn = aws_sqs_queue.onenote_sync[0].arn
+  function_name    = module.onenote_sync_lambda[0].lambda_function_name
+
+  batch_size                         = 1 # Process one sync at a time
+  maximum_batching_window_in_seconds = 0 # Process immediately
+
+  scaling_config {
+    maximum_concurrency = 5 # Limit concurrent syncs
+  }
+}
+
+# ============================================================================
+# OneNote Sync Scheduler Lambda
+# Runs hourly to fan out sync jobs for all active connections
+# ============================================================================
+
+module "onenote_scheduler_lambda" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "8.1.2"
+
+  count = var.enable_workspaces ? 1 : 0
+
+  function_name = "${var.environment}-${var.app_name}-onenote-scheduler"
+  description   = "Hourly scheduler for OneNote sync jobs"
+  handler       = "handler.lambda_handler"
+  runtime       = "python3.12"
+  timeout       = 60
+  memory_size   = 256
+
+  # Source code
+  source_path = [
+    {
+      path             = "${path.module}/../lambda/onenote-scheduler"
+      pip_requirements = false
+      patterns = [
+        "!tests/.*",
+        "!__pycache__/.*",
+        "!\\.venv/.*",
+        "!.*\\.pyc",
+      ]
+    }
+  ]
+
+  # CloudWatch Logs retention and encryption
+  cloudwatch_logs_retention_in_days = 7
+  cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs.arn
+
+  # Suppress verbose archive output
+  quiet_archive_local_exec = true
+
+  environment_variables = {
+    ENV                = var.environment
+    APP_NAME           = var.app_name
+    WORKSPACES_TABLE   = module.workspaces_table[0].dynamodb_table_id
+    ONENOTE_SYNC_QUEUE = aws_sqs_queue.onenote_sync[0].url
+  }
+
+  # IAM permissions
+  attach_policy_statements = true
+  policy_statements = {
+    # DynamoDB for scanning connections
+    dynamodb = {
+      effect = "Allow"
+      actions = [
+        "dynamodb:Scan"
+      ]
+      resources = [
+        module.workspaces_table[0].dynamodb_table_arn
+      ]
+    }
+
+    # SQS for sending sync jobs
+    sqs_send = {
+      effect = "Allow"
+      actions = [
+        "sqs:SendMessage"
+      ]
+      resources = [
+        aws_sqs_queue.onenote_sync[0].arn
+      ]
+    }
+  }
+
+  tags = {
+    Purpose = "onenote-scheduler"
+  }
+}
+
+# EventBridge rule for hourly sync
+resource "aws_cloudwatch_event_rule" "onenote_hourly_sync" {
+  count = var.enable_workspaces ? 1 : 0
+
+  name                = "${var.environment}-${var.app_name}-onenote-hourly-sync"
+  description         = "Trigger OneNote sync scheduler every hour"
+  schedule_expression = "rate(1 hour)"
+
+  tags = {
+    Purpose = "onenote-scheduler"
+  }
+}
+
+resource "aws_cloudwatch_event_target" "onenote_scheduler" {
+  count = var.enable_workspaces ? 1 : 0
+
+  rule      = aws_cloudwatch_event_rule.onenote_hourly_sync[0].name
+  target_id = "onenote-scheduler"
+  arn       = module.onenote_scheduler_lambda[0].lambda_function_arn
+}
+
+resource "aws_lambda_permission" "onenote_scheduler_eventbridge" {
+  count = var.enable_workspaces ? 1 : 0
+
+  statement_id  = "AllowEventBridgeInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = module.onenote_scheduler_lambda[0].lambda_function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.onenote_hourly_sync[0].arn
+}
+
+# ============================================================================
+# SSM Parameter for OneNote Callback URL
+# ============================================================================
+
+resource "aws_ssm_parameter" "microsoft_onenote_callback_url" {
+  count = var.enable_workspaces ? 1 : 0
+
+  name        = "/${var.environment}/${var.app_name}/oauth/microsoft/onenote-callback-url"
+  description = "Microsoft OAuth callback URL for OneNote integration"
+  type        = "String"
+  value       = var.domain != "" ? "https://${local.fqdn}/api/onenote/callback" : "PLACEHOLDER_CONFIGURE_ME"
+
+  tags = {
+    Purpose = "microsoft-oauth"
+  }
+}
+
+# ============================================================================
+# Outputs
+# ============================================================================
+
+output "onenote_integration_lambda_name" {
+  description = "Name of the OneNote integration Lambda function"
+  value       = var.enable_workspaces ? module.onenote_integration_lambda[0].lambda_function_name : null
+}
+
+output "onenote_integration_lambda_arn" {
+  description = "ARN of the OneNote integration Lambda function"
+  value       = var.enable_workspaces ? module.onenote_integration_lambda[0].lambda_function_arn : null
+}
+
+output "onenote_integration_url" {
+  description = "Lambda Function URL for OneNote integration"
+  value       = var.enable_workspaces ? aws_lambda_function_url.onenote_integration[0].function_url : null
+}
+
+output "onenote_sync_queue_url" {
+  description = "SQS queue URL for OneNote sync jobs"
+  value       = var.enable_workspaces ? aws_sqs_queue.onenote_sync[0].url : null
+}
+
+output "onenote_sync_lambda_name" {
+  description = "Name of the OneNote sync Lambda function"
+  value       = var.enable_workspaces ? module.onenote_sync_lambda[0].lambda_function_name : null
+}
+
+output "onenote_sync_lambda_arn" {
+  description = "ARN of the OneNote sync Lambda function"
+  value       = var.enable_workspaces ? module.onenote_sync_lambda[0].lambda_function_arn : null
+}
+
+output "onenote_scheduler_lambda_name" {
+  description = "Name of the OneNote scheduler Lambda function"
+  value       = var.enable_workspaces ? module.onenote_scheduler_lambda[0].lambda_function_name : null
+}
+
+output "onenote_scheduler_lambda_arn" {
+  description = "ARN of the OneNote scheduler Lambda function"
+  value       = var.enable_workspaces ? module.onenote_scheduler_lambda[0].lambda_function_arn : null
+}
