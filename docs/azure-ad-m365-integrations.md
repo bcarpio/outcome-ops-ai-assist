@@ -1,6 +1,6 @@
-# Azure AD App Setup — M365 Integrations (SharePoint / Outlook / Teams / OneDrive)
+# Azure AD App Setup — M365 Integrations (SharePoint / Outlook / Teams / OneDrive / OneNote)
 
-This guide is for setting up the **Microsoft Graph OAuth app** used by the M365 source integrations (SharePoint, Outlook, Teams, OneDrive). It is **separate from the ALB OIDC login app** documented in [`azure-ad-setup.md`](./azure-ad-setup.md) — the two apps have different purposes and live as two distinct App Registrations.
+This guide is for setting up the **Microsoft Graph OAuth app** used by the M365 source integrations (SharePoint, Outlook, Teams, OneDrive, OneNote). It is **separate from the ALB OIDC login app** documented in [`azure-ad-setup.md`](./azure-ad-setup.md) — the two apps have different purposes and live as two distinct App Registrations.
 
 | Concern | App | Documented in |
 |---|---|---|
@@ -164,6 +164,21 @@ End-to-end smoke test (one integration is sufficient — they all share the same
 
 If the user sees `AADSTS65001: The user or administrator has not consented...`, an admin needs to click **Grant admin consent** in Step 2.
 
+## Where do my OneNote notebooks come from? (OneNote vs SharePoint)
+
+OneNote in Microsoft 365 stores notebooks in two completely different places, and Graph exposes them through **two different APIs**. This trips up basically every customer at least once, so it's worth knowing up front.
+
+| Where the notebook lives | Graph API | OutcomeOps integration that picks it up |
+|---|---|---|
+| User's personal OneDrive | `/me/onenote/notebooks` | **OneNote** |
+| A SharePoint site (incl. Teams channel notebooks, group sites, doc-library notebooks) | `/sites/{site-id}/onenote/notebooks` | **SharePoint** (as part of the site's content) |
+
+Both kinds appear unified in [onenote.com](https://www.onenote.com) and the OneNote desktop/mobile apps, which is why this is confusing — at the API level they are entirely separate.
+
+**Symptom:** Customer connects the OneNote integration, sees only some of their notebooks in the picker, and panics. The missing notebooks are SharePoint-hosted and will sync through the **SharePoint** integration instead. Connect both integrations to get full coverage.
+
+**Renaming notebooks:** When Microsoft auto-provisions a tenant, the user's default personal notebook often gets a non-friendly name like `Note_YYYYMMDD_HHMMSS`. Users can rename it in OneNote (right-click → Rename Notebook) and the new `displayName` will flow through on the next sync.
+
 ## Multi-customer note (BYOC)
 
 OutcomeOps AI Assist is BYOC (deploys into the customer's own AWS account). Each customer makes their own Azure AD app registration following the steps above. There is no shared SaaS app — the `microsoft_oauth_client_id` in each customer's tfvars points at their own App Registration.
@@ -181,7 +196,7 @@ If the customer's tenant requires admin approval for new app registrations (comm
 3. Roll the integration Lambdas via env-var touch to clear in-memory cached config:
 
    ```bash
-   for fn in sharepoint outlook teams onedrive; do
+   for fn in sharepoint outlook teams onedrive onenote; do
      aws lambda update-function-configuration \
        --function-name "prd-outcome-ops-ai-assist-${fn}-integration" \
        --region us-west-2 \
@@ -202,6 +217,8 @@ The sync Lambdas pick up the new secret automatically — they re-read SSM at mo
 | `AADSTS7000215: Invalid client secret` | SSM secret stale / rotated in Azure but not in SSM | Re-run Step 4's `put-parameter` with the current secret + roll the integration Lambda envs to clear cache |
 | Connection works but no files sync | Tokens stored but sync hasn't fired yet | EventBridge runs hourly; click "Sync now" on the connection card OR wait for the cron |
 | `auth_error` status on a connection after some time | Refresh token revoked (user signed out everywhere / admin revoked grants / tenant moved) | Workspace admin clicks Disconnect then Connect again on the integration card |
+| OneNote picker is missing some notebooks the user expects | Those notebooks are SharePoint-hosted (Teams channel, group site, doc library) — they don't come through `/me/onenote/notebooks` | See [Where do my OneNote notebooks come from?](#where-do-my-onenote-notebooks-come-from-onenote-vs-sharepoint) — connect the SharePoint integration to cover them |
+| OneNote notebook shows as `Note_YYYYMMDD_HHMMSS` in the picker | Microsoft auto-generated default-notebook name during tenant provisioning | User renames the notebook in onenote.com (right-click → Rename); next sync picks up the new `displayName` |
 
 ## Related
 
