@@ -1078,6 +1078,88 @@ def process_sharepoint_file(
         return None
 
 
+def process_onedrive_file(
+    workspace_id: str,
+    connection_id: str,
+    file_info: Dict[str, Any],
+    sync_id: Optional[str] = None,
+) -> Optional[str]:
+    """
+    Process a OneDrive file and upload to S3.
+
+    Downloads from pre-authenticated @microsoft.graph.downloadUrl. Stores
+    under workspaces/{ws}/onedrive/{connection_id}/{folder_path}/{filename}
+    so multiple OneDrive connections in the same workspace don't collide.
+    """
+    import urllib.error
+    import urllib.request
+
+    drive_name = file_info.get("drive_name", "OneDrive")
+    folder_path = file_info.get("folder_path", "")
+    filename = file_info.get("filename", "")
+    download_url = file_info.get("download_url", "")
+    mime_type = file_info.get("mime_type", "application/octet-stream")
+    item_id = file_info.get("item_id", "")
+    drive_id = file_info.get("drive_id", "")
+
+    logger.info(f"Processing OneDrive file: {drive_name}{folder_path}/{filename}")
+
+    if not download_url:
+        logger.error(f"No download URL for OneDrive file {filename}")
+        return None
+
+    try:
+        request = urllib.request.Request(download_url)
+        with urllib.request.urlopen(request, timeout=300) as response:
+            content = response.read()
+
+        # Sanitize each segment of folder_path independently so the
+        # original directory structure is preserved as a hierarchy in S3.
+        safe_folder_parts = [
+            sanitize_filename(p) for p in folder_path.strip("/").split("/") if p
+        ]
+        safe_filename = sanitize_filename(filename)
+
+        if safe_folder_parts:
+            s3_key = f"workspaces/{workspace_id}/onedrive/{connection_id}/{'/'.join(safe_folder_parts)}/{safe_filename}"
+        else:
+            s3_key = f"workspaces/{workspace_id}/onedrive/{connection_id}/{safe_filename}"
+
+        metadata = {
+            "source": "onedrive",
+            "workspace_id": workspace_id,
+            "connection_id": connection_id,
+            "onedrive_drive_id": drive_id[:128] if drive_id else "",
+            "onedrive_item_id": item_id[:128] if item_id else "",
+            "onedrive_folder_path": folder_path[:1024] if folder_path else "",
+        }
+
+        if sync_id:
+            metadata["sync_id"] = sync_id
+
+        s3_client.put_object(
+            Bucket=KB_BUCKET,
+            Key=s3_key,
+            Body=content,
+            ContentType=mime_type,
+            Metadata=metadata,
+            ExpectedBucketOwner=_get_account_id(),
+        )
+
+        logger.info(f"Uploaded OneDrive file to s3://{KB_BUCKET}/{s3_key}")
+        return s3_key
+
+    except urllib.error.HTTPError as e:
+        logger.error(f"Download error for OneDrive file {filename}: {e.code}")
+        return None
+    except ClientError as e:
+        logger.error(f"S3 error uploading OneDrive file {filename}: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"Error processing OneDrive file {filename}: {e}")
+        return None
+
+
 def process_sharepoint_page(
     workspace_id: str,
     connection_id: str,
@@ -1183,6 +1265,11 @@ def _build_repo_identifier(source: str, workspace_id: str, body: Dict, file_info
         ident = file_info.get("channel_name") or "General"
     elif source in ("sharepoint", "sharepoint_page"):
         ident = file_info.get("site_name") or ""
+    elif source == "onedrive":
+        # Use drive_id (Graph stable identifier) as the license-tracking
+        # identity. Different folders within the same OneDrive drive share
+        # the same identifier - they're the same licensable repo.
+        ident = file_info.get("drive_id") or ""
     else:
         ident = ""
     # Strip slashes/colons from ident so the composite stays parseable.
@@ -1372,6 +1459,13 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
                 )
             elif source == "sharepoint_page":
                 s3_key = process_sharepoint_page(
+                    workspace_id=workspace_id,
+                    connection_id=connection_id,
+                    file_info=file_info,
+                    sync_id=sync_id,
+                )
+            elif source == "onedrive":
+                s3_key = process_onedrive_file(
                     workspace_id=workspace_id,
                     connection_id=connection_id,
                     file_info=file_info,
