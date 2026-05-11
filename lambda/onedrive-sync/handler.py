@@ -116,6 +116,7 @@ def update_connection_status(
     status: str,
     file_count: int = 0,
     delta_tokens: Optional[Dict] = None,
+    known_item_ids: Optional[List[str]] = None,
     error: Optional[str] = None,
 ):
     """Update connection sync status."""
@@ -137,6 +138,10 @@ def update_connection_status(
         update_expr += ", delta_tokens = :delta"
         expr_values[":delta"] = delta_tokens
 
+    if known_item_ids is not None:
+        update_expr += ", known_item_ids = :known"
+        expr_values[":known"] = known_item_ids
+
     if error:
         update_expr += ", last_sync_error = :error"
         expr_values[":error"] = error
@@ -154,6 +159,54 @@ def update_connection_status(
         )
     except ClientError as e:
         logger.error(f"Failed to update connection status: {e}")
+
+
+def queue_orphan_cleanup(
+    workspace_id: str,
+    connection_id: str,
+    current_item_ids: List[str],
+) -> None:
+    """Queue a delete_orphans job to delete-worker.
+
+    delete-worker enumerates S3 keys under
+    ``workspaces/{ws}/onedrive/{connection_id}/`` and reads the
+    ``onedrive_item_id`` metadata on each object. Anything whose item_id
+    is NOT in current_item_ids gets deleted.
+
+    Best-effort: skipped if DELETE_QUEUE isn't configured or
+    current_item_ids is empty (defensive - empty set would wipe
+    everything for the connection).
+    """
+    if not DELETE_QUEUE:
+        logger.warning("DELETE_QUEUE not configured; skipping OneDrive orphan cleanup")
+        return
+
+    if not current_item_ids:
+        logger.warning(
+            f"[onedrive-sync] Empty current_item_ids for {workspace_id}/{connection_id}; "
+            "skipping orphan cleanup (would wipe everything)"
+        )
+        return
+
+    payload = {
+        "action": "delete_orphans",
+        "workspace_id": workspace_id,
+        "source": "onedrive",
+        "prefix": f"{connection_id}/",
+        "current_ids": current_item_ids,
+    }
+    try:
+        sqs_client.send_message(
+            QueueUrl=DELETE_QUEUE,
+            MessageBody=json.dumps(payload),
+        )
+        logger.info(
+            f"[onedrive-sync] Queued orphan cleanup for "
+            f"{workspace_id}/onedrive/{connection_id} "
+            f"(current={len(current_item_ids)} item_ids)"
+        )
+    except ClientError as e:
+        logger.error(f"Failed to queue OneDrive orphan cleanup: {e}")
 
 
 def queue_file_ingestion(
@@ -223,6 +276,12 @@ def process_sync_request(message: Dict) -> Dict[str, Any]:
     delta_tokens = connection.get("delta_tokens", {}) or {}
     drive_id = connection.get("drive_id", "")
     drive_name = connection.get("drive_name", "OneDrive")
+    # known_item_ids maintains the full set of item_ids the sync believes
+    # are currently live. We update it incrementally each delta run (add
+    # on new files, remove on `deleted` items in the delta response), then
+    # ship the full set to delete-worker as expected_keys for orphan
+    # cleanup. First-run: empty list, orphan cleanup is a no-op.
+    known_item_ids = set(connection.get("known_item_ids", []) or [])
 
     if not selected_folders:
         logger.warning(f"No folders selected for connection {connection_id}")
@@ -312,17 +371,21 @@ def process_sync_request(message: Dict) -> Dict[str, Any]:
             if new_delta:
                 delta_tokens[folder_id] = new_delta
 
-            # Filter to active files only (skip folders, skip deletions for
-            # now - file deletions inside selected folders are handled by
-            # the document-level orphan path on the next full reconcile)
+            # Split the delta response into deletions, active files, and
+            # folders/other (ignored). Deletions update known_item_ids so the
+            # end-of-run delete_orphans cleanup picks them up. Files get
+            # queued for ingestion AND added to known_item_ids.
             active_files = []
             for item in items:
-                if item.get("deleted"):
-                    continue
-                if "@removed" in item:
+                item_id = item.get("id")
+                if item.get("deleted") or "@removed" in item:
+                    if item_id:
+                        known_item_ids.discard(item_id)
                     continue
                 if "file" not in item:
                     continue
+                if item_id:
+                    known_item_ids.add(item_id)
                 active_files.append(item)
 
             logger.info(
@@ -357,11 +420,20 @@ def process_sync_request(message: Dict) -> Dict[str, Any]:
         # never raises. License-server dedupes by metadata.repo string match.
         track_repo_active(repo=repo_project)
 
+        current_item_ids = sorted(known_item_ids)
         update_connection_status(
             workspace_id, connection_id, "completed",
             file_count=total_files,
             delta_tokens=delta_tokens,
+            known_item_ids=current_item_ids,
         )
+
+        # Queue orphan cleanup. delete-worker enumerates S3 keys under
+        # this connection's prefix, reads onedrive_item_id metadata, and
+        # deletes anything not in current_item_ids. Catches files removed
+        # from OneDrive (delta reported as deleted -> we discarded their
+        # id from known_item_ids above) and any drift from previous syncs.
+        queue_orphan_cleanup(workspace_id, connection_id, current_item_ids)
 
         log_source_sync(
             audit_table_name=os.environ.get("AUDIT_TABLE", ""),
@@ -375,6 +447,7 @@ def process_sync_request(message: Dict) -> Dict[str, Any]:
                 "sync_id": sync_id,
                 "drive_id": drive_id,
                 "folder_count": len(selected_folders),
+                "known_item_count": len(current_item_ids),
             },
         )
 

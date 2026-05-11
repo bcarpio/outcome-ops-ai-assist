@@ -356,6 +356,22 @@ def find_orphaned_documents(
             # GitHub S3 key: workspaces/{ws}/github/{repo}/{file_path}
             # Strip prefix to get relative file path
             item_id = key[len(s3_prefix):] if key.startswith(s3_prefix) else ""
+        elif source == "onedrive":
+            # OneDrive S3 keys don't carry the item_id in the path -
+            # we store it as object metadata so the user-visible folder
+            # hierarchy stays intact. Head the object to read it.
+            try:
+                head = s3_client.head_object(
+                    Bucket=KB_BUCKET,
+                    Key=key,
+                    ExpectedBucketOwner=_get_account_id(),
+                )
+                item_id = (head.get("Metadata") or {}).get("onedrive_item_id", "")
+            except ClientError as e:
+                logger.warning(f"head_object failed for {key}: {e}")
+                # Skip rather than treat as orphan - missing metadata
+                # shouldn't trigger an accidental delete
+                continue
         else:
             item_id = key.split("/")[-1].split("_")[0]
 

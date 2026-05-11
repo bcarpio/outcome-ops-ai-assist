@@ -424,3 +424,147 @@ class TestLambdaHandlerDispatch:
         # First message bad, second ok
         assert any(r.get("status") == "error" for r in body["results"])
         assert any(r.get("status") == "success" for r in body["results"])
+
+
+# ============================================================================
+# Orphan cleanup (deletions detected via delta)
+# ============================================================================
+
+
+class TestKnownItemIdsTracking:
+    """known_item_ids is the source-of-truth set the sync ships to
+    delete-worker as expected_ids. Add on new file, remove on delete
+    item in delta response."""
+
+    @patch.object(handler_module, "queue_file_ingestion")
+    @patch.object(handler_module, "log_source_sync")
+    @patch.object(handler_module, "queue_orphan_cleanup")
+    @patch.object(handler_module, "get_folder_delta")
+    @patch.object(handler_module, "_load_oauth_config")
+    @patch.object(handler_module, "refresh_access_token", return_value="access")
+    def test_new_files_added_to_known_item_ids(
+        self, _refresh, _load, mock_delta, mock_cleanup,
+        mock_audit, _queue, mock_table, sample_connection
+    ):
+        sample_connection["known_item_ids"] = ["existing_1"]
+        mock_table.get_item.return_value = {"Item": sample_connection}
+        mock_delta.return_value = (
+            [
+                {"id": "new_1", "name": "a.pdf", "file": {},
+                 "@microsoft.graph.downloadUrl": "https://x"},
+                {"id": "new_2", "name": "b.pdf", "file": {},
+                 "@microsoft.graph.downloadUrl": "https://x"},
+            ],
+            "delta_link",
+        )
+
+        handler_module.process_sync_request({
+            "workspace_id": "ws_test", "connection_id": "conn_test",
+        })
+
+        # cleanup queued with the union (existing + new)
+        called_with = mock_cleanup.call_args[0]
+        ws, conn, current_ids = called_with
+        assert ws == "ws_test"
+        assert conn == "conn_test"
+        assert set(current_ids) == {"existing_1", "new_1", "new_2"}
+
+    @patch.object(handler_module, "queue_file_ingestion")
+    @patch.object(handler_module, "log_source_sync")
+    @patch.object(handler_module, "queue_orphan_cleanup")
+    @patch.object(handler_module, "get_folder_delta")
+    @patch.object(handler_module, "_load_oauth_config")
+    @patch.object(handler_module, "refresh_access_token", return_value="access")
+    def test_deleted_items_removed_from_known_item_ids(
+        self, _refresh, _load, mock_delta, mock_cleanup,
+        mock_audit, _queue, mock_table, sample_connection
+    ):
+        """Delta reports `deleted: {state: deleted}` for files removed
+        in OneDrive. Those item_ids must drop out of known_item_ids so
+        the orphan cleanup picks them up."""
+        sample_connection["known_item_ids"] = ["keep_me", "delete_me", "also_delete"]
+        mock_table.get_item.return_value = {"Item": sample_connection}
+        mock_delta.return_value = (
+            [
+                {"id": "delete_me", "deleted": {"state": "deleted"}},
+                {"id": "also_delete", "@removed": {"reason": "deleted"}},
+                {"id": "new_one", "name": "x.pdf", "file": {},
+                 "@microsoft.graph.downloadUrl": "https://x"},
+            ],
+            "delta_link",
+        )
+
+        handler_module.process_sync_request({
+            "workspace_id": "ws_test", "connection_id": "conn_test",
+        })
+
+        _ws, _conn, current_ids = mock_cleanup.call_args[0]
+        assert "keep_me" in current_ids
+        assert "new_one" in current_ids
+        assert "delete_me" not in current_ids
+        assert "also_delete" not in current_ids
+
+    @patch.object(handler_module, "queue_file_ingestion")
+    @patch.object(handler_module, "log_source_sync")
+    @patch.object(handler_module, "queue_orphan_cleanup")
+    @patch.object(handler_module, "get_folder_delta")
+    @patch.object(handler_module, "_load_oauth_config")
+    @patch.object(handler_module, "refresh_access_token", return_value="access")
+    def test_known_item_ids_persisted_to_ddb(
+        self, _refresh, _load, mock_delta, _cleanup,
+        _audit, _queue, mock_table, sample_connection
+    ):
+        sample_connection["known_item_ids"] = []
+        mock_table.get_item.return_value = {"Item": sample_connection}
+        mock_delta.return_value = (
+            [{"id": "f1", "name": "a", "file": {},
+              "@microsoft.graph.downloadUrl": "https://x"}],
+            "delta_link",
+        )
+
+        handler_module.process_sync_request({
+            "workspace_id": "ws_test", "connection_id": "conn_test",
+        })
+
+        # update_item should have been called with known_item_ids set
+        update_calls = mock_table.update_item.call_args_list
+        # find the "completed" status update
+        for call in update_calls:
+            expr_values = call[1].get("ExpressionAttributeValues", {})
+            if expr_values.get(":status") == "completed":
+                assert ":known" in expr_values
+                assert "f1" in expr_values[":known"]
+                return
+        raise AssertionError("No completed-status update with known_item_ids")
+
+
+class TestQueueOrphanCleanup:
+
+    def test_sends_correct_payload(self):
+        handler_module.queue_orphan_cleanup("ws1", "conn1", ["id1", "id2"])
+        sent = json.loads(mock_sqs_client.send_message.call_args[1]["MessageBody"])
+        assert sent == {
+            "action": "delete_orphans",
+            "workspace_id": "ws1",
+            "source": "onedrive",
+            "prefix": "conn1/",
+            "current_ids": ["id1", "id2"],
+        }
+        assert mock_sqs_client.send_message.call_args[1]["QueueUrl"] == "https://sqs.example.com/delete"
+
+    def test_refuses_empty_current_ids(self):
+        """Defensive: empty set would orphan-delete every file. Skip."""
+        handler_module.queue_orphan_cleanup("ws1", "conn1", [])
+        mock_sqs_client.send_message.assert_not_called()
+
+    def test_skips_when_delete_queue_unconfigured(self, monkeypatch):
+        monkeypatch.setattr(handler_module, "DELETE_QUEUE", None)
+        handler_module.queue_orphan_cleanup("ws1", "conn1", ["id1"])
+        mock_sqs_client.send_message.assert_not_called()
+
+    def test_swallows_sqs_error(self):
+        mock_sqs_client.send_message.side_effect = ClientError(
+            {"Error": {"Code": "X", "Message": "boom"}}, "SendMessage"
+        )
+        # Must not raise
+        handler_module.queue_orphan_cleanup("ws1", "conn1", ["id1"])

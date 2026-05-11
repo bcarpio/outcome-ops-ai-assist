@@ -787,6 +787,63 @@ class TestFindOrphanedDocuments:
         # but also won't be added because empty string is falsy
         assert result == []
 
+    @patch.object(handler_module, 'list_s3_keys_with_prefix')
+    def test_find_orphans_onedrive_uses_object_metadata(self, mock_list):
+        """OneDrive doesn't carry item_id in the S3 key (we preserve the
+        user-visible folder hierarchy instead). Item_id is stored in S3
+        object metadata; orphan detection HEADs each object to read it."""
+        mock_list.return_value = [
+            "workspaces/ws_1/onedrive/conn_x/Documents/report.pdf",
+            "workspaces/ws_1/onedrive/conn_x/Documents/deleted.docx",
+            "workspaces/ws_1/onedrive/conn_x/Photos/img.png",
+        ]
+        # Mock HEAD responses with different item_ids
+        def head_side_effect(**kwargs):
+            key = kwargs.get("Key", "")
+            mapping = {
+                "workspaces/ws_1/onedrive/conn_x/Documents/report.pdf": "item_keep_1",
+                "workspaces/ws_1/onedrive/conn_x/Documents/deleted.docx": "item_orphan",
+                "workspaces/ws_1/onedrive/conn_x/Photos/img.png": "item_keep_2",
+            }
+            return {"Metadata": {"onedrive_item_id": mapping.get(key, "")}}
+
+        mock_s3_client.head_object.side_effect = head_side_effect
+
+        current_ids = {"item_keep_1", "item_keep_2"}
+        result = find_orphaned_documents("ws_1", "onedrive", "conn_x/", current_ids)
+
+        assert len(result) == 1
+        assert "deleted.docx" in result[0]
+
+    @patch.object(handler_module, 'list_s3_keys_with_prefix')
+    def test_find_orphans_onedrive_head_failure_skips_key(self, mock_list):
+        """If head_object fails (e.g. transient AccessDenied) the key is
+        skipped rather than treated as an orphan - we don't want to
+        accidentally delete a file because we couldn't read its metadata."""
+        mock_list.return_value = [
+            "workspaces/ws_1/onedrive/conn_x/file.pdf",
+        ]
+        mock_s3_client.head_object.side_effect = ClientError(
+            {"Error": {"Code": "AccessDenied", "Message": "boom"}},
+            "HeadObject",
+        )
+
+        result = find_orphaned_documents("ws_1", "onedrive", "conn_x/", {"item_x"})
+        assert result == []
+
+    @patch.object(handler_module, 'list_s3_keys_with_prefix')
+    def test_find_orphans_onedrive_missing_metadata_skips(self, mock_list):
+        """An object without onedrive_item_id metadata (shouldn't happen
+        in practice but defend anyway) gets an empty item_id and is
+        filtered out by the `if item_id` guard - skipped, not deleted."""
+        mock_list.return_value = [
+            "workspaces/ws_1/onedrive/conn_x/file.pdf",
+        ]
+        mock_s3_client.head_object.return_value = {"Metadata": {}}
+
+        result = find_orphaned_documents("ws_1", "onedrive", "conn_x/", {"item_x"})
+        assert result == []
+
 
 # ============================================================================
 # handle_delete_document
