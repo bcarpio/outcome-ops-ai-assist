@@ -1704,7 +1704,12 @@ export async function validateDatabaseConnection(
     const data = await safeJson(response)
     throw new Error((data?.error as string) || `Failed to validate connection: ${response.status}`)
   }
-  return (await safeJson(response)) as ValidateDatabaseConnectionResult
+  const data = (await safeJson(response)) || {}
+  return {
+    valid: Boolean(data.valid),
+    server_version: (data.server_version as string | null | undefined) ?? null,
+    error: (data.error as string | null | undefined) ?? null,
+  }
 }
 
 export async function createDatabaseConnection(
