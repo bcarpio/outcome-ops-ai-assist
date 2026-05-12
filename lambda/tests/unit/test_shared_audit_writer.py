@@ -285,8 +285,10 @@ class TestActionConstants:
         # (PRIVACY_MODE_UPDATED, DOCUMENT_INGESTED) + 23 from
         # plan/audit-completeness Tier 1 + Tier 2 + 1 from ADR-019
         # license-layer regression detector + 1 from OneDrive +
-        # 1 from OneNote = 45.
-        assert len(ADMIN_ACTIONS) == 45
+        # 1 from OneNote + 4 from database integration
+        # (DATABASE_SYNCED, DB_CONNECTION_ESTABLISHED,
+        # DB_CREDENTIAL_USED, DB_CONNECTION_DELETED) = 49.
+        assert len(ADMIN_ACTIONS) == 49
 
     def test_known_action_in_set(self):
         assert ACTION_API_KEY_CREATED in ADMIN_ACTIONS

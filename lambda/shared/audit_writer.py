@@ -91,10 +91,19 @@ ACTION_TEAMS_SYNCED = "TEAMS_SYNCED"
 ACTION_SHAREPOINT_SYNCED = "SHAREPOINT_SYNCED"
 ACTION_ONEDRIVE_SYNCED = "ONEDRIVE_SYNCED"
 ACTION_ONENOTE_SYNCED = "ONENOTE_SYNCED"
+ACTION_DATABASE_SYNCED = "DATABASE_SYNCED"
 
 # OAuth lifecycle — credential establishment + rotation evidence.
 ACTION_OAUTH_CONNECTION_ESTABLISHED = "OAUTH_CONNECTION_ESTABLISHED"
 ACTION_OAUTH_TOKEN_REFRESHED = "OAUTH_TOKEN_REFRESHED"
+
+# Database connection lifecycle — non-OAuth credential storage.
+# DB_CREDENTIAL_USED fires on every sync read of the stored credential;
+# keeps secret-access events in the unified audit table instead of
+# splitting between audit + CloudTrail.
+ACTION_DB_CONNECTION_ESTABLISHED = "DB_CONNECTION_ESTABLISHED"
+ACTION_DB_CREDENTIAL_USED = "DB_CREDENTIAL_USED"
+ACTION_DB_CONNECTION_DELETED = "DB_CONNECTION_DELETED"
 
 # Data-deletion events — right-to-deletion compliance.
 ACTION_DOCUMENT_DELETED = "DOCUMENT_DELETED"
@@ -152,8 +161,12 @@ ADMIN_ACTIONS = frozenset(
         ACTION_SHAREPOINT_SYNCED,
         ACTION_ONEDRIVE_SYNCED,
         ACTION_ONENOTE_SYNCED,
+        ACTION_DATABASE_SYNCED,
         ACTION_OAUTH_CONNECTION_ESTABLISHED,
         ACTION_OAUTH_TOKEN_REFRESHED,
+        ACTION_DB_CONNECTION_ESTABLISHED,
+        ACTION_DB_CREDENTIAL_USED,
+        ACTION_DB_CONNECTION_DELETED,
         ACTION_DOCUMENT_DELETED,
         ACTION_CONVERSATION_DELETED,
         ACTION_WORKSPACE_SHARING_UPDATED,
@@ -186,6 +199,7 @@ _SOURCE_SYNC_ACTIONS = {
     "sharepoint": "SHAREPOINT_SYNCED",
     "onedrive":   "ONEDRIVE_SYNCED",
     "onenote":    "ONENOTE_SYNCED",
+    "database":   "DATABASE_SYNCED",
 }
 
 
@@ -213,6 +227,11 @@ HIDDEN_DASHBOARD_ACTIONS = frozenset({
     ACTION_SHAREPOINT_SYNCED,
     ACTION_ONEDRIVE_SYNCED,
     ACTION_ONENOTE_SYNCED,
+    ACTION_DATABASE_SYNCED,
+    # Per-credential-decrypt during database sync — one row per active
+    # connection per scheduler tick. Forensically essential, dashboard
+    # noise. Operators filter ?action=DB_CREDENTIAL_USED explicitly.
+    ACTION_DB_CREDENTIAL_USED,
     # Operator preference: keep these queryable but off the dashboard
     # cards. They write the audit row for forensic / right-to-deletion
     # / per-PR provenance, but the volume + nature isn't dashboard-
@@ -377,7 +396,7 @@ def log_source_sync(
         audit_table_name: DynamoDB table name (typically ``AUDIT_TABLE``).
         source: One of ``"github"``, ``"confluence"``, ``"jira"``,
             ``"outlook"``, ``"teams"``, ``"sharepoint"``, ``"onedrive"``,
-            ``"onenote"``.
+            ``"onenote"``, ``"database"``.
         workspace_id: Workspace this sync was scoped to.
         target: Source-specific target identifier (repo name, space
             key, project key, mailbox, channel, site, etc.).
