@@ -1869,6 +1869,39 @@ class TestEdgeCases:
         assert body["has_more"] is False
         assert "next_cursor" not in body
 
+    def test_list_conversations_admin_scan_passes_limit(self, mock_table):
+        """Admin (no user_id) scan must pass Limit so it doesn't read past one page."""
+        mock_table.scan.return_value = {"Items": []}
+
+        list_conversations(limit=37)
+        call_args = mock_table.scan.call_args[1]
+        assert call_args["Limit"] == 37
+
+    def test_list_conversations_admin_scan_pagination_with_cursor(self, mock_table):
+        """Admin scan accepts a base64 cursor and forwards it as ExclusiveStartKey,
+        and returns next_cursor when LastEvaluatedKey is present."""
+        import base64
+        cursor_key = {"PK": "CONV#cN", "SK": "METADATA"}
+        cursor = base64.b64encode(json.dumps(cursor_key).encode()).decode()
+
+        mock_table.scan.return_value = {
+            "Items": [{"conversation_id": "cN+1"}],
+            "LastEvaluatedKey": {"PK": "CONV#cN+1", "SK": "METADATA"},
+        }
+
+        result = list_conversations(limit=20, cursor=cursor)
+        call_args = mock_table.scan.call_args[1]
+        assert call_args["ExclusiveStartKey"] == cursor_key
+
+        body = json.loads(result["body"])
+        assert body["has_more"] is True
+        assert "next_cursor" in body
+
+    def test_list_conversations_admin_invalid_cursor(self, mock_table):
+        """Admin scan returns 400 on an undecodable cursor (no silent skip)."""
+        result = list_conversations(cursor="not-valid-base64!!!")
+        assert result["statusCode"] == 400
+
     def test_delete_conversation_also_deletes_memory(self, mock_table):
         """Test that deleting a conversation also deletes memory chunks."""
         mock_s3vectors_client.list_vectors.return_value = {

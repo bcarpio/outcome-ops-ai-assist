@@ -423,17 +423,27 @@ def get_user_workspace_ids(email):
         is_admin = org_resp.get("Item", {}).get("org_role") == "org_admin"
 
         if is_admin:
-            # Scan for all workspaces
+            # Enumerate all WS#... METADATA rows across the whole table.
+            # Paginated via LastEvaluatedKey - a single Scan reads at most
+            # 1MB and silently truncates without it; bites at enterprise
+            # workspace counts. Same risk shape as the ServiceNow ADR-004
+            # write-up.
             workspace_ids = []
-            response = table.scan(
-                FilterExpression="begins_with(SK, :sk)",
-                ExpressionAttributeValues={":sk": "METADATA"},
-                ProjectionExpression="PK",
-            )
-            for item in response.get("Items", []):
-                pk = item.get("PK", "")
-                if pk.startswith("WS#"):
-                    workspace_ids.append(pk.replace("WS#", ""))
+            scan_kwargs = {
+                "FilterExpression": "begins_with(SK, :sk)",
+                "ExpressionAttributeValues": {":sk": "METADATA"},
+                "ProjectionExpression": "PK",
+            }
+            while True:
+                response = table.scan(**scan_kwargs)
+                for item in response.get("Items", []):
+                    pk = item.get("PK", "")
+                    if pk.startswith("WS#"):
+                        workspace_ids.append(pk.replace("WS#", ""))
+                last_key = response.get("LastEvaluatedKey")
+                if not last_key:
+                    break
+                scan_kwargs["ExclusiveStartKey"] = last_key
             return workspace_ids
 
         # Regular user: direct memberships
@@ -453,27 +463,35 @@ def get_user_workspace_ids(email):
         if not direct_ids:
             return []
 
-        # Find workspaces that share with the user's workspaces
-        # Uses search_allowed_workspaces list on workspace METADATA
+        # Find workspaces that share with the user's workspaces. Same
+        # pagination consideration as the admin branch - the share-resolution
+        # has to see EVERY workspace METADATA row to know whether it grants
+        # the user access via search_allowed_workspaces.
         all_ids = set(direct_ids)
-        ws_scan = table.scan(
-            FilterExpression="begins_with(SK, :sk)",
-            ExpressionAttributeValues={":sk": "METADATA"},
-            ProjectionExpression="PK, search_allowed_workspaces",
-        )
-        for item in ws_scan.get("Items", []):
-            pk = item.get("PK", "")
-            if not pk.startswith("WS#"):
-                continue
-            ws_id = pk.replace("WS#", "")
-            if ws_id in all_ids:
-                continue
-            allowed = item.get("search_allowed_workspaces", [])
-            if allowed:
-                for direct_id in direct_ids:
-                    if direct_id in allowed:
-                        all_ids.add(ws_id)
-                        break
+        scan_kwargs = {
+            "FilterExpression": "begins_with(SK, :sk)",
+            "ExpressionAttributeValues": {":sk": "METADATA"},
+            "ProjectionExpression": "PK, search_allowed_workspaces",
+        }
+        while True:
+            ws_scan = table.scan(**scan_kwargs)
+            for item in ws_scan.get("Items", []):
+                pk = item.get("PK", "")
+                if not pk.startswith("WS#"):
+                    continue
+                ws_id = pk.replace("WS#", "")
+                if ws_id in all_ids:
+                    continue
+                allowed = item.get("search_allowed_workspaces", [])
+                if allowed:
+                    for direct_id in direct_ids:
+                        if direct_id in allowed:
+                            all_ids.add(ws_id)
+                            break
+            last_key = ws_scan.get("LastEvaluatedKey")
+            if not last_key:
+                break
+            scan_kwargs["ExclusiveStartKey"] = last_key
 
         return list(all_ids)
     except ClientError as e:

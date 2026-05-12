@@ -1100,6 +1100,65 @@ class TestGetUserWorkspaceIds:
         assert "ws-direct" in result
         assert "ws-shared" in result
 
+    @patch.object(mcp_module, "_get_dynamodb")
+    def test_admin_paginates_across_scan_pages(self, mock_get_ddb):
+        """Admin enumeration must walk every LastEvaluatedKey page so workspaces
+        past the 1MB Scan boundary aren't silently dropped at enterprise scale."""
+        table = MagicMock()
+        mock_get_ddb.return_value.Table.return_value = table
+        table.get_item.return_value = {"Item": {"org_role": "org_admin"}}
+
+        page1 = {
+            "Items": [{"PK": "WS#a"}, {"PK": "WS#b"}],
+            "LastEvaluatedKey": {"PK": "WS#b", "SK": "METADATA"},
+        }
+        page2 = {
+            "Items": [{"PK": "WS#c"}, {"PK": "WS#d"}],
+            "LastEvaluatedKey": {"PK": "WS#d", "SK": "METADATA"},
+        }
+        page3 = {"Items": [{"PK": "WS#e"}]}
+        table.scan.side_effect = [page1, page2, page3]
+
+        result = mcp_module.get_user_workspace_ids("admin@example.com")
+        assert sorted(result) == ["a", "b", "c", "d", "e"]
+        assert table.scan.call_count == 3
+        # Subsequent calls must pass the prior page's LastEvaluatedKey.
+        assert table.scan.call_args_list[1][1]["ExclusiveStartKey"] == {
+            "PK": "WS#b", "SK": "METADATA"
+        }
+        assert table.scan.call_args_list[2][1]["ExclusiveStartKey"] == {
+            "PK": "WS#d", "SK": "METADATA"
+        }
+
+    @patch.object(mcp_module, "_get_dynamodb")
+    def test_share_resolution_paginates_across_scan_pages(self, mock_get_ddb):
+        """Share-resolution scan must walk every page so a ws-shared row that
+        sits on page 2+ still gets matched against the user's direct memberships."""
+        table = MagicMock()
+        mock_get_ddb.return_value.Table.return_value = table
+        table.get_item.return_value = {"Item": {"org_role": "member"}}
+        table.query.return_value = {
+            "Items": [{"workspace_id": "ws-direct"}]
+        }
+
+        page1 = {
+            "Items": [
+                {"PK": "WS#ws-direct", "search_allowed_workspaces": []},
+            ],
+            "LastEvaluatedKey": {"PK": "WS#ws-direct", "SK": "METADATA"},
+        }
+        page2 = {
+            "Items": [
+                {"PK": "WS#ws-shared-late", "search_allowed_workspaces": ["ws-direct"]},
+            ],
+        }
+        table.scan.side_effect = [page1, page2]
+
+        result = mcp_module.get_user_workspace_ids("user@example.com")
+        assert "ws-direct" in result
+        assert "ws-shared-late" in result
+        assert table.scan.call_count == 2
+
 
 # ============================================================================
 # Tests: McpHandler.log_message override

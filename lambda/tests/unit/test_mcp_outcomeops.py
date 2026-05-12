@@ -191,6 +191,11 @@ class TestMcpToolHandlers:
         mock_dynamodb.query.return_value = {
             "Items": [{"workspace_id": "ws-1"}]
         }
+        # Share-resolution path in get_user_workspace_ids paginates table.scan
+        # via LastEvaluatedKey; the test must return a real dict (no key) so
+        # the loop exits. A bare MagicMock would return a truthy MagicMock and
+        # spin forever.
+        mock_dynamodb.scan.return_value = {"Items": []}
 
         result = mcp_module.handle_list_workspaces({}, "user@example.com")
 
@@ -224,6 +229,11 @@ class TestMcpToolHandlers:
                 },
             ]},
         ]
+        # Share-resolution path in get_user_workspace_ids paginates table.scan
+        # via LastEvaluatedKey; the test must return a real dict (no key) so
+        # the loop exits. A bare MagicMock would return a truthy MagicMock and
+        # spin forever.
+        mock_dynamodb.scan.return_value = {"Items": []}
 
         result = mcp_module.handle_list_workspace_documents(
             {"workspace_id": "ws-1"}, "user@example.com"

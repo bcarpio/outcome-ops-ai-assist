@@ -2137,42 +2137,43 @@ def list_conversations(user_id: str = None, limit: int = 20, cursor: str = None)
                         "body": json.dumps({"error": "Invalid cursor"}),
                     }
 
-            # Try GSI2 query first, fall back to scan if index doesn't exist yet
-            try:
-                query_params = {
-                    "IndexName": "GSI2",
-                    "KeyConditionExpression": "GSI2PK = :pk",
-                    "ExpressionAttributeValues": {":pk": f"USER#{user_id}"},
-                    "ScanIndexForward": False,
-                    "Limit": limit,
-                }
-                if cursor:
-                    query_params["ExclusiveStartKey"] = exclusive_start_key
+            # GSI2 is a deployed resource (terraform/dynamodb.tf). If it's
+            # missing, that's a deploy bug and we want to fail loudly, not
+            # silently fall back to a Scan that truncates at 1MB and gives
+            # wrong results on a large chat table (the same risk class as
+            # the ServiceNow bug write-up in the OutcomeOps ADR file).
+            query_params = {
+                "IndexName": "GSI2",
+                "KeyConditionExpression": "GSI2PK = :pk",
+                "ExpressionAttributeValues": {":pk": f"USER#{user_id}"},
+                "ScanIndexForward": False,
+                "Limit": limit,
+            }
+            if cursor:
+                query_params["ExclusiveStartKey"] = exclusive_start_key
 
-                response = table.query(**query_params)
-            except ClientError as gsi_err:
-                error_code = gsi_err.response.get("Error", {}).get("Code", "")
-                if error_code in ("ValidationException", "AccessDeniedException"):
-                    # GSI2 doesn't exist yet — fall back to scan
-                    logger.warning("GSI2 not available, falling back to scan")
-                    response = table.scan(
-                        FilterExpression="SK = :sk AND user_id = :uid",
-                        ExpressionAttributeValues={":sk": "METADATA", ":uid": user_id},
-                    )
-                    # Sort in Python since scan doesn't guarantee order
-                    response["Items"] = sorted(
-                        response.get("Items", []),
-                        key=lambda x: x.get("updated_at", ""),
-                        reverse=True,
-                    )[:limit]
-                else:
-                    raise
+            response = table.query(**query_params)
         else:
-            # Fallback to scan when no user_id (admin use case)
-            response = table.scan(
-                FilterExpression="SK = :sk",
-                ExpressionAttributeValues={":sk": "METADATA"},
-            )
+            # Admin enumeration path - no user_id filter. Paginated via
+            # the LastEvaluatedKey cursor returned below; clients iterate
+            # to walk the full table. Single Scan call still reads at most
+            # 1MB, so callers MUST honor `next_cursor` to see everything.
+            scan_kwargs = {
+                "FilterExpression": "SK = :sk",
+                "ExpressionAttributeValues": {":sk": "METADATA"},
+                "Limit": limit,
+            }
+            if cursor:
+                try:
+                    scan_kwargs["ExclusiveStartKey"] = json.loads(
+                        base64.b64decode(cursor).decode()
+                    )
+                except Exception:
+                    return {
+                        "statusCode": 400,
+                        "body": json.dumps({"error": "Invalid cursor"}),
+                    }
+            response = table.scan(**scan_kwargs)
 
         conversations = response.get("Items", [])
 
