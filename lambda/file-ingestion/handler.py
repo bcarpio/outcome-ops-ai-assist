@@ -33,6 +33,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 import boto3
+import yaml
 from botocore.exceptions import ClientError
 
 # Add the lambda root to sys.path so the bundled `shared/` package
@@ -1241,6 +1242,124 @@ def process_onenote_page(
         return None
 
 
+def _strip_top_values(doc: Any) -> Any:
+    """Recursively remove any ``top_values`` key from a parsed YAML doc.
+
+    Defensive backstop to the strip already performed in database-sync.
+    Even if a future contributor regresses the upstream pass, this gate
+    ensures column-value leakage never lands in S3. The two
+    implementations share the same shape; tests in chunk 05 keep them
+    in sync.
+    """
+    if isinstance(doc, dict):
+        doc.pop("top_values", None)
+        for v in doc.values():
+            _strip_top_values(v)
+    elif isinstance(doc, list):
+        for item in doc:
+            _strip_top_values(item)
+    return doc
+
+
+def process_database_artifact(
+    workspace_id: str,
+    connection_id: str,
+    file_info: Dict[str, Any],
+    sync_id: Optional[str] = None,
+) -> Optional[str]:
+    """
+    Process a per-table YAML chunk from Databao introspection and
+    upload to S3.
+
+    S3 key shape:
+      workspaces/{ws}/database/{conn_id}/{catalog}/{schema}/{table_id}.yaml
+
+    The table_id is `catalog.schema.table` sanitized via
+    sanitize_filename — matches what database-sync stores in
+    known_table_ids so delete-worker's orphan check is a direct stem
+    match (same pattern as OneNote pages).
+
+    Defensive top_values strip runs here AGAIN even though
+    database-sync already stripped on the way into SQS. Two gates
+    keep column-value data out of S3 if the upstream pass ever
+    regresses.
+    """
+    engine = file_info.get("engine", "")
+    host_hash = file_info.get("host_hash", "")
+    catalog = file_info.get("catalog", "")
+    schema = file_info.get("schema", "")
+    table_name = file_info.get("table", "")
+    table_id = file_info.get("table_id", "")
+    yaml_content = file_info.get("yaml_content", "")
+
+    logger.info(
+        f"Processing database artifact: {engine} {catalog}.{schema}.{table_name}"
+    )
+
+    if not table_id:
+        logger.error(f"Database artifact missing table_id: {table_name}")
+        return None
+
+    if not yaml_content or len(yaml_content.strip()) < 10:
+        logger.warning(f"Database artifact for {table_id} has empty yaml; skipping")
+        return None
+
+    # Defensive top_values strip. yaml round-trip rather than regex so
+    # we don't accidentally mangle column values that legitimately
+    # contain the string "top_values".
+    try:
+        doc = yaml.safe_load(yaml_content)
+        _strip_top_values(doc)
+        clean_yaml = yaml.dump(doc, sort_keys=False)
+    except yaml.YAMLError as e:
+        logger.error(f"Failed to parse YAML for {table_id}: {e}")
+        return None
+
+    # Sanitize ID segments independently so the hierarchy is preserved
+    # while OS-unsafe chars are scrubbed. Same per-segment treatment
+    # as process_onedrive_file / process_onenote_page.
+    safe_catalog = sanitize_filename(catalog) or "_default"
+    safe_schema = sanitize_filename(schema) or "_default"
+    safe_table_id = sanitize_filename(table_id)
+
+    s3_key = (
+        f"workspaces/{workspace_id}/database/{connection_id}/"
+        f"{safe_catalog}/{safe_schema}/{safe_table_id}.yaml"
+    )
+
+    metadata = {
+        "source": "database",
+        "workspace_id": workspace_id,
+        "connection_id": connection_id,
+        "database_engine": engine[:128],
+        "database_host_hash": host_hash[:128] if host_hash else "",
+        "database_catalog": (catalog or "")[:128],
+        "database_schema": (schema or "")[:128],
+        "database_table": (table_name or "")[:128],
+        "database_table_id": table_id[:128],
+    }
+    if sync_id:
+        metadata["sync_id"] = sync_id
+
+    try:
+        s3_client.put_object(
+            Bucket=KB_BUCKET,
+            Key=s3_key,
+            Body=clean_yaml.encode("utf-8"),
+            ContentType="application/yaml",
+            Metadata=metadata,
+            ExpectedBucketOwner=_get_account_id(),
+        )
+        logger.info(f"Uploaded database artifact to s3://{KB_BUCKET}/{s3_key}")
+        return s3_key
+    except ClientError as e:
+        logger.error(f"S3 error uploading database artifact {table_id}: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"Error processing database artifact {table_id}: {e}")
+        return None
+
+
 def process_sharepoint_page(
     workspace_id: str,
     connection_id: str,
@@ -1358,6 +1477,15 @@ def _build_repo_identifier(source: str, workspace_id: str, body: Dict, file_info
         # string match so re-emitting the same notebook_id per page
         # is fine.
         ident = file_info.get("notebook_id") or ""
+    elif source == "database":
+        # One physical DB (engine + host_hash) is one licensable repo
+        # regardless of how many catalogs/schemas/tables are introspected.
+        # database-sync uses the same "{engine}:{host_hash}" form when
+        # calling check_repo_limit; emitting it as the ident here keeps
+        # license-server dedup consistent.
+        engine = file_info.get("engine") or ""
+        host_hash = file_info.get("host_hash") or ""
+        ident = f"{engine}:{host_hash}" if engine and host_hash else ""
     else:
         ident = ""
     # Strip slashes/colons from ident so the composite stays parseable.
@@ -1561,6 +1689,13 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
                 )
             elif source == "onenote":
                 s3_key = process_onenote_page(
+                    workspace_id=workspace_id,
+                    connection_id=connection_id,
+                    file_info=file_info,
+                    sync_id=sync_id,
+                )
+            elif source == "database":
+                s3_key = process_database_artifact(
                     workspace_id=workspace_id,
                     connection_id=connection_id,
                     file_info=file_info,
