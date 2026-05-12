@@ -617,42 +617,62 @@ The Chat UI runs on ECS Fargate with a custom container image:
 
 ### Lambda Layer Updates
 
-Lambdas use installed-package layers (mounted at `/opt/python`) for shared
-dependencies. These are distinct from container images — they're zipped
-libraries, not full Docker images, and they ship via Terraform after
-being built locally.
+Two small Lambdas use installed-package layers (zipped libraries mounted
+at `/opt/python`) for shared dependencies:
 
 | Layer | Purpose | Used by |
 |---|---|---|
 | `runtime-layer` | `git`, `make`, `tar`, etc. | generate-code (cloning customer repos) |
 | `terraform-layer` | terraform CLI binary | generate-code (`terraform fmt` / `validate` on generated code) |
-| `databao-layer` | Databao Context Engine + Postgres/MySQL/MSSQL drivers | database-integration, database-sync |
 
 **When to rebuild a layer:**
-- Its `requirements.txt` changes (e.g., bumping a DB driver version, picking up an upstream Databao release)
+- Its `requirements.txt` changes
 - Its build script changes
 - First-time deploy to a fresh environment
 
 **Build commands:**
 ```bash
-# Build a specific layer
 make build-runtime-layer
 make build-terraform-layer
-make build-databao-layer
-
-# Or all three at once before a deploy
-make build-all-layers
+make build-all-layers   # both at once
 ```
 
 Each script runs inside the Amazon Linux 2 / Python 3.12 Docker image so
-binaries/native components are ABI-compatible with the Lambda runtime.
-After the build, run `terraform apply` — Terraform packages the layer
-directory into a layer-version zip and publishes it.
+binaries are ABI-compatible with the Lambda runtime. After the build,
+run `terraform apply` — Terraform packages the layer directory and
+publishes it as a new layer version.
 
-**Layer size cap:** Lambda layers cap at 250 MB unzipped. The Databao
-layer with all three DB drivers lands around 150-200 MB. If a future
-driver (Oracle, SAP HANA) pushes us over, split into per-engine
-sub-layers and attach selectively per Lambda.
+**Layer size cap:** Lambda layers cap at 250 MB unzipped. For Lambdas
+with bigger dependency stacks (e.g., the database integration's
+Databao + Postgres/MySQL/MSSQL drivers totaling 350+ MB), we ship as
+container images instead — see the next subsection.
+
+### Database Integration Container Images
+
+The database integration's two Lambdas (`database-integration` and
+`database-sync`) ship as Lambda container images rather than zip + layer
+because Databao Context Engine plus the DB driver set exceeds Lambda's
+250 MB unzipped layer cap. Container images allow up to 10 GB, giving
+plenty of headroom for future engines (Oracle, SAP HANA).
+
+```bash
+ENVIRONMENT=prd make build-database-images
+```
+
+The build script:
+1. Creates the two ECR repos via targeted Terraform apply
+2. Downloads the OutcomeOps license validator layer content (via
+   `aws lambda get-layer-version-by-arn`) and stages it for the sync
+   image — container-image Lambdas can't attach Lambda layers, so the
+   license code is baked into the image at build time
+3. Builds + pushes both images
+4. Writes image tags to SSM so the main `terraform apply` picks them up
+
+**Rebuild when:**
+- `lambda/databao-requirements.txt` changes
+- Either Lambda's Dockerfile changes
+- The handler Python code changes
+- The `outcomeops_license_layer_arn` in your tfvars bumps to a new layer version (the new license layer content needs to be re-baked into the sync image)
 
 ### Terraform Module Updates
 

@@ -1,4 +1,4 @@
-.PHONY: help setup install fmt lint validate test test-unit test-integration test-coverage test-ui audit build-run-tests-image build-ui-image build-mcp-server-image build-snyk-image build-runtime-layer build-terraform-layer build-databao-layer build-all-layers clean all
+.PHONY: help setup install fmt lint validate test test-unit test-integration test-coverage test-ui audit build-run-tests-image build-ui-image build-mcp-server-image build-snyk-image build-database-images build-runtime-layer build-terraform-layer build-all-layers clean all
 
 APP_NAME ?= outcome-ops-ai-assist
 AWS_REGION ?= us-west-2
@@ -287,15 +287,36 @@ build-runtime-layer:
 build-terraform-layer:
 	./scripts/build-terraform-layer.sh
 
-# Build the Databao Context Engine + DB driver layer used by
-# database-integration and database-sync.
-build-databao-layer:
-	./scripts/build-databao-layer.sh
-
 # Build all Lambda layers in one shot. Run before `terraform apply` after
 # updating any layer's requirements.txt or build script.
 build-all-layers:
 	./scripts/build-all-layers.sh
+
+# Build and push the database integration + sync container images.
+# These ship as container images (not Lambda layers) because the Databao
+# Context Engine + DB drivers total well over Lambda's 250 MB unzipped
+# layer cap. Container images cap at 10 GB so there's plenty of headroom.
+# Usage:
+#   ENVIRONMENT=dev make build-database-images
+#   ENVIRONMENT=prd make build-database-images
+build-database-images:
+	@if [ -z "$$ENVIRONMENT" ]; then \
+		echo "Error: ENVIRONMENT variable not set."; \
+		echo "Usage: ENVIRONMENT=dev make build-database-images"; \
+		echo "       ENVIRONMENT=prd make build-database-images"; \
+		exit 1; \
+	fi
+	@echo "Ensuring ECR repositories exist for environment: $$ENVIRONMENT"
+	@cd terraform && \
+		terraform init -input=false > /dev/null 2>&1 && \
+		(terraform workspace select $$ENVIRONMENT 2>/dev/null || terraform workspace new $$ENVIRONMENT) && \
+		terraform apply -var-file=$$ENVIRONMENT.tfvars \
+			-target=aws_ecr_repository.database_integration \
+			-target=aws_ecr_repository.database_sync \
+			-auto-approve
+	@echo ""
+	@echo "Building database container images for environment: $$ENVIRONMENT"
+	./scripts/build-database-images.sh --env $$ENVIRONMENT
 
 # ============================================================================
 # Utilities: Clean up build artifacts

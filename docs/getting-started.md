@@ -171,10 +171,9 @@ The Makefile target handles everything:
 
 ### Step 5b: Build Lambda Layers
 
-Several Lambdas depend on installed-package layers (distinct from container images — layers are zipped libraries mounted at `/opt/python` alongside the Lambda handler). These must be built locally before `terraform apply` so Terraform can package and publish them:
+A couple of small Lambdas depend on installed-package layers (zipped libraries mounted at `/opt/python` alongside the Lambda handler). These must be built locally before `terraform apply` so Terraform can package and publish them:
 
 ```bash
-# Build all three Lambda layers in one shot
 make build-all-layers
 ```
 
@@ -183,15 +182,34 @@ Or build them individually:
 ```bash
 make build-runtime-layer    # git/make/tar for generate-code Lambda
 make build-terraform-layer  # terraform CLI for generate-code's fmt/validate
-make build-databao-layer    # Databao Context Engine + DB drivers for the database source
 ```
 
-Each script builds inside the Amazon Linux 2 / Python 3.12 Docker image so native components (DB drivers, git) are ABI-compatible with the Lambda runtime.
+Each script builds inside the Amazon Linux 2 / Python 3.12 Docker image so native components (git, etc.) are ABI-compatible with the Lambda runtime.
 
 Rebuild any layer when:
-- Its `requirements.txt` changes (e.g., bumping a DB driver version)
+- Its `requirements.txt` changes
 - Its build script changes
 - You're deploying to a fresh environment for the first time
+
+### Step 5c: Build Database Integration Container Images
+
+The database integration ships as **Lambda container images** rather than a layer because the Databao Context Engine + Postgres/MySQL/MSSQL drivers exceed Lambda's 250 MB unzipped layer cap. Two images:
+
+```bash
+ENVIRONMENT=prd make build-database-images
+```
+
+The Makefile target:
+1. Creates the ECR repos via targeted Terraform apply
+2. Stages the OutcomeOps license validator layer content (downloaded from the layer ARN in your tfvars) so it can be baked into the sync image — container-image Lambdas can't attach Lambda layers, the license code is included in the image instead
+3. Builds + pushes both images (`database-integration`, `database-sync`)
+4. Writes image tags to SSM so the main `terraform apply` references them
+
+Rebuild when:
+- `lambda/databao-requirements.txt` changes
+- Either Lambda's Dockerfile changes
+- The handler Python code changes
+- `outcomeops_license_layer_arn` in your tfvars bumps to a new layer version
 
 ### Step 6: Deploy Infrastructure
 
@@ -354,16 +372,16 @@ make test-coverage         # Run tests with coverage report
 make audit                 # Run npm audit on UI dependencies
 
 # Container images (ECR) - require ENVIRONMENT=dev|prd
-ENVIRONMENT=prd make build-run-tests-image    # Run-tests Lambda container
-ENVIRONMENT=prd make build-ui-image           # Chat UI Fargate container
-ENVIRONMENT=prd make build-mcp-server-image   # OutcomeOps MCP server container
-ENVIRONMENT=prd make build-snyk-image         # Snyk MCP server container
+ENVIRONMENT=prd make build-run-tests-image     # Run-tests Lambda container
+ENVIRONMENT=prd make build-ui-image            # Chat UI Fargate container
+ENVIRONMENT=prd make build-mcp-server-image    # OutcomeOps MCP server container
+ENVIRONMENT=prd make build-snyk-image          # Snyk MCP server container
+ENVIRONMENT=prd make build-database-images     # database-integration + database-sync Lambda containers
 
 # Lambda layers (zipped packages, distinct from container images)
 make build-runtime-layer   # git/make/tar for generate-code Lambda
 make build-terraform-layer # terraform CLI for generate-code fmt/validate
-make build-databao-layer   # Databao + DB drivers for database source
-make build-all-layers      # All three layers in one shot
+make build-all-layers      # Both layers in one shot
 
 make clean                 # Clean build artifacts
 make all                   # Run fmt, validate, and test

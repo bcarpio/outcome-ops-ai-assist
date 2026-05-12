@@ -1,7 +1,36 @@
 # ============================================================================
-# Database Integration Lambda
-# Handles connection management for the database structured-data source
-# (Postgres / MySQL / MS SQL Server) via the Databao Context Engine.
+# Database Integration Lambdas (container-image deployed)
+#
+# Two Lambdas in the trio ship as container images:
+#   - database-integration : UI picker / connection CRUD
+#   - database-sync        : SQS-driven Databao introspection worker
+#
+# The scheduler stays zip-based (it's tiny - just a DDB scan + SQS fan-out
+# - no Databao dependency).
+#
+# Container-image deployment is required here because Databao Context Engine
+# plus the Postgres/MySQL/MSSQL driver set totals over 350 MB unzipped, well
+# past Lambda's 250 MB unzipped layer cap. Container images allow up to 10
+# GB which gives plenty of headroom for future engines (Oracle, SAP HANA).
+#
+# Image tags are written to SSM by scripts/build-database-images.sh; this
+# Terraform reads them at plan time so a `terraform apply` after a build
+# picks up the new image automatically.
+# ============================================================================
+
+# Read image tags from SSM (set by build-database-images.sh)
+data "aws_ssm_parameter" "database_integration_image_tag" {
+  count = var.enable_workspaces ? 1 : 0
+  name  = "/${var.environment}/${var.app_name}/database-integration/image-tag"
+}
+
+data "aws_ssm_parameter" "database_sync_image_tag" {
+  count = var.enable_workspaces ? 1 : 0
+  name  = "/${var.environment}/${var.app_name}/database-sync/image-tag"
+}
+
+# ============================================================================
+# Database Integration Lambda (container image)
 # ============================================================================
 
 module "database_integration_lambda" {
@@ -12,43 +41,18 @@ module "database_integration_lambda" {
 
   function_name = "${var.environment}-${var.app_name}-database-integration"
   description   = "Database connection management + introspection picker for OutcomeOps AI Assist"
-  handler       = "handler.lambda_handler"
-  runtime       = "python3.12"
   timeout       = 60
-  memory_size   = 512
+  memory_size   = 1024
+  publish       = true
 
-  # Source code with pip requirements
-  source_path = [
-    {
-      path             = "${path.module}/../lambda/database-integration"
-      pip_requirements = true
-      patterns = [
-        "!tests/.*",
-        "!__pycache__/.*",
-        "!\\.venv/.*",
-        "!requirements-dev\\.txt",
-        "!.*\\.pyc",
-        "!\\.pytest_cache/.*",
-      ]
-    },
-    {
-      path          = "${path.module}/../lambda/shared"
-      prefix_in_zip = "shared"
-    }
-  ]
+  # Container image deployment
+  create_package = false
+  package_type   = "Image"
+  image_uri      = "${aws_ecr_repository.database_integration[0].repository_url}:${data.aws_ssm_parameter.database_integration_image_tag[0].value}"
+  architectures  = ["x86_64"]
 
-  # CloudWatch Logs retention and encryption
   cloudwatch_logs_retention_in_days = 7
   cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs.arn
-
-  # Suppress verbose archive output
-  quiet_archive_local_exec = true
-
-  # Integration Lambda needs Databao for the schema picker
-  # (list_schemas calls INFORMATION_SCHEMA on the customer DB).
-  layers = [
-    module.databao_layer[0].lambda_layer_arn,
-  ]
 
   environment_variables = {
     ENV                       = var.environment
@@ -60,10 +64,8 @@ module "database_integration_lambda" {
     AUDIT_TABLE               = module.audit_logs_table.dynamodb_table_id
   }
 
-  # IAM permissions
   attach_policy_statements = true
   policy_statements = {
-    # DynamoDB for connections and credentials
     dynamodb = {
       effect = "Allow"
       actions = [
@@ -79,7 +81,6 @@ module "database_integration_lambda" {
       ]
     }
 
-    # KMS for credential encryption/decryption
     kms_db_credentials = {
       effect = "Allow"
       actions = [
@@ -92,7 +93,6 @@ module "database_integration_lambda" {
       ]
     }
 
-    # SQS for sync and delete queues
     sqs_send = {
       effect = "Allow"
       actions = [
@@ -104,7 +104,6 @@ module "database_integration_lambda" {
       ]
     }
 
-    # DynamoDB audit log writes
     dynamodb_audit = {
       effect = "Allow"
       actions = [
@@ -121,7 +120,6 @@ module "database_integration_lambda" {
   }
 }
 
-# Lambda Function URL with IAM auth
 resource "aws_lambda_function_url" "database_integration" {
   count = var.enable_workspaces ? 1 : 0
 
@@ -137,7 +135,6 @@ resource "aws_lambda_function_url" "database_integration" {
   }
 }
 
-# Store URL in SSM for Fargate proxy
 resource "aws_ssm_parameter" "database_integration_url" {
   count = var.enable_workspaces ? 1 : 0
 
@@ -159,17 +156,15 @@ resource "aws_sqs_queue" "database_sync" {
   count = var.enable_workspaces ? 1 : 0
 
   name                       = "${var.environment}-${var.app_name}-database-sync"
-  visibility_timeout_seconds = 900   # 15 minutes for long-running syncs
-  message_retention_seconds  = 86400 # 1 day
-  receive_wait_time_seconds  = 20    # Long polling
+  visibility_timeout_seconds = 900
+  message_retention_seconds  = 86400
+  receive_wait_time_seconds  = 20
 
-  # Dead letter queue
   redrive_policy = jsonencode({
     deadLetterTargetArn = aws_sqs_queue.database_sync_dlq[0].arn
     maxReceiveCount     = 3
   })
 
-  # Encryption at rest
   sqs_managed_sse_enabled = var.enable_cmk_encryption ? null : true
   kms_master_key_id       = local.data_cmk_arn
 
@@ -182,7 +177,7 @@ resource "aws_sqs_queue" "database_sync_dlq" {
   count = var.enable_workspaces ? 1 : 0
 
   name                      = "${var.environment}-${var.app_name}-database-sync-dlq"
-  message_retention_seconds = 1209600 # 14 days
+  message_retention_seconds = 1209600
 
   sqs_managed_sse_enabled = var.enable_cmk_encryption ? null : true
   kms_master_key_id       = local.data_cmk_arn
@@ -193,9 +188,14 @@ resource "aws_sqs_queue" "database_sync_dlq" {
 }
 
 # ============================================================================
-# Database Sync Lambda
-# Processes SQS messages to introspect databases via Databao + queue
-# per-table YAML chunks to file-ingestion.
+# Database Sync Lambda (container image)
+#
+# Note: the OutcomeOps license validator is baked into this image at build
+# time (see lambda/database-sync/Dockerfile + scripts/build-database-images.sh).
+# Container-image Lambdas can't attach Lambda layers, so the license layer's
+# content is downloaded via get-layer-version-by-arn and unpacked into the
+# image's site-packages. The handler code imports `outcomeops_license`
+# exactly as it would with a zip+layer deployment.
 # ============================================================================
 
 module "database_sync_lambda" {
@@ -206,40 +206,17 @@ module "database_sync_lambda" {
 
   function_name = "${var.environment}-${var.app_name}-database-sync"
   description   = "Database introspection sync via Databao for OutcomeOps AI Assist"
-  handler       = "handler.lambda_handler"
-  runtime       = "python3.12"
-  timeout       = 900 # 15 minutes for large warehouses
+  timeout       = 900
   memory_size   = 2048
+  publish       = true
 
-  source_path = [
-    {
-      path             = "${path.module}/../lambda/database-sync"
-      pip_requirements = true
-      patterns = [
-        "!tests/.*",
-        "!__pycache__/.*",
-        "!\\.venv/.*",
-        "!requirements-dev\\.txt",
-        "!.*\\.pyc",
-        "!\\.pytest_cache/.*",
-      ]
-    },
-    {
-      path          = "${path.module}/../lambda/shared"
-      prefix_in_zip = "shared"
-    }
-  ]
+  create_package = false
+  package_type   = "Image"
+  image_uri      = "${aws_ecr_repository.database_sync[0].repository_url}:${data.aws_ssm_parameter.database_sync_image_tag[0].value}"
+  architectures  = ["x86_64"]
 
   cloudwatch_logs_retention_in_days = 7
   cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs.arn
-
-  quiet_archive_local_exec = true
-
-  # ADR-019: attach OutcomeOps license validator + Databao layer.
-  layers = [
-    var.outcomeops_license_layer_arn,
-    module.databao_layer[0].lambda_layer_arn,
-  ]
 
   environment_variables = merge(
     {
@@ -326,15 +303,14 @@ module "database_sync_lambda" {
   }
 }
 
-# SQS trigger for sync Lambda
 resource "aws_lambda_event_source_mapping" "database_sync" {
   count = var.enable_workspaces ? 1 : 0
 
   event_source_arn = aws_sqs_queue.database_sync[0].arn
   function_name    = module.database_sync_lambda[0].lambda_function_name
 
-  batch_size                         = 1 # Process one sync at a time
-  maximum_batching_window_in_seconds = 0 # Process immediately
+  batch_size                         = 1
+  maximum_batching_window_in_seconds = 0
 
   scaling_config {
     maximum_concurrency = 5
@@ -342,8 +318,7 @@ resource "aws_lambda_event_source_mapping" "database_sync" {
 }
 
 # ============================================================================
-# Database Sync Scheduler Lambda
-# Runs hourly to fan out sync jobs for all active connections
+# Database Sync Scheduler Lambda (zip - no Databao dep, stays small)
 # ============================================================================
 
 module "database_scheduler_lambda" {
@@ -412,7 +387,6 @@ module "database_scheduler_lambda" {
   }
 }
 
-# EventBridge rule for hourly sync
 resource "aws_cloudwatch_event_rule" "database_hourly_sync" {
   count = var.enable_workspaces ? 1 : 0
 

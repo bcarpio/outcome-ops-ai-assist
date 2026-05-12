@@ -19,18 +19,16 @@ echo "--- Building Runtime Layer ---"
 "$SCRIPT_DIR/build-runtime-layer.sh"
 echo ""
 
-# Build Databao layer (Databao Context Engine + DB drivers)
-echo "--- Building Databao Layer ---"
-"$SCRIPT_DIR/build-databao-layer.sh"
-echo ""
-
 echo "========================================"
 echo "All layers built successfully!"
 echo "========================================"
 echo ""
 echo "Layer sizes:"
 du -sh lambda/runtime-layer 2>/dev/null || true
-du -sh lambda/databao-layer 2>/dev/null || true
+echo ""
+echo "Note: the database integration ships as Lambda container images,"
+echo "not a Lambda layer. To build those, run:"
+echo "  ENVIRONMENT=<dev|prd> make build-database-images"
 echo ""
 echo "Run 'terraform plan' to see the changes."
 echo ""

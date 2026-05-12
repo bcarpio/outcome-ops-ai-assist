@@ -75,8 +75,6 @@ lambda/java-layer/java/
 # Terraform layer (binaries only - keep README)
 lambda/terraform-layer/bin/
 
-# Databao layer (installed packages only - keep requirements.txt)
-lambda/databao-layer/python/
 
 # Scratch/working directory
 .scratch/
@@ -85,3 +83,4 @@ lambda/databao-layer/python/
 # agents; per the EXECUTE.md convention they stay out of git so the
 # repo doesn't accumulate stale plans next to shipped code).
 plan/
+lambda/.license-layer-staging/

@@ -73,21 +73,29 @@ PHI in a way that aggregate statistics like null-percentage don't.
 This section is for the operator deploying OutcomeOps into their AWS
 account — not the workspace admin connecting an individual DB later.
 
-The database integration ships as a Lambda trio + a Lambda layer:
+The integration ships as two **Lambda container images** (not a Lambda
+layer — Databao + DB drivers total over 350 MB unzipped, well past
+Lambda's 250 MB unzipped layer cap; container images allow up to 10 GB):
 
-1. **Build the Databao Lambda layer** (must happen before
-   `terraform apply` — Terraform packages the layer dir into a
-   layer-version zip):
+- `database-integration` — UI-facing picker / connection CRUD
+- `database-sync` — SQS-driven Databao introspection worker
+
+Plus a third zip-based Lambda (`database-scheduler`) for the hourly cron.
+
+1. **Build + push the two container images**. The script also stages the
+   OutcomeOps license validator layer content into the sync image at
+   build time (container-image Lambdas can't attach Lambda layers, so
+   the license code is baked in):
    ```bash
-   make build-databao-layer
+   ENVIRONMENT=prd make build-database-images
    ```
-   The script runs inside the Amazon Linux 2 / Python 3.12 Docker
-   image so the DB driver native components are ABI-compatible with
-   Lambda. Layer typically lands ~150-200 MB unzipped.
+   This creates the ECR repos via a targeted `terraform apply`, builds
+   both images, pushes them, and writes the image tags to SSM so the
+   main Terraform apply can reference them.
 
-2. **Apply Terraform** — picks up `lambda-database.tf`,
-   `lambda-databao-layer.tf`, `kms-database.tf`, and the Fargate
-   `DATABASE_LAMBDA_URL` env var wired into `ui-fargate.tf`:
+2. **Apply Terraform** — picks up `lambda-database.tf`, `kms-database.tf`,
+   and the Fargate `DATABASE_LAMBDA_URL` env var wired into
+   `ui-fargate.tf`:
    ```bash
    cd terraform
    terraform plan -var-file=prd.tfvars -out=terraform.prd.out
@@ -110,12 +118,13 @@ After step 3, the **Database** card appears under **Workspace
 Settings → Integrations** for workspace admins. Continue to
 "Connecting a database" below for the per-workspace setup.
 
-**Rebuild the layer whenever:**
-- `lambda/databao-layer/requirements.txt` changes (Databao release bump, DB driver bump)
-- `scripts/build-databao-layer.sh` changes
-- You're deploying to a fresh environment for the first time
+**Rebuild the images whenever:**
+- `lambda/databao-requirements.txt` changes (Databao release bump, DB driver bump)
+- Either Lambda's Dockerfile changes
+- The handler Python code changes (rebuild + redeploy to pick up the new code)
+- The OutcomeOps license layer version changes (`outcomeops_license_layer_arn` in tfvars bumps)
 
-See [`docs/deployment-guide.md`](./deployment-guide.md#lambda-layer-updates) for the broader layer-management story.
+See [`docs/deployment-guide.md`](./deployment-guide.md#container-image-updates) for the broader image-update story.
 
 ## Connecting a database
 
@@ -263,7 +272,7 @@ specific customer ask we're tracking:
 | **`auth_error`** on a connection after some time | DB password rotated, user revoked, or SSL cert changed | Workspace admin disconnects and reconnects with the new creds. (DB-side auth has no refresh-token equivalent — manual rotation is the path.) |
 | **`blocked_license_limit`** status | Hitting the repo-limit for your OutcomeOps tier | Same as any other source — increase your tier or trim connections. Repo identity is `{engine}:{host_hash}` so the same physical DB across multiple workspace connections counts ONCE |
 | **Schema picker is slow / empty** | Large warehouse, slow `INFORMATION_SCHEMA` introspection, or the connection user lacks `SELECT` on the schemas | Confirm the user has the right grants. For very large warehouses (10k+ tables), a DDB-cached schema tree is on the roadmap |
-| **Connection card shows "Server misconfiguration: Databao layer missing"** | Lambda layer wasn't built before terraform apply | Run `make build-databao-layer` (or `make build-all-layers` to rebuild all) then `terraform apply` again |
+| **Connection card returns "Server misconfiguration: Databao layer missing"** | Container image wasn't built (or not yet pushed) before terraform apply | Run `ENVIRONMENT=prd make build-database-images` then `terraform apply` |
 
 ## Related
 

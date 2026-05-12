@@ -1,0 +1,16 @@
+# Databao Context Engine + DB drivers, shared by both database integration
+# container images (database-integration + database-sync).
+#
+# Kept at the lambda/ root rather than per-Lambda so the dependency set
+# stays consistent across the two images and a single bump propagates.
+databao-context-engine
+
+# Database drivers for the MVP-supported engines
+asyncpg          # Postgres (incl. Aurora Postgres, RDS Postgres, Redshift)
+pymysql          # MySQL (incl. Aurora MySQL, RDS MySQL, MariaDB)
+mssql-python     # MS SQL Server (Microsoft's new pure-Python driver)
+
+# boto3 and yaml come pre-installed in the AWS-published lambda/python:3.12
+# image, but pinning here as a defense against image regressions.
+boto3>=1.34.0
+PyYAML>=6.0.0

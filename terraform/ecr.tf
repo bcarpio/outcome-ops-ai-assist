@@ -133,3 +133,116 @@ output "chat_ui_ecr_repository_arn" {
   description = "ECR repository ARN for chat UI container image"
   value       = var.deploy_ui ? aws_ecr_repository.chat_ui[0].arn : null
 }
+
+# ============================================================================
+# ECR Repositories for Database Integration Lambda Container Images
+# ============================================================================
+# The database integration ships as container images (not a Lambda layer) -
+# the Databao Context Engine + Postgres/MySQL/MSSQL drivers total over 350
+# MB unzipped, well past Lambda's 250 MB unzipped layer cap. Container
+# images go up to 10 GB.
+#
+# Two repos, one per Lambda:
+#   - database-integration: UI-facing picker (validate connection, list schemas)
+#   - database-sync:        SQS worker (full Databao introspection + license-gated)
+#
+# Bootstrap (same pattern as run-tests):
+#   ENVIRONMENT=prd make build-database-images
+#     -> creates ECR repos via targeted terraform apply
+#     -> builds + pushes both images
+#     -> stores image tags in SSM for the main terraform apply to pick up
+# ============================================================================
+
+resource "aws_ecr_repository" "database_integration" {
+  count = var.enable_workspaces ? 1 : 0
+
+  name                 = "${var.environment}-${var.app_name}-database-integration"
+  image_tag_mutability = "IMMUTABLE"
+  force_delete         = true
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+
+  encryption_configuration {
+    encryption_type = var.enable_cmk_encryption ? "KMS" : "AES256"
+    kms_key         = local.data_cmk_arn
+  }
+
+  tags = {
+    Purpose = "database-integration-lambda"
+  }
+}
+
+resource "aws_ecr_lifecycle_policy" "database_integration" {
+  count = var.enable_workspaces ? 1 : 0
+
+  repository = aws_ecr_repository.database_integration[0].name
+
+  policy = jsonencode({
+    rules = [
+      {
+        rulePriority = 1
+        description  = "Keep last 5 images"
+        selection = {
+          tagStatus   = "any"
+          countType   = "imageCountMoreThan"
+          countNumber = 5
+        }
+        action = { type = "expire" }
+      }
+    ]
+  })
+}
+
+resource "aws_ecr_repository" "database_sync" {
+  count = var.enable_workspaces ? 1 : 0
+
+  name                 = "${var.environment}-${var.app_name}-database-sync"
+  image_tag_mutability = "IMMUTABLE"
+  force_delete         = true
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+
+  encryption_configuration {
+    encryption_type = var.enable_cmk_encryption ? "KMS" : "AES256"
+    kms_key         = local.data_cmk_arn
+  }
+
+  tags = {
+    Purpose = "database-sync-lambda"
+  }
+}
+
+resource "aws_ecr_lifecycle_policy" "database_sync" {
+  count = var.enable_workspaces ? 1 : 0
+
+  repository = aws_ecr_repository.database_sync[0].name
+
+  policy = jsonencode({
+    rules = [
+      {
+        rulePriority = 1
+        description  = "Keep last 5 images"
+        selection = {
+          tagStatus   = "any"
+          countType   = "imageCountMoreThan"
+          countNumber = 5
+        }
+        action = { type = "expire" }
+      }
+    ]
+  })
+}
+
+output "database_integration_ecr_repository_url" {
+  description = "ECR repository URL for database-integration Lambda container image"
+  value       = var.enable_workspaces ? aws_ecr_repository.database_integration[0].repository_url : null
+}
+
+output "database_sync_ecr_repository_url" {
+  description = "ECR repository URL for database-sync Lambda container image"
+  value       = var.enable_workspaces ? aws_ecr_repository.database_sync[0].repository_url : null
+}
