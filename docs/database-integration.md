@@ -16,6 +16,14 @@ Once connected, your AI assistant can answer questions like:
 
 without anyone hand-curating a data dictionary.
 
+> **Who is this doc for?**
+>
+> | If you're... | Jump to |
+> |---|---|
+> | The **operator** deploying OutcomeOps into your AWS account and turning on the database source for the first time | [Deploying the integration](#deploying-the-integration-operator) — 3 commands: build the Databao Lambda layer, `terraform apply`, rebuild the UI image |
+> | A **workspace admin** connecting one of your databases to a workspace | [Connecting a database](#connecting-a-database) → [Configuring scope](#configuring-scope-which-tables-to-ingest) |
+> | A **security / compliance reviewer** evaluating what data leaves the customer's DB | [What gets ingested](#what-gets-ingested) and [Compliance posture](#compliance-posture) |
+
 ## Why this integration exists
 
 For regulated enterprises (HCLS, financial services, public sector),
