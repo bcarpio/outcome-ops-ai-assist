@@ -1,4 +1,4 @@
-.PHONY: help setup install fmt lint validate test test-unit test-integration test-coverage test-ui audit build-run-tests-image build-ui-image build-mcp-server-image build-snyk-image clean all
+.PHONY: help setup install fmt lint validate test test-unit test-integration test-coverage test-ui audit build-run-tests-image build-ui-image build-mcp-server-image build-snyk-image build-runtime-layer build-terraform-layer build-databao-layer build-all-layers clean all
 
 APP_NAME ?= outcome-ops-ai-assist
 AWS_REGION ?= us-west-2
@@ -270,6 +270,32 @@ build-snyk-image:
 	aws ecr get-login-password --region $(AWS_REGION) | docker login --username AWS --password-stdin $(AWS_ACCOUNT).dkr.ecr.$(AWS_REGION).amazonaws.com
 	docker build -t $(ECR_REPO):latest containers/mcp-snyk/
 	docker push $(ECR_REPO):latest
+
+# ============================================================================
+# Lambda layers — installed packages / binaries published as Lambda layer
+# versions, distinct from container images. Each script builds inside the
+# Amazon Linux 2 / Python 3.12 image so the binaries are ABI-compatible
+# with the Lambda runtime. The layer is then packaged + published by
+# terraform on the next apply.
+# ============================================================================
+
+# Build the runtime tools layer (git, make, tar, etc.) used by generate-code.
+build-runtime-layer:
+	./scripts/build-runtime-layer.sh
+
+# Build the terraform CLI layer used by generate-code for fmt/validate.
+build-terraform-layer:
+	./scripts/build-terraform-layer.sh
+
+# Build the Databao Context Engine + DB driver layer used by
+# database-integration and database-sync.
+build-databao-layer:
+	./scripts/build-databao-layer.sh
+
+# Build all Lambda layers in one shot. Run before `terraform apply` after
+# updating any layer's requirements.txt or build script.
+build-all-layers:
+	./scripts/build-all-layers.sh
 
 # ============================================================================
 # Utilities: Clean up build artifacts
