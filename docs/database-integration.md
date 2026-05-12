@@ -60,6 +60,55 @@ defaults: for a column called `patient_diagnosis`, the top 10 values
 *are* the data. Even when "aggregated by frequency," they expose
 PHI in a way that aggregate statistics like null-percentage don't.
 
+## Deploying the integration (operator)
+
+This section is for the operator deploying OutcomeOps into their AWS
+account — not the workspace admin connecting an individual DB later.
+
+The database integration ships as a Lambda trio + a Lambda layer:
+
+1. **Build the Databao Lambda layer** (must happen before
+   `terraform apply` — Terraform packages the layer dir into a
+   layer-version zip):
+   ```bash
+   make build-databao-layer
+   ```
+   The script runs inside the Amazon Linux 2 / Python 3.12 Docker
+   image so the DB driver native components are ABI-compatible with
+   Lambda. Layer typically lands ~150-200 MB unzipped.
+
+2. **Apply Terraform** — picks up `lambda-database.tf`,
+   `lambda-databao-layer.tf`, `kms-database.tf`, and the Fargate
+   `DATABASE_LAMBDA_URL` env var wired into `ui-fargate.tf`:
+   ```bash
+   cd terraform
+   terraform plan -var-file=prd.tfvars -out=terraform.prd.out
+   terraform apply terraform.prd.out
+   ```
+   No new tfvars required — the integration is gated by the existing
+   `enable_workspaces` flag.
+
+3. **Rebuild + redeploy the UI image** so the new Database card
+   appears in Workspace Settings:
+   ```bash
+   ENVIRONMENT=prd make build-ui-image
+   aws ecs update-service \
+     --cluster prd-outcome-ops-ai-assist-ui \
+     --service ui \
+     --force-new-deployment
+   ```
+
+After step 3, the **Database** card appears under **Workspace
+Settings → Integrations** for workspace admins. Continue to
+"Connecting a database" below for the per-workspace setup.
+
+**Rebuild the layer whenever:**
+- `lambda/databao-layer/requirements.txt` changes (Databao release bump, DB driver bump)
+- `scripts/build-databao-layer.sh` changes
+- You're deploying to a fresh environment for the first time
+
+See [`docs/deployment-guide.md`](./deployment-guide.md#lambda-layer-updates) for the broader layer-management story.
+
 ## Connecting a database
 
 Workspace admins go to **Workspace Settings → Integrations** and click
@@ -206,7 +255,7 @@ specific customer ask we're tracking:
 | **`auth_error`** on a connection after some time | DB password rotated, user revoked, or SSL cert changed | Workspace admin disconnects and reconnects with the new creds. (DB-side auth has no refresh-token equivalent — manual rotation is the path.) |
 | **`blocked_license_limit`** status | Hitting the repo-limit for your OutcomeOps tier | Same as any other source — increase your tier or trim connections. Repo identity is `{engine}:{host_hash}` so the same physical DB across multiple workspace connections counts ONCE |
 | **Schema picker is slow / empty** | Large warehouse, slow `INFORMATION_SCHEMA` introspection, or the connection user lacks `SELECT` on the schemas | Confirm the user has the right grants. For very large warehouses (10k+ tables), a DDB-cached schema tree is on the roadmap |
-| **Connection card shows "Server misconfiguration: Databao layer missing"** | Lambda layer wasn't built before terraform apply | Run `./scripts/build-databao-layer.sh` (or `make build-all-layers` shortcut) then re-apply |
+| **Connection card shows "Server misconfiguration: Databao layer missing"** | Lambda layer wasn't built before terraform apply | Run `make build-databao-layer` (or `make build-all-layers` to rebuild all) then `terraform apply` again |
 
 ## Related
 

@@ -169,6 +169,30 @@ The Makefile target handles everything:
 3. Builds the Docker image
 4. Pushes to ECR
 
+### Step 5b: Build Lambda Layers
+
+Several Lambdas depend on installed-package layers (distinct from container images — layers are zipped libraries mounted at `/opt/python` alongside the Lambda handler). These must be built locally before `terraform apply` so Terraform can package and publish them:
+
+```bash
+# Build all three Lambda layers in one shot
+make build-all-layers
+```
+
+Or build them individually:
+
+```bash
+make build-runtime-layer    # git/make/tar for generate-code Lambda
+make build-terraform-layer  # terraform CLI for generate-code's fmt/validate
+make build-databao-layer    # Databao Context Engine + DB drivers for the database source
+```
+
+Each script builds inside the Amazon Linux 2 / Python 3.12 Docker image so native components (DB drivers, git) are ABI-compatible with the Lambda runtime.
+
+Rebuild any layer when:
+- Its `requirements.txt` changes (e.g., bumping a DB driver version)
+- Its build script changes
+- You're deploying to a fresh environment for the first time
+
 ### Step 6: Deploy Infrastructure
 
 ```bash
@@ -328,7 +352,19 @@ make test                  # Run all tests
 make test-unit             # Run only unit tests
 make test-coverage         # Run tests with coverage report
 make audit                 # Run npm audit on UI dependencies
-make build-run-tests-image # Build and push run-tests Docker image to ECR
+
+# Container images (ECR) - require ENVIRONMENT=dev|prd
+ENVIRONMENT=prd make build-run-tests-image    # Run-tests Lambda container
+ENVIRONMENT=prd make build-ui-image           # Chat UI Fargate container
+ENVIRONMENT=prd make build-mcp-server-image   # OutcomeOps MCP server container
+ENVIRONMENT=prd make build-snyk-image         # Snyk MCP server container
+
+# Lambda layers (zipped packages, distinct from container images)
+make build-runtime-layer   # git/make/tar for generate-code Lambda
+make build-terraform-layer # terraform CLI for generate-code fmt/validate
+make build-databao-layer   # Databao + DB drivers for database source
+make build-all-layers      # All three layers in one shot
+
 make clean                 # Clean build artifacts
 make all                   # Run fmt, validate, and test
 ```

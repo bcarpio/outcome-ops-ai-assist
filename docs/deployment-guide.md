@@ -615,6 +615,45 @@ The Chat UI runs on ECS Fargate with a custom container image:
    aws ecs update-service --cluster ${CLUSTER} --service ${SERVICE} --force-new-deployment
    ```
 
+### Lambda Layer Updates
+
+Lambdas use installed-package layers (mounted at `/opt/python`) for shared
+dependencies. These are distinct from container images — they're zipped
+libraries, not full Docker images, and they ship via Terraform after
+being built locally.
+
+| Layer | Purpose | Used by |
+|---|---|---|
+| `runtime-layer` | `git`, `make`, `tar`, etc. | generate-code (cloning customer repos) |
+| `terraform-layer` | terraform CLI binary | generate-code (`terraform fmt` / `validate` on generated code) |
+| `databao-layer` | Databao Context Engine + Postgres/MySQL/MSSQL drivers | database-integration, database-sync |
+
+**When to rebuild a layer:**
+- Its `requirements.txt` changes (e.g., bumping a DB driver version, picking up an upstream Databao release)
+- Its build script changes
+- First-time deploy to a fresh environment
+
+**Build commands:**
+```bash
+# Build a specific layer
+make build-runtime-layer
+make build-terraform-layer
+make build-databao-layer
+
+# Or all three at once before a deploy
+make build-all-layers
+```
+
+Each script runs inside the Amazon Linux 2 / Python 3.12 Docker image so
+binaries/native components are ABI-compatible with the Lambda runtime.
+After the build, run `terraform apply` — Terraform packages the layer
+directory into a layer-version zip and publishes it.
+
+**Layer size cap:** Lambda layers cap at 250 MB unzipped. The Databao
+layer with all three DB drivers lands around 150-200 MB. If a future
+driver (Oracle, SAP HANA) pushes us over, split into per-engine
+sub-layers and attach selectively per Lambda.
+
 ### Terraform Module Updates
 
 1. Review the OutcomeOps release notes for breaking changes
