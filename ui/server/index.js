@@ -38,6 +38,7 @@ const TEAMS_LAMBDA_URL = process.env.TEAMS_LAMBDA_URL;
 const SHAREPOINT_LAMBDA_URL = process.env.SHAREPOINT_LAMBDA_URL;
 const ONEDRIVE_LAMBDA_URL = process.env.ONEDRIVE_LAMBDA_URL;
 const ONENOTE_LAMBDA_URL = process.env.ONENOTE_LAMBDA_URL;
+const DATABASE_LAMBDA_URL = process.env.DATABASE_LAMBDA_URL;
 const AWS_REGION = process.env.AWS_REGION || "us-west-2";
 const STATIC_DIR = process.env.STATIC_DIR || "/app/static";
 const LOCAL_DEV_MODE = process.env.LOCAL_DEV_MODE === "true";
@@ -319,6 +320,13 @@ async function signedOneDriveFetch(method, path, options = {}) {
  */
 async function signedOneNoteFetch(method, path, options = {}) {
   return signedFetch(ONENOTE_LAMBDA_URL, method, path, options);
+}
+
+/**
+ * Sign and send a request to the Database integration Lambda Function URL.
+ */
+async function signedDatabaseFetch(method, path, options = {}) {
+  return signedFetch(DATABASE_LAMBDA_URL, method, path, options);
 }
 
 // Streaming chat proxy endpoint with SigV4 auth
@@ -2049,6 +2057,97 @@ app.post("/api/workspaces/:id/onenote/connections/:connId/sync", (req, res) => {
 // Delete OneNote connection
 app.delete("/api/workspaces/:id/onenote/connections/:connId", (req, res) => {
   proxyOneNoteRequest(req, res, "DELETE", `/workspaces/${req.params.id}/onenote/connections/${req.params.connId}`);
+});
+
+// ============================================================================
+// Database Integration Routes
+// Structured-data source via the Databao Context Engine.
+// ============================================================================
+
+async function proxyDatabaseRequest(req, res, method, path) {
+  if (!DATABASE_LAMBDA_URL) {
+    console.log("[proxy] DATABASE_LAMBDA_URL not configured - database integration disabled");
+    res.status(404).json({ error: "Database integration not enabled. Set DATABASE_LAMBDA_URL." });
+    return;
+  }
+
+  const user = extractUser(req);
+  console.log(`[proxy] Database ${method} ${path} for: ${user.email}`);
+
+  try {
+    const options = {
+      extraHeaders: userHeaders(req, user),
+    };
+    if (req.body && Object.keys(req.body).length > 0) {
+      options.body = JSON.stringify(req.body);
+    }
+
+    const response = await signedDatabaseFetch(method, path, options);
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`[proxy] Database Lambda error: ${response.status} - ${errorText}`);
+      res.status(response.status).json({ error: errorText || "Database request failed" });
+      return;
+    }
+
+    const text = await response.text();
+    if (!text) {
+      console.error("[proxy] Empty response from Database Lambda");
+      res.status(500).json({ error: "Empty response from database service" });
+      return;
+    }
+
+    try {
+      const data = JSON.parse(text);
+      res.status(response.status).json(data);
+    } catch (parseError) {
+      console.error(`[proxy] Failed to parse database response: ${text}`);
+      res.status(500).json({ error: "Invalid response from database service" });
+    }
+  } catch (error) {
+    console.error(`[proxy] Database error: ${error.message}`);
+    if (error.message.includes("credentials") || error.message.includes("Credential")) {
+      res.status(500).json({ error: "AWS credentials not configured." });
+    } else {
+      res.status(500).json({ error: `Failed to process database request: ${error.message}` });
+    }
+  }
+}
+
+// Validate connection (no persist) — used by the "Test connection" button
+app.post("/api/database/connections/validate", (req, res) => {
+  proxyDatabaseRequest(req, res, "POST", "/api/database/connections/validate");
+});
+
+// Create connection
+app.post("/api/database/connections", (req, res) => {
+  proxyDatabaseRequest(req, res, "POST", "/api/database/connections");
+});
+
+// List connections
+app.get("/api/workspaces/:id/database/connections", (req, res) => {
+  proxyDatabaseRequest(req, res, "GET", `/workspaces/${req.params.id}/database/connections`);
+});
+
+// List schemas/tables for the picker
+app.get("/api/workspaces/:id/database/connections/:connId/schemas", (req, res) => {
+  proxyDatabaseRequest(req, res, "GET", `/workspaces/${req.params.id}/database/connections/${req.params.connId}/schemas`);
+});
+
+// Update scope
+app.put("/api/workspaces/:id/database/connections/:connId/scope", (req, res) => {
+  proxyDatabaseRequest(req, res, "PUT", `/workspaces/${req.params.id}/database/connections/${req.params.connId}/scope`);
+});
+
+// Trigger sync
+app.post("/api/workspaces/:id/database/connections/:connId/sync", (req, res) => {
+  proxyDatabaseRequest(req, res, "POST", `/workspaces/${req.params.id}/database/connections/${req.params.connId}/sync`);
+});
+
+// Delete connection
+app.delete("/api/workspaces/:id/database/connections/:connId", (req, res) => {
+  proxyDatabaseRequest(req, res, "DELETE", `/workspaces/${req.params.id}/database/connections/${req.params.connId}`);
 });
 
 // ============================================================================

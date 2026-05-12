@@ -71,6 +71,13 @@ vi.mock('../../../src/lib/api', () => ({
   updateOneNoteNotebooks: vi.fn(),
   triggerOneNoteSync: vi.fn(),
   deleteOneNoteConnection: vi.fn(),
+  listDatabaseConnections: vi.fn(),
+  createDatabaseConnection: vi.fn(),
+  validateDatabaseConnection: vi.fn(),
+  listDatabaseSchemas: vi.fn(),
+  updateDatabaseScope: vi.fn(),
+  triggerDatabaseSync: vi.fn(),
+  deleteDatabaseConnection: vi.fn(),
   searchUsers: vi.fn(),
   getWorkspaceSystemPrompt: vi.fn(),
   updateWorkspaceSystemPrompt: vi.fn(),
@@ -97,6 +104,8 @@ import {
   updateOneDriveFolders, triggerOneDriveSync, deleteOneDriveConnection,
   listOneNoteConnections, getOneNoteAuthUrl, listOneNoteNotebooks,
   updateOneNoteNotebooks, triggerOneNoteSync, deleteOneNoteConnection,
+  listDatabaseConnections, createDatabaseConnection, validateDatabaseConnection,
+  listDatabaseSchemas, updateDatabaseScope, triggerDatabaseSync, deleteDatabaseConnection,
   searchUsers,
   getWorkspaceSystemPrompt, updateWorkspaceSystemPrompt, resetWorkspaceSystemPrompt,
   getWorkspacePrivacy, updateWorkspacePrivacy,
@@ -148,6 +157,13 @@ const mockListOneNoteNotebooks = vi.mocked(listOneNoteNotebooks)
 const mockUpdateOneNoteNotebooks = vi.mocked(updateOneNoteNotebooks)
 const mockTriggerOneNoteSync = vi.mocked(triggerOneNoteSync)
 const mockDeleteOneNoteConnection = vi.mocked(deleteOneNoteConnection)
+const mockListDatabaseConnections = vi.mocked(listDatabaseConnections)
+const mockCreateDatabaseConnection = vi.mocked(createDatabaseConnection)
+const mockValidateDatabaseConnection = vi.mocked(validateDatabaseConnection)
+const mockListDatabaseSchemas = vi.mocked(listDatabaseSchemas)
+const mockUpdateDatabaseScope = vi.mocked(updateDatabaseScope)
+const mockTriggerDatabaseSync = vi.mocked(triggerDatabaseSync)
+const mockDeleteDatabaseConnection = vi.mocked(deleteDatabaseConnection)
 const mockSearchUsers = vi.mocked(searchUsers)
 const mockGetWorkspaceSystemPrompt = vi.mocked(getWorkspaceSystemPrompt)
 const mockUpdateWorkspaceSystemPrompt = vi.mocked(updateWorkspaceSystemPrompt)
@@ -171,6 +187,7 @@ function setupDefaultMocks() {
   mockListSharePointConnections.mockResolvedValue([])
   mockListOneDriveConnections.mockResolvedValue([])
   mockListOneNoteConnections.mockResolvedValue([])
+  mockListDatabaseConnections.mockResolvedValue([])
   mockGetWorkspacePrivacy.mockResolvedValue({
     workspace_id: 'ws-1',
     privacy_mode: 'STRICT',

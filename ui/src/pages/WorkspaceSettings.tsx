@@ -86,6 +86,13 @@ import {
   updateOneNoteNotebooks,
   triggerOneNoteSync,
   deleteOneNoteConnection,
+  listDatabaseConnections,
+  createDatabaseConnection,
+  validateDatabaseConnection,
+  listDatabaseSchemas,
+  updateDatabaseScope,
+  triggerDatabaseSync,
+  deleteDatabaseConnection,
   getGitHubInstallUrl,
   listGitHubInstallations,
   listGitHubInstallationRepos,
@@ -121,6 +128,11 @@ import {
   type OneNoteConnection,
   type OneNoteNotebook,
   type OneNoteNotebookConfig,
+  type DatabaseConnection,
+  type DatabaseEngine,
+  type DatabaseSchemaInfo,
+  type DatabaseScopeConfig,
+  type DatabaseCredentialPayload,
   searchUsers,
   type SearchUser,
   getWorkspaceSystemPrompt,
@@ -251,6 +263,32 @@ export default function WorkspaceSettings() {
   const [loadingONNotebooks, setLoadingONNotebooks] = useState(false)
   const [selectedONNotebooks, setSelectedONNotebooks] = useState<Set<string>>(new Set())
   const [savingONNotebooks, setSavingONNotebooks] = useState(false)
+
+  // Database integration state
+  const [databaseConnections, setDatabaseConnections] = useState<DatabaseConnection[]>([])
+  const [syncingDatabase, setSyncingDatabase] = useState<string | null>(null)
+  // Connect-new modal state
+  const [showDatabaseConnectModal, setShowDatabaseConnectModal] = useState(false)
+  const [dbConnectEngine, setDbConnectEngine] = useState<DatabaseEngine>('postgres')
+  const [dbConnectHost, setDbConnectHost] = useState('')
+  const [dbConnectPort, setDbConnectPort] = useState<number>(5432)
+  const [dbConnectDatabaseName, setDbConnectDatabaseName] = useState('')
+  const [dbConnectDisplayLabel, setDbConnectDisplayLabel] = useState('')
+  const [dbConnectUsername, setDbConnectUsername] = useState('')
+  const [dbConnectPassword, setDbConnectPassword] = useState('')
+  const [dbConnectSSLMode, setDbConnectSSLMode] = useState<string>('require')
+  const [dbConnectMSSQLEncrypt, setDbConnectMSSQLEncrypt] = useState<boolean>(true)
+  const [dbValidating, setDbValidating] = useState(false)
+  const [dbValidationResult, setDbValidationResult] = useState<{ valid: boolean; error?: string | null; server_version?: string | null } | null>(null)
+  const [dbCreating, setDbCreating] = useState(false)
+  // Scope picker modal state
+  const [configuringDatabaseConnection, setConfiguringDatabaseConnection] = useState<DatabaseConnection | null>(null)
+  const [availableDatabaseSchemas, setAvailableDatabaseSchemas] = useState<DatabaseSchemaInfo[]>([])
+  const [loadingDatabaseSchemas, setLoadingDatabaseSchemas] = useState(false)
+  // Per-table introspection + sampling toggles, keyed by sanitized "catalog.schema.table"
+  const [databaseIntrospectSet, setDatabaseIntrospectSet] = useState<Set<string>>(new Set())
+  const [databaseSamplingSet, setDatabaseSamplingSet] = useState<Set<string>>(new Set())
+  const [savingDatabaseScope, setSavingDatabaseScope] = useState(false)
 
   // Legacy repo state removed - now using GitHub App integration
 
@@ -389,7 +427,7 @@ export default function WorkspaceSettings() {
     if (!workspaceId) return
     setLoadingConnections(true)
     try {
-      const [confluenceData, jiraData, outlookData, teamsData, sharePointData, oneDriveData, oneNoteData] = await Promise.all([
+      const [confluenceData, jiraData, outlookData, teamsData, sharePointData, oneDriveData, oneNoteData, databaseData] = await Promise.all([
         listConfluenceConnections(workspaceId),
         listJiraConnections(workspaceId),
         listOutlookConnections(workspaceId).catch(() => []),
@@ -397,6 +435,7 @@ export default function WorkspaceSettings() {
         listSharePointConnections(workspaceId).catch(() => []),
         listOneDriveConnections(workspaceId).catch(() => []),
         listOneNoteConnections(workspaceId).catch(() => []),
+        listDatabaseConnections(workspaceId).catch(() => []),
       ])
       setConfluenceConnections(confluenceData)
       setJiraConnections(jiraData)
@@ -405,6 +444,7 @@ export default function WorkspaceSettings() {
       setSharePointConnections(sharePointData)
       setOneDriveConnections(oneDriveData)
       setOneNoteConnections(oneNoteData)
+      setDatabaseConnections(databaseData)
     } catch (err) {
       console.error('Failed to load connections:', err)
     } finally {
@@ -1248,6 +1288,238 @@ export default function WorkspaceSettings() {
       await deleteOneNoteConnection(workspaceId, connectionId)
       setOneNoteConnections(prev => prev.filter(c => c.connection_id !== connectionId))
       setSuccess('OneNote connection deleted')
+      setTimeout(() => setSuccess(null), 3000)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to delete connection')
+    }
+  }
+
+  // ============================================================================
+  // Database integration handlers
+  // ============================================================================
+
+  function _defaultDbPort(engine: DatabaseEngine): number {
+    if (engine === 'mysql') return 3306
+    if (engine === 'mssql') return 1433
+    return 5432 // postgres
+  }
+
+  function openDatabaseConnectModal() {
+    setDbConnectEngine('postgres')
+    setDbConnectHost('')
+    setDbConnectPort(_defaultDbPort('postgres'))
+    setDbConnectDatabaseName('')
+    setDbConnectDisplayLabel('')
+    setDbConnectUsername('')
+    setDbConnectPassword('')
+    setDbConnectSSLMode('require')
+    setDbConnectMSSQLEncrypt(true)
+    setDbValidationResult(null)
+    setShowDatabaseConnectModal(true)
+  }
+
+  function _buildDbCredential(): DatabaseCredentialPayload {
+    if (dbConnectEngine === 'mssql') {
+      return {
+        engine: 'mssql',
+        username: dbConnectUsername,
+        password: dbConnectPassword,
+        encrypt: dbConnectMSSQLEncrypt,
+      }
+    }
+    return {
+      engine: dbConnectEngine,
+      username: dbConnectUsername,
+      password: dbConnectPassword,
+      ssl_mode: dbConnectSSLMode || undefined,
+    }
+  }
+
+  async function handleValidateDatabase() {
+    setDbValidating(true)
+    setDbValidationResult(null)
+    setError(null)
+    try {
+      const result = await validateDatabaseConnection({
+        engine: dbConnectEngine,
+        host: dbConnectHost,
+        port: dbConnectPort,
+        database_name: dbConnectDatabaseName,
+        credential: _buildDbCredential(),
+      })
+      setDbValidationResult(result)
+    } catch (err) {
+      setDbValidationResult({
+        valid: false,
+        error: err instanceof Error ? err.message : 'Validation failed',
+      })
+    } finally {
+      setDbValidating(false)
+    }
+  }
+
+  async function handleCreateDatabaseConnection() {
+    if (!workspaceId) return
+    setDbCreating(true)
+    setError(null)
+    try {
+      const conn = await createDatabaseConnection({
+        workspace_id: workspaceId,
+        engine: dbConnectEngine,
+        host: dbConnectHost,
+        port: dbConnectPort,
+        database_name: dbConnectDatabaseName,
+        display_label: dbConnectDisplayLabel || undefined,
+        credential: _buildDbCredential(),
+      })
+      setDatabaseConnections(prev => [...prev, conn])
+      setShowDatabaseConnectModal(false)
+      setSuccess('Database connection created. Configure scope to start syncing.')
+      setTimeout(() => setSuccess(null), 3000)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create database connection')
+    } finally {
+      setDbCreating(false)
+    }
+  }
+
+  function _tableKey(catalog: string, schema: string, table: string): string {
+    return `${catalog}|${schema}|${table}`
+  }
+
+  async function openDatabaseConfiguration(connection: DatabaseConnection) {
+    if (!workspaceId) return
+    setConfiguringDatabaseConnection(connection)
+    setLoadingDatabaseSchemas(true)
+    try {
+      const schemas = await listDatabaseSchemas(workspaceId, connection.connection_id)
+      setAvailableDatabaseSchemas(schemas)
+      // Seed the selection state from the existing scope_config.
+      const seedIntrospect = new Set<string>()
+      const seedSampling = new Set<string>()
+      const includeList = (connection.scope_config?.introspection?.include) || []
+      const samplingIncludeList = (connection.scope_config?.sampling?.include) || []
+      schemas.forEach(s => {
+        const k = _tableKey(s.catalog, s.schema, s.table)
+        // includeList uses "catalog.schema.table" form; seed if present
+        if (includeList.includes(`${s.catalog}.${s.schema}.${s.table}`)) seedIntrospect.add(k)
+        if (samplingIncludeList.includes(`${s.catalog}.${s.schema}.${s.table}`)) seedSampling.add(k)
+      })
+      // First time configuring? Default to "introspect everything visible,
+      // sample nothing" - the regulated-buyer-friendly default.
+      if (seedIntrospect.size === 0 && includeList.length === 0) {
+        schemas.forEach(s => seedIntrospect.add(_tableKey(s.catalog, s.schema, s.table)))
+      }
+      setDatabaseIntrospectSet(seedIntrospect)
+      setDatabaseSamplingSet(seedSampling)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load database schemas')
+      setConfiguringDatabaseConnection(null)
+    } finally {
+      setLoadingDatabaseSchemas(false)
+    }
+  }
+
+  function toggleDatabaseIntrospect(catalog: string, schema: string, table: string) {
+    const k = _tableKey(catalog, schema, table)
+    setDatabaseIntrospectSet(prev => {
+      const next = new Set(prev)
+      if (next.has(k)) {
+        next.delete(k)
+        // If we drop introspection on a table, also drop sampling on it.
+        setDatabaseSamplingSet(s => {
+          const ns = new Set(s)
+          ns.delete(k)
+          return ns
+        })
+      } else {
+        next.add(k)
+      }
+      return next
+    })
+  }
+
+  function toggleDatabaseSampling(catalog: string, schema: string, table: string) {
+    const k = _tableKey(catalog, schema, table)
+    setDatabaseSamplingSet(prev => {
+      const next = new Set(prev)
+      if (next.has(k)) {
+        next.delete(k)
+      } else {
+        // Sampling requires introspection - opt-in to introspect too.
+        setDatabaseIntrospectSet(introspect => {
+          if (introspect.has(k)) return introspect
+          const ni = new Set(introspect)
+          ni.add(k)
+          return ni
+        })
+        next.add(k)
+      }
+      return next
+    })
+  }
+
+  async function handleSaveDatabaseScope() {
+    if (!workspaceId || !configuringDatabaseConnection) return
+    setSavingDatabaseScope(true)
+    setError(null)
+    try {
+      // Materialize sets back into the wire-format include lists
+      // ("catalog.schema.table"). exclude is left empty for MVP — we
+      // express scope by include-only.
+      const introspectInclude: string[] = []
+      const samplingInclude: string[] = []
+      availableDatabaseSchemas.forEach(s => {
+        const k = _tableKey(s.catalog, s.schema, s.table)
+        const path = `${s.catalog}.${s.schema}.${s.table}`
+        if (databaseIntrospectSet.has(k)) introspectInclude.push(path)
+        if (databaseSamplingSet.has(k)) samplingInclude.push(path)
+      })
+
+      const scope: DatabaseScopeConfig = {
+        introspection: { include: introspectInclude, exclude: [] },
+        sampling:      { enabled: samplingInclude.length > 0, include: samplingInclude, exclude: [] },
+        profiling:     { enabled: true },
+      }
+
+      await updateDatabaseScope(
+        workspaceId,
+        configuringDatabaseConnection.connection_id,
+        scope,
+      )
+      setConfiguringDatabaseConnection(null)
+      setSuccess('Database scope updated and sync queued')
+      loadConnections()
+      setTimeout(() => setSuccess(null), 3000)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save database scope')
+    } finally {
+      setSavingDatabaseScope(false)
+    }
+  }
+
+  async function handleTriggerDatabaseSync(connectionId: string) {
+    if (!workspaceId) return
+    setSyncingDatabase(connectionId)
+    setError(null)
+    try {
+      await triggerDatabaseSync(workspaceId, connectionId)
+      setSuccess('Database sync queued')
+      setTimeout(() => setSuccess(null), 3000)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to trigger sync')
+    } finally {
+      setSyncingDatabase(null)
+    }
+  }
+
+  async function handleDeleteDatabaseConnection(connectionId: string) {
+    if (!workspaceId) return
+    setError(null)
+    try {
+      await deleteDatabaseConnection(workspaceId, connectionId)
+      setDatabaseConnections(prev => prev.filter(c => c.connection_id !== connectionId))
+      setSuccess('Database connection deleted')
       setTimeout(() => setSuccess(null), 3000)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to delete connection')
@@ -2783,6 +3055,115 @@ export default function WorkspaceSettings() {
                 </ul>
               )}
             </div>
+
+            {/* Database Section */}
+            <div className="bg-white rounded-lg border shadow-sm">
+              <div className="p-4 border-b flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <svg className="w-6 h-6 text-blue-600" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M12 3C7.58 3 4 4.79 4 7v10c0 2.21 3.59 4 8 4s8-1.79 8-4V7c0-2.21-3.58-4-8-4zm0 2c3.87 0 6 1.5 6 2s-2.13 2-6 2-6-1.5-6-2 2.13-2 6-2zm0 14c-3.87 0-6-1.5-6-2v-2.23c1.61.79 3.79 1.23 6 1.23s4.39-.44 6-1.23V17c0 .5-2.13 2-6 2zm0-5c-3.87 0-6-1.5-6-2V9.77c1.61.79 3.79 1.23 6 1.23s4.39-.44 6-1.23V12c0 .5-2.13 2-6 2z" />
+                  </svg>
+                  <div>
+                    <h3 className="font-medium">Database</h3>
+                    <p className="text-sm text-gray-500">Production-truth context from your databases (Postgres, MySQL, MS SQL Server)</p>
+                  </div>
+                </div>
+                {isAdmin && (
+                  <button
+                    onClick={openDatabaseConnectModal}
+                    className="flex items-center gap-2 px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                  >
+                    <Plus size={16} />
+                    Connect
+                  </button>
+                )}
+              </div>
+              {loadingConnections ? (
+                <div className="p-8 flex items-center justify-center">
+                  <Loader2 className="animate-spin text-gray-400" size={24} />
+                </div>
+              ) : databaseConnections.length === 0 ? (
+                <div className="p-8 text-center text-gray-500">
+                  No database connections yet
+                </div>
+              ) : (
+                <ul className="divide-y">
+                  {databaseConnections.map(conn => (
+                    <li key={conn.connection_id} className="p-4">
+                      <div className="flex items-start justify-between">
+                        <div className="flex-1">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <p className="font-medium text-gray-900">{conn.display_label}</p>
+                            <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-700 uppercase">
+                              {conn.engine}
+                            </span>
+                          </div>
+                          <p className="text-sm text-gray-500 mt-0.5">{conn.host}:{conn.port} / {conn.database_name}</p>
+                          <p className="text-sm text-gray-500 mt-1">
+                            {(conn.scope_config?.introspection?.include || []).length === 0 ? (
+                              <span className="text-amber-600">No tables selected - click Configure</span>
+                            ) : (
+                              <>
+                                {conn.scope_config.introspection.include.length} table{conn.scope_config.introspection.include.length !== 1 ? 's' : ''} selected
+                                {' | '}
+                                {conn.tables_count || 0} synced
+                                {' | '}
+                                {conn.scope_config?.sampling?.enabled ? 'sampling: on' : 'sampling: off'}
+                              </>
+                            )}
+                          </p>
+                          <p className="text-xs text-gray-400 mt-1">
+                            Status: <span className={
+                              conn.last_sync_status === 'completed' ? 'text-green-600' :
+                              conn.last_sync_status === 'error' || conn.last_sync_status === 'auth_error' ? 'text-red-600' :
+                              conn.last_sync_status === 'syncing' || conn.last_sync_status === 'queued' ? 'text-blue-600' :
+                              'text-gray-500'
+                            }>
+                              {conn.last_sync_status || 'pending'}
+                            </span>
+                            {conn.last_sync_at && (
+                              <> | Last sync: {new Date(conn.last_sync_at).toLocaleDateString()}</>
+                            )}
+                            {conn.last_sync_error && (
+                              <span className="text-red-500"> | {conn.last_sync_error}</span>
+                            )}
+                          </p>
+                        </div>
+                        {isAdmin && (
+                          <div className="flex items-center gap-2 ml-4">
+                            <button
+                              onClick={() => openDatabaseConfiguration(conn)}
+                              className="px-3 py-1.5 text-sm text-blue-600 hover:bg-blue-50 rounded transition-colors"
+                            >
+                              Configure
+                            </button>
+                            <button
+                              onClick={() => handleTriggerDatabaseSync(conn.connection_id)}
+                              disabled={syncingDatabase === conn.connection_id || (conn.scope_config?.introspection?.include || []).length === 0}
+                              className="p-1.5 text-gray-500 hover:bg-gray-100 rounded transition-colors disabled:opacity-50"
+                              title="Sync now"
+                            >
+                              {syncingDatabase === conn.connection_id ? (
+                                <Loader2 size={16} className="animate-spin" />
+                              ) : (
+                                <RefreshCw size={16} />
+                              )}
+                            </button>
+                            <button
+                              onClick={() => handleDeleteDatabaseConnection(conn.connection_id)}
+                              className="p-1.5 text-red-500 hover:bg-red-50 rounded transition-colors"
+                              title="Disconnect"
+                            >
+                              <Trash2 size={16} />
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           </div>
         )}
 
@@ -3841,6 +4222,254 @@ export default function WorkspaceSettings() {
                   className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 transition-colors flex items-center gap-2"
                 >
                   {savingONNotebooks && <Loader2 size={16} className="animate-spin" />}
+                  Save & Sync
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Database Connect Modal */}
+      {showDatabaseConnectModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-xl mx-4 max-h-[90vh] flex flex-col">
+            <div className="p-6 border-b">
+              <h2 className="text-lg font-semibold">Connect Database</h2>
+              <p className="text-sm text-gray-500 mt-1">
+                Postgres (incl. Aurora / RDS / Redshift), MySQL (incl. Aurora / RDS / MariaDB), or MS SQL Server.
+              </p>
+            </div>
+            <div className="flex-1 overflow-y-auto p-6 space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Engine</label>
+                <select
+                  value={dbConnectEngine}
+                  onChange={(e) => {
+                    const engine = e.target.value as DatabaseEngine
+                    setDbConnectEngine(engine)
+                    setDbConnectPort(_defaultDbPort(engine))
+                    setDbValidationResult(null)
+                  }}
+                  className="w-full border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="postgres">PostgreSQL (incl. Aurora / RDS / Redshift)</option>
+                  <option value="mysql">MySQL (incl. Aurora / RDS / MariaDB)</option>
+                  <option value="mssql">MS SQL Server</option>
+                </select>
+              </div>
+              <div className="grid grid-cols-3 gap-3">
+                <div className="col-span-2">
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Host</label>
+                  <input
+                    type="text"
+                    value={dbConnectHost}
+                    onChange={(e) => setDbConnectHost(e.target.value)}
+                    placeholder="db.internal.example.com"
+                    className="w-full border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Port</label>
+                  <input
+                    type="number"
+                    value={dbConnectPort}
+                    onChange={(e) => setDbConnectPort(Number(e.target.value))}
+                    className="w-full border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Database name</label>
+                <input
+                  type="text"
+                  value={dbConnectDatabaseName}
+                  onChange={(e) => setDbConnectDatabaseName(e.target.value)}
+                  placeholder="analytics"
+                  className="w-full border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Display label (optional)</label>
+                <input
+                  type="text"
+                  value={dbConnectDisplayLabel}
+                  onChange={(e) => setDbConnectDisplayLabel(e.target.value)}
+                  placeholder="Analytics Warehouse"
+                  className="w-full border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Username</label>
+                  <input
+                    type="text"
+                    value={dbConnectUsername}
+                    onChange={(e) => setDbConnectUsername(e.target.value)}
+                    autoComplete="off"
+                    className="w-full border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
+                  <input
+                    type="password"
+                    value={dbConnectPassword}
+                    onChange={(e) => setDbConnectPassword(e.target.value)}
+                    autoComplete="new-password"
+                    className="w-full border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+              </div>
+              {dbConnectEngine !== 'mssql' && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">SSL mode</label>
+                  <select
+                    value={dbConnectSSLMode}
+                    onChange={(e) => setDbConnectSSLMode(e.target.value)}
+                    className="w-full border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="require">require</option>
+                    <option value="verify-ca">verify-ca</option>
+                    <option value="verify-full">verify-full</option>
+                    <option value="disable">disable (NOT recommended)</option>
+                  </select>
+                </div>
+              )}
+              {dbConnectEngine === 'mssql' && (
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={dbConnectMSSQLEncrypt}
+                    onChange={(e) => setDbConnectMSSQLEncrypt(e.target.checked)}
+                    className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
+                  />
+                  Encrypt connection (Encrypt=yes)
+                </label>
+              )}
+
+              {dbValidationResult && (
+                <div className={`p-3 rounded text-sm ${dbValidationResult.valid ? 'bg-green-50 text-green-800' : 'bg-red-50 text-red-700'}`}>
+                  {dbValidationResult.valid ? (
+                    <>
+                      Connection successful{dbValidationResult.server_version && <> — server version: {dbValidationResult.server_version}</>}
+                    </>
+                  ) : (
+                    <>Connection failed: {dbValidationResult.error}</>
+                  )}
+                </div>
+              )}
+            </div>
+            <div className="px-6 py-4 bg-gray-50 rounded-b-lg flex items-center justify-between border-t">
+              <button
+                onClick={handleValidateDatabase}
+                disabled={dbValidating || !dbConnectHost || !dbConnectDatabaseName || !dbConnectUsername}
+                className="px-3 py-1.5 text-sm border border-blue-600 text-blue-600 rounded-lg hover:bg-blue-50 disabled:opacity-50 transition-colors flex items-center gap-2"
+              >
+                {dbValidating && <Loader2 size={14} className="animate-spin" />}
+                Test connection
+              </button>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setShowDatabaseConnectModal(false)}
+                  className="px-4 py-2 text-gray-700 hover:bg-gray-200 rounded-lg transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleCreateDatabaseConnection}
+                  disabled={dbCreating || !dbConnectHost || !dbConnectDatabaseName || !dbConnectUsername || !dbConnectPassword}
+                  className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors flex items-center gap-2"
+                >
+                  {dbCreating && <Loader2 size={16} className="animate-spin" />}
+                  Save connection
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Database Scope Picker Modal */}
+      {configuringDatabaseConnection && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-3xl mx-4 max-h-[85vh] flex flex-col">
+            <div className="p-6 border-b">
+              <h2 className="text-lg font-semibold">Configure Database Scope</h2>
+              <p className="text-sm text-gray-500 mt-1">
+                Choose which tables to introspect from {configuringDatabaseConnection.display_label}.
+              </p>
+              <p className="text-xs text-gray-500 mt-2">
+                Introspect = pull schema + safe aggregate statistics.
+                Sample = also pull example rows (opt-in per table; Comprehend PII redaction runs at ingest).
+              </p>
+            </div>
+            <div className="flex-1 overflow-y-auto p-6">
+              {loadingDatabaseSchemas ? (
+                <div className="py-8 flex items-center justify-center">
+                  <Loader2 className="animate-spin text-gray-400" size={24} />
+                </div>
+              ) : availableDatabaseSchemas.length === 0 ? (
+                <p className="text-center text-gray-500 py-4">No tables visible. Check that the connection user has SELECT on the schemas you want to ingest.</p>
+              ) : (
+                <table className="w-full text-sm">
+                  <thead className="text-xs uppercase text-gray-500">
+                    <tr>
+                      <th className="text-left p-2">Catalog</th>
+                      <th className="text-left p-2">Schema</th>
+                      <th className="text-left p-2">Table</th>
+                      <th className="text-center p-2">Introspect</th>
+                      <th className="text-center p-2">Sample rows</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {availableDatabaseSchemas.map(s => {
+                      const k = _tableKey(s.catalog, s.schema, s.table)
+                      return (
+                        <tr key={k} className="border-t hover:bg-gray-50">
+                          <td className="p-2 text-gray-600">{s.catalog || '-'}</td>
+                          <td className="p-2 text-gray-600">{s.schema}</td>
+                          <td className="p-2 font-medium text-gray-900">{s.table}</td>
+                          <td className="p-2 text-center">
+                            <input
+                              type="checkbox"
+                              checked={databaseIntrospectSet.has(k)}
+                              onChange={() => toggleDatabaseIntrospect(s.catalog, s.schema, s.table)}
+                              className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
+                            />
+                          </td>
+                          <td className="p-2 text-center">
+                            <input
+                              type="checkbox"
+                              checked={databaseSamplingSet.has(k)}
+                              onChange={() => toggleDatabaseSampling(s.catalog, s.schema, s.table)}
+                              className="w-4 h-4 text-amber-600 rounded focus:ring-amber-500"
+                            />
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              )}
+            </div>
+            <div className="px-6 py-4 bg-gray-50 rounded-b-lg flex items-center justify-between border-t">
+              <p className="text-sm text-gray-500">
+                {databaseIntrospectSet.size} table{databaseIntrospectSet.size !== 1 ? 's' : ''} to introspect, {databaseSamplingSet.size} with sampling
+              </p>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setConfiguringDatabaseConnection(null)}
+                  className="px-4 py-2 text-gray-700 hover:bg-gray-200 rounded-lg transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleSaveDatabaseScope}
+                  disabled={savingDatabaseScope || databaseIntrospectSet.size === 0}
+                  className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors flex items-center gap-2"
+                >
+                  {savingDatabaseScope && <Loader2 size={16} className="animate-spin" />}
                   Save & Sync
                 </button>
               </div>

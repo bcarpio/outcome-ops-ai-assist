@@ -1615,6 +1615,184 @@ export async function deleteOneNoteConnection(workspaceId: string, connectionId:
 }
 
 // ============================================================================
+// Database Integration Types and API
+// Production-truth structured-data source via the Databao Context Engine.
+// ============================================================================
+
+export type DatabaseEngine = 'postgres' | 'mysql' | 'mssql'
+
+export interface DatabaseConnection {
+  connection_id: string
+  workspace_id: string
+  engine: DatabaseEngine
+  host: string
+  port: number
+  database_name: string
+  display_label: string
+  host_hash: string
+  scope_config: DatabaseScopeConfig
+  last_sync_at: string | null
+  last_sync_status:
+    | 'needs_configuration'
+    | 'queued'
+    | 'syncing'
+    | 'completed'
+    | 'error'
+    | 'auth_error'
+    | 'no_scope_selected'
+    | 'blocked_license_limit'
+  last_sync_error?: string | null
+  tables_count: number
+  created_at: string
+  updated_at: string
+}
+
+export interface DatabaseScopeConfig {
+  introspection: { include: string[]; exclude: string[] }
+  sampling: { enabled: boolean; include: string[]; exclude: string[] }
+  profiling: { enabled: boolean }
+}
+
+export interface DatabaseSchemaInfo {
+  catalog: string
+  schema: string
+  table: string
+  row_count_estimate?: number | null
+}
+
+// Discriminated union of engine-specific credential payloads. The
+// integration Lambda treats the dict as opaque and forwards it to
+// Databao - this shape is the contract surface for the picker UI.
+export type DatabaseCredentialPayload =
+  | { engine: 'postgres'; username: string; password: string; ssl_mode?: string }
+  | { engine: 'mysql';    username: string; password: string; ssl_mode?: string }
+  | { engine: 'mssql';    username: string; password: string; encrypt?: boolean }
+
+export interface CreateDatabaseConnectionRequest {
+  workspace_id: string
+  engine: DatabaseEngine
+  host: string
+  port: number
+  database_name: string
+  display_label?: string
+  credential: DatabaseCredentialPayload
+}
+
+export interface ValidateDatabaseConnectionRequest {
+  engine: DatabaseEngine
+  host: string
+  port: number
+  database_name: string
+  credential: DatabaseCredentialPayload
+}
+
+export interface ValidateDatabaseConnectionResult {
+  valid: boolean
+  server_version?: string | null
+  error?: string | null
+}
+
+export async function validateDatabaseConnection(
+  request: ValidateDatabaseConnectionRequest,
+): Promise<ValidateDatabaseConnectionResult> {
+  const response = await fetch(`${API_BASE}/database/connections/validate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  })
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to validate connection: ${response.status}`)
+  }
+  return (await safeJson(response)) as ValidateDatabaseConnectionResult
+}
+
+export async function createDatabaseConnection(
+  request: CreateDatabaseConnectionRequest,
+): Promise<DatabaseConnection> {
+  const response = await fetch(`${API_BASE}/database/connections`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  })
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to create connection: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return data?.connection as DatabaseConnection
+}
+
+export async function listDatabaseConnections(workspaceId: string): Promise<DatabaseConnection[]> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/database/connections`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to list database connections: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return (data?.connections as DatabaseConnection[]) || []
+}
+
+export async function listDatabaseSchemas(
+  workspaceId: string,
+  connectionId: string,
+): Promise<DatabaseSchemaInfo[]> {
+  const response = await fetch(
+    `${API_BASE}/workspaces/${workspaceId}/database/connections/${connectionId}/schemas`,
+  )
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to list schemas: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return (data?.schemas as DatabaseSchemaInfo[]) || []
+}
+
+export async function updateDatabaseScope(
+  workspaceId: string,
+  connectionId: string,
+  scopeConfig: DatabaseScopeConfig,
+): Promise<void> {
+  const response = await fetch(
+    `${API_BASE}/workspaces/${workspaceId}/database/connections/${connectionId}/scope`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scope_config: scopeConfig }),
+    },
+  )
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to update scope: ${response.status}`)
+  }
+}
+
+export async function triggerDatabaseSync(workspaceId: string, connectionId: string): Promise<void> {
+  const response = await fetch(
+    `${API_BASE}/workspaces/${workspaceId}/database/connections/${connectionId}/sync`,
+    { method: 'POST' },
+  )
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to trigger sync: ${response.status}`)
+  }
+}
+
+export async function deleteDatabaseConnection(
+  workspaceId: string,
+  connectionId: string,
+): Promise<void> {
+  const response = await fetch(
+    `${API_BASE}/workspaces/${workspaceId}/database/connections/${connectionId}`,
+    { method: 'DELETE' },
+  )
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to delete connection: ${response.status}`)
+  }
+}
+
+// ============================================================================
 // GitHub Integration Types and API
 // ============================================================================
 
