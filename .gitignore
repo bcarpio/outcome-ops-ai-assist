@@ -75,6 +75,9 @@ lambda/java-layer/java/
 # Terraform layer (binaries only - keep README)
 lambda/terraform-layer/bin/
 
+# Databao layer (installed packages only - keep requirements.txt)
+lambda/databao-layer/python/
+
 # Scratch/working directory
 .scratch/
 

@@ -400,6 +400,10 @@ module "ui_ecs" {
               {
                 name  = "ONENOTE_LAMBDA_URL"
                 value = aws_lambda_function_url.onenote_integration[0].function_url
+              },
+              {
+                name  = "DATABASE_LAMBDA_URL"
+                value = aws_lambda_function_url.database_integration[0].function_url
               }
             ] : [],
             # Add scanner JWT secret SSM path when security scanner is enabled
@@ -496,6 +500,13 @@ module "ui_ecs" {
               "lambda:InvokeFunctionUrl"
             ]
             resources = [module.onenote_integration_lambda[0].lambda_function_arn]
+          },
+          {
+            effect = "Allow"
+            actions = [
+              "lambda:InvokeFunctionUrl"
+            ]
+            resources = [module.database_integration_lambda[0].lambda_function_arn]
           }
         ] : [],
         # SSM read for scanner JWT secret when security scanner is enabled
