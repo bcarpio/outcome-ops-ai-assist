@@ -2061,7 +2061,7 @@ app.delete("/api/workspaces/:id/onenote/connections/:connId", (req, res) => {
 
 // ============================================================================
 // Database Integration Routes
-// Structured-data source via the Databao Context Engine.
+// Structured-data source via the schema introspection engine.
 // ============================================================================
 
 async function proxyDatabaseRequest(req, res, method, path) {
