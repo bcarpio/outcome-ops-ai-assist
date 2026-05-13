@@ -1,5 +1,9 @@
-# Databao Context Engine + DB drivers, shared by both database integration
-# container images (database-integration + database-sync).
+# Schema introspection engine + DB drivers, shared by both database
+# integration container images (database-integration + database-sync).
+#
+# DATABAO-SPECIFIC: the upstream library is JetBrains' Databao Context
+# Engine (Apache 2.0). The pip package name 'databao-context-engine'
+# below is the literal upstream artifact - leave it as-is.
 #
 # Kept at the lambda/ root rather than per-Lambda so the dependency set
 # stays consistent across the two images and a single bump propagates.

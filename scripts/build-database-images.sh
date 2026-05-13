@@ -130,7 +130,7 @@ build_one() {
   echo "Building: ${full_image}"
 
   # Build context is the repo root so Dockerfile COPYs can grab
-  # lambda/shared/, lambda/databao-requirements.txt, and (for sync)
+  # lambda/shared/, lambda/db-introspection-requirements.txt, and (for sync)
   # lambda/.license-layer-staging/.
   docker build \
     --platform linux/amd64 \
