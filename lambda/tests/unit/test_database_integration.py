@@ -1,5 +1,5 @@
 """Unit tests for database-integration Lambda (handler, credential_manager,
-databao_helpers stubs)."""
+introspection_helpers stubs)."""
 
 import base64
 import importlib.util
@@ -36,7 +36,7 @@ def _load_module(mod_name, filename, directory, also_register_as=None):
 
 
 # Load credential_manager FIRST under the name the handler imports it
-# as (from credential_manager). Then databao_helpers, then handler.
+# as (from credential_manager). Then introspection_helpers, then handler.
 credential_module = _load_module(
     "db_int_credential_manager",
     "credential_manager.py",
@@ -44,10 +44,10 @@ credential_module = _load_module(
     also_register_as="credential_manager",
 )
 helpers_module = _load_module(
-    "db_int_databao_helpers",
-    "databao_helpers.py",
+    "db_int_introspection_helpers",
+    "introspection_helpers.py",
     "../../database-integration",
-    also_register_as="databao_helpers",
+    also_register_as="introspection_helpers",
 )
 handler_module = _load_module(
     "db_int_handler", "handler.py", "../../database-integration"
@@ -154,23 +154,24 @@ class TestCredentialManager:
 
 
 # ============================================================================
-# Databao Helpers Tests
+# Introspection Helpers Tests
 # ============================================================================
 
 
-class TestDatabaoHelpers:
+class TestIntrospectionHelpers:
 
     def test_validate_connection_raises_when_layer_unavailable(self):
-        # Per ADR-019 / deploy-bug semantics, when the Databao package
+        # Per ADR-019 / deploy-bug semantics, when the upstream package
         # isn't in the runtime image the helper raises
-        # DatabaoLayerNotAttached so callers (the integration handler)
-        # can map it to a 500 "Server misconfiguration" response rather
-        # than silently returning a misleading success/empty result.
+        # IntrospectionEngineUnavailable so callers (the integration
+        # handler) can map it to a 500 "Server misconfiguration"
+        # response rather than silently returning a misleading
+        # success/empty result.
         with patch.object(
-            helpers_module, "_import_databao",
-            side_effect=helpers_module.DatabaoLayerNotAttached("missing"),
+            helpers_module, "_import_introspection_engine",
+            side_effect=helpers_module.IntrospectionEngineUnavailable("missing"),
         ):
-            with pytest.raises(helpers_module.DatabaoLayerNotAttached):
+            with pytest.raises(helpers_module.IntrospectionEngineUnavailable):
                 helpers_module.validate_connection(
                     engine="postgres",
                     host="h", port=5432, database_name="d",
@@ -179,10 +180,10 @@ class TestDatabaoHelpers:
 
     def test_list_schemas_raises_when_layer_unavailable(self):
         with patch.object(
-            helpers_module, "_import_databao",
-            side_effect=helpers_module.DatabaoLayerNotAttached("missing"),
+            helpers_module, "_import_introspection_engine",
+            side_effect=helpers_module.IntrospectionEngineUnavailable("missing"),
         ):
-            with pytest.raises(helpers_module.DatabaoLayerNotAttached):
+            with pytest.raises(helpers_module.IntrospectionEngineUnavailable):
                 helpers_module.list_schemas(
                     engine="postgres",
                     host="h", port=5432, database_name="d",
@@ -209,9 +210,9 @@ class TestDatabaoHelpers:
         # The integration handler already gates on a supported-engine
         # allowlist, but the helper also rejects unknowns so a future
         # caller (or a typo) doesn't silently mis-route to the wrong
-        # Databao plugin.
+        # engine plugin.
         fake_dce = MagicMock()
-        with patch.object(helpers_module, "_import_databao", return_value=fake_dce):
+        with patch.object(helpers_module, "_import_introspection_engine", return_value=fake_dce):
             r = helpers_module.validate_connection(
                 engine="oracle",
                 host="h", port=1521, database_name="d",
@@ -220,8 +221,8 @@ class TestDatabaoHelpers:
         assert r.valid is False
         assert "oracle" in (r.error or "").lower() or "unsupported" in (r.error or "").lower()
 
-    def test_validate_connection_returns_valid_on_databao_VALID(self):
-        # Stub Databao to report VALID; the helper should return
+    def test_validate_connection_returns_valid_on_engine_VALID(self):
+        # Stub the engine to report VALID; the helper should return
         # ValidationResult(valid=True).
         fake_dce = MagicMock()
         fake_dce.DatasourceConnectionStatus.VALID = "VALID_SENTINEL"
@@ -236,7 +237,7 @@ class TestDatabaoHelpers:
 
         fake_dce.init_dce_domain.return_value = fake_mgr
 
-        with patch.object(helpers_module, "_import_databao", return_value=fake_dce):
+        with patch.object(helpers_module, "_import_introspection_engine", return_value=fake_dce):
             # Patch the deferred config import too
             with patch(
                 "databao_context_engine.plugins.databases.postgresql.config_file."
@@ -257,8 +258,9 @@ class TestDatabaoHelpers:
         assert r.error is None
 
     def test_validate_connection_returns_invalid_with_full_message(self):
-        # Stub Databao to report INVALID with both summary + full_message;
-        # helper should surface the more useful full_message in error.
+        # Stub the engine to report INVALID with both summary +
+        # full_message; helper should surface the more useful
+        # full_message in error.
         fake_dce = MagicMock()
         fake_dce.DatasourceConnectionStatus.VALID = "VALID_SENTINEL"
         fake_dce.DatasourceType.return_value = "ds_type"
@@ -272,7 +274,7 @@ class TestDatabaoHelpers:
 
         fake_dce.init_dce_domain.return_value = fake_mgr
 
-        with patch.object(helpers_module, "_import_databao", return_value=fake_dce):
+        with patch.object(helpers_module, "_import_introspection_engine", return_value=fake_dce):
             with patch(
                 "databao_context_engine.plugins.databases.mysql.config_file."
                 "MySQLConfigFile",
@@ -339,21 +341,21 @@ class TestParsePathAndAuth:
 
 class TestValidate:
 
-    @patch.object(handler_module, "databao_validate")
+    @patch.object(handler_module, "validate_db_connection")
     def test_validate_credentials_unsupported_engine(self, mock_v):
         body = {"engine": "oracle", "host": "h", "port": 1521, "database_name": "d", "credential": {}}
         result = handler_module.validate_credentials(body)
         assert result["statusCode"] == 400
         mock_v.assert_not_called()
 
-    @patch.object(handler_module, "databao_validate")
+    @patch.object(handler_module, "validate_db_connection")
     def test_validate_credentials_missing_fields(self, mock_v):
         body = {"engine": "postgres", "host": "", "port": 0, "database_name": "", "credential": {}}
         result = handler_module.validate_credentials(body)
         assert result["statusCode"] == 400
         mock_v.assert_not_called()
 
-    @patch.object(handler_module, "databao_validate")
+    @patch.object(handler_module, "validate_db_connection")
     def test_validate_credentials_success(self, mock_v):
         mock_v.return_value = helpers_module.ValidationResult(
             valid=True, server_version="15.4"
@@ -374,7 +376,7 @@ class TestCreateConnection:
 
     @patch.object(handler_module, "log_admin_action")
     @patch.object(handler_module, "save_credential")
-    @patch.object(handler_module, "databao_validate")
+    @patch.object(handler_module, "validate_db_connection")
     @patch.object(handler_module, "_get_dynamodb")
     def test_create_connection_success(
         self, mock_db_fn, mock_validate, mock_save, mock_audit
@@ -431,7 +433,7 @@ class TestCreateConnection:
         assert audit_kwargs["details"]["engine"] == "postgres"
         assert audit_kwargs["details"]["host_hash"] == item["host_hash"]
 
-    @patch.object(handler_module, "databao_validate")
+    @patch.object(handler_module, "validate_db_connection")
     @patch.object(handler_module, "_get_dynamodb")
     def test_create_connection_non_admin_403(self, mock_db_fn, mock_validate):
         mock_table = MagicMock()
@@ -455,7 +457,7 @@ class TestCreateConnection:
         mock_validate.assert_not_called()
 
     @patch.object(handler_module, "save_credential")
-    @patch.object(handler_module, "databao_validate")
+    @patch.object(handler_module, "validate_db_connection")
     @patch.object(handler_module, "_get_dynamodb")
     def test_create_connection_validation_fails_returns_400(
         self, mock_db_fn, mock_validate, mock_save

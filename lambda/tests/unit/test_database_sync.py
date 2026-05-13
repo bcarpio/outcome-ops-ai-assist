@@ -320,14 +320,14 @@ class TestProcessSyncRequest:
         assert "Credential" in result["error"]
 
     @patch.object(handler_module, "log_admin_action")
-    @patch.object(handler_module, "_run_databao_build")
+    @patch.object(handler_module, "_run_schema_introspection")
     @patch.object(handler_module, "get_credential")
     def test_credential_used_audit_row_emitted(
         self, mock_get_cred, mock_build, mock_audit,
         mock_table, sample_connection, mock_credential,
     ):
         """The forensic audit row for credential use fires on decrypt,
-        not on Databao success - the customer's data was touched the
+        not on engine success - the customer's data was touched the
         moment we decrypted, regardless of what happens next."""
         mock_table.get_item.return_value = {"Item": sample_connection}
         mock_get_cred.return_value = mock_credential
@@ -346,7 +346,7 @@ class TestProcessSyncRequest:
         assert details["engine"] == "postgres"
         assert details["host_hash"] == "deadbeefcafebabe"
 
-    @patch.object(handler_module, "_run_databao_build")
+    @patch.object(handler_module, "_run_schema_introspection")
     @patch.object(handler_module, "get_credential")
     def test_repo_limit_block_uses_engine_host_hash_identity(
         self, mock_get_cred, mock_build,
@@ -376,13 +376,13 @@ class TestProcessSyncRequest:
         assert result["status"] == "skipped"
         assert result["reason"] == "license_limit"
         assert seen_repos == ["database:postgres:deadbeefcafebabe"]
-        # Databao not called when limit hit
+        # Engine not called when limit hit
         mock_build.assert_not_called()
 
     @patch.object(handler_module, "queue_orphan_cleanup")
     @patch.object(handler_module, "queue_table_ingestion")
     @patch.object(handler_module, "log_source_sync")
-    @patch.object(handler_module, "_run_databao_build")
+    @patch.object(handler_module, "_run_schema_introspection")
     @patch.object(handler_module, "get_credential")
     def test_full_success_queues_tables_and_emits_audit(
         self, mock_get_cred, mock_build, mock_audit, mock_queue_table,
@@ -439,7 +439,7 @@ class TestKnownTableIdsTracking:
     @patch.object(handler_module, "queue_orphan_cleanup")
     @patch.object(handler_module, "queue_table_ingestion")
     @patch.object(handler_module, "log_source_sync")
-    @patch.object(handler_module, "_run_databao_build")
+    @patch.object(handler_module, "_run_schema_introspection")
     @patch.object(handler_module, "get_credential")
     def test_table_ids_sanitized_before_storage(
         self, mock_get_cred, mock_build, _audit, _queue, mock_cleanup,
@@ -472,7 +472,7 @@ class TestKnownTableIdsTracking:
     @patch.object(handler_module, "queue_orphan_cleanup")
     @patch.object(handler_module, "queue_table_ingestion")
     @patch.object(handler_module, "log_source_sync")
-    @patch.object(handler_module, "_run_databao_build")
+    @patch.object(handler_module, "_run_schema_introspection")
     @patch.object(handler_module, "get_credential")
     def test_known_table_ids_persisted_to_ddb(
         self, mock_get_cred, mock_build, _audit, _queue, _cleanup,
