@@ -168,6 +168,52 @@ def _datasource_type(dce, engine: str):
     return dce.DatasourceType(full_type=engine)
 
 
+def _get_introspector(engine: str):
+    """Return a configured upstream introspector for the given engine.
+
+    Used by list_schemas (UI picker) and the sync Lambda's
+    _run_schema_introspection. Bypasses the upstream `build_context`
+    flow entirely — that path instantiates an Ollama LLM service even
+    with should_enrich_context=False, which on Lambda triggers a
+    runtime tarball download into /tmp that exhausts the writable
+    quota. introspect_database() is the lower-level API that walks
+    catalogs/schemas/tables via plain SQL queries against the
+    customer DB — no DuckDB migrations, no LLM, no /tmp downloads.
+
+    Each branch imports lazily so a missing/renamed plugin in a future
+    upstream version fails with a clear traceback at call time rather
+    than at module import.
+    """
+    if engine == "postgres":
+        from databao_context_engine.plugins.databases.postgresql.postgresql_connector import (
+            PostgresqlConnector,
+        )
+        from databao_context_engine.plugins.databases.postgresql.postgresql_introspector import (
+            PostgresqlIntrospector,
+        )
+        return PostgresqlIntrospector(PostgresqlConnector())
+
+    if engine == "mysql":
+        from databao_context_engine.plugins.databases.mysql.mysql_connector import (
+            MySQLConnector,
+        )
+        from databao_context_engine.plugins.databases.mysql.mysql_introspector import (
+            MySQLIntrospector,
+        )
+        return MySQLIntrospector(MySQLConnector())
+
+    if engine == "mssql":
+        from databao_context_engine.plugins.databases.mssql.mssql_connector import (
+            MSSQLConnector,
+        )
+        from databao_context_engine.plugins.databases.mssql.mssql_introspector import (
+            MSSQLIntrospector,
+        )
+        return MSSQLIntrospector(MSSQLConnector())
+
+    raise ValueError(f"Unsupported engine: {engine!r}")
+
+
 def validate_connection(
     engine: str,
     host: str,
@@ -235,18 +281,19 @@ def list_schemas(
 ) -> List[SchemaInfo]:
     """Metadata-only enumeration for the UI schema/table picker.
 
-    Drives the engine's build_context with sampling off, indexing off,
-    and enrichment off so the run is metadata-only and cheap. Parses
-    the per-datasource YAML artifact for the catalog/schema/table
-    tree and returns it as a flat list of SchemaInfo.
+    Calls the upstream engine's introspector.introspect_database()
+    directly — bypasses build_context so we don't pay the Ollama-
+    install cost on Lambda. Returns a flat list of SchemaInfo across
+    all visible catalogs/schemas/tables that the RO user can SELECT
+    from.
 
     For very large warehouses we may need to add a cache layer
     (DDB-backed) - flagged in plan/PROGRESS.md as an open question.
     """
-    dce = _import_introspection_engine()
+    _import_introspection_engine()  # raises IntrospectionEngineUnavailable if missing
     try:
         config = _build_config(
-            dce, engine, host, port, database_name, credential_payload,
+            None, engine, host, port, database_name, credential_payload,
             datasource_name="ooat-picker",
             enable_sampling=False,
         )
@@ -255,66 +302,25 @@ def list_schemas(
         return []
 
     try:
-        with tempfile.TemporaryDirectory(prefix="dce-picker-") as domain_dir:
-            mgr = dce.init_dce_domain(Path(domain_dir))
-            configured = mgr.create_datasource_config(
-                datasource_type=_datasource_type(dce, engine),
-                datasource_name="ooat-picker",
-                config_content=config,
-            )
-            results = mgr.build_context(
-                datasource_ids=[configured.datasource.id],
-                should_index=False,
-                should_enrich_context=False,
-            )
-            if not results:
-                return []
-
-            return _parse_schema_tree(results[0].context_file_path)
+        introspector = _get_introspector(engine)
+        result = introspector.introspect_database(config)
     except Exception:
-        # DATABAO-SPECIFIC: keep the upstream name in the log line so
-        # upstream-issue triage stays fast.
-        logger.exception("Databao build_context for picker failed")
+        logger.exception("Schema introspection for picker failed")
         return []
 
-
-def _parse_schema_tree(context_file_path) -> List[SchemaInfo]:
-    """Walk the engine's YAML artifact and return a flat catalog/schema/table list.
-
-    # DATABAO-SPECIFIC: this upstream library writes the YAML artifact
-    # to context_file_path on disk; we then parse it.
-
-    YAML shape (per build_context output, verified against the upstream
-    engine 0.x for postgres / mysql / mssql):
-
-        context:
-          catalogs:
-            - name: <catalog>
-              schemas:
-                - name: <schema>
-                  tables:
-                    - name: <table>
-                      kind: table | view
-                      ...
-    """
-    import yaml
-
-    if not context_file_path or not Path(context_file_path).exists():
-        return []
-
-    data = yaml.safe_load(Path(context_file_path).read_text())
     out: List[SchemaInfo] = []
-    for catalog in (data.get("context", {}) or {}).get("catalogs", []) or []:
-        cat_name = catalog.get("name") or ""
-        for schema in catalog.get("schemas", []) or []:
-            sch_name = schema.get("name") or ""
-            for table in schema.get("tables", []) or []:
-                tbl_name = table.get("name") or ""
-                if not tbl_name:
+    for catalog in result.catalogs:
+        for schema in catalog.schemas:
+            for table in schema.tables:
+                if not table.name:
                     continue
-                out.append(SchemaInfo(catalog=cat_name, schema=sch_name, table=tbl_name))
+                out.append(SchemaInfo(
+                    catalog=catalog.name or "",
+                    schema=schema.name or "",
+                    table=table.name,
+                ))
     return out
 
 
-# The full build_context call for sync lives in database-sync (heavy
-# operation, long timeout Lambda needed). Not exposed here.
+# The full introspect_database call for sync lives in database-sync
+# (heavier operation, long-timeout Lambda needed). Not exposed here.

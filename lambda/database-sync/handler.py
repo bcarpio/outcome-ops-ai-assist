@@ -12,9 +12,11 @@ Flow per SQS record:
   4. check_repo_limit("database:{engine}:{host_hash}") - repo identity
      uses engine+host_hash so the same physical DB across many
      workspace connections counts once.
-  5. Call the engine's build_context() in a temp dir.
-  6. For each table in the YAML artifact: strip top_values, queue a
-     message to FILE_INGESTION_QUEUE.
+  5. Call the engine's introspector.introspect_database() directly
+     (bypassing build_context to avoid the upstream's Ollama runtime
+     install on Lambda).
+  6. For each in-scope table: serialize to dict, strip top_values,
+     wrap in the per-table YAML envelope, queue to FILE_INGESTION_QUEUE.
   7. Update connection status to completed, write known_table_ids.
   8. Queue orphan_cleanup to delete-worker.
   9. Emit DATABASE_SYNCED audit row.
@@ -29,10 +31,8 @@ import logging
 import os
 import re
 import sys
-import tempfile
 import time
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import boto3
@@ -329,7 +329,8 @@ def _build_sync_config(
     # the engine's schema-level scope.
     # DATABAO-SPECIFIC: the upstream engine's introspection scope is
     # schema-level while our admin picker is table-level. The per-table
-    # filter is applied post-build in _slice_yaml_into_tables.
+    # filter is applied post-introspect in _run_schema_introspection
+    # against the include_table_keys set.
     include_rules = []
     for catalog, schemas in (schemas_by_catalog or {}).items():
         include_rules.append(
@@ -412,95 +413,127 @@ def _detect_top_values(doc: Any) -> bool:
     return False
 
 
-def _slice_yaml_into_tables(
-    context_file_path,
-    include_table_keys: set,
-) -> Dict[str, Any]:
-    """Parse the per-datasource YAML artifact and emit per-table chunks.
+def _to_yaml_safe(obj: Any) -> Any:
+    """Recursively convert a dataclass/enum tree into YAML-dumpable primitives.
 
-    # DATABAO-SPECIFIC: this upstream library writes its YAML artifact
-    # to context_file_path on disk; we then parse it.
+    dataclasses.asdict() doesn't unwrap enums (DatasetKind etc.); this
+    walker does, while preserving the nested structure so the resulting
+    dict round-trips cleanly through yaml.safe_dump.
+    """
+    from dataclasses import is_dataclass, fields
+    from enum import Enum
 
-    Each chunk preserves the catalog/schema/table envelope so it can be
-    ingested as a standalone YAML artifact. top_values are stripped from
-    every chunk before yaml.dump (defensive - file-ingestion strips
-    again on the receiving end).
+    if obj is None:
+        return None
+    if isinstance(obj, Enum):
+        return obj.value
+    if is_dataclass(obj):
+        return {f.name: _to_yaml_safe(getattr(obj, f.name)) for f in fields(obj)}
+    if isinstance(obj, list):
+        return [_to_yaml_safe(x) for x in obj]
+    if isinstance(obj, tuple):
+        return [_to_yaml_safe(x) for x in obj]
+    if isinstance(obj, dict):
+        return {k: _to_yaml_safe(v) for k, v in obj.items()}
+    return obj
 
-    Only tables whose 'catalog.schema.table' key is in include_table_keys
-    are emitted - that's how we honor the admin's per-table picker
-    selection on top of the engine's schema-level scope.
+
+def _get_introspector_for_sync(engine: str):
+    """Return a configured upstream introspector for the given engine.
+
+    Sibling of database-integration/introspection_helpers._get_introspector
+    — duplicated rather than shared because the two Lambdas can't import
+    each other (per the comment on _build_sync_config). Behavior must
+    match; tests exercise both call sites against the same fixture
+    shape.
+
+    Bypasses the upstream `build_context` flow which on Lambda triggers
+    an Ollama runtime tarball download that exhausts /tmp.
+    """
+    if engine == "postgres":
+        from databao_context_engine.plugins.databases.postgresql.postgresql_connector import (
+            PostgresqlConnector,
+        )
+        from databao_context_engine.plugins.databases.postgresql.postgresql_introspector import (
+            PostgresqlIntrospector,
+        )
+        return PostgresqlIntrospector(PostgresqlConnector())
+
+    if engine == "mysql":
+        from databao_context_engine.plugins.databases.mysql.mysql_connector import (
+            MySQLConnector,
+        )
+        from databao_context_engine.plugins.databases.mysql.mysql_introspector import (
+            MySQLIntrospector,
+        )
+        return MySQLIntrospector(MySQLConnector())
+
+    if engine == "mssql":
+        from databao_context_engine.plugins.databases.mssql.mssql_connector import (
+            MSSQLConnector,
+        )
+        from databao_context_engine.plugins.databases.mssql.mssql_introspector import (
+            MSSQLIntrospector,
+        )
+        return MSSQLIntrospector(MSSQLConnector())
+
+    raise ValueError(f"Unsupported engine: {engine!r}")
+
+
+def _build_table_chunk_yaml(
+    table_obj: Any,
+    catalog_name: str,
+    schema_name: str,
+    engine: str,
+    datasource_id: str,
+) -> tuple[str, int, bool]:
+    """Serialize one DatabaseTable to the per-table YAML chunk file-ingestion
+    consumes. Returns (yaml_string, column_count, had_top_values).
+
+    The envelope (datasource_id / datasource_type / context.catalogs[]/...)
+    is preserved verbatim from the build_context-era format so downstream
+    consumers (file-ingestion + future chunking/embedding) don't have
+    to change shape.
     """
     import yaml
 
-    if not context_file_path or not Path(context_file_path).exists():
-        return {"tables": [], "columns_count": 0, "had_top_values": False}
+    table_dict = _to_yaml_safe(table_obj)
+    column_count = len(table_dict.get("columns") or [])
+    had_top_values = _detect_top_values(table_dict)
+    strip_top_values(table_dict)
 
-    full_doc = yaml.safe_load(Path(context_file_path).read_text())
-    if not isinstance(full_doc, dict):
-        return {"tables": [], "columns_count": 0, "had_top_values": False}
-
-    had_top_values = _detect_top_values(full_doc)
-    columns_count = 0
-    tables_out: List[Dict[str, Any]] = []
-
-    datasource_id = full_doc.get("datasource_id")
-    datasource_type = full_doc.get("datasource_type")
-    catalogs = ((full_doc.get("context") or {}).get("catalogs") or [])
-
-    for catalog in catalogs:
-        cat_name = catalog.get("name") or ""
-        for schema in catalog.get("schemas") or []:
-            sch_name = schema.get("name") or ""
-            for table in schema.get("tables") or []:
-                tbl_name = table.get("name") or ""
-                if not tbl_name:
-                    continue
-
-                table_key = f"{cat_name}.{sch_name}.{tbl_name}"
-                if table_key not in include_table_keys:
-                    continue
-
-                columns_count += len(table.get("columns") or [])
-                # Strip top_values from this table's dict, then envelope
-                # it in a single-table YAML document so the downstream
-                # ingestion path sees a self-contained chunk.
-                strip_top_values(table)
-                chunk_doc = {
-                    "datasource_id": datasource_id,
-                    "datasource_type": datasource_type,
-                    "context": {
-                        "catalogs": [{
-                            "name": cat_name,
-                            "schemas": [{
-                                "name": sch_name,
-                                "tables": [table],
-                            }],
-                        }],
-                    },
-                }
-                tables_out.append({
-                    "catalog": cat_name,
-                    "schema": sch_name,
-                    "table": tbl_name,
-                    "yaml": yaml.safe_dump(chunk_doc, sort_keys=False),
-                })
-
-    return {
-        "tables": tables_out,
-        "columns_count": columns_count,
-        "had_top_values": had_top_values,
+    chunk_doc = {
+        "datasource_id": datasource_id,
+        "datasource_type": engine,
+        "context": {
+            "catalogs": [{
+                "name": catalog_name,
+                "schemas": [{
+                    "name": schema_name,
+                    "tables": [table_dict],
+                }],
+            }],
+        },
     }
+    return yaml.safe_dump(chunk_doc, sort_keys=False), column_count, had_top_values
 
 
 def _run_schema_introspection(connection: Dict, credential: Dict) -> Dict[str, Any]:
-    """Run schema introspection against the customer DB and slice the
-    resulting YAML into per-table chunks.
+    """Run schema introspection against the customer DB and emit per-table
+    YAML chunks.
 
     Returns a dict with keys:
       - "tables": list of per-table dicts {catalog, schema, table, yaml}
       - "columns_count": total columns introspected
       - "had_top_values": bool - informational; the YAML in "tables" is
         already stripped of top_values
+
+    Drives the upstream engine's introspector.introspect_database()
+    directly. The full build_context flow instantiates an Ollama LLM
+    service even with should_enrich_context=False, which on Lambda
+    triggers a runtime tarball download that exhausts /tmp. The
+    lower-level introspector API walks catalogs/schemas/tables via
+    plain SQL — no DuckDB, no LLM, no /tmp downloads.
     """
     # DATABAO-SPECIFIC: keep the upstream package name in the log line
     # below so upstream-issue triage stays fast.
@@ -517,6 +550,7 @@ def _run_schema_introspection(connection: Dict, credential: Dict) -> Dict[str, A
     host = connection.get("host", "")
     port = int(connection.get("port") or 0)
     database_name = connection.get("database_name", "")
+    connection_id = connection.get("connection_id", "")
     scope_config = connection.get("scope_config") or {}
 
     include_strs = (scope_config.get("introspection") or {}).get("include") or []
@@ -547,29 +581,53 @@ def _run_schema_introspection(connection: Dict, credential: Dict) -> Dict[str, A
         return {"tables": [], "columns_count": 0, "had_top_values": False}
 
     try:
-        with tempfile.TemporaryDirectory(prefix="dce-sync-") as domain_dir:
-            mgr = dce.init_dce_domain(Path(domain_dir))
-            configured = mgr.create_datasource_config(
-                datasource_type=dce.DatasourceType(full_type=engine),
-                datasource_name="ooat-sync",
-                config_content=config,
-            )
-            results = mgr.build_context(
-                datasource_ids=[configured.datasource.id],
-                should_index=False,
-                should_enrich_context=False,
-            )
-            if not results:
-                return {"tables": [], "columns_count": 0, "had_top_values": False}
-
-            return _slice_yaml_into_tables(
-                results[0].context_file_path, include_table_keys,
-            )
+        introspector = _get_introspector_for_sync(engine)
+        result = introspector.introspect_database(config)
     except Exception:
         # DATABAO-SPECIFIC: keep the upstream name in the log line so
         # upstream-issue triage stays fast.
-        logger.exception("[database-sync] Databao build_context raised")
+        logger.exception("[database-sync] Databao introspect_database raised")
         return {"tables": [], "columns_count": 0, "had_top_values": False}
+
+    # Stable datasource_id keyed on the OutcomeOps connection so per-
+    # table chunks across a sync share the same envelope value. The
+    # downstream embedding path doesn't depend on this being a UUID; a
+    # stable string is sufficient and easier to triage in logs.
+    datasource_id = f"ooat-sync:{engine}:{connection_id}" if connection_id else f"ooat-sync:{engine}"
+
+    tables_out: List[Dict[str, Any]] = []
+    columns_count = 0
+    had_top_values = False
+
+    for catalog in result.catalogs:
+        cat_name = catalog.name or ""
+        for schema in catalog.schemas:
+            sch_name = schema.name or ""
+            for table in schema.tables:
+                tbl_name = table.name or ""
+                if not tbl_name:
+                    continue
+                table_key = f"{cat_name}.{sch_name}.{tbl_name}"
+                if table_key not in include_table_keys:
+                    continue
+
+                yaml_str, col_count, table_had_top_values = _build_table_chunk_yaml(
+                    table, cat_name, sch_name, engine, datasource_id,
+                )
+                columns_count += col_count
+                had_top_values = had_top_values or table_had_top_values
+                tables_out.append({
+                    "catalog": cat_name,
+                    "schema": sch_name,
+                    "table": tbl_name,
+                    "yaml": yaml_str,
+                })
+
+    return {
+        "tables": tables_out,
+        "columns_count": columns_count,
+        "had_top_values": had_top_values,
+    }
 
 
 def process_sync_request(message: Dict) -> Dict[str, Any]:

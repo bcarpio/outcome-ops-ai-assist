@@ -198,6 +198,80 @@ class TestIntrospectionHelpers:
         assert r.server_version == "15.4"
         assert r.error is None
 
+    def test_list_schemas_walks_introspector_result(self):
+        """list_schemas should call introspector.introspect_database()
+        and flatten the catalog/schema/table tree into SchemaInfo entries.
+        Mocks the upstream introspector + config builder so the test
+        runs without the databao package installed."""
+        from dataclasses import dataclass as _dc, field
+
+        @_dc
+        class StubTable:
+            name: str
+
+        @_dc
+        class StubSchema:
+            name: str
+            tables: list = field(default_factory=list)
+
+        @_dc
+        class StubCatalog:
+            name: str
+            schemas: list = field(default_factory=list)
+
+        @_dc
+        class StubResult:
+            catalogs: list = field(default_factory=list)
+
+        stub_result = StubResult(catalogs=[
+            StubCatalog(name="analytics", schemas=[
+                StubSchema(name="healthcare", tables=[
+                    StubTable(name="patients"), StubTable(name="encounters"),
+                ]),
+                StubSchema(name="billing", tables=[StubTable(name="claims")]),
+            ]),
+        ])
+
+        fake_introspector = MagicMock()
+        fake_introspector.introspect_database.return_value = stub_result
+
+        with patch.object(
+            helpers_module, "_import_introspection_engine", return_value=MagicMock(),
+        ), patch.object(
+            helpers_module, "_build_config", return_value=MagicMock(),
+        ), patch.object(
+            helpers_module, "_get_introspector", return_value=fake_introspector,
+        ):
+            schemas = helpers_module.list_schemas(
+                engine="mssql", host="h", port=1433, database_name="analytics",
+                credential_payload={"username": "u", "password": "p"},
+            )
+
+        triples = [(s.catalog, s.schema, s.table) for s in schemas]
+        assert triples == [
+            ("analytics", "healthcare", "patients"),
+            ("analytics", "healthcare", "encounters"),
+            ("analytics", "billing", "claims"),
+        ]
+
+    def test_list_schemas_returns_empty_on_introspector_exception(self):
+        """If the introspector raises (auth failure, network blip, etc.),
+        list_schemas returns [] rather than bubbling — the picker UI
+        surfaces an empty-list hint."""
+        with patch.object(
+            helpers_module, "_import_introspection_engine", return_value=MagicMock(),
+        ), patch.object(
+            helpers_module, "_build_config", return_value=MagicMock(),
+        ), patch.object(
+            helpers_module, "_get_introspector",
+            side_effect=RuntimeError("upstream boom"),
+        ):
+            schemas = helpers_module.list_schemas(
+                engine="mssql", host="h", port=1433, database_name="analytics",
+                credential_payload={"username": "u", "password": "p"},
+            )
+        assert schemas == []
+
     def test_schema_info_dataclass_shape(self):
         s = helpers_module.SchemaInfo(
             catalog="c", schema="public", table="users", row_count_estimate=100,

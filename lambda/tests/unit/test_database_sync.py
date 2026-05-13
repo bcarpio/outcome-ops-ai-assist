@@ -192,6 +192,251 @@ class TestStripTopValues:
 
 
 # ============================================================================
+# Schema introspection (introspect_database path)
+# ============================================================================
+
+
+class TestToYamlSafe:
+    """Recursive dataclass/enum unwrap used to serialize introspector
+    results into YAML chunks."""
+
+    def test_unwraps_simple_dataclass(self):
+        from dataclasses import dataclass as _dc
+
+        @_dc
+        class Inner:
+            x: int
+            y: str
+
+        assert handler_module._to_yaml_safe(Inner(x=1, y="a")) == {"x": 1, "y": "a"}
+
+    def test_unwraps_enum_to_value(self):
+        from enum import Enum
+
+        class Kind(Enum):
+            TABLE = "table"
+            VIEW = "view"
+
+        assert handler_module._to_yaml_safe(Kind.TABLE) == "table"
+
+    def test_unwraps_nested_dataclass_and_list(self):
+        from dataclasses import dataclass as _dc, field
+
+        @_dc
+        class Col:
+            name: str
+
+        @_dc
+        class Tbl:
+            name: str
+            columns: list = field(default_factory=list)
+
+        result = handler_module._to_yaml_safe(
+            Tbl(name="t", columns=[Col(name="a"), Col(name="b")])
+        )
+        assert result == {"name": "t", "columns": [{"name": "a"}, {"name": "b"}]}
+
+    def test_passes_through_primitives(self):
+        assert handler_module._to_yaml_safe(None) is None
+        assert handler_module._to_yaml_safe("x") == "x"
+        assert handler_module._to_yaml_safe(7) == 7
+        assert handler_module._to_yaml_safe({"a": 1}) == {"a": 1}
+
+
+class TestBuildTableChunkYaml:
+    """The per-table YAML envelope file-ingestion expects."""
+
+    def _make_stub_table(self, name="users", with_top_values=False):
+        # Mirrors databao_context_engine's DatabaseTable shape via a
+        # plain dataclass so the unwrapper handles it identically.
+        from dataclasses import dataclass as _dc, field
+        from enum import Enum
+
+        class Kind(Enum):
+            TABLE = "table"
+
+        @_dc
+        class StubColumn:
+            name: str
+            type: str
+            top_values: list | None = None
+
+        @_dc
+        class StubTable:
+            name: str
+            kind: Kind = Kind.TABLE
+            columns: list = field(default_factory=list)
+
+        cols = [
+            StubColumn(name="id", type="int"),
+            StubColumn(
+                name="email", type="varchar",
+                top_values=["a@x.com"] if with_top_values else None,
+            ),
+        ]
+        return StubTable(name=name, columns=cols)
+
+    def test_envelope_shape(self):
+        import yaml
+
+        yaml_str, col_count, had_tv = handler_module._build_table_chunk_yaml(
+            self._make_stub_table(),
+            catalog_name="analytics",
+            schema_name="healthcare",
+            engine="mssql",
+            datasource_id="ooat-sync:mssql:conn123",
+        )
+        doc = yaml.safe_load(yaml_str)
+        assert doc["datasource_id"] == "ooat-sync:mssql:conn123"
+        assert doc["datasource_type"] == "mssql"
+        assert doc["context"]["catalogs"][0]["name"] == "analytics"
+        assert doc["context"]["catalogs"][0]["schemas"][0]["name"] == "healthcare"
+        tbl = doc["context"]["catalogs"][0]["schemas"][0]["tables"][0]
+        assert tbl["name"] == "users"
+        assert tbl["kind"] == "table"
+        assert len(tbl["columns"]) == 2
+        assert col_count == 2
+
+    def test_strips_top_values_from_emitted_yaml(self):
+        import yaml
+
+        yaml_str, _, had_tv = handler_module._build_table_chunk_yaml(
+            self._make_stub_table(with_top_values=True),
+            catalog_name="c", schema_name="s",
+            engine="mssql", datasource_id="d",
+        )
+        # The detection flag fires because top_values was present
+        # pre-strip; the emitted YAML has been stripped.
+        assert had_tv is True
+        doc = yaml.safe_load(yaml_str)
+        for col in doc["context"]["catalogs"][0]["schemas"][0]["tables"][0]["columns"]:
+            assert "top_values" not in col
+
+
+class TestRunSchemaIntrospection:
+    """End-to-end behavior of _run_schema_introspection with the
+    introspector mocked. The function should filter to include_table_keys,
+    serialize via _build_table_chunk_yaml, and return aggregated counts."""
+
+    @pytest.fixture
+    def stub_introspect_result(self):
+        from dataclasses import dataclass as _dc, field
+
+        @_dc
+        class StubCol:
+            name: str
+            type: str
+
+        @_dc
+        class StubTable:
+            name: str
+            columns: list = field(default_factory=list)
+
+        @_dc
+        class StubSchema:
+            name: str
+            tables: list = field(default_factory=list)
+
+        @_dc
+        class StubCatalog:
+            name: str
+            schemas: list = field(default_factory=list)
+
+        @_dc
+        class StubResult:
+            catalogs: list = field(default_factory=list)
+
+        return StubResult(catalogs=[
+            StubCatalog(name="analytics", schemas=[
+                StubSchema(name="healthcare", tables=[
+                    StubTable(name="patients", columns=[StubCol(name="id", type="int")]),
+                    StubTable(name="excluded", columns=[StubCol(name="id", type="int")]),
+                ]),
+                StubSchema(name="billing", tables=[
+                    StubTable(name="claims", columns=[StubCol(name="id", type="int"), StubCol(name="amount", type="decimal")]),
+                ]),
+            ]),
+        ])
+
+    def test_filters_to_include_keys_and_serializes(
+        self, stub_introspect_result, sample_connection, mock_credential
+    ):
+        import yaml
+
+        connection = {
+            **sample_connection,
+            "engine": "mssql",
+            "scope_config": {
+                "introspection": {"include": [
+                    "analytics.healthcare.patients",
+                    "analytics.billing.claims",
+                ]},
+                "sampling": {"enabled": False},
+            },
+        }
+        # Bypass real introspector creation; return one whose
+        # introspect_database call yields our fixture.
+        fake_introspector = MagicMock()
+        fake_introspector.introspect_database.return_value = stub_introspect_result
+
+        with patch.object(
+            handler_module, "_get_introspector_for_sync",
+            return_value=fake_introspector,
+        ), patch.object(
+            handler_module, "_build_sync_config",
+            return_value=MagicMock(),  # config is opaque to the rest of the function
+        ):
+            result = handler_module._run_schema_introspection(connection, mock_credential)
+
+        # patients + claims; excluded gets filtered
+        assert len(result["tables"]) == 2
+        emitted = {(t["catalog"], t["schema"], t["table"]) for t in result["tables"]}
+        assert emitted == {
+            ("analytics", "healthcare", "patients"),
+            ("analytics", "billing", "claims"),
+        }
+        # columns: patients=1 + claims=2
+        assert result["columns_count"] == 3
+        assert result["had_top_values"] is False
+
+        # YAML envelope sanity-check on one entry
+        doc = yaml.safe_load(result["tables"][0]["yaml"])
+        assert doc["datasource_type"] == "mssql"
+        assert doc["context"]["catalogs"][0]["name"] == "analytics"
+
+    def test_no_include_keys_skips_introspect(
+        self, sample_connection, mock_credential
+    ):
+        connection = {
+            **sample_connection,
+            "scope_config": {"introspection": {"include": []}},
+        }
+        result = handler_module._run_schema_introspection(connection, mock_credential)
+        assert result == {"tables": [], "columns_count": 0, "had_top_values": False}
+
+    def test_introspector_exception_returns_empty(
+        self, sample_connection, mock_credential
+    ):
+        connection = {
+            **sample_connection,
+            "engine": "mssql",
+            "scope_config": {
+                "introspection": {"include": ["analytics.healthcare.patients"]},
+                "sampling": {"enabled": False},
+            },
+        }
+        fake = MagicMock()
+        fake.introspect_database.side_effect = RuntimeError("upstream boom")
+        with patch.object(
+            handler_module, "_get_introspector_for_sync", return_value=fake,
+        ), patch.object(
+            handler_module, "_build_sync_config", return_value=MagicMock(),
+        ):
+            result = handler_module._run_schema_introspection(connection, mock_credential)
+        assert result == {"tables": [], "columns_count": 0, "had_top_values": False}
+
+
+# ============================================================================
 # get_connection / update_connection_status
 # ============================================================================
 
