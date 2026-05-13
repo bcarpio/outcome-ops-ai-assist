@@ -20,6 +20,13 @@ FROM public.ecr.aws/lambda/python:3.12
 # Build context is repo root (`docker build -f lambda/database-integration/Dockerfile .`)
 # so we can also COPY lambda/shared/ into the image.
 
+# DATABAO-SPECIFIC: mssql-python (Microsoft's new MSSQL driver, used by
+# the upstream engine's MSSQL plugin) needs libtool-ltdl for dynamic
+# driver loading and krb5-libs for its Kerberos client linkage (linked
+# even when using SQL Auth). asyncpg/pymysql are pure-Python+C-ext and
+# need nothing extra. AWS's lambda/python:3.12 base ships neither.
+RUN dnf install -y libtool-ltdl krb5-libs && dnf clean all
+
 # Install the schema introspection engine plus the DB driver set the MVP
 # supports. Drivers bring native components that the AWS-published
 # Lambda Python image will compile against the runtime ABI.

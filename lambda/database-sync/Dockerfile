@@ -22,6 +22,13 @@
 
 FROM public.ecr.aws/lambda/python:3.12
 
+# DATABAO-SPECIFIC: mssql-python (Microsoft's new MSSQL driver, used by
+# the upstream engine's MSSQL plugin) needs libtool-ltdl for dynamic
+# driver loading and krb5-libs for its Kerberos client linkage (linked
+# even when using SQL Auth). asyncpg/pymysql are pure-Python+C-ext and
+# need nothing extra. AWS's lambda/python:3.12 base ships neither.
+RUN dnf install -y libtool-ltdl krb5-libs && dnf clean all
+
 # Install the introspection engine + DB drivers (shared requirements with database-integration)
 COPY lambda/db-introspection-requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.txt && \

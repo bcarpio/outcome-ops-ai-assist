@@ -12,7 +12,7 @@ databao-context-engine
 # Database drivers for the MVP-supported engines
 asyncpg          # Postgres (incl. Aurora Postgres, RDS Postgres, Redshift)
 pymysql          # MySQL (incl. Aurora MySQL, RDS MySQL, MariaDB)
-mssql-python     # MS SQL Server (Microsoft's new pure-Python driver)
+mssql-python==0.13.1   # MS SQL Server (Microsoft's new driver). Pinned: pre-1.0, drifts; needs libtool-ltdl + krb5-libs at runtime (installed in both Dockerfiles).
 
 # boto3 and yaml come pre-installed in the AWS-published lambda/python:3.12
 # image, but pinning here as a defense against image regressions.
