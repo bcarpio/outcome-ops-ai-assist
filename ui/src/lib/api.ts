@@ -1616,7 +1616,7 @@ export async function deleteOneNoteConnection(workspaceId: string, connectionId:
 
 // ============================================================================
 // Database Integration Types and API
-// Production-truth structured-data source via the Databao Context Engine.
+// Production-truth structured-data source via the schema introspection engine.
 // ============================================================================
 
 export type DatabaseEngine = 'postgres' | 'mysql' | 'mssql'
@@ -1662,7 +1662,7 @@ export interface DatabaseSchemaInfo {
 
 // Discriminated union of engine-specific credential payloads. The
 // integration Lambda treats the dict as opaque and forwards it to
-// Databao - this shape is the contract surface for the picker UI.
+// Picker UI contract surface - the catalog/schema/table tree returned by the introspection engine.
 export type DatabaseCredentialPayload =
   | { engine: 'postgres'; username: string; password: string; ssl_mode?: string }
   | { engine: 'mysql';    username: string; password: string; ssl_mode?: string }
