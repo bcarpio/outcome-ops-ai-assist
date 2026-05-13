@@ -193,7 +193,7 @@ Rebuild any layer when:
 
 ### Step 5c: Build Database Integration Container Images
 
-The database integration ships as **Lambda container images** rather than a layer because the Databao Context Engine + Postgres/MySQL/MSSQL drivers exceed Lambda's 250 MB unzipped layer cap. Two images:
+The database integration ships as **Lambda container images** rather than a layer because the schema introspection engine + Postgres/MySQL/MSSQL drivers exceed Lambda's 250 MB unzipped layer cap. Two images:
 
 ```bash
 ENVIRONMENT=prd make build-database-images
@@ -206,7 +206,7 @@ The Makefile target:
 4. Writes image tags to SSM so the main `terraform apply` references them
 
 Rebuild when:
-- `lambda/databao-requirements.txt` changes
+- `lambda/db-introspection-requirements.txt` changes
 - Either Lambda's Dockerfile changes
 - The handler Python code changes
 - `outcomeops_license_layer_arn` in your tfvars bumps to a new layer version

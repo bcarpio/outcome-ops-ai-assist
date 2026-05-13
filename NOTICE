@@ -1,0 +1,24 @@
+OutcomeOps AI Assist
+Copyright 2024-2026 OutcomeOps
+
+This product includes software developed at OutcomeOps
+(https://outcomeops.ai/).
+
+==============================================================================
+
+This product includes software from JetBrains' Databao Context Engine
+(https://github.com/JetBrains/databao-context-engine), licensed under the
+Apache License, Version 2.0 and Additional Terms and Conditions (see the
+upstream LICENSE.md for the full text).
+
+  Copyright (c) 2025 JetBrains s.r.o.
+
+==============================================================================
+
+This product includes Postgres / MySQL / MSSQL connector libraries
+distributed under their respective open-source licenses. See each
+package's LICENSE for details:
+
+  - asyncpg       (Apache 2.0)
+  - PyMySQL       (MIT)
+  - mssql-python  (MIT)
