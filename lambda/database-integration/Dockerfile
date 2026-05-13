@@ -20,6 +20,16 @@ FROM public.ecr.aws/lambda/python:3.12
 # Build context is repo root (`docker build -f lambda/database-integration/Dockerfile .`)
 # so we can also COPY lambda/shared/ into the image.
 
+# DATABAO-SPECIFIC: the upstream engine uses DuckDB internally for its
+# migration / context-storage layer. DuckDB resolves $HOME for its
+# extensions cache dir at connect time and raises IOException if HOME
+# is unset or empty. AWS's lambda/python:3.12 image does NOT set HOME,
+# so build_context fails before any datasource introspection happens
+# ("Can't find the home directory at ''"). /tmp is the only writable
+# path in Lambda; pointing HOME there satisfies DuckDB and is reset
+# per cold start.
+ENV HOME=/tmp
+
 # DATABAO-SPECIFIC: mssql-python (Microsoft's new MSSQL driver, used by
 # the upstream engine's MSSQL plugin) needs libtool-ltdl for dynamic
 # driver loading and krb5-libs for its Kerberos client linkage (linked
