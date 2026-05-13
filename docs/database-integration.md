@@ -278,9 +278,12 @@ specific customer ask we're tracking:
 | Symptom | Cause | Fix |
 |---|---|---|
 | **"Connection test failed"** at create time | Bad credentials, unreachable host, or firewall block | Verify the username/password against the DB directly. Check that the OutcomeOps Lambda VPC can route to your DB host (VPC peering / SG allowlist / etc.) |
+| **MSSQL: "Login failed for user 'X'"** with credentials you know are correct | MSSQL hides "database not found" behind the same `Login failed` error string. The user authenticated but can't access the database you named in the connection form. | Double-check the database name. Try connecting as the same user with `sqlcmd -d <db>` to confirm. |
+| **MySQL: "Access denied for user 'X'@'%' to database 'Y'"** (error code 1044) | User authenticated but has no grants on the named database. Different error from MSSQL — MySQL surfaces this distinctly. | `GRANT SELECT ON <db>.* TO '<user>'@'%';` then re-test. |
 | **`auth_error`** on a connection after some time | DB password rotated, user revoked, or SSL cert changed | Workspace admin disconnects and reconnects with the new creds. (DB-side auth has no refresh-token equivalent — manual rotation is the path.) |
 | **`blocked_license_limit`** status | Hitting the repo-limit for your OutcomeOps tier | Same as any other source — increase your tier or trim connections. Repo identity is `{engine}:{host_hash}` so the same physical DB across multiple workspace connections counts ONCE |
-| **Schema picker is slow / empty** | Large warehouse, slow `INFORMATION_SCHEMA` introspection, or the connection user lacks `SELECT` on the schemas | Confirm the user has the right grants. For very large warehouses (10k+ tables), a DDB-cached schema tree is on the roadmap |
+| **Schema picker is slow / empty** | Large warehouse, slow `INFORMATION_SCHEMA` introspection, or the connection user lacks `SELECT` on the schemas | Confirm the user has the right grants per [`database-integration-readonly-user.md`](./database-integration-readonly-user.md). For very large warehouses (10k+ tables), a DDB-cached schema tree is on the roadmap |
+| **MSSQL columns have `stats: null`** despite sampling=on | The upstream introspection plugin doesn't implement per-column stats for MSSQL. Schema metadata + sample rows still work; aggregate column stats don't. | No customer-side fix — tracked as a v2 follow-up. Postgres + MySQL get full stats; MSSQL gets schema + samples only. |
 | **Connection card returns "Server misconfiguration: schema introspection engine unavailable"** | Container image wasn't built (or not yet pushed) before terraform apply | Run `ENVIRONMENT=prd make build-database-images` then `terraform apply` |
 
 ## Related
