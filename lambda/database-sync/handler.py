@@ -19,15 +19,8 @@ Flow per SQS record:
   8. Queue orphan_cleanup to delete-worker.
   9. Emit DATABASE_SYNCED audit row.
 
-The top_values strip is duplicated defensively in file-ingestion
-(chunk 03) so a regression here can't cause column values to land
-in S3.
-
-NOTE (chunk 01 scaffold): the actual Databao call is stubbed. The
-shape (license validation, credential decrypt + audit, repo-limit
-check, file-ingestion enqueue, status update, audit emission) is
-fully wired so the integration tests in chunk 05 can exercise the
-flow without the Databao layer attached.
+The top_values strip is duplicated defensively in file-ingestion so a
+regression here can't cause column values to land in S3.
 """
 
 import hashlib
@@ -36,8 +29,10 @@ import logging
 import os
 import re
 import sys
+import tempfile
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import boto3
@@ -293,37 +288,274 @@ def _emit_credential_used_audit(
         logger.warning(f"Failed to emit DB_CREDENTIAL_USED audit row: {e}")
 
 
+def _build_sync_config(
+    dce,
+    engine: str,
+    host: str,
+    port: int,
+    database_name: str,
+    credential: Dict[str, Any],
+    schemas_by_catalog: Dict[str, set],
+    sampling_enabled: bool,
+):
+    """Engine-specific ConfigFile for the full sync build.
+
+    Mirrors database-integration/databao_helpers._build_config but adds
+    IntrospectionScope (limit Databao to the admin-selected schemas) and
+    honors the workspace's sampling toggle. Duplicated rather than
+    shared because the two Lambdas can't import each other - kept in
+    sync by tests that exercise both call sites.
+    """
+    from databao_context_engine.plugins.databases.sampling_scope import SamplingConfig
+    from databao_context_engine.plugins.databases.introspection_scope import (
+        IntrospectionScope, ScopeIncludeRule,
+    )
+    from databao_context_engine.plugins.databases.profiling_config import ProfilingConfig
+
+    user = credential.get("username")
+    password = credential.get("password")
+    sampling = SamplingConfig(enabled=bool(sampling_enabled))
+    # We always want aggregate column stats - admin opt-in to sampling
+    # is the separate toggle above.
+    profiling = ProfilingConfig(enabled=True)
+
+    # Translate admin's "catalog.schema.table" picker selection into
+    # Databao's schema-level scope. Databao introspects all tables in
+    # the selected schemas; the per-table filter is applied post-build
+    # in _slice_yaml_into_tables.
+    include_rules = []
+    for catalog, schemas in (schemas_by_catalog or {}).items():
+        include_rules.append(
+            ScopeIncludeRule(catalog=catalog, schemas=sorted(schemas))
+        )
+    introspection_scope = IntrospectionScope(include=include_rules) if include_rules else None
+
+    if engine == "postgres":
+        from databao_context_engine.plugins.databases.postgresql.config_file import (
+            PostgresConfigFile, PostgresConnectionProperties,
+        )
+        additional = {}
+        ssl_mode = credential.get("ssl_mode")
+        if ssl_mode and ssl_mode != "disable":
+            additional["ssl"] = ssl_mode
+        return PostgresConfigFile(
+            name="ooat-sync",
+            connection=PostgresConnectionProperties(
+                host=host, port=port, database=database_name,
+                user=user, password=password,
+                additional_properties=additional,
+            ),
+            sampling=sampling,
+            profiling=profiling,
+            introspection_scope=introspection_scope,
+        )
+
+    if engine == "mysql":
+        from databao_context_engine.plugins.databases.mysql.config_file import (
+            MySQLConfigFile, MySQLConnectionProperties,
+        )
+        additional = {}
+        ssl_mode = credential.get("ssl_mode")
+        if ssl_mode and ssl_mode != "disable":
+            additional["ssl"] = {}
+        return MySQLConfigFile(
+            name="ooat-sync",
+            connection=MySQLConnectionProperties(
+                host=host, port=port, database=database_name,
+                user=user, password=password,
+                additional_properties=additional,
+            ),
+            sampling=sampling,
+            profiling=profiling,
+            introspection_scope=introspection_scope,
+        )
+
+    if engine == "mssql":
+        from databao_context_engine.plugins.databases.mssql.config_file import (
+            MSSQLConfigFile, MSSQLConnectionProperties,
+        )
+        encrypt_value = "yes" if credential.get("encrypt", True) else "no"
+        additional = {}
+        if credential.get("trust_server_certificate"):
+            additional["trust_server_certificate"] = True
+        return MSSQLConfigFile(
+            name="ooat-sync",
+            connection=MSSQLConnectionProperties(
+                host=host, port=port, database=database_name,
+                user=user, password=password,
+                encrypt=encrypt_value,
+                additional_properties=additional,
+            ),
+            sampling=sampling,
+            profiling=profiling,
+            introspection_scope=introspection_scope,
+        )
+
+    raise ValueError(f"Unsupported engine: {engine!r}")
+
+
+def _detect_top_values(doc: Any) -> bool:
+    """Walk a parsed YAML doc and return True if any node has 'top_values'."""
+    if isinstance(doc, dict):
+        if "top_values" in doc:
+            return True
+        return any(_detect_top_values(v) for v in doc.values())
+    if isinstance(doc, list):
+        return any(_detect_top_values(item) for item in doc)
+    return False
+
+
+def _slice_yaml_into_tables(
+    context_file_path,
+    include_table_keys: set,
+) -> Dict[str, Any]:
+    """Parse Databao's per-datasource YAML and emit per-table chunks.
+
+    Each chunk preserves the catalog/schema/table envelope so it can be
+    ingested as a standalone YAML artifact. top_values are stripped from
+    every chunk before yaml.dump (defensive - file-ingestion strips
+    again on the receiving end).
+
+    Only tables whose 'catalog.schema.table' key is in include_table_keys
+    are emitted - that's how we honor the admin's per-table picker
+    selection on top of Databao's schema-level scope.
+    """
+    import yaml
+
+    if not context_file_path or not Path(context_file_path).exists():
+        return {"tables": [], "columns_count": 0, "had_top_values": False}
+
+    full_doc = yaml.safe_load(Path(context_file_path).read_text())
+    if not isinstance(full_doc, dict):
+        return {"tables": [], "columns_count": 0, "had_top_values": False}
+
+    had_top_values = _detect_top_values(full_doc)
+    columns_count = 0
+    tables_out: List[Dict[str, Any]] = []
+
+    datasource_id = full_doc.get("datasource_id")
+    datasource_type = full_doc.get("datasource_type")
+    catalogs = ((full_doc.get("context") or {}).get("catalogs") or [])
+
+    for catalog in catalogs:
+        cat_name = catalog.get("name") or ""
+        for schema in catalog.get("schemas") or []:
+            sch_name = schema.get("name") or ""
+            for table in schema.get("tables") or []:
+                tbl_name = table.get("name") or ""
+                if not tbl_name:
+                    continue
+
+                table_key = f"{cat_name}.{sch_name}.{tbl_name}"
+                if table_key not in include_table_keys:
+                    continue
+
+                columns_count += len(table.get("columns") or [])
+                # Strip top_values from this table's dict, then envelope
+                # it in a single-table YAML document so the downstream
+                # ingestion path sees a self-contained chunk.
+                strip_top_values(table)
+                chunk_doc = {
+                    "datasource_id": datasource_id,
+                    "datasource_type": datasource_type,
+                    "context": {
+                        "catalogs": [{
+                            "name": cat_name,
+                            "schemas": [{
+                                "name": sch_name,
+                                "tables": [table],
+                            }],
+                        }],
+                    },
+                }
+                tables_out.append({
+                    "catalog": cat_name,
+                    "schema": sch_name,
+                    "table": tbl_name,
+                    "yaml": yaml.safe_dump(chunk_doc, sort_keys=False),
+                })
+
+    return {
+        "tables": tables_out,
+        "columns_count": columns_count,
+        "had_top_values": had_top_values,
+    }
+
+
 def _run_databao_build(connection: Dict, credential: Dict) -> Dict[str, Any]:
-    """Wrapper for Databao's build_context() call.
+    """Run Databao build_context against the customer DB and slice the
+    resulting YAML into per-table chunks.
 
     Returns a dict with keys:
       - "tables": list of per-table dicts {catalog, schema, table, yaml}
       - "columns_count": total columns introspected
-      - "had_top_values": bool — informational; the YAML is already
-        stripped by the time it lands in "tables"
-
-    NOTE (chunk 01): real Databao wiring lands with the layer in
-    chunk 02. Stubbed here to return an empty result so the rest of
-    the flow can be exercised by unit tests.
+      - "had_top_values": bool - informational; the YAML in "tables" is
+        already stripped of top_values
     """
     try:
-        from databao_context_engine import init_dce_domain  # noqa: F401
+        import databao_context_engine as dce
     except ImportError:
-        logger.warning(
-            "[database-sync] databao_context_engine not importable — "
-            "layer wiring lands in chunk 02; returning empty build result"
+        logger.error(
+            "[database-sync] databao_context_engine not importable - "
+            "container image build is broken (Databao should be baked in)"
         )
         return {"tables": [], "columns_count": 0, "had_top_values": False}
 
-    # The real implementation will:
-    # 1. mkdtemp() a domain dir
-    # 2. domain_manager.create_datasource_config(...)
-    # 3. domain_manager.build_context()
-    # 4. parse the per-datasource YAML artifact
-    # 5. for each table, slice the YAML into a per-table chunk and
-    #    call strip_top_values() on the parsed doc, then yaml.dump()
-    # Wiring lands in chunk 02 when the layer is attached.
-    return {"tables": [], "columns_count": 0, "had_top_values": False}
+    engine = connection.get("engine", "")
+    host = connection.get("host", "")
+    port = int(connection.get("port") or 0)
+    database_name = connection.get("database_name", "")
+    scope_config = connection.get("scope_config") or {}
+
+    include_strs = (scope_config.get("introspection") or {}).get("include") or []
+    if not include_strs:
+        logger.info("[database-sync] No tables in scope.introspection.include; skipping build")
+        return {"tables": [], "columns_count": 0, "had_top_values": False}
+
+    include_table_keys = set(include_strs)
+    schemas_by_catalog: Dict[str, set] = {}
+    for key in include_strs:
+        parts = key.split(".", 2)
+        if len(parts) != 3:
+            logger.warning(f"[database-sync] Malformed include key (skipped): {key!r}")
+            continue
+        cat, sch, _tbl = parts
+        schemas_by_catalog.setdefault(cat, set()).add(sch)
+
+    sampling_enabled = bool((scope_config.get("sampling") or {}).get("enabled"))
+
+    try:
+        config = _build_sync_config(
+            dce, engine, host, port, database_name, credential,
+            schemas_by_catalog=schemas_by_catalog,
+            sampling_enabled=sampling_enabled,
+        )
+    except (ValueError, ImportError) as e:
+        logger.error(f"[database-sync] Config build failed: {e}")
+        return {"tables": [], "columns_count": 0, "had_top_values": False}
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="dce-sync-") as domain_dir:
+            mgr = dce.init_dce_domain(Path(domain_dir))
+            configured = mgr.create_datasource_config(
+                datasource_type=dce.DatasourceType(full_type=engine),
+                datasource_name="ooat-sync",
+                config_content=config,
+            )
+            results = mgr.build_context(
+                datasource_ids=[configured.datasource.id],
+                should_index=False,
+                should_enrich_context=False,
+            )
+            if not results:
+                return {"tables": [], "columns_count": 0, "had_top_values": False}
+
+            return _slice_yaml_into_tables(
+                results[0].context_file_path, include_table_keys,
+            )
+    except Exception:
+        logger.exception("[database-sync] Databao build_context raised")
+        return {"tables": [], "columns_count": 0, "had_top_values": False}
 
 
 def process_sync_request(message: Dict) -> Dict[str, Any]:

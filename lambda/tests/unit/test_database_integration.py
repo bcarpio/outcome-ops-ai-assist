@@ -161,25 +161,33 @@ class TestCredentialManager:
 class TestDatabaoHelpers:
 
     def test_validate_connection_raises_when_layer_unavailable(self):
-        # In the test env the Databao layer isn't attached. Per ADR-019
-        # / deploy-bug semantics, the helper raises DatabaoLayerNotAttached
-        # so callers (the integration handler) can map it to a 500
-        # "Server misconfiguration" response rather than silently
-        # returning a misleading success/empty result.
-        with pytest.raises(helpers_module.DatabaoLayerNotAttached):
-            helpers_module.validate_connection(
-                engine="postgres",
-                host="h", port=5432, database_name="d",
-                credential_payload={"username": "u", "password": "p"},
-            )
+        # Per ADR-019 / deploy-bug semantics, when the Databao package
+        # isn't in the runtime image the helper raises
+        # DatabaoLayerNotAttached so callers (the integration handler)
+        # can map it to a 500 "Server misconfiguration" response rather
+        # than silently returning a misleading success/empty result.
+        with patch.object(
+            helpers_module, "_import_databao",
+            side_effect=helpers_module.DatabaoLayerNotAttached("missing"),
+        ):
+            with pytest.raises(helpers_module.DatabaoLayerNotAttached):
+                helpers_module.validate_connection(
+                    engine="postgres",
+                    host="h", port=5432, database_name="d",
+                    credential_payload={"username": "u", "password": "p"},
+                )
 
     def test_list_schemas_raises_when_layer_unavailable(self):
-        with pytest.raises(helpers_module.DatabaoLayerNotAttached):
-            helpers_module.list_schemas(
-                engine="postgres",
-                host="h", port=5432, database_name="d",
-                credential_payload={"username": "u", "password": "p"},
-            )
+        with patch.object(
+            helpers_module, "_import_databao",
+            side_effect=helpers_module.DatabaoLayerNotAttached("missing"),
+        ):
+            with pytest.raises(helpers_module.DatabaoLayerNotAttached):
+                helpers_module.list_schemas(
+                    engine="postgres",
+                    host="h", port=5432, database_name="d",
+                    credential_payload={"username": "u", "password": "p"},
+                )
 
     def test_validation_result_dataclass_shape(self):
         # The handler tests pass ValidationResult instances around -
@@ -196,6 +204,92 @@ class TestDatabaoHelpers:
         assert s.catalog == "c"
         assert s.table == "users"
         assert s.row_count_estimate == 100
+
+    def test_validate_connection_unsupported_engine(self):
+        # The integration handler already gates on a supported-engine
+        # allowlist, but the helper also rejects unknowns so a future
+        # caller (or a typo) doesn't silently mis-route to the wrong
+        # Databao plugin.
+        fake_dce = MagicMock()
+        with patch.object(helpers_module, "_import_databao", return_value=fake_dce):
+            r = helpers_module.validate_connection(
+                engine="oracle",
+                host="h", port=1521, database_name="d",
+                credential_payload={"username": "u", "password": "p"},
+            )
+        assert r.valid is False
+        assert "oracle" in (r.error or "").lower() or "unsupported" in (r.error or "").lower()
+
+    def test_validate_connection_returns_valid_on_databao_VALID(self):
+        # Stub Databao to report VALID; the helper should return
+        # ValidationResult(valid=True).
+        fake_dce = MagicMock()
+        fake_dce.DatasourceConnectionStatus.VALID = "VALID_SENTINEL"
+        fake_dce.DatasourceType.return_value = "ds_type"
+
+        fake_mgr = MagicMock()
+        check_result = MagicMock()
+        check_result.connection_status = "VALID_SENTINEL"
+        check_result.summary = None
+        check_result.full_message = None
+        fake_mgr.check_datasource_config_connection.return_value = check_result
+
+        fake_dce.init_dce_domain.return_value = fake_mgr
+
+        with patch.object(helpers_module, "_import_databao", return_value=fake_dce):
+            # Patch the deferred config import too
+            with patch(
+                "databao_context_engine.plugins.databases.postgresql.config_file."
+                "PostgresConfigFile",
+                create=True,
+            ):
+                with patch(
+                    "databao_context_engine.plugins.databases.postgresql.config_file."
+                    "PostgresConnectionProperties",
+                    create=True,
+                ):
+                    r = helpers_module.validate_connection(
+                        engine="postgres",
+                        host="h", port=5432, database_name="d",
+                        credential_payload={"username": "u", "password": "p"},
+                    )
+        assert r.valid is True
+        assert r.error is None
+
+    def test_validate_connection_returns_invalid_with_full_message(self):
+        # Stub Databao to report INVALID with both summary + full_message;
+        # helper should surface the more useful full_message in error.
+        fake_dce = MagicMock()
+        fake_dce.DatasourceConnectionStatus.VALID = "VALID_SENTINEL"
+        fake_dce.DatasourceType.return_value = "ds_type"
+
+        fake_mgr = MagicMock()
+        check_result = MagicMock()
+        check_result.connection_status = "INVALID_SENTINEL"
+        check_result.summary = "Connection failed"
+        check_result.full_message = "Access denied for user 'u'"
+        fake_mgr.check_datasource_config_connection.return_value = check_result
+
+        fake_dce.init_dce_domain.return_value = fake_mgr
+
+        with patch.object(helpers_module, "_import_databao", return_value=fake_dce):
+            with patch(
+                "databao_context_engine.plugins.databases.mysql.config_file."
+                "MySQLConfigFile",
+                create=True,
+            ):
+                with patch(
+                    "databao_context_engine.plugins.databases.mysql.config_file."
+                    "MySQLConnectionProperties",
+                    create=True,
+                ):
+                    r = helpers_module.validate_connection(
+                        engine="mysql",
+                        host="h", port=3306, database_name="d",
+                        credential_payload={"username": "u", "password": "bad"},
+                    )
+        assert r.valid is False
+        assert "Access denied" in (r.error or "")
 
 
 # ============================================================================
