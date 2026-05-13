@@ -1,6 +1,6 @@
 # Azure AD App Setup — M365 Integrations (SharePoint / Outlook / Teams / OneDrive / OneNote)
 
-This guide covers M365 sources only. For **database sources** (Postgres, MySQL, MS SQL Server via the Databao Context Engine), see [`database-integration.md`](./database-integration.md) — that integration doesn't go through Azure AD at all.
+This guide covers M365 sources only. For **database sources** (Postgres, MySQL, MS SQL Server), see [`database-integration.md`](./database-integration.md) — that integration doesn't go through Azure AD at all.
 
 This guide is for setting up the **Microsoft Graph OAuth app** used by the M365 source integrations (SharePoint, Outlook, Teams, OneDrive, OneNote). It is **separate from the ALB OIDC login app** documented in [`azure-ad-setup.md`](./azure-ad-setup.md) — the two apps have different purposes and live as two distinct App Registrations.
 

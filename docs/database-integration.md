@@ -2,10 +2,9 @@
 
 OutcomeOps AI Assist's database integration ingests **production-truth
 schema context** — tables, columns, relationships, and safe aggregate
-statistics — from your operational and analytical databases. It uses
-[JetBrains' Databao Context Engine](https://github.com/JetBrains/databao-context-engine)
-(Apache 2.0) under the hood and wraps it in the same 3-Lambda trio
-pattern used by every other OutcomeOps source.
+statistics — from your operational and analytical databases. It
+introspects schemas via a schema introspection engine wrapped in the
+same 3-Lambda trio pattern used by every other OutcomeOps source.
 
 Once connected, your AI assistant can answer questions like:
 
@@ -20,7 +19,7 @@ without anyone hand-curating a data dictionary.
 >
 > | If you're... | Jump to |
 > |---|---|
-> | The **operator** deploying OutcomeOps into your AWS account and turning on the database source for the first time | [Deploying the integration](#deploying-the-integration-operator) — 3 commands: build the Databao Lambda layer, `terraform apply`, rebuild the UI image |
+> | The **operator** deploying OutcomeOps into your AWS account and turning on the database source for the first time | [Deploying the integration](#deploying-the-integration-operator) — 3 commands: build the database Lambda container images, `terraform apply`, rebuild the UI image |
 > | A **workspace admin** connecting one of your databases to a workspace | [Connecting a database](#connecting-a-database) → [Configuring scope](#configuring-scope-which-tables-to-ingest) |
 > | A **security / compliance reviewer** evaluating what data leaves the customer's DB | [What gets ingested](#what-gets-ingested) and [Compliance posture](#compliance-posture) |
 
@@ -44,15 +43,16 @@ alone don't cover this.
 
 ### Roadmap (demand-driven, not in MVP)
 
-- **Oracle** — Databao does not support today. Real regulated-buyer need; tracked as a near-term roadmap item.
-- **SAP HANA** — Databao does not support today. Lost-deal signal informs priority; tracked alongside Oracle.
-- **BigQuery / Snowflake** — supported by Databao but deprioritized for the regulated-buyer MVP (most ICP customers run AWS-native warehouses). Will add when a customer asks.
-- **dbt projects** — Databao supports, but rare in regulated ICP (heritage ETL dominates). Deferred.
+- **Oracle** — the upstream engine does not support today. Real regulated-buyer need; tracked as a near-term roadmap item.
+- **SAP HANA** — the upstream engine does not support today. Lost-deal signal informs priority; tracked alongside Oracle.
+- **BigQuery / Snowflake** — supported by the upstream engine but deprioritized for the regulated-buyer MVP (most ICP customers run AWS-native warehouses). Will add when a customer asks.
+- **dbt projects** — supported by the upstream engine, but rare in regulated ICP (heritage ETL dominates). Deferred.
 
 ### Out of scope
 
-NoSQL stores (MongoDB, DynamoDB, Cassandra). Databao is fundamentally
-relational/columnar — these don't fit the introspection model.
+NoSQL stores (MongoDB, DynamoDB, Cassandra). The schema introspection
+engine is fundamentally relational/columnar — these don't fit the
+introspection model.
 
 ## What gets ingested
 
@@ -74,11 +74,12 @@ This section is for the operator deploying OutcomeOps into their AWS
 account — not the workspace admin connecting an individual DB later.
 
 The integration ships as two **Lambda container images** (not a Lambda
-layer — Databao + DB drivers total over 350 MB unzipped, well past
-Lambda's 250 MB unzipped layer cap; container images allow up to 10 GB):
+layer — the schema introspection engine + DB drivers total over 350 MB
+unzipped, well past Lambda's 250 MB unzipped layer cap; container
+images allow up to 10 GB):
 
 - `database-integration` — UI-facing picker / connection CRUD
-- `database-sync` — SQS-driven Databao introspection worker
+- `database-sync` — SQS-driven introspection worker
 
 Plus a third zip-based Lambda (`database-scheduler`) for the hourly cron.
 
@@ -119,7 +120,7 @@ Settings → Integrations** for workspace admins. Continue to
 "Connecting a database" below for the per-workspace setup.
 
 **Rebuild the images whenever:**
-- `lambda/databao-requirements.txt` changes (Databao release bump, DB driver bump)
+- `lambda/db-introspection-requirements.txt` changes (introspection-engine release bump, DB driver bump)
 - Either Lambda's Dockerfile changes
 - The handler Python code changes (rebuild + redeploy to pick up the new code)
 - The OutcomeOps license layer version changes (`outcomeops_license_layer_arn` in tfvars bumps)
@@ -139,10 +140,9 @@ Workspace admins go to **Workspace Settings → Integrations** and click
 | **MySQL** | host, port (default 3306), database name, username, password | SSL mode; display label |
 | **MS SQL Server** | host, port (default 1433), database name, username, password | `Encrypt=yes` toggle (recommended on); display label |
 
-The **Test connection** button runs Databao's
-`check_datasource_connection` against your DB **without persisting
-the credentials**, so you get immediate feedback if the creds are
-bad before you save.
+The **Test connection** button runs the engine's connection-check
+API against your DB **without persisting the credentials**, so you
+get immediate feedback if the creds are bad before you save.
 
 ### Creating a read-only DB user
 
@@ -182,6 +182,15 @@ For each table you can independently toggle:
 Save → the connection moves to `queued`, and the next scheduler tick
 (hourly) or **Sync now** kicks off introspection.
 
+## Under the hood
+
+The schema introspection engine is JetBrains' [Databao Context
+Engine](https://github.com/JetBrains/databao-context-engine) (Apache
+2.0). OutcomeOps wraps it in a thin helper module and runs it inside
+an AWS Lambda container image; it's a build-time dependency, not a
+runtime service. Attribution lives in the repository's
+[NOTICE](../NOTICE) file.
+
 ## Compliance posture
 
 For the conversation with your auditors / security org:
@@ -211,7 +220,7 @@ Workspace admin clicks "Connect Database"
      |
      v
 database-integration Lambda
-  - validates connection (Databao check_datasource_connection)
+  - validates connection (engine's connection-check API)
   - encrypts credentials with KMS, stores DB_CREDENTIAL# in DDB
   - emits DB_CONNECTION_ESTABLISHED audit row
   - returns 200; UI shows the connection card
@@ -226,7 +235,7 @@ database-sync Lambda (also fired hourly by database-scheduler)
   - license-validate (ADR-019)
   - decrypts credential -> emits DB_CREDENTIAL_USED audit row
   - check_repo_limit("database:{engine}:{host_hash}")
-  - calls Databao build_context() -> YAML artifact
+  - calls the engine's build_context() -> YAML artifact
   - STRIPS top_values from YAML in-memory
   - queues to FILE_INGESTION_QUEUE (one message per table)
   - emits DATABASE_SYNCED audit row
@@ -258,11 +267,11 @@ but is queryable via `?action=DB_CREDENTIAL_USED` in the audit API.
 Demand-driven follow-ups, not "future" hand-waving — each maps to a
 specific customer ask we're tracking:
 
-- **Oracle support** — Databao upstream gap; HCLS / financial-services demand.
-- **SAP HANA support** — Databao upstream gap; named lost-deal signal.
-- **BigQuery + Snowflake** — supported by Databao but lower priority for the regulated ICP; add when a customer hits this gap.
+- **Oracle support** — upstream engine gap; HCLS / financial-services demand.
+- **SAP HANA support** — upstream engine gap; named lost-deal signal.
+- **BigQuery + Snowflake** — supported by the upstream engine but lower priority for the regulated ICP; add when a customer hits this gap.
 - **Row sampling default-on with admin per-table opt-in UX** — already wired technically, just default-off in MVP. Enable selectively for customers comfortable with the redaction story.
-- **Live SQL execution via the chat Lambda (Databao's MCP server)** — the big enterprise unlock, but requires us to own a per-workspace query-governance layer (column-level masking, query allow-lists, per-user query audit, generated-SQL audit trail). **Will not ship until a lighthouse regulated customer co-designs the governance with us.**
+- **Live SQL execution via the chat Lambda (upstream engine's MCP server)** — the big enterprise unlock, but requires us to own a per-workspace query-governance layer (column-level masking, query allow-lists, per-user query audit, generated-SQL audit trail). **Will not ship until a lighthouse regulated customer co-designs the governance with us.**
 
 ## Troubleshooting
 
@@ -272,7 +281,7 @@ specific customer ask we're tracking:
 | **`auth_error`** on a connection after some time | DB password rotated, user revoked, or SSL cert changed | Workspace admin disconnects and reconnects with the new creds. (DB-side auth has no refresh-token equivalent — manual rotation is the path.) |
 | **`blocked_license_limit`** status | Hitting the repo-limit for your OutcomeOps tier | Same as any other source — increase your tier or trim connections. Repo identity is `{engine}:{host_hash}` so the same physical DB across multiple workspace connections counts ONCE |
 | **Schema picker is slow / empty** | Large warehouse, slow `INFORMATION_SCHEMA` introspection, or the connection user lacks `SELECT` on the schemas | Confirm the user has the right grants. For very large warehouses (10k+ tables), a DDB-cached schema tree is on the roadmap |
-| **Connection card returns "Server misconfiguration: Databao layer missing"** | Container image wasn't built (or not yet pushed) before terraform apply | Run `ENVIRONMENT=prd make build-database-images` then `terraform apply` |
+| **Connection card returns "Server misconfiguration: schema introspection engine unavailable"** | Container image wasn't built (or not yet pushed) before terraform apply | Run `ENVIRONMENT=prd make build-database-images` then `terraform apply` |
 
 ## Related
 

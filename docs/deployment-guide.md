@@ -644,16 +644,16 @@ publishes it as a new layer version.
 
 **Layer size cap:** Lambda layers cap at 250 MB unzipped. For Lambdas
 with bigger dependency stacks (e.g., the database integration's
-Databao + Postgres/MySQL/MSSQL drivers totaling 350+ MB), we ship as
-container images instead — see the next subsection.
+schema introspection engine + Postgres/MySQL/MSSQL drivers totaling
+350+ MB), we ship as container images instead — see the next subsection.
 
 ### Database Integration Container Images
 
 The database integration's two Lambdas (`database-integration` and
 `database-sync`) ship as Lambda container images rather than zip + layer
-because Databao Context Engine plus the DB driver set exceeds Lambda's
-250 MB unzipped layer cap. Container images allow up to 10 GB, giving
-plenty of headroom for future engines (Oracle, SAP HANA).
+because the schema introspection engine plus the DB driver set exceeds
+Lambda's 250 MB unzipped layer cap. Container images allow up to 10 GB,
+giving plenty of headroom for future engines (Oracle, SAP HANA).
 
 ```bash
 ENVIRONMENT=prd make build-database-images
@@ -669,7 +669,7 @@ The build script:
 4. Writes image tags to SSM so the main `terraform apply` picks them up
 
 **Rebuild when:**
-- `lambda/databao-requirements.txt` changes
+- `lambda/db-introspection-requirements.txt` changes
 - Either Lambda's Dockerfile changes
 - The handler Python code changes
 - The `outcomeops_license_layer_arn` in your tfvars bumps to a new layer version (the new license layer content needs to be re-baked into the sync image)
