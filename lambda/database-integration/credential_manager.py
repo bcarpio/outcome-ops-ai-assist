@@ -4,8 +4,8 @@ Credential Manager for database connections.
 Mirrors the OneNote token_manager pattern but stores an engine-specific
 credential payload (dict) instead of an OAuth refresh token. The payload
 is opaque to this module — callers (database-sync) treat it as JSON
-that gets forwarded into Databao's connector config for the target
-engine.
+that gets forwarded into the schema introspection engine's connector
+config for the target engine.
 
 Storage:
     PK = DB_CREDENTIAL#{connection_id}
