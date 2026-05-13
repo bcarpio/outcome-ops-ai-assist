@@ -203,13 +203,14 @@ def _get_introspector(engine: str):
         return MySQLIntrospector(MySQLConnector())
 
     if engine == "mssql":
-        from databao_context_engine.plugins.databases.mssql.mssql_connector import (
-            MSSQLConnector,
-        )
-        from databao_context_engine.plugins.databases.mssql.mssql_introspector import (
-            MSSQLIntrospector,
-        )
-        return MSSQLIntrospector(MSSQLConnector())
+        # Use the local subclass that adds the missing collect_stats
+        # override. The upstream MSSQLIntrospector inherits a no-op
+        # collect_stats from BaseIntrospector, which is why MSSQL
+        # tables/columns come back with stats: null. Retire this
+        # branch (back to plain MSSQLIntrospector) when JetBrains
+        # ships their own collect_stats upstream.
+        from shared.mssql_stats import get_outcomeops_mssql_introspector
+        return get_outcomeops_mssql_introspector()
 
     raise ValueError(f"Unsupported engine: {engine!r}")
 
