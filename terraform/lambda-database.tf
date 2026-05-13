@@ -3,12 +3,13 @@
 #
 # Two Lambdas in the trio ship as container images:
 #   - database-integration : UI picker / connection CRUD
-#   - database-sync        : SQS-driven Databao introspection worker
+#   - database-sync        : SQS-driven schema introspection worker
 #
 # The scheduler stays zip-based (it's tiny - just a DDB scan + SQS fan-out
-# - no Databao dependency).
+# - no introspection engine dependency).
 #
-# Container-image deployment is required here because Databao Context Engine
+# Container-image deployment is required here because the schema introspection
+# engine
 # plus the Postgres/MySQL/MSSQL driver set totals over 350 MB unzipped, well
 # past Lambda's 250 MB unzipped layer cap. Container images allow up to 10
 # GB which gives plenty of headroom for future engines (Oracle, SAP HANA).
@@ -205,7 +206,7 @@ module "database_sync_lambda" {
   count = var.enable_workspaces ? 1 : 0
 
   function_name = "${var.environment}-${var.app_name}-database-sync"
-  description   = "Database introspection sync via Databao for OutcomeOps AI Assist"
+  description   = "Schema introspection sync for OutcomeOps AI Assist"
   timeout       = 900
   memory_size   = 2048
   publish       = true
@@ -318,7 +319,7 @@ resource "aws_lambda_event_source_mapping" "database_sync" {
 }
 
 # ============================================================================
-# Database Sync Scheduler Lambda (zip - no Databao dep, stays small)
+# Database Sync Scheduler Lambda (zip - no introspection-engine dep, stays small)
 # ============================================================================
 
 module "database_scheduler_lambda" {

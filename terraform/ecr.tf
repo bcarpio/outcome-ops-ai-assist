@@ -138,13 +138,13 @@ output "chat_ui_ecr_repository_arn" {
 # ECR Repositories for Database Integration Lambda Container Images
 # ============================================================================
 # The database integration ships as container images (not a Lambda layer) -
-# the Databao Context Engine + Postgres/MySQL/MSSQL drivers total over 350
+# the schema introspection engine + Postgres/MySQL/MSSQL drivers total over 350
 # MB unzipped, well past Lambda's 250 MB unzipped layer cap. Container
 # images go up to 10 GB.
 #
 # Two repos, one per Lambda:
 #   - database-integration: UI-facing picker (validate connection, list schemas)
-#   - database-sync:        SQS worker (full Databao introspection + license-gated)
+#   - database-sync:        SQS worker (full schema introspection + license-gated)
 #
 # Bootstrap (same pattern as run-tests):
 #   ENVIRONMENT=prd make build-database-images

@@ -293,8 +293,8 @@ build-all-layers:
 	./scripts/build-all-layers.sh
 
 # Build and push the database integration + sync container images.
-# These ship as container images (not Lambda layers) because the Databao
-# Context Engine + DB drivers total well over Lambda's 250 MB unzipped
+# These ship as container images (not Lambda layers) because the schema
+# introspection engine + DB drivers total well over Lambda's 250 MB unzipped
 # layer cap. Container images cap at 10 GB so there's plenty of headroom.
 # Usage:
 #   ENVIRONMENT=dev make build-database-images

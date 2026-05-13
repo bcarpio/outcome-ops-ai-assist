@@ -2,10 +2,11 @@
 # Database Sync Lambda Container Image
 # ============================================================================
 # SQS-driven worker for the database integration. Receives sync requests
-# from DATABASE_SYNC_QUEUE, runs Databao introspection against the customer
+# from DATABASE_SYNC_QUEUE, runs schema introspection against the customer
 # DB, strips top_values, queues per-table YAML chunks to file-ingestion.
 #
-# Ships as a container image (not a Lambda layer + zip) because Databao +
+# Ships as a container image (not a Lambda layer + zip) because the
+# schema introspection engine +
 # DB drivers exceed Lambda's 250 MB unzipped layer cap.
 #
 # License-validator layer integration: Lambda container images CANNOT
@@ -21,8 +22,8 @@
 
 FROM public.ecr.aws/lambda/python:3.12
 
-# Install Databao + DB drivers (shared requirements with database-integration)
-COPY lambda/databao-requirements.txt /tmp/requirements.txt
+# Install the introspection engine + DB drivers (shared requirements with database-integration)
+COPY lambda/db-introspection-requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.txt && \
     find /var/lang/lib/python3.12/site-packages -name "tests" -type d -prune -exec rm -rf {} + 2>/dev/null || true && \
     find /var/lang/lib/python3.12/site-packages -name "__pycache__" -type d -prune -exec rm -rf {} + 2>/dev/null || true && \
