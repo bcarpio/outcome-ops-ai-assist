@@ -1,7 +1,7 @@
 """
 Database Sync Lambda for OutcomeOps AI Assist.
 
-SQS-triggered worker that drives Databao introspection against a
+SQS-triggered worker that drives schema introspection against a
 customer database connection, strips top_values from the produced
 artifact, and queues per-table chunks to file-ingestion.
 
@@ -12,7 +12,7 @@ Flow per SQS record:
   4. check_repo_limit("database:{engine}:{host_hash}") - repo identity
      uses engine+host_hash so the same physical DB across many
      workspace connections counts once.
-  5. Call databao build_context() in a temp dir.
+  5. Call the engine's build_context() in a temp dir.
   6. For each table in the YAML artifact: strip top_values, queue a
      message to FILE_INGESTION_QUEUE.
   7. Update connection status to completed, write known_table_ids.
@@ -151,9 +151,10 @@ def strip_top_values(doc: Any) -> Any:
     """Recursively remove any `top_values` key from a parsed YAML doc.
 
     Top values for columns are data leaving the DB (just aggregated by
-    frequency). Defensible "statistics" framing from Databao, but for
-    regulated-buyer defaults we treat them as the same risk class as
-    row sampling — strip before the artifact crosses the SQS boundary.
+    frequency). Defensible "statistics" framing from the upstream engine,
+    but for regulated-buyer defaults we treat them as the same risk
+    class as row sampling — strip before the artifact crosses the SQS
+    boundary.
 
     file-ingestion runs this same pass defensively. Both call sites
     share this implementation via duplicated copy (lambdas can't
@@ -300,11 +301,16 @@ def _build_sync_config(
 ):
     """Engine-specific ConfigFile for the full sync build.
 
-    Mirrors database-integration/databao_helpers._build_config but adds
-    IntrospectionScope (limit Databao to the admin-selected schemas) and
-    honors the workspace's sampling toggle. Duplicated rather than
-    shared because the two Lambdas can't import each other - kept in
-    sync by tests that exercise both call sites.
+    Mirrors database-integration/introspection_helpers._build_config but
+    adds IntrospectionScope (limit the engine to the admin-selected
+    schemas) and honors the workspace's sampling toggle. Duplicated
+    rather than shared because the two Lambdas can't import each
+    other - kept in sync by tests that exercise both call sites.
+
+    # DATABAO-SPECIFIC: this upstream library defaults
+    # SamplingConfig.enabled=True; we force it off unless the admin
+    # opted in via scope_config. Same posture as
+    # introspection_helpers._build_config.
     """
     from databao_context_engine.plugins.databases.sampling_scope import SamplingConfig
     from databao_context_engine.plugins.databases.introspection_scope import (
@@ -320,9 +326,10 @@ def _build_sync_config(
     profiling = ProfilingConfig(enabled=True)
 
     # Translate admin's "catalog.schema.table" picker selection into
-    # Databao's schema-level scope. Databao introspects all tables in
-    # the selected schemas; the per-table filter is applied post-build
-    # in _slice_yaml_into_tables.
+    # the engine's schema-level scope.
+    # DATABAO-SPECIFIC: the upstream engine's introspection scope is
+    # schema-level while our admin picker is table-level. The per-table
+    # filter is applied post-build in _slice_yaml_into_tables.
     include_rules = []
     for catalog, schemas in (schemas_by_catalog or {}).items():
         include_rules.append(
@@ -409,7 +416,10 @@ def _slice_yaml_into_tables(
     context_file_path,
     include_table_keys: set,
 ) -> Dict[str, Any]:
-    """Parse Databao's per-datasource YAML and emit per-table chunks.
+    """Parse the per-datasource YAML artifact and emit per-table chunks.
+
+    # DATABAO-SPECIFIC: this upstream library writes its YAML artifact
+    # to context_file_path on disk; we then parse it.
 
     Each chunk preserves the catalog/schema/table envelope so it can be
     ingested as a standalone YAML artifact. top_values are stripped from
@@ -418,7 +428,7 @@ def _slice_yaml_into_tables(
 
     Only tables whose 'catalog.schema.table' key is in include_table_keys
     are emitted - that's how we honor the admin's per-table picker
-    selection on top of Databao's schema-level scope.
+    selection on top of the engine's schema-level scope.
     """
     import yaml
 
@@ -482,8 +492,8 @@ def _slice_yaml_into_tables(
     }
 
 
-def _run_databao_build(connection: Dict, credential: Dict) -> Dict[str, Any]:
-    """Run Databao build_context against the customer DB and slice the
+def _run_schema_introspection(connection: Dict, credential: Dict) -> Dict[str, Any]:
+    """Run schema introspection against the customer DB and slice the
     resulting YAML into per-table chunks.
 
     Returns a dict with keys:
@@ -492,6 +502,8 @@ def _run_databao_build(connection: Dict, credential: Dict) -> Dict[str, Any]:
       - "had_top_values": bool - informational; the YAML in "tables" is
         already stripped of top_values
     """
+    # DATABAO-SPECIFIC: keep the upstream package name in the log line
+    # below so upstream-issue triage stays fast.
     try:
         import databao_context_engine as dce
     except ImportError:
@@ -554,6 +566,8 @@ def _run_databao_build(connection: Dict, credential: Dict) -> Dict[str, Any]:
                 results[0].context_file_path, include_table_keys,
             )
     except Exception:
+        # DATABAO-SPECIFIC: keep the upstream name in the log line so
+        # upstream-issue triage stays fast.
         logger.exception("[database-sync] Databao build_context raised")
         return {"tables": [], "columns_count": 0, "had_top_values": False}
 
@@ -597,7 +611,7 @@ def process_sync_request(message: Dict) -> Dict[str, Any]:
 
     # Decrypt credential — this is the moment we emit the
     # DB_CREDENTIAL_USED audit row, regardless of whether the
-    # downstream Databao call succeeds.
+    # downstream introspection call succeeds.
     credential = get_credential(connection_id)
     if not credential:
         logger.error(f"No credential found for connection {connection_id}")
@@ -633,14 +647,16 @@ def process_sync_request(message: Dict) -> Dict[str, Any]:
         return {"status": "skipped", "reason": "license_limit"}
 
     try:
-        build_result = _run_databao_build(connection, credential)
+        build_result = _run_schema_introspection(connection, credential)
     except Exception as e:
+        # DATABAO-SPECIFIC: keep the upstream name in the log line so
+        # upstream-issue triage stays fast.
         logger.error(f"Databao build failed: {e}")
         update_connection_status(
             workspace_id, connection_id, "error",
-            error=f"Databao build failed: {e}",
+            error=f"schema introspection failed: {e}",
         )
-        return {"status": "error", "error": f"Databao build failed: {e}"}
+        return {"status": "error", "error": f"schema introspection failed: {e}"}
 
     tables = build_result.get("tables", [])
     columns_count = build_result.get("columns_count", 0)

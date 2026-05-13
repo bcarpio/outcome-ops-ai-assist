@@ -1268,7 +1268,7 @@ def process_database_artifact(
     sync_id: Optional[str] = None,
 ) -> Optional[str]:
     """
-    Process a per-table YAML chunk from Databao introspection and
+    Process a per-table YAML chunk from schema introspection and
     upload to S3.
 
     S3 key shape:

@@ -1,19 +1,21 @@
 """
-Thin wrapper around Databao Context Engine calls.
+Thin wrapper around the schema introspection engine.
 
-Keeps the Databao API surface contained to one module so future swaps
-or version bumps are cheap. All exported functions accept generic
-engine + credential params and translate to Databao datasource config
-shapes internally.
+Keeps the upstream engine's API surface contained to one module so
+future swaps or version bumps are cheap. All exported functions accept
+generic engine + credential params and translate to the upstream
+datasource config shapes internally.
 
-This module is intentionally light on logic — Databao does the real
-work. The wrappers exist so the integration / sync handlers don't
-import `databao_context_engine` directly and the surface stays auditable.
+This module is intentionally light on logic — the upstream engine does
+the real work. The wrappers exist so the integration / sync handlers
+don't import the upstream package directly and the surface stays
+auditable.
 
-All `databao_context_engine` imports are deferred to call time so the
-integration Lambda can import this module cleanly without the package
-present (unit tests run without it). When the package is missing,
-these functions raise DatabaoLayerNotAttached at call time.
+# DATABAO-SPECIFIC: all `databao_context_engine` imports are deferred to
+# call time so the integration Lambda can import this module cleanly
+# without the package present (unit tests run without it). When the
+# package is missing, these functions raise IntrospectionEngineUnavailable
+# at call time.
 """
 
 import logging
@@ -25,8 +27,9 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-class DatabaoLayerNotAttached(RuntimeError):
-    """Raised when Databao is called but the Lambda layer isn't attached.
+class IntrospectionEngineUnavailable(RuntimeError):
+    """Raised when the schema introspection engine is called but its
+    package isn't importable in the runtime container.
 
     Catch-and-audit per ADR-019 — the sync Lambda should emit a
     LICENSE_FAIL_OPEN-style "deploy bug" audit row when it sees this.
@@ -50,16 +53,16 @@ class SchemaInfo:
     row_count_estimate: Optional[int] = None
 
 
-def _import_databao():
-    """Deferred import. Raises DatabaoLayerNotAttached if the package
-    isn't installed in the runtime image."""
+def _import_introspection_engine():
+    """Deferred import. Raises IntrospectionEngineUnavailable if the
+    upstream package isn't installed in the runtime container image."""
     try:
         import databao_context_engine  # noqa: F401
         return databao_context_engine
     except ImportError as e:
-        raise DatabaoLayerNotAttached(
-            "databao_context_engine import failed - layer not attached "
-            "(see terraform/lambda-databao-layer.tf): " + str(e)
+        raise IntrospectionEngineUnavailable(
+            "databao_context_engine import failed - upstream package "
+            "missing from runtime container image: " + str(e)
         )
 
 
@@ -82,11 +85,13 @@ def _build_config(
       - trust_server_certificate (MSSQL): bool — for RDS / self-signed
         certs, skips cert validation. Default False (secure).
 
-    Sampling is hard-coded off by default. Databao defaults
-    SamplingConfig.enabled=True, which would pull real row data on every
-    introspection - inconsistent with OutcomeOps's regulated-buyer
-    posture. Callers that need sampling (admin per-table opt-in via
-    scope_config in the sync handler) pass enable_sampling=True.
+    Sampling is hard-coded off by default.
+
+    # DATABAO-SPECIFIC: this upstream library defaults
+    # SamplingConfig.enabled=True, which would pull real row data on
+    # every introspection - inconsistent with OutcomeOps's regulated-buyer
+    # posture. Callers that need sampling (admin per-table opt-in via
+    # scope_config in the sync handler) pass enable_sampling=True.
     """
     from databao_context_engine.plugins.databases.sampling_scope import SamplingConfig
 
@@ -155,7 +160,7 @@ def _build_config(
 
 
 def _datasource_type(dce, engine: str):
-    """Return the Databao DatasourceType for the given engine string.
+    """Return the upstream engine's DatasourceType for the given engine string.
 
     Plugin IDs (jetbrains/postgres etc.) declare `supported = {"postgres"}`
     so the simple lowercase engine name is the right full_type value.
@@ -184,7 +189,7 @@ def validate_connection(
         ValidationResult with valid=True on success, or valid=False
         with an error message on failure.
     """
-    dce = _import_databao()
+    dce = _import_introspection_engine()
     try:
         config = _build_config(
             dce, engine, host, port, database_name, credential_payload,
@@ -205,6 +210,8 @@ def validate_connection(
                 config_content=config,
             )
     except Exception as e:
+        # DATABAO-SPECIFIC: keep the upstream name in the log line so
+        # upstream-issue triage stays fast.
         logger.exception("Databao check_datasource_config_connection raised")
         return ValidationResult(valid=False, error=f"{type(e).__name__}: {e}")
 
@@ -228,7 +235,7 @@ def list_schemas(
 ) -> List[SchemaInfo]:
     """Metadata-only enumeration for the UI schema/table picker.
 
-    Drives Databao's build_context with sampling off, indexing off,
+    Drives the engine's build_context with sampling off, indexing off,
     and enrichment off so the run is metadata-only and cheap. Parses
     the per-datasource YAML artifact for the catalog/schema/table
     tree and returns it as a flat list of SchemaInfo.
@@ -236,7 +243,7 @@ def list_schemas(
     For very large warehouses we may need to add a cache layer
     (DDB-backed) - flagged in plan/PROGRESS.md as an open question.
     """
-    dce = _import_databao()
+    dce = _import_introspection_engine()
     try:
         config = _build_config(
             dce, engine, host, port, database_name, credential_payload,
@@ -265,15 +272,20 @@ def list_schemas(
 
             return _parse_schema_tree(results[0].context_file_path)
     except Exception:
+        # DATABAO-SPECIFIC: keep the upstream name in the log line so
+        # upstream-issue triage stays fast.
         logger.exception("Databao build_context for picker failed")
         return []
 
 
 def _parse_schema_tree(context_file_path) -> List[SchemaInfo]:
-    """Walk the Databao YAML artifact and return a flat catalog/schema/table list.
+    """Walk the engine's YAML artifact and return a flat catalog/schema/table list.
 
-    YAML shape (per build_context output, verified against Databao
-    0.x for postgres / mysql / mssql):
+    # DATABAO-SPECIFIC: this upstream library writes the YAML artifact
+    # to context_file_path on disk; we then parse it.
+
+    YAML shape (per build_context output, verified against the upstream
+    engine 0.x for postgres / mysql / mssql):
 
         context:
           catalogs:
@@ -304,5 +316,5 @@ def _parse_schema_tree(context_file_path) -> List[SchemaInfo]:
     return out
 
 
-# build_context lives in database-sync (heavy operation, long timeout
-# Lambda needed). Not exposed here.
+# The full build_context call for sync lives in database-sync (heavy
+# operation, long timeout Lambda needed). Not exposed here.

@@ -8,7 +8,7 @@ integration shape; key differences:
   - Credentials stored KMS-encrypted in DDB (see credential_manager.py),
     NOT in AWS Secrets Manager — keeps all credential-access audit
     rows in the unified audit table.
-  - Validation step (Databao check_datasource_connection) before
+  - Validation step (engine check_datasource_config_connection) before
     persisting the connection record.
 
 API Endpoints:
@@ -49,10 +49,10 @@ from credential_manager import (
     delete_credential,
     save_credential,
 )
-from databao_helpers import (
-    DatabaoLayerNotAttached,
-    list_schemas as databao_list_schemas,
-    validate_connection as databao_validate,
+from introspection_helpers import (
+    IntrospectionEngineUnavailable,
+    list_schemas as list_db_schemas,
+    validate_connection as validate_db_connection,
 )
 
 logger = logging.getLogger()
@@ -194,16 +194,16 @@ def validate_credentials(body: Dict) -> Dict:
         return _error(400, "host, port, and database_name are required")
 
     try:
-        result = databao_validate(
+        result = validate_db_connection(
             engine=engine,
             host=host,
             port=port,
             database_name=database_name,
             credential_payload=credential,
         )
-    except DatabaoLayerNotAttached as e:
-        logger.error(f"Databao layer not attached: {e}")
-        return _error(500, "Server misconfiguration: Databao layer missing")
+    except IntrospectionEngineUnavailable as e:
+        logger.error(f"Schema introspection engine unavailable: {e}")
+        return _error(500, "Server misconfiguration: schema introspection engine unavailable")
 
     if result.valid:
         return _response(200, {
@@ -245,16 +245,16 @@ def create_connection(user_email: str, body: Dict) -> Dict:
 
     # Pre-flight validation - don't persist a connection we can't reach.
     try:
-        validation = databao_validate(
+        validation = validate_db_connection(
             engine=engine,
             host=host,
             port=port,
             database_name=database_name,
             credential_payload=credential,
         )
-    except DatabaoLayerNotAttached as e:
-        logger.error(f"Databao layer not attached: {e}")
-        return _error(500, "Server misconfiguration: Databao layer missing")
+    except IntrospectionEngineUnavailable as e:
+        logger.error(f"Schema introspection engine unavailable: {e}")
+        return _error(500, "Server misconfiguration: schema introspection engine unavailable")
 
     if not validation.valid:
         return _error(400, f"Connection test failed: {validation.error}")
@@ -375,7 +375,7 @@ def get_connection(user_email: str, workspace_id: str, connection_id: str) -> Op
 def get_schemas(user_email: str, workspace_id: str, connection_id: str) -> Dict:
     """List catalogs/schemas/tables for the picker.
 
-    Calls databao_helpers.list_schemas which does a metadata-only
+    Calls introspection_helpers.list_schemas which does a metadata-only
     introspection (no row sampling, no column profiling) — cheap
     enough for picker latency on small/medium DBs. Large warehouses
     may need a DDB-backed cache; flagged in plan/PROGRESS.md.
@@ -390,16 +390,16 @@ def get_schemas(user_email: str, workspace_id: str, connection_id: str) -> Dict:
         return _error(500, "Credential not found for connection")
 
     try:
-        schemas = databao_list_schemas(
+        schemas = list_db_schemas(
             engine=connection["engine"],
             host=connection["host"],
             port=connection["port"],
             database_name=connection["database_name"],
             credential_payload=credential,
         )
-    except DatabaoLayerNotAttached as e:
-        logger.error(f"Databao layer not attached: {e}")
-        return _error(500, "Server misconfiguration: Databao layer missing")
+    except IntrospectionEngineUnavailable as e:
+        logger.error(f"Schema introspection engine unavailable: {e}")
+        return _error(500, "Server misconfiguration: schema introspection engine unavailable")
 
     payload = [
         {
