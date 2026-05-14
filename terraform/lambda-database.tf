@@ -229,6 +229,10 @@ module "database_sync_lambda" {
       DATABASE_SYNC_QUEUE       = aws_sqs_queue.database_sync[0].url
       DELETE_QUEUE              = aws_sqs_queue.delete_queue[0].url
       AUDIT_TABLE               = module.audit_logs_table.dynamodb_table_id
+      # chunk 07: empty string when no subscribers configured - the
+      # handler's publish path is gated on truthiness, so a missing
+      # topic is a clean no-op (audit row still fires).
+      DATABASE_DRIFT_TOPIC_ARN = length(aws_sns_topic.database_drift) > 0 ? aws_sns_topic.database_drift[0].arn : ""
     },
     local.outcomeops_license_env,
   )
@@ -294,6 +298,17 @@ module "database_sync_lambda" {
         resources = [
           module.audit_logs_table.dynamodb_table_arn
         ]
+      }
+
+      # chunk 07: publish-grant on the database-drift topic. Uses a
+      # nonexistent-arn placeholder when no topic was created so the
+      # policy attachment stays well-formed; the handler's publish
+      # path is gated on the env-var being non-empty, so nothing tries
+      # to publish in that case.
+      publish_drift = {
+        effect    = "Allow"
+        actions   = ["sns:Publish"]
+        resources = length(aws_sns_topic.database_drift) > 0 ? [aws_sns_topic.database_drift[0].arn] : ["arn:aws:sns:*:*:nonexistent"]
       }
     },
     local.outcomeops_license_iam,

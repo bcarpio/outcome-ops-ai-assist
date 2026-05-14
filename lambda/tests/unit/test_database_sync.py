@@ -1029,3 +1029,573 @@ class TestLambdaHandlerDispatch:
         body = json.loads(result["body"])
         assert any(r.get("status") == "error" for r in body["results"])
         assert any(r.get("status") == "success" for r in body["results"])
+
+
+# ============================================================================
+# Chunk 07: _list_visible_schemas - unrestricted enumeration
+# ============================================================================
+
+
+class TestListVisibleSchemas:
+    """The cheap unrestricted introspect that powers schema-drift
+    detection. Profiling + sampling are forced off; no IntrospectionScope
+    is passed - we want every schema the RO user can see."""
+
+    @pytest.fixture
+    def stub_introspect_result(self):
+        from dataclasses import dataclass as _dc, field
+
+        @_dc
+        class StubSchema:
+            name: str
+
+        @_dc
+        class StubCatalog:
+            name: str
+            schemas: list = field(default_factory=list)
+
+        @_dc
+        class StubResult:
+            catalogs: list = field(default_factory=list)
+
+        return StubResult(catalogs=[
+            StubCatalog(name="analytics", schemas=[
+                StubSchema(name="public"),
+                StubSchema(name="healthcare"),
+                StubSchema(name="imaging"),
+            ]),
+            StubCatalog(name="archive", schemas=[
+                StubSchema(name="legacy"),
+            ]),
+        ])
+
+    def test_returns_sorted_two_segment_keys(self, stub_introspect_result, mock_credential):
+        import databao_context_engine as dce
+
+        fake_introspector = MagicMock()
+        fake_introspector.introspect_database.return_value = stub_introspect_result
+        with patch.object(
+            handler_module, "_get_introspector_for_sync",
+            return_value=fake_introspector,
+        ):
+            keys = handler_module._list_visible_schemas(
+                dce, "mssql", "host", 1433, "analytics", mock_credential,
+            )
+        # Sorted catalog.schema keys across both catalogs
+        assert keys == [
+            "analytics.healthcare",
+            "analytics.imaging",
+            "analytics.public",
+            "archive.legacy",
+        ]
+
+    def test_postgres_config_has_no_introspection_scope(self, stub_introspect_result):
+        """Postgres path: build config with profiling+sampling off and
+        no IntrospectionScope, then walk every catalog/schema the user
+        can see."""
+        import databao_context_engine as dce
+
+        fake_introspector = MagicMock()
+        fake_introspector.introspect_database.return_value = stub_introspect_result
+        captured = {}
+
+        def _capture_introspect(cfg):
+            captured["config"] = cfg
+            return stub_introspect_result
+
+        fake_introspector.introspect_database.side_effect = _capture_introspect
+
+        with patch.object(
+            handler_module, "_get_introspector_for_sync",
+            return_value=fake_introspector,
+        ):
+            handler_module._list_visible_schemas(
+                dce, "postgres", "h", 5432, "analytics",
+                {"username": "u", "password": "p", "ssl_mode": "require"},
+            )
+        cfg = captured["config"]
+        # Profiling + sampling both off (metadata-only call).
+        assert cfg.profiling.enabled is False
+        assert cfg.sampling.enabled is False
+        # No IntrospectionScope = enumerate everything.
+        assert getattr(cfg, "introspection_scope", None) is None
+
+    def test_mysql_config_path(self, stub_introspect_result):
+        import databao_context_engine as dce
+
+        fake_introspector = MagicMock()
+        captured = {}
+
+        def _capture(cfg):
+            captured["config"] = cfg
+            return stub_introspect_result
+
+        fake_introspector.introspect_database.side_effect = _capture
+        with patch.object(
+            handler_module, "_get_introspector_for_sync",
+            return_value=fake_introspector,
+        ):
+            handler_module._list_visible_schemas(
+                dce, "mysql", "h", 3306, "analytics",
+                {"username": "u", "password": "p"},
+            )
+        cfg = captured["config"]
+        assert cfg.profiling.enabled is False
+        assert cfg.sampling.enabled is False
+
+    def test_mssql_config_path(self, stub_introspect_result):
+        import databao_context_engine as dce
+
+        fake_introspector = MagicMock()
+        captured = {}
+
+        def _capture(cfg):
+            captured["config"] = cfg
+            return stub_introspect_result
+
+        fake_introspector.introspect_database.side_effect = _capture
+        with patch.object(
+            handler_module, "_get_introspector_for_sync",
+            return_value=fake_introspector,
+        ):
+            handler_module._list_visible_schemas(
+                dce, "mssql", "h", 1433, "analytics",
+                {"username": "u", "password": "p", "encrypt": True},
+            )
+        cfg = captured["config"]
+        assert cfg.profiling.enabled is False
+        assert cfg.sampling.enabled is False
+
+    def test_unsupported_engine_raises(self, mock_credential):
+        import databao_context_engine as dce
+
+        with pytest.raises(ValueError, match="Unsupported engine"):
+            handler_module._list_visible_schemas(
+                dce, "oracle", "h", 1521, "db", mock_credential,
+            )
+
+
+# ============================================================================
+# Chunk 07: schema-drift delta computation + audit-row + DDB persist
+# ============================================================================
+
+
+class TestSchemaDriftDelta:
+    """Chunk 07: diff current available_schemas against the connection
+    record's prior snapshot to produce schemas_added / schemas_removed
+    on the DATABASE_SYNCED audit row's extra_details."""
+
+    @patch.object(handler_module, "queue_orphan_cleanup")
+    @patch.object(handler_module, "queue_table_ingestion")
+    @patch.object(handler_module, "log_source_sync")
+    @patch.object(handler_module, "_list_visible_schemas")
+    @patch.object(handler_module, "_run_schema_introspection")
+    @patch.object(handler_module, "get_credential")
+    def test_added_schemas_surface_in_audit(
+        self, mock_get_cred, mock_intro, mock_list_schemas, mock_audit,
+        mock_queue_table, _cleanup,
+        mock_table, sample_connection, mock_credential,
+    ):
+        """Prior snapshot had [analytics.public]; current enumeration
+        finds [analytics.public, analytics.imaging] -> imaging is added."""
+        connection_with_prior_schemas = {
+            **sample_connection,
+            "available_schemas": ["analytics.public"],
+        }
+        mock_table.get_item.return_value = {"Item": connection_with_prior_schemas}
+        mock_get_cred.return_value = mock_credential
+        mock_intro.return_value = {
+            "tables": [], "columns_count": 0, "had_top_values": False,
+        }
+        mock_list_schemas.return_value = ["analytics.imaging", "analytics.public"]
+
+        handler_module.process_sync_request({
+            "workspace_id": "ws_test", "connection_id": "conn_test",
+        })
+
+        details = mock_audit.call_args[1]["extra_details"]
+        assert details["schemas_added"] == ["analytics.imaging"]
+        assert details["schemas_removed"] == []
+        assert details["schema_count_delta"] == 1
+
+    @patch.object(handler_module, "queue_orphan_cleanup")
+    @patch.object(handler_module, "queue_table_ingestion")
+    @patch.object(handler_module, "log_source_sync")
+    @patch.object(handler_module, "_list_visible_schemas")
+    @patch.object(handler_module, "_run_schema_introspection")
+    @patch.object(handler_module, "get_credential")
+    def test_removed_schemas_surface_in_audit(
+        self, mock_get_cred, mock_intro, mock_list_schemas, mock_audit,
+        mock_queue_table, _cleanup,
+        mock_table, sample_connection, mock_credential,
+    ):
+        """DBA dropped a schema between syncs."""
+        connection_with_prior_schemas = {
+            **sample_connection,
+            "available_schemas": ["analytics.public", "analytics.legacy"],
+        }
+        mock_table.get_item.return_value = {"Item": connection_with_prior_schemas}
+        mock_get_cred.return_value = mock_credential
+        mock_intro.return_value = {
+            "tables": [], "columns_count": 0, "had_top_values": False,
+        }
+        mock_list_schemas.return_value = ["analytics.public"]
+
+        handler_module.process_sync_request({
+            "workspace_id": "ws_test", "connection_id": "conn_test",
+        })
+        details = mock_audit.call_args[1]["extra_details"]
+        assert details["schemas_added"] == []
+        assert details["schemas_removed"] == ["analytics.legacy"]
+        assert details["schema_count_delta"] == -1
+
+    @patch.object(handler_module, "queue_orphan_cleanup")
+    @patch.object(handler_module, "queue_table_ingestion")
+    @patch.object(handler_module, "log_source_sync")
+    @patch.object(handler_module, "_list_visible_schemas")
+    @patch.object(handler_module, "_run_schema_introspection")
+    @patch.object(handler_module, "get_credential")
+    def test_no_change_yields_empty_delta(
+        self, mock_get_cred, mock_intro, mock_list_schemas, mock_audit,
+        mock_queue_table, _cleanup,
+        mock_table, sample_connection, mock_credential,
+    ):
+        """Steady state: prior == current -> both deltas empty."""
+        connection_with_prior_schemas = {
+            **sample_connection,
+            "available_schemas": ["analytics.public", "analytics.billing"],
+        }
+        mock_table.get_item.return_value = {"Item": connection_with_prior_schemas}
+        mock_get_cred.return_value = mock_credential
+        mock_intro.return_value = {
+            "tables": [], "columns_count": 0, "had_top_values": False,
+        }
+        mock_list_schemas.return_value = ["analytics.billing", "analytics.public"]
+
+        handler_module.process_sync_request({
+            "workspace_id": "ws_test", "connection_id": "conn_test",
+        })
+        details = mock_audit.call_args[1]["extra_details"]
+        assert details["schemas_added"] == []
+        assert details["schemas_removed"] == []
+        assert details["schema_count_delta"] == 0
+
+    @patch.object(handler_module, "queue_orphan_cleanup")
+    @patch.object(handler_module, "queue_table_ingestion")
+    @patch.object(handler_module, "log_source_sync")
+    @patch.object(handler_module, "_list_visible_schemas")
+    @patch.object(handler_module, "_run_schema_introspection")
+    @patch.object(handler_module, "get_credential")
+    def test_first_sync_treats_everything_as_added(
+        self, mock_get_cred, mock_intro, mock_list_schemas, mock_audit,
+        mock_queue_table, _cleanup,
+        mock_table, sample_connection, mock_credential,
+    ):
+        """First sync after this chunk lands (or after fresh connect):
+        connection has no available_schemas yet, so every visible schema
+        is 'added'."""
+        mock_table.get_item.return_value = {"Item": sample_connection}
+        mock_get_cred.return_value = mock_credential
+        mock_intro.return_value = {
+            "tables": [], "columns_count": 0, "had_top_values": False,
+        }
+        mock_list_schemas.return_value = ["analytics.public", "analytics.healthcare"]
+
+        handler_module.process_sync_request({
+            "workspace_id": "ws_test", "connection_id": "conn_test",
+        })
+        details = mock_audit.call_args[1]["extra_details"]
+        assert details["schemas_added"] == sorted(
+            ["analytics.public", "analytics.healthcare"]
+        )
+        assert details["schemas_removed"] == []
+        assert details["schema_count_delta"] == 2
+
+    @patch.object(handler_module, "queue_orphan_cleanup")
+    @patch.object(handler_module, "queue_table_ingestion")
+    @patch.object(handler_module, "log_source_sync")
+    @patch.object(handler_module, "_list_visible_schemas")
+    @patch.object(handler_module, "_run_schema_introspection")
+    @patch.object(handler_module, "get_credential")
+    def test_enumeration_failure_is_graceful(
+        self, mock_get_cred, mock_intro, mock_list_schemas, mock_audit,
+        mock_queue_table, _cleanup,
+        mock_table, sample_connection, mock_credential,
+    ):
+        """If _list_visible_schemas raises, the sync still completes -
+        we treat the enumeration result as empty and just log."""
+        mock_table.get_item.return_value = {"Item": sample_connection}
+        mock_get_cred.return_value = mock_credential
+        mock_intro.return_value = {
+            "tables": [], "columns_count": 0, "had_top_values": False,
+        }
+        mock_list_schemas.side_effect = RuntimeError("transient introspect blip")
+
+        result = handler_module.process_sync_request({
+            "workspace_id": "ws_test", "connection_id": "conn_test",
+        })
+        # Sync still succeeded - drift detection is best-effort.
+        assert result["status"] == "success"
+        details = mock_audit.call_args[1]["extra_details"]
+        # Empty enumeration -> nothing added (we don't know what's
+        # actually missing, so we don't claim removals either).
+        assert details["schemas_added"] == []
+
+    @patch.object(handler_module, "queue_orphan_cleanup")
+    @patch.object(handler_module, "queue_table_ingestion")
+    @patch.object(handler_module, "log_source_sync")
+    @patch.object(handler_module, "_list_visible_schemas")
+    @patch.object(handler_module, "_run_schema_introspection")
+    @patch.object(handler_module, "get_credential")
+    def test_available_schemas_persisted_to_ddb(
+        self, mock_get_cred, mock_intro, mock_list_schemas, _audit,
+        _queue, _cleanup,
+        mock_table, sample_connection, mock_credential,
+    ):
+        """The completed-status update writes available_schemas via the
+        new UpdateExpression kwarg."""
+        mock_table.get_item.return_value = {"Item": sample_connection}
+        mock_get_cred.return_value = mock_credential
+        mock_intro.return_value = {
+            "tables": [], "columns_count": 0, "had_top_values": False,
+        }
+        mock_list_schemas.return_value = ["analytics.public", "analytics.imaging"]
+
+        handler_module.process_sync_request({
+            "workspace_id": "ws_test", "connection_id": "conn_test",
+        })
+
+        for call in mock_table.update_item.call_args_list:
+            expr_values = call[1].get("ExpressionAttributeValues", {})
+            if expr_values.get(":status") == "completed":
+                assert ":as" in expr_values
+                assert expr_values[":as"] == [
+                    "analytics.public", "analytics.imaging",
+                ]
+                assert "available_schemas" in call[1]["UpdateExpression"]
+                return
+        raise AssertionError("No completed-status update with available_schemas")
+
+
+# ============================================================================
+# Chunk 07: SNS drift-notification publish
+# ============================================================================
+
+
+class TestDriftNotificationPublish:
+    """Push-notification path. Topic ARN comes from env. Empty/unset
+    arn = audit-only (no publish). Non-empty deltas trigger publish;
+    all-empty deltas skip publish (steady-state syncs send nothing)."""
+
+    @patch.object(handler_module, "queue_orphan_cleanup")
+    @patch.object(handler_module, "queue_table_ingestion")
+    @patch.object(handler_module, "log_source_sync")
+    @patch.object(handler_module, "_list_visible_schemas")
+    @patch.object(handler_module, "_run_schema_introspection")
+    @patch.object(handler_module, "get_credential")
+    def test_publish_fires_on_schema_drift(
+        self, mock_get_cred, mock_intro, mock_list_schemas, _audit,
+        _queue, _cleanup,
+        mock_table, sample_connection, mock_credential, monkeypatch,
+    ):
+        """Schema added -> publish fires with subject+body containing
+        the connection label + engine."""
+        monkeypatch.setenv("DATABASE_DRIFT_TOPIC_ARN", "arn:aws:sns:us-east-1:111:db-drift")
+        mock_publish = MagicMock()
+        monkeypatch.setattr(handler_module.sns_client, "publish", mock_publish)
+
+        connection_with_prior = {
+            **sample_connection,
+            "available_schemas": ["analytics.public"],
+        }
+        mock_table.get_item.return_value = {"Item": connection_with_prior}
+        mock_get_cred.return_value = mock_credential
+        mock_intro.return_value = {
+            "tables": [], "columns_count": 0, "had_top_values": False,
+        }
+        mock_list_schemas.return_value = ["analytics.public", "analytics.imaging"]
+
+        handler_module.process_sync_request({
+            "workspace_id": "ws_test", "connection_id": "conn_test",
+        })
+        mock_publish.assert_called_once()
+        call_kwargs = mock_publish.call_args[1]
+        assert call_kwargs["TopicArn"] == "arn:aws:sns:us-east-1:111:db-drift"
+        # Subject capped at 99 chars
+        assert len(call_kwargs["Subject"]) <= 99
+        assert "Database drift" in call_kwargs["Subject"]
+        assert "Test DW" in call_kwargs["Subject"]
+        # Body lists the actual drift
+        assert "analytics.imaging" in call_kwargs["Message"]
+
+    @patch.object(handler_module, "queue_orphan_cleanup")
+    @patch.object(handler_module, "queue_table_ingestion")
+    @patch.object(handler_module, "log_source_sync")
+    @patch.object(handler_module, "_list_visible_schemas")
+    @patch.object(handler_module, "_run_schema_introspection")
+    @patch.object(handler_module, "get_credential")
+    def test_publish_fires_on_table_drift_only(
+        self, mock_get_cred, mock_intro, mock_list_schemas, _audit,
+        mock_queue_table, _cleanup,
+        mock_table, sample_connection, mock_credential, monkeypatch,
+    ):
+        """Table-level drift (no new schemas) still triggers publish -
+        chunk 07's topic subsumes chunk 06's table-level drift alerting."""
+        monkeypatch.setenv("DATABASE_DRIFT_TOPIC_ARN", "arn:aws:sns:us-east-1:111:db-drift")
+        mock_publish = MagicMock()
+        monkeypatch.setattr(handler_module.sns_client, "publish", mock_publish)
+
+        connection_with_prior = {
+            **sample_connection,
+            "available_schemas": ["analytics.public"],
+            # known_table_ids is empty so any current tables count as added
+        }
+        mock_table.get_item.return_value = {"Item": connection_with_prior}
+        mock_get_cred.return_value = mock_credential
+        mock_intro.return_value = {
+            "tables": [
+                {"catalog": "analytics", "schema": "public", "table": "orders",
+                 "yaml": "name: orders\n"},
+            ],
+            "columns_count": 1,
+            "had_top_values": False,
+        }
+        # No schema drift
+        mock_list_schemas.return_value = ["analytics.public"]
+
+        handler_module.process_sync_request({
+            "workspace_id": "ws_test", "connection_id": "conn_test",
+        })
+        mock_publish.assert_called_once()
+
+    @patch.object(handler_module, "queue_orphan_cleanup")
+    @patch.object(handler_module, "queue_table_ingestion")
+    @patch.object(handler_module, "log_source_sync")
+    @patch.object(handler_module, "_list_visible_schemas")
+    @patch.object(handler_module, "_run_schema_introspection")
+    @patch.object(handler_module, "get_credential")
+    def test_publish_skipped_when_no_drift(
+        self, mock_get_cred, mock_intro, mock_list_schemas, _audit,
+        _queue, _cleanup,
+        mock_table, sample_connection, mock_credential, monkeypatch,
+    ):
+        """Steady state: every delta list empty -> SNS publish skipped.
+        Quiet hourly tick. No email noise."""
+        monkeypatch.setenv("DATABASE_DRIFT_TOPIC_ARN", "arn:aws:sns:us-east-1:111:db-drift")
+        mock_publish = MagicMock()
+        monkeypatch.setattr(handler_module.sns_client, "publish", mock_publish)
+
+        connection_steady = {
+            **sample_connection,
+            "available_schemas": ["analytics.public"],
+            "known_table_ids": [],   # current also empty -> no table drift
+        }
+        mock_table.get_item.return_value = {"Item": connection_steady}
+        mock_get_cred.return_value = mock_credential
+        mock_intro.return_value = {
+            "tables": [], "columns_count": 0, "had_top_values": False,
+        }
+        mock_list_schemas.return_value = ["analytics.public"]
+
+        handler_module.process_sync_request({
+            "workspace_id": "ws_test", "connection_id": "conn_test",
+        })
+        mock_publish.assert_not_called()
+
+    @patch.object(handler_module, "queue_orphan_cleanup")
+    @patch.object(handler_module, "queue_table_ingestion")
+    @patch.object(handler_module, "log_source_sync")
+    @patch.object(handler_module, "_list_visible_schemas")
+    @patch.object(handler_module, "_run_schema_introspection")
+    @patch.object(handler_module, "get_credential")
+    def test_publish_noop_when_topic_arn_unset(
+        self, mock_get_cred, mock_intro, mock_list_schemas, _audit,
+        _queue, _cleanup,
+        mock_table, sample_connection, mock_credential, monkeypatch,
+    ):
+        """No topic-arn env var (empty list of tfvar emails -> no topic)
+        means publish is a no-op even if drift is non-empty. Audit row
+        still fires."""
+        monkeypatch.delenv("DATABASE_DRIFT_TOPIC_ARN", raising=False)
+        mock_publish = MagicMock()
+        monkeypatch.setattr(handler_module.sns_client, "publish", mock_publish)
+
+        connection_with_prior = {
+            **sample_connection,
+            "available_schemas": ["analytics.public"],
+        }
+        mock_table.get_item.return_value = {"Item": connection_with_prior}
+        mock_get_cred.return_value = mock_credential
+        mock_intro.return_value = {
+            "tables": [], "columns_count": 0, "had_top_values": False,
+        }
+        mock_list_schemas.return_value = ["analytics.public", "analytics.imaging"]
+
+        result = handler_module.process_sync_request({
+            "workspace_id": "ws_test", "connection_id": "conn_test",
+        })
+        # Sync still succeeded - audit row already wrote the drift.
+        assert result["status"] == "success"
+        mock_publish.assert_not_called()
+
+    @patch.object(handler_module, "queue_orphan_cleanup")
+    @patch.object(handler_module, "queue_table_ingestion")
+    @patch.object(handler_module, "log_source_sync")
+    @patch.object(handler_module, "_list_visible_schemas")
+    @patch.object(handler_module, "_run_schema_introspection")
+    @patch.object(handler_module, "get_credential")
+    def test_publish_clienterror_is_swallowed(
+        self, mock_get_cred, mock_intro, mock_list_schemas, _audit,
+        _queue, _cleanup,
+        mock_table, sample_connection, mock_credential, monkeypatch,
+    ):
+        """SNS ClientError must not block the sync — audit row already
+        has the data. Just warning-log."""
+        monkeypatch.setenv("DATABASE_DRIFT_TOPIC_ARN", "arn:aws:sns:us-east-1:111:db-drift")
+        mock_publish = MagicMock(side_effect=ClientError(
+            {"Error": {"Code": "X", "Message": "boom"}}, "Publish",
+        ))
+        monkeypatch.setattr(handler_module.sns_client, "publish", mock_publish)
+
+        connection_with_prior = {
+            **sample_connection,
+            "available_schemas": ["analytics.public"],
+        }
+        mock_table.get_item.return_value = {"Item": connection_with_prior}
+        mock_get_cred.return_value = mock_credential
+        mock_intro.return_value = {
+            "tables": [], "columns_count": 0, "had_top_values": False,
+        }
+        mock_list_schemas.return_value = ["analytics.public", "analytics.imaging"]
+
+        result = handler_module.process_sync_request({
+            "workspace_id": "ws_test", "connection_id": "conn_test",
+        })
+        assert result["status"] == "success"
+
+
+class TestUpdateConnectionStatusAvailableSchemas:
+    """The new available_schemas kwarg writes to DDB only when provided."""
+
+    def test_available_schemas_kwarg_writes_to_ddb(self, mock_table):
+        handler_module.update_connection_status(
+            "ws", "c", "completed",
+            tables_count=1,
+            known_table_ids=["x"],
+            available_schemas=["analytics.public", "analytics.imaging"],
+        )
+        call_args = mock_table.update_item.call_args[1]
+        expr = call_args["UpdateExpression"]
+        assert "available_schemas" in expr
+        values = call_args["ExpressionAttributeValues"]
+        assert values[":as"] == ["analytics.public", "analytics.imaging"]
+
+    def test_available_schemas_omitted_when_not_provided(self, mock_table):
+        handler_module.update_connection_status(
+            "ws", "c", "syncing",
+        )
+        call_args = mock_table.update_item.call_args[1]
+        expr = call_args["UpdateExpression"]
+        # No :as placeholder when the kwarg wasn't passed
+        assert ":as" not in call_args["ExpressionAttributeValues"]
+        assert "available_schemas" not in expr

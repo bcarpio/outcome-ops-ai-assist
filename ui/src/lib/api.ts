@@ -1643,6 +1643,11 @@ export interface DatabaseConnection {
     | 'blocked_license_limit'
   last_sync_error?: string | null
   tables_count: number
+  // chunk 07: snapshot of every schema the RO user could see at the
+  // last sync (sorted "catalog.schema" keys). UI uses this to render
+  // the "N new schemas available" pill on the connection card and
+  // the per-schema "NEW" badge in the Configure Scope picker.
+  available_schemas?: string[]
   created_at: string
   updated_at: string
 }

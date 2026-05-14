@@ -74,6 +74,10 @@ DELETE_QUEUE = os.environ.get("DELETE_QUEUE")
 
 dynamodb = boto3.resource("dynamodb")
 sqs_client = boto3.client("sqs")
+# chunk 07: lazy publish path — only used when DATABASE_DRIFT_TOPIC_ARN
+# is set AND a drift list is non-empty. SNS publish failures are
+# non-blocking (warning-logged; the audit row already has the data).
+sns_client = boto3.client("sns")
 
 
 def sanitize_filename(name: str) -> str:
@@ -108,6 +112,7 @@ def update_connection_status(
     status: str,
     tables_count: int = 0,
     known_table_ids: Optional[List[str]] = None,
+    available_schemas: Optional[List[str]] = None,
     error: Optional[str] = None,
 ):
     table = dynamodb.Table(WORKSPACES_TABLE)
@@ -127,6 +132,15 @@ def update_connection_status(
     if known_table_ids is not None:
         update_expr += ", known_table_ids = :kti"
         expr_values[":kti"] = known_table_ids
+
+    # chunk 07: prior-sync snapshot of every schema the RO user could
+    # see. UI reads this for the "N new schemas available" pill on the
+    # connection card; the sync's drift-detection diffs the current
+    # enumeration against this list to produce schemas_added /
+    # schemas_removed.
+    if available_schemas is not None:
+        update_expr += ", available_schemas = :as"
+        expr_values[":as"] = available_schemas
 
     if error:
         update_expr += ", last_sync_error = :error"
@@ -676,6 +690,219 @@ def _run_schema_introspection(connection: Dict, credential: Dict) -> Dict[str, A
     }
 
 
+def _list_visible_schemas(
+    dce,
+    engine: str,
+    host: str,
+    port: int,
+    database_name: str,
+    credential: Dict[str, Any],
+) -> List[str]:
+    """Cheap unrestricted enumeration of every schema the RO user can
+    see.
+
+    Profiling + sampling are both disabled so the introspect call is
+    metadata-only: one `information_schema.schemata` (or `sys.schemas`
+    on MSSQL) lookup plus per-catalog schema enumeration. Sub-second on
+    every engine for typical schema counts.
+
+    Returned shape is a sorted list of "catalog.schema" keys, matching
+    the 2-segment format the rest of chunk 06 / 07 uses for
+    `available_schemas`, `introspection.include`, etc.
+
+    Chunk 07: diffing this against the connection record's prior-sync
+    `available_schemas` produces the schemas_added / schemas_removed
+    drift signal that rides on the DATABASE_SYNCED audit row.
+    """
+    from databao_context_engine.plugins.databases.sampling_scope import (
+        SamplingConfig,
+    )
+    from databao_context_engine.plugins.databases.profiling_config import (
+        ProfilingConfig,
+    )
+
+    user = credential.get("username")
+    password = credential.get("password")
+    sampling = SamplingConfig(enabled=False)
+    profiling = ProfilingConfig(enabled=False)
+
+    # No introspection_scope = enumerate everything visible to the
+    # RO user. Per-engine config-build pattern mirrors
+    # _build_sync_config, just without IntrospectionScope + with both
+    # profiling + sampling forced off.
+    if engine == "postgres":
+        from databao_context_engine.plugins.databases.postgresql.config_file import (
+            PostgresConfigFile, PostgresConnectionProperties,
+        )
+        additional = {}
+        ssl_mode = credential.get("ssl_mode")
+        if ssl_mode and ssl_mode != "disable":
+            additional["ssl"] = ssl_mode
+        config = PostgresConfigFile(
+            name="ooat-schema-enum",
+            connection=PostgresConnectionProperties(
+                host=host, port=port, database=database_name,
+                user=user, password=password,
+                additional_properties=additional,
+            ),
+            sampling=sampling,
+            profiling=profiling,
+        )
+    elif engine == "mysql":
+        from databao_context_engine.plugins.databases.mysql.config_file import (
+            MySQLConfigFile, MySQLConnectionProperties,
+        )
+        additional = {}
+        ssl_mode = credential.get("ssl_mode")
+        if ssl_mode and ssl_mode != "disable":
+            additional["ssl"] = {}
+        config = MySQLConfigFile(
+            name="ooat-schema-enum",
+            connection=MySQLConnectionProperties(
+                host=host, port=port, database=database_name,
+                user=user, password=password,
+                additional_properties=additional,
+            ),
+            sampling=sampling,
+            profiling=profiling,
+        )
+    elif engine == "mssql":
+        from databao_context_engine.plugins.databases.mssql.config_file import (
+            MSSQLConfigFile, MSSQLConnectionProperties,
+        )
+        encrypt_value = "yes" if credential.get("encrypt", True) else "no"
+        additional = {}
+        if credential.get("trust_server_certificate"):
+            additional["trust_server_certificate"] = True
+        config = MSSQLConfigFile(
+            name="ooat-schema-enum",
+            connection=MSSQLConnectionProperties(
+                host=host, port=port, database=database_name,
+                user=user, password=password,
+                encrypt=encrypt_value,
+                additional_properties=additional,
+            ),
+            sampling=sampling,
+            profiling=profiling,
+        )
+    else:
+        raise ValueError(f"Unsupported engine: {engine!r}")
+
+    introspector = _get_introspector_for_sync(engine)
+    result = introspector.introspect_database(config)
+
+    keys: set = set()
+    for cat in result.catalogs:
+        cat_name = cat.name or ""
+        for sch in cat.schemas:
+            sch_name = sch.name or ""
+            keys.add(f"{cat_name}.{sch_name}")
+    return sorted(keys)
+
+
+def _format_drift_email(
+    workspace_id: str,
+    connection_id: str,
+    engine: str,
+    host: str,
+    database_name: str,
+    display_label: str,
+    sync_id: str,
+    schemas_added: List[str],
+    schemas_removed: List[str],
+    tables_added: List[str],
+    tables_removed: List[str],
+) -> Dict[str, str]:
+    """Build the SNS subject+body for a drift notification.
+
+    Plain text — keeps Slack-webhook / SES-rule / generic-email
+    subscribers all happy. Subject is capped at 99 chars (SNS rule)
+    by the caller.
+    """
+    label = display_label or connection_id
+    subject = f"[OutcomeOps] Database drift: {label} ({engine})"
+    now = datetime.now(timezone.utc).isoformat()
+    body_lines = [
+        "Database drift detected during sync.",
+        "",
+        f"Connection:   {label}",
+        f"Engine:       {engine}",
+        f"Host:         {host}",
+        f"Database:     {database_name}",
+        f"Workspace:    {workspace_id}",
+        f"Sync ID:      {sync_id}",
+        f"Time:         {now}",
+        "",
+        f"Schemas added:   {list(schemas_added)}",
+        f"Schemas removed: {list(schemas_removed)}",
+        "",
+        f"Tables added:    {list(tables_added)}",
+        f"Tables removed:  {list(tables_removed)}",
+        "",
+        "These changes were detected against the connection's prior-sync",
+        "snapshot. Tables in selected schemas auto-flow to your KB; new",
+        "SCHEMAS require admin action - open Configure Scope on the",
+        "connection to include them.",
+        "",
+        "This is an automated notification from OutcomeOps AI Assist. To",
+        "adjust who receives these, update database_drift_notification_emails",
+        "in your terraform tfvars and re-apply.",
+    ]
+    return {"subject": subject, "body": "\n".join(body_lines)}
+
+
+def _publish_drift_notification(
+    workspace_id: str,
+    connection_id: str,
+    engine: str,
+    host: str,
+    database_name: str,
+    display_label: str,
+    sync_id: str,
+    schemas_added: List[str],
+    schemas_removed: List[str],
+    tables_added: List[str],
+    tables_removed: List[str],
+) -> None:
+    """Publish a structured drift email to DATABASE_DRIFT_TOPIC_ARN.
+
+    No-op when the topic arn env var is unset/empty OR when every drift
+    list is empty (steady-state syncs publish nothing). Publish
+    failures are warning-logged and swallowed — the DATABASE_SYNCED
+    audit row already carries the data, so SNS is just the push-path.
+    """
+    topic_arn = os.environ.get("DATABASE_DRIFT_TOPIC_ARN", "")
+    if not topic_arn:
+        return
+    if not (schemas_added or schemas_removed or tables_added or tables_removed):
+        return
+
+    msg = _format_drift_email(
+        workspace_id=workspace_id,
+        connection_id=connection_id,
+        engine=engine,
+        host=host,
+        database_name=database_name,
+        display_label=display_label,
+        sync_id=sync_id,
+        schemas_added=schemas_added,
+        schemas_removed=schemas_removed,
+        tables_added=tables_added,
+        tables_removed=tables_removed,
+    )
+    try:
+        sns_client.publish(
+            TopicArn=topic_arn,
+            Subject=msg["subject"][:99],  # SNS subject max 100
+            Message=msg["body"],
+        )
+    except ClientError as e:
+        # Non-blocking — audit row already has the drift fields.
+        logger.warning(f"Failed to publish drift notification: {e}")
+    except Exception as e:
+        logger.warning(f"Unexpected error publishing drift notification: {e}")
+
+
 def process_sync_request(message: Dict) -> Dict[str, Any]:
     """Process a sync request for a database connection."""
     sync_start = time.time()
@@ -802,6 +1029,34 @@ def process_sync_request(message: Dict) -> Dict[str, Any]:
     tables_added = sorted(current_known - previous_known)
     tables_removed = sorted(previous_known - current_known)
 
+    # Chunk 07: schema-level drift detection. After the scoped sync
+    # introspect (which only walks admin-selected schemas), run an
+    # unrestricted enumeration to discover every schema the RO user
+    # can see. Diffing against the connection record's prior-sync
+    # snapshot produces schemas_added / schemas_removed.
+    #
+    # First sync after this chunk lands: schemas_added = every visible
+    # schema (expected). Subsequent syncs: genuine drift only.
+    #
+    # Enumeration failure is graceful (logged + treated as empty) so
+    # a transient introspect error doesn't fail the whole sync — the
+    # scoped introspect already succeeded and the table-level drift
+    # signal still rides on the audit row.
+    try:
+        dce_mod = __import__("databao_context_engine")
+        available_schemas = _list_visible_schemas(
+            dce_mod, engine, connection.get("host", ""),
+            int(connection.get("port") or 0), database_name, credential,
+        )
+    except Exception:
+        logger.exception("[database-sync] visible-schemas enumeration failed")
+        available_schemas = []
+
+    prior_available = connection.get("available_schemas") or []
+    schemas_added = sorted(set(available_schemas) - set(prior_available))
+    schemas_removed = sorted(set(prior_available) - set(available_schemas))
+    schema_count_delta = len(schemas_added) - len(schemas_removed)
+
     # Per-source usage tracking (ADR-019). Non-blocking.
     track_repo_active(repo=repo_project)
 
@@ -809,6 +1064,7 @@ def process_sync_request(message: Dict) -> Dict[str, Any]:
         workspace_id, connection_id, "completed",
         tables_count=len(current_table_ids),
         known_table_ids=current_table_ids,
+        available_schemas=available_schemas,
     )
 
     queue_orphan_cleanup(workspace_id, connection_id, current_table_ids)
@@ -837,7 +1093,31 @@ def process_sync_request(message: Dict) -> Dict[str, Any]:
             "tables_added": tables_added,
             "tables_removed": tables_removed,
             "table_count_delta": len(tables_added) - len(tables_removed),
+            # chunk 07: schema-level drift delta. Mirrors the
+            # tables_added / tables_removed shape so downstream
+            # alert consumers can wire one logic path.
+            "schemas_added": schemas_added,
+            "schemas_removed": schemas_removed,
+            "schema_count_delta": schema_count_delta,
         },
+    )
+
+    # Chunk 07: push notification. Gated on a non-empty topic ARN
+    # (length-0 tfvar = no topic, no publish) AND on at least one
+    # drift list being non-empty (steady-state syncs publish
+    # nothing — no email noise on the common no-drift hourly tick).
+    _publish_drift_notification(
+        workspace_id=workspace_id,
+        connection_id=connection_id,
+        engine=engine,
+        host=connection.get("host", ""),
+        database_name=database_name,
+        display_label=connection.get("display_label", ""),
+        sync_id=sync_id,
+        schemas_added=schemas_added,
+        schemas_removed=schemas_removed,
+        tables_added=tables_added,
+        tables_removed=tables_removed,
     )
 
     return {

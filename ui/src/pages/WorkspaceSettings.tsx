@@ -3086,6 +3086,23 @@ export default function WorkspaceSettings() {
                             <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-700 uppercase">
                               {conn.engine}
                             </span>
+                            {/* chunk 07: surface DBA-created schemas the
+                                admin hasn't included yet. N = available
+                                schemas minus already-included. Schemas
+                                always require admin confirmation (no
+                                auto-add), so this nudges them into the
+                                picker. */}
+                            {(() => {
+                              const available = conn.available_schemas || []
+                              const included = conn.scope_config?.introspection?.include || []
+                              const includedSet = new Set(included)
+                              const newCount = available.filter(s => !includedSet.has(s)).length
+                              return available.length > 0 && newCount > 0 ? (
+                                <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-700">
+                                  {newCount} new schema{newCount !== 1 ? 's' : ''} available - click Configure
+                                </span>
+                              ) : null
+                            })()}
                           </div>
                           <p className="text-sm text-gray-500 mt-0.5">{conn.host}:{conn.port} / {conn.database_name}</p>
                           <p className="text-sm text-gray-500 mt-1">
@@ -4428,10 +4445,27 @@ export default function WorkspaceSettings() {
                       </tr>
                     </thead>
                     <tbody>
-                      {ordered.map(([schemaKey, bucket]) => (
+                      {ordered.map(([schemaKey, bucket]) => {
+                        // chunk 07: badge a schema "NEW" when it
+                        // appeared in the last sync's available_schemas
+                        // snapshot but is not yet in the picker's
+                        // selected-set. Clears once the admin saves with
+                        // it included (or explicitly leaves it out).
+                        const availableSet = new Set(
+                          configuringDatabaseConnection.available_schemas || []
+                        )
+                        const isNew = availableSet.has(schemaKey) && !databaseIntrospectSchemas.has(schemaKey)
+                        return (
                         <tr key={schemaKey} className="border-t hover:bg-gray-50 align-top">
                           <td className="p-2 text-gray-600">{bucket.catalog || '-'}</td>
-                          <td className="p-2 font-medium text-gray-900">{bucket.schema}</td>
+                          <td className="p-2 font-medium text-gray-900">
+                            {bucket.schema}
+                            {isNew && (
+                              <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-100 text-amber-700 uppercase tracking-wide">
+                                NEW
+                              </span>
+                            )}
+                          </td>
                           <td className="p-2 text-gray-600 text-xs">
                             <span className="font-mono">{bucket.tables.length} table{bucket.tables.length !== 1 ? 's' : ''}</span>
                             <span className="text-gray-400 ml-2">{bucket.tables.slice(0, 6).join(', ')}{bucket.tables.length > 6 ? `, +${bucket.tables.length - 6} more` : ''}</span>
@@ -4453,7 +4487,8 @@ export default function WorkspaceSettings() {
                             />
                           </td>
                         </tr>
-                      ))}
+                        )
+                      })}
                     </tbody>
                   </table>
                 )
