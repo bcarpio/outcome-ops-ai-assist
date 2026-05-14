@@ -216,12 +216,32 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install certifi
+        run: pip install certifi
+
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
 
       - name: Terraform Init
         run: terraform init -input=false -backend=false
         working-directory: ${{ env.TERRAFORM_DIR }}
+
+      # Builds the platform-CA Lambda layer zip on disk so terraform's
+      # filebase64sha256() in lambda-platform-ca-layer.tf has a file to
+      # hash during validate. Must run BEFORE `terraform validate`. With
+      # the default empty platform_ca_bundle_ssm_param_arns the script
+      # ships a certifi-only passthrough layer so this is safe on
+      # first-time deploys too -- see scripts/build-platform-ca-layer.sh.
+      - name: Build platform CA layer
+        run: make build-platform-layer
+        env:
+          ENVIRONMENT: ${{ env.ENVIRONMENT }}
+          AWS_REGION: ${{ env.AWS_REGION }}
 
       - name: Terraform Format Check
         run: terraform fmt -check -recursive
@@ -230,18 +250,4 @@ jobs:
       - name: Terraform Validate
         run: terraform validate
         working-directory: ${{ env.TERRAFORM_DIR }}
-
-      # Builds the platform-CA Lambda layer zip on disk so terraform's
-      # filebase64sha256() resource in lambda-platform-ca-layer.tf has a
-      # file to hash. Runs after terraform init (so `terraform output`
-      # resolves platform_ca_bundle_ssm_param_arns when one is set) and
-      # before any future terraform apply step. With the default empty
-      # platform_ca_bundle_ssm_param_arns the script ships a certifi-only
-      # passthrough layer so this is safe on first-time deploys too --
-      # see scripts/build-platform-ca-layer.sh + plan/03-platform-ca-trust-layer.md.
-      - name: Build platform CA layer
-        run: make build-platform-layer
-        env:
-          ENVIRONMENT: ${{ env.ENVIRONMENT }}
-          AWS_REGION: ${{ env.AWS_REGION }}
 
