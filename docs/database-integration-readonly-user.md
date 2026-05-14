@@ -99,17 +99,30 @@ FLUSH PRIVILEGES;
   the connected user via `information_schema.SCHEMATA`. So you can
   set it to `healthcare` (or any granted DB) and the picker will
   still surface every DB the user has SELECT on.
-- For full per-column aggregate stats, the introspector runs
-  `ANALYZE TABLE ... UPDATE HISTOGRAM`. Plain `SELECT` is enough for
-  this to work on InnoDB with `innodb_stats_auto_recalc=ON` (default).
-  If you want bulletproof stats parity, also grant `INSERT, UPDATE`
-  on `mysql.column_stats`:
+- **`ANALYZE TABLE` needs INSERT, not just SELECT.** MySQL 8's
+  `ANALYZE TABLE` (which the upstream introspector runs on every
+  sync to refresh column stats and histograms) requires both
+  `SELECT` and `INSERT` privileges on the target table, even though
+  it doesn't actually insert row data. Without `INSERT`, sync logs
+  a harmless `Failed to analyze table ... INSERT command denied`
+  warning per table per sync and falls back to whatever stats
+  `innodb_stats_auto_recalc` already cached. Two ways to handle:
   ```sql
-  -- Optional: enables ANALYZE UPDATE HISTOGRAM by the RO user
-  GRANT INSERT, UPDATE, DELETE ON mysql.column_stats TO 'outcomeops_ro'@'%';
+  -- Option A: grant INSERT on the user-data schemas. The
+  -- introspector never actually writes row data; INSERT is required
+  -- only for ANALYZE TABLE's privilege check. Trade-off: a
+  -- compromised RO credential could now INSERT fake rows.
+  GRANT SELECT, INSERT ON healthcare.* TO 'outcomeops_ro'@'%';
+
+  -- Option B: keep SELECT-only. ANALYZE TABLE fails (warning
+  -- logged, not error). Stats still come from
+  -- innodb_stats_auto_recalc's background refresh, which is usually
+  -- fresh enough but lags moments after schema changes.
   ```
-  Most customers won't need this; InnoDB's automatic stats are usually
-  fresh enough.
+  RDS MySQL also blocks `GRANT ... ON mysql.column_stats` even from
+  the admin user, so the histogram-table grant some upstream docs
+  recommend isn't reachable on RDS — but it's not strictly necessary
+  either; the source-table INSERT is the blocking permission.
 - For MySQL 8+ with `caching_sha2_password` plugin issues, fall back
   to `mysql_native_password`:
   ```sql
