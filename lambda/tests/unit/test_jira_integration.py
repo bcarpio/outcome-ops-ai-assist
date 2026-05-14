@@ -70,10 +70,21 @@ _generate_connection_id = handler_module._generate_connection_id
 
 @pytest.fixture(autouse=True)
 def reset_module_globals():
-    """Reset cached module globals between tests."""
+    """Reset cached module globals between tests.
+
+    Also pins `report_repos_snapshot` to None so the license-snapshot
+    helper short-circuits during tests that don't explicitly exercise it.
+    Other test modules (test_jira_sync etc.) inject a MagicMock
+    outcomeops_license into sys.modules at import time, which would
+    otherwise drive the helper into a real DDB scan against a generic
+    MagicMock (infinite-loop risk).
+    """
     handler_module._dynamodb = None
     handler_module._sqs = None
+    saved_snapshot = handler_module.report_repos_snapshot
+    handler_module.report_repos_snapshot = None
     yield
+    handler_module.report_repos_snapshot = saved_snapshot
 
 
 @pytest.fixture
@@ -1828,3 +1839,164 @@ class TestLambdaHandlerRouting:
         }
         result = lambda_handler(event, None)
         assert result["statusCode"] == 404
+
+
+# ============================================================================
+# License snapshot wiring (chunk 03 of license-layer-v2 migration)
+# ============================================================================
+
+class TestLicenseSnapshotWiring:
+    """The connect (callback - new connection only), scope-update
+    (update_projects), and disconnect (handle_disconnect) paths must
+    fire report_repos_snapshot with the full active-repo set so the
+    license server's view tracks DDB truth.
+    """
+
+    @patch.object(handler_module, 'save_tokens')
+    @patch.object(handler_module, 'save_connection')
+    @patch.object(handler_module, '_generate_connection_id', return_value="jira_new_conn")
+    @patch.object(handler_module, 'list_connections', return_value=[])
+    @patch.object(handler_module, 'get_accessible_resources')
+    @patch.object(handler_module, 'exchange_code_for_tokens')
+    @patch.object(handler_module, 'get_oauth_config')
+    @patch.object(handler_module, 'report_repos_snapshot')
+    @patch.object(handler_module, 'get_active_repos_for_customer')
+    def test_callback_new_connection_publishes_snapshot(
+        self, mock_get_active, mock_snapshot,
+        mock_config, mock_exchange, mock_resources, mock_list,
+        mock_gen_id, mock_save_conn, mock_save_tokens,
+        oauth_config, sample_sites,
+    ):
+        """A brand-new connection from the callback must publish the snapshot."""
+        mock_config.return_value = oauth_config
+        mock_exchange.return_value = ("access_tok", "refresh_tok", 3600)
+        mock_resources.return_value = sample_sites
+        mock_get_active.return_value = []
+
+        event = {
+            "queryStringParameters": {
+                "code": "auth_code_123",
+                "state": json.dumps({"workspace_id": "ws_test", "user_email": "admin@example.com"}),
+            },
+        }
+
+        result = handle_callback(event)
+        assert result["statusCode"] == 302
+        mock_snapshot.assert_called_once_with(active_repos=[])
+
+    @patch.object(handler_module, 'save_tokens')
+    @patch.object(handler_module, 'list_connections')
+    @patch.object(handler_module, 'get_accessible_resources')
+    @patch.object(handler_module, 'exchange_code_for_tokens')
+    @patch.object(handler_module, 'get_oauth_config')
+    @patch.object(handler_module, 'report_repos_snapshot')
+    @patch.object(handler_module, 'get_active_repos_for_customer')
+    def test_callback_existing_connection_does_not_publish_snapshot(
+        self, mock_get_active, mock_snapshot,
+        mock_config, mock_exchange, mock_resources, mock_list, mock_save_tokens,
+        oauth_config, sample_sites, sample_connection,
+    ):
+        """Re-authorizing an existing connection refreshes tokens only; the
+        set of license-counted projects is unchanged so no snapshot fires."""
+        mock_config.return_value = oauth_config
+        mock_exchange.return_value = ("new_access", "new_refresh", 3600)
+        mock_resources.return_value = sample_sites
+        mock_list.return_value = [sample_connection]
+
+        event = {
+            "queryStringParameters": {
+                "code": "auth_code_123",
+                "state": json.dumps({"workspace_id": "ws_test", "user_email": "admin@example.com"}),
+            },
+        }
+
+        result = handle_callback(event)
+        assert result["statusCode"] == 302
+        mock_snapshot.assert_not_called()
+
+    @patch.object(handler_module, 'queue_sync_job')
+    @patch.object(handler_module, 'update_sync_status')
+    @patch.object(handler_module, 'update_connection_projects')
+    @patch.object(handler_module, 'list_all_projects')
+    @patch.object(handler_module, 'refresh_access_token')
+    @patch.object(handler_module, 'get_connection')
+    @patch.object(handler_module, 'report_repos_snapshot')
+    @patch.object(handler_module, 'get_active_repos_for_customer')
+    @patch.object(handler_module, '_get_dynamodb')
+    def test_update_projects_publishes_snapshot(
+        self, mock_db_fn, mock_get_active, mock_snapshot,
+        mock_get_conn, mock_refresh, mock_list_projects,
+        mock_update_conn, mock_update_status, mock_queue,
+        mock_dynamodb, mock_table, sample_connection, sample_projects,
+    ):
+        """handle_update_projects must publish the active-repo snapshot."""
+        mock_db_fn.return_value = mock_dynamodb
+        mock_table.get_item.return_value = {"Item": {"role": "workspace_admin"}}
+        mock_get_conn.return_value = sample_connection
+        mock_refresh.return_value = "access_token"
+        mock_list_projects.return_value = sample_projects
+        mock_get_active.return_value = ["jira:PROJ", "jira:OPS"]
+
+        event = {
+            "headers": {"x-user-email": "admin@example.com"},
+            "pathParameters": {"id": "ws_test", "connectionId": "jira_conn_test"},
+            "body": json.dumps({"project_keys": ["PROJ", "OPS"]}),
+        }
+
+        result = handle_update_projects(event)
+        assert result["statusCode"] == 200
+        mock_snapshot.assert_called_once_with(active_repos=["jira:PROJ", "jira:OPS"])
+
+    @patch.object(handler_module, 'delete_connection')
+    @patch.object(handler_module, 'delete_tokens')
+    @patch.object(handler_module, 'queue_delete_job')
+    @patch.object(handler_module, 'get_connection')
+    @patch.object(handler_module, 'report_repos_snapshot')
+    @patch.object(handler_module, 'get_active_repos_for_customer')
+    @patch.object(handler_module, '_get_dynamodb')
+    def test_disconnect_publishes_snapshot(
+        self, mock_db_fn, mock_get_active, mock_snapshot,
+        mock_get_conn, mock_queue_delete, mock_del_tokens, mock_del_conn,
+        mock_dynamodb, mock_table, sample_connection,
+    ):
+        """handle_disconnect must publish the active-repo snapshot."""
+        mock_db_fn.return_value = mock_dynamodb
+        mock_table.get_item.return_value = {"Item": {"role": "workspace_admin"}}
+        mock_get_conn.return_value = sample_connection
+        mock_get_active.return_value = []
+
+        event = {
+            "headers": {"x-user-email": "admin@example.com"},
+            "pathParameters": {"id": "ws_test", "connectionId": "jira_conn_test"},
+        }
+
+        result = handle_disconnect(event)
+        assert result["statusCode"] == 200
+        mock_snapshot.assert_called_once_with(active_repos=[])
+
+    @patch.object(handler_module, 'delete_connection')
+    @patch.object(handler_module, 'delete_tokens')
+    @patch.object(handler_module, 'queue_delete_job')
+    @patch.object(handler_module, 'get_connection')
+    @patch.object(handler_module, 'report_repos_snapshot')
+    @patch.object(handler_module, 'get_active_repos_for_customer',
+                  side_effect=RuntimeError("ddb boom"))
+    @patch.object(handler_module, '_get_dynamodb')
+    def test_disconnect_swallows_snapshot_failure(
+        self, mock_db_fn, mock_get_active, mock_snapshot,
+        mock_get_conn, mock_queue_delete, mock_del_tokens, mock_del_conn,
+        mock_dynamodb, mock_table, sample_connection,
+    ):
+        """Snapshot failures must not block the disconnect response."""
+        mock_db_fn.return_value = mock_dynamodb
+        mock_table.get_item.return_value = {"Item": {"role": "workspace_admin"}}
+        mock_get_conn.return_value = sample_connection
+
+        event = {
+            "headers": {"x-user-email": "admin@example.com"},
+            "pathParameters": {"id": "ws_test", "connectionId": "jira_conn_test"},
+        }
+
+        result = handle_disconnect(event)
+        assert result["statusCode"] == 200
+        mock_snapshot.assert_not_called()
