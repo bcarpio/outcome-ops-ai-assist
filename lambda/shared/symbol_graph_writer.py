@@ -389,14 +389,19 @@ def write_facts(
     *,
     symbol_graph_table_name: Optional[str] = None,
     code_maps_table_name: Optional[str] = None,
+    previous_commit_sha: Optional[str] = None,
+    skip_pointer_swap: bool = False,
 ) -> WriteResult:
     """Persist a Fact stream for one (workspace, repo, commit_sha) tuple.
 
     Steps mirror plan-gkg/02 "Write path":
-      1. Read previous SHA from the code-maps pointer (Option A).
+      1. Read previous SHA from the code-maps pointer (Option A) —
+         skipped when ``previous_commit_sha`` is supplied explicitly.
       2. Batch-delete the previous-SHA partition.
       3. Batch-write the new Facts.
-      4. Atomically swap the pointer to ``commit_sha``.
+      4. Atomically swap the pointer to ``commit_sha`` — skipped when
+         ``skip_pointer_swap=True`` (chunk-03 atomic-swap path owns the
+         pointer state machine in ``shared.symbol_graph_pointer``).
 
     If step 3 raises, the pointer is NOT swapped, so reads still resolve
     to the previous SHA. If the previous SHA equals the new SHA the
@@ -415,6 +420,16 @@ def write_facts(
         code_maps_table_name: Code-maps state-tracking table name (for
             the pointer-swap). Defaults to the ``CODE_MAPS_TABLE``
             environment variable.
+        previous_commit_sha: Caller-supplied previous SHA. When provided
+            the writer skips the pointer-read in step 1 and uses this
+            value for the delete pass — required when the caller is
+            chunk-03's atomic-swap path (the new pointer schema lives
+            on ``graph_sha`` / ``graph_pending_sha``, not on the legacy
+            ``current_commit_sha`` field the writer reads by default).
+        skip_pointer_swap: When True, step 4 is skipped. Chunk-03's
+            ``symbol_graph_pointer.commit_swap`` owns pointer state
+            and must not be clobbered by the writer's legacy put_item
+            of ``current_commit_sha``.
 
     Returns:
         ``WriteResult`` describing the regen outcome.
@@ -443,8 +458,13 @@ def write_facts(
         "CODE_MAPS_TABLE", ""
     )
 
-    # Step 1: previous SHA pointer.
-    previous_sha = read_current_commit_sha(code_maps_name, workspace_id, repo)
+    # Step 1: previous SHA. Caller-supplied wins over the legacy read.
+    if previous_commit_sha is not None:
+        previous_sha: Optional[str] = previous_commit_sha or None
+    else:
+        previous_sha = read_current_commit_sha(
+            code_maps_name, workspace_id, repo
+        )
 
     # Step 2: delete the previous-SHA partition (only if it differs and exists).
     deleted = 0
@@ -462,10 +482,15 @@ def write_facts(
 
     written = _write_facts_batched(table_name, items)
 
-    # Step 4: pointer-swap. Only after step 3 succeeded.
-    swapped = _swap_pointer(
-        code_maps_name, workspace_id, repo, commit_sha
-    ) if code_maps_name else False
+    # Step 4: pointer-swap. Only after step 3 succeeded. Chunk-03's
+    # atomic-swap path passes ``skip_pointer_swap=True`` so commit_swap
+    # in symbol_graph_pointer owns the state machine end-to-end.
+    if skip_pointer_swap or not code_maps_name:
+        swapped = False
+    else:
+        swapped = _swap_pointer(
+            code_maps_name, workspace_id, repo, commit_sha
+        )
 
     return WriteResult(
         facts_written=written,

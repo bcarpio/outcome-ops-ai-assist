@@ -762,7 +762,10 @@ def _call_bedrock_and_audit(prompt: str, group_name: str) -> str:
     return summary
 
 
-def generate_batch_summary(batch: Dict[str, Any]) -> str:
+def generate_batch_summary(
+    batch: Dict[str, Any],
+    fact_sink: "list[Fact] | None" = None,
+) -> str:
     """
     Generate batch summary using Claude via Bedrock.
 
@@ -772,6 +775,11 @@ def generate_batch_summary(batch: Dict[str, Any]) -> str:
 
     Args:
         batch: Batch message containing repo, batch_type, group_name, file_paths
+        fact_sink: Optional list to append symbol-graph Facts to. The
+            extractor (plan-gkg chunk 01) runs on the raw fetched bytes
+            BEFORE chunking so symbol resolution sees complete files.
+            When ``None`` the extractor pass is skipped — keeps the
+            existing call sites (tests, legacy paths) unchanged.
 
     Returns:
         Generated summary text
@@ -788,6 +796,18 @@ def generate_batch_summary(batch: Dict[str, Any]) -> str:
     for file_path in file_paths:
         try:
             content = fetch_file_content(repo_project, file_path)
+
+            # Symbol-graph extractor pass (plan-gkg chunk 03). Run on
+            # the FULL raw content, not the chunked / truncated copy —
+            # truncation would drop symbol definitions and produce
+            # spurious "no callers" results. Best-effort, per-file
+            # try/except: an extractor crash never blocks the summary.
+            if fact_sink is not None:
+                language = _language_for_path(file_path)
+                if language is not None:
+                    fact_sink.extend(
+                        _iter_batch_facts(file_path, language, content)
+                    )
 
             # Chunk large files instead of skipping them
             chunks = chunk_large_content(content, file_path)
@@ -1049,15 +1069,27 @@ def _emit_facts(
     workspace_id: str = "",
     repo: str = "",
     commit_sha: str = "",
+    previous_graph_sha: "str | None" = None,
 ) -> int:
-    """Hand the Fact stream to the symbol-graph writer (plan-gkg chunk 02).
+    """Hand the Fact stream to the symbol-graph writer (plan-gkg chunks 02/03).
 
     When ``workspace_id`` / ``repo`` / ``commit_sha`` are all present the
     Facts are persisted via the delete-then-write path in
-    ``shared.symbol_graph_writer``. When any context is missing — which
-    is the steady-state until chunk 03 wires SHA propagation through the
-    SQS message — we log the count and skip storage so the call site
-    stays harmless.
+    ``shared.symbol_graph_writer``. The chunk-03 pointer state machine
+    in ``shared.symbol_graph_pointer`` owns the actual ``graph_sha``
+    advance, so the writer is invoked with ``skip_pointer_swap=True``
+    to keep the legacy ``current_commit_sha`` write from clobbering
+    the new ``graph_sha`` / ``graph_pending_sha`` attributes on the
+    pointer row.
+
+    Args:
+        facts: Iterable of chunk-01 Facts.
+        workspace_id / repo / commit_sha: Storage context. When any are
+            missing the call is a no-op log (legacy producer path).
+        previous_graph_sha: Caller-supplied previous SHA from the
+            chunk-03 pointer module. Bypasses the writer's legacy
+            pointer read so it doesn't reach for a code-maps row that
+            no longer carries the source-of-truth pointer.
 
     Returns the number of Facts the writer accepted (zero when storage
     was skipped). Failures are caught and logged; the symbol-graph regen
@@ -1070,7 +1102,7 @@ def _emit_facts(
     if not (workspace_id and repo and commit_sha):
         logger.info(
             "symbol-graph extractor emitted %d facts (storage skipped — "
-            "no workspace/commit context; chunk 03 wires the hand-off)",
+            "no workspace/commit context on the SQS message)",
             count,
         )
         return 0
@@ -1083,16 +1115,16 @@ def _emit_facts(
             repo=repo,
             commit_sha=commit_sha,
             facts=materialized,
+            previous_commit_sha=previous_graph_sha or "",
+            skip_pointer_swap=True,
         )
         logger.info(
-            "symbol-graph wrote %d facts (deleted %d) for %s/%s@%s "
-            "(pointer_swapped=%s)",
+            "symbol-graph wrote %d facts (deleted %d) for %s/%s@%s",
             result.facts_written,
             result.facts_deleted,
             workspace_id,
             repo,
             commit_sha,
-            result.pointer_swapped,
         )
         return result.facts_written
     except Exception as exc:  # pragma: no cover - defensive
@@ -1138,54 +1170,143 @@ def process_batch_record(record: Dict[str, Any]) -> None:
         f"({len(batch['file_paths'])} files)"
     )
 
-    # Symbol-graph extractor hand-off (plan-gkg chunks 01 + 02).
-    # The extractor (chunk 01) is wired and importable; the writer
-    # (chunk 02) persists Facts when workspace/commit context is
-    # present. Chunk 03 owns wiring the SHA + file iteration through
-    # the SQS message — until then the storage call is a no-op (logs
-    # only) because ``commit_sha`` won't be on the batch.
-    _emit_facts(
-        iter(()),
-        workspace_id=batch.get("workspace_id") or "",
-        repo=batch.get("repo") or "",
-        commit_sha=batch.get("commit_sha") or "",
-    )
+    # Symbol-graph regen context (plan-gkg chunk 03). All three of
+    # workspace_id, repo, and commit_sha must be present for the
+    # atomic-swap path to engage; legacy producers that omit any of
+    # them fall through to the existing summary-only flow.
+    sg_workspace = batch.get("workspace_id") or ""
+    sg_repo = batch.get("repo") or ""
+    sg_commit_sha = batch.get("commit_sha") or ""
+    sg_enabled = bool(sg_workspace and sg_repo and sg_commit_sha)
 
-    # Generate batch summary
-    batch_summary = generate_batch_summary(batch)
+    # Begin the atomic swap: claim graph_pending_sha on the pointer row.
+    # Failure here means a concurrent regen owns the pointer; we still
+    # proceed with the LLM summary path (legacy contract) but skip the
+    # symbol-graph writer to avoid stomping the other regen.
+    sg_facts: "list[Fact]" = []
+    sg_previous_graph_sha: "str | None" = None
+    sg_claimed = False
+    if sg_enabled:
+        try:
+            from shared.symbol_graph_pointer import (  # type: ignore
+                begin_swap,
+                get_previous_graph_sha,
+            )
+
+            sg_previous_graph_sha = get_previous_graph_sha(
+                sg_workspace, sg_repo, code_maps_table_name=CODE_MAPS_TABLE
+            )
+            sg_claimed = begin_swap(
+                sg_workspace,
+                sg_repo,
+                sg_commit_sha,
+                code_maps_table_name=CODE_MAPS_TABLE,
+            )
+            if not sg_claimed:
+                logger.warning(
+                    "symbol-graph regen for %s/%s@%s blocked — "
+                    "concurrent regen owns the pointer; skipping write",
+                    sg_workspace,
+                    sg_repo,
+                    sg_commit_sha,
+                )
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning(
+                "symbol-graph begin_swap failed for %s/%s@%s: %s — "
+                "continuing without graph regen",
+                sg_workspace,
+                sg_repo,
+                sg_commit_sha,
+                exc,
+            )
+            sg_claimed = False
+
+    # Generate batch summary. When the symbol-graph claim succeeded we
+    # also collect Facts inline (the extractor sees raw bytes BEFORE
+    # the summary path's chunk/truncate, so symbol resolution is
+    # complete). Any extractor failure is per-file try/except inside
+    # ``_iter_batch_facts`` — never blocks the summary.
+    try:
+        if sg_claimed:
+            batch_summary = generate_batch_summary(batch, fact_sink=sg_facts)
+        else:
+            batch_summary = generate_batch_summary(batch)
+    except Exception:
+        # Summary path failed — abandon the pending swap so the next
+        # regen can claim the pointer cleanly.
+        if sg_claimed:
+            _abandon_symbol_graph_swap(sg_workspace, sg_repo)
+        raise
 
     # PII redaction (plan/ chunk 05). Code summaries occasionally include
     # accidentally-pasted credentials / customer data from inline
     # comments; redact before embedding so neither S3 Vectors nor the
     # downstream RAG flow sees raw identifiers. Honors the workspace's
     # privacy_mode and the org-level kill switch.
-    workspace_id = batch.get("workspace_id") or ""
-    if workspace_id:
-        ws_table = _get_workspaces_table()
-        org_enabled = (
-            os.environ.get("PII_REDACTION_ENABLED", "true").lower() == "true"
-        )
-        mode = (
-            read_workspace_mode(ws_table, workspace_id)
-            if ws_table is not None
-            else MODE_STRICT
-        )
-        redaction = redact(batch_summary, mode=mode, org_enabled=org_enabled)
-        batch_summary = redaction.text
-        _emit_ingest_audit(
-            workspace_id=workspace_id,
-            source="github",
-            document_id=f"{batch['repo']}#{batch['group_name']}",
-            redaction=redaction,
-            mode=mode,
-        )
+    try:
+        workspace_id = batch.get("workspace_id") or ""
+        if workspace_id:
+            ws_table = _get_workspaces_table()
+            org_enabled = (
+                os.environ.get("PII_REDACTION_ENABLED", "true").lower() == "true"
+            )
+            mode = (
+                read_workspace_mode(ws_table, workspace_id)
+                if ws_table is not None
+                else MODE_STRICT
+            )
+            redaction = redact(batch_summary, mode=mode, org_enabled=org_enabled)
+            batch_summary = redaction.text
+            _emit_ingest_audit(
+                workspace_id=workspace_id,
+                source="github",
+                document_id=f"{batch['repo']}#{batch['group_name']}",
+                redaction=redaction,
+                mode=mode,
+            )
 
-    # Generate embedding for batch summary
-    batch_embedding = generate_embedding(batch_summary)
+        # Generate embedding for batch summary
+        batch_embedding = generate_embedding(batch_summary)
 
-    # Store batch summary
-    if not store_batch_summary(batch, batch_summary, batch_embedding):
-        raise Exception(f"Failed to store batch summary for {batch['group_name']}")
+        # Store batch summary
+        if not store_batch_summary(batch, batch_summary, batch_embedding):
+            raise Exception(f"Failed to store batch summary for {batch['group_name']}")
+    except Exception:
+        # Any failure after the summary was generated still leaves the
+        # symbol-graph pending swap open. Abandon it so the next regen
+        # gets a clean pointer; the SQS retry will redo the work.
+        if sg_claimed:
+            _abandon_symbol_graph_swap(sg_workspace, sg_repo)
+        raise
+
+    # Symbol-graph write + atomic-swap commit (plan-gkg chunk 03).
+    # Runs AFTER the summary path has fully succeeded so a regen never
+    # leaves a fresh graph slice attached to a half-written summary.
+    if sg_claimed:
+        try:
+            _emit_facts(
+                iter(sg_facts),
+                workspace_id=sg_workspace,
+                repo=sg_repo,
+                commit_sha=sg_commit_sha,
+                previous_graph_sha=sg_previous_graph_sha,
+            )
+            _commit_symbol_graph_swap(sg_workspace, sg_repo, sg_commit_sha)
+        except Exception as exc:
+            # Write or commit failed — abandon the pending swap. The
+            # already-written facts under the new SHA become orphans
+            # that the next regen will overwrite (idempotent SK) or
+            # the weekly sweep will GC. The pointer remains on the
+            # previous graph_sha so readers see consistent state.
+            logger.warning(
+                "symbol-graph write/commit failed for %s/%s@%s: %s — "
+                "abandoning pending swap",
+                sg_workspace,
+                sg_repo,
+                sg_commit_sha,
+                exc,
+            )
+            _abandon_symbol_graph_swap(sg_workspace, sg_repo)
 
     logger.info(f"Successfully processed {batch['batch_type']} summary for {batch['group_name']}")
 
@@ -1195,6 +1316,51 @@ def process_batch_record(record: Dict[str, Any]) -> None:
         cooldown_seconds = 10
         logger.info(f"Waiting {cooldown_seconds}s cooldown before next message...")
         time.sleep(cooldown_seconds)
+
+
+def _commit_symbol_graph_swap(
+    workspace_id: str, repo: str, commit_sha: str
+) -> None:
+    """Best-effort wrapper around ``symbol_graph_pointer.commit_swap``.
+
+    Raises on the underlying ClientError so the caller can abandon the
+    pending swap — a conditional-check failure (pending sha changed
+    out from under us) returns False here and is left for the caller
+    to react to.
+    """
+    from shared.symbol_graph_pointer import commit_swap  # type: ignore
+
+    ok = commit_swap(
+        workspace_id,
+        repo,
+        commit_sha,
+        code_maps_table_name=CODE_MAPS_TABLE,
+    )
+    if not ok:
+        raise RuntimeError(
+            f"symbol-graph commit_swap rejected for {workspace_id}/{repo}@{commit_sha}"
+        )
+
+
+def _abandon_symbol_graph_swap(workspace_id: str, repo: str) -> None:
+    """Best-effort wrapper around ``symbol_graph_pointer.abandon_swap``.
+
+    Never raises — the abandon path runs from failure handlers and
+    must not mask the original exception.
+    """
+    try:
+        from shared.symbol_graph_pointer import abandon_swap  # type: ignore
+
+        abandon_swap(
+            workspace_id, repo, code_maps_table_name=CODE_MAPS_TABLE
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(
+            "symbol-graph abandon_swap failed for %s/%s: %s",
+            workspace_id,
+            repo,
+            exc,
+        )
 
 
 def handler(event, context):

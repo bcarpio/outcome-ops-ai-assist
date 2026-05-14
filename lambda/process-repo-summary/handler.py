@@ -744,7 +744,8 @@ def send_code_units_to_sqs(
     code_units: List[Dict[str, Any]],
     repo: str,
     repo_project: str,
-    workspace_id: Optional[str] = None
+    workspace_id: Optional[str] = None,
+    commit_sha: Optional[str] = None,
 ):
     """
     Send code units to SQS for detailed batch processing.
@@ -755,6 +756,11 @@ def send_code_units_to_sqs(
         repo: Repository name
         repo_project: Repository project (owner/repo)
         workspace_id: Optional workspace ID for workspace-scoped storage
+        commit_sha: Optional current repo commit SHA. When supplied
+            alongside ``workspace_id``, ``process-batch-summary`` runs
+            the symbol-graph extractor + atomic-swap pointer protocol
+            (plan-gkg chunk 03). When absent, the consumer falls back
+            to the legacy summary-only path.
 
     Note: orphan cleanup is NOT queued from here. The caller must invoke
     _queue_orphan_code_map_cleanup() separately with the FULL current
@@ -774,6 +780,9 @@ def send_code_units_to_sqs(
             }
             if workspace_id:
                 message["workspace_id"] = workspace_id
+            if commit_sha:
+                # Plan-gkg chunk 03 — symbol-graph regen anchors on this.
+                message["commit_sha"] = commit_sha
 
             message_body = json.dumps(message)
 
@@ -1014,7 +1023,13 @@ def handler(event, context):
 
             # Send code units to SQS for detailed processing
             if code_units:
-                send_code_units_to_sqs(code_units, repo, repo_project, workspace_id)
+                send_code_units_to_sqs(
+                    code_units,
+                    repo,
+                    repo_project,
+                    workspace_id,
+                    commit_sha=current_commit_sha,
+                )
                 logger.info(f"Queued {len(code_units)} code units for {repo}")
 
             # Queue code-map orphan cleanup using the FULL tree's code units

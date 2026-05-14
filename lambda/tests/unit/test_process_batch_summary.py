@@ -405,6 +405,177 @@ class TestProcessBatchRecord:
             process_batch_record(record)
 
 
+class TestSymbolGraphWiring:
+    """plan-gkg chunk 03 — verify the begin_swap / extract / commit_swap
+    pointer protocol fires when (workspace_id, repo, commit_sha) are all
+    present on the SQS message, and is fully skipped when commit_sha is
+    absent (legacy producer)."""
+
+    @patch("process_batch_summary_handler.store_batch_summary")
+    @patch("process_batch_summary_handler.generate_embedding")
+    @patch("process_batch_summary_handler.generate_batch_summary")
+    @patch("process_batch_summary_handler._emit_facts")
+    @patch("process_batch_summary_handler._commit_symbol_graph_swap")
+    @patch("process_batch_summary_handler._abandon_symbol_graph_swap")
+    def test_emit_facts_fires_with_full_context_when_commit_sha_present(
+        self,
+        mock_abandon,
+        mock_commit,
+        mock_emit_facts,
+        mock_summary,
+        mock_embedding,
+        mock_store,
+    ):
+        """When the SQS message carries workspace_id + repo + commit_sha,
+        the chunk-03 path engages: begin_swap claims the pointer, the
+        summary path runs WITH a fact sink, _emit_facts is invoked with
+        all three context args, and commit_swap advances the pointer."""
+        record = {
+            "body": json.dumps({
+                "repo": "owner/repo",
+                "repo_project": "owner/repo",
+                "batch_type": "shared",
+                "group_name": "utils",
+                "file_paths": ["x.py"],
+                "storage_key": "summary#utils",
+                "workspace_id": "ws-graph",
+                "commit_sha": "deadbeef",
+            })
+        }
+        mock_summary.return_value = "summary text"
+        mock_embedding.return_value = [0.1] * 1024
+        mock_store.return_value = True
+
+        # Patch the pointer module symbols imported lazily inside
+        # process_batch_record.
+        with patch(
+            "shared.symbol_graph_pointer.begin_swap",
+            return_value=True,
+        ) as mock_begin, patch(
+            "shared.symbol_graph_pointer.get_previous_graph_sha",
+            return_value="cafef00d",
+        ) as mock_prev:
+            process_batch_record(record)
+
+        # begin_swap was called with the message's commit_sha.
+        mock_begin.assert_called_once()
+        call_kwargs = mock_begin.call_args
+        # begin_swap(workspace_id, repo, new_sha, *, code_maps_table_name=...)
+        args = call_kwargs.args
+        assert args[0] == "ws-graph"
+        assert args[1] == "owner/repo"
+        assert args[2] == "deadbeef"
+
+        # _emit_facts received the full context.
+        mock_emit_facts.assert_called_once()
+        emit_kwargs = mock_emit_facts.call_args.kwargs
+        assert emit_kwargs["workspace_id"] == "ws-graph"
+        assert emit_kwargs["repo"] == "owner/repo"
+        assert emit_kwargs["commit_sha"] == "deadbeef"
+        assert emit_kwargs["previous_graph_sha"] == "cafef00d"
+
+        # commit_swap was called; abandon was not.
+        mock_commit.assert_called_once_with(
+            "ws-graph", "owner/repo", "deadbeef"
+        )
+        mock_abandon.assert_not_called()
+
+        # generate_batch_summary received a fact_sink (chunk-03 enabled).
+        # The first positional arg is the batch; fact_sink is the keyword.
+        summary_call = mock_summary.call_args
+        assert summary_call.kwargs.get("fact_sink") is not None
+
+    @patch("process_batch_summary_handler.store_batch_summary")
+    @patch("process_batch_summary_handler.generate_embedding")
+    @patch("process_batch_summary_handler.generate_batch_summary")
+    @patch("process_batch_summary_handler._emit_facts")
+    @patch("process_batch_summary_handler._commit_symbol_graph_swap")
+    @patch("process_batch_summary_handler._abandon_symbol_graph_swap")
+    def test_emit_facts_skipped_when_commit_sha_absent(
+        self,
+        mock_abandon,
+        mock_commit,
+        mock_emit_facts,
+        mock_summary,
+        mock_embedding,
+        mock_store,
+    ):
+        """Legacy producers that omit commit_sha (or any of the three
+        required fields) fall through to the summary-only path. No
+        pointer ops, no _emit_facts call."""
+        record = {
+            "body": json.dumps({
+                "repo": "owner/repo",
+                "repo_project": "owner/repo",
+                "batch_type": "shared",
+                "group_name": "utils",
+                "file_paths": ["x.py"],
+                "storage_key": "summary#utils",
+                "workspace_id": "ws-graph",
+                # commit_sha intentionally absent
+            })
+        }
+        mock_summary.return_value = "summary text"
+        mock_embedding.return_value = [0.1] * 1024
+        mock_store.return_value = True
+
+        with patch(
+            "shared.symbol_graph_pointer.begin_swap",
+        ) as mock_begin:
+            process_batch_record(record)
+
+        # Chunk-03 path stays off when commit_sha is missing.
+        mock_begin.assert_not_called()
+        mock_emit_facts.assert_not_called()
+        mock_commit.assert_not_called()
+        mock_abandon.assert_not_called()
+
+    @patch("process_batch_summary_handler.store_batch_summary")
+    @patch("process_batch_summary_handler.generate_embedding")
+    @patch("process_batch_summary_handler.generate_batch_summary")
+    @patch("process_batch_summary_handler._emit_facts")
+    @patch("process_batch_summary_handler._commit_symbol_graph_swap")
+    @patch("process_batch_summary_handler._abandon_symbol_graph_swap")
+    def test_summary_failure_abandons_pending_swap(
+        self,
+        mock_abandon,
+        mock_commit,
+        mock_emit_facts,
+        mock_summary,
+        mock_embedding,
+        mock_store,
+    ):
+        """A summary-path failure after begin_swap claimed the pointer
+        must call abandon_swap so the next regen can claim cleanly."""
+        record = {
+            "body": json.dumps({
+                "repo": "owner/repo",
+                "repo_project": "owner/repo",
+                "batch_type": "shared",
+                "group_name": "utils",
+                "file_paths": ["x.py"],
+                "storage_key": "summary#utils",
+                "workspace_id": "ws-graph",
+                "commit_sha": "deadbeef",
+            })
+        }
+        mock_summary.side_effect = RuntimeError("bedrock down")
+
+        with patch(
+            "shared.symbol_graph_pointer.begin_swap",
+            return_value=True,
+        ), patch(
+            "shared.symbol_graph_pointer.get_previous_graph_sha",
+            return_value=None,
+        ):
+            with pytest.raises(RuntimeError, match="bedrock down"):
+                process_batch_record(record)
+
+        mock_emit_facts.assert_not_called()
+        mock_commit.assert_not_called()
+        mock_abandon.assert_called_once_with("ws-graph", "owner/repo")
+
+
 class TestPiiRedactionWiring:
     """plan/ chunk 05 - verify the redact -> embed pipeline wiring for
     workspace-scoped batch summaries."""
