@@ -23,9 +23,24 @@ module "process_batch_summary_lambda" {
   cloudwatch_logs_retention_in_days = 7
   cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs.arn
 
-  # Source code from local directory (includes shared module)
+  # Source code from local directory (includes shared module).
+  # plan-gkg chunk 01 added tree-sitter + per-language grammars to
+  # lambda/process-batch-summary/requirements.txt; the extractor
+  # ImportErrors without them. pip_requirements = true tells the
+  # terraform-aws-modules/lambda module to pip-install those into the
+  # deploy zip during `terraform apply`. patterns exclude test code
+  # and venv detritus.
   source_path = [
-    "${path.module}/../lambda/process-batch-summary",
+    {
+      path             = "${path.module}/../lambda/process-batch-summary"
+      pip_requirements = true
+      patterns = [
+        "!__pycache__/.*",
+        "!\\.venv/.*",
+        "!.*\\.pyc",
+        "!tests/.*",
+      ]
+    },
     {
       path          = "${path.module}/../lambda/shared"
       prefix_in_zip = "shared"

@@ -30,7 +30,16 @@ module "analyze_pr_lambda" {
   # without a sys.path shim in the deployed zip. Local tests keep the
   # sys.path fallback for convenience.
   source_path = [
-    "${path.module}/../lambda/analyze-pr",
+    {
+      path             = "${path.module}/../lambda/analyze-pr"
+      pip_requirements = true
+      patterns = [
+        "!__pycache__/.*",
+        "!\\.venv/.*",
+        "!.*\\.pyc",
+        "!tests/.*",
+      ]
+    },
     {
       path          = "${path.module}/../lambda/process-batch-summary/extractor"
       prefix_in_zip = "extractor"
