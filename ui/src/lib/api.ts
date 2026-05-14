@@ -1648,8 +1648,13 @@ export interface DatabaseConnection {
 }
 
 export interface DatabaseScopeConfig {
+  // chunk 06: include holds 2-segment "catalog.schema" keys. Tables
+  // inside the selected schemas are auto-discovered on every sync.
   introspection: { include: string[]; exclude: string[] }
-  sampling: { enabled: boolean; include: string[]; exclude: string[] }
+  // chunk 06: sampling.include is a parallel list of "catalog.schema"
+  // keys (subset of introspection.include) where sampling is on.
+  // sampling.enabled bool is retired.
+  sampling: { include: string[]; exclude: string[] }
   profiling: { enabled: boolean }
 }
 

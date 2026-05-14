@@ -289,6 +289,30 @@ def _emit_credential_used_audit(
         logger.warning(f"Failed to emit DB_CREDENTIAL_USED audit row: {e}")
 
 
+def _parse_schema_keys(keys: List[str], *, field: str) -> Dict[str, set]:
+    """Validate that every key in `keys` is a strict "catalog.schema"
+    two-segment key and return a {catalog: {schema, ...}} map.
+
+    Raises ValueError with a precise message on any malformed entry.
+    `field` is the scope_config field name for the error message
+    (e.g. "introspection.include" or "sampling.include").
+    """
+    out: Dict[str, set] = {}
+    for key in keys or []:
+        parts = key.split(".", 2)
+        # Strict shape: exactly 2 non-empty segments. The legacy 3-
+        # segment "catalog.schema.table" shape is intentionally
+        # rejected — chunk 06 moved scope to schema-level and existing
+        # connections were disconnected pre-deploy (no migration).
+        if len(parts) != 2 or not parts[0] or not parts[1]:
+            raise ValueError(
+                f"Malformed {field} entry {key!r}: expected "
+                f"'catalog.schema' (2 segments), got {len(parts)}"
+            )
+        out.setdefault(parts[0], set()).add(parts[1])
+    return out
+
+
 def _build_sync_config(
     dce,
     engine: str,
@@ -297,22 +321,27 @@ def _build_sync_config(
     database_name: str,
     credential: Dict[str, Any],
     schemas_by_catalog: Dict[str, set],
-    sampling_enabled: bool,
+    sampling_schemas_by_catalog: Dict[str, set],
 ):
     """Engine-specific ConfigFile for the full sync build.
 
     Mirrors database-integration/introspection_helpers._build_config but
     adds IntrospectionScope (limit the engine to the admin-selected
-    schemas) and honors the workspace's sampling toggle. Duplicated
-    rather than shared because the two Lambdas can't import each
-    other - kept in sync by tests that exercise both call sites.
+    schemas) and a per-schema SamplingScope (admin opts in to sampling
+    on a per-schema basis). Duplicated rather than shared because the
+    two Lambdas can't import each other - kept in sync by tests that
+    exercise both call sites.
 
     # DATABAO-SPECIFIC: this upstream library defaults
-    # SamplingConfig.enabled=True; we force it off unless the admin
-    # opted in via scope_config. Same posture as
-    # introspection_helpers._build_config.
+    # SamplingConfig.enabled=True; we force it off when no schemas
+    # are in sampling.include. When the admin has opted some schemas
+    # in, we set enabled=True AND pass a SamplingScope so sampling
+    # only fires for those schemas — tables in introspection-only
+    # schemas stay sample-free.
     """
-    from databao_context_engine.plugins.databases.sampling_scope import SamplingConfig
+    from databao_context_engine.plugins.databases.sampling_scope import (
+        SamplingConfig, SamplingScope, SamplingIncludeRule,
+    )
     from databao_context_engine.plugins.databases.introspection_scope import (
         IntrospectionScope, ScopeIncludeRule,
     )
@@ -320,17 +349,31 @@ def _build_sync_config(
 
     user = credential.get("username")
     password = credential.get("password")
-    sampling = SamplingConfig(enabled=bool(sampling_enabled))
+
+    # Sampling: enabled iff the admin opted-in any schema. When on,
+    # scope it to exactly those schemas so other-schema tables stay
+    # sample-free even though they're still introspected for schema
+    # metadata.
+    if sampling_schemas_by_catalog:
+        sampling_rules = [
+            SamplingIncludeRule(catalog=cat, schemas=sorted(schemas))
+            for cat, schemas in sampling_schemas_by_catalog.items()
+        ]
+        sampling = SamplingConfig(
+            enabled=True,
+            scope=SamplingScope(include=sampling_rules),
+        )
+    else:
+        sampling = SamplingConfig(enabled=False)
+
     # We always want aggregate column stats - admin opt-in to sampling
-    # is the separate toggle above.
+    # is the separate per-schema knob above.
     profiling = ProfilingConfig(enabled=True)
 
-    # Translate admin's "catalog.schema.table" picker selection into
-    # the engine's schema-level scope.
-    # DATABAO-SPECIFIC: the upstream engine's introspection scope is
-    # schema-level while our admin picker is table-level. The per-table
-    # filter is applied post-introspect in _run_schema_introspection
-    # against the include_table_keys set.
+    # Translate the admin's per-schema picker selection into the
+    # engine's schema-level scope. Same shape Databao's
+    # IntrospectionScope expects natively, no post-introspect filter
+    # needed.
     include_rules = []
     for catalog, schemas in (schemas_by_catalog or {}).items():
         include_rules.append(
@@ -556,26 +599,27 @@ def _run_schema_introspection(connection: Dict, credential: Dict) -> Dict[str, A
 
     include_strs = (scope_config.get("introspection") or {}).get("include") or []
     if not include_strs:
-        logger.info("[database-sync] No tables in scope.introspection.include; skipping build")
+        logger.info("[database-sync] No schemas in scope.introspection.include; skipping build")
         return {"tables": [], "columns_count": 0, "had_top_values": False}
 
-    include_table_keys = set(include_strs)
-    schemas_by_catalog: Dict[str, set] = {}
-    for key in include_strs:
-        parts = key.split(".", 2)
-        if len(parts) != 3:
-            logger.warning(f"[database-sync] Malformed include key (skipped): {key!r}")
-            continue
-        cat, sch, _tbl = parts
-        schemas_by_catalog.setdefault(cat, set()).add(sch)
+    try:
+        schemas_by_catalog = _parse_schema_keys(include_strs, field="introspection.include")
+    except ValueError as e:
+        logger.error(f"[database-sync] {e}")
+        return {"tables": [], "columns_count": 0, "had_top_values": False}
 
-    sampling_enabled = bool((scope_config.get("sampling") or {}).get("enabled"))
+    sampling_include = (scope_config.get("sampling") or {}).get("include") or []
+    try:
+        sampling_schemas_by_catalog = _parse_schema_keys(sampling_include, field="sampling.include")
+    except ValueError as e:
+        logger.error(f"[database-sync] {e}")
+        return {"tables": [], "columns_count": 0, "had_top_values": False}
 
     try:
         config = _build_sync_config(
             dce, engine, host, port, database_name, credential,
             schemas_by_catalog=schemas_by_catalog,
-            sampling_enabled=sampling_enabled,
+            sampling_schemas_by_catalog=sampling_schemas_by_catalog,
         )
     except (ValueError, ImportError) as e:
         logger.error(f"[database-sync] Config build failed: {e}")
@@ -608,10 +652,11 @@ def _run_schema_introspection(connection: Dict, credential: Dict) -> Dict[str, A
                 tbl_name = table.name or ""
                 if not tbl_name:
                     continue
-                table_key = f"{cat_name}.{sch_name}.{tbl_name}"
-                if table_key not in include_table_keys:
-                    continue
 
+                # No per-table filter: the IntrospectionScope passed
+                # into the engine already restricted us to the admin-
+                # selected schemas; every table in those schemas gets
+                # auto-discovered and emitted.
                 yaml_str, col_count, table_had_top_values = _build_table_chunk_yaml(
                     table, cat_name, sch_name, engine, datasource_id,
                 )
@@ -746,6 +791,17 @@ def process_sync_request(message: Dict) -> Dict[str, Any]:
         )
         tables_queued += 1
 
+    # Schema-drift delta against the previous sync's known_table_ids.
+    # First sync after a fresh connect (or after chunk-06's deploy +
+    # reconnect): every table is "added", nothing is "removed" -
+    # expected. Subsequent syncs surface only genuine schema-level
+    # drift (DBA created a new table, dropped a table, etc.). Audit
+    # consumers can wire downstream alerting off these fields.
+    previous_known = set(connection.get("known_table_ids") or [])
+    current_known = set(current_table_ids)
+    tables_added = sorted(current_known - previous_known)
+    tables_removed = sorted(previous_known - current_known)
+
     # Per-source usage tracking (ADR-019). Non-blocking.
     track_repo_active(repo=repo_project)
 
@@ -756,6 +812,11 @@ def process_sync_request(message: Dict) -> Dict[str, Any]:
     )
 
     queue_orphan_cleanup(workspace_id, connection_id, current_table_ids)
+
+    # sampling-on iff any schemas opted in via the new per-schema
+    # sampling.include list (chunk 06). Legacy sampling.enabled bool
+    # is no longer read.
+    sampling_include = (scope_config.get("sampling") or {}).get("include") or []
 
     log_source_sync(
         audit_table_name=os.environ.get("AUDIT_TABLE", ""),
@@ -772,9 +833,10 @@ def process_sync_request(message: Dict) -> Dict[str, Any]:
             "tables_count": len(current_table_ids),
             "columns_count": columns_count,
             "top_values_stripped": True,
-            "sampling_enabled": bool(
-                (scope_config.get("sampling") or {}).get("enabled")
-            ),
+            "sampling_schemas": sampling_include,
+            "tables_added": tables_added,
+            "tables_removed": tables_removed,
+            "table_count_delta": len(tables_added) - len(tables_removed),
         },
     )
 

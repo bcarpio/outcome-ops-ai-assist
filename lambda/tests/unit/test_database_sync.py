@@ -105,9 +105,11 @@ def sample_connection():
         "host_hash": "deadbeefcafebabe",
         "display_label": "Test DW",
         "scope_config": {
-            "introspection": {"include": ["public.users"], "exclude": []},
-            "sampling": {"enabled": False, "include": [], "exclude": []},
-            "profiling": {"enabled": True},
+            # Chunk 06: 2-segment "catalog.schema" keys, sampling.include
+            # replaces sampling.enabled bool.
+            "introspection": {"include": ["analytics.public"], "exclude": []},
+            "sampling":      {"include": [], "exclude": []},
+            "profiling":     {"enabled": True},
         },
         "known_table_ids": [],
         "tables_count": 0,
@@ -358,24 +360,25 @@ class TestRunSchemaIntrospection:
             ]),
         ])
 
-    def test_filters_to_include_keys_and_serializes(
+    def test_emits_every_table_in_selected_schemas(
         self, stub_introspect_result, sample_connection, mock_credential
     ):
+        """Schemas-only scope: every table the upstream introspector
+        returns is emitted, no per-table filter (chunk 06)."""
         import yaml
 
         connection = {
             **sample_connection,
             "engine": "mssql",
             "scope_config": {
+                # Schema-level include (2 segments) — chunk 06 shape.
                 "introspection": {"include": [
-                    "analytics.healthcare.patients",
-                    "analytics.billing.claims",
+                    "analytics.healthcare",
+                    "analytics.billing",
                 ]},
-                "sampling": {"enabled": False},
+                "sampling": {"include": []},  # sampling off
             },
         }
-        # Bypass real introspector creation; return one whose
-        # introspect_database call yields our fixture.
         fake_introspector = MagicMock()
         fake_introspector.introspect_database.return_value = stub_introspect_result
 
@@ -384,25 +387,43 @@ class TestRunSchemaIntrospection:
             return_value=fake_introspector,
         ), patch.object(
             handler_module, "_build_sync_config",
-            return_value=MagicMock(),  # config is opaque to the rest of the function
+            return_value=MagicMock(),
         ):
             result = handler_module._run_schema_introspection(connection, mock_credential)
 
-        # patients + claims; excluded gets filtered
-        assert len(result["tables"]) == 2
+        # ALL tables in result (patients, excluded, claims) get emitted -
+        # no per-table filter.
+        assert len(result["tables"]) == 3
         emitted = {(t["catalog"], t["schema"], t["table"]) for t in result["tables"]}
         assert emitted == {
             ("analytics", "healthcare", "patients"),
+            ("analytics", "healthcare", "excluded"),
             ("analytics", "billing", "claims"),
         }
-        # columns: patients=1 + claims=2
-        assert result["columns_count"] == 3
+        # columns: patients=1 + excluded=1 + claims=2 = 4
+        assert result["columns_count"] == 4
         assert result["had_top_values"] is False
 
-        # YAML envelope sanity-check on one entry
         doc = yaml.safe_load(result["tables"][0]["yaml"])
         assert doc["datasource_type"] == "mssql"
         assert doc["context"]["catalogs"][0]["name"] == "analytics"
+
+    def test_rejects_legacy_three_segment_include(
+        self, sample_connection, mock_credential
+    ):
+        """Legacy 'catalog.schema.table' shape is rejected. Connections
+        were disconnected pre-chunk-06 deploy; no legacy records survive."""
+        connection = {
+            **sample_connection,
+            "engine": "mssql",
+            "scope_config": {
+                "introspection": {"include": ["analytics.healthcare.patients"]},
+                "sampling": {"include": []},
+            },
+        }
+        result = handler_module._run_schema_introspection(connection, mock_credential)
+        # Strict-validation failure -> empty result, error logged.
+        assert result == {"tables": [], "columns_count": 0, "had_top_values": False}
 
     def test_no_include_keys_skips_introspect(
         self, sample_connection, mock_credential
@@ -421,8 +442,8 @@ class TestRunSchemaIntrospection:
             **sample_connection,
             "engine": "mssql",
             "scope_config": {
-                "introspection": {"include": ["analytics.healthcare.patients"]},
-                "sampling": {"enabled": False},
+                "introspection": {"include": ["analytics.healthcare"]},
+                "sampling": {"include": []},
             },
         }
         fake = MagicMock()
@@ -434,6 +455,119 @@ class TestRunSchemaIntrospection:
         ):
             result = handler_module._run_schema_introspection(connection, mock_credential)
         assert result == {"tables": [], "columns_count": 0, "had_top_values": False}
+
+    def test_sampling_include_drives_sampling_scope(
+        self, stub_introspect_result, sample_connection, mock_credential
+    ):
+        """sampling.include of schema keys produces a SamplingConfig
+        with SamplingScope containing per-schema SamplingIncludeRules."""
+        connection = {
+            **sample_connection,
+            "engine": "mssql",
+            "scope_config": {
+                "introspection": {"include": ["analytics.healthcare", "analytics.billing"]},
+                # sampling on for healthcare ONLY
+                "sampling": {"include": ["analytics.healthcare"]},
+            },
+        }
+        fake_introspector = MagicMock()
+        fake_introspector.introspect_database.return_value = stub_introspect_result
+
+        captured = {}
+
+        def capture_build_sync_config(*args, **kw):
+            captured["sampling_schemas_by_catalog"] = kw.get("sampling_schemas_by_catalog")
+            captured["schemas_by_catalog"] = kw.get("schemas_by_catalog")
+            return MagicMock()
+
+        with patch.object(
+            handler_module, "_get_introspector_for_sync",
+            return_value=fake_introspector,
+        ), patch.object(
+            handler_module, "_build_sync_config",
+            side_effect=capture_build_sync_config,
+        ):
+            handler_module._run_schema_introspection(connection, mock_credential)
+
+        assert captured["sampling_schemas_by_catalog"] == {
+            "analytics": {"healthcare"},
+        }
+        # Introspection still covers both schemas - sampling scope is
+        # a subset, not the introspection set.
+        assert captured["schemas_by_catalog"] == {
+            "analytics": {"healthcare", "billing"},
+        }
+
+    def test_build_sync_config_sampling_off_when_include_empty(self):
+        """Empty sampling.include -> SamplingConfig(enabled=False)."""
+        import databao_context_engine as dce
+        cfg = handler_module._build_sync_config(
+            dce, "mssql", "host", 1433, "analytics",
+            credential={"username": "u", "password": "p"},
+            schemas_by_catalog={"analytics": {"healthcare"}},
+            sampling_schemas_by_catalog={},
+        )
+        assert cfg.sampling.enabled is False
+        # No scope set when sampling is off.
+        assert cfg.sampling.scope is None
+
+    def test_build_sync_config_sampling_on_with_scope(self):
+        """Non-empty sampling.include -> SamplingConfig.enabled=True with
+        SamplingScope.include populated per-schema."""
+        import databao_context_engine as dce
+        cfg = handler_module._build_sync_config(
+            dce, "mssql", "host", 1433, "analytics",
+            credential={"username": "u", "password": "p"},
+            schemas_by_catalog={"analytics": {"healthcare", "billing"}},
+            sampling_schemas_by_catalog={"analytics": {"healthcare"}},
+        )
+        assert cfg.sampling.enabled is True
+        assert cfg.sampling.scope is not None
+        assert len(cfg.sampling.scope.include) == 1
+        rule = cfg.sampling.scope.include[0]
+        assert rule.catalog == "analytics"
+        assert rule.schemas == ["healthcare"]
+
+
+class TestParseSchemaKeys:
+    """The strict-validation helper used by both _run_schema_introspection
+    paths to reject legacy 3-segment include entries."""
+
+    def test_accepts_two_segment(self):
+        assert handler_module._parse_schema_keys(
+            ["analytics.healthcare", "analytics.billing"],
+            field="introspection.include",
+        ) == {"analytics": {"healthcare", "billing"}}
+
+    def test_dedupes_across_repeats(self):
+        assert handler_module._parse_schema_keys(
+            ["analytics.healthcare", "analytics.healthcare"],
+            field="introspection.include",
+        ) == {"analytics": {"healthcare"}}
+
+    def test_rejects_three_segment_legacy_shape(self):
+        with pytest.raises(ValueError, match="2 segments"):
+            handler_module._parse_schema_keys(
+                ["analytics.healthcare.patients"],
+                field="introspection.include",
+            )
+
+    def test_rejects_one_segment(self):
+        with pytest.raises(ValueError, match="2 segments"):
+            handler_module._parse_schema_keys(
+                ["analytics"], field="introspection.include",
+            )
+
+    def test_rejects_empty_segments(self):
+        with pytest.raises(ValueError, match="2 segments"):
+            handler_module._parse_schema_keys(
+                ["analytics."], field="introspection.include",
+            )
+
+    def test_empty_list_returns_empty_map(self):
+        assert handler_module._parse_schema_keys(
+            [], field="sampling.include",
+        ) == {}
 
 
 # ============================================================================
@@ -661,17 +795,71 @@ class TestProcessSyncRequest:
         assert mock_queue_table.call_count == 2
 
         # log_source_sync row carries the compliance posture in
-        # extra_details so auditors can see at-a-glance whether
-        # top_values was stripped + whether sampling was on.
+        # extra_details so auditors can see at-a-glance what was
+        # processed: top_values stripped, sampling schemas, and the
+        # per-sync schema-drift delta (tables_added/removed) for
+        # downstream alerting.
         audit_kwargs = mock_audit.call_args[1]
         assert audit_kwargs["source"] == "database"
         assert audit_kwargs["files_synced"] == 2
-        assert audit_kwargs["extra_details"]["engine"] == "postgres"
-        assert audit_kwargs["extra_details"]["host_hash"] == "deadbeefcafebabe"
-        assert audit_kwargs["extra_details"]["tables_count"] == 2
-        assert audit_kwargs["extra_details"]["columns_count"] == 12
-        assert audit_kwargs["extra_details"]["top_values_stripped"] is True
-        assert audit_kwargs["extra_details"]["sampling_enabled"] is False
+        details = audit_kwargs["extra_details"]
+        assert details["engine"] == "postgres"
+        assert details["host_hash"] == "deadbeefcafebabe"
+        assert details["tables_count"] == 2
+        assert details["columns_count"] == 12
+        assert details["top_values_stripped"] is True
+        # New (chunk 06): sampling_schemas replaces sampling_enabled.
+        # The fixture has scope_config.sampling.include = [] so sampling
+        # is off and the list is empty.
+        assert details["sampling_schemas"] == []
+        # New (chunk 06): schema-drift delta. The sample_connection
+        # fixture has known_table_ids=[] so every current table is
+        # "added" on this sync.
+        assert sorted(details["tables_added"]) == [
+            "analytics.public.orders", "analytics.public.users",
+        ]
+        assert details["tables_removed"] == []
+        assert details["table_count_delta"] == 2
+
+    @patch.object(handler_module, "queue_orphan_cleanup")
+    @patch.object(handler_module, "queue_table_ingestion")
+    @patch.object(handler_module, "log_source_sync")
+    @patch.object(handler_module, "_run_schema_introspection")
+    @patch.object(handler_module, "get_credential")
+    def test_audit_row_surfaces_tables_added_and_removed_delta(
+        self, mock_get_cred, mock_build, mock_audit, mock_queue_table,
+        _cleanup, mock_table, sample_connection, mock_credential,
+    ):
+        """Second-sync semantics: connection.known_table_ids reflects
+        the prior sync's table set. New tables show up in tables_added,
+        dropped tables in tables_removed."""
+        connection_with_prior_state = {
+            **sample_connection,
+            # Previous sync had users + payments (no orders).
+            "known_table_ids": ["analytics.public.users", "analytics.public.payments"],
+        }
+        mock_table.get_item.return_value = {"Item": connection_with_prior_state}
+        mock_get_cred.return_value = mock_credential
+        mock_build.return_value = {
+            "tables": [
+                # users carries over from the previous sync
+                {"catalog": "analytics", "schema": "public", "table": "users",
+                 "yaml": "name: users\n"},
+                # orders is new
+                {"catalog": "analytics", "schema": "public", "table": "orders",
+                 "yaml": "name: orders\n"},
+                # payments is gone (was in known_table_ids, not in current)
+            ],
+            "columns_count": 8,
+            "had_top_values": False,
+        }
+        handler_module.process_sync_request({
+            "workspace_id": "ws_test", "connection_id": "conn_test",
+        })
+        details = mock_audit.call_args[1]["extra_details"]
+        assert details["tables_added"] == ["analytics.public.orders"]
+        assert details["tables_removed"] == ["analytics.public.payments"]
+        assert details["table_count_delta"] == 0   # +1 added, -1 removed
 
 
 # ============================================================================

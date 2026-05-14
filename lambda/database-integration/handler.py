@@ -169,14 +169,40 @@ def generate_id() -> str:
 
 
 def _default_scope_config() -> Dict[str, Any]:
-    """MVP default: introspect everything the admin selects, no
-    sampling, profiling on (top_values stripped post-hoc by sync /
-    file-ingestion)."""
+    """Default scope at connection-create time. Schemas-only scope as
+    of chunk 06: introspection.include and sampling.include both hold
+    2-segment 'catalog.schema' keys. Sampling is off by default
+    (empty include == off, the regulated-buyer posture). Profiling
+    is on so admins get aggregate column stats; top_values are
+    stripped post-hoc by sync + file-ingestion.
+    """
     return {
         "introspection": {"include": [], "exclude": []},
-        "sampling":      {"enabled": False, "include": [], "exclude": []},
+        "sampling":      {"include": [], "exclude": []},
         "profiling":     {"enabled": True},
     }
+
+
+def _validate_schema_keys(keys: list, *, field: str) -> None:
+    """Strict-validate a list of 'catalog.schema' keys. Raises
+    ValueError on any malformed entry.
+
+    Chunk 06: introspection.include and sampling.include both hold
+    schema-level keys exclusively. Legacy 3-segment 'catalog.schema.table'
+    entries are intentionally rejected — connections were disconnected
+    before the chunk-06 deploy so no legacy records survive.
+    """
+    if not isinstance(keys, list):
+        raise ValueError(f"{field} must be a list of 'catalog.schema' strings")
+    for key in keys:
+        if not isinstance(key, str):
+            raise ValueError(f"{field} entry must be a string, got {type(key).__name__}")
+        parts = key.split(".", 2)
+        if len(parts) != 2 or not parts[0] or not parts[1]:
+            raise ValueError(
+                f"Malformed {field} entry {key!r}: expected "
+                f"'catalog.schema' (2 segments), got {len(parts)}"
+            )
 
 
 def validate_credentials(body: Dict) -> Dict:
@@ -433,8 +459,23 @@ def update_scope(
     scope = body.get("scope_config") or {}
     # Defensive defaults if admin sent partial scope
     scope.setdefault("introspection", {"include": [], "exclude": []})
-    scope.setdefault("sampling", {"enabled": False, "include": [], "exclude": []})
+    scope.setdefault("sampling", {"include": [], "exclude": []})
     scope.setdefault("profiling", {"enabled": True})
+
+    # Strict 2-segment validation (chunk 06). Reject the legacy
+    # 'catalog.schema.table' shape — connections were disconnected
+    # pre-deploy, no legacy records survive.
+    try:
+        _validate_schema_keys(
+            scope.get("introspection", {}).get("include") or [],
+            field="introspection.include",
+        )
+        _validate_schema_keys(
+            scope.get("sampling", {}).get("include") or [],
+            field="sampling.include",
+        )
+    except ValueError as e:
+        return _error(400, str(e))
 
     now = datetime.now(timezone.utc).isoformat()
     try:

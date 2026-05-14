@@ -285,9 +285,11 @@ export default function WorkspaceSettings() {
   const [configuringDatabaseConnection, setConfiguringDatabaseConnection] = useState<DatabaseConnection | null>(null)
   const [availableDatabaseSchemas, setAvailableDatabaseSchemas] = useState<DatabaseSchemaInfo[]>([])
   const [loadingDatabaseSchemas, setLoadingDatabaseSchemas] = useState(false)
-  // Per-table introspection + sampling toggles, keyed by sanitized "catalog.schema.table"
-  const [databaseIntrospectSet, setDatabaseIntrospectSet] = useState<Set<string>>(new Set())
-  const [databaseSamplingSet, setDatabaseSamplingSet] = useState<Set<string>>(new Set())
+  // Per-schema introspection + sampling toggles (chunk 06). Keys are
+  // "catalog.schema". Tables inside selected schemas are auto-
+  // discovered on every sync; the admin doesn't pick individual tables.
+  const [databaseIntrospectSchemas, setDatabaseIntrospectSchemas] = useState<Set<string>>(new Set())
+  const [databaseSamplingSchemas, setDatabaseSamplingSchemas] = useState<Set<string>>(new Set())
   const [savingDatabaseScope, setSavingDatabaseScope] = useState(false)
 
   // Legacy repo state removed - now using GitHub App integration
@@ -1383,9 +1385,6 @@ export default function WorkspaceSettings() {
     }
   }
 
-  function _tableKey(catalog: string, schema: string, table: string): string {
-    return `${catalog}|${schema}|${table}`
-  }
 
   async function openDatabaseConfiguration(connection: DatabaseConnection) {
     if (!workspaceId) return
@@ -1394,24 +1393,21 @@ export default function WorkspaceSettings() {
     try {
       const schemas = await listDatabaseSchemas(workspaceId, connection.connection_id)
       setAvailableDatabaseSchemas(schemas)
-      // Seed the selection state from the existing scope_config.
-      const seedIntrospect = new Set<string>()
-      const seedSampling = new Set<string>()
+      // Seed picker state from existing scope_config (chunk 06: keys
+      // are "catalog.schema").
       const includeList = (connection.scope_config?.introspection?.include) || []
       const samplingIncludeList = (connection.scope_config?.sampling?.include) || []
-      schemas.forEach(s => {
-        const k = _tableKey(s.catalog, s.schema, s.table)
-        // includeList uses "catalog.schema.table" form; seed if present
-        if (includeList.includes(`${s.catalog}.${s.schema}.${s.table}`)) seedIntrospect.add(k)
-        if (samplingIncludeList.includes(`${s.catalog}.${s.schema}.${s.table}`)) seedSampling.add(k)
-      })
-      // First time configuring? Default to "introspect everything visible,
-      // sample nothing" - the regulated-buyer-friendly default.
+      const seedIntrospect = new Set<string>(includeList)
+      const seedSampling = new Set<string>(samplingIncludeList)
+
+      // First time configuring? Default to "introspect every visible
+      // schema, sample nothing" - the regulated-buyer-friendly
+      // default that still gives admins a working starting point.
       if (seedIntrospect.size === 0 && includeList.length === 0) {
-        schemas.forEach(s => seedIntrospect.add(_tableKey(s.catalog, s.schema, s.table)))
+        new Set(schemas.map(s => `${s.catalog}.${s.schema}`)).forEach(k => seedIntrospect.add(k))
       }
-      setDatabaseIntrospectSet(seedIntrospect)
-      setDatabaseSamplingSet(seedSampling)
+      setDatabaseIntrospectSchemas(seedIntrospect)
+      setDatabaseSamplingSchemas(seedSampling)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load database schemas')
       setConfiguringDatabaseConnection(null)
@@ -1420,40 +1416,39 @@ export default function WorkspaceSettings() {
     }
   }
 
-  function toggleDatabaseIntrospect(catalog: string, schema: string, table: string) {
-    const k = _tableKey(catalog, schema, table)
-    setDatabaseIntrospectSet(prev => {
+  function toggleSchemaIntrospect(schemaKey: string) {
+    setDatabaseIntrospectSchemas(prev => {
       const next = new Set(prev)
-      if (next.has(k)) {
-        next.delete(k)
-        // If we drop introspection on a table, also drop sampling on it.
-        setDatabaseSamplingSet(s => {
+      if (next.has(schemaKey)) {
+        next.delete(schemaKey)
+        // Drop sampling on the schema if we drop introspection too;
+        // can't sample a schema we aren't pulling.
+        setDatabaseSamplingSchemas(s => {
           const ns = new Set(s)
-          ns.delete(k)
+          ns.delete(schemaKey)
           return ns
         })
       } else {
-        next.add(k)
+        next.add(schemaKey)
       }
       return next
     })
   }
 
-  function toggleDatabaseSampling(catalog: string, schema: string, table: string) {
-    const k = _tableKey(catalog, schema, table)
-    setDatabaseSamplingSet(prev => {
+  function toggleSchemaSampling(schemaKey: string) {
+    setDatabaseSamplingSchemas(prev => {
       const next = new Set(prev)
-      if (next.has(k)) {
-        next.delete(k)
+      if (next.has(schemaKey)) {
+        next.delete(schemaKey)
       } else {
         // Sampling requires introspection - opt-in to introspect too.
-        setDatabaseIntrospectSet(introspect => {
-          if (introspect.has(k)) return introspect
+        setDatabaseIntrospectSchemas(introspect => {
+          if (introspect.has(schemaKey)) return introspect
           const ni = new Set(introspect)
-          ni.add(k)
+          ni.add(schemaKey)
           return ni
         })
-        next.add(k)
+        next.add(schemaKey)
       }
       return next
     })
@@ -1464,21 +1459,15 @@ export default function WorkspaceSettings() {
     setSavingDatabaseScope(true)
     setError(null)
     try {
-      // Materialize sets back into the wire-format include lists
-      // ("catalog.schema.table"). exclude is left empty for MVP — we
-      // express scope by include-only.
-      const introspectInclude: string[] = []
-      const samplingInclude: string[] = []
-      availableDatabaseSchemas.forEach(s => {
-        const k = _tableKey(s.catalog, s.schema, s.table)
-        const path = `${s.catalog}.${s.schema}.${s.table}`
-        if (databaseIntrospectSet.has(k)) introspectInclude.push(path)
-        if (databaseSamplingSet.has(k)) samplingInclude.push(path)
-      })
+      // Materialize per-schema selection into the wire format —
+      // chunk 06 uses 2-segment "catalog.schema" keys for both
+      // introspection.include and sampling.include.
+      const introspectInclude = Array.from(databaseIntrospectSchemas).sort()
+      const samplingInclude = Array.from(databaseSamplingSchemas).sort()
 
       const scope: DatabaseScopeConfig = {
         introspection: { include: introspectInclude, exclude: [] },
-        sampling:      { enabled: samplingInclude.length > 0, include: samplingInclude, exclude: [] },
+        sampling:      { include: samplingInclude, exclude: [] },
         profiling:     { enabled: true },
       }
 
@@ -3101,14 +3090,16 @@ export default function WorkspaceSettings() {
                           <p className="text-sm text-gray-500 mt-0.5">{conn.host}:{conn.port} / {conn.database_name}</p>
                           <p className="text-sm text-gray-500 mt-1">
                             {(conn.scope_config?.introspection?.include || []).length === 0 ? (
-                              <span className="text-amber-600">No tables selected - click Configure</span>
+                              <span className="text-amber-600">No schemas selected - click Configure</span>
                             ) : (
                               <>
-                                {conn.scope_config.introspection.include.length} table{conn.scope_config.introspection.include.length !== 1 ? 's' : ''} selected
+                                {conn.scope_config.introspection.include.length} schema{conn.scope_config.introspection.include.length !== 1 ? 's' : ''} selected
                                 {' | '}
-                                {conn.tables_count || 0} synced
+                                {conn.tables_count || 0} tables (auto-discovered)
                                 {' | '}
-                                {conn.scope_config?.sampling?.enabled ? 'sampling: on' : 'sampling: off'}
+                                {(conn.scope_config?.sampling?.include || []).length > 0
+                                  ? `sampling: ${conn.scope_config.sampling.include.length} schema${conn.scope_config.sampling.include.length !== 1 ? 's' : ''}`
+                                  : 'sampling: off'}
                               </>
                             )}
                           </p>
@@ -4397,11 +4388,11 @@ export default function WorkspaceSettings() {
             <div className="p-6 border-b">
               <h2 className="text-lg font-semibold">Configure Database Scope</h2>
               <p className="text-sm text-gray-500 mt-1">
-                Choose which tables to introspect from {configuringDatabaseConnection.display_label}.
+                Choose which schemas to introspect from {configuringDatabaseConnection.display_label}.
               </p>
               <p className="text-xs text-gray-500 mt-2">
-                Introspect = pull schema + safe aggregate statistics.
-                Sample = also pull example rows (opt-in per table; Comprehend PII redaction runs at ingest).
+                Introspect = pull schema + safe aggregate statistics for every table in the selected schema. New tables added to a selected schema are auto-discovered on the next hourly sync.
+                Sample = also pull example rows from every table in the selected schema (Comprehend PII redaction runs at ingest if enabled).
               </p>
             </div>
             <div className="flex-1 overflow-y-auto p-6">
@@ -4410,52 +4401,67 @@ export default function WorkspaceSettings() {
                   <Loader2 className="animate-spin text-gray-400" size={24} />
                 </div>
               ) : availableDatabaseSchemas.length === 0 ? (
-                <p className="text-center text-gray-500 py-4">No tables visible. Check that the connection user has SELECT on the schemas you want to ingest.</p>
-              ) : (
-                <table className="w-full text-sm">
-                  <thead className="text-xs uppercase text-gray-500">
-                    <tr>
-                      <th className="text-left p-2">Catalog</th>
-                      <th className="text-left p-2">Schema</th>
-                      <th className="text-left p-2">Table</th>
-                      <th className="text-center p-2">Introspect</th>
-                      <th className="text-center p-2">Sample rows</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {availableDatabaseSchemas.map(s => {
-                      const k = _tableKey(s.catalog, s.schema, s.table)
-                      return (
-                        <tr key={k} className="border-t hover:bg-gray-50">
-                          <td className="p-2 text-gray-600">{s.catalog || '-'}</td>
-                          <td className="p-2 text-gray-600">{s.schema}</td>
-                          <td className="p-2 font-medium text-gray-900">{s.table}</td>
+                <p className="text-center text-gray-500 py-4">No schemas visible. The connection user may lack USAGE on any schema, or the database has no user schemas yet. Check Lambda logs for the actual introspection error.</p>
+              ) : (() => {
+                // Group the (catalog, schema, table) flat list returned
+                // by the picker API into per-schema buckets so we can
+                // render schemas as the selection unit and show their
+                // current tables read-only beneath.
+                const schemaBuckets = new Map<string, { catalog: string; schema: string; tables: string[] }>()
+                availableDatabaseSchemas.forEach(s => {
+                  const key = `${s.catalog}.${s.schema}`
+                  if (!schemaBuckets.has(key)) {
+                    schemaBuckets.set(key, { catalog: s.catalog, schema: s.schema, tables: [] })
+                  }
+                  schemaBuckets.get(key)!.tables.push(s.table)
+                })
+                const ordered = Array.from(schemaBuckets.entries()).sort(([a], [b]) => a.localeCompare(b))
+                return (
+                  <table className="w-full text-sm">
+                    <thead className="text-xs uppercase text-gray-500">
+                      <tr>
+                        <th className="text-left p-2">Catalog</th>
+                        <th className="text-left p-2">Schema</th>
+                        <th className="text-left p-2">Tables (auto-discovered)</th>
+                        <th className="text-center p-2">Introspect</th>
+                        <th className="text-center p-2">Sample rows</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {ordered.map(([schemaKey, bucket]) => (
+                        <tr key={schemaKey} className="border-t hover:bg-gray-50 align-top">
+                          <td className="p-2 text-gray-600">{bucket.catalog || '-'}</td>
+                          <td className="p-2 font-medium text-gray-900">{bucket.schema}</td>
+                          <td className="p-2 text-gray-600 text-xs">
+                            <span className="font-mono">{bucket.tables.length} table{bucket.tables.length !== 1 ? 's' : ''}</span>
+                            <span className="text-gray-400 ml-2">{bucket.tables.slice(0, 6).join(', ')}{bucket.tables.length > 6 ? `, +${bucket.tables.length - 6} more` : ''}</span>
+                          </td>
                           <td className="p-2 text-center">
                             <input
                               type="checkbox"
-                              checked={databaseIntrospectSet.has(k)}
-                              onChange={() => toggleDatabaseIntrospect(s.catalog, s.schema, s.table)}
+                              checked={databaseIntrospectSchemas.has(schemaKey)}
+                              onChange={() => toggleSchemaIntrospect(schemaKey)}
                               className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
                             />
                           </td>
                           <td className="p-2 text-center">
                             <input
                               type="checkbox"
-                              checked={databaseSamplingSet.has(k)}
-                              onChange={() => toggleDatabaseSampling(s.catalog, s.schema, s.table)}
+                              checked={databaseSamplingSchemas.has(schemaKey)}
+                              onChange={() => toggleSchemaSampling(schemaKey)}
                               className="w-4 h-4 text-amber-600 rounded focus:ring-amber-500"
                             />
                           </td>
                         </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
-              )}
+                      ))}
+                    </tbody>
+                  </table>
+                )
+              })()}
             </div>
             <div className="px-6 py-4 bg-gray-50 rounded-b-lg flex items-center justify-between border-t">
               <p className="text-sm text-gray-500">
-                {databaseIntrospectSet.size} table{databaseIntrospectSet.size !== 1 ? 's' : ''} to introspect, {databaseSamplingSet.size} with sampling
+                {databaseIntrospectSchemas.size} schema{databaseIntrospectSchemas.size !== 1 ? 's' : ''} to introspect, {databaseSamplingSchemas.size} with sampling
               </p>
               <div className="flex gap-3">
                 <button
@@ -4466,7 +4472,7 @@ export default function WorkspaceSettings() {
                 </button>
                 <button
                   onClick={handleSaveDatabaseScope}
-                  disabled={savingDatabaseScope || databaseIntrospectSet.size === 0}
+                  disabled={savingDatabaseScope || databaseIntrospectSchemas.size === 0}
                   className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors flex items-center gap-2"
                 >
                   {savingDatabaseScope && <Loader2 size={16} className="animate-spin" />}

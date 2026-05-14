@@ -487,9 +487,11 @@ class TestCreateConnection:
         assert item["display_label"] == "Analytics DW"
         # host_hash populated and stable-length
         assert len(item["host_hash"]) == 16
-        # Default scope_config seeded with empty include + sampling off
+        # Default scope_config (chunk 06): empty schema-level include
+        # for both introspection and sampling, profiling on.
         assert item["scope_config"]["introspection"]["include"] == []
-        assert item["scope_config"]["sampling"]["enabled"] is False
+        assert item["scope_config"]["sampling"]["include"] == []
+        assert "enabled" not in item["scope_config"]["sampling"]
         assert item["scope_config"]["profiling"]["enabled"] is True
         assert item["last_sync_status"] == "needs_configuration"
         assert item["known_table_ids"] == []
@@ -606,10 +608,7 @@ class TestListConnections:
 
 class TestUpdateScope:
 
-    @patch.object(handler_module, "_queue_sync")
-    @patch.object(handler_module, "get_connection")
-    @patch.object(handler_module, "_get_dynamodb")
-    def test_update_scope_admin_queues_sync(self, mock_db_fn, mock_get_conn, mock_queue):
+    def _admin_mocks(self, mock_db_fn, mock_get_conn):
         mock_table = MagicMock()
         mock_table.get_item.side_effect = [
             {"Item": {"role": "workspace_admin"}},
@@ -619,16 +618,62 @@ class TestUpdateScope:
         mock_db_fn.return_value = mock_db
         mock_get_conn.return_value = {"connection_id": "c1"}
 
+    @patch.object(handler_module, "_queue_sync")
+    @patch.object(handler_module, "get_connection")
+    @patch.object(handler_module, "_get_dynamodb")
+    def test_update_scope_admin_queues_sync_with_schema_keys(
+        self, mock_db_fn, mock_get_conn, mock_queue,
+    ):
+        """Chunk 06 happy path: 2-segment 'catalog.schema' keys accepted."""
+        self._admin_mocks(mock_db_fn, mock_get_conn)
         body = {
             "scope_config": {
-                "introspection": {"include": ["public.users"], "exclude": []},
-                "sampling": {"enabled": False, "include": [], "exclude": []},
-                "profiling": {"enabled": True},
+                "introspection": {"include": ["analytics.healthcare"], "exclude": []},
+                "sampling":      {"include": [], "exclude": []},
+                "profiling":     {"enabled": True},
             }
         }
         result = handler_module.update_scope("u@x.com", "ws1", "c1", body)
         assert result["statusCode"] == 200
         mock_queue.assert_called_once_with("ws1", "c1")
+
+    @patch.object(handler_module, "_queue_sync")
+    @patch.object(handler_module, "get_connection")
+    @patch.object(handler_module, "_get_dynamodb")
+    def test_update_scope_rejects_legacy_three_segment_include(
+        self, mock_db_fn, mock_get_conn, mock_queue,
+    ):
+        """Chunk 06 strict-validation: 'catalog.schema.table' returns 400.
+        Connections were disconnected pre-deploy so no legacy survives."""
+        self._admin_mocks(mock_db_fn, mock_get_conn)
+        body = {
+            "scope_config": {
+                "introspection": {"include": ["analytics.healthcare.patients"]},
+                "sampling":      {"include": []},
+            }
+        }
+        result = handler_module.update_scope("u@x.com", "ws1", "c1", body)
+        assert result["statusCode"] == 400
+        assert "2 segments" in result["body"]
+        mock_queue.assert_not_called()
+
+    @patch.object(handler_module, "_queue_sync")
+    @patch.object(handler_module, "get_connection")
+    @patch.object(handler_module, "_get_dynamodb")
+    def test_update_scope_rejects_malformed_sampling_include(
+        self, mock_db_fn, mock_get_conn, mock_queue,
+    ):
+        self._admin_mocks(mock_db_fn, mock_get_conn)
+        body = {
+            "scope_config": {
+                "introspection": {"include": ["analytics.healthcare"]},
+                "sampling":      {"include": ["analytics"]},  # 1-segment
+            }
+        }
+        result = handler_module.update_scope("u@x.com", "ws1", "c1", body)
+        assert result["statusCode"] == 400
+        assert "sampling.include" in result["body"]
+        mock_queue.assert_not_called()
 
     @patch.object(handler_module, "_get_dynamodb")
     def test_update_scope_non_admin_403(self, mock_db_fn):
