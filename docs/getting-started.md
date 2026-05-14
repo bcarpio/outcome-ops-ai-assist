@@ -153,63 +153,28 @@ curl -H "Authorization: token $(aws ssm get-parameter --name /prd/outcome-ops-ai
   https://api.github.com/user
 ```
 
-### Step 5: Build Run-Tests Docker Image
+### Step 5: Build Lambda Layers, Container Images, and Platform-CA Layer
 
-The run-tests Lambda requires a Docker image for executing test suites. This must be built and pushed to ECR before deploying the full infrastructure.
-
-```bash
-# Build the run-tests Docker image and push to ECR
-# This automatically creates the ECR repository if it doesn't exist
-ENVIRONMENT=prd make build-run-tests-image
-```
-
-The Makefile target handles everything:
-1. Initializes Terraform and selects/creates the workspace
-2. Creates the ECR repository via targeted Terraform apply
-3. Builds the Docker image
-4. Pushes to ECR
-
-### Step 5b: Build Lambda Layers
-
-A couple of small Lambdas depend on installed-package layers (zipped libraries mounted at `/opt/python` alongside the Lambda handler). These must be built locally before `terraform apply` so Terraform can package and publish them:
+Before `terraform apply`, every Lambda layer and container image referenced by terraform must exist locally (zips on disk) or in ECR (container tags). One command builds all of them:
 
 ```bash
-make build-all-layers
+ENVIRONMENT=prd make pre-deploy
 ```
 
-Or build them individually:
+This runs, in order:
 
-```bash
-make build-runtime-layer    # git/make/tar for generate-code Lambda
-make build-terraform-layer  # terraform CLI for generate-code's fmt/validate
-```
+1. **`make build-all-layers`** — builds the runtime-tools layer (git/make/tar) and the terraform-CLI layer used by generate-code. Each script builds inside the Amazon Linux 2 / Python 3.12 Docker image so native binaries are ABI-compatible with the Lambda runtime.
+2. **`make build-all-images`** — builds every container image (run-tests, chat UI, OutcomeOps MCP server, Snyk MCP server, database-integration, database-sync), auto-creating each ECR repo via targeted terraform apply and pushing tags to SSM so the main apply references them.
+3. **`make build-platform-layer`** — builds the platform-CA Lambda layer. Always succeeds: with the default empty `platform_ca_bundle_ssm_param_arns` the layer ships pure Mozilla certifi (passthrough); with customer roots configured, the layer concatenates each PEM and validates it with `openssl x509`.
 
-Each script builds inside the Amazon Linux 2 / Python 3.12 Docker image so native components (git, etc.) are ABI-compatible with the Lambda runtime.
+Rebuild via `pre-deploy` whenever you:
+- Pull new code that changes a Lambda handler or `requirements.txt`
+- Edit a Dockerfile or `lambda/db-introspection-requirements.txt`
+- Rotate a SecureString referenced by `customer_ca_bundle_ssm_param_arns` or `platform_ca_bundle_ssm_param_arns`
+- Bump `outcomeops_license_layer_arn` in your tfvars to a new version
+- Deploy to a fresh environment for the first time
 
-Rebuild any layer when:
-- Its `requirements.txt` changes
-- Its build script changes
-- You're deploying to a fresh environment for the first time
-
-### Step 5c: Build Database Integration Container Images
-
-The database integration ships as **Lambda container images** rather than a layer because the schema introspection engine + Postgres/MySQL/MSSQL drivers exceed Lambda's 250 MB unzipped layer cap. Two images:
-
-```bash
-ENVIRONMENT=prd make build-database-images
-```
-
-The Makefile target:
-1. Creates the ECR repos via targeted Terraform apply
-2. Stages the OutcomeOps license validator layer content (downloaded from the layer ARN in your tfvars) so it can be baked into the sync image — container-image Lambdas can't attach Lambda layers, the license code is included in the image instead
-3. Builds + pushes both images (`database-integration`, `database-sync`)
-4. Writes image tags to SSM so the main `terraform apply` references them
-
-Rebuild when:
-- `lambda/db-introspection-requirements.txt` changes
-- Either Lambda's Dockerfile changes
-- The handler Python code changes
-- `outcomeops_license_layer_arn` in your tfvars bumps to a new layer version
+The individual `make build-*` targets remain documented in the "Available Make Commands" reference further down -- invoke them directly when iterating on a single failed step.
 
 ### Step 6: Deploy Infrastructure
 
@@ -378,10 +343,17 @@ ENVIRONMENT=prd make build-mcp-server-image    # OutcomeOps MCP server container
 ENVIRONMENT=prd make build-snyk-image          # Snyk MCP server container
 ENVIRONMENT=prd make build-database-images     # database-integration + database-sync Lambda containers
 
+# Container images (combined)
+ENVIRONMENT=prd make build-all-images          # Builds every container image in one shot
+
 # Lambda layers (zipped packages, distinct from container images)
 make build-runtime-layer   # git/make/tar for generate-code Lambda
 make build-terraform-layer # terraform CLI for generate-code fmt/validate
 make build-all-layers      # Both layers in one shot
+make build-platform-layer  # Platform-CA trust layer (certifi + platform_ca_bundle_ssm_param_arns)
+
+# Combined deployment shortcut
+ENVIRONMENT=prd make pre-deploy                # Builds all layers + all images + platform-CA layer
 
 make clean                 # Clean build artifacts
 make all                   # Run fmt, validate, and test

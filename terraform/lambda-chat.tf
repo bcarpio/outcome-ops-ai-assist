@@ -17,9 +17,15 @@ module "chat_streaming_lambda" {
 
   # Lambda Web Adapter layer for HTTP streaming + OutcomeOps license validator
   # (ADR-019: license layer is required on every customer-facing Lambda).
+  # The platform-CA layer is also attached unconditionally so that under
+  # BYO-internal-CA deploys (ui_acm_certificate_arn pointing at a private-PKI
+  # cert), the requests calls to the MCP servers in lambda/chat/handler.py
+  # actually trust the listener. Empty platform_ca_bundle_ssm_param_arns
+  # ships pure certifi so this is a no-op for default-public-cert deploys.
   layers = [
     "arn:aws:lambda:${var.aws_region}:753240598075:layer:LambdaAdapterLayerX86:25",
     var.outcomeops_license_layer_arn,
+    aws_lambda_layer_version.platform_ca.arn,
   ]
 
   # Source code with pip requirements (includes shared module)
@@ -78,6 +84,15 @@ module "chat_streaming_lambda" {
       RAG_MAX_DOC_CHARS              = tostring(var.rag_max_doc_chars)
       WORKSPACES_TABLE               = module.workspaces_table[0].dynamodb_table_id
       OAUTH_KMS_KEY_ARN              = aws_kms_key.oauth_tokens[0].arn
+
+      # Point requests / urllib3 / httpx / stdlib ssl + urllib.request at
+      # the merged PEM shipped in the platform-CA layer so BYO-internal-CA
+      # MCP listeners are trusted. Both env vars are needed because
+      # `requests` honors REQUESTS_CA_BUNDLE and stdlib honors SSL_CERT_FILE.
+      # /opt/ca-bundle.pem is the layer's mount path -- see
+      # lambda-platform-ca-layer.tf.
+      REQUESTS_CA_BUNDLE = "/opt/ca-bundle.pem"
+      SSL_CERT_FILE      = "/opt/ca-bundle.pem"
     },
     local.outcomeops_license_env,
   )

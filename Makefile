@@ -1,4 +1,4 @@
-.PHONY: help setup install fmt lint validate test test-unit test-integration test-coverage test-ui audit build-run-tests-image build-ui-image build-mcp-server-image build-snyk-image build-database-images build-runtime-layer build-terraform-layer build-all-layers clean all
+.PHONY: help setup install fmt lint validate test test-unit test-integration test-coverage test-ui audit build-run-tests-image build-ui-image build-mcp-server-image build-snyk-image build-database-images build-runtime-layer build-terraform-layer build-all-layers build-platform-layer build-all-images pre-deploy clean all
 
 APP_NAME ?= outcome-ops-ai-assist
 AWS_REGION ?= us-west-2
@@ -31,8 +31,20 @@ help:
 	@echo "Container Images:"
 	@echo "  make build-run-tests-image      Build run-tests container (auto-creates ECR, ENVIRONMENT=dev|prd)"
 	@echo "  make build-ui-image             Build chat UI container (auto-creates ECR, ENVIRONMENT=dev|prd)"
-	@echo "  make build-mcp-server-image Build OutcomeOps MCP server container (ENVIRONMENT=dev|prd)"
-	@echo "  make build-snyk-image       Build Snyk MCP server container (ENVIRONMENT=dev|prd)"
+	@echo "  make build-mcp-server-image     Build OutcomeOps MCP server container (ENVIRONMENT=dev|prd)"
+	@echo "  make build-snyk-image           Build Snyk MCP server container (ENVIRONMENT=dev|prd)"
+	@echo "  make build-database-images      Build database-integration + database-sync container images (ENVIRONMENT=dev|prd)"
+	@echo "  make build-all-images           Build every container image in one shot (ENVIRONMENT=dev|prd)"
+	@echo ""
+	@echo "Lambda Layers:"
+	@echo "  make build-runtime-layer        Build the runtime tools layer (git/make/tar) for generate-code"
+	@echo "  make build-terraform-layer      Build the terraform CLI layer for generate-code fmt/validate"
+	@echo "  make build-all-layers           Build every Lambda layer in one shot"
+	@echo "  make build-platform-layer       Build the platform-CA trust layer (certifi + platform_ca_bundle_ssm_param_arns)"
+	@echo ""
+	@echo "Combined Deployment:"
+	@echo "  make pre-deploy                 Build all layers, all images, and the platform-CA layer (ENVIRONMENT=dev|prd)."
+	@echo "                                  One-command catch-all before 'terraform apply'."
 	@echo ""
 	@echo "Combined:"
 	@echo "  make all              Run fmt, validate, and all tests"
@@ -317,6 +329,44 @@ build-database-images:
 	@echo ""
 	@echo "Building database container images for environment: $$ENVIRONMENT"
 	./scripts/build-database-images.sh --env $$ENVIRONMENT
+
+# Build the platform-CA Lambda Layer (Mozilla certifi + customer roots from
+# platform_ca_bundle_ssm_param_arns). The layer is attached to every platform
+# Lambda that egresses to the UI ALB (chat, workspace-management). Always
+# succeeds: empty platform_ca_bundle_ssm_param_arns produces a passthrough
+# layer that ships only the certifi roots, so layer-attachment stays
+# uniform between BYO-internal-CA and default-public-cert deploys. See
+# scripts/build-platform-ca-layer.sh + terraform/lambda-platform-ca-layer.tf.
+build-platform-layer:
+	./scripts/build-platform-ca-layer.sh
+
+# Build every customer-image container in one shot. Each underlying target
+# already validates ENVIRONMENT and ensures its own ECR repo, so this is
+# just an ordering wrapper -- a field engineer should not have to remember
+# the full per-container list. Parallels build-all-layers.
+build-all-images:
+	@if [ -z "$$ENVIRONMENT" ]; then \
+		echo "Error: ENVIRONMENT variable not set."; \
+		echo "Usage: ENVIRONMENT=dev make build-all-images"; \
+		echo "       ENVIRONMENT=prd make build-all-images"; \
+		exit 1; \
+	fi
+	ENVIRONMENT=$$ENVIRONMENT $(MAKE) build-run-tests-image
+	ENVIRONMENT=$$ENVIRONMENT $(MAKE) build-ui-image
+	ENVIRONMENT=$$ENVIRONMENT $(MAKE) build-mcp-server-image
+	ENVIRONMENT=$$ENVIRONMENT $(MAKE) build-snyk-image
+	ENVIRONMENT=$$ENVIRONMENT $(MAKE) build-database-images
+
+# Single catch-all before `terraform apply`. Builds every Lambda layer,
+# every container image, and the platform-CA layer. Idempotent (each
+# underlying target skips when nothing changed). Run once after any code
+# or tfvars change before applying terraform. Replaces the field
+# engineer's prior 5-7 separate make invocations -- see
+# docs/getting-started.md. CI keeps its per-image steps for parallelism +
+# per-step logs; pre-deploy is the human-driven shortcut.
+pre-deploy: build-all-layers build-all-images build-platform-layer
+	@echo ""
+	@echo "All pre-terraform builds complete. Next: terraform apply."
 
 # ============================================================================
 # Utilities: Clean up build artifacts

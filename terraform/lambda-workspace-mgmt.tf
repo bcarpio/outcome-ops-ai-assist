@@ -17,9 +17,15 @@ module "workspace_management_lambda" {
   timeout       = 30
   memory_size   = 512
 
-  # Lambda Web Adapter layer for HTTP endpoints
+  # Lambda Web Adapter layer for HTTP endpoints. The platform-CA layer is
+  # also attached unconditionally so that under BYO-internal-CA deploys the
+  # outbound requests calls in lambda/workspace-management/handler.py to
+  # the MCP servers actually trust the listener. Empty
+  # platform_ca_bundle_ssm_param_arns ships pure certifi so this is a no-op
+  # for default-public-cert deploys.
   layers = [
-    "arn:aws:lambda:${var.aws_region}:753240598075:layer:LambdaAdapterLayerX86:25"
+    "arn:aws:lambda:${var.aws_region}:753240598075:layer:LambdaAdapterLayerX86:25",
+    aws_lambda_layer_version.platform_ca.arn,
   ]
 
   # Source code with pip requirements (includes shared module so handler.py
@@ -66,6 +72,13 @@ module "workspace_management_lambda" {
     # PII redaction posture (read for GET /workspaces/{id}/privacy so the
     # UI knows whether to render the toggle). plan/ chunk 07.
     PII_REDACTION_ENABLED = tostring(var.pii_redaction_enabled)
+
+    # Point requests / urllib3 / httpx / stdlib ssl + urllib.request at
+    # the merged PEM shipped in the platform-CA layer so BYO-internal-CA
+    # MCP listeners are trusted. Both env vars are needed because
+    # `requests` honors REQUESTS_CA_BUNDLE and stdlib honors SSL_CERT_FILE.
+    REQUESTS_CA_BUNDLE = "/opt/ca-bundle.pem"
+    SSL_CERT_FILE      = "/opt/ca-bundle.pem"
   }
 
   # IAM permissions
