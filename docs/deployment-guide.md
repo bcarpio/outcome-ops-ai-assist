@@ -1,6 +1,6 @@
 # Deployment Guide
 
-This guide covers deployment, operations, and maintenance for OutcomeOps AI Assist. For initial setup steps, see [Getting Started](getting-started.md). For security details, see [Security Overview](security-overview.md).
+This guide covers deployment, operations, and maintenance for OutcomeOps AI Assist. For initial setup steps, see [Getting Started](getting-started.md). For security details, see [Security Overview](security-overview.md). For customer-managed DNS or TLS certificates (cross-account Route53, Infoblox / AD-DNS, internal-CA certs), see [BYO TLS Certificate + BYO DNS](byo-cert-and-dns.md).
 
 ---
 

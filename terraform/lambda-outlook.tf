@@ -556,7 +556,7 @@ resource "aws_ssm_parameter" "microsoft_callback_url" {
   count = var.enable_workspaces ? 1 : 0
 
   name        = "/${var.environment}/${var.app_name}/oauth/microsoft/callback-url"
-  description = "Microsoft OAuth callback URL"
+  description = "OAuth callback URL for Outlook. Register this in your Azure AD app registration after local.fqdn resolves to the UI ALB (whether via terraform-managed Route53 or external DNS - see docs/byo-cert-and-dns.md)."
   type        = "String"
   value       = var.domain != "" ? "https://${local.fqdn}/api/outlook/callback" : "PLACEHOLDER_CONFIGURE_ME"
 

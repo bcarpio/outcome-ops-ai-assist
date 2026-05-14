@@ -508,7 +508,7 @@ resource "aws_ssm_parameter" "atlassian_jira_callback_url" {
   count = var.enable_workspaces ? 1 : 0
 
   name        = "/${var.environment}/${var.app_name}/oauth/atlassian/jira-callback-url"
-  description = "Jira OAuth callback URL"
+  description = "OAuth callback URL for Jira. Register this in your Atlassian OAuth app config after local.fqdn resolves to the UI ALB (whether via terraform-managed Route53 or external DNS - see docs/byo-cert-and-dns.md)."
   type        = "String"
   value       = var.domain != "" ? "https://${local.fqdn}/api/jira/callback" : "PLACEHOLDER_CONFIGURE_ME"
 

@@ -509,7 +509,7 @@ resource "aws_ssm_parameter" "microsoft_sharepoint_callback_url" {
   count = var.enable_workspaces ? 1 : 0
 
   name        = "/${var.environment}/${var.app_name}/oauth/microsoft/sharepoint-callback-url"
-  description = "Microsoft OAuth callback URL for SharePoint integration"
+  description = "OAuth callback URL for SharePoint. Register this in your Azure AD app registration after local.fqdn resolves to the UI ALB (whether via terraform-managed Route53 or external DNS - see docs/byo-cert-and-dns.md)."
   type        = "String"
   value       = var.domain != "" ? "https://${local.fqdn}/api/sharepoint/callback" : "PLACEHOLDER_CONFIGURE_ME"
 
