@@ -23,6 +23,64 @@ bottom of this doc before investigating root cause.
 
 ---
 
+## Audit-row checks (every validation)
+
+In addition to the per-validation expectations below, every chat turn
+issued during validation must produce **two** audit rows that the
+operator confirms before signing off (plan-gkg chunk 09 — the audit
+story is part of the v1 definition of done, not optional):
+
+1. **Cost row** — Query the audit table for `lambda_name="chat:router"`
+   with a timestamp inside the validation window. Confirms the Haiku
+   classifier cost was attributed to `chat:router` (not buried inside
+   the chat total) and that the per-workspace spend dashboard splits
+   router cost as its own line.
+
+   ```bash
+   # Spot-check the latest router cost row landed.
+   aws dynamodb scan \
+     --table-name ${env}-${app_name}-audit-logs \
+     --filter-expression "lambda_name = :ln" \
+     --expression-attribute-values '{":ln": {"S": "chat:router"}}' \
+     --max-items 5 \
+     --projection-expression "#ts, lambda_name, model_id, cost_usd, flagged_reason" \
+     --expression-attribute-names '{"#ts": "timestamp"}'
+   ```
+
+   The `flagged_reason` column carries `q_sha256=<hex>` — the SHA256
+   hash of the question. The plaintext question must never appear in
+   any audit field.
+
+2. **Routing-decision row** — Query for
+   `action="CHAT_ROUTING_DECISION"` matching the same timestamp window.
+   Confirms `shared.audit_writer.log_routing_decision()` fired with the
+   expected `intent` field (matches the chat-router CloudWatch log
+   line `[chat.augment] router decision: intent=...`) plus the
+   `retrievals_fired`, `graph_sha`, `graph_staleness_seconds`, and
+   `graph_result_count` details.
+
+   ```bash
+   aws dynamodb scan \
+     --table-name ${env}-${app_name}-audit-logs \
+     --filter-expression "#ac = :ac" \
+     --expression-attribute-values '{":ac": {"S": "CHAT_ROUTING_DECISION"}}' \
+     --expression-attribute-names '{"#ac": "action"}' \
+     --max-items 5 \
+     --projection-expression "#ts, workspace_id, details"
+   ```
+
+   The `details` map must include `question_hash` (matching the cost
+   row's SHA256), `intent`, `retrievals_fired`, and (when the graph
+   fired) `graph_sha` / `graph_staleness_seconds` / `graph_result_count`.
+
+**Fail signal** (applies to every validation below): if either audit
+row is missing for the chat turn under test — or if the question text
+appears in any audit field instead of its SHA256 hash — the
+validation fails regardless of whether the user-facing answer was
+correct. Audit completeness is a hard gate, not aspirational.
+
+---
+
 ## Validation 1 — Internal-symbol caller query (the disproof case)
 
 **Workspace**: `Engineering` (`B1MgdLzM1j0YeyAqCWbyxg`) on dev or prd.

@@ -38,12 +38,17 @@ VENDOR_NAME = "OutcomeOps"
 # OCSF class UIDs (see https://schema.ocsf.io/)
 CLASS_ACCOUNT_CHANGE = 3001
 CLASS_AUTHENTICATION = 3002
+# plan-gkg/09 — chat routing-decision audit lands on OCSF
+# "Application Lifecycle" so a SIEM consumer can distinguish it
+# from generic 6005 "Application Activity" rows.
+CLASS_APPLICATION_LIFECYCLE = 6002
 CLASS_API_ACTIVITY = 6003
 CLASS_APPLICATION_ACTIVITY = 6005
 
 CLASS_NAMES = {
     CLASS_ACCOUNT_CHANGE: "Account Change",
     CLASS_AUTHENTICATION: "Authentication",
+    CLASS_APPLICATION_LIFECYCLE: "Application Lifecycle",
     CLASS_API_ACTIVITY: "API Activity",
     CLASS_APPLICATION_ACTIVITY: "Application Activity",
 }
@@ -82,6 +87,14 @@ ACT_OTHER = 5
 
 ACT_LOGON = 1
 
+# OCSF class 6002 "Application Lifecycle" reserves 1-8 for
+# install/remove/start/stop/restart/enable/disable/update. We use 99
+# ("Other") for the retrieval-routing extension - well outside the
+# reserved range, distinct from every other activity_id currently in
+# use by OutcomeOps (ACT_CREATE/READ/UPDATE/DELETE/OTHER + ACT_LOGON
+# are all <= 5).
+ACT_ROUTING_DECISION = 99
+
 # Mapping: admin action -> (class_uid, activity_id, severity_id)
 ADMIN_ACTION_MAP: Dict[str, tuple] = {
     # Workspace lifecycle (3001 Account Change)
@@ -111,6 +124,16 @@ ADMIN_ACTION_MAP: Dict[str, tuple] = {
         CLASS_APPLICATION_ACTIVITY,
         ACT_OTHER,
         SEV_MEDIUM,
+    ),
+    # plan-gkg/09 — chat routing decision (which retrievals fired, graph
+    # staleness, result counts). Lands on OCSF Application Lifecycle
+    # 6002 with the routing-decision activity_id so SIEM consumers can
+    # filter on type_uid=600299 without conflating it with generic 6005
+    # Application Activity events.
+    "CHAT_ROUTING_DECISION": (
+        CLASS_APPLICATION_LIFECYCLE,
+        ACT_ROUTING_DECISION,
+        SEV_INFO,
     ),
 }
 

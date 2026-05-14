@@ -20,11 +20,12 @@ Schema (admin row):
 See plan/01-dynamodb-schema.md for the canonical wire format.
 """
 
+import hashlib
 import logging
 import secrets
 import time
 from datetime import datetime, timezone
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 import boto3
 
@@ -120,6 +121,13 @@ ACTION_PR_ANALYZED = "PR_ANALYZED"
 ACTION_CODE_GENERATED = "CODE_GENERATED"
 ACTION_CODE_GEN_DLQ_SALVAGE_PR_CREATED = "CODE_GEN_DLQ_SALVAGE_PR_CREATED"
 
+# plan-gkg/09 — every chat turn fires a routing decision (intent +
+# retrievals fired + graph staleness). Cost of the Haiku classification
+# itself still lands via ``log_audit_entry(lambda_name="chat:router")``
+# in ``shared.audit``; this constant tags the separate "what surfaces
+# did we hit" event that ``log_routing_decision`` writes.
+ACTION_CHAT_ROUTING_DECISION = "CHAT_ROUTING_DECISION"
+
 # Tier 2 — nice-to-haves.
 ACTION_BUDGET_THRESHOLD_CROSSED = "BUDGET_THRESHOLD_CROSSED"
 ACTION_DOCUMENT_DOWNLOADED = "DOCUMENT_DOWNLOADED"
@@ -179,6 +187,7 @@ ADMIN_ACTIONS = frozenset(
         ACTION_DOCUMENT_DOWNLOADED,
         ACTION_MCP_TOOL_INVOKED,
         ACTION_TESTS_RAN,
+        ACTION_CHAT_ROUTING_DECISION,
     }
 )
 
@@ -241,6 +250,12 @@ HIDDEN_DASHBOARD_ACTIONS = frozenset({
     ACTION_CONVERSATION_DELETED,
     ACTION_PR_ANALYZED,
     ACTION_TESTS_RAN,
+    # Per-chat-turn — would dominate the "actions" cards and drown
+    # out everything operators actually want to skim. Forensically
+    # essential (routing decision is part of the audit story), but
+    # filtered out of the dashboard by default; operators query with
+    # ?action=CHAT_ROUTING_DECISION when investigating.
+    ACTION_CHAT_ROUTING_DECISION,
 })
 
 
@@ -438,6 +453,118 @@ def log_source_sync(
         source_ip="",
         user_agent="",
         details=details,
+    )
+
+
+# ============================================================================
+# plan-gkg/09 — chat routing-decision audit
+# ============================================================================
+
+
+def _hash_question(question_text: str) -> str:
+    """SHA256 hash of a chat-turn question text.
+
+    The router invocation itself is logged via
+    ``shared.audit.log_audit_entry()`` with ``flagged_reason`` already
+    carrying ``q_sha256=<hex>``. ``log_routing_decision`` uses this same
+    helper so the routing-decision audit row and the Bedrock cost row
+    correlate on a stable hash without ever storing the question text
+    in either row. Empty input is hashed deterministically too so the
+    audit row is well-formed even on the empty / whitespace edge case.
+    """
+
+    raw = question_text or ""
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def log_routing_decision(
+    audit_table_name: str,
+    workspace_id: str,
+    user_email: str,
+    question_hash: str,
+    intent: str,
+    retrievals_fired: List[str],
+    graph_sha: Optional[str] = None,
+    graph_staleness_seconds: Optional[int] = None,
+    graph_result_count: Optional[int] = None,
+    rag_chunk_count: Optional[int] = None,
+    manifest_hit_count: Optional[int] = None,
+    source_ip: str = "",
+    user_agent: str = "",
+) -> None:
+    """Emit one ``CHAT_ROUTING_DECISION`` audit row per chat turn.
+
+    Per plan-gkg/09: the **Haiku cost** of the classifier call is logged
+    separately via ``log_audit_entry(lambda_name="chat:router")`` in
+    ``shared.audit``. This function logs the **routing decision itself**
+    — which retrieval surfaces fired, the graph anchor SHA + staleness,
+    and the result counts each surface returned. Two distinct events,
+    one auditable record per turn.
+
+    Question text is hashed (SHA256), never stored in plaintext, so PII
+    in user questions does not land in the audit stream. The hash lets
+    investigators correlate routing decisions for identical questions
+    without storing the question itself.
+
+    Mapped to OCSF ``Application Lifecycle (6002)`` with activity_id 99
+    ("Other" — class-specific retrieval routing extension; see
+    ``shared.ocsf_mapper`` for the type_uid). The OCSF envelope is
+    composed at audit-stream-export time; ``map_audit_row_to_ocsf``
+    picks the class/activity from the action constant.
+
+    Non-fatal: catches all exceptions, logs a warning, never raises.
+    A routing-decision-audit failure must not break a chat turn.
+
+    Args:
+        audit_table_name: DynamoDB table name (typically ``AUDIT_TABLE``).
+        workspace_id: Workspace this chat turn ran against. Empty
+            string is system-level (rare for chat).
+        user_email: Acting user's email; empty if unauthenticated.
+        question_hash: SHA256 hex of the question text. Callers pass
+            ``_hash_question(question)`` to get the canonical form.
+        intent: One of ``pattern | dependency | structural | hybrid |
+            unknown`` (the router's ``VALID_INTENTS``).
+        retrievals_fired: Ordered list of retrieval surfaces that ran
+            for this turn, e.g. ``["rag", "graph"]`` or
+            ``["rag", "manifest", "graph"]``.
+        graph_sha: Symbol-graph anchor SHA, or ``None`` when the graph
+            didn't fire.
+        graph_staleness_seconds: Seconds since ``graph_sha`` was
+            committed; ``None`` when the graph didn't fire.
+        graph_result_count: Number of sites returned by the graph
+            query (zero is a finding — empty-set discipline).
+        rag_chunk_count: Number of RAG chunks returned, or ``None``
+            when RAG didn't fire.
+        manifest_hit_count: Number of manifest matches, or ``None``
+            when the manifest layer didn't fire.
+        source_ip: HTTP source IP if available.
+        user_agent: HTTP user agent if available.
+    """
+    details: Dict = {
+        "question_hash": question_hash or "",
+        "intent": intent or "unknown",
+        "retrievals_fired": list(retrievals_fired or []),
+    }
+    if graph_sha is not None:
+        details["graph_sha"] = graph_sha
+    if graph_staleness_seconds is not None:
+        details["graph_staleness_seconds"] = int(graph_staleness_seconds)
+    if graph_result_count is not None:
+        details["graph_result_count"] = int(graph_result_count)
+    if rag_chunk_count is not None:
+        details["rag_chunk_count"] = int(rag_chunk_count)
+    if manifest_hit_count is not None:
+        details["manifest_hit_count"] = int(manifest_hit_count)
+
+    log_admin_action(
+        audit_table_name,
+        ACTION_CHAT_ROUTING_DECISION,
+        workspace_id=workspace_id,
+        user_email=user_email,
+        source_ip=source_ip,
+        user_agent=user_agent,
+        details=details,
+        category=CATEGORY_ADMIN,
     )
 
 

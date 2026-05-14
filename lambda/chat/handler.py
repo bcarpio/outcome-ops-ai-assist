@@ -36,8 +36,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared.audit import log_audit_entry
 from shared.audit_writer import (
     ACTION_CONVERSATION_DELETED,
+    _hash_question,
     log_admin_action,
     log_license_fail_open,
+    log_routing_decision,
 )
 from shared.prompts import build_chat_system_prompt
 
@@ -674,7 +676,19 @@ def _augment_context_with_symbol_graph(
     Plan-gkg/05 "Failure modes" calls this out explicitly.
     """
 
-    out: Dict[str, Any] = {"decision": None, "graph_block": ""}
+    # plan-gkg/09: also surface routing telemetry so the caller can
+    # emit a CHAT_ROUTING_DECISION audit row alongside the rag-chunk
+    # count it owns. Keys are intentionally additive — existing
+    # consumers that only read ``decision`` / ``graph_block`` are
+    # unaffected.
+    out: Dict[str, Any] = {
+        "decision": None,
+        "graph_block": "",
+        "retrievals_fired": [],
+        "graph_sha": None,
+        "graph_staleness_seconds": None,
+        "graph_result_count": None,
+    }
 
     if not GRAPH_RETRIEVAL_ENABLED:
         return out
@@ -873,6 +887,15 @@ def _augment_context_with_symbol_graph(
             result=result,
             definition_site=definition_site,
         )
+        # plan-gkg/09 routing-decision telemetry: capture which surface
+        # ran + its result count + the graph anchor staleness so the
+        # caller can emit the CHAT_ROUTING_DECISION audit row.
+        out["retrievals_fired"] = ["graph"]
+        out["graph_sha"] = getattr(result, "graph_sha", None)
+        out["graph_staleness_seconds"] = getattr(
+            result, "staleness_seconds", None
+        )
+        out["graph_result_count"] = len(getattr(result, "sites", []) or [])
     except SymbolGraphUnavailable as exc:
         logger.warning(
             "[chat.augment] SymbolGraphUnavailable for %s: %s; degrading",
@@ -1974,6 +1997,45 @@ def handle_chat_stream(event: Dict) -> Generator[str, None, None]:
     graph_block = graph_augment.get("graph_block", "")
     if graph_block:
         context = f"{context}\n\n---\n\n{graph_block}"
+
+    # plan-gkg/09: emit one CHAT_ROUTING_DECISION audit row per chat
+    # turn. Cost of the Haiku classifier itself is logged separately
+    # via log_audit_entry(lambda_name="chat:router") inside the router
+    # module; this row carries the orthogonal "what retrievals fired,
+    # how fresh was the graph, how many results" payload that the
+    # regulated-buyer audit story depends on. Question text is hashed
+    # (SHA256), never stored in plaintext.
+    try:
+        _routing_decision = graph_augment.get("decision")
+        _retrievals_fired = list(graph_augment.get("retrievals_fired") or [])
+        # RAG always fires on the chat path (unless GRAPH_RETRIEVAL is
+        # off AND search_results came back empty - we still consider
+        # the RAG surface "fired" because the search was attempted).
+        if "rag" not in _retrievals_fired:
+            _retrievals_fired.insert(0, "rag")
+        _intent = (
+            _routing_decision.intent
+            if _routing_decision is not None
+            else "unknown"
+        )
+        log_routing_decision(
+            audit_table_name=os.environ.get("AUDIT_TABLE", ""),
+            workspace_id=(workspace_ids[0] if workspace_ids else ""),
+            user_email=user_id or "",
+            question_hash=_hash_question(request.message),
+            intent=_intent,
+            retrievals_fired=_retrievals_fired,
+            graph_sha=graph_augment.get("graph_sha"),
+            graph_staleness_seconds=graph_augment.get(
+                "graph_staleness_seconds"
+            ),
+            graph_result_count=graph_augment.get("graph_result_count"),
+            rag_chunk_count=len(search_results) if search_results else 0,
+            source_ip=source_ip,
+            user_agent=user_agent,
+        )
+    except Exception:  # pragma: no cover - audit is best-effort
+        logger.exception("[chat] log_routing_decision failed")
 
     # Build sources (deduplicated)
     sources = []

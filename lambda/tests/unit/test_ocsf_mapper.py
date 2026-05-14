@@ -259,3 +259,32 @@ def test_envelope_omits_feature_when_lambda_name_blank():
     )
     out = map_audit_row_to_ocsf(image)
     assert "feature" not in out["metadata"]["product"]
+
+
+def test_chat_routing_decision_maps_to_application_lifecycle_class():
+    """plan-gkg/09: CHAT_ROUTING_DECISION rows must map to OCSF
+    Application Lifecycle (6002) with the routing-decision activity_id
+    so SIEM consumers can filter on type_uid=600299 without conflating
+    with generic 6005 Application Activity events."""
+    from ocsf_mapper import CLASS_APPLICATION_LIFECYCLE  # noqa: PLC0415
+
+    image = _ddb(
+        {
+            "category": "admin",
+            "action": "CHAT_ROUTING_DECISION",
+            "user_email": "alice@example.com",
+            "request_id": "r-routing",
+            "workspace_id": "ws_engineering",
+            "timestamp": "2026-05-14T10:00:00Z",
+        }
+    )
+    out = map_audit_row_to_ocsf(image)
+    assert out["class_uid"] == CLASS_APPLICATION_LIFECYCLE
+    assert out["class_name"] == "Application Lifecycle"
+    assert out["activity_id"] == 99  # ACT_ROUTING_DECISION
+    # type_uid = class * 100 + activity_id
+    assert out["type_uid"] == 600299
+    assert out["severity_id"] == SEV_INFO
+    # Falls under the Application category (6), not IAM.
+    assert out["category_uid"] == 6
+    assert out["activity_name"] == "CHAT_ROUTING_DECISION"

@@ -287,8 +287,9 @@ class TestActionConstants:
         # license-layer regression detector + 1 from OneDrive +
         # 1 from OneNote + 4 from database integration
         # (DATABASE_SYNCED, DB_CONNECTION_ESTABLISHED,
-        # DB_CREDENTIAL_USED, DB_CONNECTION_DELETED) = 49.
-        assert len(ADMIN_ACTIONS) == 49
+        # DB_CREDENTIAL_USED, DB_CONNECTION_DELETED) + 1 from
+        # plan-gkg/09 (CHAT_ROUTING_DECISION) = 50.
+        assert len(ADMIN_ACTIONS) == 50
 
     def test_known_action_in_set(self):
         assert ACTION_API_KEY_CREATED in ADMIN_ACTIONS
