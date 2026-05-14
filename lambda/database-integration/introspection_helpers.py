@@ -53,6 +53,33 @@ class SchemaInfo:
     row_count_estimate: Optional[int] = None
 
 
+@dataclass
+class SchemasResult:
+    """Result of a picker-side list_schemas call.
+
+    Lets the handler distinguish "user genuinely has zero visible
+    schemas" (schemas=[], error=None -> 200) from "introspection
+    blew up" (schemas=[], error="...", error_type="introspection_failed"
+    -> 502). The handler maps error_type to HTTP code; the UI then
+    renders the actual upstream message instead of a hardcoded
+    "Check SELECT grants" hint that's only correct for the truly-
+    empty case.
+
+    error_type values:
+        - None: success (error is also None)
+        - "introspection_failed": the upstream introspector raised;
+          most common cause is auth/network/permission against the
+          customer DB. error carries the upstream message.
+        - "engine_unavailable": deferred via the existing
+          IntrospectionEngineUnavailable exception at the handler
+          boundary; not used in this dataclass directly today, but
+          reserved so the UI mapping stays explicit.
+    """
+    schemas: List["SchemaInfo"]
+    error: Optional[str] = None
+    error_type: Optional[str] = None
+
+
 def _import_introspection_engine():
     """Deferred import. Raises IntrospectionEngineUnavailable if the
     upstream package isn't installed in the runtime container image."""
@@ -270,7 +297,65 @@ def validate_connection(
     # established"); full_message has the engine-specific detail
     # (auth failure, network refused, SSL cert problem, etc.).
     detail = result.full_message or result.summary or str(result.connection_status.value)
+
+    # MSSQL-only: "Login failed for user 'X'." is also what you get when
+    # the *database* doesn't exist or the connection user can't access
+    # it — MSSQL hides "db not found" behind a login-failed string to
+    # prevent info disclosure about which DBs exist on the server.
+    # Probe the `master` system database (every authenticated SQL
+    # Server login can reach it) with the same creds to disambiguate:
+    # if master auths cleanly, auth itself is fine and the original
+    # failure was about the target DB. Postgres/MySQL distinguish
+    # these at the wire level so they don't need this probe.
+    if engine == "mssql" and detail and "Login failed for user" in detail:
+        master_check = _probe_mssql_master(
+            dce, host, port, credential_payload,
+        )
+        if master_check.valid:
+            return ValidationResult(
+                valid=False,
+                error=(
+                    f"Cannot access database {database_name!r} — check the "
+                    f"database name or your grants on that database. "
+                    f"(Authentication itself succeeded against 'master'.)"
+                ),
+            )
+
     return ValidationResult(valid=False, error=detail)
+
+
+def _probe_mssql_master(
+    dce,
+    host: str,
+    port: int,
+    credential_payload: Dict[str, Any],
+) -> ValidationResult:
+    """One-shot: same creds, database='master', does it auth?
+
+    Returns ValidationResult; on .valid=True the original failure was
+    about the target DB, not auth. Cheap (single TCP/TLS round trip +
+    a check_datasource_config_connection call). Best-effort — any
+    exception just returns valid=False so the caller falls back to the
+    original error.
+    """
+    try:
+        master_config = _build_config(
+            dce, "mssql", host, port, "master", credential_payload,
+            datasource_name="ooat-master-probe",
+        )
+        with tempfile.TemporaryDirectory(prefix="dce-master-") as d:
+            mgr = dce.init_dce_domain(Path(d))
+            r = mgr.check_datasource_config_connection(
+                datasource_type=_datasource_type(dce, "mssql"),
+                datasource_name="ooat-master-probe",
+                config_content=master_config,
+            )
+            return ValidationResult(
+                valid=(r.connection_status == dce.DatasourceConnectionStatus.VALID),
+            )
+    except Exception:
+        logger.exception("MSSQL master-DB probe raised; falling back to original error")
+        return ValidationResult(valid=False)
 
 
 def list_schemas(
@@ -279,14 +364,21 @@ def list_schemas(
     port: int,
     database_name: str,
     credential_payload: Dict[str, Any],
-) -> List[SchemaInfo]:
+) -> SchemasResult:
     """Metadata-only enumeration for the UI schema/table picker.
 
     Calls the upstream engine's introspector.introspect_database()
     directly — bypasses build_context so we don't pay the Ollama-
-    install cost on Lambda. Returns a flat list of SchemaInfo across
-    all visible catalogs/schemas/tables that the RO user can SELECT
-    from.
+    install cost on Lambda. Returns a SchemasResult wrapping a flat
+    list of SchemaInfo across all visible catalogs/schemas/tables
+    that the RO user can SELECT from.
+
+    On introspection failure (auth, network blip, malformed config,
+    upstream exception) returns SchemasResult(schemas=[], error=...,
+    error_type="introspection_failed") so the handler can map to
+    HTTP 502 with the real message in the body. Previously the
+    function returned bare [] on any failure, which the UI couldn't
+    distinguish from "truly zero visible tables."
 
     For very large warehouses we may need to add a cache layer
     (DDB-backed) - flagged in plan/PROGRESS.md as an open question.
@@ -300,14 +392,20 @@ def list_schemas(
         )
     except (ValueError, ImportError) as e:
         logger.error(f"list_schemas config build failed: {e}")
-        return []
+        return SchemasResult(
+            schemas=[], error=str(e), error_type="introspection_failed",
+        )
 
     try:
         introspector = _get_introspector(engine)
         result = introspector.introspect_database(config)
-    except Exception:
+    except Exception as e:
         logger.exception("Schema introspection for picker failed")
-        return []
+        return SchemasResult(
+            schemas=[],
+            error=f"{type(e).__name__}: {e}",
+            error_type="introspection_failed",
+        )
 
     out: List[SchemaInfo] = []
     for catalog in result.catalogs:
@@ -320,7 +418,7 @@ def list_schemas(
                     schema=schema.name or "",
                     table=table.name,
                 ))
-    return out
+    return SchemasResult(schemas=out)
 
 
 # The full introspect_database call for sync lives in database-sync

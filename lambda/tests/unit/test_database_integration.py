@@ -242,22 +242,29 @@ class TestIntrospectionHelpers:
         ), patch.object(
             helpers_module, "_get_introspector", return_value=fake_introspector,
         ):
-            schemas = helpers_module.list_schemas(
+            result = helpers_module.list_schemas(
                 engine="mssql", host="h", port=1433, database_name="analytics",
                 credential_payload={"username": "u", "password": "p"},
             )
 
-        triples = [(s.catalog, s.schema, s.table) for s in schemas]
+        # Success path: SchemasResult with error=None and the flat
+        # SchemaInfo list populated.
+        assert isinstance(result, helpers_module.SchemasResult)
+        assert result.error is None
+        assert result.error_type is None
+        triples = [(s.catalog, s.schema, s.table) for s in result.schemas]
         assert triples == [
             ("analytics", "healthcare", "patients"),
             ("analytics", "healthcare", "encounters"),
             ("analytics", "billing", "claims"),
         ]
 
-    def test_list_schemas_returns_empty_on_introspector_exception(self):
+    def test_list_schemas_returns_SchemasResult_with_error_on_introspector_exception(self):
         """If the introspector raises (auth failure, network blip, etc.),
-        list_schemas returns [] rather than bubbling — the picker UI
-        surfaces an empty-list hint."""
+        list_schemas returns SchemasResult(schemas=[], error=...,
+        error_type="introspection_failed") so the handler can map to
+        HTTP 502 and the UI can render the real upstream message
+        instead of a hardcoded SELECT-grants hint."""
         with patch.object(
             helpers_module, "_import_introspection_engine", return_value=MagicMock(),
         ), patch.object(
@@ -266,11 +273,14 @@ class TestIntrospectionHelpers:
             helpers_module, "_get_introspector",
             side_effect=RuntimeError("upstream boom"),
         ):
-            schemas = helpers_module.list_schemas(
+            result = helpers_module.list_schemas(
                 engine="mssql", host="h", port=1433, database_name="analytics",
                 credential_payload={"username": "u", "password": "p"},
             )
-        assert schemas == []
+        assert isinstance(result, helpers_module.SchemasResult)
+        assert result.schemas == []
+        assert result.error_type == "introspection_failed"
+        assert "upstream boom" in (result.error or "")
 
     def test_schema_info_dataclass_shape(self):
         s = helpers_module.SchemaInfo(
@@ -366,6 +376,139 @@ class TestIntrospectionHelpers:
                     )
         assert r.valid is False
         assert "Access denied" in (r.error or "")
+
+    def test_mssql_login_failed_with_master_succeeding_returns_db_not_found_message(self):
+        # MSSQL deliberately hides "database not found" behind a
+        # "Login failed for user 'X'." string. When the master-DB
+        # probe succeeds, we know auth is fine and the target DB is
+        # the real problem - the helper should rewrite the error to
+        # the friendlier "Cannot access database 'X'" message.
+        fake_dce = MagicMock()
+        fake_dce.DatasourceConnectionStatus.VALID = "VALID_SENTINEL"
+        fake_dce.DatasourceType.return_value = "ds_type"
+
+        # First check (target DB): INVALID + "Login failed for user".
+        first_result = MagicMock()
+        first_result.connection_status = "INVALID_SENTINEL"
+        first_result.summary = "Connection failed"
+        first_result.full_message = "Login failed for user 'outcomeops_ro'."
+
+        # Second check (master probe): VALID.
+        second_result = MagicMock()
+        second_result.connection_status = "VALID_SENTINEL"
+        second_result.summary = None
+        second_result.full_message = None
+
+        fake_mgr = MagicMock()
+        fake_mgr.check_datasource_config_connection.side_effect = [
+            first_result, second_result,
+        ]
+        fake_dce.init_dce_domain.return_value = fake_mgr
+
+        with patch.object(helpers_module, "_import_introspection_engine", return_value=fake_dce):
+            with patch(
+                "databao_context_engine.plugins.databases.mssql.config_file."
+                "MSSQLConfigFile",
+                create=True,
+            ):
+                with patch(
+                    "databao_context_engine.plugins.databases.mssql.config_file."
+                    "MSSQLConnectionProperties",
+                    create=True,
+                ):
+                    r = helpers_module.validate_connection(
+                        engine="mssql",
+                        host="h", port=1433, database_name="typo_db",
+                        credential_payload={"username": "u", "password": "p"},
+                    )
+        assert r.valid is False
+        assert "Cannot access database" in (r.error or "")
+        assert "typo_db" in (r.error or "")
+        # Two calls: target DB then master probe.
+        assert fake_mgr.check_datasource_config_connection.call_count == 2
+
+    def test_mssql_login_failed_with_master_also_failing_returns_original_error(self):
+        # When the master probe also returns INVALID, auth genuinely
+        # failed - keep the original "Login failed" message rather
+        # than rewriting it (the user needs to fix their password,
+        # not the database name).
+        fake_dce = MagicMock()
+        fake_dce.DatasourceConnectionStatus.VALID = "VALID_SENTINEL"
+        fake_dce.DatasourceType.return_value = "ds_type"
+
+        first_result = MagicMock()
+        first_result.connection_status = "INVALID_SENTINEL"
+        first_result.summary = "Connection failed"
+        first_result.full_message = "Login failed for user 'outcomeops_ro'."
+
+        second_result = MagicMock()
+        second_result.connection_status = "INVALID_SENTINEL"
+        second_result.summary = "Connection failed"
+        second_result.full_message = "Login failed for user 'outcomeops_ro'."
+
+        fake_mgr = MagicMock()
+        fake_mgr.check_datasource_config_connection.side_effect = [
+            first_result, second_result,
+        ]
+        fake_dce.init_dce_domain.return_value = fake_mgr
+
+        with patch.object(helpers_module, "_import_introspection_engine", return_value=fake_dce):
+            with patch(
+                "databao_context_engine.plugins.databases.mssql.config_file."
+                "MSSQLConfigFile",
+                create=True,
+            ):
+                with patch(
+                    "databao_context_engine.plugins.databases.mssql.config_file."
+                    "MSSQLConnectionProperties",
+                    create=True,
+                ):
+                    r = helpers_module.validate_connection(
+                        engine="mssql",
+                        host="h", port=1433, database_name="d",
+                        credential_payload={"username": "u", "password": "bad"},
+                    )
+        assert r.valid is False
+        assert "Login failed for user" in (r.error or "")
+        assert "Cannot access database" not in (r.error or "")
+
+    def test_postgres_login_failed_does_not_probe_master(self):
+        # Postgres distinguishes auth failures from "db not found" at
+        # the wire level, so the master-probe path is MSSQL-only.
+        # Even if Postgres happens to return a "Login failed for user"
+        # string, no second probe should fire.
+        fake_dce = MagicMock()
+        fake_dce.DatasourceConnectionStatus.VALID = "VALID_SENTINEL"
+        fake_dce.DatasourceType.return_value = "ds_type"
+
+        first_result = MagicMock()
+        first_result.connection_status = "INVALID_SENTINEL"
+        first_result.summary = "Connection failed"
+        first_result.full_message = "Login failed for user 'u'"
+
+        fake_mgr = MagicMock()
+        fake_mgr.check_datasource_config_connection.return_value = first_result
+        fake_dce.init_dce_domain.return_value = fake_mgr
+
+        with patch.object(helpers_module, "_import_introspection_engine", return_value=fake_dce):
+            with patch(
+                "databao_context_engine.plugins.databases.postgresql.config_file."
+                "PostgresConfigFile",
+                create=True,
+            ):
+                with patch(
+                    "databao_context_engine.plugins.databases.postgresql.config_file."
+                    "PostgresConnectionProperties",
+                    create=True,
+                ):
+                    r = helpers_module.validate_connection(
+                        engine="postgres",
+                        host="h", port=5432, database_name="d",
+                        credential_payload={"username": "u", "password": "bad"},
+                    )
+        assert r.valid is False
+        # Exactly one call - no master-DB probe for Postgres.
+        assert fake_mgr.check_datasource_config_connection.call_count == 1
 
 
 # ============================================================================
@@ -688,6 +831,83 @@ class TestUpdateScope:
 
         result = handler_module.update_scope("u@x.com", "ws1", "c1", {})
         assert result["statusCode"] == 403
+
+
+class TestGetSchemas:
+    """Tests for handler.get_schemas, which maps a SchemasResult to HTTP.
+
+    The handler does a deferred `from credential_manager import
+    get_credential` at call time. Other test modules in the suite
+    (e.g., database-sync) load their own credential_manager.py under
+    the same `credential_manager` sys.modules key, so this fixture
+    pins sys.modules["credential_manager"] back to the
+    database-integration one for the duration of each test.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _pin_credential_module(self):
+        prior = sys.modules.get("credential_manager")
+        sys.modules["credential_manager"] = credential_module
+        yield
+        if prior is not None:
+            sys.modules["credential_manager"] = prior
+        else:
+            sys.modules.pop("credential_manager", None)
+
+    @patch.object(handler_module, "list_db_schemas")
+    @patch.object(handler_module, "get_connection")
+    def test_handler_schemas_route_returns_502_on_introspection_failed(
+        self, mock_get_conn, mock_list,
+    ):
+        # When list_schemas reports error_type="introspection_failed",
+        # the route should return HTTP 502 with the upstream error
+        # message in the body so the UI can render it verbatim
+        # instead of falling back to a hardcoded SELECT-grants hint.
+        mock_get_conn.return_value = {
+            "engine": "mssql",
+            "host": "h",
+            "port": 1433,
+            "database_name": "d",
+        }
+        mock_list.return_value = helpers_module.SchemasResult(
+            schemas=[],
+            error="RuntimeError: upstream boom",
+            error_type="introspection_failed",
+        )
+
+        with patch.object(
+            credential_module, "get_credential",
+            return_value={"username": "u", "password": "p"},
+        ):
+            result = handler_module.get_schemas("u@x.com", "ws1", "c1")
+        assert result["statusCode"] == 502
+        body = json.loads(result["body"])
+        assert body["error_type"] == "introspection_failed"
+        assert "upstream boom" in body["error"]
+
+    @patch.object(handler_module, "list_db_schemas")
+    @patch.object(handler_module, "get_connection")
+    def test_handler_schemas_route_returns_200_with_empty_schemas(
+        self, mock_get_conn, mock_list,
+    ):
+        # Genuinely-empty SchemasResult (schemas=[], error=None) still
+        # returns 200 - the UI's empty-state hint covers that case.
+        mock_get_conn.return_value = {
+            "engine": "postgres",
+            "host": "h",
+            "port": 5432,
+            "database_name": "d",
+        }
+        mock_list.return_value = helpers_module.SchemasResult(schemas=[])
+
+        with patch.object(
+            credential_module, "get_credential",
+            return_value={"username": "u", "password": "p"},
+        ):
+            result = handler_module.get_schemas("u@x.com", "ws1", "c1")
+        assert result["statusCode"] == 200
+        body = json.loads(result["body"])
+        assert body == {"schemas": []}
 
 
 class TestDeleteConnection:
