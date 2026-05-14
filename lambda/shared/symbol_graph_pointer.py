@@ -113,15 +113,21 @@ def _reset_clients_for_tests() -> None:
 class PointerState:
     """Snapshot of the symbol-graph pointer for one (workspace, repo).
 
-    Both fields are ``None`` on first-time reads (no row, or row exists
-    but neither attribute is set). The query layer in chunk 04 uses
-    ``graph_sha`` as the authoritative anchor and treats a non-None
-    ``graph_pending_sha`` as "regen in flight" — neither stale nor
-    wrong, fall back to ``graph_sha``.
+    All three fields default to ``None`` on first-time reads (no row, or
+    row exists but the attributes are unset). The query layer in chunk
+    04 uses ``graph_sha`` as the authoritative anchor and treats a
+    non-None ``graph_pending_sha`` as "regen in flight" — neither stale
+    nor wrong, fall back to ``graph_sha``.
+
+    ``graph_sha_committed_at`` is the epoch-second timestamp of the most
+    recent successful ``commit_swap`` call (i.e. when the current
+    ``graph_sha`` became the committed slice). Chunk-04 readers use it
+    to compute ``staleness_seconds = now - graph_sha_committed_at``.
     """
 
     graph_sha: Optional[str]
     graph_pending_sha: Optional[str]
+    graph_sha_committed_at: Optional[int] = None
 
 
 def _table_name(code_maps_table_name: Optional[str]) -> str:
@@ -181,6 +187,18 @@ def read_pointer(
     item = response.get("Item") or {}
     graph_sha = item.get("graph_sha")
     graph_pending_sha = item.get("graph_pending_sha")
+    committed_at_raw = item.get("graph_sha_committed_at")
+    # DynamoDB returns numerics as Decimal — coerce to int defensively so
+    # downstream staleness math (now - committed_at) doesn't trip over
+    # mixed types. Reject zero / non-numeric values.
+    try:
+        committed_at = (
+            int(committed_at_raw) if committed_at_raw is not None else None
+        )
+    except (TypeError, ValueError):
+        committed_at = None
+    if committed_at is not None and committed_at <= 0:
+        committed_at = None
     return PointerState(
         graph_sha=graph_sha if isinstance(graph_sha, str) and graph_sha else None,
         graph_pending_sha=(
@@ -188,6 +206,7 @@ def read_pointer(
             if isinstance(graph_pending_sha, str) and graph_pending_sha
             else None
         ),
+        graph_sha_committed_at=committed_at,
     )
 
 
@@ -278,10 +297,16 @@ def commit_swap(
 
     table = _resource().Table(_table_name(code_maps_table_name))
     try:
+        # graph_sha_committed_at is set here (not in begin_swap) because
+        # "when did this slice become the committed slice" semantically
+        # refers to the commit step. Chunk-04 readers use it for
+        # staleness_seconds.
         table.update_item(
             Key=_pointer_key(workspace_id, repo),
             UpdateExpression=(
-                "SET graph_sha = :new_sha, updated_at = :now "
+                "SET graph_sha = :new_sha, "
+                "graph_sha_committed_at = :now, "
+                "updated_at = :now "
                 "REMOVE graph_pending_sha"
             ),
             ConditionExpression="graph_pending_sha = :new_sha",
