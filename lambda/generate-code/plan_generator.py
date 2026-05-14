@@ -7,6 +7,7 @@ Uses pluggable backends for language-specific plan generation.
 
 import json
 import logging
+import os
 from datetime import datetime
 from typing import Any, Dict, Optional
 
@@ -14,6 +15,7 @@ from codegen_backends import CodeGeneratorBackend, get_backend_for_repo
 from codegen_backends.base import StandardsContext
 from bedrock_client import invoke_claude, extract_json_from_response
 from github_api import get_github_token, commit_file, update_file, get_file, create_pull_request
+from impact_analysis import ImpactAnalysisResult, run_impact_analysis
 from knowledge_base import (
     get_lambda_standards,
     get_standards_for_backend,
@@ -444,6 +446,58 @@ def generate_execution_plan(
             f"${summarization_cost.total_cost_usd:.6f} "
             f"({summarization_cost.input_tokens} in, {summarization_cost.output_tokens} out)"
         )
+
+    # Pre-PR caller impact analysis (plan-gkg chunk 07).
+    # On the modify-path, query the symbol graph for callers of each
+    # symbol the plan touches so the step executors get a list of caller
+    # sites that need parallel updates. Best-effort: failure here does
+    # NOT break codegen (analyze-pr is the safety net per chunk 06).
+    try:
+        # Flatten the parsed plan back into a text corpus for symbol
+        # extraction. The model often names target symbols in step
+        # titles/descriptions; we feed all three through together so we
+        # match the regex regardless of where the symbol was mentioned.
+        plan_text_for_impact = "\n".join(
+            f"{s.title}\n{s.description}\n" + "\n".join(s.files_to_create)
+            for s in steps
+        )
+        impact_result = run_impact_analysis(
+            issue_title=webhook_event.issue.title,
+            issue_description=webhook_event.issue.body,
+            plan_text=plan_text_for_impact,
+            workspace_id=os.environ.get("WORKSPACE_ID") or "",
+            files_to_create=[
+                f for s in steps for f in (s.files_to_create or [])
+            ],
+            symbol_graph_table_name=os.environ.get("SYMBOL_GRAPH_TABLE"),
+            code_maps_table_name=os.environ.get("CODE_MAPS_TABLE"),
+        )
+        if impact_result.skipped:
+            logger.info(
+                "[plan-gen] Impact analysis skipped: %s (%s)",
+                impact_result.task_type,
+                impact_result.reason,
+            )
+        else:
+            logger.info(
+                "[plan-gen] Impact analysis (%s): %d symbols, %d callers — %s",
+                impact_result.task_type,
+                len(impact_result.impacts),
+                sum(len(i.callers) for i in impact_result.impacts),
+                impact_result.reason,
+            )
+            # Surface the prompt section in logs so step executors and
+            # reviewers can see the caller list even before the section
+            # is woven into the next codegen pass.
+            if impact_result.prompt_section:
+                logger.info(
+                    "[plan-gen] Caller impact section:\n%s",
+                    impact_result.prompt_section,
+                )
+    except Exception as exc:  # pragma: no cover - defensive
+        # Per plan-gkg/07 failure-modes: graph unavailable -> impact
+        # analysis skipped, codegen proceeds. We never let this raise.
+        logger.warning("[plan-gen] Impact analysis pass failed: %s", exc)
 
     return plan
 
