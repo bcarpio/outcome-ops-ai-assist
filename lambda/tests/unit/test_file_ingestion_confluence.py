@@ -92,7 +92,6 @@ def stub_outcomeops_license():
     allowed.current = 0
     allowed.limit = 100
     stub.check_repo_limit.return_value = allowed
-    stub.track_repo_active.return_value = True
     saved = sys.modules.get("outcomeops_license")
     sys.modules["outcomeops_license"] = stub
     yield stub
@@ -1901,8 +1900,10 @@ class TestLambdaHandlerConfluenceJiraRouting:
 class TestLicenseEnforcement:
     """Validate the ADR-019 fail-closed license + repo-limit contract for
     file-ingestion (the upstream entry boundary in the unified ingest
-    pipeline). check_repo_limit runs here per source; track_repo_active
-    runs at the completion boundary in process-documents instead."""
+    pipeline). check_repo_limit runs here per source; liveness reporting
+    (license layer v2.0.0 desired-state snapshot via
+    report_repos_snapshot) is owned by the *-integration connect/
+    disconnect handlers, not this Lambda."""
 
     @patch.object(handler_module, 'process_confluence_page')
     def test_lambda_handler_license_valid(
@@ -1997,8 +1998,9 @@ class TestLicenseEnforcement:
         self, mock_process, stub_outcomeops_license
     ):
         """check_repo_limit fires per record at the upstream boundary.
-        track_repo_active is intentionally NOT called here - it runs at
-        the completion boundary in process-documents."""
+        Liveness reporting (license layer v2.0.0 desired-state snapshot
+        via report_repos_snapshot) is owned by the *-integration connect/
+        disconnect handlers, not this Lambda."""
         mock_process.return_value = "workspaces/ws_z/confluence/space/page.html"
         event = {
             "Records": [{
@@ -2017,6 +2019,3 @@ class TestLicenseEnforcement:
         stub_outcomeops_license.check_repo_limit.assert_called_once_with(
             repo="ws_z:confluence:FIN"
         )
-        # Defense-in-depth: file-ingestion never tracks usage; that
-        # belongs to the completion boundary (process-documents).
-        stub_outcomeops_license.track_repo_active.assert_not_called()

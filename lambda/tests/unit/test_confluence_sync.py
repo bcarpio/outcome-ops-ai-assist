@@ -23,10 +23,10 @@ mock_ssm_client = MagicMock()
 def _make_license_module_stub():
     """Stand-in for the outcomeops_license layer in unit tests.
 
-    The handler imports validate_license / check_repo_limit /
-    track_repo_active at module scope. The layer is mounted at /opt/python
-    in the Lambda runtime; in unit tests we inject a MagicMock module so
-    the imports succeed and individual tests can monkeypatch behaviour.
+    The handler imports validate_license / check_repo_limit at module
+    scope. The layer is mounted at /opt/python in the Lambda runtime;
+    in unit tests we inject a MagicMock module so the imports succeed
+    and individual tests can monkeypatch behaviour.
     """
     stub = MagicMock()
     stub.validate_license.return_value = {"sub": "test-customer"}
@@ -39,7 +39,6 @@ def _make_license_module_stub():
             self.limit = limit
 
     stub.check_repo_limit.side_effect = lambda **_: _Result()
-    stub.track_repo_active.return_value = True
     return stub
 
 
@@ -1488,7 +1487,12 @@ class TestLicenseValidation:
 
 
 class TestRepoLimitEnforcement:
-    """Test per-space check_repo_limit + track_repo_active (ADR-019)."""
+    """Test per-space check_repo_limit (ADR-019).
+
+    Liveness tracking (license layer v2.0.0 desired-state snapshot via
+    report_repos_snapshot) is owned by the confluence-integration
+    connect/disconnect handlers and tested in those test modules.
+    """
 
     @patch.object(handler_module, 'queue_orphan_detection')
     @patch.object(handler_module, 'queue_file_ingestion')
@@ -1533,40 +1537,3 @@ class TestRepoLimitEnforcement:
             "pages_queued", 1
         ) == 0
 
-    @patch.object(handler_module, 'queue_orphan_detection')
-    @patch.object(handler_module, 'queue_file_ingestion')
-    @patch.object(handler_module, 'list_pages_in_space')
-    @patch.object(handler_module, 'refresh_access_token')
-    @patch.object(handler_module, '_load_oauth_config')
-    @patch.object(handler_module, 'update_connection_status')
-    @patch.object(handler_module, 'get_connection')
-    def test_track_repo_active_called_on_successful_sync(
-        self, mock_get_conn, mock_update, mock_config, mock_refresh,
-        mock_list_pages, mock_queue, mock_orphan, monkeypatch,
-    ):
-        """After a successful sync, track_repo_active is called once with
-        the namespaced confluence:{space_key} identifier per processed
-        space."""
-        mock_get_conn.return_value = {
-            "cloud_id": "cloud_abc",
-            "selected_spaces": [
-                {"id": "space_1", "key": "ENG", "name": "Engineering"},
-            ],
-            "include_attachments": False,
-        }
-        mock_config.return_value = {"client_id": "cid", "client_secret": "csec"}
-        mock_refresh.return_value = "access_token"
-        mock_list_pages.return_value = [{"id": "p1", "title": "Page 1"}]
-        monkeypatch.setattr(
-            handler_module, "check_repo_limit", lambda **_: _LimitResult()
-        )
-        mock_track = MagicMock(return_value=True)
-        monkeypatch.setattr(handler_module, "track_repo_active", mock_track)
-
-        result = process_sync_request({
-            "workspace_id": "ws_test",
-            "connection_id": "conn_test",
-        })
-
-        assert result["status"] == "success"
-        mock_track.assert_called_once_with(repo="confluence:ENG")

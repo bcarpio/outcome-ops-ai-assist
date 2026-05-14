@@ -41,13 +41,11 @@ from shared.audit_writer import log_license_fail_open, log_source_sync  # noqa: 
 try:
     from outcomeops_license import (  # noqa: E402
         check_repo_limit,
-        track_repo_active,
         validate_license,
     )
 except ImportError:  # pragma: no cover - deploy bug path, exercised in tests
     validate_license = None  # type: ignore[assignment]
     check_repo_limit = None  # type: ignore[assignment]
-    track_repo_active = None  # type: ignore[assignment]
 
 # Configure logging
 logger = logging.getLogger()
@@ -787,8 +785,8 @@ def process_sync_request(message: Dict) -> Dict:
                     "repo_type": repo_type,
                 },
             )
-            # ADR-019: liveness tracking; non-blocking, never raises.
-            track_repo_active(repo=repo_name)
+            # ADR-019: liveness tracking now lives in connect/disconnect
+            # handlers via report_repos_snapshot (license layer v2.0.0).
             return {"status": "no_changes", "commit_sha": current_sha}
 
         # Get repo file tree
@@ -848,9 +846,8 @@ def process_sync_request(message: Dict) -> Dict:
                 "repo_type": repo_type,
             },
         )
-        # ADR-019: liveness tracking on successful sync; non-blocking.
-        if result.get("status") == "success":
-            track_repo_active(repo=repo_name)
+        # ADR-019: liveness tracking now lives in connect/disconnect handlers
+        # via report_repos_snapshot (license layer v2.0.0 desired-state model).
         return result
 
     except Exception as e:

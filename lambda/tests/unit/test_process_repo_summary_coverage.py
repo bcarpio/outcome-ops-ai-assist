@@ -399,9 +399,6 @@ class TestHandlerExtended:
             MagicMock(return_value=MagicMock(allowed=True)),
         )
         monkeypatch.setattr(
-            rsh, "track_repo_active", MagicMock(return_value=True),
-        )
-        monkeypatch.setattr(
             rsh, "track_code_map_updated", MagicMock(return_value=True),
         )
 

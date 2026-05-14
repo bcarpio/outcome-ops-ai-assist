@@ -1447,13 +1447,14 @@ def process_sharepoint_page(
 
 def _build_repo_identifier(source: str, workspace_id: str, body: Dict, file_info: Dict) -> str:
     """Build the per-source composite repo identifier used by
-    check_repo_limit() / track_repo_active() (ADR-019).
+    check_repo_limit() (ADR-019).
 
     file-ingestion is the upstream entry: it picks the source identifier
     out of the SQS message and composes ``{workspace_id}:{source}:{ident}``
     so the license server has a stable, low-cardinality string per
-    customer source. process-documents then derives the same composite
-    from the S3 key path so dedup works across the boundary.
+    customer source. Liveness reporting (license layer v2.0.0
+    desired-state snapshot via report_repos_snapshot) is owned by the
+    *-integration connect/disconnect handlers, not this Lambda.
     """
     if source in ("confluence", "confluence_attachment"):
         ident = file_info.get("space_key") or file_info.get("space_name") or ""
@@ -1504,9 +1505,9 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
       to let SQS DLQ the batch on hard failures).
     - check_repo_limit(repo=composite) runs per-source at this upstream
       entry boundary; blocked sources are skipped in this batch.
-    - track_repo_active() is intentionally NOT called here -- it fires
-      at the completion boundary in process-documents/handler.py once
-      the document has actually been embedded.
+    - Liveness reporting (license layer v2.0.0 desired-state snapshot via
+      report_repos_snapshot) is owned by the *-integration connect/
+      disconnect handlers, not this Lambda.
     """
     logger.info(f"File ingestion handler invoked with {len(event.get('Records', []))} records")
 

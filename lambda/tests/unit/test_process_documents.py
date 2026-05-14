@@ -141,7 +141,6 @@ def stub_outcomeops_license():
     """
     stub = MagicMock()
     stub.validate_license.return_value = {"sub": "test-customer"}
-    stub.track_repo_active.return_value = True
     saved = sys.modules.get("outcomeops_license")
     sys.modules["outcomeops_license"] = stub
     yield stub
@@ -2128,9 +2127,11 @@ class TestLambdaHandlerEdgeCases:
 class TestLicenseEnforcement:
     """Validate the ADR-019 fail-closed license + usage-tracking contract
     for process-documents (the completion boundary in the unified ingest
-    pipeline). track_repo_active runs here per successful document;
-    check_repo_limit is intentionally NOT called - it runs upstream in
-    file-ingestion before we ever reach S3."""
+    pipeline). check_repo_limit is intentionally NOT called - it runs
+    upstream in file-ingestion before we ever reach S3. Liveness
+    reporting (license layer v2.0.0 desired-state snapshot via
+    report_repos_snapshot) is owned by the *-integration connect/
+    disconnect handlers, not this Lambda."""
 
     @patch.object(handler_module, "process_document")
     def test_lambda_handler_license_valid(
@@ -2188,42 +2189,3 @@ class TestLicenseEnforcement:
         # Assert the symbol was never even accessed on the stub.
         stub_outcomeops_license.check_repo_limit.assert_not_called()
 
-    @patch.object(handler_module, "process_document")
-    def test_tracking_called_on_success(
-        self, mock_process, stub_outcomeops_license
-    ):
-        """track_repo_active fires once per successful document with a
-        composite repo identifier matching file-ingestion's shape:
-        '{workspace_id}:{source}:{folder_path[0]}'. Failed documents
-        (status != 'success') do NOT trigger tracking."""
-        mock_process.side_effect = [
-            {"status": "success", "key": "ok"},
-            {"status": "error", "key": "bad"},
-        ]
-        event = {
-            "Records": [
-                {
-                    "s3": {
-                        "bucket": {"name": "test-kb-bucket"},
-                        "object": {
-                            "key": "workspaces/ws_q/confluence/ENG/page.html"
-                        },
-                    }
-                },
-                {
-                    "s3": {
-                        "bucket": {"name": "test-kb-bucket"},
-                        "object": {
-                            "key": "workspaces/ws_q/jira/PROJ/PROJ-1.html"
-                        },
-                    }
-                },
-            ]
-        }
-
-        lambda_handler(event, None)
-
-        # Only one call - the failed document is skipped.
-        stub_outcomeops_license.track_repo_active.assert_called_once_with(
-            repo="ws_q:confluence:ENG"
-        )
