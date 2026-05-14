@@ -160,6 +160,15 @@ jobs:
               pip install -r "$req"
             fi
           done
+          # Database integration shares its deps at the lambda root
+          # (consumed by both database-integration and database-sync
+          # container builds) — the per-Lambda glob above doesn't
+          # match it. Install explicitly so unit tests that touch the
+          # introspection_helpers / mssql_stats modules can resolve
+          # databao_context_engine + driver imports at patch time.
+          if [ -f lambda/db-introspection-requirements.txt ]; then
+            pip install -r lambda/db-introspection-requirements.txt
+          fi
           # Install test dependencies
           pip install pytest pytest-cov pytest-asyncio boto3 moto requests httpx
 
