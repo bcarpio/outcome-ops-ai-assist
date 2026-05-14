@@ -571,7 +571,12 @@ def _load_mcp_server(table, mcp_id):
     config = {
         "mcp_id": mcp_id,
         "name": meta.get("name", mcp_id),
-        "url": meta.get("url", ""),
+        # Prefer the Cloud Map internal URL when present. The gateway is a
+        # Fargate task in the same VPC as catalog MCP servers, so private-DNS
+        # HTTP traffic bypasses the ALB (no TLS hop, no cert trust). The `url`
+        # field remains the ALB URL for external (Lambda) callers like chat
+        # and workspace-management, which can't resolve internal DNS.
+        "url": meta.get("internal_url") or meta.get("url", ""),
         "auth_type": meta.get("auth_type", "none"),
         "ssm_token_path": meta.get("ssm_token_path", ""),
         "ssm_token_header": meta.get("ssm_token_header", ""),

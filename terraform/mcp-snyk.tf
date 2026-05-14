@@ -74,8 +74,16 @@ module "mcp_snyk" {
   alb_listener_rule_priority = 6
   mcp_path_pattern           = "/mcp/snyk"
 
-  # Allow ALB to reach the MCP container
-  allowed_security_group_ids = [module.ui_alb_sg.security_group_id]
+  # Allow ALB + OutcomeOps gateway to reach the MCP container.
+  # The gateway is a Fargate task in the same VPC and reaches siblings
+  # via Cloud Map private DNS (no ALB hop, no TLS, no cert trust). The
+  # conditional + compact() keeps the disable path
+  # (mcp_server_enabled = false) clean when module.mcp_outcomeops has
+  # zero instances.
+  allowed_security_group_ids = compact([
+    module.ui_alb_sg.security_group_id,
+    var.mcp_server_enabled ? module.mcp_outcomeops[0].security_group_id : "",
+  ])
 }
 
 # -----------------------------------------------------------------------------
@@ -90,13 +98,17 @@ resource "aws_dynamodb_table_item" "mcp_snyk" {
   range_key  = "SK"
 
   item = jsonencode({
-    PK                    = { S = "MCP#catalog-snyk" }
-    SK                    = { S = "METADATA" }
-    GSI1PK                = { S = "ORG#default" }
-    GSI1SK                = { S = "MCP#catalog-snyk" }
-    mcp_id                = { S = "catalog-snyk" }
-    name                  = { S = "Snyk" }
-    url                   = { S = "${local.mcp_base_url}/mcp/snyk" }
+    PK     = { S = "MCP#catalog-snyk" }
+    SK     = { S = "METADATA" }
+    GSI1PK = { S = "ORG#default" }
+    GSI1SK = { S = "MCP#catalog-snyk" }
+    mcp_id = { S = "catalog-snyk" }
+    name   = { S = "Snyk" }
+    url    = { S = "${local.mcp_base_url}/mcp/snyk" }
+    # Cloud Map private DNS - gateway reads this and bypasses the ALB.
+    # External Lambda callers (chat, workspace-management) can't resolve
+    # private DNS and continue to use `url`.
+    internal_url          = { S = module.mcp_snyk[0].service_url }
     auth_type             = { S = "none" }
     ssm_token_path        = { S = local.mcp_snyk_token_ssm_path }
     ssm_token_header      = { S = "SNYK_TOKEN" }

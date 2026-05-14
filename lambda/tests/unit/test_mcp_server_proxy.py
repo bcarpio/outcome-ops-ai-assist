@@ -233,6 +233,57 @@ class TestMcpServerDiscovery:
         mock_dynamodb.get_item.assert_not_called()
 
 
+class TestLoadMcpServerInternalUrl:
+    """_load_mcp_server prefers internal_url over url when present.
+
+    The gateway is a Fargate task in the same VPC as catalog MCP servers, so
+    private-DNS HTTP via Cloud Map bypasses the ALB. External Lambda callers
+    (chat, workspace-management) keep using the ALB url because they can't
+    resolve private DNS.
+    """
+
+    def test_prefers_internal_url_when_present(self, mock_dynamodb):
+        """DDB metadata has both url + internal_url -> config['url'] is internal_url."""
+        mock_dynamodb.get_item.side_effect = [
+            {
+                "Item": {
+                    "mcp_id": "catalog-sonarqube",
+                    "name": "SonarQube",
+                    "url": "https://app.example.com/mcp",
+                    "internal_url": "http://sonarqube.prd-mcp.local:8080/mcp",
+                    "auth_type": "none",
+                    "status": "active",
+                }
+            },
+            {"Item": {"tools": []}},
+        ]
+
+        result = mcp_module._load_mcp_server(mock_dynamodb, "catalog-sonarqube")
+
+        assert result is not None
+        assert result["config"]["url"] == "http://sonarqube.prd-mcp.local:8080/mcp"
+
+    def test_falls_back_to_url_when_no_internal_url(self, mock_dynamodb):
+        """DDB metadata has only url (user-added MCP) -> config['url'] is the ALB url."""
+        mock_dynamodb.get_item.side_effect = [
+            {
+                "Item": {
+                    "mcp_id": "user-123",
+                    "name": "User MCP",
+                    "url": "https://user-mcp.example.com",
+                    "auth_type": "bearer",
+                    "status": "active",
+                }
+            },
+            {"Item": {"tools": []}},
+        ]
+
+        result = mcp_module._load_mcp_server(mock_dynamodb, "user-123")
+
+        assert result is not None
+        assert result["config"]["url"] == "https://user-mcp.example.com"
+
+
 class TestToolNamespacing:
     """Test tool namespacing for proxied tools."""
 

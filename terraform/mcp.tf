@@ -84,8 +84,16 @@ module "mcp_sonarqube" {
   alb_listener_rule_priority = 7
   mcp_path_pattern           = "/mcp"
 
-  # Allow ALB to reach the MCP container
-  allowed_security_group_ids = [module.ui_alb_sg.security_group_id]
+  # Allow ALB + OutcomeOps gateway to reach the MCP container.
+  # The gateway is a Fargate task in the same VPC and reaches siblings
+  # via Cloud Map private DNS (no ALB hop, no TLS, no cert trust). The
+  # conditional + compact() keeps the disable path
+  # (mcp_server_enabled = false) clean when module.mcp_outcomeops has
+  # zero instances.
+  allowed_security_group_ids = compact([
+    module.ui_alb_sg.security_group_id,
+    var.mcp_server_enabled ? module.mcp_outcomeops[0].security_group_id : "",
+  ])
 }
 
 # -----------------------------------------------------------------------------
@@ -102,13 +110,17 @@ resource "aws_dynamodb_table_item" "mcp_sonarqube" {
   range_key  = "SK"
 
   item = jsonencode({
-    PK                    = { S = "MCP#catalog-sonarqube" }
-    SK                    = { S = "METADATA" }
-    GSI1PK                = { S = "ORG#default" }
-    GSI1SK                = { S = "MCP#catalog-sonarqube" }
-    mcp_id                = { S = "catalog-sonarqube" }
-    name                  = { S = "SonarQube" }
-    url                   = { S = "${local.mcp_base_url}/mcp" }
+    PK     = { S = "MCP#catalog-sonarqube" }
+    SK     = { S = "METADATA" }
+    GSI1PK = { S = "ORG#default" }
+    GSI1SK = { S = "MCP#catalog-sonarqube" }
+    mcp_id = { S = "catalog-sonarqube" }
+    name   = { S = "SonarQube" }
+    url    = { S = "${local.mcp_base_url}/mcp" }
+    # Cloud Map private DNS - gateway reads this and bypasses the ALB.
+    # External Lambda callers (chat, workspace-management) can't resolve
+    # private DNS and continue to use `url`.
+    internal_url          = { S = module.mcp_sonarqube[0].service_url }
     auth_type             = { S = "none" }
     ssm_token_path        = { S = local.mcp_sonarqube_token_ssm_path }
     ssm_token_header      = { S = "SONARQUBE_TOKEN" }

@@ -234,23 +234,107 @@ FQDN.
 
 The platform CA Lambda layer built by
 `scripts/build-platform-ca-layer.sh` is attached to every Lambda that
-calls back into the UI ALB over HTTPS. As of this writing, three
+calls back into the UI ALB over HTTPS. As of this writing, two
 Lambdas:
 
 - `chat` — calls MCP servers during chat sessions (uses `requests`).
 - `workspace-management` — calls MCP servers during registration and
   tool discovery (uses `requests`).
-- `mcp-server` — calls downstream MCP servers via the gateway pattern
-  (uses stdlib `urllib.request`, which only honors `SSL_CERT_FILE`,
-  not `REQUESTS_CA_BUNDLE` — both env vars are set on all three
-  Lambdas to cover `requests`, `httpx`, and stdlib TLS).
+
+Both have `REQUESTS_CA_BUNDLE=/opt/ca-bundle.pem` and
+`SSL_CERT_FILE=/opt/ca-bundle.pem` set to cover `requests`, `httpx`,
+and stdlib TLS.
 
 If you add a new Lambda that egresses to `local.fqdn`, attach the
-layer and set both `REQUESTS_CA_BUNDLE=/opt/ca-bundle.pem` and
-`SSL_CERT_FILE=/opt/ca-bundle.pem`. Forgetting the layer manifests as
-silent TLS verification 500s only on BYO-internal-CA deploys, so the
-failure mode skips local dev and most public-cert customers — easy
-to miss in review.
+layer and set both env vars. Forgetting the layer manifests as silent
+TLS verification 500s only on BYO-internal-CA deploys, so the failure
+mode skips local dev and most public-cert customers — easy to miss
+in review.
+
+### Why `mcp-server` is NOT in the list
+
+The OutcomeOps MCP gateway (`mcp-server`) is a Fargate task running
+in the same VPC as the built-in catalog MCP servers (sonarqube,
+snyk). For sibling traffic it does NOT call the UI ALB — it reaches
+each sibling directly over Cloud Map private DNS at
+`http://<server>.${environment}-mcp.local:8080/mcp`, which is plain
+HTTP inside the VPC. No TLS hop, no cert trust required, no platform
+CA layer needed.
+
+This is wired by two pieces:
+
+1. Each sibling's DDB `METADATA` record (auto-registered by terraform
+   in `terraform/mcp.tf` and `terraform/mcp-snyk.tf`) carries both a
+   public `url` field (ALB URL, used by external Lambda callers) and
+   an `internal_url` field set from the module's `service_url`
+   output. The gateway's `_load_mcp_server` in
+   `lambda/mcp-server/handler.py` prefers `internal_url` when
+   present.
+2. Each sibling's security group lets the gateway's task SG in via
+   `compact([alb_sg, mcp_outcomeops[0].security_group_id])` —
+   conditional on `mcp_server_enabled` so the disable path stays
+   clean.
+
+If a future engineer adds a new catalog MCP server, they must
+populate `internal_url` on the catalog DDB record (using
+`module.<new>[0].service_url`) and add the gateway SG to that
+server's `allowed_security_group_ids`. If they skip the
+`internal_url`, the gateway falls back to the ALB URL — still works
+on public-cert deploys, breaks on internal-CA deploys.
+
+#### User-added MCP server caveat
+
+If a customer registers their own MCP server through the UI and
+points it at an internal-CA-signed URL, the gateway still reaches
+that URL via HTTPS (no Cloud Map bypass for non-catalog servers,
+since they don't live in this VPC). The gateway's stdlib
+`urllib.request` won't trust the cert without `SSL_CERT_FILE`
+pointing at a bundle that includes the customer's internal CA, and
+the platform CA layer is NOT attached to mcp-server today. The
+recommended posture is: customers should use publicly-trusted certs
+for any user-added MCP server. If a customer absolutely needs an
+internal-CA-signed user-added MCP server, attach the platform CA
+layer to mcp-server and set its env vars (the same pattern used for
+chat and workspace-management).
+
+### One-time DDB backfill for existing deployments
+
+The `aws_dynamodb_table_item` resources that write the catalog
+METADATA records have `lifecycle { ignore_changes = [item] }`, which
+keeps terraform from clobbering admin-edited fields. The trade-off
+is that after this feature lands, existing prd deploys won't see the
+new `internal_url` field on already-created records — only fresh
+deploys (or records re-created after manual deletion) pick it up
+automatically.
+
+Backfill once per environment from the deploy box:
+
+```bash
+ENV=prd APP=outcome-ops-ai-assist REGION=us-west-2
+TABLE=${ENV}-${APP}-workspaces
+
+aws dynamodb update-item --region $REGION --table-name $TABLE \
+  --key '{"PK":{"S":"MCP#catalog-sonarqube"},"SK":{"S":"METADATA"}}' \
+  --update-expression "SET internal_url = :u" \
+  --expression-attribute-values \
+    '{":u":{"S":"http://sonarqube.prd-mcp.local:8080/mcp"}}'
+
+aws dynamodb update-item --region $REGION --table-name $TABLE \
+  --key '{"PK":{"S":"MCP#catalog-snyk"},"SK":{"S":"METADATA"}}' \
+  --update-expression "SET internal_url = :u" \
+  --expression-attribute-values \
+    '{":u":{"S":"http://snyk.prd-mcp.local:8080/mcp"}}'
+```
+
+Verify the exact Cloud Map service names before running:
+
+```bash
+aws servicediscovery list-services --region $REGION
+```
+
+The gateway clears its in-memory cache on cold start; expect the
+update to propagate within the MCP cache TTL (~5 minutes) on warm
+containers.
 
 ## Terraform version note
 
