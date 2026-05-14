@@ -270,7 +270,65 @@ def validate_connection(
     # established"); full_message has the engine-specific detail
     # (auth failure, network refused, SSL cert problem, etc.).
     detail = result.full_message or result.summary or str(result.connection_status.value)
+
+    # MSSQL-only: "Login failed for user 'X'." is also what you get when
+    # the *database* doesn't exist or the connection user can't access
+    # it — MSSQL hides "db not found" behind a login-failed string to
+    # prevent info disclosure about which DBs exist on the server.
+    # Probe the `master` system database (every authenticated SQL
+    # Server login can reach it) with the same creds to disambiguate:
+    # if master auths cleanly, auth itself is fine and the original
+    # failure was about the target DB. Postgres/MySQL distinguish
+    # these at the wire level so they don't need this probe.
+    if engine == "mssql" and detail and "Login failed for user" in detail:
+        master_check = _probe_mssql_master(
+            dce, host, port, credential_payload,
+        )
+        if master_check.valid:
+            return ValidationResult(
+                valid=False,
+                error=(
+                    f"Cannot access database {database_name!r} — check the "
+                    f"database name or your grants on that database. "
+                    f"(Authentication itself succeeded against 'master'.)"
+                ),
+            )
+
     return ValidationResult(valid=False, error=detail)
+
+
+def _probe_mssql_master(
+    dce,
+    host: str,
+    port: int,
+    credential_payload: Dict[str, Any],
+) -> ValidationResult:
+    """One-shot: same creds, database='master', does it auth?
+
+    Returns ValidationResult; on .valid=True the original failure was
+    about the target DB, not auth. Cheap (single TCP/TLS round trip +
+    a check_datasource_config_connection call). Best-effort — any
+    exception just returns valid=False so the caller falls back to the
+    original error.
+    """
+    try:
+        master_config = _build_config(
+            dce, "mssql", host, port, "master", credential_payload,
+            datasource_name="ooat-master-probe",
+        )
+        with tempfile.TemporaryDirectory(prefix="dce-master-") as d:
+            mgr = dce.init_dce_domain(Path(d))
+            r = mgr.check_datasource_config_connection(
+                datasource_type=_datasource_type(dce, "mssql"),
+                datasource_name="ooat-master-probe",
+                config_content=master_config,
+            )
+            return ValidationResult(
+                valid=(r.connection_status == dce.DatasourceConnectionStatus.VALID),
+            )
+    except Exception:
+        logger.exception("MSSQL master-DB probe raised; falling back to original error")
+        return ValidationResult(valid=False)
 
 
 def list_schemas(

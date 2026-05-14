@@ -367,6 +367,139 @@ class TestIntrospectionHelpers:
         assert r.valid is False
         assert "Access denied" in (r.error or "")
 
+    def test_mssql_login_failed_with_master_succeeding_returns_db_not_found_message(self):
+        # MSSQL deliberately hides "database not found" behind a
+        # "Login failed for user 'X'." string. When the master-DB
+        # probe succeeds, we know auth is fine and the target DB is
+        # the real problem - the helper should rewrite the error to
+        # the friendlier "Cannot access database 'X'" message.
+        fake_dce = MagicMock()
+        fake_dce.DatasourceConnectionStatus.VALID = "VALID_SENTINEL"
+        fake_dce.DatasourceType.return_value = "ds_type"
+
+        # First check (target DB): INVALID + "Login failed for user".
+        first_result = MagicMock()
+        first_result.connection_status = "INVALID_SENTINEL"
+        first_result.summary = "Connection failed"
+        first_result.full_message = "Login failed for user 'outcomeops_ro'."
+
+        # Second check (master probe): VALID.
+        second_result = MagicMock()
+        second_result.connection_status = "VALID_SENTINEL"
+        second_result.summary = None
+        second_result.full_message = None
+
+        fake_mgr = MagicMock()
+        fake_mgr.check_datasource_config_connection.side_effect = [
+            first_result, second_result,
+        ]
+        fake_dce.init_dce_domain.return_value = fake_mgr
+
+        with patch.object(helpers_module, "_import_introspection_engine", return_value=fake_dce):
+            with patch(
+                "databao_context_engine.plugins.databases.mssql.config_file."
+                "MSSQLConfigFile",
+                create=True,
+            ):
+                with patch(
+                    "databao_context_engine.plugins.databases.mssql.config_file."
+                    "MSSQLConnectionProperties",
+                    create=True,
+                ):
+                    r = helpers_module.validate_connection(
+                        engine="mssql",
+                        host="h", port=1433, database_name="typo_db",
+                        credential_payload={"username": "u", "password": "p"},
+                    )
+        assert r.valid is False
+        assert "Cannot access database" in (r.error or "")
+        assert "typo_db" in (r.error or "")
+        # Two calls: target DB then master probe.
+        assert fake_mgr.check_datasource_config_connection.call_count == 2
+
+    def test_mssql_login_failed_with_master_also_failing_returns_original_error(self):
+        # When the master probe also returns INVALID, auth genuinely
+        # failed - keep the original "Login failed" message rather
+        # than rewriting it (the user needs to fix their password,
+        # not the database name).
+        fake_dce = MagicMock()
+        fake_dce.DatasourceConnectionStatus.VALID = "VALID_SENTINEL"
+        fake_dce.DatasourceType.return_value = "ds_type"
+
+        first_result = MagicMock()
+        first_result.connection_status = "INVALID_SENTINEL"
+        first_result.summary = "Connection failed"
+        first_result.full_message = "Login failed for user 'outcomeops_ro'."
+
+        second_result = MagicMock()
+        second_result.connection_status = "INVALID_SENTINEL"
+        second_result.summary = "Connection failed"
+        second_result.full_message = "Login failed for user 'outcomeops_ro'."
+
+        fake_mgr = MagicMock()
+        fake_mgr.check_datasource_config_connection.side_effect = [
+            first_result, second_result,
+        ]
+        fake_dce.init_dce_domain.return_value = fake_mgr
+
+        with patch.object(helpers_module, "_import_introspection_engine", return_value=fake_dce):
+            with patch(
+                "databao_context_engine.plugins.databases.mssql.config_file."
+                "MSSQLConfigFile",
+                create=True,
+            ):
+                with patch(
+                    "databao_context_engine.plugins.databases.mssql.config_file."
+                    "MSSQLConnectionProperties",
+                    create=True,
+                ):
+                    r = helpers_module.validate_connection(
+                        engine="mssql",
+                        host="h", port=1433, database_name="d",
+                        credential_payload={"username": "u", "password": "bad"},
+                    )
+        assert r.valid is False
+        assert "Login failed for user" in (r.error or "")
+        assert "Cannot access database" not in (r.error or "")
+
+    def test_postgres_login_failed_does_not_probe_master(self):
+        # Postgres distinguishes auth failures from "db not found" at
+        # the wire level, so the master-probe path is MSSQL-only.
+        # Even if Postgres happens to return a "Login failed for user"
+        # string, no second probe should fire.
+        fake_dce = MagicMock()
+        fake_dce.DatasourceConnectionStatus.VALID = "VALID_SENTINEL"
+        fake_dce.DatasourceType.return_value = "ds_type"
+
+        first_result = MagicMock()
+        first_result.connection_status = "INVALID_SENTINEL"
+        first_result.summary = "Connection failed"
+        first_result.full_message = "Login failed for user 'u'"
+
+        fake_mgr = MagicMock()
+        fake_mgr.check_datasource_config_connection.return_value = first_result
+        fake_dce.init_dce_domain.return_value = fake_mgr
+
+        with patch.object(helpers_module, "_import_introspection_engine", return_value=fake_dce):
+            with patch(
+                "databao_context_engine.plugins.databases.postgresql.config_file."
+                "PostgresConfigFile",
+                create=True,
+            ):
+                with patch(
+                    "databao_context_engine.plugins.databases.postgresql.config_file."
+                    "PostgresConnectionProperties",
+                    create=True,
+                ):
+                    r = helpers_module.validate_connection(
+                        engine="postgres",
+                        host="h", port=5432, database_name="d",
+                        credential_payload={"username": "u", "password": "bad"},
+                    )
+        assert r.valid is False
+        # Exactly one call - no master-DB probe for Postgres.
+        assert fake_mgr.check_datasource_config_connection.call_count == 1
+
 
 # ============================================================================
 # Integration Handler Tests
