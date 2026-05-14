@@ -22,12 +22,27 @@ import json
 import logging
 import os
 import secrets
+import sys
 import urllib.parse
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import boto3
 from botocore.exceptions import ClientError
+
+# Make shared/ importable; deploy package now bundles lambda/shared/
+# at zip root via terraform source_path (see lambda-github.tf).
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from shared.license_repos import get_active_repos_for_customer  # noqa: E402
+
+# ADR-019: license layer is the source of truth for repo limits. Wrap
+# the import in try/except so the module still loads when the layer is
+# unattached -- the snapshot helper below treats that as a no-op (the
+# heartbeat scheduler is the safety net).
+try:
+    from outcomeops_license import report_repos_snapshot  # noqa: E402
+except ImportError:  # pragma: no cover - deploy bug path, exercised in tests
+    report_repos_snapshot = None  # type: ignore[assignment]
 
 from github_app import (
     GitHubAppError,
@@ -64,6 +79,24 @@ def _get_sqs():
     if _sqs is None:
         _sqs = boto3.client("sqs")
     return _sqs
+
+
+def _snapshot_active_repos() -> None:
+    """Refresh the license server's repo-set snapshot after any connect
+    or disconnect. Non-blocking on failure -- the hourly heartbeat
+    scheduler (license-heartbeat-scheduler) is the safety net for any
+    missed snapshot.
+    """
+    if report_repos_snapshot is None:
+        # Layer not attached (deploy-bug path). The validate_license
+        # check upstream will have caught this; treat the snapshot
+        # call as a no-op here.
+        return
+    try:
+        active = get_active_repos_for_customer(_get_dynamodb(), WORKSPACES_TABLE)
+        report_repos_snapshot(active_repos=active)
+    except Exception as e:
+        logger.warning(f"[license-snapshot] non-blocking failure: {e}")
 
 
 # ============================================================================
@@ -673,6 +706,11 @@ def handle_add_repos(event: Dict) -> Dict:
             update_repo_sync_status(workspace_id, repo_name, "queued")
             queue_sync_job(workspace_id, repo_name, installation_id)
 
+    # Refresh the license server's active-repo snapshot if any repo was
+    # actually added (license layer v2.0.0 desired-state model).
+    if added:
+        _snapshot_active_repos()
+
     return _response(201, {
         "added": len(added),
         "repos": [
@@ -808,6 +846,10 @@ def handle_delete_repo(event: Dict) -> Dict:
 
     # Delete repo record
     delete_repo(workspace_id, repo_name)
+
+    # Refresh the license server's active-repo snapshot (license layer
+    # v2.0.0 desired-state model).
+    _snapshot_active_repos()
 
     return _response(200, {"message": "Repo removed"})
 

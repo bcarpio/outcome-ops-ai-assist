@@ -62,12 +62,23 @@ _queue_sync = handler_module._queue_sync
 
 @pytest.fixture(autouse=True)
 def reset_module_globals():
-    """Reset cached module globals between tests."""
+    """Reset cached module globals between tests.
+
+    Also pins `report_repos_snapshot` to None so the license-snapshot
+    helper short-circuits during tests that don't explicitly exercise it.
+    Other test modules (test_confluence_sync etc.) inject a MagicMock
+    outcomeops_license into sys.modules at import time, which would
+    otherwise drive the helper into a real DDB scan against a generic
+    MagicMock (infinite-loop risk).
+    """
     handler_module._oauth_config = None
     handler_module._dynamodb = None
     handler_module._ssm = None
     handler_module._sqs = None
+    saved_snapshot = handler_module.report_repos_snapshot
+    handler_module.report_repos_snapshot = None
     yield
+    handler_module.report_repos_snapshot = saved_snapshot
 
 
 @pytest.fixture
@@ -1625,3 +1636,143 @@ class TestLambdaHandlerRouting:
         }
         result = lambda_handler(event, None)
         assert result["statusCode"] == 404
+
+
+# ============================================================================
+# License snapshot wiring (chunk 03 of license-layer-v2 migration)
+# ============================================================================
+
+class TestLicenseSnapshotWiring:
+    """The connect (callback), scope-update (update_spaces), and
+    disconnect (delete_connection) paths must fire report_repos_snapshot
+    with the full active-repo set so the license server's view tracks
+    DDB truth.
+    """
+
+    @patch.object(handler_module, 'save_tokens')
+    @patch.object(handler_module, 'get_accessible_resources')
+    @patch.object(handler_module, 'exchange_code_for_tokens')
+    @patch.object(handler_module, '_load_oauth_config')
+    @patch.object(handler_module, 'report_repos_snapshot')
+    @patch.object(handler_module, 'get_active_repos_for_customer')
+    @patch.object(handler_module, '_get_dynamodb')
+    def test_callback_publishes_snapshot(
+        self, mock_db, mock_get_active, mock_snapshot, mock_config,
+        mock_exchange, mock_resources, mock_save,
+        mock_dynamodb, mock_table, oauth_config,
+    ):
+        """Creating a new connection must publish the active-repo snapshot."""
+        mock_db.return_value = mock_dynamodb
+        mock_config.return_value = oauth_config
+        mock_exchange.return_value = ("access_token", "refresh_token", 3600)
+        mock_resources.return_value = [
+            {"id": "cloud-123", "name": "Site", "url": "https://x.atlassian.net"}
+        ]
+        mock_get_active.return_value = []
+
+        event = {
+            "queryStringParameters": {
+                "code": "auth_code_123",
+                "state": json.dumps({"workspace_id": "ws_test"}),
+            }
+        }
+
+        result = handle_callback(event)
+        assert result["statusCode"] == 200
+        mock_snapshot.assert_called_once_with(active_repos=[])
+
+    @patch.object(handler_module, 'save_tokens')
+    @patch.object(handler_module, 'get_accessible_resources')
+    @patch.object(handler_module, 'exchange_code_for_tokens')
+    @patch.object(handler_module, '_load_oauth_config')
+    @patch.object(handler_module, 'report_repos_snapshot')
+    @patch.object(handler_module, 'get_active_repos_for_customer',
+                  side_effect=RuntimeError("ddb boom"))
+    @patch.object(handler_module, '_get_dynamodb')
+    def test_callback_swallows_snapshot_failure(
+        self, mock_db, mock_get_active, mock_snapshot, mock_config,
+        mock_exchange, mock_resources, mock_save,
+        mock_dynamodb, mock_table, oauth_config,
+    ):
+        """Snapshot failures must not block the callback response."""
+        mock_db.return_value = mock_dynamodb
+        mock_config.return_value = oauth_config
+        mock_exchange.return_value = ("access_token", "refresh_token", 3600)
+        mock_resources.return_value = [
+            {"id": "cloud-123", "name": "Site", "url": "https://x.atlassian.net"}
+        ]
+
+        event = {
+            "queryStringParameters": {
+                "code": "auth_code_123",
+                "state": json.dumps({"workspace_id": "ws_test"}),
+            }
+        }
+
+        result = handle_callback(event)
+        assert result["statusCode"] == 200
+        mock_snapshot.assert_not_called()
+
+    @patch.object(handler_module, '_queue_sync')
+    @patch.object(handler_module, 'get_connection')
+    @patch.object(handler_module, 'report_repos_snapshot')
+    @patch.object(handler_module, 'get_active_repos_for_customer')
+    @patch.object(handler_module, '_get_dynamodb')
+    def test_update_spaces_publishes_snapshot(
+        self, mock_db, mock_get_active, mock_snapshot, mock_get_conn,
+        mock_queue, mock_dynamodb, mock_table,
+    ):
+        """update_spaces must publish the active-repo snapshot."""
+        mock_db.return_value = mock_dynamodb
+        mock_table.get_item.return_value = {"Item": {"role": "workspace_admin"}}
+        mock_get_conn.return_value = {"connection_id": "conn_test"}
+        mock_get_active.return_value = ["confluence:TS"]
+        handler_module.CONFLUENCE_SYNC_QUEUE = "https://sqs.example.com/queue"
+
+        body = {
+            "selected_spaces": [{"id": "s1", "key": "TS", "name": "Test Space"}],
+            "include_attachments": True,
+        }
+        result = update_spaces("admin@example.com", "ws_test", "conn_test", body)
+        assert result["statusCode"] == 200
+        mock_snapshot.assert_called_once_with(active_repos=["confluence:TS"])
+
+    @patch.object(handler_module, 'delete_tokens')
+    @patch.object(handler_module, 'get_connection')
+    @patch.object(handler_module, 'report_repos_snapshot')
+    @patch.object(handler_module, 'get_active_repos_for_customer')
+    @patch.object(handler_module, '_get_dynamodb')
+    def test_delete_connection_publishes_snapshot(
+        self, mock_db, mock_get_active, mock_snapshot, mock_get_conn,
+        mock_del_tokens, mock_dynamodb, mock_table, sample_connection,
+    ):
+        """delete_connection must publish the active-repo snapshot."""
+        mock_db.return_value = mock_dynamodb
+        mock_table.get_item.return_value = {"Item": {"role": "workspace_admin"}}
+        mock_get_conn.return_value = sample_connection
+        mock_get_active.return_value = []
+        handler_module.DELETE_QUEUE = None
+
+        result = delete_connection("admin@example.com", "ws_test", "conn_test")
+        assert result["statusCode"] == 200
+        mock_snapshot.assert_called_once_with(active_repos=[])
+
+    @patch.object(handler_module, 'delete_tokens')
+    @patch.object(handler_module, 'get_connection')
+    @patch.object(handler_module, 'report_repos_snapshot')
+    @patch.object(handler_module, 'get_active_repos_for_customer',
+                  side_effect=RuntimeError("ddb boom"))
+    @patch.object(handler_module, '_get_dynamodb')
+    def test_delete_connection_swallows_snapshot_failure(
+        self, mock_db, mock_get_active, mock_snapshot, mock_get_conn,
+        mock_del_tokens, mock_dynamodb, mock_table, sample_connection,
+    ):
+        """Snapshot failures must not block the disconnect response."""
+        mock_db.return_value = mock_dynamodb
+        mock_table.get_item.return_value = {"Item": {"role": "workspace_admin"}}
+        mock_get_conn.return_value = sample_connection
+        handler_module.DELETE_QUEUE = None
+
+        result = delete_connection("admin@example.com", "ws_test", "conn_test")
+        assert result["statusCode"] == 200
+        mock_snapshot.assert_not_called()

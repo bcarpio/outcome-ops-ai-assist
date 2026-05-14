@@ -50,6 +50,28 @@ handler_module = _load_module(
 
 
 # ============================================================================
+# Module-level autouse fixture
+# ============================================================================
+
+@pytest.fixture(autouse=True)
+def _pin_report_repos_snapshot_to_none():
+    """Pin `report_repos_snapshot` to None so the license-snapshot helper
+    short-circuits during tests that don't explicitly exercise it.
+
+    Other test modules (test_*_sync etc.) inject a MagicMock
+    outcomeops_license into sys.modules at import time, which would
+    otherwise drive the helper into a real DDB scan against a generic
+    MagicMock (infinite-loop risk). Tests that DO exercise the snapshot
+    path use @patch.object on this same attribute, which still wins over
+    the None default.
+    """
+    saved = handler_module.report_repos_snapshot
+    handler_module.report_repos_snapshot = None
+    yield
+    handler_module.report_repos_snapshot = saved
+
+
+# ============================================================================
 # Helpers
 # ============================================================================
 
@@ -536,3 +558,115 @@ class TestSPHandlerListConnections:
         mock_table.get_item.return_value = {}
         result = handler_module.list_connections("u@t.com", "ws1")
         assert result["statusCode"] == 403
+
+
+# ============================================================================
+# License snapshot wiring (chunk 03 of license-layer-v2 migration)
+# ============================================================================
+
+class TestSPLicenseSnapshotWiring:
+    """The connect (callback), scope-update (update_sites), and disconnect
+    (delete_connection) paths must fire report_repos_snapshot with the full
+    active-repo set so the license server's view tracks DDB truth.
+    """
+
+    @pytest.fixture(autouse=True)
+    def reset_globals(self):
+        handler_module._oauth_config = None
+        handler_module._dynamodb = None
+        handler_module._ssm = None
+        handler_module._sqs = None
+        yield
+
+    @patch.object(handler_module, "save_tokens")
+    @patch.object(handler_module, "get_user_profile")
+    @patch.object(handler_module, "exchange_code_for_tokens")
+    @patch.object(handler_module, "_load_oauth_config")
+    @patch.object(handler_module, "report_repos_snapshot")
+    @patch.object(handler_module, "get_active_repos_for_customer")
+    @patch.object(handler_module, "_get_dynamodb")
+    def test_callback_publishes_snapshot(
+        self, mock_db_fn, mock_get_active, mock_snapshot, mock_oauth,
+        mock_exchange, mock_profile, mock_save,
+    ):
+        mock_table = MagicMock()
+        mock_db = MagicMock()
+        mock_db.Table.return_value = mock_table
+        mock_db_fn.return_value = mock_db
+        mock_oauth.return_value = {"client_id": "cid", "client_secret": "csec", "callback_url": "https://cb"}
+        mock_exchange.return_value = ("access", "refresh", 3600)
+        mock_profile.return_value = {"mail": "u@t.com", "displayName": "User"}
+        mock_get_active.return_value = []
+
+        event = {"queryStringParameters": {"code": "c", "state": json.dumps({"workspace_id": "ws1"})}}
+        result = handler_module.handle_callback(event)
+        assert result["statusCode"] == 200
+        mock_snapshot.assert_called_once_with(active_repos=[])
+
+    @patch.object(handler_module, "save_tokens")
+    @patch.object(handler_module, "get_user_profile")
+    @patch.object(handler_module, "exchange_code_for_tokens")
+    @patch.object(handler_module, "_load_oauth_config")
+    @patch.object(handler_module, "report_repos_snapshot")
+    @patch.object(handler_module, "get_active_repos_for_customer",
+                  side_effect=RuntimeError("ddb boom"))
+    @patch.object(handler_module, "_get_dynamodb")
+    def test_callback_swallows_snapshot_failure(
+        self, mock_db_fn, mock_get_active, mock_snapshot, mock_oauth,
+        mock_exchange, mock_profile, mock_save,
+    ):
+        mock_table = MagicMock()
+        mock_db = MagicMock()
+        mock_db.Table.return_value = mock_table
+        mock_db_fn.return_value = mock_db
+        mock_oauth.return_value = {"client_id": "cid", "client_secret": "csec", "callback_url": "https://cb"}
+        mock_exchange.return_value = ("access", "refresh", 3600)
+        mock_profile.return_value = {"mail": "u@t.com", "displayName": "User"}
+
+        event = {"queryStringParameters": {"code": "c", "state": json.dumps({"workspace_id": "ws1"})}}
+        result = handler_module.handle_callback(event)
+        assert result["statusCode"] == 200
+        mock_snapshot.assert_not_called()
+
+    @patch.object(handler_module, "get_connection")
+    @patch.object(handler_module, "report_repos_snapshot")
+    @patch.object(handler_module, "get_active_repos_for_customer")
+    @patch.object(handler_module, "_get_dynamodb")
+    def test_update_sites_publishes_snapshot(
+        self, mock_db_fn, mock_get_active, mock_snapshot, mock_get_conn,
+    ):
+        mock_table = MagicMock()
+        mock_db = MagicMock()
+        mock_db.Table.return_value = mock_table
+        mock_db_fn.return_value = mock_db
+        mock_table.get_item.return_value = {"Item": {"role": "workspace_admin"}}
+        mock_get_conn.return_value = {"connection_id": "conn1"}
+        mock_get_active.return_value = ["sharepoint:site-abc"]
+        handler_module.SHAREPOINT_SYNC_QUEUE = None
+
+        body = {"selected_sites": [{"site_id": "site-abc", "name": "Site"}]}
+        result = handler_module.update_sites("admin@example.com", "ws1", "conn1", body)
+        assert result["statusCode"] == 200
+        mock_snapshot.assert_called_once_with(active_repos=["sharepoint:site-abc"])
+
+    @patch.object(handler_module, "delete_tokens")
+    @patch.object(handler_module, "get_connection")
+    @patch.object(handler_module, "report_repos_snapshot")
+    @patch.object(handler_module, "get_active_repos_for_customer")
+    @patch.object(handler_module, "_get_dynamodb")
+    def test_delete_connection_publishes_snapshot(
+        self, mock_db_fn, mock_get_active, mock_snapshot, mock_get_conn,
+        mock_del_tokens,
+    ):
+        mock_table = MagicMock()
+        mock_db = MagicMock()
+        mock_db.Table.return_value = mock_table
+        mock_db_fn.return_value = mock_db
+        mock_table.get_item.return_value = {"Item": {"role": "workspace_admin"}}
+        mock_get_conn.return_value = {"connection_id": "conn1", "workspace_id": "ws1"}
+        mock_get_active.return_value = []
+        handler_module.DELETE_QUEUE = None
+
+        result = handler_module.delete_connection("admin@example.com", "ws1", "conn1")
+        assert result["statusCode"] == 200
+        mock_snapshot.assert_called_once_with(active_repos=[])
