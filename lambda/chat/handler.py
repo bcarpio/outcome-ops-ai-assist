@@ -41,6 +41,17 @@ from shared.audit_writer import (
 )
 from shared.prompts import build_chat_system_prompt
 
+# plan-gkg chunk 05: symbol-graph router + context builder. Imports kept
+# explicit (rather than wildcard) so the chat handler's existing test
+# suite continues to see deterministic symbol exposure.
+from context_builder import (
+    GRAPH_GROUNDING_INSTRUCTION,
+    build_graph_unavailable_block,
+    build_symbol_definition_block,
+    build_symbol_facts_block,
+)
+from router import RouterDecision, classify_intent
+
 # Configure logging
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -510,6 +521,366 @@ PRICING = {
 def _stream_error(error: str, status_code: int = 400) -> str:
     """Format error as NDJSON."""
     return json.dumps({"type": "error", "error": error, "status_code": status_code})
+
+
+# ============================================================================
+# plan-gkg chunk 05 - Symbol-graph augmentation
+# ============================================================================
+
+# Env-gated kill-switch so operators can disable graph augmentation in
+# the field without redeploying. Default ON; set to "false" to skip the
+# router + reader path entirely (the chat handler falls back to its
+# pre-chunk-05 RAG-only behavior). Tracks plan-gkg/05 "Open question"
+# #1 - we may want to switch to parallel routing later, and this gate
+# lets us toggle without code change.
+GRAPH_AUGMENT_ENABLED = (
+    os.environ.get("GRAPH_AUGMENT_ENABLED", "true").lower() == "true"
+)
+
+
+def _fuzzy_resolve_symbol(
+    workspace_id: str,
+    bare_name: str,
+    symbol_graph_table_name: str,
+) -> List[str]:
+    """Resolve a user-typed bare symbol name to its canonical ID(s).
+
+    plan-gkg/05 "Symbol resolution from the user's question":
+
+    - The user typed ``"report_repos_snapshot"``.
+    - The graph stores ``defines`` rows with the canonical
+      ``"python:lambda.shared.outcomeops_license::report_repos_snapshot"``.
+    - Exact match misses; suffix match against ``::report_repos_snapshot``
+      (or the bare name if it already contains ``::``) succeeds.
+
+    v1 implementation: scan the base table with a filter expression on
+    ``kind = "defines"`` and ``workspace_id``, collect matching canonical
+    IDs. This is a bounded scan in chat-interactive scope; a dedicated
+    fuzzy-name index lands in v2 (plan-gkg/05 "Defer for v2").
+
+    Returns the list of matching canonical symbol IDs (empty list if
+    nothing matched, one-element list for unambiguous resolution,
+    multi-element list when the bare name is overloaded).
+    """
+
+    if not bare_name or not workspace_id or not symbol_graph_table_name:
+        return []
+
+    # If the user already typed a canonical-looking ID (contains "::"
+    # or a language prefix like "python:"), assume they meant it
+    # literally; the exact-match path already handled it.
+    if "::" in bare_name:
+        return []
+
+    try:
+        from shared.symbol_graph_reader import _resource as _sg_resource  # type: ignore
+    except Exception as exc:  # pragma: no cover - import failure
+        logger.warning("[chat.augment] reader import failed: %s", exc)
+        return []
+
+    table = _sg_resource().Table(symbol_graph_table_name)
+
+    # Build the suffix patterns we'll accept. The writer stores the
+    # canonical ID in ``target_symbol_id``; suffix forms:
+    #   "::<bare_name>"       (Python-style namespaced)
+    #   ".<bare_name>"        (dotted path, JS/TS/Java without ::)
+    #   "/<bare_name>"        (subpath imports)
+    #   "<bare_name>"         (already-bare canonical)
+    # ``begins_with`` won't help (the canonical ID puts the bare name
+    # at the END of the string), so we filter client-side after
+    # scanning the workspace's defines rows.
+
+    matches: List[str] = []
+    try:
+        scan_kwargs = {
+            "FilterExpression": (
+                "workspace_id = :ws AND kind = :kind"
+            ),
+            "ExpressionAttributeValues": {
+                ":ws": workspace_id,
+                ":kind": "defines",
+            },
+            "ProjectionExpression": "target_symbol_id",
+            # Bound the scan so chat-interactive latency stays sane
+            # on workspaces with very large graphs. 5k items covers
+            # the OutcomeOps / Hyatt scale; if it doesn't, the v2
+            # fuzzy index is the proper fix.
+            "Limit": 1000,
+        }
+        seen: set[str] = set()
+        scanned = 0
+        while True:
+            response = table.scan(**scan_kwargs)
+            for item in response.get("Items", []):
+                tsi = item.get("target_symbol_id", "")
+                if not tsi or tsi in seen:
+                    continue
+                seen.add(tsi)
+                # Accept canonical IDs whose tail (after the last
+                # ``::`` / ``.`` / ``/``) matches the bare name.
+                tail = tsi
+                for sep in ("::", ".", "/"):
+                    if sep in tail:
+                        tail = tail.rsplit(sep, 1)[-1]
+                if tail == bare_name:
+                    matches.append(tsi)
+            scanned += len(response.get("Items", []) or [])
+            last = response.get("LastEvaluatedKey")
+            if not last or scanned >= 5000 or len(matches) >= 25:
+                break
+            scan_kwargs["ExclusiveStartKey"] = last
+    except Exception as exc:
+        logger.warning(
+            "[chat.augment] fuzzy resolve failed for %r: %s", bare_name, exc
+        )
+        return []
+
+    return matches
+
+
+def _augment_context_with_symbol_graph(
+    question: str,
+    workspace_ids: Optional[List[str]],
+    user_id: str = "",
+    source_ip: str = "",
+    user_agent: str = "",
+) -> Dict[str, Any]:
+    """Route the question + (optionally) query the symbol graph.
+
+    Returns a dict with two keys:
+
+    - ``decision``      : the ``RouterDecision`` (or ``None`` if the
+                          augmentation path was skipped via the
+                          ``GRAPH_AUGMENT_ENABLED`` gate or empty
+                          workspace scope).
+    - ``graph_block``   : a rendered "Symbol facts" string ready to
+                          concatenate onto the RAG context, or ``""``
+                          when no block should be emitted (pattern /
+                          dependency / unknown without a symbol).
+
+    The function is intentionally fail-soft - any Bedrock / DynamoDB
+    error degrades to ``("", None)`` so the chat answer still ships.
+    Plan-gkg/05 "Failure modes" calls this out explicitly.
+    """
+
+    out: Dict[str, Any] = {"decision": None, "graph_block": ""}
+
+    if not GRAPH_AUGMENT_ENABLED:
+        return out
+    if not question or not question.strip():
+        return out
+    # No workspace = no graph anchor (the reader requires workspace_id).
+    if not workspace_ids:
+        return out
+
+    # Lazy import - keeps the reader's boto3 top-level import out of
+    # module-init for chat tests that don't need it.
+    try:
+        from shared.symbol_graph_reader import (  # type: ignore
+            SymbolGraphUnavailable,
+            callers,
+            definitions,
+            implementers,
+            importers,
+        )
+    except Exception as exc:  # pragma: no cover - import-failure path
+        logger.warning(
+            "[chat.augment] symbol_graph_reader import failed (%s); skipping",
+            exc,
+        )
+        return out
+
+    # 1. Classify the question.
+    primary_ws = workspace_ids[0]
+    decision = classify_intent(
+        question,
+        audit_table_name=os.environ.get("AUDIT_TABLE", ""),
+        user_email=user_id or "",
+        workspace_id=primary_ws,
+        source_ip=source_ip,
+        user_agent=user_agent,
+    )
+    out["decision"] = decision
+
+    logger.info(
+        "[chat.augment] router decision: intent=%s symbol=%s model=%s dur_ms=%d",
+        decision.intent,
+        decision.symbol_candidate,
+        decision.model_id,
+        decision.duration_ms,
+    )
+
+    # 2. Decide whether to fire the graph at all (plan-gkg/05 routing
+    # decision table).
+    intent = decision.intent
+    fires_graph = intent in ("structural", "hybrid", "unknown")
+    if not fires_graph:
+        return out
+
+    # Without a symbol candidate the graph queries have nothing to
+    # anchor on - still emit an explicit "no symbol identified" block
+    # so the model surfaces it rather than fabricating.
+    if not decision.symbol_candidate:
+        # For "unknown" we silently skip - those questions are
+        # already going through fan-out and a "no symbol identified"
+        # block would be noisy. For "structural" / "hybrid" we
+        # render the resolved-candidate block per the plan.
+        if intent == "unknown":
+            return out
+        out["graph_block"] = build_symbol_definition_block(
+            symbol_candidate="(none extracted from question)",
+            definitions=[],
+        )
+        return out
+
+    user_symbol = decision.symbol_candidate
+    code_maps_table = os.environ.get("CODE_MAPS_TABLE", "") or None
+    symbol_graph_table = os.environ.get("SYMBOL_GRAPH_TABLE", "") or None
+
+    if not symbol_graph_table:
+        # IAM and env var are wired in tf-chat (terraform/lambda-chat.tf
+        # + terraform/iam_symbol_graph.tf). If we got here without the
+        # env var, that's a deploy bug - degrade gracefully but log it
+        # for the rollout dashboard.
+        logger.warning(
+            "[chat.augment] SYMBOL_GRAPH_TABLE not set; skipping graph augmentation"
+        )
+        return out
+
+    try:
+        # 3a. Resolve the symbol - definitions() gives us the
+        # canonical anchor + the "did you find it" signal.
+        # Run for the primary workspace; cross-workspace symbol
+        # lookups can be added once the rollout proves single-
+        # workspace shape (plan-gkg/05 "Workspace scoping").
+        defs = definitions(
+            primary_ws,
+            user_symbol,
+            symbol_graph_table_name=symbol_graph_table,
+            code_maps_table_name=code_maps_table,
+        )
+
+        # plan-gkg/05 "Symbol resolution from the user's question":
+        # users type bare names like "report_repos_snapshot" rather
+        # than the canonical "python:lambda.shared.outcomeops_license
+        # ::report_repos_snapshot". When the exact lookup misses,
+        # attempt a suffix-match against defines rows for the
+        # workspace. v1 is a bounded scan in chat-interactive scope;
+        # a dedicated fuzzy index is deferred to v2 per the plan.
+        canonical_symbol = user_symbol
+        if not defs:
+            fuzzy = _fuzzy_resolve_symbol(
+                primary_ws, user_symbol, symbol_graph_table
+            )
+            if fuzzy:
+                canonical_symbol = fuzzy[0]
+                defs = definitions(
+                    primary_ws,
+                    canonical_symbol,
+                    symbol_graph_table_name=symbol_graph_table,
+                    code_maps_table_name=code_maps_table,
+                )
+                if len(fuzzy) > 1:
+                    # Multiple canonical IDs match the bare name --
+                    # surface every candidate so the model can ask
+                    # the user to disambiguate.
+                    all_defs = []
+                    for cand in fuzzy:
+                        all_defs.extend(
+                            definitions(
+                                primary_ws,
+                                cand,
+                                symbol_graph_table_name=symbol_graph_table,
+                                code_maps_table_name=code_maps_table,
+                            )
+                        )
+                    out["graph_block"] = build_symbol_definition_block(
+                        symbol_candidate=user_symbol,
+                        definitions=all_defs,
+                    )
+                    return out
+
+        if len(defs) > 1:
+            # Ambiguous - render every candidate and let the model
+            # disambiguate (plan-gkg/05 "Symbol resolution" step 3).
+            out["graph_block"] = build_symbol_definition_block(
+                symbol_candidate=user_symbol,
+                definitions=defs,
+            )
+            return out
+
+        definition_site = defs[0] if defs else None
+        symbol = canonical_symbol
+
+        # 3b. Run the directional query the user asked for. The
+        # router only distinguishes intents, not directions, so we
+        # default to callers and switch to importers when the
+        # symbol looks like a package path (slash present).
+        if "/" in symbol:
+            result = importers(
+                primary_ws,
+                symbol,
+                symbol_graph_table_name=symbol_graph_table,
+                code_maps_table_name=code_maps_table,
+            )
+            relation = "importers"
+        elif symbol.lower().startswith(("i", "abstract")):
+            # Heuristic: interface-shaped names get the implementers
+            # query in addition to / instead of callers. v1 picks
+            # whichever returns more results so we don't return an
+            # empty implementers block for a regular function whose
+            # name happens to start with "I". The router test
+            # fixtures cover both shapes.
+            impls = implementers(
+                primary_ws,
+                symbol,
+                symbol_graph_table_name=symbol_graph_table,
+                code_maps_table_name=code_maps_table,
+            )
+            calls = callers(
+                primary_ws,
+                symbol,
+                symbol_graph_table_name=symbol_graph_table,
+                code_maps_table_name=code_maps_table,
+            )
+            if len(impls.sites) >= len(calls.sites):
+                result, relation = impls, "implementers"
+            else:
+                result, relation = calls, "callers"
+        else:
+            result = callers(
+                primary_ws,
+                symbol,
+                symbol_graph_table_name=symbol_graph_table,
+                code_maps_table_name=code_maps_table,
+            )
+            relation = "callers"
+
+        out["graph_block"] = build_symbol_facts_block(
+            relation=relation,
+            target_symbol_id=symbol,
+            result=result,
+            definition_site=definition_site,
+        )
+    except SymbolGraphUnavailable as exc:
+        logger.warning(
+            "[chat.augment] SymbolGraphUnavailable for %s: %s; degrading",
+            symbol,
+            exc,
+        )
+        out["graph_block"] = build_graph_unavailable_block(
+            target_symbol_id=symbol
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.exception(
+            "[chat.augment] unexpected error querying symbol graph for %s",
+            symbol,
+        )
+        out["graph_block"] = build_graph_unavailable_block(
+            target_symbol_id=symbol
+        )
+
+    return out
 
 
 # ============================================================================
@@ -1178,11 +1549,17 @@ def generate_answer_stream(
     tool_config: Dict = None,
     tool_mapping: Dict = None,
     workspace_prompt: str = None,
+    graph_grounding: str = "",
 ) -> Generator:
     """
     Stream answer from Bedrock using ConverseStream.
     Yields text chunks, tool_use dicts, and final usage dict.
     When tool_config is provided, implements a tool use loop.
+
+    ``graph_grounding`` is the plan-gkg/05 grounding clause that pins
+    the model to facts from the "Symbol facts" block in ``context``.
+    Empty string when no graph block is present (pattern / dependency
+    questions, or when the router skipped the augmentation path).
     """
     bedrock = _get_bedrock_client()
 
@@ -1219,6 +1596,13 @@ When the user's question builds on something you said earlier in this conversati
     total_output_tokens = 0
 
     system_prompt = build_chat_system_prompt(workspace_prompt=workspace_prompt)
+    if graph_grounding:
+        # plan-gkg/05: append the structural-grounding clause so the
+        # model treats the "Symbol facts (graph-retrieved)" block in
+        # context as ground truth. Skipped when no graph block was
+        # rendered to keep the system-prompt token count flat on
+        # pattern/dependency turns (the bulk of chat traffic).
+        system_prompt = f"{system_prompt}\n\n{graph_grounding}"
 
     try:
         for iteration in range(max_iterations):
@@ -1563,6 +1947,23 @@ def handle_chat_stream(event: Dict) -> Generator[str, None, None]:
     # Format context
     context = format_context(search_results)
 
+    # plan-gkg chunk 05: route the question and (if structural / hybrid /
+    # unknown) augment the context with a "Symbol facts" block from the
+    # graph reader. Pattern + dependency intents skip this entirely so
+    # most chat traffic pays no extra latency. Failures degrade
+    # silently to RAG-only - the helper logs the failure mode for the
+    # rollout dashboard.
+    graph_augment = _augment_context_with_symbol_graph(
+        request.message,
+        workspace_ids,
+        user_id=user_id or "",
+        source_ip=source_ip,
+        user_agent=user_agent,
+    )
+    graph_block = graph_augment.get("graph_block", "")
+    if graph_block:
+        context = f"{context}\n\n---\n\n{graph_block}"
+
     # Build sources (deduplicated)
     sources = []
     seen_paths = set()
@@ -1602,6 +2003,10 @@ def handle_chat_stream(event: Dict) -> Generator[str, None, None]:
             tool_config=tool_config,
             tool_mapping=tool_mapping,
             workspace_prompt=workspace_prompt,
+            # plan-gkg/05: extra system-prompt clause that pins the
+            # model to graph facts when a Symbol-facts block is in
+            # context. Empty string when no graph block was rendered.
+            graph_grounding=GRAPH_GROUNDING_INSTRUCTION if graph_block else "",
         ):
             if isinstance(chunk, dict):
                 if chunk.get("type") == "tool_use":

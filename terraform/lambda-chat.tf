@@ -85,6 +85,14 @@ module "chat_streaming_lambda" {
       WORKSPACES_TABLE               = module.workspaces_table[0].dynamodb_table_id
       OAUTH_KMS_KEY_ARN              = aws_kms_key.oauth_tokens[0].arn
 
+      # plan-gkg chunk 05 - symbol-graph router + context builder.
+      # IAM read access is attached separately in iam_symbol_graph.tf;
+      # the env vars here let the chat handler resolve the tables
+      # without per-cold-start SSM lookups. CODE_MAPS_TABLE is used by
+      # symbol_graph_reader for the per-repo staleness pointer.
+      SYMBOL_GRAPH_TABLE = module.symbol_graph_table.dynamodb_table_id
+      CODE_MAPS_TABLE    = module.code_maps_table.dynamodb_table_id
+
       # Point requests / urllib3 / httpx / stdlib ssl + urllib.request at
       # the merged PEM shipped in the platform-CA layer so BYO-internal-CA
       # MCP listeners are trusted. Both env vars are needed because
@@ -210,6 +218,24 @@ module "chat_streaming_lambda" {
         "aws-marketplace:Subscribe"
       ]
       resources = ["*"]
+    }
+
+    # plan-gkg chunk 05 - code-maps pointer read for symbol-graph
+    # staleness reporting. The symbol_graph_reader queries the
+    # per-(workspace, repo) pointer row to compute staleness_seconds
+    # so chat answers can disclose graph freshness honestly.
+    # Read-only by design; the writer policy (in iam_symbol_graph.tf
+    # and lambda-knowledge-base.tf) handles writes.
+    code_maps_pointer_read = {
+      effect = "Allow"
+      actions = [
+        "dynamodb:GetItem",
+        "dynamodb:Query"
+      ]
+      resources = [
+        module.code_maps_table.dynamodb_table_arn,
+        "${module.code_maps_table.dynamodb_table_arn}/index/*"
+      ]
     }
 
     # S3 Vectors for KB search and conversation memory
