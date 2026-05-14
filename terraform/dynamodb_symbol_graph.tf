@@ -1,0 +1,126 @@
+# ============================================================================
+# DynamoDB Table for the Symbol Graph (plan-gkg chunk 02)
+#
+# Persists the structural Fact stream emitted by the chunk-01 extractor.
+# Each item is one edge (defines / imports / calls / implements / extends /
+# references) scoped to ${workspace_id}#${repo}#${commit_sha}, so a regen
+# (delete-old + write-new) is a single-partition operation.
+#
+# Two GSIs power the dominant read paths (chunk 04 query API):
+#   target-kind-index   - callers(X) / importers(X) / implementers(X) by
+#                         (workspace_id, target_symbol_id) + kind prefix.
+#   target-prefix-index - subpath wildcards like
+#                         "@hyatt-hpe/hpe-utils/*" by (workspace_id,
+#                         target_prefix) with kind/repo in the sort key.
+#
+# Naming note: ADR-001/ADR-004 do not specify a GSI naming convention.
+# Plan-gkg/02 proposes ``target-kind-index`` and ``target-prefix-index``;
+# owner has been flagged. Rename via a versioned table replacement if the
+# ADR amendment lands on a different convention.
+# ============================================================================
+
+module "symbol_graph_table" {
+  source  = "terraform-aws-modules/dynamodb-table/aws"
+  version = "4.0.0"
+
+  name      = "${var.environment}-${var.app_name}-symbol-graph"
+  hash_key  = "PK"
+  range_key = "SK"
+
+  # Single-tenant customer deployment; matches code-maps / chat tables.
+  deletion_protection_enabled = false
+
+  attributes = [
+    {
+      name = "PK"
+      type = "S"
+    },
+    {
+      name = "SK"
+      type = "S"
+    },
+    # target-kind-index keys (callers/importers/implementers by symbol).
+    {
+      name = "GSI1PK"
+      type = "S"
+    },
+    {
+      name = "GSI1SK"
+      type = "S"
+    },
+    # target-prefix-index keys (subpath wildcard queries).
+    {
+      name = "GSI2PK"
+      type = "S"
+    },
+    {
+      name = "GSI2SK"
+      type = "S"
+    },
+  ]
+
+  # GSI1 - target-kind-index:
+  #   PK = "${workspace_id}#${target_symbol_id}"
+  #   SK = "${kind}#${repo}#${file_path}#${line}"
+  # GSI2 - target-prefix-index:
+  #   PK = "${workspace_id}#${target_prefix}"
+  #   SK = "${target_suffix}#${kind}#${repo}#${file_path}#${line}"
+  global_secondary_indexes = [
+    {
+      name            = "target-kind-index"
+      hash_key        = "GSI1PK"
+      range_key       = "GSI1SK"
+      projection_type = "ALL"
+    },
+    {
+      name            = "target-prefix-index"
+      hash_key        = "GSI2PK"
+      range_key       = "GSI2SK"
+      projection_type = "ALL"
+    },
+  ]
+
+  # On-demand: writes are bursty (regen on every code-map refresh), reads
+  # are unpredictable but low-volume. Reserved capacity only makes sense
+  # after >6 months of observed traffic.
+  billing_mode = "PAY_PER_REQUEST"
+
+  point_in_time_recovery_enabled = true
+
+  server_side_encryption_enabled     = true
+  server_side_encryption_kms_key_arn = local.data_cmk_arn
+
+  tags = {
+    Purpose = "symbol-graph"
+  }
+}
+
+resource "aws_ssm_parameter" "symbol_graph_table_name" {
+  name  = "/${var.environment}/${var.app_name}/dynamodb/symbol-graph-table"
+  type  = "String"
+  value = module.symbol_graph_table.dynamodb_table_id
+
+  tags = {
+    Purpose = "symbol-graph"
+  }
+}
+
+resource "aws_ssm_parameter" "symbol_graph_table_arn" {
+  name  = "/${var.environment}/${var.app_name}/dynamodb/symbol-graph-table-arn"
+  type  = "String"
+  value = module.symbol_graph_table.dynamodb_table_arn
+
+  tags = {
+    Purpose = "symbol-graph"
+  }
+}
+
+output "symbol_graph_table_name" {
+  description = "Name of the symbol-graph DynamoDB table"
+  value       = module.symbol_graph_table.dynamodb_table_id
+}
+
+output "symbol_graph_table_arn" {
+  description = "ARN of the symbol-graph DynamoDB table"
+  value       = module.symbol_graph_table.dynamodb_table_arn
+}

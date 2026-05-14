@@ -10,6 +10,20 @@ import importlib.util
 from types import ModuleType
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+
+# Snapshot the real boto3 / botocore modules (if present in sys.modules
+# from a prior import) so the module-scope finalizer at the bottom of
+# this file can restore them. Without the restore, every test that
+# loads alphabetically AFTER this one sees the MagicMock and any code
+# under test that does `boto3.resource(...)` returns a Mock chain
+# instead of the real package. See test_symbol_graph_writer.py for
+# the test that surfaced this contamination.
+_real_modules = {
+    name: sys.modules.get(name)
+    for name in ("boto3", "botocore", "botocore.exceptions", "botocore.config")
+}
 
 # Mock boto3 before any imports
 mock_boto3 = MagicMock()
@@ -23,6 +37,7 @@ mock_botocore_config = MagicMock()
 sys.modules['botocore'] = mock_botocore
 sys.modules['botocore.exceptions'] = mock_botocore_exceptions
 sys.modules['botocore.config'] = mock_botocore_config
+
 
 # Base path for check_handlers
 check_handlers_path = os.path.join(
@@ -76,6 +91,21 @@ init_spec = importlib.util.spec_from_file_location(
 )
 # Re-use the package module but exec the init
 init_spec.loader.exec_module(check_handlers_package)
+
+
+# At this point, check_handlers and its submodules are fully loaded into
+# sys.modules with their internal `boto3` references pointing at the
+# MagicMock — that's the state the tests in this file need. Restore the
+# top-level sys.modules entries to the real packages so downstream test
+# files (notably test_symbol_graph_writer.py) that do `import boto3`
+# get the actual installed package. Without this restore, every test
+# loading alphabetically after this file gets a Mock-chained boto3.
+for _name, _original in _real_modules.items():
+    if _original is not None:
+        sys.modules[_name] = _original
+    else:
+        sys.modules.pop(_name, None)
+del _name, _original
 
 
 class TestCheckHandlersExports:

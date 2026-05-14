@@ -333,6 +333,7 @@ class TestStoreBatchSummary:
 
         batch = {
             "repo": "test-repo",
+            "repo_project": "owner/test-repo",
             "storage_key": "summary#test",
             "batch_type": "shared",
             "group_name": "utils",

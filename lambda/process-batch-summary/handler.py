@@ -1043,21 +1043,67 @@ def _language_for_path(file_path: str) -> str | None:
     return None
 
 
-def _emit_facts(facts: Iterable[Fact]) -> int:
-    """Stub hand-off for the symbol-graph Fact stream.
+def _emit_facts(
+    facts: Iterable[Fact],
+    *,
+    workspace_id: str = "",
+    repo: str = "",
+    commit_sha: str = "",
+) -> int:
+    """Hand the Fact stream to the symbol-graph writer (plan-gkg chunk 02).
 
-    Chunk 01 is emission-only. Chunk 03 will wire this to the SQS
-    message that downstream storage (chunk 02) consumes. For now we
-    materialize the iterator and log the count so the extractor's
-    effects are observable end-to-end without standing up the
-    downstream infrastructure.
+    When ``workspace_id`` / ``repo`` / ``commit_sha`` are all present the
+    Facts are persisted via the delete-then-write path in
+    ``shared.symbol_graph_writer``. When any context is missing — which
+    is the steady-state until chunk 03 wires SHA propagation through the
+    SQS message — we log the count and skip storage so the call site
+    stays harmless.
+
+    Returns the number of Facts the writer accepted (zero when storage
+    was skipped). Failures are caught and logged; the symbol-graph regen
+    must never break the existing batch-summary path.
     """
 
-    count = 0
-    for _ in facts:
-        count += 1
-    logger.info("symbol-graph extractor emitted %d facts (chunk 01 stub)", count)
-    return count
+    materialized: list[Fact] = list(facts)
+    count = len(materialized)
+
+    if not (workspace_id and repo and commit_sha):
+        logger.info(
+            "symbol-graph extractor emitted %d facts (storage skipped — "
+            "no workspace/commit context; chunk 03 wires the hand-off)",
+            count,
+        )
+        return 0
+
+    try:
+        from shared.symbol_graph_writer import write_facts  # type: ignore
+
+        result = write_facts(
+            workspace_id=workspace_id,
+            repo=repo,
+            commit_sha=commit_sha,
+            facts=materialized,
+        )
+        logger.info(
+            "symbol-graph wrote %d facts (deleted %d) for %s/%s@%s "
+            "(pointer_swapped=%s)",
+            result.facts_written,
+            result.facts_deleted,
+            workspace_id,
+            repo,
+            commit_sha,
+            result.pointer_swapped,
+        )
+        return result.facts_written
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(
+            "symbol-graph write failed for %s/%s@%s: %s",
+            workspace_id,
+            repo,
+            commit_sha,
+            exc,
+        )
+        return 0
 
 
 def _iter_batch_facts(
@@ -1092,14 +1138,18 @@ def process_batch_record(record: Dict[str, Any]) -> None:
         f"({len(batch['file_paths'])} files)"
     )
 
-    # Symbol-graph extractor stub (plan-gkg chunk 01).
-    # Chunk 01 is emission-only — the extractor package is wired and
-    # importable, but the SQS hand-off (chunk 03) and storage (chunk 02)
-    # are not built yet. We invoke ``_emit_facts`` with an empty stream
-    # so the call site is exercised end-to-end and the LogLines surface
-    # the stub in CloudWatch; chunk 03 swaps in a real iterator over
-    # the batch's file contents.
-    _emit_facts(iter(()))
+    # Symbol-graph extractor hand-off (plan-gkg chunks 01 + 02).
+    # The extractor (chunk 01) is wired and importable; the writer
+    # (chunk 02) persists Facts when workspace/commit context is
+    # present. Chunk 03 owns wiring the SHA + file iteration through
+    # the SQS message — until then the storage call is a no-op (logs
+    # only) because ``commit_sha`` won't be on the batch.
+    _emit_facts(
+        iter(()),
+        workspace_id=batch.get("workspace_id") or "",
+        repo=batch.get("repo") or "",
+        commit_sha=batch.get("commit_sha") or "",
+    )
 
     # Generate batch summary
     batch_summary = generate_batch_summary(batch)
