@@ -452,6 +452,21 @@ def generate_execution_plan(
     # symbol the plan touches so the step executors get a list of caller
     # sites that need parallel updates. Best-effort: failure here does
     # NOT break codegen (analyze-pr is the safety net per chunk 06).
+    #
+    # Operator kill-switch: GRAPH_RETRIEVAL_ENABLED is the platform-wide
+    # gate (plan-gkg chunk 08 standardized the name across chat /
+    # analyze-pr / generate-code). Default ON; set to "false" to skip
+    # the impact-analysis pass entirely. The legacy
+    # ``GRAPH_AUGMENT_ENABLED`` value is honored as a fallback for
+    # deploys that haven't been re-rolled with the canonical var.
+    _graph_kill_switch = os.environ.get(
+        "GRAPH_RETRIEVAL_ENABLED",
+        os.environ.get("GRAPH_AUGMENT_ENABLED", "true"),
+    )
+    if _graph_kill_switch.lower() != "true":
+        logger.info("[plan-gen] Impact analysis disabled via env")
+        return plan
+
     try:
         # Flatten the parsed plan back into a text corpus for symbol
         # extraction. The model often names target symbols in step

@@ -19,16 +19,44 @@ module "analyze_pr_lambda" {
   cloudwatch_logs_retention_in_days = 7
   cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs.arn
 
-  # Source code from local directory
-  source_path = "${path.module}/../lambda/analyze-pr"
+  # Source code from local directory.
+  #
+  # plan-gkg chunk 08: analyze-pr's structural-impact pass (chunk 06)
+  # needs the chunk-01 extractor at runtime so canonical symbol IDs
+  # produced from post-diff file content line up exactly with the
+  # graph. The extractor lives in lambda/process-batch-summary/extractor
+  # because that's where the writer runs; here we ship it as a prefixed
+  # subdirectory so the lazy import in diff_symbol_resolver.py finds it
+  # without a sys.path shim in the deployed zip. Local tests keep the
+  # sys.path fallback for convenience.
+  source_path = [
+    "${path.module}/../lambda/analyze-pr",
+    {
+      path          = "${path.module}/../lambda/process-batch-summary/extractor"
+      prefix_in_zip = "extractor"
+    }
+  ]
 
   # Suppress verbose archive output
   quiet_archive_local_exec = true
 
-  # Environment variables
+  # Environment variables.
+  #
+  # plan-gkg chunk 08: wire the symbol-graph reader's two anchor
+  # tables (chunk 02 created the SSM params alongside the DDB module;
+  # we read directly from the module output rather than re-resolving
+  # SSM at cold-start). GRAPH_RETRIEVAL_ENABLED is the platform-wide
+  # kill-switch (defaults to "true" via the handler) so an operator
+  # can flip the flag without redeploy via SSM-backed env override.
+  # PR_WORKSPACE_ID is NOT wired here -- analyze-pr resolves
+  # repo -> workspace at runtime; plumbed through handler.py via the
+  # env var only as a forward-compat seam.
   environment_variables = {
-    ENV      = var.environment
-    APP_NAME = var.app_name
+    ENV                     = var.environment
+    APP_NAME                = var.app_name
+    SYMBOL_GRAPH_TABLE      = module.symbol_graph_table.dynamodb_table_id
+    CODE_MAPS_TABLE         = module.code_maps_table.dynamodb_table_id
+    GRAPH_RETRIEVAL_ENABLED = "true"
   }
 
   # IAM permissions

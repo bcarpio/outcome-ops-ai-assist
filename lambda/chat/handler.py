@@ -533,8 +533,19 @@ def _stream_error(error: str, status_code: int = 400) -> str:
 # pre-chunk-05 RAG-only behavior). Tracks plan-gkg/05 "Open question"
 # #1 - we may want to switch to parallel routing later, and this gate
 # lets us toggle without code change.
-GRAPH_AUGMENT_ENABLED = (
-    os.environ.get("GRAPH_AUGMENT_ENABLED", "true").lower() == "true"
+#
+# Naming: plan-gkg/08 standardized the kill-switch on
+# ``GRAPH_RETRIEVAL_ENABLED`` so chat / analyze-pr / generate-code all
+# share the same operator-facing flag. The previous name
+# ``GRAPH_AUGMENT_ENABLED`` is still honored for backward compatibility
+# (older deploys may still set it via SSM) but the canonical name is
+# the one in the if-cascade below.
+GRAPH_RETRIEVAL_ENABLED = (
+    os.environ.get(
+        "GRAPH_RETRIEVAL_ENABLED",
+        os.environ.get("GRAPH_AUGMENT_ENABLED", "true"),
+    ).lower()
+    == "true"
 )
 
 
@@ -651,7 +662,7 @@ def _augment_context_with_symbol_graph(
 
     - ``decision``      : the ``RouterDecision`` (or ``None`` if the
                           augmentation path was skipped via the
-                          ``GRAPH_AUGMENT_ENABLED`` gate or empty
+                          ``GRAPH_RETRIEVAL_ENABLED`` gate or empty
                           workspace scope).
     - ``graph_block``   : a rendered "Symbol facts" string ready to
                           concatenate onto the RAG context, or ``""``
@@ -665,7 +676,7 @@ def _augment_context_with_symbol_graph(
 
     out: Dict[str, Any] = {"decision": None, "graph_block": ""}
 
-    if not GRAPH_AUGMENT_ENABLED:
+    if not GRAPH_RETRIEVAL_ENABLED:
         return out
     if not question or not question.strip():
         return out

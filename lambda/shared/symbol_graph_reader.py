@@ -159,6 +159,88 @@ def _query_with_retry(table, **query_kwargs):
 _dynamodb_resource = None
 _test_resource_override = None
 
+# CloudWatch client for the chunk-08 ``QueryLatency`` metric emission.
+# Lazy + best-effort: a publish failure must not break a query that
+# already succeeded. Matches the writer's lazy-client pattern.
+_cloudwatch_client = None
+_test_cloudwatch_override = None
+
+
+def _cloudwatch():
+    """Return a cached CloudWatch client (or the test override).
+
+    plan-gkg chunk 08 introduced ``OutcomeOps/SymbolGraph::QueryLatency``
+    so the latency alarm in terraform/cloudwatch_symbol_graph.tf has
+    something to compare against. We emit lazily and best-effort -- the
+    alarm is correct-by-construction (no metric = no breach), and a
+    publish error must never bubble out of a query.
+    """
+
+    global _cloudwatch_client
+    if _test_cloudwatch_override is not None:
+        return _test_cloudwatch_override
+    if _cloudwatch_client is None:
+        try:
+            _cloudwatch_client = boto3.client("cloudwatch")
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning(
+                "[symbol_graph_reader] cloudwatch init failed: %s", exc
+            )
+            return None
+    return _cloudwatch_client
+
+
+def _set_cloudwatch_for_tests(client) -> None:
+    """Test hook -- inject a stub CloudWatch client (or None to
+    no-op the metric emission entirely)."""
+
+    global _test_cloudwatch_override
+    _test_cloudwatch_override = client
+
+
+def _emit_query_latency_metric(
+    *, index_name: str, latency_ms: float, item_count: int
+) -> None:
+    """Publish ``QueryLatency`` to ``OutcomeOps/SymbolGraph``.
+
+    The chunk-08 alarm watches the p99 across all dimensions; we attach
+    ``Index`` as a dimension so operators can drill into target-kind vs
+    target-prefix latency separately if the alarm fires. Best-effort:
+    any error is swallowed and logged at WARN. The metric is the
+    *graph* query latency, not Lambda-end-to-end -- that's covered by
+    the per-Lambda feature-agnostic duration alarms.
+    """
+
+    client = _cloudwatch()
+    if client is None:
+        return
+    try:
+        client.put_metric_data(
+            Namespace="OutcomeOps/SymbolGraph",
+            MetricData=[
+                {
+                    "MetricName": "QueryLatency",
+                    "Unit": "Milliseconds",
+                    "Value": latency_ms,
+                    "Dimensions": [
+                        {"Name": "Index", "Value": index_name},
+                    ],
+                },
+                {
+                    "MetricName": "QueryItemCount",
+                    "Unit": "Count",
+                    "Value": float(item_count),
+                    "Dimensions": [
+                        {"Name": "Index", "Value": index_name},
+                    ],
+                },
+            ],
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(
+            "[symbol_graph_reader] QueryLatency emit failed: %s", exc
+        )
+
 
 def _resource():
     """Return a cached DynamoDB resource.
@@ -187,8 +269,11 @@ def _reset_clients_for_tests() -> None:
     """Test hook — clear cached resource + override."""
 
     global _dynamodb_resource, _test_resource_override
+    global _cloudwatch_client, _test_cloudwatch_override
     _dynamodb_resource = None
     _test_resource_override = None
+    _cloudwatch_client = None
+    _test_cloudwatch_override = None
 
 
 # ---------------------------------------------------------------------------
@@ -383,36 +468,51 @@ def _query_gsi(
     last_key: Optional[dict] = None
     truncated = False
 
-    while True:
-        remaining = limit - len(items)
-        if remaining <= 0:
-            # The previous page already filled the cap. If the previous
-            # response carried a LastEvaluatedKey there is at least one
-            # more item server-side, so the result is truncated.
-            truncated = last_key is not None
-            break
+    # plan-gkg chunk 08: time the whole GSI walk (including pagination)
+    # and emit ``OutcomeOps/SymbolGraph::QueryLatency`` so the
+    # cloudwatch_symbol_graph.tf p99 alarm has a signal. Use a wall-clock
+    # timer because that's what the alarm threshold is calibrated
+    # against (200ms ceiling, 50ms target -- both in real time).
+    _t_start = time.perf_counter()
+    try:
+        while True:
+            remaining = limit - len(items)
+            if remaining <= 0:
+                # The previous page already filled the cap. If the
+                # previous response carried a LastEvaluatedKey there is
+                # at least one more item server-side, so the result is
+                # truncated.
+                truncated = last_key is not None
+                break
 
-        kwargs = {
-            "IndexName": index_name,
-            "KeyConditionExpression": key_condition,
-            "Limit": remaining,
-        }
-        if last_key:
-            kwargs["ExclusiveStartKey"] = last_key
+            kwargs = {
+                "IndexName": index_name,
+                "KeyConditionExpression": key_condition,
+                "Limit": remaining,
+            }
+            if last_key:
+                kwargs["ExclusiveStartKey"] = last_key
 
-        response = _query_with_retry(table, **kwargs)
-        page_items = response.get("Items", []) or []
-        items.extend(page_items[:remaining])
-        last_key = response.get("LastEvaluatedKey")
+            response = _query_with_retry(table, **kwargs)
+            page_items = response.get("Items", []) or []
+            items.extend(page_items[:remaining])
+            last_key = response.get("LastEvaluatedKey")
 
-        if len(items) >= limit:
-            # If there's more server-side OR the page itself overflowed
-            # the remaining slot, mark truncated.
-            if last_key is not None or len(page_items) > remaining:
-                truncated = True
-            break
-        if not last_key:
-            break
+            if len(items) >= limit:
+                # If there's more server-side OR the page itself
+                # overflowed the remaining slot, mark truncated.
+                if last_key is not None or len(page_items) > remaining:
+                    truncated = True
+                break
+            if not last_key:
+                break
+    finally:
+        _latency_ms = (time.perf_counter() - _t_start) * 1000.0
+        _emit_query_latency_metric(
+            index_name=index_name,
+            latency_ms=_latency_ms,
+            item_count=len(items),
+        )
 
     return items, truncated
 

@@ -790,10 +790,17 @@ def _build_structural_impact_comment(
     the staleness phrase in the rendered footer is the disclaimer.
     """
 
-    # Operator kill-switch: GRAPH_AUGMENT_ENABLED is the same gate used
-    # by chat (chunk 05). When disabled, this pass is a no-op so a
-    # rollout can be paused without redeploy.
-    if os.environ.get("GRAPH_AUGMENT_ENABLED", "true").lower() != "true":
+    # Operator kill-switch: GRAPH_RETRIEVAL_ENABLED is the platform-wide
+    # gate (plan-gkg chunk 08 standardized the name across chat /
+    # analyze-pr / generate-code). When disabled, this pass is a no-op
+    # so a rollout can be paused without redeploy. The legacy
+    # ``GRAPH_AUGMENT_ENABLED`` value is honored as a fallback so older
+    # deploys that still set the chunk-06 name continue to work.
+    _kill_switch = os.environ.get(
+        "GRAPH_RETRIEVAL_ENABLED",
+        os.environ.get("GRAPH_AUGMENT_ENABLED", "true"),
+    )
+    if _kill_switch.lower() != "true":
         logger.info("[analyze-pr.structural] augmentation disabled via env")
         return None
 

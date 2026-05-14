@@ -106,7 +106,11 @@ def _isolate_env(monkeypatch):
     monkeypatch.setenv("SYMBOL_GRAPH_TABLE", SYMBOL_GRAPH_TABLE)
     monkeypatch.setenv("CODE_MAPS_TABLE", CODE_MAPS_TABLE)
     monkeypatch.setenv("AUDIT_TABLE", "")
-    monkeypatch.setenv("GRAPH_AUGMENT_ENABLED", "true")
+    # plan-gkg chunk 08 standardized the kill-switch name. Tests
+    # default to the canonical var and a dedicated backward-compat
+    # test below pins the legacy fallback path.
+    monkeypatch.setenv("GRAPH_RETRIEVAL_ENABLED", "true")
+    monkeypatch.delenv("GRAPH_AUGMENT_ENABLED", raising=False)
     yield
 
 
@@ -992,9 +996,27 @@ def _load_handler():
 
 class TestHandlerStructuralGlue:
     def test_disabled_via_env_returns_none(self, monkeypatch):
-        """GRAPH_AUGMENT_ENABLED=false short-circuits without firing
-        any reader calls -- the kill-switch documented in chunk 06.
+        """GRAPH_RETRIEVAL_ENABLED=false short-circuits without firing
+        any reader calls -- the kill-switch standardized in chunk 08.
         """
+        monkeypatch.setenv("GRAPH_RETRIEVAL_ENABLED", "false")
+        handler = _load_handler()
+        out = handler._build_structural_impact_comment(
+            repository="o/r",
+            pr=MagicMock(),
+            files=[],
+            token="t",
+            workspace_id="ws",
+            base_sha="b",
+            head_sha="h",
+        )
+        assert out is None
+
+    def test_disabled_via_legacy_env_returns_none(self, monkeypatch):
+        """Backward-compat: GRAPH_AUGMENT_ENABLED=false (the chunk-06
+        name) still disables the pass when GRAPH_RETRIEVAL_ENABLED is
+        unset. Lets operators on older deploys roll forward."""
+        monkeypatch.delenv("GRAPH_RETRIEVAL_ENABLED", raising=False)
         monkeypatch.setenv("GRAPH_AUGMENT_ENABLED", "false")
         handler = _load_handler()
         out = handler._build_structural_impact_comment(
@@ -1010,7 +1032,7 @@ class TestHandlerStructuralGlue:
 
     def test_missing_workspace_id_returns_none(self, monkeypatch):
         """No workspace_id = no graph anchor -- pass is a no-op."""
-        monkeypatch.setenv("GRAPH_AUGMENT_ENABLED", "true")
+        monkeypatch.setenv("GRAPH_RETRIEVAL_ENABLED", "true")
         handler = _load_handler()
         out = handler._build_structural_impact_comment(
             repository="o/r",
@@ -1026,7 +1048,7 @@ class TestHandlerStructuralGlue:
     def test_missing_symbol_graph_table_returns_none(self, monkeypatch):
         """SYMBOL_GRAPH_TABLE unset -> no-op (deploy bug guard)."""
         monkeypatch.delenv("SYMBOL_GRAPH_TABLE", raising=False)
-        monkeypatch.setenv("GRAPH_AUGMENT_ENABLED", "true")
+        monkeypatch.setenv("GRAPH_RETRIEVAL_ENABLED", "true")
         handler = _load_handler()
         out = handler._build_structural_impact_comment(
             repository="o/r",

@@ -72,6 +72,14 @@ module "generate_code_lambda" {
       GIT_EXEC_PATH = "/opt/libexec/git-core"
       # Shared libraries for git
       LD_LIBRARY_PATH = "/opt/lib:/var/lang/lib:/lib64:/usr/lib64"
+
+      # plan-gkg chunk 08 - symbol-graph anchor tables + kill-switch.
+      # impact_analysis (chunk 07) reads the graph for callers of every
+      # modified symbol so the plan covers caller sites. IAM read access
+      # is attached separately in iam_symbol_graph.tf.
+      SYMBOL_GRAPH_TABLE      = module.symbol_graph_table.dynamodb_table_id
+      CODE_MAPS_TABLE         = module.code_maps_table.dynamodb_table_id
+      GRAPH_RETRIEVAL_ENABLED = "true"
     },
     local.outcomeops_license_env,
   )

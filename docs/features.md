@@ -70,6 +70,29 @@ and by code-gen as the "where does this thing live" index.
 - **Workspace-scoped repo allowlist** — code-map vectors are
   partitioned by repo, repos are joined to workspaces via membership.
 
+### Structural retrieval (symbol graph)
+
+A parallel structural-retrieval index that augments RAG with
+deterministic caller / importer / implementer answers. Extracted
+during existing code-map regen runs, stored in DynamoDB
+(`${env}-${app}-symbol-graph`), queried in parallel with vector
+RAG by `chat`, `analyze-pr`, and `generate-code`. Honestly returns
+empty sets — "no callers found in this workspace" — instead of
+fabricating a list, which is the audit unlock for the regulated
+buyer. See `plan-gkg/` for design and `docs/symbol-graph-validation.md`
+for the operator validation runbook.
+
+- **`callers(X)`** — every direct caller of a symbol, with file path
+  and line.
+- **`importers(X)`** — every importer of a package or subpath
+  (e.g. `@hyatt-hpe/hpe-utils/http2`); exact-match and prefix /
+  wildcard modes.
+- **`implementers(I)`** — every class implementing an interface.
+- **`definitions(X)`** — where a symbol is defined.
+
+Operator kill-switch: `GRAPH_RETRIEVAL_ENABLED` (default `"true"`)
+gates the graph path per Lambda; one-touch rollback without redeploy.
+
 ## Code generation pipeline (Jira → Code → PR → Analyze)
 
 End-to-end loop that turns a Jira ticket into a reviewed PR with

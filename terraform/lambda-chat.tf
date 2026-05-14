@@ -93,6 +93,12 @@ module "chat_streaming_lambda" {
       SYMBOL_GRAPH_TABLE = module.symbol_graph_table.dynamodb_table_id
       CODE_MAPS_TABLE    = module.code_maps_table.dynamodb_table_id
 
+      # plan-gkg chunk 08 - platform-wide kill-switch (default ON).
+      # Operators can disable graph retrieval without redeploy by
+      # flipping this in console / SSM-backed config; the chat handler
+      # falls back to its pre-chunk-05 RAG-only behavior.
+      GRAPH_RETRIEVAL_ENABLED = "true"
+
       # Point requests / urllib3 / httpx / stdlib ssl + urllib.request at
       # the merged PEM shipped in the platform-CA layer so BYO-internal-CA
       # MCP listeners are trusted. Both env vars are needed because

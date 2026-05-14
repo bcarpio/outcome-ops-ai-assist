@@ -77,7 +77,11 @@ def _isolate_env(monkeypatch):
     monkeypatch.setenv("SYMBOL_GRAPH_TABLE", SYMBOL_GRAPH_TABLE)
     monkeypatch.setenv("CODE_MAPS_TABLE", CODE_MAPS_TABLE)
     monkeypatch.setenv("AUDIT_TABLE", "")
-    monkeypatch.setenv("GRAPH_AUGMENT_ENABLED", "true")
+    # plan-gkg chunk 08 standardized the kill-switch name. Tests
+    # exercise the canonical var by default and a dedicated
+    # backward-compat test below pins the legacy fallback behavior.
+    monkeypatch.setenv("GRAPH_RETRIEVAL_ENABLED", "true")
+    monkeypatch.delenv("GRAPH_AUGMENT_ENABLED", raising=False)
     yield
 
 
@@ -372,8 +376,30 @@ def test_augment_no_workspace_skips_router_and_graph(_inject_clients):
 
 
 def test_augment_kill_switch_disables_augmentation(monkeypatch, _inject_clients):
-    """GRAPH_AUGMENT_ENABLED=false bypasses router + reader entirely
-    so an operator can disable in the field without redeploy."""
+    """GRAPH_RETRIEVAL_ENABLED=false bypasses router + reader entirely
+    so an operator can disable in the field without redeploy
+    (plan-gkg chunk 08 standardized var name)."""
+    monkeypatch.setenv("GRAPH_RETRIEVAL_ENABLED", "false")
+    bedrock_stub = _inject_clients
+    handler = _import_augment()
+
+    out = handler._augment_context_with_symbol_graph(
+        question="Who calls report_repos_snapshot?",
+        workspace_ids=[WORKSPACE_ID],
+        user_id="user@x.com",
+    )
+    assert out["decision"] is None
+    assert out["graph_block"] == ""
+
+
+def test_augment_kill_switch_legacy_var_still_honored(
+    monkeypatch, _inject_clients
+):
+    """Backward-compat: when GRAPH_RETRIEVAL_ENABLED is unset but the
+    legacy GRAPH_AUGMENT_ENABLED=false is set, augmentation stays off.
+    Lets operators on older deploys roll forward without touching
+    SSM."""
+    monkeypatch.delenv("GRAPH_RETRIEVAL_ENABLED", raising=False)
     monkeypatch.setenv("GRAPH_AUGMENT_ENABLED", "false")
     bedrock_stub = _inject_clients
     handler = _import_augment()
