@@ -416,7 +416,7 @@ def get_schemas(user_email: str, workspace_id: str, connection_id: str) -> Dict:
         return _error(500, "Credential not found for connection")
 
     try:
-        schemas = list_db_schemas(
+        result = list_db_schemas(
             engine=connection["engine"],
             host=connection["host"],
             port=connection["port"],
@@ -427,6 +427,16 @@ def get_schemas(user_email: str, workspace_id: str, connection_id: str) -> Dict:
         logger.error(f"Schema introspection engine unavailable: {e}")
         return _error(500, "Server misconfiguration: schema introspection engine unavailable")
 
+    # Distinguish "user truly has zero in-scope schemas" (200 with
+    # empty list) from "introspection failed" (502 with the upstream
+    # message in the body) so the picker UI can render the actual
+    # failure cause instead of a generic SELECT-grants hint.
+    if result.error_type == "introspection_failed":
+        return _response(502, {
+            "error": result.error or "Schema introspection failed",
+            "error_type": result.error_type,
+        })
+
     payload = [
         {
             "catalog": s.catalog,
@@ -434,7 +444,7 @@ def get_schemas(user_email: str, workspace_id: str, connection_id: str) -> Dict:
             "table": s.table,
             "row_count_estimate": s.row_count_estimate,
         }
-        for s in schemas
+        for s in result.schemas
     ]
     return _response(200, {"schemas": payload})
 

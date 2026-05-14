@@ -53,6 +53,33 @@ class SchemaInfo:
     row_count_estimate: Optional[int] = None
 
 
+@dataclass
+class SchemasResult:
+    """Result of a picker-side list_schemas call.
+
+    Lets the handler distinguish "user genuinely has zero visible
+    schemas" (schemas=[], error=None -> 200) from "introspection
+    blew up" (schemas=[], error="...", error_type="introspection_failed"
+    -> 502). The handler maps error_type to HTTP code; the UI then
+    renders the actual upstream message instead of a hardcoded
+    "Check SELECT grants" hint that's only correct for the truly-
+    empty case.
+
+    error_type values:
+        - None: success (error is also None)
+        - "introspection_failed": the upstream introspector raised;
+          most common cause is auth/network/permission against the
+          customer DB. error carries the upstream message.
+        - "engine_unavailable": deferred via the existing
+          IntrospectionEngineUnavailable exception at the handler
+          boundary; not used in this dataclass directly today, but
+          reserved so the UI mapping stays explicit.
+    """
+    schemas: List["SchemaInfo"]
+    error: Optional[str] = None
+    error_type: Optional[str] = None
+
+
 def _import_introspection_engine():
     """Deferred import. Raises IntrospectionEngineUnavailable if the
     upstream package isn't installed in the runtime container image."""
@@ -337,14 +364,21 @@ def list_schemas(
     port: int,
     database_name: str,
     credential_payload: Dict[str, Any],
-) -> List[SchemaInfo]:
+) -> SchemasResult:
     """Metadata-only enumeration for the UI schema/table picker.
 
     Calls the upstream engine's introspector.introspect_database()
     directly — bypasses build_context so we don't pay the Ollama-
-    install cost on Lambda. Returns a flat list of SchemaInfo across
-    all visible catalogs/schemas/tables that the RO user can SELECT
-    from.
+    install cost on Lambda. Returns a SchemasResult wrapping a flat
+    list of SchemaInfo across all visible catalogs/schemas/tables
+    that the RO user can SELECT from.
+
+    On introspection failure (auth, network blip, malformed config,
+    upstream exception) returns SchemasResult(schemas=[], error=...,
+    error_type="introspection_failed") so the handler can map to
+    HTTP 502 with the real message in the body. Previously the
+    function returned bare [] on any failure, which the UI couldn't
+    distinguish from "truly zero visible tables."
 
     For very large warehouses we may need to add a cache layer
     (DDB-backed) - flagged in plan/PROGRESS.md as an open question.
@@ -358,14 +392,20 @@ def list_schemas(
         )
     except (ValueError, ImportError) as e:
         logger.error(f"list_schemas config build failed: {e}")
-        return []
+        return SchemasResult(
+            schemas=[], error=str(e), error_type="introspection_failed",
+        )
 
     try:
         introspector = _get_introspector(engine)
         result = introspector.introspect_database(config)
-    except Exception:
+    except Exception as e:
         logger.exception("Schema introspection for picker failed")
-        return []
+        return SchemasResult(
+            schemas=[],
+            error=f"{type(e).__name__}: {e}",
+            error_type="introspection_failed",
+        )
 
     out: List[SchemaInfo] = []
     for catalog in result.catalogs:
@@ -378,7 +418,7 @@ def list_schemas(
                     schema=schema.name or "",
                     table=table.name,
                 ))
-    return out
+    return SchemasResult(schemas=out)
 
 
 # The full introspect_database call for sync lives in database-sync
