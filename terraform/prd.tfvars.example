@@ -155,11 +155,14 @@ github_usernames_to_tag = "yourusername"
 # ============================================================================
 
 # Email addresses subscribed to the database-drift SNS topic. Notifications
-# fire when a database sync detects schemas or tables that were added or
-# removed against the prior-sync snapshot (DBA created a new schema, dropped
-# a table, etc.). Empty list = no topic created, no notifications fire —
-# the DATABASE_SYNCED audit row still carries schemas_added / tables_added /
-# etc. fields regardless, so audit-table polling still works.
+# fire on schema-level drift only — i.e. a DBA created or dropped a schema
+# since the prior sync, so the admin needs to revisit Configure Scope to
+# decide whether to add it. Table-level changes inside already-selected
+# schemas are auto-ingested on the next sync and are NOT emailed (the
+# admin has no action to take on them). Empty list = no topic created,
+# no notifications fire — the DATABASE_SYNCED audit row still carries
+# schemas_added / schemas_removed / tables_added / tables_removed fields
+# regardless, so audit-table polling and downstream consumers still work.
 #
 # Each email gets an AWS SNS SubscribeNow email on first apply; click-confirm
 # to activate. The topic ARN is also exposed as a terraform output

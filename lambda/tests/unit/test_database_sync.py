@@ -1424,8 +1424,16 @@ class TestDriftNotificationPublish:
         assert len(call_kwargs["Subject"]) <= 99
         assert "Database drift" in call_kwargs["Subject"]
         assert "Test DW" in call_kwargs["Subject"]
-        # Body lists the actual drift
+        # Body lists the actual schema drift
         assert "analytics.imaging" in call_kwargs["Message"]
+        # Body should NOT carry the table-level data lines (admin has
+        # no action to take on auto-discovered tables; only the audit
+        # row carries those fields for downstream consumers). Match
+        # against the data-formatted prefix (with colon) so the
+        # explanatory parenthetical that mentions "Tables added or
+        # removed" without a colon doesn't trip the assertion.
+        assert "Tables added:" not in call_kwargs["Message"]
+        assert "Tables removed:" not in call_kwargs["Message"]
 
     @patch.object(handler_module, "queue_orphan_cleanup")
     @patch.object(handler_module, "queue_table_ingestion")
@@ -1433,13 +1441,16 @@ class TestDriftNotificationPublish:
     @patch.object(handler_module, "_list_visible_schemas")
     @patch.object(handler_module, "_run_schema_introspection")
     @patch.object(handler_module, "get_credential")
-    def test_publish_fires_on_table_drift_only(
+    def test_publish_skipped_on_table_drift_only(
         self, mock_get_cred, mock_intro, mock_list_schemas, _audit,
         mock_queue_table, _cleanup,
         mock_table, sample_connection, mock_credential, monkeypatch,
     ):
-        """Table-level drift (no new schemas) still triggers publish -
-        chunk 07's topic subsumes chunk 06's table-level drift alerting."""
+        """Table-level drift inside already-selected schemas is handled
+        automatically by chunk 06's auto-discover / orphan-cleanup
+        paths. Admin has nothing to act on, so we deliberately do NOT
+        email about it. The DATABASE_SYNCED audit row still carries
+        tables_added / tables_removed for downstream consumers."""
         monkeypatch.setenv("DATABASE_DRIFT_TOPIC_ARN", "arn:aws:sns:us-east-1:111:db-drift")
         mock_publish = MagicMock()
         monkeypatch.setattr(handler_module.sns_client, "publish", mock_publish)
@@ -1459,13 +1470,13 @@ class TestDriftNotificationPublish:
             "columns_count": 1,
             "had_top_values": False,
         }
-        # No schema drift
+        # No schema drift — table only
         mock_list_schemas.return_value = ["analytics.public"]
 
         handler_module.process_sync_request({
             "workspace_id": "ws_test", "connection_id": "conn_test",
         })
-        mock_publish.assert_called_once()
+        mock_publish.assert_not_called()
 
     @patch.object(handler_module, "queue_orphan_cleanup")
     @patch.object(handler_module, "queue_table_ingestion")

@@ -808,20 +808,23 @@ def _format_drift_email(
     sync_id: str,
     schemas_added: List[str],
     schemas_removed: List[str],
-    tables_added: List[str],
-    tables_removed: List[str],
 ) -> Dict[str, str]:
     """Build the SNS subject+body for a drift notification.
 
     Plain text — keeps Slack-webhook / SES-rule / generic-email
     subscribers all happy. Subject is capped at 99 chars (SNS rule)
     by the caller.
+
+    Schema-drift ONLY. Table-level drift inside selected schemas is
+    handled automatically by chunk 06's auto-discover path (new
+    tables sync, dropped tables get orphan-cleaned) so the admin
+    has no action to take and we don't want to email about it.
     """
     label = display_label or connection_id
     subject = f"[OutcomeOps] Database drift: {label} ({engine})"
     now = datetime.now(timezone.utc).isoformat()
     body_lines = [
-        "Database drift detected during sync.",
+        "Database schema drift detected during sync.",
         "",
         f"Connection:   {label}",
         f"Engine:       {engine}",
@@ -834,17 +837,21 @@ def _format_drift_email(
         f"Schemas added:   {list(schemas_added)}",
         f"Schemas removed: {list(schemas_removed)}",
         "",
-        f"Tables added:    {list(tables_added)}",
-        f"Tables removed:  {list(tables_removed)}",
+        "New schemas require admin action - open Configure Scope on",
+        "the connection to include them. Schemas that were removed",
+        "are no longer visible to the connection's read-only user;",
+        "investigate whether the upstream DB dropped them or the",
+        "user's grants changed.",
         "",
-        "These changes were detected against the connection's prior-sync",
-        "snapshot. Tables in selected schemas auto-flow to your KB; new",
-        "SCHEMAS require admin action - open Configure Scope on the",
-        "connection to include them.",
+        "(Tables added or removed inside already-selected schemas",
+        "are handled automatically and are not surfaced here. The",
+        "DATABASE_SYNCED audit row's tables_added / tables_removed",
+        "fields still carry that data for downstream consumers.)",
         "",
-        "This is an automated notification from OutcomeOps AI Assist. To",
-        "adjust who receives these, update database_drift_notification_emails",
-        "in your terraform tfvars and re-apply.",
+        "This is an automated notification from OutcomeOps AI Assist.",
+        "To adjust who receives these, update",
+        "database_drift_notification_emails in your terraform tfvars",
+        "and re-apply.",
     ]
     return {"subject": subject, "body": "\n".join(body_lines)}
 
@@ -859,20 +866,25 @@ def _publish_drift_notification(
     sync_id: str,
     schemas_added: List[str],
     schemas_removed: List[str],
-    tables_added: List[str],
-    tables_removed: List[str],
 ) -> None:
     """Publish a structured drift email to DATABASE_DRIFT_TOPIC_ARN.
 
-    No-op when the topic arn env var is unset/empty OR when every drift
-    list is empty (steady-state syncs publish nothing). Publish
-    failures are warning-logged and swallowed — the DATABASE_SYNCED
-    audit row already carries the data, so SNS is just the push-path.
+    Schema-drift only. Table-level drift inside already-selected
+    schemas is handled by chunk 06's auto-discover path with no
+    admin action required, so it does NOT trigger an email; only
+    schema additions/removals (which DO require admin action) fire
+    a notification.
+
+    No-op when the topic arn env var is unset/empty OR when both
+    schema-drift lists are empty (steady-state and table-only-drift
+    syncs publish nothing). Publish failures are warning-logged and
+    swallowed — the DATABASE_SYNCED audit row already carries the
+    data, so SNS is just the push-path.
     """
     topic_arn = os.environ.get("DATABASE_DRIFT_TOPIC_ARN", "")
     if not topic_arn:
         return
-    if not (schemas_added or schemas_removed or tables_added or tables_removed):
+    if not (schemas_added or schemas_removed):
         return
 
     msg = _format_drift_email(
@@ -885,14 +897,16 @@ def _publish_drift_notification(
         sync_id=sync_id,
         schemas_added=schemas_added,
         schemas_removed=schemas_removed,
-        tables_added=tables_added,
-        tables_removed=tables_removed,
     )
     try:
         sns_client.publish(
             TopicArn=topic_arn,
             Subject=msg["subject"][:99],  # SNS subject max 100
             Message=msg["body"],
+        )
+        logger.info(
+            f"Published schema-drift notification to {topic_arn} "
+            f"(added={len(schemas_added)}, removed={len(schemas_removed)})"
         )
     except ClientError as e:
         # Non-blocking — audit row already has the drift fields.
@@ -1100,10 +1114,15 @@ def process_sync_request(message: Dict) -> Dict[str, Any]:
         },
     )
 
-    # Chunk 07: push notification. Gated on a non-empty topic ARN
-    # (length-0 tfvar = no topic, no publish) AND on at least one
-    # drift list being non-empty (steady-state syncs publish
-    # nothing — no email noise on the common no-drift hourly tick).
+    # Chunk 07: push notification — schema-drift ONLY. Table-level
+    # drift inside already-selected schemas is auto-discovered (new
+    # tables) or auto-cleaned (removed tables) by chunk 06's path
+    # and requires no admin action, so it does not email. Schema
+    # additions / removals DO require admin action (admin must
+    # opt-in to a new schema; investigate a removed one) and are
+    # the only thing this notification surfaces. Tables_added /
+    # tables_removed still ride on the DATABASE_SYNCED audit row
+    # above for downstream consumers (audit-table polling, etc.).
     _publish_drift_notification(
         workspace_id=workspace_id,
         connection_id=connection_id,
@@ -1114,8 +1133,6 @@ def process_sync_request(message: Dict) -> Dict[str, Any]:
         sync_id=sync_id,
         schemas_added=schemas_added,
         schemas_removed=schemas_removed,
-        tables_added=tables_added,
-        tables_removed=tables_removed,
     )
 
     return {
