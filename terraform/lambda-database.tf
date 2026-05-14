@@ -55,66 +55,72 @@ module "database_integration_lambda" {
   cloudwatch_logs_retention_in_days = 7
   cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs.arn
 
-  environment_variables = {
-    ENV                       = var.environment
-    APP_NAME                  = var.app_name
-    WORKSPACES_TABLE          = module.workspaces_table[0].dynamodb_table_id
-    DB_CREDENTIAL_KMS_KEY_ARN = aws_kms_key.db_credentials[0].arn
-    DATABASE_SYNC_QUEUE       = aws_sqs_queue.database_sync[0].url
-    DELETE_QUEUE              = aws_sqs_queue.delete_queue[0].url
-    AUDIT_TABLE               = module.audit_logs_table.dynamodb_table_id
-  }
+  environment_variables = merge(
+    {
+      ENV                       = var.environment
+      APP_NAME                  = var.app_name
+      WORKSPACES_TABLE          = module.workspaces_table[0].dynamodb_table_id
+      DB_CREDENTIAL_KMS_KEY_ARN = aws_kms_key.db_credentials[0].arn
+      DATABASE_SYNC_QUEUE       = aws_sqs_queue.database_sync[0].url
+      DELETE_QUEUE              = aws_sqs_queue.delete_queue[0].url
+      AUDIT_TABLE               = module.audit_logs_table.dynamodb_table_id
+    },
+    local.outcomeops_license_env,
+  )
 
   attach_policy_statements = true
-  policy_statements = {
-    dynamodb = {
-      effect = "Allow"
-      actions = [
-        "dynamodb:GetItem",
-        "dynamodb:PutItem",
-        "dynamodb:UpdateItem",
-        "dynamodb:DeleteItem",
-        "dynamodb:Query"
-      ]
-      resources = [
-        module.workspaces_table[0].dynamodb_table_arn,
-        "${module.workspaces_table[0].dynamodb_table_arn}/index/*"
-      ]
-    }
+  policy_statements = merge(
+    {
+      dynamodb = {
+        effect = "Allow"
+        actions = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:DeleteItem",
+          "dynamodb:Query"
+        ]
+        resources = [
+          module.workspaces_table[0].dynamodb_table_arn,
+          "${module.workspaces_table[0].dynamodb_table_arn}/index/*"
+        ]
+      }
 
-    kms_db_credentials = {
-      effect = "Allow"
-      actions = [
-        "kms:Encrypt",
-        "kms:Decrypt",
-        "kms:GenerateDataKey*"
-      ]
-      resources = [
-        aws_kms_key.db_credentials[0].arn
-      ]
-    }
+      kms_db_credentials = {
+        effect = "Allow"
+        actions = [
+          "kms:Encrypt",
+          "kms:Decrypt",
+          "kms:GenerateDataKey*"
+        ]
+        resources = [
+          aws_kms_key.db_credentials[0].arn
+        ]
+      }
 
-    sqs_send = {
-      effect = "Allow"
-      actions = [
-        "sqs:SendMessage"
-      ]
-      resources = [
-        aws_sqs_queue.database_sync[0].arn,
-        aws_sqs_queue.delete_queue[0].arn
-      ]
-    }
+      sqs_send = {
+        effect = "Allow"
+        actions = [
+          "sqs:SendMessage"
+        ]
+        resources = [
+          aws_sqs_queue.database_sync[0].arn,
+          aws_sqs_queue.delete_queue[0].arn
+        ]
+      }
 
-    dynamodb_audit = {
-      effect = "Allow"
-      actions = [
-        "dynamodb:PutItem"
-      ]
-      resources = [
-        module.audit_logs_table.dynamodb_table_arn
-      ]
-    }
-  }
+      dynamodb_audit = {
+        effect = "Allow"
+        actions = [
+          "dynamodb:PutItem"
+        ]
+        resources = [
+          module.audit_logs_table.dynamodb_table_arn
+        ]
+      }
+    },
+    local.outcomeops_license_iam,
+  )
 
   tags = {
     Purpose = "database-integration"

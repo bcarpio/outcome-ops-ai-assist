@@ -43,94 +43,100 @@ module "teams_integration_lambda" {
   # Suppress verbose archive output
   quiet_archive_local_exec = true
 
-  environment_variables = {
-    ENV               = var.environment
-    APP_NAME          = var.app_name
-    WORKSPACES_TABLE  = module.workspaces_table[0].dynamodb_table_id
-    OAUTH_KMS_KEY_ARN = aws_kms_key.oauth_tokens[0].arn
-    TEAMS_SYNC_QUEUE  = aws_sqs_queue.teams_sync[0].url
-    DELETE_QUEUE      = aws_sqs_queue.delete_queue[0].url
-    AUDIT_TABLE       = module.audit_logs_table.dynamodb_table_id
-  }
+  environment_variables = merge(
+    {
+      ENV               = var.environment
+      APP_NAME          = var.app_name
+      WORKSPACES_TABLE  = module.workspaces_table[0].dynamodb_table_id
+      OAUTH_KMS_KEY_ARN = aws_kms_key.oauth_tokens[0].arn
+      TEAMS_SYNC_QUEUE  = aws_sqs_queue.teams_sync[0].url
+      DELETE_QUEUE      = aws_sqs_queue.delete_queue[0].url
+      AUDIT_TABLE       = module.audit_logs_table.dynamodb_table_id
+    },
+    local.outcomeops_license_env,
+  )
 
   # IAM permissions
   attach_policy_statements = true
-  policy_statements = {
-    # DynamoDB for connections and tokens
-    dynamodb = {
-      effect = "Allow"
-      actions = [
-        "dynamodb:GetItem",
-        "dynamodb:PutItem",
-        "dynamodb:UpdateItem",
-        "dynamodb:DeleteItem",
-        "dynamodb:Query"
-      ]
-      resources = [
-        module.workspaces_table[0].dynamodb_table_arn,
-        "${module.workspaces_table[0].dynamodb_table_arn}/index/*"
-      ]
-    }
+  policy_statements = merge(
+    {
+      # DynamoDB for connections and tokens
+      dynamodb = {
+        effect = "Allow"
+        actions = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:DeleteItem",
+          "dynamodb:Query"
+        ]
+        resources = [
+          module.workspaces_table[0].dynamodb_table_arn,
+          "${module.workspaces_table[0].dynamodb_table_arn}/index/*"
+        ]
+      }
 
-    # SSM for OAuth configuration
-    ssm_read = {
-      effect = "Allow"
-      actions = [
-        "ssm:GetParameter",
-        "ssm:GetParameters"
-      ]
-      resources = [
-        "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/oauth/microsoft/*"
-      ]
-    }
+      # SSM for OAuth configuration
+      ssm_read = {
+        effect = "Allow"
+        actions = [
+          "ssm:GetParameter",
+          "ssm:GetParameters"
+        ]
+        resources = [
+          "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/oauth/microsoft/*"
+        ]
+      }
 
-    # KMS for token encryption/decryption
-    kms_oauth = {
-      effect = "Allow"
-      actions = [
-        "kms:Encrypt",
-        "kms:Decrypt",
-        "kms:GenerateDataKey*"
-      ]
-      resources = [
-        aws_kms_key.oauth_tokens[0].arn
-      ]
-    }
+      # KMS for token encryption/decryption
+      kms_oauth = {
+        effect = "Allow"
+        actions = [
+          "kms:Encrypt",
+          "kms:Decrypt",
+          "kms:GenerateDataKey*"
+        ]
+        resources = [
+          aws_kms_key.oauth_tokens[0].arn
+        ]
+      }
 
-    # KMS for SSM parameter decryption
-    kms_ssm = {
-      effect = "Allow"
-      actions = [
-        "kms:Decrypt"
-      ]
-      resources = [
-        "arn:aws:kms:${var.aws_region}:${data.aws_caller_identity.current.account_id}:alias/aws/ssm"
-      ]
-    }
+      # KMS for SSM parameter decryption
+      kms_ssm = {
+        effect = "Allow"
+        actions = [
+          "kms:Decrypt"
+        ]
+        resources = [
+          "arn:aws:kms:${var.aws_region}:${data.aws_caller_identity.current.account_id}:alias/aws/ssm"
+        ]
+      }
 
-    # SQS for sync and delete queues
-    sqs_send = {
-      effect = "Allow"
-      actions = [
-        "sqs:SendMessage"
-      ]
-      resources = [
-        aws_sqs_queue.teams_sync[0].arn,
-        aws_sqs_queue.delete_queue[0].arn
-      ]
-    }
+      # SQS for sync and delete queues
+      sqs_send = {
+        effect = "Allow"
+        actions = [
+          "sqs:SendMessage"
+        ]
+        resources = [
+          aws_sqs_queue.teams_sync[0].arn,
+          aws_sqs_queue.delete_queue[0].arn
+        ]
+      }
 
-    # DynamoDB audit log writes (plan/audit-completeness)
-    dynamodb_audit = {
-      effect = "Allow"
-      actions = [
-        "dynamodb:PutItem"
-      ]
-      resources = [
-        module.audit_logs_table.dynamodb_table_arn
-      ]
-    }
-  }
+      # DynamoDB audit log writes (plan/audit-completeness)
+      dynamodb_audit = {
+        effect = "Allow"
+        actions = [
+          "dynamodb:PutItem"
+        ]
+        resources = [
+          module.audit_logs_table.dynamodb_table_arn
+        ]
+      }
+    },
+    local.outcomeops_license_iam,
+  )
 
   tags = {
     Purpose = "teams-integration"
