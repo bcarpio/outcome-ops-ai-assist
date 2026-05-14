@@ -108,6 +108,12 @@ class GitHubFile(BaseModel):
     additions: int
     deletions: int
     changes: int
+    # GitHub's /pulls/{n}/files response includes a ``patch`` field with
+    # the unified-diff body for each file (omitted for binary diffs or
+    # very large patches). plan-gkg chunk 06 walks this for symbol
+    # resolution. Optional so the existing parse/queue path (which only
+    # needs filename + status) stays backwards-compatible.
+    patch: Optional[str] = None
 
 
 def get_github_token() -> str:
@@ -212,6 +218,41 @@ def fetch_pr_files(repository: str, pr_number: int, token: str) -> List[GitHubFi
     except requests.exceptions.RequestException as e:
         logger.error(f"Failed to fetch PR files from GitHub: {e}")
         raise Exception(f"GitHub API error: {str(e)}")
+
+
+def fetch_file_contents(
+    repository: str, file_path: str, ref: str, token: str
+) -> Optional[bytes]:
+    """Fetch the raw bytes of ``file_path`` at ``ref`` from GitHub.
+
+    Used by the plan-gkg chunk-06 structural-impact pass: the diff
+    symbol resolver runs the extractor over the **post-diff** file
+    content so canonical symbol IDs match the graph. ``ref`` is the
+    PR's head SHA for "what the symbol looks like after the change",
+    or the base SHA for staleness queries.
+
+    Returns None for missing files (e.g. removed-in-PR), binary blobs,
+    or any error -- callers degrade gracefully.
+    """
+    url = f"https://api.github.com/repos/{repository}/contents/{file_path}"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        # Raw media type so we skip the base64-encoded JSON envelope.
+        "Accept": "application/vnd.github.v3.raw",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    params = {"ref": ref}
+    try:
+        response = requests.get(url, headers=headers, params=params, timeout=30)
+        if response.status_code == 404:
+            return None
+        response.raise_for_status()
+        return response.content
+    except requests.exceptions.RequestException as e:
+        logger.warning(
+            f"Failed to fetch contents of {file_path} at {ref}: {e}"
+        )
+        return None
 
 
 def post_pr_comment(repository: str, pr_number: int, body: str, token: str) -> Dict[str, Any]:
@@ -611,6 +652,47 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
         logger.info(f"Changed files: {len(changed_files)}, Checks to run: {len(checks_to_run)}")
 
+        # plan-gkg chunk 06: compute the structural-impact block and post
+        # it as a PR comment. This is best-effort -- we wrap the whole
+        # pass in try/except so a graph failure can't break the existing
+        # check-queueing pipeline (plan-gkg/06 "Failure modes").
+        try:
+            base_sha = (pr.base or {}).get("sha") if isinstance(pr.base, dict) else None
+            head_sha = (pr.head or {}).get("sha") if isinstance(pr.head, dict) else None
+            # Workspace_id resolution from a repo is plumbed through
+            # for forward compatibility (chunk 08 will wire repo ->
+            # workspace lookup). For now we honor an explicit env var
+            # if set, else skip.
+            workspace_id = os.environ.get("PR_WORKSPACE_ID", "") or None
+            structural_block = _build_structural_impact_comment(
+                repository=request.repository,
+                pr=pr,
+                files=files,
+                token=token,
+                workspace_id=workspace_id,
+                base_sha=base_sha,
+                head_sha=head_sha,
+            )
+            if structural_block:
+                comment_body = (
+                    structural_block
+                    + "\n\n---\n*Powered by [OutcomeOps AI Assist](https://outcomeops.ai)*"
+                )
+                post_pr_comment(
+                    request.repository, request.pr_number, comment_body, token
+                )
+                logger.info(
+                    "[analyze-pr.structural] posted structural-impact comment "
+                    "for PR #%d", request.pr_number
+                )
+        except Exception as exc:
+            # Non-fatal -- the structural pass is additive context.
+            logger.warning(
+                "[analyze-pr.structural] failed for PR #%d: %s",
+                request.pr_number,
+                exc,
+            )
+
         # If no checks needed, post comment and return
         if not checks_to_run:
             comment_body = """**OutcomeOps Analysis:** No checks needed for this PR (no relevant files changed)
@@ -677,6 +759,154 @@ Results will be posted as comments when complete.
     except Exception as e:
         logger.error(f"Error analyzing PR: {str(e)}", exc_info=True)
         raise
+
+
+def _build_structural_impact_comment(
+    *,
+    repository: str,
+    pr: Any,
+    files: List[GitHubFile],
+    token: str,
+    workspace_id: Optional[str],
+    base_sha: Optional[str],
+    head_sha: Optional[str],
+) -> Optional[str]:
+    """Compute the plan-gkg chunk-06 structural-impact block.
+
+    Returns a Markdown string ready to post as a PR comment, or None
+    when no block should be emitted (no mutated symbols resolved, or
+    no workspace_id, or graph augmentation gated off).
+
+    Graceful degradation: any exception in the chunk-04 reader is
+    swallowed and we return ``build_unavailable_block`` so the human
+    reviewer still sees that structural retrieval failed -- the
+    review otherwise proceeds. Matches the plan's "structural section
+    omitted; review still ships" failure-mode.
+
+    Resolution of plan-gkg/overview.md open question #3: we run the
+    reader against the **base SHA** (the parent of the PR) so the
+    pre-change graph anchors caller analysis. The reader's pointer
+    aggregation already returns ``graph_sha`` / ``staleness_seconds``;
+    the staleness phrase in the rendered footer is the disclaimer.
+    """
+
+    # Operator kill-switch: GRAPH_AUGMENT_ENABLED is the same gate used
+    # by chat (chunk 05). When disabled, this pass is a no-op so a
+    # rollout can be paused without redeploy.
+    if os.environ.get("GRAPH_AUGMENT_ENABLED", "true").lower() != "true":
+        logger.info("[analyze-pr.structural] augmentation disabled via env")
+        return None
+
+    symbol_graph_table = os.environ.get("SYMBOL_GRAPH_TABLE", "")
+    code_maps_table = os.environ.get("CODE_MAPS_TABLE", "")
+    if not symbol_graph_table:
+        # IAM + env-var wiring lives in terraform/iam_symbol_graph.tf
+        # + terraform/lambda-pr-analysis.tf. If we got here without
+        # the env var, the structural pass simply doesn't run.
+        logger.info(
+            "[analyze-pr.structural] SYMBOL_GRAPH_TABLE not set; skipping"
+        )
+        return None
+    if not workspace_id:
+        # Per plan-gkg/06 + the chunk-04 reader contract: queries are
+        # workspace-scoped. analyze-pr today doesn't know which
+        # workspace owns a given repository -- the lookup is plumbed
+        # through here for forward compatibility (chunk 08 will wire
+        # repo -> workspace resolution) but we no-op when it's empty.
+        logger.info(
+            "[analyze-pr.structural] no workspace_id resolved; skipping"
+        )
+        return None
+
+    # Lazy import so module-load of analyze-pr's handler.py doesn't
+    # require the extractor module to be on sys.path (live Lambda zip
+    # doesn't include it today; tests + future zip layouts will).
+    try:
+        from diff_symbol_resolver import FilePatch, resolve_targets  # type: ignore
+        from structural_review import (  # type: ignore
+            analyze_structural_impact,
+            build_impact_block,
+            build_unavailable_block,
+        )
+    except Exception as exc:  # pragma: no cover - import path
+        logger.warning(
+            "[analyze-pr.structural] module import failed (%s); skipping",
+            exc,
+        )
+        return None
+
+    if not head_sha:
+        # Fall back to "main" if the PR's head SHA isn't available --
+        # the extractor doesn't care about ref correctness for the
+        # symbol-resolution step, only for picking up the post-diff
+        # content. Real PRs always have a head SHA.
+        head_sha = "HEAD"
+
+    # 1. Build FilePatch list: filename + patch + post-diff bytes.
+    file_patches: List[FilePatch] = []
+    for f in files:
+        if f.status == "removed":
+            file_patches.append(
+                FilePatch(
+                    file_path=f.filename,
+                    status=f.status,
+                    patch=f.patch,
+                    post_diff_source=None,
+                )
+            )
+            continue
+        if not f.patch:
+            # Binary diff or omitted patch -- still record so the
+            # resolver can log/skip. post_diff_source stays None to
+            # short-circuit.
+            file_patches.append(
+                FilePatch(
+                    file_path=f.filename,
+                    status=f.status,
+                    patch=None,
+                    post_diff_source=None,
+                )
+            )
+            continue
+        post = fetch_file_contents(repository, f.filename, head_sha, token)
+        file_patches.append(
+            FilePatch(
+                file_path=f.filename,
+                status=f.status,
+                patch=f.patch,
+                post_diff_source=post,
+            )
+        )
+
+    # 2. Resolve canonical symbol IDs from the diff.
+    mutated = resolve_targets(file_patches)
+    if not mutated:
+        logger.info(
+            "[analyze-pr.structural] no mutated symbols resolved; "
+            "skipping structural block"
+        )
+        return None
+
+    logger.info(
+        "[analyze-pr.structural] %d mutated symbol(s) resolved", len(mutated)
+    )
+
+    # 3. Query the graph. Resilient -- per-symbol errors get surfaced
+    # in the block, not raised.
+    impacts = analyze_structural_impact(
+        workspace_id=workspace_id,
+        mutated=mutated,
+        symbol_graph_table_name=symbol_graph_table,
+        code_maps_table_name=code_maps_table or None,
+    )
+    if not impacts:
+        # Reader raised at module-import time, or the workspace_id
+        # / mutated list mismatched. Render an unavailable block so
+        # the reviewer knows the structural pass was attempted but
+        # couldn't complete.
+        return build_unavailable_block(base_sha=base_sha)
+
+    return build_impact_block(impacts, base_sha=base_sha)
 
 
 def _emit_pr_analyzed(

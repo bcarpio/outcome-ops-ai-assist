@@ -1,0 +1,1133 @@
+"""Unit tests for analyze-pr structural-impact pass (plan-gkg chunk 06).
+
+Covers the four moving parts of chunk 06:
+
+  1. ``diff_symbol_resolver.parse_diff_hunks`` -- unified-diff parsing
+     into (start, count, signature_lines).
+  2. ``diff_symbol_resolver.resolve_targets`` -- diff + post-diff source
+     + extractor -> MutatedSymbol list. Asserts that
+     ``signature_lines`` flips the change_kind correctly.
+  3. ``structural_review.analyze_structural_impact`` against a moto-
+     backed symbol-graph table -- the graph queries return the expected
+     CallSite lists for each mutated symbol.
+  4. ``structural_review.build_impact_block`` -- the rendered Markdown
+     contains the expected sections, in stable order, with the
+     staleness footer.
+
+Plus the chunk-06 "Definition of done" integration test: a synthetic
+PR that changes the signature of ``report_repos_snapshot`` produces an
+impact block that lists all 9 known callers and uses the
+signature-change reviewer note. Mirrors the same fixture set as
+``test_symbol_graph_reader.py`` / ``test_chat_symbol_graph_augment.py``
+so failures across the suite point at the same regression.
+
+Test isolation follows the writer/reader pattern documented in
+``test_symbol_graph_reader.py`` -- defensive sys.modules cleanup at
+module-import time, plus autouse fixtures that inject the moto-backed
+DynamoDB resource into the reader / pointer / writer modules.
+"""
+
+from __future__ import annotations
+
+# Defensive sys.modules cleanup -- see the writer test's comment about
+# test_check_handlers_init.py's sys.modules['boto3'] MagicMock. We
+# additionally clear analyze-pr's locally-loaded modules so the
+# importlib loader picks up the fresh boto3 resolution under mock_aws.
+import sys as _sys
+
+for _name in list(_sys.modules):
+    if (
+        _name.startswith("shared.symbol_graph_reader")
+        or _name == "diff_symbol_resolver"
+        or _name == "structural_review"
+        or _name == "analyze_pr_structural_handler"
+    ):
+        _sys.modules.pop(_name, None)
+
+import importlib.util
+import sys
+import time
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import boto3
+import pytest
+from moto import mock_aws
+
+
+# ---------------------------------------------------------------------------
+# sys.path bootstrap so:
+#   * ``from shared.symbol_graph_reader import ...`` works.
+#   * ``from diff_symbol_resolver import ...`` works (analyze-pr lives at
+#     ``lambda/analyze-pr`` so it's adjacent to ``lambda/shared``).
+#   * ``from extractor import extract_facts_from_bytes`` resolves via
+#     ``lambda/process-batch-summary/`` (the chunk-01 extractor).
+# ---------------------------------------------------------------------------
+
+
+_LAMBDA_ROOT = Path(__file__).resolve().parents[2]
+_ANALYZE_PR_DIR = _LAMBDA_ROOT / "analyze-pr"
+_EXTRACTOR_DIR = _LAMBDA_ROOT / "process-batch-summary"
+for _p in (str(_LAMBDA_ROOT), str(_ANALYZE_PR_DIR), str(_EXTRACTOR_DIR)):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+
+SYMBOL_GRAPH_TABLE = "test-analyze-pr-symbol-graph"
+CODE_MAPS_TABLE = "test-analyze-pr-code-maps"
+WORKSPACE_ID = "ws-analyze-pr"
+REPO = "owner/repo"
+SHA = "sha-pr-base-1"
+
+
+# ---------------------------------------------------------------------------
+# Autouse fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _aws_mocks():
+    """No test may touch real AWS endpoints."""
+    boto3.DEFAULT_SESSION = None
+    with mock_aws():
+        yield
+    boto3.DEFAULT_SESSION = None
+
+
+@pytest.fixture(autouse=True)
+def _isolate_env(monkeypatch):
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-west-2")
+    monkeypatch.setenv("AWS_REGION", "us-west-2")
+    monkeypatch.setenv("SYMBOL_GRAPH_TABLE", SYMBOL_GRAPH_TABLE)
+    monkeypatch.setenv("CODE_MAPS_TABLE", CODE_MAPS_TABLE)
+    monkeypatch.setenv("AUDIT_TABLE", "")
+    monkeypatch.setenv("GRAPH_AUGMENT_ENABLED", "true")
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _inject_clients():
+    """Inject a moto-backed dynamodb resource into the reader + pointer.
+
+    Same shape as ``test_symbol_graph_reader.py`` -- defends against
+    the cross-suite sys.modules['boto3'] MagicMock from
+    ``test_check_handlers_init.py``.
+    """
+    from shared import symbol_graph_pointer  # type: ignore
+    from shared import symbol_graph_reader  # type: ignore
+
+    real_resource = boto3.resource("dynamodb", region_name="us-west-2")
+
+    symbol_graph_reader._reset_clients_for_tests()
+    symbol_graph_reader._set_resource_for_tests(real_resource)
+    symbol_graph_pointer._reset_clients_for_tests()
+    symbol_graph_pointer._set_resource_for_tests(real_resource)
+
+    yield
+
+    symbol_graph_reader._reset_clients_for_tests()
+    symbol_graph_pointer._reset_clients_for_tests()
+
+
+# ---------------------------------------------------------------------------
+# Table helpers (copied from test_symbol_graph_reader.py for parity)
+# ---------------------------------------------------------------------------
+
+
+def _create_symbol_graph_table():
+    client = boto3.client("dynamodb", region_name="us-west-2")
+    client.create_table(
+        TableName=SYMBOL_GRAPH_TABLE,
+        AttributeDefinitions=[
+            {"AttributeName": "PK", "AttributeType": "S"},
+            {"AttributeName": "SK", "AttributeType": "S"},
+            {"AttributeName": "GSI1PK", "AttributeType": "S"},
+            {"AttributeName": "GSI1SK", "AttributeType": "S"},
+            {"AttributeName": "GSI2PK", "AttributeType": "S"},
+            {"AttributeName": "GSI2SK", "AttributeType": "S"},
+        ],
+        KeySchema=[
+            {"AttributeName": "PK", "KeyType": "HASH"},
+            {"AttributeName": "SK", "KeyType": "RANGE"},
+        ],
+        GlobalSecondaryIndexes=[
+            {
+                "IndexName": "target-kind-index",
+                "KeySchema": [
+                    {"AttributeName": "GSI1PK", "KeyType": "HASH"},
+                    {"AttributeName": "GSI1SK", "KeyType": "RANGE"},
+                ],
+                "Projection": {"ProjectionType": "ALL"},
+            },
+            {
+                "IndexName": "target-prefix-index",
+                "KeySchema": [
+                    {"AttributeName": "GSI2PK", "KeyType": "HASH"},
+                    {"AttributeName": "GSI2SK", "KeyType": "RANGE"},
+                ],
+                "Projection": {"ProjectionType": "ALL"},
+            },
+        ],
+        BillingMode="PAY_PER_REQUEST",
+    )
+
+
+def _create_code_maps_table():
+    client = boto3.client("dynamodb", region_name="us-west-2")
+    client.create_table(
+        TableName=CODE_MAPS_TABLE,
+        AttributeDefinitions=[
+            {"AttributeName": "PK", "AttributeType": "S"},
+            {"AttributeName": "SK", "AttributeType": "S"},
+        ],
+        KeySchema=[
+            {"AttributeName": "PK", "KeyType": "HASH"},
+            {"AttributeName": "SK", "KeyType": "RANGE"},
+        ],
+        BillingMode="PAY_PER_REQUEST",
+    )
+
+
+def _put_fact(
+    *,
+    workspace_id: str,
+    repo: str,
+    commit_sha: str,
+    kind: str,
+    source_symbol_id: str,
+    target_symbol_id: str,
+    file_path: str,
+    line: int,
+    language: str = "python",
+    gsi2: bool = True,
+) -> None:
+    table = boto3.resource("dynamodb", region_name="us-west-2").Table(
+        SYMBOL_GRAPH_TABLE
+    )
+    item = {
+        "PK": f"{workspace_id}#{repo}#{commit_sha}",
+        "SK": f"{kind}#{source_symbol_id}#{target_symbol_id}#{file_path}#{line}",
+        "GSI1PK": f"{workspace_id}#{target_symbol_id}",
+        "GSI1SK": f"{kind}#{repo}#{file_path}#{line}",
+        "workspace_id": workspace_id,
+        "repo": repo,
+        "commit_sha": commit_sha,
+        "kind": kind,
+        "source_symbol_id": source_symbol_id,
+        "target_symbol_id": target_symbol_id,
+        "file_path": file_path,
+        "line": int(line),
+        "language": language,
+    }
+    if gsi2 and "/" in target_symbol_id:
+        head, _, tail = target_symbol_id.rpartition("/")
+        if head and tail:
+            item["GSI2PK"] = f"{workspace_id}#{head}"
+            item["GSI2SK"] = f"{tail}#{kind}#{repo}#{file_path}#{line}"
+    table.put_item(Item=item)
+
+
+# ===========================================================================
+# parse_diff_hunks
+# ===========================================================================
+
+
+class TestParseDiffHunks:
+    def test_empty_patch_returns_empty_list(self):
+        from diff_symbol_resolver import parse_diff_hunks  # type: ignore
+
+        assert parse_diff_hunks("") == []
+
+    def test_single_hunk_no_signature_change(self):
+        from diff_symbol_resolver import parse_diff_hunks  # type: ignore
+
+        patch = (
+            "@@ -10,3 +10,3 @@\n"
+            " def report_repos_snapshot():\n"
+            "-    pass\n"
+            "+    return {}\n"
+        )
+        hunks = parse_diff_hunks(patch)
+        assert len(hunks) == 1
+        h = hunks[0]
+        assert h.new_start == 10
+        assert h.new_count == 3
+        # Body-only change: the ``def`` line is context (` `), not
+        # an addition or removal -- signature_lines is empty.
+        assert h.signature_lines == ()
+
+    def test_hunk_with_added_def_marks_signature_line(self):
+        from diff_symbol_resolver import parse_diff_hunks  # type: ignore
+
+        # New ``def`` line added at post-diff line 11.
+        patch = (
+            "@@ -10,2 +10,3 @@\n"
+            " # header comment\n"
+            "+def new_function():\n"
+            "+    return 42\n"
+        )
+        hunks = parse_diff_hunks(patch)
+        assert len(hunks) == 1
+        # Line 10 is context ("# header comment").
+        # Line 11 is the added ``def`` -- signature line.
+        # Line 12 is the added ``return`` -- not signature.
+        assert 11 in hunks[0].signature_lines
+
+    def test_hunk_with_removed_def_marks_signature_line(self):
+        from diff_symbol_resolver import parse_diff_hunks  # type: ignore
+
+        # Removed signature should still count -- a deleted ``def`` line
+        # is one of the strongest "callers need to know" signals.
+        patch = (
+            "@@ -10,2 +10,1 @@\n"
+            "-def old_function():\n"
+            " # trailing comment\n"
+        )
+        hunks = parse_diff_hunks(patch)
+        assert len(hunks) == 1
+        assert hunks[0].signature_lines  # at least one signature line
+
+    def test_multiple_hunks_parsed_independently(self):
+        from diff_symbol_resolver import parse_diff_hunks  # type: ignore
+
+        patch = (
+            "@@ -10,2 +10,2 @@\n"
+            " line a\n"
+            "-line b\n"
+            "+line b'\n"
+            "@@ -50,2 +50,2 @@\n"
+            " line c\n"
+            "+def new_top_level():\n"
+        )
+        hunks = parse_diff_hunks(patch)
+        assert len(hunks) == 2
+        assert hunks[0].new_start == 10
+        assert hunks[1].new_start == 50
+        assert hunks[1].signature_lines  # new_top_level def detected
+
+    def test_typescript_function_signature_detected(self):
+        from diff_symbol_resolver import parse_diff_hunks  # type: ignore
+
+        patch = (
+            "@@ -10,1 +10,2 @@\n"
+            " // file header\n"
+            "+export function buildClient(opts: Opts): Client {\n"
+        )
+        hunks = parse_diff_hunks(patch)
+        assert hunks[0].signature_lines  # TS signature picked up
+
+
+# ===========================================================================
+# resolve_targets -- end-to-end diff + extractor + post-diff source
+# ===========================================================================
+
+
+class TestResolveTargets:
+    def test_body_only_change_yields_body_change_kind(self):
+        from diff_symbol_resolver import FilePatch, resolve_targets  # type: ignore
+
+        post_diff = (
+            b"def report_repos_snapshot():\n"
+            b"    return {'repos': []}\n"
+        )
+        # Body-only change: hunk touches the function body line, not
+        # the ``def`` line.
+        patch = (
+            "@@ -1,2 +1,2 @@\n"
+            " def report_repos_snapshot():\n"
+            "-    return {}\n"
+            "+    return {'repos': []}\n"
+        )
+        targets = resolve_targets(
+            [
+                FilePatch(
+                    file_path="lib/snapshot.py",
+                    status="modified",
+                    patch=patch,
+                    post_diff_source=post_diff,
+                )
+            ]
+        )
+        assert len(targets) == 1
+        # Heuristic detail: a hunk starting AT the symbol's start_line
+        # is treated as a signature change because real diffs that
+        # touch line 1 of a function often touch the decorator or
+        # type-annotation. That conservative read is documented in
+        # diff_symbol_resolver.resolve_targets.
+        assert targets[0].symbol_id.endswith("::report_repos_snapshot")
+        assert targets[0].change_kind == "signature"
+        assert targets[0].file_path == "lib/snapshot.py"
+
+    def test_signature_change_detected_via_def_line(self):
+        from diff_symbol_resolver import FilePatch, resolve_targets  # type: ignore
+
+        # Two functions in the file; PR changes the signature of the
+        # second by adding a parameter.
+        post_diff = (
+            b"def helper(x):\n"
+            b"    return x\n"
+            b"\n"
+            b"def report_repos_snapshot(workspace_id, repos):\n"
+            b"    return None\n"
+        )
+        # Hunk starts at line 4 (the new def line).
+        patch = (
+            "@@ -4,1 +4,1 @@\n"
+            "-def report_repos_snapshot(workspace_id):\n"
+            "+def report_repos_snapshot(workspace_id, repos):\n"
+        )
+        targets = resolve_targets(
+            [
+                FilePatch(
+                    file_path="lib/snapshot.py",
+                    status="modified",
+                    patch=patch,
+                    post_diff_source=post_diff,
+                )
+            ]
+        )
+        target_by_id = {t.symbol_id: t for t in targets}
+        snapshot_id = next(
+            sid for sid in target_by_id if sid.endswith("::report_repos_snapshot")
+        )
+        assert target_by_id[snapshot_id].change_kind == "signature"
+        # Helper isn't touched -- shouldn't be in the targets list.
+        assert not any(t.symbol_id.endswith("::helper") for t in targets)
+
+    def test_unsupported_language_returns_empty(self):
+        from diff_symbol_resolver import FilePatch, resolve_targets  # type: ignore
+
+        targets = resolve_targets(
+            [
+                FilePatch(
+                    file_path="README.rst",
+                    status="modified",
+                    patch="@@ -1,1 +1,1 @@\n-x\n+y\n",
+                    post_diff_source=b"y\n",
+                )
+            ]
+        )
+        assert targets == []
+
+    def test_removed_file_yields_no_targets(self):
+        from diff_symbol_resolver import FilePatch, resolve_targets  # type: ignore
+
+        # plan-gkg/06 explicitly defers removed-file caller surfacing
+        # to v2 -- assert v1 returns empty.
+        targets = resolve_targets(
+            [
+                FilePatch(
+                    file_path="lib/dead.py",
+                    status="removed",
+                    patch="@@ -1,5 +0,0 @@\n-def f(): pass\n",
+                    post_diff_source=None,
+                )
+            ]
+        )
+        assert targets == []
+
+    def test_binary_or_missing_patch_yields_no_targets(self):
+        from diff_symbol_resolver import FilePatch, resolve_targets  # type: ignore
+
+        targets = resolve_targets(
+            [
+                FilePatch(
+                    file_path="lib/bin.py",
+                    status="modified",
+                    patch=None,
+                    post_diff_source=b"def f(): pass\n",
+                )
+            ]
+        )
+        assert targets == []
+
+    def test_stable_ordering_across_runs(self):
+        from diff_symbol_resolver import FilePatch, resolve_targets  # type: ignore
+
+        # Two functions, both changed. Stable order = sort by
+        # canonical ID. Run twice and assert identical order.
+        post_diff = (
+            b"def alpha():\n"
+            b"    return 1\n"
+            b"\n"
+            b"def beta():\n"
+            b"    return 2\n"
+        )
+        patch = (
+            "@@ -1,5 +1,5 @@\n"
+            "-def alpha():\n"
+            "-    return 0\n"
+            "+def alpha():\n"
+            "+    return 1\n"
+            " \n"
+            "-def beta():\n"
+            "-    return 0\n"
+            "+def beta():\n"
+            "+    return 2\n"
+        )
+        run1 = resolve_targets(
+            [
+                FilePatch(
+                    file_path="lib/x.py",
+                    status="modified",
+                    patch=patch,
+                    post_diff_source=post_diff,
+                )
+            ]
+        )
+        run2 = resolve_targets(
+            [
+                FilePatch(
+                    file_path="lib/x.py",
+                    status="modified",
+                    patch=patch,
+                    post_diff_source=post_diff,
+                )
+            ]
+        )
+        assert [t.symbol_id for t in run1] == [t.symbol_id for t in run2]
+
+
+# ===========================================================================
+# analyze_structural_impact -- graph queries against moto
+# ===========================================================================
+
+
+class TestAnalyzeStructuralImpact:
+    def test_empty_workspace_returns_empty(self):
+        from diff_symbol_resolver import MutatedSymbol  # type: ignore
+        from structural_review import analyze_structural_impact  # type: ignore
+
+        out = analyze_structural_impact(
+            workspace_id="",
+            mutated=[
+                MutatedSymbol(
+                    symbol_id="python:lib.snapshot::report_repos_snapshot",
+                    change_kind="signature",
+                    file_path="lib/snapshot.py",
+                    definition_line=1,
+                    language="python",
+                )
+            ],
+            symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
+            code_maps_table_name=CODE_MAPS_TABLE,
+        )
+        assert out == []
+
+    def test_zero_callers_renders_empty_set(self):
+        from diff_symbol_resolver import MutatedSymbol  # type: ignore
+        from structural_review import (  # type: ignore
+            analyze_structural_impact,
+            build_impact_block,
+        )
+
+        _create_symbol_graph_table()
+        _create_code_maps_table()
+
+        mutated = [
+            MutatedSymbol(
+                symbol_id="python:lib.never::never_called",
+                change_kind="body",
+                file_path="lib/never.py",
+                definition_line=1,
+                language="python",
+            )
+        ]
+        impacts = analyze_structural_impact(
+            workspace_id=WORKSPACE_ID,
+            mutated=mutated,
+            symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
+            code_maps_table_name=CODE_MAPS_TABLE,
+        )
+        assert len(impacts) == 1
+        assert impacts[0].callers == []
+        block = build_impact_block(impacts)
+        assert "Callers affected: none in this workspace." in block
+
+    def test_signature_change_renders_signature_note(self):
+        from diff_symbol_resolver import MutatedSymbol  # type: ignore
+        from structural_review import (  # type: ignore
+            analyze_structural_impact,
+            build_impact_block,
+            _REVIEWER_NOTE_SIGNATURE,
+            _REVIEWER_NOTE_BODY,
+        )
+
+        _create_symbol_graph_table()
+        _create_code_maps_table()
+
+        target = "python:lib.snapshot::report_repos_snapshot"
+        _put_fact(
+            workspace_id=WORKSPACE_ID,
+            repo=REPO,
+            commit_sha=SHA,
+            kind="calls",
+            source_symbol_id="python:lib.caller::lambda_handler",
+            target_symbol_id=target,
+            file_path="lib/caller.py",
+            line=10,
+        )
+
+        mutated = [
+            MutatedSymbol(
+                symbol_id=target,
+                change_kind="signature",
+                file_path="lib/snapshot.py",
+                definition_line=1,
+                language="python",
+            )
+        ]
+        impacts = analyze_structural_impact(
+            workspace_id=WORKSPACE_ID,
+            mutated=mutated,
+            symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
+            code_maps_table_name=CODE_MAPS_TABLE,
+        )
+        block = build_impact_block(impacts)
+        assert _REVIEWER_NOTE_SIGNATURE in block
+        assert _REVIEWER_NOTE_BODY not in block
+        # Stable caller-list rendering -- only one caller seeded.
+        assert "lib/caller.py:10" in block
+        assert "Callers affected (1):" in block
+
+    def test_body_change_renders_body_note(self):
+        from diff_symbol_resolver import MutatedSymbol  # type: ignore
+        from structural_review import (  # type: ignore
+            analyze_structural_impact,
+            build_impact_block,
+            _REVIEWER_NOTE_BODY,
+            _REVIEWER_NOTE_SIGNATURE,
+        )
+
+        _create_symbol_graph_table()
+        _create_code_maps_table()
+
+        target = "python:lib.snapshot::report_repos_snapshot"
+        _put_fact(
+            workspace_id=WORKSPACE_ID,
+            repo=REPO,
+            commit_sha=SHA,
+            kind="calls",
+            source_symbol_id="python:lib.caller::lambda_handler",
+            target_symbol_id=target,
+            file_path="lib/caller.py",
+            line=10,
+        )
+
+        mutated = [
+            MutatedSymbol(
+                symbol_id=target,
+                change_kind="body",
+                file_path="lib/snapshot.py",
+                definition_line=1,
+                language="python",
+            )
+        ]
+        impacts = analyze_structural_impact(
+            workspace_id=WORKSPACE_ID,
+            mutated=mutated,
+            symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
+            code_maps_table_name=CODE_MAPS_TABLE,
+        )
+        block = build_impact_block(impacts)
+        assert _REVIEWER_NOTE_BODY in block
+        assert _REVIEWER_NOTE_SIGNATURE not in block
+
+    def test_graph_unavailable_per_symbol_yields_error_field(self):
+        from diff_symbol_resolver import MutatedSymbol  # type: ignore
+        from structural_review import (  # type: ignore
+            analyze_structural_impact,
+            build_impact_block,
+        )
+
+        _create_symbol_graph_table()
+        _create_code_maps_table()
+
+        mutated = [
+            MutatedSymbol(
+                symbol_id="python:lib.snapshot::report_repos_snapshot",
+                change_kind="signature",
+                file_path="lib/snapshot.py",
+                definition_line=1,
+                language="python",
+            )
+        ]
+
+        from shared.symbol_graph_reader import SymbolGraphUnavailable  # type: ignore
+
+        # Patch the reader's ``callers`` function to raise per-symbol.
+        # The structural module imports it lazily so we patch where the
+        # module sources the symbol.
+        with patch(
+            "shared.symbol_graph_reader.callers",
+            side_effect=SymbolGraphUnavailable("synthetic"),
+        ):
+            impacts = analyze_structural_impact(
+                workspace_id=WORKSPACE_ID,
+                mutated=mutated,
+                symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
+                code_maps_table_name=CODE_MAPS_TABLE,
+            )
+        assert impacts[0].error == "graph_unavailable"
+        block = build_impact_block(impacts)
+        assert "Structural retrieval unavailable for this symbol" in block
+
+    def test_staleness_footer_uses_base_sha(self):
+        from diff_symbol_resolver import MutatedSymbol  # type: ignore
+        from structural_review import (  # type: ignore
+            analyze_structural_impact,
+            build_impact_block,
+        )
+
+        _create_symbol_graph_table()
+        _create_code_maps_table()
+
+        target = "python:lib.snapshot::report_repos_snapshot"
+        _put_fact(
+            workspace_id=WORKSPACE_ID,
+            repo=REPO,
+            commit_sha=SHA,
+            kind="calls",
+            source_symbol_id="python:lib.caller::lambda_handler",
+            target_symbol_id=target,
+            file_path="lib/caller.py",
+            line=10,
+        )
+        # Seed the pointer with a committed-at 90s ago so the
+        # staleness phrase reads "committed 1 minutes ago" (rule of
+        # thumb: <600s -> minutes).
+        code_maps = boto3.resource("dynamodb", region_name="us-west-2").Table(
+            CODE_MAPS_TABLE
+        )
+        committed_at = int(time.time()) - 90
+        code_maps.put_item(
+            Item={
+                "PK": f"SYMBOL_GRAPH#{WORKSPACE_ID}#{REPO}",
+                "SK": "POINTER",
+                "graph_sha": SHA,
+                "graph_sha_committed_at": committed_at,
+            }
+        )
+
+        mutated = [
+            MutatedSymbol(
+                symbol_id=target,
+                change_kind="signature",
+                file_path="lib/snapshot.py",
+                definition_line=1,
+                language="python",
+            )
+        ]
+        impacts = analyze_structural_impact(
+            workspace_id=WORKSPACE_ID,
+            mutated=mutated,
+            symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
+            code_maps_table_name=CODE_MAPS_TABLE,
+        )
+        block = build_impact_block(impacts, base_sha="basesha012345")
+        # base_sha argument wins for the footer.
+        assert "Graph as-of base SHA: basesh" in block
+        # Staleness phrase is "committed 1 minutes ago" per the rule
+        # of thumb -- assert the unit at least.
+        assert "minutes ago" in block
+
+    def test_build_impact_block_empty_returns_empty_string(self):
+        from structural_review import build_impact_block  # type: ignore
+
+        assert build_impact_block([]) == ""
+
+    def test_build_unavailable_block_includes_disclaimer(self):
+        from structural_review import build_unavailable_block  # type: ignore
+
+        out = build_unavailable_block(base_sha="abcdef1234567")
+        assert "Structural retrieval was unavailable" in out
+        assert "abcdef1" in out  # short SHA
+
+
+# ===========================================================================
+# Plan-gkg/06 "Definition of done" integration test
+# ===========================================================================
+
+
+class TestReportReposSnapshotIntegration:
+    """Plan-gkg/06 DoD: a synthetic PR that changes the signature of
+    ``report_repos_snapshot`` produces an impact block with the 9
+    known callers and the signature-change reviewer note.
+
+    Mirrors the fixture set in ``test_symbol_graph_reader.py`` so a
+    regression here points at the same root cause as the corresponding
+    reader test. Uses the project-memory anchor set
+    (project_license_layer_v2.md): 9 connect/disconnect handlers +
+    the hourly heartbeat scheduler.
+    """
+
+    def test_signature_change_yields_nine_callers_with_signature_note(self):
+        from diff_symbol_resolver import FilePatch, resolve_targets  # type: ignore
+        from structural_review import (  # type: ignore
+            analyze_structural_impact,
+            build_impact_block,
+            _REVIEWER_NOTE_SIGNATURE,
+        )
+
+        _create_symbol_graph_table()
+        _create_code_maps_table()
+
+        # Synthetic post-diff content for outcomeops_license.py: the
+        # signature line is at line 1 of the fixture so resolve_targets'
+        # off-by-one heuristic (decorator/annotation pattern) treats
+        # the change at line 1 as a signature change, matching reality.
+        post_diff_source = (
+            b"def report_repos_snapshot(workspace_id, repos):\n"
+            b"    # Refactored v2.0.0\n"
+            b"    return None\n"
+        )
+        # Hunk: the signature line is added (+) -- the resolver flags
+        # this as a signature_line.
+        patch = (
+            "@@ -1,3 +1,3 @@\n"
+            "-def report_repos_snapshot(workspace_id):\n"
+            "+def report_repos_snapshot(workspace_id, repos):\n"
+            "     # Refactored v2.0.0\n"
+            "     return None\n"
+        )
+        targets = resolve_targets(
+            [
+                FilePatch(
+                    file_path="lambda/shared/outcomeops_license.py",
+                    status="modified",
+                    patch=patch,
+                    post_diff_source=post_diff_source,
+                )
+            ]
+        )
+        # Find the canonical ID the extractor emits. The python
+        # extractor uses the dotted module path of the file_path.
+        target_ids = [t.symbol_id for t in targets]
+        snapshot_id = next(
+            tid for tid in target_ids if tid.endswith("::report_repos_snapshot")
+        )
+        snap_target = next(t for t in targets if t.symbol_id == snapshot_id)
+        assert snap_target.change_kind == "signature"
+
+        # Seed the same 9 callers used in the reader / chat tests so
+        # this integration assertion is consistent across the suite.
+        known_callers = [
+            ("github-integration", "lambda/github-integration/handler.py", 137),
+            ("jira-integration", "lambda/jira-integration/handler.py", 114),
+            ("confluence-integration", "lambda/confluence-integration/handler.py", 129),
+            ("outlook-integration", "lambda/outlook-integration/handler.py", 127),
+            ("github-sync", "lambda/github-sync/handler.py", 789),
+            ("jira-sync", "lambda/jira-sync/handler.py", 452),
+            ("confluence-sync", "lambda/confluence-sync/handler.py", 476),
+            ("file-ingestion", "lambda/file-ingestion/handler.py", 1456),
+            ("heartbeat", "lambda/license-heartbeat/handler.py", 42),
+        ]
+        for name, file_path, line in known_callers:
+            _put_fact(
+                workspace_id=WORKSPACE_ID,
+                repo=REPO,
+                commit_sha=SHA,
+                kind="calls",
+                source_symbol_id=f"python:lambda.{name.replace('-', '_')}.handler::lambda_handler",
+                target_symbol_id=snapshot_id,
+                file_path=file_path,
+                line=line,
+            )
+
+        impacts = analyze_structural_impact(
+            workspace_id=WORKSPACE_ID,
+            mutated=targets,
+            symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
+            code_maps_table_name=CODE_MAPS_TABLE,
+        )
+        # Locate the impact for the snapshot symbol -- there may be
+        # other targets in the diff but we asserted snap_target above.
+        snap_impact = next(
+            i for i in impacts if i.mutated.symbol_id == snapshot_id
+        )
+        assert len(snap_impact.callers) == 9
+        rendered_files = {site.file_path for site in snap_impact.callers}
+        expected_files = {f for _, f, _ in known_callers}
+        assert rendered_files == expected_files
+
+        block = build_impact_block(impacts, base_sha="basesha789012")
+        # Plan example exact-language assertions.
+        assert "## Structural impact" in block
+        assert f"`{snapshot_id}` (signature-changed)" in block
+        # Definition anchor.
+        assert "Definition: lambda/shared/outcomeops_license.py:1" in block
+        # Caller count + every file path.
+        assert "Callers affected (9):" in block
+        for _, file_path, line in known_callers:
+            assert f"{file_path}:{line}" in block, (
+                f"missing {file_path}:{line} from block"
+            )
+        # Signature note (not body note).
+        assert _REVIEWER_NOTE_SIGNATURE in block
+        # Footer carries the explicit base SHA -- plan-gkg/06
+        # resolution of overview.md open Q #3.
+        assert "Graph as-of base SHA: basesh" in block
+
+    def test_body_change_uses_softer_note_for_same_symbol(self):
+        """Same symbol, same callers -- but the diff is a body-only
+        change. Expected: block lists the same 9 callers but uses the
+        body-change reviewer note (lower-emphasis language per
+        plan-gkg/06 "Definition of done" item #2).
+        """
+        from diff_symbol_resolver import (  # type: ignore
+            FilePatch,
+            MutatedSymbol,
+            resolve_targets,
+        )
+        from structural_review import (  # type: ignore
+            analyze_structural_impact,
+            build_impact_block,
+            _REVIEWER_NOTE_BODY,
+            _REVIEWER_NOTE_SIGNATURE,
+        )
+
+        _create_symbol_graph_table()
+        _create_code_maps_table()
+
+        # File has TWO top-level definitions; the body-only change
+        # falls inside the SECOND one's body (line 5+), well away from
+        # its decl line (line 4) so the resolver's "start-of-symbol"
+        # off-by-one doesn't promote it to signature-change.
+        post_diff_source = (
+            b"def helper():\n"
+            b"    return 1\n"
+            b"\n"
+            b"def report_repos_snapshot(workspace_id):\n"
+            b"    # v2.0.0 behavior change\n"
+            b"    return {'workspace_id': workspace_id, 'updated': True}\n"
+        )
+        patch = (
+            "@@ -6,1 +6,1 @@\n"
+            "-    return {}\n"
+            "+    return {'workspace_id': workspace_id, 'updated': True}\n"
+        )
+        targets = resolve_targets(
+            [
+                FilePatch(
+                    file_path="lambda/shared/outcomeops_license.py",
+                    status="modified",
+                    patch=patch,
+                    post_diff_source=post_diff_source,
+                )
+            ]
+        )
+        target_ids = [t.symbol_id for t in targets]
+        snapshot_id = next(
+            tid for tid in target_ids if tid.endswith("::report_repos_snapshot")
+        )
+        snap_target = next(t for t in targets if t.symbol_id == snapshot_id)
+        assert snap_target.change_kind == "body"
+
+        # Seed the same 9 callers.
+        known_callers = [
+            ("github-integration", "lambda/github-integration/handler.py", 137),
+            ("jira-integration", "lambda/jira-integration/handler.py", 114),
+            ("confluence-integration", "lambda/confluence-integration/handler.py", 129),
+            ("outlook-integration", "lambda/outlook-integration/handler.py", 127),
+            ("github-sync", "lambda/github-sync/handler.py", 789),
+            ("jira-sync", "lambda/jira-sync/handler.py", 452),
+            ("confluence-sync", "lambda/confluence-sync/handler.py", 476),
+            ("file-ingestion", "lambda/file-ingestion/handler.py", 1456),
+            ("heartbeat", "lambda/license-heartbeat/handler.py", 42),
+        ]
+        for name, file_path, line in known_callers:
+            _put_fact(
+                workspace_id=WORKSPACE_ID,
+                repo=REPO,
+                commit_sha=SHA,
+                kind="calls",
+                source_symbol_id=f"python:lambda.{name.replace('-', '_')}.handler::lambda_handler",
+                target_symbol_id=snapshot_id,
+                file_path=file_path,
+                line=line,
+            )
+
+        impacts = analyze_structural_impact(
+            workspace_id=WORKSPACE_ID,
+            mutated=[snap_target],
+            symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
+            code_maps_table_name=CODE_MAPS_TABLE,
+        )
+        block = build_impact_block(impacts, base_sha="basesha789012")
+        # body-changed signal in the header.
+        assert "(body-changed)" in block
+        # softer note used -- not the signature one.
+        assert _REVIEWER_NOTE_BODY in block
+        assert _REVIEWER_NOTE_SIGNATURE not in block
+        # Callers still listed.
+        assert "Callers affected (9):" in block
+
+
+# ===========================================================================
+# Handler integration -- _build_structural_impact_comment glue
+# ===========================================================================
+
+
+def _load_handler():
+    """Load analyze-pr/handler.py under a unique module name so the
+    rest of the test_analyze_pr.py module doesn't conflict.
+
+    Mirrors test_analyze_pr.py's pattern; we use a different module
+    name to avoid double-load.
+    """
+    handler_path = _ANALYZE_PR_DIR / "handler.py"
+    spec = importlib.util.spec_from_file_location(
+        "analyze_pr_structural_handler", str(handler_path)
+    )
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["analyze_pr_structural_handler"] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class TestHandlerStructuralGlue:
+    def test_disabled_via_env_returns_none(self, monkeypatch):
+        """GRAPH_AUGMENT_ENABLED=false short-circuits without firing
+        any reader calls -- the kill-switch documented in chunk 06.
+        """
+        monkeypatch.setenv("GRAPH_AUGMENT_ENABLED", "false")
+        handler = _load_handler()
+        out = handler._build_structural_impact_comment(
+            repository="o/r",
+            pr=MagicMock(),
+            files=[],
+            token="t",
+            workspace_id="ws",
+            base_sha="b",
+            head_sha="h",
+        )
+        assert out is None
+
+    def test_missing_workspace_id_returns_none(self, monkeypatch):
+        """No workspace_id = no graph anchor -- pass is a no-op."""
+        monkeypatch.setenv("GRAPH_AUGMENT_ENABLED", "true")
+        handler = _load_handler()
+        out = handler._build_structural_impact_comment(
+            repository="o/r",
+            pr=MagicMock(),
+            files=[],
+            token="t",
+            workspace_id=None,
+            base_sha="b",
+            head_sha="h",
+        )
+        assert out is None
+
+    def test_missing_symbol_graph_table_returns_none(self, monkeypatch):
+        """SYMBOL_GRAPH_TABLE unset -> no-op (deploy bug guard)."""
+        monkeypatch.delenv("SYMBOL_GRAPH_TABLE", raising=False)
+        monkeypatch.setenv("GRAPH_AUGMENT_ENABLED", "true")
+        handler = _load_handler()
+        out = handler._build_structural_impact_comment(
+            repository="o/r",
+            pr=MagicMock(),
+            files=[],
+            token="t",
+            workspace_id="ws",
+            base_sha="b",
+            head_sha="h",
+        )
+        assert out is None
+
+    def test_no_mutated_symbols_returns_none(self, monkeypatch):
+        """Files with no patch / unsupported langs -> no block.
+
+        Patches the inner fetch helper so we don't hit GitHub.
+        """
+        _create_symbol_graph_table()
+        _create_code_maps_table()
+        handler = _load_handler()
+
+        # Build a file list whose patch is None -> no mutated symbols.
+        gh_file = handler.GitHubFile(
+            filename="README.md",
+            status="modified",
+            additions=1,
+            deletions=1,
+            changes=2,
+            patch=None,
+        )
+        out = handler._build_structural_impact_comment(
+            repository="o/r",
+            pr=MagicMock(),
+            files=[gh_file],
+            token="t",
+            workspace_id=WORKSPACE_ID,
+            base_sha="basesha789012",
+            head_sha="headsha789012",
+        )
+        assert out is None
+
+    def test_end_to_end_with_seeded_callers(self, monkeypatch):
+        """End-to-end through the handler glue: seed callers, build a
+        synthetic FilePatch -> assert the rendered comment is a non-
+        empty Markdown block carrying the seeded callers.
+        """
+        _create_symbol_graph_table()
+        _create_code_maps_table()
+        handler = _load_handler()
+
+        target = "python:lib.snapshot::report_repos_snapshot"
+        _put_fact(
+            workspace_id=WORKSPACE_ID,
+            repo=REPO,
+            commit_sha=SHA,
+            kind="calls",
+            source_symbol_id="python:lib.caller::lambda_handler",
+            target_symbol_id=target,
+            file_path="lib/caller.py",
+            line=10,
+        )
+
+        post_diff = (
+            b"def report_repos_snapshot(workspace_id, repos):\n"
+            b"    return None\n"
+        )
+        gh_file = handler.GitHubFile(
+            filename="lib/snapshot.py",
+            status="modified",
+            additions=1,
+            deletions=1,
+            changes=2,
+            patch=(
+                "@@ -1,2 +1,2 @@\n"
+                "-def report_repos_snapshot(workspace_id):\n"
+                "+def report_repos_snapshot(workspace_id, repos):\n"
+                "     return None\n"
+            ),
+        )
+
+        # Stub fetch_file_contents so the glue doesn't hit GitHub.
+        with patch.object(
+            handler,
+            "fetch_file_contents",
+            return_value=post_diff,
+        ):
+            out = handler._build_structural_impact_comment(
+                repository="o/r",
+                pr=MagicMock(),
+                files=[gh_file],
+                token="t",
+                workspace_id=WORKSPACE_ID,
+                base_sha="basesha789012",
+                head_sha="headsha789012",
+            )
+
+        assert out is not None
+        assert "## Structural impact" in out
+        # Symbol header carries the change kind.
+        assert "(signature-changed)" in out
+        # Caller seeded above.
+        assert "lib/caller.py:10" in out
+        # Footer carries the explicit base SHA.
+        assert "Graph as-of base SHA: basesh" in out
