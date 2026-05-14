@@ -150,6 +150,23 @@ github_usernames_to_tag = "yourusername"
 # cost_alert_org_monthly_usd       = 0
 # cost_alert_workspace_monthly_usd = 0
 
+# ============================================================================
+# Database Drift Notifications
+# ============================================================================
+
+# Email addresses subscribed to the database-drift SNS topic. Notifications
+# fire when a database sync detects schemas or tables that were added or
+# removed against the prior-sync snapshot (DBA created a new schema, dropped
+# a table, etc.). Empty list = no topic created, no notifications fire —
+# the DATABASE_SYNCED audit row still carries schemas_added / tables_added /
+# etc. fields regardless, so audit-table polling still works.
+#
+# Each email gets an AWS SNS SubscribeNow email on first apply; click-confirm
+# to activate. The topic ARN is also exposed as a terraform output
+# (database_drift_topic_arn) for orgs wanting to wire additional subscribers
+# (Slack webhook via Lambda, PagerDuty integration, SQS routing, etc.).
+# database_drift_notification_emails = ["dba@example.com", "alerts@example.com"]
+
 # EventBridge cron expression controlling when the alert Lambda runs.
 # Default: 13:00 UTC daily (~6am PT / 9am ET).
 # cost_alert_schedule_expression   = "cron(0 13 * * ? *)"
