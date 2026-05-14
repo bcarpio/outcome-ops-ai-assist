@@ -44,12 +44,15 @@ RUN dnf install -y libtool-ltdl krb5-libs ca-certificates && dnf clean all
 # this, RDS MSSQL connections fail with "unable to get local issuer
 # certificate" because RDS uses its own CA chain rooted at Amazon's
 # private RDS root. Same bundle covers all AWS regions.
-#
-# v2 TODO: customer BYO trust. Let customers drop additional bundles
-# into a configurable path (S3-staged, tfvar-listed, or mounted) so
-# on-prem MSSQL with corporate CAs works without forking the Dockerfile.
 ADD https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem \
     /etc/pki/ca-trust/source/anchors/aws-rds-global-bundle.pem
+RUN update-ca-trust
+
+# Customer-provided CA bundles fetched from SSM by the build script
+# and staged at lambda/.ca-bundles-staging/. If the dir contains only
+# .gitkeep (no customer bundles configured), the COPY is a no-op and
+# update-ca-trust regenerates the same bundle as before.
+COPY lambda/.ca-bundles-staging/ /etc/pki/ca-trust/source/anchors/
 RUN update-ca-trust
 
 # Install the schema introspection engine plus the DB driver set the MVP

@@ -107,6 +107,80 @@ fi
 echo "License layer staged at ${STAGING_DIR}/python/"
 
 # ----------------------------------------------------------------------------
+# Stage customer-provided CA bundles (BYO trust roots for non-RDS DBs)
+# ----------------------------------------------------------------------------
+# Customers connecting to MSSQL backed by a CA the AWS RDS global bundle
+# doesn't cover (Azure SQL with corporate roots, on-prem MSSQL signed by
+# an internal CA, GCP Cloud SQL for MSSQL, etc.) can register one or more
+# SSM Parameter Store SecureString ARNs via the
+# customer_ca_bundle_ssm_param_arns tfvar. We fetch each here, validate
+# the PEM with openssl x509, and write the bundles into
+# lambda/.ca-bundles-staging/customer-<name>.pem so the database image
+# Dockerfiles can COPY them into /etc/pki/ca-trust/source/anchors/ and
+# update-ca-trust will bake them into the system trust store.
+#
+# The directory always exists (lambda/.ca-bundles-staging/.gitkeep ships
+# in the repo); we just rm -f any stale *.pem from a previous run so a
+# rotated-out bundle can't leak forward into the next image.
+CA_STAGING_DIR="lambda/.ca-bundles-staging"
+mkdir -p "${CA_STAGING_DIR}"
+rm -f "${CA_STAGING_DIR}"/*.pem
+
+CA_ARNS_JSON=$(terraform -chdir=terraform output -json customer_ca_bundle_ssm_param_arns 2>/dev/null || echo '[]')
+CA_ARNS=$(echo "${CA_ARNS_JSON}" | jq -r '.[]?' 2>/dev/null || true)
+
+if [[ -n "${CA_ARNS}" ]]; then
+  echo ""
+  echo "Staging customer CA bundles from SSM..."
+  while IFS= read -r ca_arn; do
+    [[ -z "${ca_arn}" ]] && continue
+    # The leaf segment after the final '/' makes a stable file name; the
+    # `customer-` prefix prevents collision with aws-rds-global-bundle.pem.
+    name="$(basename "${ca_arn}")"
+    out="${CA_STAGING_DIR}/customer-${name}.pem"
+
+    # `aws ssm get-parameter` accepts either the full ARN or the bare
+    # parameter name in --name; passing the ARN works across accounts /
+    # regions without parsing it manually.
+    if ! aws ssm get-parameter \
+        --name "${ca_arn}" \
+        --with-decryption \
+        --query 'Parameter.Value' \
+        --output text \
+        --region "${AWS_REGION}" > "${out}"; then
+      echo "ERROR: failed to fetch SecureString from ${ca_arn}"
+      echo "       Verify the ARN is correct and the deploy role has"
+      echo "       ssm:GetParameter + kms:Decrypt on the encrypting key."
+      rm -f "${out}"
+      exit 1
+    fi
+
+    # Hard-fail the build on any invalid PEM so the customer fixes the
+    # SecureString contents before deploy rather than discovering it at
+    # first TLS handshake.
+    if ! openssl x509 -in "${out}" -noout -dates -subject > /dev/null 2>&1; then
+      echo "ERROR: ${ca_arn} did not decode to a valid X.509 PEM"
+      echo "       SecureString contents must be a single PEM-encoded"
+      echo "       root or intermediate cert. Inspect with:"
+      echo "         aws ssm get-parameter --name '${ca_arn}' --with-decryption \\"
+      echo "             --query Parameter.Value --output text | openssl x509 -text -noout"
+      rm -f "${out}"
+      exit 1
+    fi
+
+    # Echo the validated cert summary so the build log records exactly
+    # which CA went into this image (subject + validity window).
+    echo "  + ${ca_arn}"
+    openssl x509 -in "${out}" -noout -dates -subject 2>&1 | sed 's/^/      /'
+  done <<< "${CA_ARNS}"
+  echo "Customer CA bundles staged at ${CA_STAGING_DIR}/"
+else
+  echo ""
+  echo "No customer_ca_bundle_ssm_param_arns configured; only the AWS"
+  echo "RDS global bundle will be baked into the database images."
+fi
+
+# ----------------------------------------------------------------------------
 # ECR login (once for both images)
 # ----------------------------------------------------------------------------
 echo ""
@@ -161,6 +235,11 @@ build_one database-sync
 echo ""
 echo "Cleaning license layer staging..."
 rm -rf "${STAGING_DIR}"
+
+# Keep the directory (and its .gitkeep) but drop any fetched PEMs so a
+# rotated-out cert doesn't sit on the local disk longer than necessary.
+# The next build rebuilds from SSM regardless.
+rm -f "${CA_STAGING_DIR}"/*.pem
 
 echo ""
 echo "=============================================="

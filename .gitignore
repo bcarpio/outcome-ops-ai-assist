@@ -85,6 +85,13 @@ lambda/terraform-layer/bin/
 plan/
 lambda/.license-layer-staging/
 
+# Customer CA bundles fetched from SSM SecureString at image-build time
+# by scripts/build-database-images.sh. The directory itself stays in the
+# repo (via lambda/.ca-bundles-staging/.gitkeep) so the database
+# Dockerfile COPY always has a source path even when no customer
+# bundles are configured.
+lambda/.ca-bundles-staging/*.pem
+
 # Claude Code working directory - agent worktrees + tooling state.
 # Should never end up in the repo (was added by an over-broad `git add -A`).
 .claude/
