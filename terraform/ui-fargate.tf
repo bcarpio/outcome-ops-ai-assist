@@ -87,15 +87,28 @@ locals {
   # fqdn is defined in locals.tf
   use_oidc      = var.deploy_ui && var.oidc_enabled && var.domain != ""
   oidc_ssm_path = "/${var.environment}/${var.app_name}/oidc/client-secret"
+
+  # Whether terraform should manage Route53 (zone lookup, DVO records,
+  # A-ALIAS). Off when DNS is managed externally.
+  manage_route53 = local.use_oidc && var.manage_dns_in_route53
+
+  # Whether terraform should request a new ACM cert (vs. using the
+  # customer-provided ARN). Only meaningful when we also manage DNS,
+  # because DNS validation requires writing CNAMEs into Route53.
+  issue_acm_cert = local.manage_route53 && var.ui_acm_certificate_arn == ""
+
+  # The cert ARN the listener will actually attach. Either the one we
+  # just issued + validated, or the BYO ARN passed in.
+  ui_cert_arn = local.issue_acm_cert ? aws_acm_certificate_validation.ui[0].certificate_arn : var.ui_acm_certificate_arn
 }
 
 data "aws_route53_zone" "main" {
-  count = local.use_oidc ? 1 : 0
+  count = local.manage_route53 ? 1 : 0
   name  = "${var.domain}."
 }
 
 resource "aws_acm_certificate" "ui" {
-  count             = local.use_oidc ? 1 : 0
+  count             = local.issue_acm_cert ? 1 : 0
   domain_name       = local.fqdn
   validation_method = "DNS"
 
@@ -114,7 +127,7 @@ resource "aws_acm_certificate" "ui" {
 }
 
 resource "aws_route53_record" "cert_validation" {
-  for_each = local.use_oidc ? {
+  for_each = local.issue_acm_cert ? {
     for dvo in aws_acm_certificate.ui[0].domain_validation_options : dvo.domain_name => {
       name   = dvo.resource_record_name
       record = dvo.resource_record_value
@@ -131,13 +144,13 @@ resource "aws_route53_record" "cert_validation" {
 }
 
 resource "aws_acm_certificate_validation" "ui" {
-  count                   = local.use_oidc ? 1 : 0
+  count                   = local.issue_acm_cert ? 1 : 0
   certificate_arn         = aws_acm_certificate.ui[0].arn
   validation_record_fqdns = [for record in aws_route53_record.cert_validation : record.fqdn]
 }
 
 resource "aws_route53_record" "ui" {
-  count   = local.use_oidc ? 1 : 0
+  count   = local.manage_route53 ? 1 : 0
   zone_id = data.aws_route53_zone.main[0].zone_id
   name    = local.fqdn
   type    = "A"
@@ -255,7 +268,7 @@ resource "aws_lb_listener" "https" {
   port              = 443
   protocol          = "HTTPS"
   ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
-  certificate_arn   = aws_acm_certificate_validation.ui[0].certificate_arn
+  certificate_arn   = local.ui_cert_arn
 
   default_action {
     type  = "authenticate-oidc"
@@ -565,6 +578,21 @@ output "ui_url" {
 output "ui_alb_dns_name" {
   description = "Internal ALB DNS name for chat UI (VPC access only)"
   value       = var.deploy_ui ? module.ui_alb.dns_name : null
+}
+
+output "alb_dns_name" {
+  value       = var.deploy_ui ? module.ui_alb.dns_name : ""
+  description = "DNS name of the UI ALB. CNAME local.fqdn to this in your external DNS when manage_dns_in_route53 = false."
+}
+
+output "alb_zone_id" {
+  value       = var.deploy_ui ? module.ui_alb.zone_id : ""
+  description = "Hosted zone ID of the UI ALB. If you're using Route53 in a different account, use this for an A-ALIAS instead of a CNAME (free + AWS-native)."
+}
+
+output "fqdn_to_cname" {
+  value       = var.deploy_ui ? local.fqdn : ""
+  description = "FQDN that must resolve to alb_dns_name. When manage_dns_in_route53 = true this is created automatically; when false, you create the CNAME (or cross-account R53 A-ALIAS) in your DNS system."
 }
 
 output "ui_alb_arn" {
