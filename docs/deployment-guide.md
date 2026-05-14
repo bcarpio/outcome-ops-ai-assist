@@ -673,6 +673,17 @@ The build script:
 - Either Lambda's Dockerfile changes
 - The handler Python code changes
 - The `outcomeops_license_layer_arn` in your tfvars bumps to a new layer version (the new license layer content needs to be re-baked into the sync image)
+- A customer trust root rotates (`customer_ca_bundle_ssm_param_arns` parameter contents change) — the build script fetches the SecureString at build time and bakes it into the image
+
+**Customer CA bundles (non-RDS DBs):** When
+`customer_ca_bundle_ssm_param_arns` is non-empty, the build script
+calls `aws ssm get-parameter --with-decryption` on each ARN at
+build time. The deploy role running `make build-database-images`
+therefore needs `ssm:GetParameter` on each ARN, plus `kms:Decrypt`
+on the encrypting KMS key if you used a customer-managed key
+(`alias/aws/ssm` is grant-free). See
+[`database-integration-readonly-user.md`](./database-integration-readonly-user.md#adding-customer-trust-roots-non-rds--on-prem)
+for the per-customer setup.
 
 ### Terraform Module Updates
 
