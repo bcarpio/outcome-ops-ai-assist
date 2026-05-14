@@ -121,10 +121,50 @@ this fallback at runtime when the Tree-sitter grammar fails to import.
    include one OO file and one procedural file so both backends are
    exercised by `make test-unit`.
 
+### OO walk coverage (v1.1, 2026-05-14)
+
+The Tree-sitter backend walks the parse tree for these node kinds and
+emits the matching `Fact` kinds. Anything outside this list is left to
+the regex backend or deliberately deferred.
+
+| Grammar node | Emits | Notes |
+|---|---|---|
+| `class_declaration` | `defines` (class) + `defines` (methods inside `public_section`/`private_section`/`protected_section`) | One `defines` per `method_declaration` child. |
+| `class_implementation` | `defines` (class) + `defines` (methods) | Class fact emitted again so both shapes show up; storage (chunk 02) dedupes on `(kind, source, target)`. |
+| `method_implementation` | `defines` (namespaced to the class) + body walk | Body walk descends into `method_body` for calls / imports. |
+| `function_implementation` | `defines` (module-scoped) + body walk | Top-level `FUNCTION` declarations. |
+| `report_statement` | `defines` (the report name, module-scoped) | Top-level `REPORT z_foo.` |
+| `include_statement` | `imports` (target = included program, wildcard symbol `*`) | Emitted whether the include lives at module scope or inside a method body. |
+| `call_method_static` (`Cls=>m( )`) | `calls` (target = `abap:CLS::M`) | Functional-call form only — the grammar parses it cleanly. |
+| `call_method_instance` (`obj->m( )`) | `calls` (target resolves via the `DATA: lo TYPE REF TO cls.` declaration when present; module-scoped otherwise) | Best-effort object-type tracking per class implementation. |
+| `call_function` (`CALL FUNCTION 'NAME'.`) | `calls` (target = `abap:NAME::*`) | Function module names are module-level identifiers in ABAP, hence wildcard symbol. |
+| `create_object_statement` (`CREATE OBJECT lo.`) | `calls` (target = `abap:CLS::<constructor>` when the type is known; otherwise against the variable name) | The class lookup uses the same object-type map as instance-call resolution. |
+| `perform_statement` (`PERFORM helper.`) | `calls` (target = the form name, module-scoped) | OO bodies still call procedural FORMs in real customer code, so we recognise the construct in either path. |
+| `macro_include` named `METHOD` with an `attribute_access_static` parameter | `calls` (same shape as `call_method_static`) | Pattern-matched workaround: the grammar misparses the legacy `CALL METHOD Cls=>m.` statement form as a macro invocation. We recognise that exact shape so the legacy syntax still emits a fact. |
+
+### Known v1 edges (grammar gaps the walk can't close)
+
+- **Legacy `CALL METHOD obj->method.`** parses as a top-level `ERROR`
+  node — neither the macro-include workaround nor any clean kind fires.
+  The regex backend covers this when a file lacks any OO header; in
+  pure-OO files using the legacy syntax we currently drop the call. If
+  this surfaces as a recall problem in chunk 04 query results, the fix
+  is to add an ERROR-recovery pass that pattern-matches the
+  `call`/`METHOD`/`name`/`->`/`name` token sequence. Tracked, not in v1.
+- **Procedural-only constructs** (`FORM`, `FUNCTION-POOL`,
+  `START-OF-SELECTION`, event blocks) — the FrankRogalski grammar
+  errors on these. The hybrid dispatcher routes those files to the
+  regex backend; no v1 coverage change is required.
+- **`CREATE OBJECT lo TYPE zcl_other.`** (inline type) — the object-
+  type map currently only sees `DATA: lo TYPE REF TO zcl_other.`
+  declarations. Inline-typed `CREATE OBJECT` calls emit against the
+  variable name. Backlog.
+
 If a future contributor proposes lifting OO-ABAP fact emission to
 parity with the Java/Python backends (full method-body call-graph
-walks), this ADR must be revisited and the dependency contract on
-the FrankRogalski grammar must be re-validated.
+walks with argument resolution, ERROR-node recovery, inline-type
+recognition), this ADR must be revisited and the dependency contract
+on the FrankRogalski grammar must be re-validated.
 
 ## Related ADRs
 
@@ -147,3 +187,7 @@ Version History:
 
 - v1.0 (2026-05-14): Initial decision — hybrid Tree-sitter + regex,
   FrankRogalski fork pinned to commit `7dcb098`
+- v1.1 (2026-05-14): Tree-sitter walk implemented for the OO node
+  kinds enumerated above; regex retained for procedural / event-block
+  files. Documented the known grammar edges (legacy `CALL METHOD
+  obj->m.` ERROR node, inline-typed `CREATE OBJECT`).

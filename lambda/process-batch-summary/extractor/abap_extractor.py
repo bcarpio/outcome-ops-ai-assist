@@ -227,19 +227,274 @@ def _extract_via_regex(file_path: str, source: bytes) -> Iterator[Fact]:
         )
 
 
-def _extract_via_tree_sitter(file_path: str, source: bytes) -> Iterator[Fact]:
-    """Tree-sitter backend (lazy import).
+_TS_PARSER = None  # lazily constructed; module-level cache.
 
-    The FrankRogalski grammar is not on PyPI and is only available via
-    git + compilation. In environments where it isn't installed we fall
-    back to the regex backend rather than fail the whole run. ADR-020
-    documents the dependency contract.
+
+def _get_tree_sitter_parser():
+    """Return a cached tree-sitter Parser bound to the ABAP grammar.
+
+    Returns ``None`` when the FrankRogalski grammar wheel isn't
+    available in the runtime — caller should fall back to regex.
     """
 
+    global _TS_PARSER
+    if _TS_PARSER is not None:
+        return _TS_PARSER
     try:
-        import tree_sitter_abap  # type: ignore  # noqa: F401
-        from tree_sitter import Language, Parser  # noqa: F401
+        import tree_sitter_abap as tsa  # type: ignore
+        from tree_sitter import Language, Parser  # type: ignore
     except Exception:
+        return None
+    try:
+        _TS_PARSER = Parser(Language(tsa.language()))
+        return _TS_PARSER
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("tree-sitter-abap parser construction failed: %s", exc)
+        return None
+
+
+def _ts_node_text(node, source: bytes) -> str:
+    return source[node.start_byte : node.end_byte].decode("utf-8", errors="replace")
+
+
+def _ts_first_child_named(node, name: str):
+    """Return the first child whose ``type`` equals ``name``, else None."""
+
+    for child in node.children:
+        if child.type == name:
+            return child
+    return None
+
+
+def _ts_children_named(node, name: str):
+    return [c for c in node.children if c.type == name]
+
+
+def _ts_class_name(node, source: bytes) -> Optional[str]:
+    """Return the upper-cased class/method/function ``name`` child text."""
+
+    n = _ts_first_child_named(node, "name")
+    if n is None:
+        return None
+    return _ts_node_text(n, source).upper()
+
+
+def _ts_collect_object_types(class_impl_node, source: bytes) -> dict:
+    """Best-effort: map local var name -> referenced type within a class impl.
+
+    Walks ``chained_variable_declaration`` and ``variable_declaration``
+    descendants. Each ``variable`` child carries a ``name`` and an
+    optional ``typing`` subtree whose final ``type`` token is the
+    referenced class name (e.g. ``DATA: lo TYPE REF TO zcl_other.``
+    yields ``{"LO": "ZCL_OTHER"}``).
+    """
+
+    result: dict = {}
+    stack = list(class_impl_node.children)
+    while stack:
+        cur = stack.pop()
+        if cur.type in ("chained_variable_declaration", "variable_declaration"):
+            for var in cur.children:
+                if var.type != "variable":
+                    continue
+                var_name = _ts_first_child_named(var, "name")
+                if var_name is None:
+                    continue
+                typing = _ts_first_child_named(var, "typing")
+                if typing is None:
+                    continue
+                # The last ``type`` child holds the referenced class name.
+                type_children = _ts_children_named(typing, "type")
+                if not type_children:
+                    continue
+                result[_ts_node_text(var_name, source).upper()] = _ts_node_text(
+                    type_children[-1], source
+                ).upper()
+        else:
+            stack.extend(cur.children)
+    return result
+
+
+def _ts_walk_method_body(
+    body_node,
+    source: bytes,
+    file_path: str,
+    method_source_id: str,
+    module: str,
+    object_types: dict,
+) -> Iterator[Fact]:
+    """Walk a method/function body and emit ``calls``/``imports`` facts.
+
+    Recognises:
+      * ``call_method_instance``   -> ``obj->m( )``
+      * ``call_method_static``     -> ``Cls=>m( )``
+      * ``call_function``          -> ``CALL FUNCTION 'NAME'.``
+      * ``create_object_statement``-> ``CREATE OBJECT lo.`` (resolves to
+                                       the declared class when known)
+      * ``perform_statement``      -> ``PERFORM helper.``
+      * ``include_statement``      -> ``INCLUDE z_top.``  (yields ``imports``)
+
+    Also picks up the legacy ``CALL METHOD Cls=>method.`` form, which the
+    grammar surfaces as a ``macro_include`` node named ``METHOD`` with
+    an ``attribute_access_static`` parameter — we treat it as a static
+    method call rather than a macro invocation.
+    """
+
+    stack = list(body_node.children)
+    while stack:
+        cur = stack.pop()
+        kind = cur.type
+
+        if kind == "call_method_instance":
+            names = _ts_children_named(cur, "name")
+            if len(names) >= 2:
+                obj = _ts_node_text(names[0], source).upper()
+                method = _ts_node_text(names[1], source).upper()
+                # Try to resolve obj -> declared class; fall back to module.
+                cls = object_types.get(obj, module)
+                yield Fact(
+                    kind="calls",
+                    source_symbol_id=method_source_id,
+                    target_symbol_id=make_symbol_id("abap", cls, method),
+                    file_path=file_path,
+                    line=cur.start_point[0] + 1,
+                    language="abap",
+                )
+            # No need to recurse into children of a call — args rarely add facts.
+            continue
+
+        if kind == "call_method_static":
+            names = _ts_children_named(cur, "name")
+            if len(names) >= 2:
+                cls = _ts_node_text(names[0], source).upper()
+                method = _ts_node_text(names[1], source).upper()
+                yield Fact(
+                    kind="calls",
+                    source_symbol_id=method_source_id,
+                    target_symbol_id=make_symbol_id("abap", cls, method),
+                    file_path=file_path,
+                    line=cur.start_point[0] + 1,
+                    language="abap",
+                )
+            continue
+
+        if kind == "call_function":
+            lit = _ts_first_child_named(cur, "character_literal")
+            if lit is not None:
+                # Strip surrounding quotes.
+                name = _ts_node_text(lit, source).strip("'\"").upper()
+                yield Fact(
+                    kind="calls",
+                    source_symbol_id=method_source_id,
+                    target_symbol_id=make_symbol_id("abap", name, "*"),
+                    file_path=file_path,
+                    line=cur.start_point[0] + 1,
+                    language="abap",
+                )
+            continue
+
+        if kind == "create_object_statement":
+            n = _ts_first_child_named(cur, "name")
+            if n is not None:
+                var = _ts_node_text(n, source).upper()
+                target_cls = object_types.get(var, var)
+                yield Fact(
+                    kind="calls",
+                    source_symbol_id=method_source_id,
+                    target_symbol_id=make_symbol_id(
+                        "abap", target_cls, "<constructor>"
+                    ),
+                    file_path=file_path,
+                    line=cur.start_point[0] + 1,
+                    language="abap",
+                )
+            continue
+
+        if kind == "perform_statement":
+            n = _ts_first_child_named(cur, "name")
+            if n is not None:
+                target = _ts_node_text(n, source).upper()
+                yield Fact(
+                    kind="calls",
+                    source_symbol_id=method_source_id,
+                    target_symbol_id=make_symbol_id("abap", module, target),
+                    file_path=file_path,
+                    line=cur.start_point[0] + 1,
+                    language="abap",
+                )
+            continue
+
+        if kind == "include_statement":
+            n = _ts_first_child_named(cur, "name")
+            if n is not None:
+                target = _ts_node_text(n, source).upper()
+                yield Fact(
+                    kind="imports",
+                    source_symbol_id=method_source_id,
+                    target_symbol_id=make_symbol_id("abap", target, "*"),
+                    file_path=file_path,
+                    line=cur.start_point[0] + 1,
+                    language="abap",
+                )
+            continue
+
+        if kind == "macro_include":
+            # The grammar misparses ``CALL METHOD Cls=>method.`` as a
+            # ``macro_include`` named ``METHOD`` whose only parameter is
+            # an ``attribute_access_static``. Pattern-match that shape so
+            # the legacy static-call syntax still emits a ``calls`` fact.
+            mname = _ts_first_child_named(cur, "name")
+            params = _ts_first_child_named(cur, "parameter_list")
+            if (
+                mname is not None
+                and params is not None
+                and _ts_node_text(mname, source).upper() == "METHOD"
+            ):
+                attr = _ts_first_child_named(params, "attribute_access_static")
+                if attr is not None:
+                    names = _ts_children_named(attr, "name")
+                    if len(names) >= 2:
+                        cls = _ts_node_text(names[0], source).upper()
+                        method = _ts_node_text(names[1], source).upper()
+                        yield Fact(
+                            kind="calls",
+                            source_symbol_id=method_source_id,
+                            target_symbol_id=make_symbol_id("abap", cls, method),
+                            file_path=file_path,
+                            line=cur.start_point[0] + 1,
+                            language="abap",
+                        )
+                        continue
+
+        # Default: descend.
+        stack.extend(cur.children)
+
+
+def _extract_via_tree_sitter(file_path: str, source: bytes) -> Iterator[Fact]:
+    """Tree-sitter backend for OO ABAP (ADR-020 v1.1 walk).
+
+    Walks the FrankRogalski grammar parse tree for the OO node kinds
+    documented in ADR-020:
+
+      * ``class_declaration`` / ``class_implementation``
+      * ``method_declaration`` / ``method_implementation``
+      * ``function_implementation``
+      * ``call_method_instance`` / ``call_method_static`` / ``call_function``
+      * ``create_object_statement``
+      * ``perform_statement``
+      * ``include_statement`` / ``report_statement``
+
+    Procedural-only constructs (``START-OF-SELECTION``, ``FUNCTION-POOL``,
+    event blocks, ``FORM``) are not in this grammar's vocabulary and are
+    handled by the regex backend — the dispatcher in ``extract()`` routes
+    them there.
+
+    Falls back to the regex backend when the grammar wheel isn't
+    available in the runtime environment (ADR-020 dormancy contingency).
+    """
+
+    parser = _get_tree_sitter_parser()
+    if parser is None:
         logger.info(
             "tree-sitter-abap grammar not available; falling back to regex for %s",
             file_path,
@@ -247,14 +502,157 @@ def _extract_via_tree_sitter(file_path: str, source: bytes) -> Iterator[Fact]:
         yield from _extract_via_regex(file_path, source)
         return
 
-    # When the grammar IS available, the OO ABAP edges this extractor
-    # would emit are a strict superset of what the regex backend can
-    # see today: namespace-correct method bodies and accurate call
-    # arguments. v1 ships the regex result here too (matching what
-    # ADR-020 documents as the OO-ABAP coverage baseline) so the wire
-    # contract stays stable; the richer tree-sitter walk lands in a
-    # follow-up chunk that wires the grammar at build time.
-    yield from _extract_via_regex(file_path, source)
+    try:
+        tree = parser.parse(source)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(
+            "tree-sitter-abap parse failed for %s: %s; falling back to regex",
+            file_path,
+            exc,
+        )
+        yield from _extract_via_regex(file_path, source)
+        return
+
+    module = _module_path(file_path)
+    module_symbol_id = make_symbol_id("abap", module, "<module>")
+    root = tree.root_node
+
+    for child in root.children:
+        # Top-level INCLUDE / REPORT live alongside class bodies in
+        # ABAP — emit them against the module before we descend into
+        # OO scopes.
+        if child.type == "include_statement":
+            n = _ts_first_child_named(child, "name")
+            if n is not None:
+                target = _ts_node_text(n, source).upper()
+                yield Fact(
+                    kind="imports",
+                    source_symbol_id=module_symbol_id,
+                    target_symbol_id=make_symbol_id("abap", target, "*"),
+                    file_path=file_path,
+                    line=child.start_point[0] + 1,
+                    language="abap",
+                )
+            continue
+
+        if child.type == "report_statement":
+            n = _ts_first_child_named(child, "name")
+            if n is not None:
+                report_name = _ts_node_text(n, source).upper()
+                yield Fact(
+                    kind="defines",
+                    source_symbol_id=module_symbol_id,
+                    target_symbol_id=make_symbol_id("abap", module, report_name),
+                    file_path=file_path,
+                    line=child.start_point[0] + 1,
+                    language="abap",
+                )
+            continue
+
+        if child.type == "function_implementation":
+            fn_name = _ts_class_name(child, source)
+            if fn_name is None:
+                continue
+            fn_id = make_symbol_id("abap", module, fn_name)
+            yield Fact(
+                kind="defines",
+                source_symbol_id=module_symbol_id,
+                target_symbol_id=fn_id,
+                file_path=file_path,
+                line=child.start_point[0] + 1,
+                language="abap",
+            )
+            # Function bodies may contain calls — walk them.
+            for c in child.children:
+                if c.type == "method_body":
+                    yield from _ts_walk_method_body(
+                        c, source, file_path, fn_id, module, {}
+                    )
+            continue
+
+        if child.type == "class_declaration":
+            cls_name = _ts_class_name(child, source)
+            if cls_name is None:
+                continue
+            cls_id = make_symbol_id("abap", module, cls_name)
+            yield Fact(
+                kind="defines",
+                source_symbol_id=module_symbol_id,
+                target_symbol_id=cls_id,
+                file_path=file_path,
+                line=child.start_point[0] + 1,
+                language="abap",
+            )
+            # Walk method declarations inside each section.
+            for section in child.children:
+                if section.type not in (
+                    "public_section",
+                    "private_section",
+                    "protected_section",
+                ):
+                    continue
+                for member in section.children:
+                    if member.type != "method_declaration":
+                        continue
+                    m_name = _ts_class_name(member, source)
+                    if m_name is None:
+                        continue
+                    method_id = make_symbol_id(
+                        "abap", module, m_name, namespace=cls_name
+                    )
+                    yield Fact(
+                        kind="defines",
+                        source_symbol_id=cls_id,
+                        target_symbol_id=method_id,
+                        file_path=file_path,
+                        line=member.start_point[0] + 1,
+                        language="abap",
+                    )
+            continue
+
+        if child.type == "class_implementation":
+            cls_name = _ts_class_name(child, source)
+            if cls_name is None:
+                continue
+            cls_id = make_symbol_id("abap", module, cls_name)
+            # Class-impl is *also* a ``defines`` site — having both
+            # ``class_declaration`` and ``class_implementation`` in one
+            # file is the canonical OO ABAP shape, so we emit twice on
+            # purpose: the storage layer (chunk 02) dedupes on
+            # (kind, source, target).
+            yield Fact(
+                kind="defines",
+                source_symbol_id=module_symbol_id,
+                target_symbol_id=cls_id,
+                file_path=file_path,
+                line=child.start_point[0] + 1,
+                language="abap",
+            )
+            object_types = _ts_collect_object_types(child, source)
+            for member in child.children:
+                if member.type != "method_implementation":
+                    continue
+                m_name = _ts_class_name(member, source)
+                if m_name is None:
+                    continue
+                method_id = make_symbol_id(
+                    "abap", module, m_name, namespace=cls_name
+                )
+                yield Fact(
+                    kind="defines",
+                    source_symbol_id=cls_id,
+                    target_symbol_id=method_id,
+                    file_path=file_path,
+                    line=member.start_point[0] + 1,
+                    language="abap",
+                )
+                body = _ts_first_child_named(member, "method_body")
+                if body is None:
+                    continue
+                yield from _ts_walk_method_body(
+                    body, source, file_path, method_id, module, object_types
+                )
+            continue
 
 
 def extract(file_path: str, source: bytes) -> Iterator[Fact]:

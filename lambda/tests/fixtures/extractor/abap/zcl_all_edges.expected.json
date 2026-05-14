@@ -1,0 +1,114 @@
+[
+  {
+    "kind": "defines",
+    "source_symbol_id": "abap:tests/fixtures/extractor/abap/zcl_all_edges.clas.abap::<module>",
+    "target_symbol_id": "abap:tests/fixtures/extractor/abap/zcl_all_edges.clas.abap::ZCL_ALL_EDGES",
+    "line": 1,
+    "language": "abap"
+  },
+  {
+    "kind": "defines",
+    "source_symbol_id": "abap:tests/fixtures/extractor/abap/zcl_all_edges.clas.abap::ZCL_ALL_EDGES",
+    "target_symbol_id": "abap:tests/fixtures/extractor/abap/zcl_all_edges.clas.abap::ZCL_ALL_EDGES::RUN",
+    "line": 7,
+    "language": "abap"
+  },
+  {
+    "kind": "defines",
+    "source_symbol_id": "abap:tests/fixtures/extractor/abap/zcl_all_edges.clas.abap::ZCL_ALL_EDGES",
+    "target_symbol_id": "abap:tests/fixtures/extractor/abap/zcl_all_edges.clas.abap::ZCL_ALL_EDGES::LOAD",
+    "line": 8,
+    "language": "abap"
+  },
+  {
+    "kind": "defines",
+    "source_symbol_id": "abap:tests/fixtures/extractor/abap/zcl_all_edges.clas.abap::ZCL_ALL_EDGES",
+    "target_symbol_id": "abap:tests/fixtures/extractor/abap/zcl_all_edges.clas.abap::ZCL_ALL_EDGES::HELPER",
+    "line": 11,
+    "language": "abap"
+  },
+  {
+    "kind": "defines",
+    "source_symbol_id": "abap:tests/fixtures/extractor/abap/zcl_all_edges.clas.abap::<module>",
+    "target_symbol_id": "abap:tests/fixtures/extractor/abap/zcl_all_edges.clas.abap::ZCL_ALL_EDGES",
+    "line": 16,
+    "language": "abap"
+  },
+  {
+    "kind": "defines",
+    "source_symbol_id": "abap:tests/fixtures/extractor/abap/zcl_all_edges.clas.abap::ZCL_ALL_EDGES",
+    "target_symbol_id": "abap:tests/fixtures/extractor/abap/zcl_all_edges.clas.abap::ZCL_ALL_EDGES::RUN",
+    "line": 18,
+    "language": "abap"
+  },
+  {
+    "kind": "imports",
+    "source_symbol_id": "abap:tests/fixtures/extractor/abap/zcl_all_edges.clas.abap::ZCL_ALL_EDGES::RUN",
+    "target_symbol_id": "abap:ZINC_RUNTIME::*",
+    "line": 20,
+    "language": "abap"
+  },
+  {
+    "kind": "calls",
+    "source_symbol_id": "abap:tests/fixtures/extractor/abap/zcl_all_edges.clas.abap::ZCL_ALL_EDGES::RUN",
+    "target_symbol_id": "abap:ZCL_OTHER::<constructor>",
+    "line": 21,
+    "language": "abap"
+  },
+  {
+    "kind": "calls",
+    "source_symbol_id": "abap:tests/fixtures/extractor/abap/zcl_all_edges.clas.abap::ZCL_ALL_EDGES::RUN",
+    "target_symbol_id": "abap:ZCL_OTHER::DO_WORK",
+    "line": 22,
+    "language": "abap"
+  },
+  {
+    "kind": "calls",
+    "source_symbol_id": "abap:tests/fixtures/extractor/abap/zcl_all_edges.clas.abap::ZCL_ALL_EDGES::RUN",
+    "target_symbol_id": "abap:ZCL_STATIC::COMPUTE",
+    "line": 23,
+    "language": "abap"
+  },
+  {
+    "kind": "calls",
+    "source_symbol_id": "abap:tests/fixtures/extractor/abap/zcl_all_edges.clas.abap::ZCL_ALL_EDGES::RUN",
+    "target_symbol_id": "abap:ZCL_LEGACY::LOG",
+    "line": 24,
+    "language": "abap"
+  },
+  {
+    "kind": "calls",
+    "source_symbol_id": "abap:tests/fixtures/extractor/abap/zcl_all_edges.clas.abap::ZCL_ALL_EDGES::RUN",
+    "target_symbol_id": "abap:BAPI_COMMIT::*",
+    "line": 25,
+    "language": "abap"
+  },
+  {
+    "kind": "calls",
+    "source_symbol_id": "abap:tests/fixtures/extractor/abap/zcl_all_edges.clas.abap::ZCL_ALL_EDGES::RUN",
+    "target_symbol_id": "abap:tests/fixtures/extractor/abap/zcl_all_edges.clas.abap::CLEANUP",
+    "line": 26,
+    "language": "abap"
+  },
+  {
+    "kind": "defines",
+    "source_symbol_id": "abap:tests/fixtures/extractor/abap/zcl_all_edges.clas.abap::ZCL_ALL_EDGES",
+    "target_symbol_id": "abap:tests/fixtures/extractor/abap/zcl_all_edges.clas.abap::ZCL_ALL_EDGES::LOAD",
+    "line": 29,
+    "language": "abap"
+  },
+  {
+    "kind": "calls",
+    "source_symbol_id": "abap:tests/fixtures/extractor/abap/zcl_all_edges.clas.abap::ZCL_ALL_EDGES::LOAD",
+    "target_symbol_id": "abap:ZCL_STATIC::COMPUTE",
+    "line": 30,
+    "language": "abap"
+  },
+  {
+    "kind": "defines",
+    "source_symbol_id": "abap:tests/fixtures/extractor/abap/zcl_all_edges.clas.abap::ZCL_ALL_EDGES",
+    "target_symbol_id": "abap:tests/fixtures/extractor/abap/zcl_all_edges.clas.abap::ZCL_ALL_EDGES::HELPER",
+    "line": 33,
+    "language": "abap"
+  }
+]

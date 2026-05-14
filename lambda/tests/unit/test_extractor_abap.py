@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 
@@ -17,6 +18,7 @@ from extractor import extract_facts  # noqa: E402
 from extractor.abap_extractor import (  # noqa: E402
     _extract_via_regex,
     _extract_via_tree_sitter,
+    _get_tree_sitter_parser,
     _looks_oo,
     _looks_procedural,
 )
@@ -114,3 +116,149 @@ class TestTreeSitterBackendFallback:
         # Whatever the underlying backend, the dispatcher must emit
         # at least the class definition.
         assert any("ZCL_FOO" in f.target_symbol_id for f in facts)
+
+
+# ---------------------------------------------------------------------------
+# Tree-sitter OO walk (ADR-020 v1.1)
+# ---------------------------------------------------------------------------
+
+
+_HAS_TS_ABAP = _get_tree_sitter_parser() is not None
+
+
+@pytest.mark.skipif(
+    not _HAS_TS_ABAP,
+    reason="tree-sitter-abap grammar not installed in this environment",
+)
+class TestTreeSitterOoWalk:
+    """The Tree-sitter walk must exercise every OO node kind enumerated
+    in ADR-020 v1.1 and emit a stable Fact stream against the
+    ``zcl_all_edges`` fixture.
+    """
+
+    FIXTURE = "zcl_all_edges.clas.abap"
+    GOLDEN = "zcl_all_edges.expected.json"
+
+    @pytest.fixture
+    def facts(self):
+        return _load(self.FIXTURE)
+
+    @pytest.fixture
+    def golden(self):
+        with open(os.path.join(FIXTURE_DIR, self.GOLDEN)) as fh:
+            return json.load(fh)
+
+    def test_dispatcher_picks_tree_sitter(self):
+        with open(os.path.join(FIXTURE_DIR, self.FIXTURE)) as fh:
+            text = fh.read()
+        assert _looks_oo(text) is True
+
+    def test_facts_match_golden(self, facts, golden):
+        # We compare on the (kind, source, target, line, language)
+        # tuple so the test is robust to test-runtime CWD differences
+        # in ``file_path``. Symbol IDs derived from the fixture path
+        # are normalised the same way on both sides.
+        fixture_suffix = "tests/fixtures/extractor/abap/zcl_all_edges.clas.abap"
+
+        def normalise(value: str) -> str:
+            idx = value.find(fixture_suffix)
+            if idx == -1:
+                return value
+            return "abap:" + fixture_suffix + value[idx + len(fixture_suffix) :]
+
+        def key(rec):
+            if isinstance(rec, dict):
+                return (
+                    rec["kind"],
+                    normalise(rec["source_symbol_id"]),
+                    normalise(rec["target_symbol_id"]),
+                    rec["line"],
+                    rec["language"],
+                )
+            return (
+                rec.kind,
+                normalise(rec.source_symbol_id),
+                normalise(rec.target_symbol_id),
+                rec.line,
+                rec.language,
+            )
+
+        actual = sorted(key(f) for f in facts)
+        expected = sorted(key(g) for g in golden)
+        assert actual == expected
+
+    def test_total_fact_count(self, facts, golden):
+        assert len(facts) == len(golden)
+
+    def test_class_declaration_emits_defines(self, facts):
+        targets = {f.target_symbol_id for f in facts if f.kind == "defines"}
+        assert any("ZCL_ALL_EDGES" in t for t in targets)
+        assert any("ZCL_ALL_EDGES::RUN" in t for t in targets)
+        assert any("ZCL_ALL_EDGES::LOAD" in t for t in targets)
+        assert any("ZCL_ALL_EDGES::HELPER" in t for t in targets)
+
+    def test_create_object_resolves_to_declared_class(self, facts):
+        targets = [f.target_symbol_id for f in facts if f.kind == "calls"]
+        assert "abap:ZCL_OTHER::<constructor>" in targets
+
+    def test_instance_call_resolves_via_data_decl(self, facts):
+        targets = [f.target_symbol_id for f in facts if f.kind == "calls"]
+        assert "abap:ZCL_OTHER::DO_WORK" in targets
+
+    def test_static_functional_call(self, facts):
+        targets = [f.target_symbol_id for f in facts if f.kind == "calls"]
+        assert "abap:ZCL_STATIC::COMPUTE" in targets
+
+    def test_legacy_call_method_static_via_macro_workaround(self, facts):
+        # ``CALL METHOD zcl_legacy=>log.`` parses as a ``macro_include``
+        # — the walk pattern-matches that shape to keep the legacy
+        # static-call syntax in the fact stream.
+        targets = [f.target_symbol_id for f in facts if f.kind == "calls"]
+        assert "abap:ZCL_LEGACY::LOG" in targets
+
+    def test_call_function_module(self, facts):
+        targets = [f.target_symbol_id for f in facts if f.kind == "calls"]
+        assert "abap:BAPI_COMMIT::*" in targets
+
+    def test_perform_emits_call(self, facts):
+        targets = [f.target_symbol_id for f in facts if f.kind == "calls"]
+        assert any("CLEANUP" in t for t in targets)
+
+    def test_include_inside_method_emits_import(self, facts):
+        imports = [f for f in facts if f.kind == "imports"]
+        assert any("ZINC_RUNTIME" in f.target_symbol_id for f in imports)
+
+
+@pytest.mark.skipif(
+    not _HAS_TS_ABAP,
+    reason="tree-sitter-abap grammar not installed in this environment",
+)
+class TestTreeSitterTopLevel:
+    """REPORT / INCLUDE / FUNCTION at top level must emit the right
+    facts even when the grammar's procedural-statement coverage is
+    partial.
+    """
+
+    def test_report_emits_defines(self):
+        src = b"REPORT z_demo.\nCLASS ZCL_X DEFINITION.\nENDCLASS.\n"
+        facts = list(_extract_via_tree_sitter("z_demo.abap", src))
+        defines = [f.target_symbol_id for f in facts if f.kind == "defines"]
+        assert any(t.endswith("::Z_DEMO") for t in defines)
+
+    def test_function_implementation_emits_defines(self):
+        src = (
+            b"FUNCTION zf_run.\nENDFUNCTION.\n"
+            b"CLASS ZCL_X DEFINITION.\nENDCLASS.\n"
+        )
+        facts = list(_extract_via_tree_sitter("zf_run.abap", src))
+        defines = [f.target_symbol_id for f in facts if f.kind == "defines"]
+        assert any(t.endswith("::ZF_RUN") for t in defines)
+
+    def test_top_level_include_emits_imports(self):
+        src = (
+            b"INCLUDE z_top.\n"
+            b"CLASS ZCL_X DEFINITION.\nENDCLASS.\n"
+        )
+        facts = list(_extract_via_tree_sitter("x.abap", src))
+        imports = [f for f in facts if f.kind == "imports"]
+        assert any("Z_TOP" in f.target_symbol_id for f in imports)
