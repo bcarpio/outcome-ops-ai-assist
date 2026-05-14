@@ -20,7 +20,7 @@ import os
 import sys
 import time
 from datetime import datetime
-from typing import Any, Dict, List
+from typing import Any, Dict, Iterable, Iterator, List
 from urllib.request import Request, urlopen
 from urllib.error import URLError
 from urllib.parse import quote
@@ -34,6 +34,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared.audit import COMPREHEND_MODEL_ID, log_audit_entry
 from shared.audit_writer import ACTION_DOCUMENT_INGESTED, log_admin_action
 from shared.pii import MODE_STRICT, read_workspace_mode, redact
+
+# Symbol-graph extractor (plan-gkg chunk 01). The extractor emits typed
+# Facts only — storage / SQS hand-off lands in chunks 02 and 03.
+# Path-prepend below mirrors the ``shared`` import above so the extractor
+# package resolves whether handler.py is loaded via the Lambda runtime
+# (cwd=/var/task) or via importlib.util.spec_from_file_location in tests.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from extractor import Fact, extract_facts_from_bytes  # type: ignore  # noqa: E402
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -1013,6 +1021,58 @@ def _emit_ingest_audit(
         )
 
 
+# Map a repo-relative file path to the symbol-graph extractor language.
+# Returns ``None`` when the extension is unknown — the extractor pass
+# is best-effort and any unrecognized file is silently skipped.
+_LANGUAGE_BY_EXT = {
+    ".py": "python",
+    ".ts": "typescript",
+    ".tsx": "typescript",
+    ".java": "java",
+    ".cs": "csharp",
+    ".go": "go",
+    ".abap": "abap",
+}
+
+
+def _language_for_path(file_path: str) -> str | None:
+    lower = file_path.lower()
+    for suffix, language in _LANGUAGE_BY_EXT.items():
+        if lower.endswith(suffix):
+            return language
+    return None
+
+
+def _emit_facts(facts: Iterable[Fact]) -> int:
+    """Stub hand-off for the symbol-graph Fact stream.
+
+    Chunk 01 is emission-only. Chunk 03 will wire this to the SQS
+    message that downstream storage (chunk 02) consumes. For now we
+    materialize the iterator and log the count so the extractor's
+    effects are observable end-to-end without standing up the
+    downstream infrastructure.
+    """
+
+    count = 0
+    for _ in facts:
+        count += 1
+    logger.info("symbol-graph extractor emitted %d facts (chunk 01 stub)", count)
+    return count
+
+
+def _iter_batch_facts(
+    file_path: str, language: str, content: str
+) -> Iterator[Fact]:
+    """Yield Facts for a single file that already has its content in hand."""
+
+    try:
+        yield from extract_facts_from_bytes(
+            file_path, language, content.encode("utf-8")
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("extractor failed on %s: %s", file_path, exc)
+
+
 def process_batch_record(record: Dict[str, Any]) -> None:
     """
     Process a single SQS record.
@@ -1031,6 +1091,15 @@ def process_batch_record(record: Dict[str, Any]) -> None:
         f"Processing {batch['batch_type']} batch: {batch['group_name']} "
         f"({len(batch['file_paths'])} files)"
     )
+
+    # Symbol-graph extractor stub (plan-gkg chunk 01).
+    # Chunk 01 is emission-only — the extractor package is wired and
+    # importable, but the SQS hand-off (chunk 03) and storage (chunk 02)
+    # are not built yet. We invoke ``_emit_facts`` with an empty stream
+    # so the call site is exercised end-to-end and the LogLines surface
+    # the stub in CloudWatch; chunk 03 swaps in a real iterator over
+    # the batch's file contents.
+    _emit_facts(iter(()))
 
     # Generate batch summary
     batch_summary = generate_batch_summary(batch)
