@@ -18,7 +18,7 @@ your customer expectations accordingly:
 | Catalog / schema / table tree | ✓ | ✓ | ✓ |
 | Column metadata (name, type, nullable, default, identity, generated) | ✓ | ✓ | ✓ |
 | Primary keys, unique constraints, foreign keys, indexes | ✓ | ✓ | ✓ |
-| Sample rows (when admin opts in per-table) | ✓ | ✓ | ✓ |
+| Sample rows (when admin opts in per-schema) | ✓ | ✓ | ✓ |
 | Table-level row counts | ✓ | ✓ | — |
 | Per-column aggregate stats (null counts, distinct counts, min/max, cardinality buckets) | ✓ partial¹ | ✓ | — |
 
@@ -163,6 +163,122 @@ ALTER ROLE db_datareader ADD MEMBER outcomeops_ro;
   as `null`. This is independent of grants — no permission level
   unlocks them. Tracked as a v2 follow-up.
 
+## Adding customer trust roots (non-RDS / on-prem)
+
+The OutcomeOps database container images bake the **AWS RDS global
+CA bundle** into the system trust store by default — Postgres /
+MySQL / MSSQL on Amazon RDS or Aurora "just work" with `Encrypt=yes`
+and full cert validation.
+
+For DBs **not behind the RDS bundle** — Azure SQL signed by a
+corporate root, on-prem MSSQL signed by an internal CA, GCP Cloud
+SQL for MSSQL with a custom chain — you need to register the
+trust root(s) so the TLS handshake validates. Otherwise the
+introspector fails with `unable to get local issuer certificate`
+(specifically on MSSQL — mssql-python's ODBC Driver 18 ships its
+own trust path and doesn't honor `SSL_CERT_FILE`).
+
+### When you need this
+
+- Azure SQL backed by your org's internal CA chain.
+- On-prem MSSQL signed by your internal CA.
+- GCP Cloud SQL for MSSQL with a non-public chain.
+- Any DB whose server cert isn't already in the AWS RDS bundle or
+  the standard public-root store baked into the Lambda image.
+
+You do NOT need this for RDS / Aurora — those work out of the box.
+
+### Upload the PEM to SSM Parameter Store as a SecureString
+
+```bash
+aws ssm put-parameter \
+  --name /outcomeops/ca-bundles/corp-root \
+  --type SecureString \
+  --value file://corp-root.pem
+```
+
+The `file://` prefix tells the CLI to read PEM contents from disk.
+SSM SecureString encrypts at rest with KMS (the AWS-managed
+`alias/aws/ssm` key by default; pass `--key-id <your-cmk-id>` to
+use a customer-managed key).
+
+The bundle must be a **single PEM-encoded X.509 cert** (root or
+intermediate). For multi-cert chains, either:
+- Concatenate them into one **SSM Advanced** parameter (8 KB cap), or
+- Split across multiple **SSM Standard** parameters (4 KB cap each).
+
+Build-time validation runs `openssl x509 -noout -dates` on each
+parameter; a malformed PEM hard-fails the image build with the
+offending ARN named in the build log, so customers see breakage
+at build time rather than at first TLS handshake.
+
+### Register the parameter ARNs in tfvars
+
+```hcl
+# terraform/prd.tfvars
+customer_ca_bundle_ssm_param_arns = [
+  "arn:aws:ssm:us-west-2:123456789012:parameter/outcomeops/ca-bundles/corp-root",
+  "arn:aws:ssm:us-west-2:123456789012:parameter/outcomeops/ca-bundles/azure-sql-intermediate",
+]
+```
+
+The `scripts/build-database-images.sh` script fetches each parameter
+at build time, validates the PEM, and bakes the bundles into both
+the `database-integration` and `database-sync` image trust stores
+(`/etc/pki/ca-trust/source/anchors/` → `update-ca-trust`).
+
+### Customer-managed KMS keys
+
+If you encrypted the SecureString with a customer-managed KMS key
+(`--key-id arn:aws:kms:...:key/...`), grant the deploy role (the
+IAM principal that runs `make build-database-images`) `kms:Decrypt`
+on that key in addition to the standard `ssm:GetParameter`. The
+AWS-managed `alias/aws/ssm` key doesn't need an explicit grant —
+SSM authorizes via the parameter ARN alone.
+
+### Rotation workflow
+
+When a CA rotates upstream, the path is:
+
+1. Update the SecureString with the new PEM:
+   ```bash
+   aws ssm put-parameter \
+     --name /outcomeops/ca-bundles/corp-root \
+     --type SecureString \
+     --value file://corp-root-new.pem \
+     --overwrite
+   ```
+2. Rebuild the database container images so the new bundle gets
+   baked in:
+   ```bash
+   ENVIRONMENT=prd make build-database-images
+   ```
+3. `terraform apply` to point the Lambdas at the new image tag.
+
+**Bake-time rebuild is required** because mssql-python's ODBC
+Driver 18 reads the system trust store at a fixed path inside the
+container — it doesn't honor `SSL_CERT_FILE` or pick up
+runtime-mounted certs. Updating the SecureString alone won't
+propagate to a running Lambda; the image needs to be rebuilt.
+
+### What goes wrong if skipped
+
+Connect / Test connection / Sync against the affected DB returns:
+
+```
+unable to get local issuer certificate
+```
+
+(MSSQL surfaces this specifically; Postgres and MySQL drivers
+respect `SSL_CERT_FILE`, so the same DB hosted on Postgres/MySQL
+backed by a corporate CA also needs the SSM bundle path even
+though the error wording differs.)
+
+The picker's structured 502 (see the troubleshooting table in
+[`database-integration.md`](./database-integration.md#troubleshooting))
+will carry this string in `error` so admins know they need to
+register the trust root.
+
 ## Verifying
 
 After creating the user, run a quick `SELECT 1` connection check as
@@ -188,17 +304,20 @@ granting credentials:
   `pg_stats` (filtered by SELECT privilege), `pg_inherits`,
   `information_schema.schemata`, `information_schema.tables`,
   `information_schema.columns`, plus `SELECT ... LIMIT 5` against
-  each picked table (only when sampling is enabled per-table).
+  every auto-discovered table inside a sampling-enabled schema
+  (only when that schema is in `scope_config.sampling.include`).
 - **MySQL**: `INFORMATION_SCHEMA.SCHEMATA`, `.TABLES`, `.COLUMNS`,
   `.STATISTICS`, `.KEY_COLUMN_USAGE`, `.REFERENTIAL_CONSTRAINTS`,
-  plus `SELECT ... LIMIT 5` against each picked table (when
-  sampling is enabled), plus `ANALYZE TABLE ... UPDATE HISTOGRAM`
-  (gracefully falls back on permission error).
+  plus `SELECT ... LIMIT 5` against every auto-discovered table
+  inside a sampling-enabled schema, plus
+  `ANALYZE TABLE ... UPDATE HISTOGRAM` (gracefully falls back on
+  permission error).
 - **MS SQL Server**: `sys.databases`, `sys.tables`, `sys.views`,
   `sys.schemas`, `sys.columns`, `sys.types`, `sys.indexes`,
   `sys.key_constraints`, `sys.foreign_keys`, `sys.extended_properties`,
   `sys.computed_columns`, `sys.default_constraints`, plus
-  `SELECT TOP 5 ...` against each picked table (when sampling).
+  `SELECT TOP 5 ...` against every auto-discovered table inside a
+  sampling-enabled schema.
 
 No writes are issued except the MySQL `ANALYZE TABLE` above, which is
 a no-op stats refresh (does not modify table data).
