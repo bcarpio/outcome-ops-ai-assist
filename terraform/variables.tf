@@ -290,6 +290,37 @@ variable "domain" {
   default     = ""
 }
 
+variable "manage_dns_in_route53" {
+  type        = bool
+  default     = true
+  description = <<-EOT
+    When true (default), terraform looks up var.domain in Route53 in
+    this deployment account and creates the A-ALIAS for local.fqdn
+    pointing at the UI ALB, plus the ACM DVO validation records. Set
+    false when DNS is managed elsewhere - cross-account Route53,
+    Infoblox, AD-DNS, NS1, BIND, etc. With this off, terraform skips
+    all Route53 + ACM-validation resources and outputs the ALB DNS
+    name + the FQDN you must CNAME to it. Requires
+    ui_acm_certificate_arn to also be set (we cannot DNS-validate a
+    public ACM cert without writing to a Route53 zone we control).
+  EOT
+}
+
+variable "ui_acm_certificate_arn" {
+  type        = string
+  default     = ""
+  description = <<-EOT
+    ARN of a pre-existing ACM certificate covering local.fqdn. Leave
+    empty (default) to have terraform request a new ACM public
+    DNS-validated cert and write the validation CNAMEs into Route53 -
+    only valid when manage_dns_in_route53 = true. Set this to BYO a
+    cert: a wildcard you already have in ACM, a public-CA cert
+    imported to ACM, or a private / internal-CA cert imported to ACM.
+    See docs/byo-cert-and-dns.md for the platform-trust-store
+    implications when this points at an internal-CA cert.
+  EOT
+}
+
 variable "cors_allowed_origins" {
   description = "Additional CORS origins for S3 bucket (browser uploads). The domain variable is automatically included if set."
   type        = list(string)

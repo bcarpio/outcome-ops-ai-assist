@@ -195,6 +195,18 @@ github_usernames_to_tag = "yourusername"
 # domain = "example.com"
 # ui_subdomain = "outcomeops"  # default
 
+# ============================================================================
+# DNS Sovereignty + TLS Certificate Sourcing
+# ============================================================================
+# Dev usually doesn't need any of these set - the defaults assume Route53
+# + auto-issued ACM public cert in this account, which is the normal dev
+# loop. Override only when reproducing a customer's BYO-cert / BYO-DNS
+# configuration. See docs/byo-cert-and-dns.md for full guidance.
+
+# manage_dns_in_route53            = true
+# ui_acm_certificate_arn           = ""
+# platform_ca_bundle_ssm_param_arns = []
+
 # Azure AD configuration.
 # oidc_enabled   = true
 # oidc_client_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"  # Azure App (client) ID

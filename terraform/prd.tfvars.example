@@ -215,6 +215,36 @@ github_usernames_to_tag = "yourusername"
 # domain = "example.com"
 # ui_subdomain = "outcomeops"  # default
 
+# ============================================================================
+# DNS Sovereignty + TLS Certificate Sourcing
+# ============================================================================
+# By default, terraform manages Route53 for var.domain in THIS account
+# and issues an ACM public DNS-validated cert. Override either or both
+# of those when the customer manages DNS elsewhere (cross-account
+# Route53, Infoblox, AD-DNS, etc.) or wants to use their own cert
+# (org-wide ACM wildcard, internal-CA cert imported to ACM, etc.).
+# See docs/byo-cert-and-dns.md.
+
+# Set false when var.domain is NOT in Route53 in this AWS account.
+# Terraform will skip all Route53 + ACM-validation resources and
+# output alb_dns_name + fqdn_to_cname for you to wire up externally.
+# manage_dns_in_route53 = true
+
+# ARN of a pre-existing ACM cert covering local.fqdn. Set this to BYO
+# a cert: org-wide ACM wildcard, public-CA cert imported to ACM, or
+# private / internal-CA cert imported to ACM. Required when
+# manage_dns_in_route53 = false.
+# ui_acm_certificate_arn = "arn:aws:acm:us-west-2:111122223333:certificate/abc-..."
+
+# SSM SecureString ARNs holding PEM-encoded CA roots to bake into the
+# platform Lambda trust store. Required when ui_acm_certificate_arn
+# points at a private / internal-CA cert - without these roots, chat
+# -> MCP calls fail TLS verification. Same model as
+# customer_ca_bundle_ssm_param_arns (database images).
+# platform_ca_bundle_ssm_param_arns = [
+#   "arn:aws:ssm:us-west-2:111122223333:parameter/prd/outcome-ops-ai-assist/ca/corp-root",
+# ]
+
 # Azure AD configuration.
 # oidc_enabled   = true
 # oidc_client_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"  # Azure App (client) ID

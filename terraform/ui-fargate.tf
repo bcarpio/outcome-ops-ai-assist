@@ -106,6 +106,10 @@ resource "aws_acm_certificate" "ui" {
 
   lifecycle {
     create_before_destroy = true
+    precondition {
+      condition     = var.manage_dns_in_route53 || var.ui_acm_certificate_arn != ""
+      error_message = "manage_dns_in_route53 = false requires ui_acm_certificate_arn to be set - terraform cannot DNS-validate a public ACM cert without a Route53 zone in this account."
+    }
   }
 }
 
