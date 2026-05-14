@@ -53,13 +53,11 @@ from credential_manager import get_credential
 try:
     from outcomeops_license import (
         check_repo_limit,
-        track_repo_active,
         validate_license,
     )
 except ImportError:
     validate_license = None  # type: ignore[assignment]
     check_repo_limit = None  # type: ignore[assignment]
-    track_repo_active = None  # type: ignore[assignment]
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -1057,8 +1055,8 @@ def process_sync_request(message: Dict) -> Dict[str, Any]:
     schemas_removed = sorted(set(prior_available) - set(available_schemas))
     schema_count_delta = len(schemas_added) - len(schemas_removed)
 
-    # Per-source usage tracking (ADR-019). Non-blocking.
-    track_repo_active(repo=repo_project)
+    # ADR-019: liveness tracking now lives in connect/disconnect handlers
+    # via report_repos_snapshot (license layer v2.0.0 desired-state model).
 
     update_connection_status(
         workspace_id, connection_id, "completed",

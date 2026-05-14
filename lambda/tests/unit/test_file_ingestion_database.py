@@ -73,7 +73,6 @@ def stub_outcomeops_license():
     allowed.current = 0
     allowed.limit = 100
     stub.check_repo_limit.return_value = allowed
-    stub.track_repo_active.return_value = True
     saved = sys.modules.get("outcomeops_license")
     sys.modules["outcomeops_license"] = stub
     yield stub

@@ -42,7 +42,6 @@ from token_manager import refresh_access_token
 try:
     from outcomeops_license import (
         check_repo_limit,
-        track_repo_active,
         validate_license,
     )
 except ImportError:
@@ -50,7 +49,6 @@ except ImportError:
     # and emits the LICENSE_FAIL_OPEN audit row before raising.
     validate_license = None  # type: ignore[assignment]
     check_repo_limit = None  # type: ignore[assignment]
-    track_repo_active = None  # type: ignore[assignment]
 
 # Configure logging
 logger = logging.getLogger()
@@ -422,10 +420,8 @@ def process_sync_request(message: Dict) -> Dict[str, Any]:
                 except SharePointAPIError as e:
                     logger.warning(f"Failed to sync pages for site {site_name}: {e}")
 
-            # Per-source usage tracking (ADR-019). Non-blocking; returns
-            # bool, never raises. License-server dedupes by metadata.repo
-            # string match, so re-tracking the same site is safe.
-            track_repo_active(repo=repo_project)
+            # ADR-019: liveness tracking now lives in connect/disconnect
+            # handlers via report_repos_snapshot (license layer v2.0.0).
 
         update_connection_status(
             workspace_id, connection_id, "completed",

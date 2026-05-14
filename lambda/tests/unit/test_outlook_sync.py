@@ -87,7 +87,6 @@ def reset_mocks(monkeypatch):
         return result
 
     monkeypatch.setattr(handler_module, "check_repo_limit", _allow)
-    monkeypatch.setattr(handler_module, "track_repo_active", lambda *a, **kw: True)
     yield
 
 
@@ -556,8 +555,6 @@ class TestOutlookSyncLicenseEnforcement:
         blocked.limit = 5
         mock_check = MagicMock(return_value=blocked)
         monkeypatch.setattr(handler_module, "check_repo_limit", mock_check)
-        mock_track = MagicMock(return_value=True)
-        monkeypatch.setattr(handler_module, "track_repo_active", mock_track)
 
         with patch.object(handler_module, "_load_oauth_config") as mock_oauth, \
              patch.object(handler_module, "refresh_access_token") as mock_refresh, \
@@ -578,36 +575,10 @@ class TestOutlookSyncLicenseEnforcement:
             assert result["status"] == "skipped"
             assert result["reason"] == "repo_limit"
             mock_check.assert_called_once_with(repo="outlook:conn_test")
-            # Folder processing and tracking are both skipped.
+            # Folder processing is skipped.
             mock_proc_folder.assert_not_called()
-            mock_track.assert_not_called()
             # Status should be marked blocked_license_limit for visibility.
             mock_update.assert_any_call(
                 "ws_test", "conn_test", "blocked_license_limit",
                 error="repo_limit_reached",
             )
-
-    def test_track_repo_active_called_on_successful_sync(self, monkeypatch):
-        """After a successful mailbox sync, track_repo_active is called."""
-        mock_track = MagicMock(return_value=True)
-        monkeypatch.setattr(handler_module, "track_repo_active", mock_track)
-
-        with patch.object(handler_module, "_load_oauth_config") as mock_oauth, \
-             patch.object(handler_module, "refresh_access_token") as mock_refresh, \
-             patch.object(handler_module, "get_connection") as mock_get_conn, \
-             patch.object(handler_module, "update_connection_status"), \
-             patch.object(handler_module, "_process_folder_page") as mock_proc_folder:
-            mock_get_conn.return_value = {
-                "selected_folders": [{"id": "f1", "displayName": "Inbox"}],
-                "delta_links": {},
-            }
-            mock_oauth.return_value = {"client_id": "c", "client_secret": "s"}
-            mock_refresh.return_value = "tok"
-            mock_proc_folder.return_value = (3, 1)
-
-            result = process_sync_request({
-                "workspace_id": "ws_test", "connection_id": "conn_test"
-            })
-
-            assert result["status"] == "success"
-            mock_track.assert_called_once_with(repo="outlook:conn_test")

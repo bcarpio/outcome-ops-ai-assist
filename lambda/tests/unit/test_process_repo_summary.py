@@ -180,11 +180,6 @@ class TestHandler:
         )
         monkeypatch.setattr(
             repo_summary_handler,
-            "track_repo_active",
-            MagicMock(return_value=True),
-        )
-        monkeypatch.setattr(
-            repo_summary_handler,
             "track_code_map_updated",
             MagicMock(return_value=True),
         )
@@ -303,18 +298,17 @@ class TestLicenseLayerIntegration:
         mock_config,
         monkeypatch,
     ):
-        """validate_license() success path: handler proceeds, all four
-        license calls fire, batch returns no failures."""
+        """validate_license() success path: handler proceeds, the three
+        per-record license calls fire (validate, check_repo_limit,
+        track_code_map_updated), batch returns no failures."""
         mock_summary.return_value = "Test summary"
         mock_embed.return_value = [0.1] * 1024
 
         mock_validate = MagicMock(return_value={"sub": "test-customer"})
         mock_check = MagicMock(return_value=MagicMock(allowed=True))
-        mock_track_repo = MagicMock(return_value=True)
         mock_track_map = MagicMock(return_value=True)
         monkeypatch.setattr(repo_summary_handler, "validate_license", mock_validate)
         monkeypatch.setattr(repo_summary_handler, "check_repo_limit", mock_check)
-        monkeypatch.setattr(repo_summary_handler, "track_repo_active", mock_track_repo)
         monkeypatch.setattr(
             repo_summary_handler, "track_code_map_updated", mock_track_map,
         )
@@ -324,7 +318,6 @@ class TestLicenseLayerIntegration:
         assert result["batchItemFailures"] == []
         mock_validate.assert_called_once()
         mock_check.assert_called_once_with(repo="owner/repo-a")
-        mock_track_repo.assert_called_once_with(repo="owner/repo-a")
         mock_track_map.assert_called_once_with(repo="owner/repo-a", branch="main")
 
     def test_handler_license_import_error(self, monkeypatch):
@@ -396,11 +389,7 @@ class TestLicenseLayerIntegration:
             "check_repo_limit",
             MagicMock(side_effect=[blocked, allowed]),
         )
-        mock_track_repo = MagicMock()
         mock_track_map = MagicMock()
-        monkeypatch.setattr(
-            repo_summary_handler, "track_repo_active", mock_track_repo,
-        )
         monkeypatch.setattr(
             repo_summary_handler, "track_code_map_updated", mock_track_map,
         )
@@ -438,8 +427,7 @@ class TestLicenseLayerIntegration:
         # never reaches generate_architectural_summary.
         assert result["batchItemFailures"] == []
         assert mock_summary.call_count == 1
-        # Only the allowed repo was tracked.
-        mock_track_repo.assert_called_once_with(repo="owner/repo-b")
+        # Only the allowed repo had its code-map usage tracked.
         mock_track_map.assert_called_once_with(
             repo="owner/repo-b", branch="main",
         )
@@ -460,12 +448,13 @@ class TestLicenseLayerIntegration:
         mock_config,
         monkeypatch,
     ):
-        """track_repo_active and track_code_map_updated fire exactly
-        once per successfully processed record, with branch defaulting
-        to 'main' when the SQS message body omits it."""
+        """track_code_map_updated fires exactly once per successfully
+        processed record, with branch defaulting to 'main' when the SQS
+        message body omits it. Liveness reporting (license layer v2.0.0
+        snapshot via report_repos_snapshot) moved to the *-integration
+        connect/disconnect handlers."""
         mock_summary.return_value = "Summary"
         mock_embed.return_value = [0.1] * 1024
-        mock_track_repo = MagicMock(return_value=True)
         mock_track_map = MagicMock(return_value=True)
         monkeypatch.setattr(
             repo_summary_handler,
@@ -478,9 +467,6 @@ class TestLicenseLayerIntegration:
             MagicMock(return_value=MagicMock(allowed=True)),
         )
         monkeypatch.setattr(
-            repo_summary_handler, "track_repo_active", mock_track_repo,
-        )
-        monkeypatch.setattr(
             repo_summary_handler, "track_code_map_updated", mock_track_map,
         )
 
@@ -489,7 +475,6 @@ class TestLicenseLayerIntegration:
         )
 
         assert result["batchItemFailures"] == []
-        mock_track_repo.assert_called_once_with(repo="owner/repo-a")
         mock_track_map.assert_called_once_with(
             repo="owner/repo-a", branch="main",
         )

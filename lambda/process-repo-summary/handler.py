@@ -60,13 +60,11 @@ try:
     from outcomeops_license import (
         check_repo_limit,
         track_code_map_updated,
-        track_repo_active,
         validate_license,
     )
 except ImportError:
     validate_license = None  # type: ignore[assignment]
     check_repo_limit = None  # type: ignore[assignment]
-    track_repo_active = None  # type: ignore[assignment]
     track_code_map_updated = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
@@ -1032,9 +1030,9 @@ def handler(event, context):
                 _queue_orphan_code_map_cleanup(repo, expected_keys, workspace_id)
 
             # Usage tracking (ADR-019). Non-blocking: returns bool, never
-            # raises. License-server dedupes track_repo_active by repo
-            # string match, so re-emitting on every code-map run is fine.
-            track_repo_active(repo=repo_project)
+            # raises. Liveness tracking moved to connect/disconnect handlers
+            # via report_repos_snapshot (license layer v2.0.0); only the
+            # code-map-updated usage metric still fires per code-map run.
             track_code_map_updated(repo=repo_project, branch=branch)
             logger.info(
                 f"[process-repo-summary] Tracked code map update for "

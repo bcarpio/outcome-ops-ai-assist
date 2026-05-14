@@ -85,7 +85,6 @@ def reset_mocks(monkeypatch):
         return result
 
     monkeypatch.setattr(handler_module, "check_repo_limit", _allow)
-    monkeypatch.setattr(handler_module, "track_repo_active", lambda *a, **kw: True)
     yield
 
 
@@ -411,8 +410,6 @@ class TestSPSyncLicenseEnforcement:
         blocked.limit = 5
         mock_check = MagicMock(return_value=blocked)
         monkeypatch.setattr(handler_module, "check_repo_limit", mock_check)
-        mock_track = MagicMock(return_value=True)
-        monkeypatch.setattr(handler_module, "track_repo_active", mock_track)
 
         with patch.object(handler_module, "_load_oauth_config") as mock_oauth, \
              patch.object(handler_module, "refresh_access_token") as mock_refresh, \
@@ -429,32 +426,5 @@ class TestSPSyncLicenseEnforcement:
 
             # check_repo_limit was called with the site_id-based identifier
             mock_check.assert_called_once_with(repo="sharepoint:site1")
-            # When blocked, the drive sync (and pages, and tracking) are
-            # all skipped.
+            # When blocked, the drive sync (and pages) are skipped.
             mock_delta.assert_not_called()
-            mock_track.assert_not_called()
-
-    def test_track_repo_active_called_on_successful_sync(
-        self, monkeypatch, sample_connection
-    ):
-        """After a successful per-site sync, track_repo_active is called."""
-        mock_track = MagicMock(return_value=True)
-        monkeypatch.setattr(handler_module, "track_repo_active", mock_track)
-
-        with patch.object(handler_module, "_load_oauth_config") as mock_oauth, \
-             patch.object(handler_module, "refresh_access_token") as mock_refresh, \
-             patch.object(handler_module, "get_connection") as mock_get_conn, \
-             patch.object(handler_module, "update_connection_status"), \
-             patch.object(handler_module, "get_drive_delta") as mock_delta, \
-             patch.object(handler_module, "list_site_pages") as mock_pages:
-            mock_get_conn.return_value = sample_connection
-            mock_oauth.return_value = {"client_id": "c", "client_secret": "s"}
-            mock_refresh.return_value = "tok"
-            mock_delta.return_value = ([], "delta")
-            mock_pages.return_value = []
-
-            handler_module.process_sync_request({
-                "workspace_id": "ws_test", "connection_id": "conn_test"
-            })
-
-            mock_track.assert_called_once_with(repo="sharepoint:site1")

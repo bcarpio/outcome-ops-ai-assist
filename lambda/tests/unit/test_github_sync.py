@@ -24,10 +24,10 @@ mock_s3_client = MagicMock()
 def _make_license_module_stub():
     """Stand-in for the outcomeops_license layer in unit tests.
 
-    The handler imports validate_license / check_repo_limit /
-    track_repo_active at module scope. The layer is mounted at /opt/python
-    in the Lambda runtime; in unit tests we inject a MagicMock module so
-    the imports succeed and individual tests can monkeypatch behaviour.
+    The handler imports validate_license / check_repo_limit at module
+    scope. The layer is mounted at /opt/python in the Lambda runtime;
+    in unit tests we inject a MagicMock module so the imports succeed
+    and individual tests can monkeypatch behaviour.
     """
     stub = MagicMock()
     stub.validate_license.return_value = {"sub": "test-customer"}
@@ -40,7 +40,6 @@ def _make_license_module_stub():
             self.limit = limit
 
     stub.check_repo_limit.side_effect = lambda **_: _Result()
-    stub.track_repo_active.return_value = True
     return stub
 
 
@@ -2039,7 +2038,12 @@ class TestLicenseValidation:
 
 
 class TestRepoLimitEnforcement:
-    """Test per-source check_repo_limit + track_repo_active (ADR-019)."""
+    """Test per-source check_repo_limit (ADR-019).
+
+    Liveness tracking (license layer v2.0.0 desired-state snapshot via
+    report_repos_snapshot) is owned by the github-integration connect/
+    disconnect handlers and tested in those test modules.
+    """
 
     @patch.object(handler_module, "get_repo")
     def test_check_repo_limit_blocked_skips_source(self, mock_get_repo, monkeypatch):
@@ -2077,52 +2081,3 @@ class TestRepoLimitEnforcement:
         statuses = [c.args[2] for c in mock_update.call_args_list]
         assert "blocked_license_limit" in statuses
 
-    @patch.object(handler_module, "_process_application_repo")
-    @patch.object(handler_module, "get_repo_tree")
-    @patch.object(handler_module, "get_latest_commit_sha")
-    @patch.object(handler_module, "get_default_branch")
-    @patch.object(handler_module, "get_installation_token")
-    @patch.object(handler_module, "update_sync_status")
-    @patch.object(handler_module, "get_repo")
-    def test_track_repo_active_called_on_successful_sync(
-        self,
-        mock_get_repo,
-        mock_update_status,
-        mock_get_token,
-        mock_get_branch,
-        mock_get_sha,
-        mock_get_tree,
-        mock_process_app,
-        monkeypatch,
-    ):
-        """After a successful sync, track_repo_active is called once with
-        the per-source identifier (owner/repo)."""
-        mock_get_repo.return_value = {
-            "repo_type": "application",
-            "include_code_maps": True,
-        }
-        mock_get_token.return_value = "fake_token"
-        mock_get_branch.return_value = "main"
-        mock_get_sha.return_value = "abc123"
-        mock_get_tree.return_value = []
-        mock_process_app.return_value = {
-            "status": "success",
-            "repo_type": "application",
-            "files_queued": 1,
-            "docs_uploaded": 0,
-            "commit_sha": "abc123",
-        }
-        monkeypatch.setattr(
-            handler_module, "check_repo_limit", lambda **_: _LimitResult()
-        )
-        mock_track = MagicMock(return_value=True)
-        monkeypatch.setattr(handler_module, "track_repo_active", mock_track)
-
-        result = handler_module.process_sync_request({
-            "workspace_id": "ws_test",
-            "repo_name": "acme/my-repo",
-            "installation_id": "12345",
-        })
-
-        assert result["status"] == "success"
-        mock_track.assert_called_once_with(repo="acme/my-repo")

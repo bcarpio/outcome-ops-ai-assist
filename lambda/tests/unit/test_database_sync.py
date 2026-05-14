@@ -80,7 +80,6 @@ def reset_mocks(monkeypatch):
         return result
 
     monkeypatch.setattr(handler_module, "check_repo_limit", _allow)
-    monkeypatch.setattr(handler_module, "track_repo_active", lambda *a, **kw: True)
     yield
 
 

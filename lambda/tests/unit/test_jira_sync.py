@@ -22,10 +22,10 @@ mock_sqs_client = MagicMock()
 def _make_license_module_stub():
     """Stand-in for the outcomeops_license layer in unit tests.
 
-    The handler imports validate_license / check_repo_limit /
-    track_repo_active at module scope. The layer is mounted at /opt/python
-    in the Lambda runtime; in unit tests we inject a MagicMock module so
-    the imports succeed and individual tests can monkeypatch behaviour.
+    The handler imports validate_license / check_repo_limit at module
+    scope. The layer is mounted at /opt/python in the Lambda runtime;
+    in unit tests we inject a MagicMock module so the imports succeed
+    and individual tests can monkeypatch behaviour.
     """
     stub = MagicMock()
     stub.validate_license.return_value = {"sub": "test-customer"}
@@ -38,7 +38,6 @@ def _make_license_module_stub():
             self.limit = limit
 
     stub.check_repo_limit.side_effect = lambda **_: _Result()
-    stub.track_repo_active.return_value = True
     return stub
 
 
@@ -1513,7 +1512,12 @@ class TestLicenseValidation:
 
 
 class TestRepoLimitEnforcement:
-    """Test per-project check_repo_limit + track_repo_active (ADR-019)."""
+    """Test per-project check_repo_limit (ADR-019).
+
+    Liveness tracking (license layer v2.0.0 desired-state snapshot via
+    report_repos_snapshot) is owned by the jira-integration connect/
+    disconnect handlers and tested in those test modules.
+    """
 
     @patch.object(handler_module, 'queue_orphan_detection')
     @patch.object(handler_module, 'queue_issue_for_ingestion')
@@ -1555,40 +1559,3 @@ class TestRepoLimitEnforcement:
             "issues_queued", 1
         ) == 0
 
-    @patch.object(handler_module, 'queue_orphan_detection')
-    @patch.object(handler_module, 'queue_issue_for_ingestion')
-    @patch.object(handler_module, 'get_issue_comments')
-    @patch.object(handler_module, 'list_all_issues_in_project')
-    @patch.object(handler_module, 'refresh_access_token')
-    @patch.object(handler_module, 'update_sync_status')
-    @patch.object(handler_module, 'get_connection')
-    def test_track_repo_active_called_on_successful_sync(
-        self, mock_get_conn, mock_update, mock_refresh, mock_list_issues,
-        mock_get_comments, mock_queue, mock_orphan, monkeypatch,
-    ):
-        """After a successful sync, track_repo_active is called once with
-        the namespaced jira:{project_key} identifier per processed
-        project."""
-        mock_get_conn.return_value = {
-            "cloud_id": "cloud_abc",
-            "selected_projects": [{"key": "PROJ", "name": "My Project"}],
-            "include_attachments": True,
-            "include_comments": False,
-        }
-        mock_refresh.return_value = "access_token"
-        mock_list_issues.return_value = [
-            {"id": "10001", "key": "PROJ-1", "fields": {}},
-        ]
-        monkeypatch.setattr(
-            handler_module, "check_repo_limit", lambda **_: _LimitResult()
-        )
-        mock_track = MagicMock(return_value=True)
-        monkeypatch.setattr(handler_module, "track_repo_active", mock_track)
-
-        result = process_sync_request({
-            "workspace_id": "ws_test",
-            "connection_id": "conn_test",
-        })
-
-        assert result["status"] == "success"
-        mock_track.assert_called_once_with(repo="jira:PROJ")

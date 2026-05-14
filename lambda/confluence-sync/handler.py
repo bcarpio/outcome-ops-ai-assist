@@ -35,13 +35,11 @@ from shared.audit_writer import log_license_fail_open, log_source_sync  # noqa: 
 try:
     from outcomeops_license import (  # noqa: E402
         check_repo_limit,
-        track_repo_active,
         validate_license,
     )
 except ImportError:  # pragma: no cover - deploy bug path, exercised in tests
     validate_license = None  # type: ignore[assignment]
     check_repo_limit = None  # type: ignore[assignment]
-    track_repo_active = None  # type: ignore[assignment]
 
 from confluence_api import (
     ConfluenceAPIError,
@@ -474,14 +472,9 @@ def process_sync_request(message: Dict) -> Dict[str, Any]:
                 "attachments_queued": attachment_count,
             },
         )
-        # ADR-019: liveness tracking per-space (non-blocking, never raises).
-        # spaces_processed holds space_name values; map back to space_key
-        # using the original selected_spaces records to keep the namespaced
-        # `confluence:{space_key}` identifier consistent with check_repo_limit.
-        for space in selected_spaces:
-            space_name = space.get("name", space.get("key", ""))
-            if space_name in spaces_processed:
-                track_repo_active(repo=f"confluence:{space.get('key', '')}")
+        # ADR-019: liveness tracking now lives in the connect/disconnect
+        # handlers via report_repos_snapshot (license layer v2.0.0 desired-
+        # state model).
         if spaces_blocked:
             result["spaces_blocked"] = spaces_blocked
         return result

@@ -89,7 +89,6 @@ def reset_mocks(monkeypatch):
         return result
 
     monkeypatch.setattr(handler_module, "check_repo_limit", _allow)
-    monkeypatch.setattr(handler_module, "track_repo_active", lambda *a, **kw: True)
     yield
 
 
@@ -501,8 +500,6 @@ class TestTeamsSyncLicenseEnforcement:
         blocked.limit = 5
         mock_check = MagicMock(return_value=blocked)
         monkeypatch.setattr(handler_module, "check_repo_limit", mock_check)
-        mock_track = MagicMock(return_value=True)
-        monkeypatch.setattr(handler_module, "track_repo_active", mock_track)
 
         with patch.object(handler_module, "_load_oauth_config") as mock_oauth, \
              patch.object(handler_module, "refresh_access_token") as mock_refresh, \
@@ -519,32 +516,6 @@ class TestTeamsSyncLicenseEnforcement:
             })
 
             mock_check.assert_called_once_with(repo="teams:team1/chan1")
-            # Blocked: per-channel sync work and tracking are all skipped.
+            # Blocked: per-channel sync work is skipped.
             mock_full.assert_not_called()
             mock_files.assert_not_called()
-            mock_track.assert_not_called()
-
-    def test_track_repo_active_called_on_successful_sync(
-        self, monkeypatch, sample_connection
-    ):
-        """After a successful per-channel sync, track_repo_active is called."""
-        mock_track = MagicMock(return_value=True)
-        monkeypatch.setattr(handler_module, "track_repo_active", mock_track)
-
-        with patch.object(handler_module, "_load_oauth_config") as mock_oauth, \
-             patch.object(handler_module, "refresh_access_token") as mock_refresh, \
-             patch.object(handler_module, "get_connection") as mock_get_conn, \
-             patch.object(handler_module, "update_connection_status"), \
-             patch.object(handler_module, "_sync_channel_full") as mock_full, \
-             patch.object(handler_module, "_sync_channel_files") as mock_files:
-            mock_get_conn.return_value = sample_connection
-            mock_oauth.return_value = {"client_id": "c", "client_secret": "s"}
-            mock_refresh.return_value = "tok"
-            mock_full.return_value = (5, "delta")
-            mock_files.return_value = 2
-
-            handler_module.process_sync_request({
-                "workspace_id": "ws_test", "connection_id": "conn_test"
-            })
-
-            mock_track.assert_called_once_with(repo="teams:team1/chan1")
