@@ -19,8 +19,9 @@ here is what makes the rest of the plan composable.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Callable, Dict, Iterator, Optional, Set
+import fnmatch
+from dataclasses import dataclass, field
+from typing import Callable, Dict, Iterator, List, Optional, Set
 
 
 # ---------------------------------------------------------------------------
@@ -192,3 +193,83 @@ def supported_languages() -> Set[str]:
     """Return the set of currently-registered language names."""
 
     return set(_REGISTRY.keys())
+
+
+# ---------------------------------------------------------------------------
+# Per-repo extraction filter (plan-gkg chunk 11)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class SymbolGraphFilter:
+    """Per-repo decisions about whether a given file participates in
+    symbol-graph extraction.
+
+    The dataclass mirrors the Pydantic ``SymbolGraphConfig`` shape from
+    ``lambda/shared/repo_config.py`` but is intentionally a plain
+    dataclass — it represents an INTERNAL pre-validated decision object
+    threaded through the extraction call site, not user input. The
+    Pydantic boundary lives at config parse time; once we hand a
+    ``SymbolGraphFilter`` to the extractor we know the values are sound.
+
+    Precedence (applied in ``should_extract``, top-most wins):
+
+    1. ``enabled=False`` — short-circuits to False, no facts emitted.
+    2. ADR-009 base path excludes (``EXCLUDED_PATH_FRAGMENTS``) — these
+       always win regardless of repo-level overrides because the
+       code-unit discoverer skips them too.
+    3. Repo-level ``exclude`` globs — beat ``include``.
+    4. Repo-level ``include`` globs — empty list = include everything
+       that survives the excludes.
+    5. ``languages`` allow-list — empty / unset = all registered.
+    6. ``max_file_bytes`` cap — 0 means "no cap".
+    """
+
+    enabled: bool = True
+    include: List[str] = field(default_factory=list)
+    exclude: List[str] = field(default_factory=list)
+    max_file_bytes: int = 524288
+    languages: Optional[List[str]] = None
+
+    def should_extract(
+        self, file_path: str, language: str, size_bytes: int
+    ) -> bool:
+        """Return True when ``file_path`` participates in extraction."""
+
+        # (1) master switch
+        if not self.enabled:
+            return False
+
+        # (2) ADR-009 base excludes — never negotiable
+        if is_excluded_path(file_path):
+            return False
+
+        # (3) repo-level excludes
+        normalized = file_path.replace("\\", "/")
+        for pat in self.exclude:
+            if fnmatch.fnmatch(normalized, pat):
+                return False
+
+        # (4) repo-level includes (empty list = include all)
+        if self.include:
+            included = any(
+                fnmatch.fnmatch(normalized, pat) for pat in self.include
+            )
+            if not included:
+                return False
+
+        # (5) language allow-list
+        if self.languages is not None and language not in self.languages:
+            return False
+
+        # (6) size cap (0 disables the cap)
+        if self.max_file_bytes and size_bytes > self.max_file_bytes:
+            return False
+
+        return True
+
+
+# Module-level default — permissive everything. Used when no repo config
+# was loaded (the existing legacy call sites) and as the safe fallback
+# from ``handler._load_symbol_graph_filter`` when config parsing fails.
+DEFAULT_SYMBOL_GRAPH_FILTER = SymbolGraphFilter()

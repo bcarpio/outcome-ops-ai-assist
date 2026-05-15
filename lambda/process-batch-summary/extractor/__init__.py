@@ -22,8 +22,10 @@ import logging
 from typing import Iterator, Optional
 
 from .base import (
-    Fact,
+    DEFAULT_SYMBOL_GRAPH_FILTER,
     EXCLUDED_PATH_FRAGMENTS,
+    Fact,
+    SymbolGraphFilter,
     get_extractor,
     is_excluded_path,
     make_symbol_id,
@@ -41,8 +43,10 @@ from . import abap_extractor  # noqa: F401
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    "Fact",
+    "DEFAULT_SYMBOL_GRAPH_FILTER",
     "EXCLUDED_PATH_FRAGMENTS",
+    "Fact",
+    "SymbolGraphFilter",
     "extract_facts",
     "extract_facts_from_bytes",
     "is_excluded_path",
@@ -60,37 +64,49 @@ def _read_source(file_path: str) -> Optional[bytes]:
         return None
 
 
-def extract_facts(file_path: str, language: str) -> Iterator[Fact]:
+def extract_facts(
+    file_path: str,
+    language: str,
+    config: Optional[SymbolGraphFilter] = None,
+) -> Iterator[Fact]:
     """Yield Facts for a file on disk.
 
-    Skips the file outright when ``file_path`` matches an ADR-009
-    exclude fragment so the extractor never disagrees with the
-    code-unit discoverer about which files are in scope.
+    Skips the file outright when ``file_path`` is rejected by the
+    per-repo ``SymbolGraphFilter`` (chunk 11) — that filter folds in
+    the ADR-009 base excludes plus the repo's own include/exclude/
+    language/size knobs. When ``config`` is None the module-level
+    permissive default is used so legacy call sites are unchanged.
     """
 
-    if is_excluded_path(file_path):
+    filt = config if config is not None else DEFAULT_SYMBOL_GRAPH_FILTER
+    source = _read_source(file_path)
+    if source is None:
+        return
+    if not filt.should_extract(file_path, language, len(source)):
         return
     fn = get_extractor(language)
     if fn is None:
         logger.debug("no extractor registered for language=%s", language)
         return
-    source = _read_source(file_path)
-    if source is None:
-        return
     yield from fn(file_path, source)
 
 
 def extract_facts_from_bytes(
-    file_path: str, language: str, source: bytes
+    file_path: str,
+    language: str,
+    source: bytes,
+    config: Optional[SymbolGraphFilter] = None,
 ) -> Iterator[Fact]:
     """Yield Facts for an in-memory source buffer.
 
-    Useful for the SQS-driven pipeline (chunk 03 will feed already-
-    fetched file bytes through here instead of round-tripping through
-    the local filesystem).
+    Useful for the SQS-driven pipeline (chunk 03 feeds already-fetched
+    file bytes through here instead of round-tripping through the local
+    filesystem). When ``config`` is None the module-level permissive
+    default is used so legacy call sites are unchanged.
     """
 
-    if is_excluded_path(file_path):
+    filt = config if config is not None else DEFAULT_SYMBOL_GRAPH_FILTER
+    if not filt.should_extract(file_path, language, len(source)):
         return
     fn = get_extractor(language)
     if fn is None:

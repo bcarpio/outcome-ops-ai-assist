@@ -59,3 +59,20 @@ required_adrs:
     - "ADR-001-terraform-infrastructure-patterns"
     - "ADR-004-lambda-handler-standards"
     - "ADR-006-python-dependency-management"
+
+# Document ingestion configuration.
+# Controls which paths are ingested and how the symbol-graph extractor
+# (plan-gkg chunk 11) treats files in this repo.
+ingestion:
+  # Symbol-graph extraction knobs. Precedence (top-most wins):
+  #   1. enabled=false short-circuits everything
+  #   2. ADR-009 base excludes (node_modules, .venv, build/, ...) always win
+  #   3. exclude globs beat include globs
+  #   4. languages allow-list narrows the supported set
+  #   5. max_file_bytes caps per-file source size (Tree-sitter cost)
+  symbol_graph:
+    enabled: true
+    # include: ["lambda/**/*.py", "ui/src/**/*.ts", "ui/src/**/*.tsx"]
+    # exclude: ["**/generated/**", "**/*.pb.py"]
+    # languages: ["python", "typescript"]
+    max_file_bytes: 524288  # 512 KiB

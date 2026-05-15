@@ -41,7 +41,12 @@ from shared.pii import MODE_STRICT, read_workspace_mode, redact
 # package resolves whether handler.py is loaded via the Lambda runtime
 # (cwd=/var/task) or via importlib.util.spec_from_file_location in tests.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from extractor import Fact, extract_facts_from_bytes  # type: ignore  # noqa: E402
+from extractor import (  # type: ignore  # noqa: E402
+    DEFAULT_SYMBOL_GRAPH_FILTER,
+    Fact,
+    SymbolGraphFilter,
+    extract_facts_from_bytes,
+)
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -765,6 +770,7 @@ def _call_bedrock_and_audit(prompt: str, group_name: str) -> str:
 def generate_batch_summary(
     batch: Dict[str, Any],
     fact_sink: "list[Fact] | None" = None,
+    sg_filter: SymbolGraphFilter = DEFAULT_SYMBOL_GRAPH_FILTER,
 ) -> str:
     """
     Generate batch summary using Claude via Bedrock.
@@ -780,6 +786,10 @@ def generate_batch_summary(
             BEFORE chunking so symbol resolution sees complete files.
             When ``None`` the extractor pass is skipped — keeps the
             existing call sites (tests, legacy paths) unchanged.
+        sg_filter: Per-repo symbol-graph extraction filter (plan-gkg
+            chunk 11). Applied per-file inside ``_iter_batch_facts``.
+            Default is the permissive module-level filter, so legacy
+            call sites keep their current behaviour.
 
     Returns:
         Generated summary text
@@ -806,7 +816,9 @@ def generate_batch_summary(
                 language = _language_for_path(file_path)
                 if language is not None:
                     fact_sink.extend(
-                        _iter_batch_facts(file_path, language, content)
+                        _iter_batch_facts(
+                            file_path, language, content, sg_filter
+                        )
                     )
 
             # Chunk large files instead of skipping them
@@ -1139,16 +1151,74 @@ def _emit_facts(
 
 
 def _iter_batch_facts(
-    file_path: str, language: str, content: str
+    file_path: str,
+    language: str,
+    content: str,
+    config: SymbolGraphFilter = DEFAULT_SYMBOL_GRAPH_FILTER,
 ) -> Iterator[Fact]:
-    """Yield Facts for a single file that already has its content in hand."""
+    """Yield Facts for a single file that already has its content in hand.
+
+    ``config`` is the per-repo extraction filter (plan-gkg chunk 11);
+    when omitted the permissive default is used so legacy call sites
+    keep their current behavior.
+    """
 
     try:
         yield from extract_facts_from_bytes(
-            file_path, language, content.encode("utf-8")
+            file_path, language, content.encode("utf-8"), config=config
         )
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("extractor failed on %s: %s", file_path, exc)
+
+
+def _load_symbol_graph_filter(
+    repo_full_name: str, branch_name: str, github_token: str
+) -> SymbolGraphFilter:
+    """Load the per-repo symbol-graph extraction filter from
+    ``.outcomeops.yaml`` (plan-gkg chunk 11).
+
+    Reads ``ingestion.symbol_graph`` from the canonical Pydantic-validated
+    ``RepoConfig`` (``lambda/shared/repo_config.py``) and maps the values
+    onto the internal ``SymbolGraphFilter`` dataclass that the extractor
+    package consumes.
+
+    Failure modes are deliberately quiet: any error (missing file,
+    network blip, malformed YAML, Pydantic ValidationError) is logged
+    and the default permissive filter is returned. The symbol-graph
+    pipeline MUST NEVER block the batch-summary path — degraded
+    behaviour here means "extract everything we'd extract without the
+    config", not "crash the summary".
+    """
+
+    try:
+        # Import inside the function so the shared module path-prepend
+        # (already done at the top of handler.py) is in effect.
+        from shared.repo_config import (  # type: ignore  # noqa: E402
+            load_repo_config_from_github,
+        )
+
+        cfg = load_repo_config_from_github(
+            repo_full_name, branch_name, github_token
+        )
+        if cfg is None:
+            return DEFAULT_SYMBOL_GRAPH_FILTER
+        sg = cfg.ingestion.symbol_graph
+        return SymbolGraphFilter(
+            enabled=sg.enabled,
+            include=list(sg.include),
+            exclude=list(sg.exclude),
+            max_file_bytes=sg.max_file_bytes,
+            languages=list(sg.languages) if sg.languages is not None else None,
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(
+            "symbol-graph config load failed for %s@%s: %s — "
+            "using default permissive filter",
+            repo_full_name,
+            branch_name,
+            exc,
+        )
+        return DEFAULT_SYMBOL_GRAPH_FILTER
 
 
 def process_batch_record(record: Dict[str, Any]) -> None:
@@ -1226,9 +1296,20 @@ def process_batch_record(record: Dict[str, Any]) -> None:
     # the summary path's chunk/truncate, so symbol resolution is
     # complete). Any extractor failure is per-file try/except inside
     # ``_iter_batch_facts`` — never blocks the summary.
+    #
+    # Per-repo .outcomeops.yaml ``ingestion.symbol_graph`` knobs
+    # (plan-gkg chunk 11) only matter on the extraction path, so the
+    # filter is only loaded when we've already claimed the swap. On the
+    # legacy / sg-disabled path the filter is irrelevant.
     try:
         if sg_claimed:
-            batch_summary = generate_batch_summary(batch, fact_sink=sg_facts)
+            sg_branch = get_default_branch(sg_repo)
+            sg_filter = _load_symbol_graph_filter(
+                sg_repo, sg_branch, GITHUB_TOKEN or ""
+            )
+            batch_summary = generate_batch_summary(
+                batch, fact_sink=sg_facts, sg_filter=sg_filter
+            )
         else:
             batch_summary = generate_batch_summary(batch)
     except Exception:

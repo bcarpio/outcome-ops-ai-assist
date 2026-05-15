@@ -1,6 +1,19 @@
 boto3>=1.36.0
 urllib3>=2.6.3
 
+# Per-repo .outcomeops.yaml parsing (plan-gkg chunk 11).
+# Pydantic owns the validation layer for the shared RepoConfig schema
+# in lambda/shared/repo_config.py; PyYAML only handles surface-level
+# deserialization. The pair must stay together — adding PyYAML without
+# Pydantic would bypass the input-validation standard.
+# STANDARDS-GAP: OutcomeOps standards mandate an EXACT pin of
+# pydantic==2.10.3, but every existing Lambda in this repo currently
+# uses the range pin pydantic>=2.0.0. Matching the existing range to
+# avoid a cascading dependency change; tightening to the exact pin is
+# tracked as a separate hardening task.
+pydantic>=2.0.0
+PyYAML>=6.0.1
+
 # Symbol-graph extractor (plan-gkg chunk 01).
 # Tree-sitter core + per-language grammars for Python / TypeScript /
 # Java / Go. C# stays regex-only per ADR-017. ABAP uses the

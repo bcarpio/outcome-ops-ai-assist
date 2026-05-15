@@ -141,6 +141,7 @@ TestingConfig = repo_config_module.TestingConfig
 InfrastructureConfig = repo_config_module.InfrastructureConfig
 RequiredAdrsConfig = repo_config_module.RequiredAdrsConfig
 IngestionConfig = repo_config_module.IngestionConfig
+SymbolGraphConfig = repo_config_module.SymbolGraphConfig
 parse_repo_config = repo_config_module.parse_repo_config
 load_repo_config_from_github = repo_config_module.load_repo_config_from_github
 get_default_config = repo_config_module.get_default_config
@@ -1167,6 +1168,73 @@ class TestConfigModels:
         cfg = IngestionConfig()
         assert cfg.standards_paths == ["docs/adr"]
         assert cfg.docs_paths == ["docs"]
+
+    def test_ingestion_config_has_symbol_graph_default(self):
+        """IngestionConfig nests a default SymbolGraphConfig (plan-gkg chunk 11)."""
+        cfg = IngestionConfig()
+        assert isinstance(cfg.symbol_graph, SymbolGraphConfig)
+        assert cfg.symbol_graph.enabled is True
+
+
+class TestSymbolGraphConfig:
+    """Pydantic schema for ``ingestion.symbol_graph`` (plan-gkg chunk 11)."""
+
+    def test_defaults(self):
+        cfg = SymbolGraphConfig()
+        assert cfg.enabled is True
+        assert cfg.include == []
+        assert cfg.exclude == []
+        assert cfg.max_file_bytes == 524288
+        assert cfg.languages is None
+
+    def test_round_trip_yaml(self):
+        yaml_content = """
+version: "1.0"
+ingestion:
+  symbol_graph:
+    enabled: false
+    include:
+      - "lambda/**/*.py"
+    exclude:
+      - "**/generated/**"
+    max_file_bytes: 1024
+    languages:
+      - python
+      - typescript
+"""
+        cfg = parse_repo_config(yaml_content)
+        sg = cfg.ingestion.symbol_graph
+        assert sg.enabled is False
+        assert sg.include == ["lambda/**/*.py"]
+        assert sg.exclude == ["**/generated/**"]
+        assert sg.max_file_bytes == 1024
+        assert sg.languages == ["python", "typescript"]
+
+    def test_negative_max_file_bytes_rejected(self):
+        yaml_content = """
+ingestion:
+  symbol_graph:
+    max_file_bytes: -1
+"""
+        with pytest.raises(ValueError):
+            parse_repo_config(yaml_content)
+
+    def test_unknown_language_rejected(self):
+        yaml_content = """
+ingestion:
+  symbol_graph:
+    languages:
+      - python
+      - cobol
+"""
+        with pytest.raises(ValueError):
+            parse_repo_config(yaml_content)
+
+    def test_known_languages_accepted(self):
+        # Mirrors the set in lambda/shared/repo_config.py.
+        for lang in ("python", "typescript", "java", "go", "csharp", "abap"):
+            cfg = SymbolGraphConfig(languages=[lang])
+            assert cfg.languages == [lang]
 
 
 # ############################################################################

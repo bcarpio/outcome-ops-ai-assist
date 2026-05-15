@@ -413,6 +413,50 @@ number and a CloudWatch logs link.
   the one-touch toggle works.
 - [ ] Owner sign-off to begin customer phase 3 rollout.
 
+## Per-repo config (plan-gkg chunk 11)
+
+Each repository can opt in or out of symbol-graph extraction through
+its `.outcomeops.yaml`. The schema lives in
+`lambda/shared/repo_config.py` (Pydantic v2) and is validated on every
+load; malformed values fall back to a permissive default and never
+block the batch-summary path.
+
+```yaml
+ingestion:
+  symbol_graph:
+    enabled: true                       # master switch
+    include:                            # repo-relative globs (empty = all)
+      - "lambda/**/*.py"
+      - "ui/src/**/*.ts"
+    exclude:                            # beats include
+      - "**/generated/**"
+      - "**/*.pb.py"
+    languages: ["python", "typescript"] # null/omitted = all registered
+    max_file_bytes: 524288              # 512 KiB; 0 disables the cap
+```
+
+Precedence (top-most wins):
+
+1. `enabled: false` short-circuits to no facts emitted for any file.
+2. ADR-009 base path excludes (`node_modules/`, `.venv/`, `build/`,
+   `generated/`, …) always win — the extractor MUST agree with the
+   code-unit discoverer on which files are in scope.
+3. `exclude` globs beat `include` globs (`fnmatch` semantics, forward
+   slashes).
+4. `include` empty / unset means "include everything that survives the
+   excludes".
+5. `languages` is an allow-list; values must be a subset of `python`,
+   `typescript`, `java`, `go`, `csharp`, `abap`. Unknown languages
+   raise `ValidationError` at parse time.
+6. `max_file_bytes` caps per-file source size (Tree-sitter cost grows
+   with input). `0` disables the cap; the default of `524288` matches
+   the spike-validated budget.
+
+Operators verify the filter from the extraction Lambda logs: each
+rejected file logs the reason at debug level; an enabled=false repo
+emits a single info-level "symbol-graph disabled by config" line per
+batch.
+
 See also:
 
 - `plan-gkg/08-rollout-and-validation.md` — full spec.

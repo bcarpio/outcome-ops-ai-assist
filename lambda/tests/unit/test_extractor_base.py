@@ -15,9 +15,11 @@ if EXTRACTOR_PARENT not in sys.path:
     sys.path.insert(0, EXTRACTOR_PARENT)
 
 from extractor.base import (  # noqa: E402
+    DEFAULT_SYMBOL_GRAPH_FILTER,
     EXCLUDED_PATH_FRAGMENTS,
     FACT_KINDS,
     Fact,
+    SymbolGraphFilter,
     get_extractor,
     is_excluded_path,
     make_symbol_id,
@@ -145,3 +147,90 @@ class TestRegistry:
             from extractor.base import _REGISTRY  # type: ignore
 
             _REGISTRY.pop("__test_lang__", None)
+
+
+class TestSymbolGraphFilter:
+    """Per-repo extraction filter precedence (plan-gkg chunk 11)."""
+
+    def test_default_filter_accepts_typical_file(self):
+        f = DEFAULT_SYMBOL_GRAPH_FILTER
+        assert (
+            f.should_extract("lambda/chat/handler.py", "python", 1024) is True
+        )
+
+    def test_disabled_short_circuits(self):
+        f = SymbolGraphFilter(enabled=False)
+        assert f.should_extract("lambda/chat/handler.py", "python", 100) is False
+
+    def test_adr009_excludes_always_win(self):
+        # Even with permissive include + disabled-everything-else,
+        # ADR-009 base excludes are non-negotiable.
+        f = SymbolGraphFilter(include=["**/*.py"])
+        assert f.should_extract("node_modules/foo/bar.py", "python", 10) is False
+        assert f.should_extract("venv/lib/x.py", "python", 10) is False
+        assert f.should_extract("build/output.py", "python", 10) is False
+
+    def test_exclude_beats_include(self):
+        f = SymbolGraphFilter(
+            include=["lambda/**/*.py"],
+            exclude=["lambda/**/test_*.py"],
+        )
+        assert (
+            f.should_extract("lambda/chat/handler.py", "python", 100) is True
+        )
+        assert (
+            f.should_extract("lambda/chat/test_foo.py", "python", 100) is False
+        )
+
+    def test_include_empty_means_include_all(self):
+        f = SymbolGraphFilter(include=[])
+        assert (
+            f.should_extract("lambda/chat/handler.py", "python", 100) is True
+        )
+        assert f.should_extract("ui/src/lib/api.ts", "typescript", 100) is True
+
+    def test_include_non_match_rejected(self):
+        f = SymbolGraphFilter(include=["lambda/**/*.py"])
+        assert f.should_extract("ui/src/lib/api.ts", "typescript", 100) is False
+        assert (
+            f.should_extract("lambda/chat/handler.py", "python", 100) is True
+        )
+
+    def test_language_allowlist(self):
+        f = SymbolGraphFilter(languages=["python"])
+        assert (
+            f.should_extract("lambda/chat/handler.py", "python", 100) is True
+        )
+        assert f.should_extract("ui/src/lib/api.ts", "typescript", 100) is False
+
+    def test_language_none_means_all(self):
+        f = SymbolGraphFilter(languages=None)
+        assert (
+            f.should_extract("lambda/chat/handler.py", "python", 100) is True
+        )
+        assert f.should_extract("ui/src/lib/api.ts", "typescript", 100) is True
+
+    def test_max_file_bytes_caps_size(self):
+        f = SymbolGraphFilter(max_file_bytes=1024)
+        assert (
+            f.should_extract("lambda/chat/handler.py", "python", 1024) is True
+        )
+        assert (
+            f.should_extract("lambda/chat/handler.py", "python", 1025) is False
+        )
+
+    def test_max_file_bytes_zero_disables_cap(self):
+        f = SymbolGraphFilter(max_file_bytes=0)
+        assert (
+            f.should_extract("lambda/chat/handler.py", "python", 10**9) is True
+        )
+
+    def test_default_filter_defaults_match_pydantic_model(self):
+        # Guards against drift between the Pydantic SymbolGraphConfig
+        # in lambda/shared/repo_config.py and the dataclass mirror here.
+        f = DEFAULT_SYMBOL_GRAPH_FILTER
+        assert f.enabled is True
+        assert f.include == []
+        assert f.exclude == []
+        assert f.max_file_bytes == 524288
+        assert f.languages is None
