@@ -27,6 +27,7 @@ locals {
     module.symbol_graph_table.dynamodb_table_arn,
     "${module.symbol_graph_table.dynamodb_table_arn}/index/target-kind-index",
     "${module.symbol_graph_table.dynamodb_table_arn}/index/target-prefix-index",
+    "${module.symbol_graph_table.dynamodb_table_arn}/index/target-name-index",
   ]
 }
 
