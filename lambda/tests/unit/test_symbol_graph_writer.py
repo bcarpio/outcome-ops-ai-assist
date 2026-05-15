@@ -535,6 +535,103 @@ def test_regen_deletes_previous_sha_partition(tables):
     assert new_partition["Count"] == 75
 
 
+def test_regen_incremental_preserves_unchanged_files_in_old_partition(tables):
+    """The incremental-safe path: when a second write under NEW_SHA only
+    touches a SUBSET of the files originally written under OLD_SHA,
+    the unchanged files' facts MUST survive in the OLD_SHA partition.
+
+    Surfaced 2026-05-15 in production: process-repo-summary's
+    incremental filter at handler.py:917-947 queues only code-units
+    containing files that changed between last_commit_sha and
+    current_commit_sha. The old behavior (wholesale partition-delete)
+    wiped unchanged files' facts that no incremental batch would
+    rewrite under the new SHA — silent data loss for any module not
+    touched by the diff.
+    """
+    from shared.symbol_graph_writer import write_facts  # type: ignore
+    from dataclasses import dataclass
+
+    @dataclass(frozen=True)
+    class FactWithPath:
+        kind: str
+        source_symbol_id: str
+        target_symbol_id: str
+        file_path: str
+        line: int
+        language: str
+
+    def _fact(path: str, i: int = 0):
+        return FactWithPath(
+            kind="calls",
+            source_symbol_id=f"python:caller_{path}::lambda_handler",
+            target_symbol_id=f"python:target_{path}::report_repos_snapshot",
+            file_path=path,
+            line=10 + i,
+            language="python",
+        )
+
+    # First regen at OLD_SHA: 5 files, one fact each.
+    initial = [
+        _fact("lambda/database-integration/handler.py"),
+        _fact("lambda/jira-integration/handler.py"),
+        _fact("lambda/github-integration/handler.py"),
+        _fact("lambda/chat/handler.py"),
+        _fact("lambda/process-batch-summary/handler.py"),
+    ]
+    write_facts(
+        workspace_id=WORKSPACE_ID,
+        repo=REPO,
+        commit_sha=OLD_SHA,
+        facts=initial,
+        symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
+        code_maps_table_name=CODE_MAPS_TABLE,
+    )
+
+    # Second regen at NEW_SHA: incremental — only chat + process-batch-summary
+    # changed; the 3 integration handlers are untouched.
+    incremental = [
+        _fact("lambda/chat/handler.py", i=1),
+        _fact("lambda/process-batch-summary/handler.py", i=1),
+    ]
+    result = write_facts(
+        workspace_id=WORKSPACE_ID,
+        repo=REPO,
+        commit_sha=NEW_SHA,
+        facts=incremental,
+        symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
+        code_maps_table_name=CODE_MAPS_TABLE,
+    )
+
+    # Only the 2 changed files' OLD_SHA facts were deleted.
+    assert result.facts_deleted == 2
+    assert result.facts_written == 2
+
+    table = tables.Table(SYMBOL_GRAPH_TABLE)
+
+    # OLD_SHA partition: 3 unchanged integration handlers survive.
+    old_partition = table.query(
+        KeyConditionExpression=Key("PK").eq(f"{WORKSPACE_ID}#{REPO}#{OLD_SHA}")
+    )
+    assert old_partition["Count"] == 3
+    surviving_files = {item["file_path"] for item in old_partition["Items"]}
+    assert surviving_files == {
+        "lambda/database-integration/handler.py",
+        "lambda/jira-integration/handler.py",
+        "lambda/github-integration/handler.py",
+    }
+
+    # NEW_SHA partition: only the 2 changed files.
+    new_partition = table.query(
+        KeyConditionExpression=Key("PK").eq(f"{WORKSPACE_ID}#{REPO}#{NEW_SHA}")
+    )
+    assert new_partition["Count"] == 2
+    new_files = {item["file_path"] for item in new_partition["Items"]}
+    assert new_files == {
+        "lambda/chat/handler.py",
+        "lambda/process-batch-summary/handler.py",
+    }
+
+
 # ===========================================================================
 # Failure recovery: write fails => pointer never advances, old SHA queryable.
 # ===========================================================================

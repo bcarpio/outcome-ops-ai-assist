@@ -316,8 +316,23 @@ def _delete_partition(
     workspace_id: str,
     repo: str,
     commit_sha: str,
+    file_paths: Optional[set] = None,
 ) -> int:
-    """Query the previous-SHA partition and batch-delete every item.
+    """Query the previous-SHA partition and batch-delete items.
+
+    When ``file_paths`` is None: deletes every item in the partition
+    (legacy full-partition wipe — only safe when the upstream sync ran
+    a FULL extract, not an incremental one).
+
+    When ``file_paths`` is a set: deletes only items whose
+    ``file_path`` attribute is in the set. This is the
+    incremental-safe path — surfaced 2026-05-15 after a scheduled
+    sync with a non-null ``last_commit_sha`` triggered
+    process-repo-summary's incremental filter
+    (``handler.py:917-947``), which queues only changed code-units.
+    A wholesale partition-delete in that scenario would wipe
+    unchanged files' facts that are never re-written by the
+    incremental batches. File-scoped delete preserves them.
 
     Returns the number of items deleted. Pagination via
     ``LastEvaluatedKey`` is honored so partitions larger than the 1 MB
@@ -336,6 +351,8 @@ def _delete_partition(
 
         response = table.query(**query_kwargs)
         items = response.get("Items", [])
+        if file_paths is not None:
+            items = [i for i in items if i.get("file_path") in file_paths]
         if items:
             with table.batch_writer() as batch:
                 for item in items:
@@ -482,19 +499,30 @@ def write_facts(
             code_maps_name, workspace_id, repo
         )
 
-    # Step 2: delete the previous-SHA partition (only if it differs and exists).
-    deleted = 0
-    if previous_sha and previous_sha != commit_sha:
-        deleted = _delete_partition(
-            table_name, workspace_id, repo, previous_sha
-        )
-
-    # Step 3: materialize Facts and batch-write. Materialization is
-    # deliberate — the extractor yields a generator and we need to know
-    # the count for the WriteResult.
+    # Step 2: materialize Facts FIRST so we know which files this batch
+    # owns. Step 3's previous-SHA delete is file-scoped so unchanged
+    # files' facts under previous_sha survive an incremental regen.
     items: List[Dict[str, object]] = []
     for fact in facts:
         items.append(_build_item(workspace_id, repo, commit_sha, fact))
+
+    file_paths_in_batch = {item["file_path"] for item in items if "file_path" in item}
+
+    # Step 3: delete the previous-SHA partition entries for files this
+    # batch owns (only if it differs and exists). Surfaced 2026-05-15:
+    # process-repo-summary's incremental filter (handler.py:917-947)
+    # queues only changed code-units, so a wholesale partition-delete
+    # would wipe facts for unchanged files that nobody is going to
+    # rewrite under the new SHA. File-scoped delete keeps them.
+    deleted = 0
+    if previous_sha and previous_sha != commit_sha:
+        deleted = _delete_partition(
+            table_name,
+            workspace_id,
+            repo,
+            previous_sha,
+            file_paths=file_paths_in_batch or None,
+        )
 
     written = _write_facts_batched(table_name, items)
 
