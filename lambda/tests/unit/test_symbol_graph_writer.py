@@ -1,9 +1,9 @@
-"""Unit tests for ``shared.symbol_graph_writer`` (plan-gkg chunk 02).
+"""Unit tests for ``shared.symbol_graph_writer`` (plan-gkg chunk 02, v2 schema).
 
-Covers the delete-then-write regen path, the pointer-swap atomicity
-guarantee, idempotency on re-writes, and the round-trip from
-DynamoDB-style query patterns (chunk 04 will lean on the same access
-patterns).
+Covers the v2 write path (SK-keyed upsert into a single (workspace, repo)
+partition), the legacy pointer-swap atomicity guarantee, idempotency on
+re-writes, and the round-trip from DynamoDB-style query patterns
+(chunk 04 leans on the same access patterns).
 
 Per ADR-005 + plan-gkg/09 the moto patches are wrapped in an
 ``autouse=True`` fixture so no test can accidentally fall through to a
@@ -13,9 +13,7 @@ DynamoDB resource between tests.
 
 from __future__ import annotations
 
-import os
 import sys
-import importlib
 from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import patch
@@ -235,7 +233,10 @@ def _implements_fact(i: int) -> FactShim:
 
 
 def test_write_facts_round_trip_table_query(tables):
-    """Partition scoped on (workspace, repo, commit) is queryable end-to-end."""
+    """v2 schema: facts land in the ``(workspace, repo)`` partition and
+    are queryable end-to-end. ``commit_sha`` rides along as a row
+    attribute for provenance.
+    """
     from shared.symbol_graph_writer import write_facts  # type: ignore
 
     facts = [_calls_fact(i) for i in range(5)]
@@ -256,9 +257,11 @@ def test_write_facts_round_trip_table_query(tables):
 
     table = tables.Table(SYMBOL_GRAPH_TABLE)
     response = table.query(
-        KeyConditionExpression=Key("PK").eq(f"{WORKSPACE_ID}#{REPO}#{NEW_SHA}")
+        KeyConditionExpression=Key("PK").eq(f"{WORKSPACE_ID}#{REPO}")
     )
     assert response["Count"] == 5
+    # Every row carries the commit_sha attribute (v2 provenance).
+    assert all(item.get("commit_sha") == NEW_SHA for item in response["Items"])
 
 
 def test_callers_query_via_gsi1(tables):
@@ -382,7 +385,7 @@ def test_write_facts_large_round_trip(tables):
     table = tables.Table(SYMBOL_GRAPH_TABLE)
 
     response = table.query(
-        KeyConditionExpression=Key("PK").eq(f"{WORKSPACE_ID}#{REPO}#{NEW_SHA}")
+        KeyConditionExpression=Key("PK").eq(f"{WORKSPACE_ID}#{REPO}")
     )
     assert response["Count"] == 60
 
@@ -410,9 +413,10 @@ def test_write_facts_large_round_trip(tables):
 
 
 def test_idempotent_rewrite_same_sha_no_duplicates(tables):
-    """SK uniqueness (kind#source#target#file#line) makes the write a
-    pure upsert; rewriting the same Facts under the same SHA leaves the
-    item count unchanged.
+    """v2 schema: SK uniqueness (kind#source#target#file#line) makes
+    every write a pure upsert into the ``(workspace, repo)`` partition.
+    Rewriting the same Facts under the same SHA leaves the item count
+    unchanged -- no delete pass needed.
     """
     from shared.symbol_graph_writer import write_facts  # type: ignore
 
@@ -434,13 +438,12 @@ def test_idempotent_rewrite_same_sha_no_duplicates(tables):
         symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
         code_maps_table_name=CODE_MAPS_TABLE,
     )
-    # Pointer already at NEW_SHA, so the delete-pass is intentionally
-    # skipped on the second write — the items are upserted in place.
+    # v2: facts_deleted is always 0 (no delete pass in the writer).
     assert result.facts_deleted == 0
 
     table = tables.Table(SYMBOL_GRAPH_TABLE)
     response = table.query(
-        KeyConditionExpression=Key("PK").eq(f"{WORKSPACE_ID}#{REPO}#{NEW_SHA}")
+        KeyConditionExpression=Key("PK").eq(f"{WORKSPACE_ID}#{REPO}")
     )
     assert response["Count"] == 100
 
@@ -482,22 +485,28 @@ def test_write_facts_dedupes_identical_facts_within_one_batch(tables):
 
     table = tables.Table(SYMBOL_GRAPH_TABLE)
     response = table.query(
-        KeyConditionExpression=Key("PK").eq(f"{WORKSPACE_ID}#{REPO}#{NEW_SHA}")
+        KeyConditionExpression=Key("PK").eq(f"{WORKSPACE_ID}#{REPO}")
     )
     assert response["Count"] == 3
 
 
 # ===========================================================================
-# Regen: writing under a new SHA deletes the old partition.
+# Regen: under v2 schema, a second write under NEW_SHA simply upserts
+# overlapping rows in place within the one (workspace, repo) partition.
 # ===========================================================================
 
 
-def test_regen_deletes_previous_sha_partition(tables):
-    """A second write under NEW_SHA after an OLD_SHA write removes the
-    old partition's items and advances the pointer.
+def test_regen_under_new_sha_upserts_in_place(tables):
+    """v2 schema: a second write under NEW_SHA after an OLD_SHA write
+    upserts overlapping rows by SK within the single
+    ``(workspace, repo)`` partition. Overlapping rows reflect NEW_SHA in
+    their ``commit_sha`` attribute; new-to-NEW_SHA rows are added.
+
+    No delete pass runs (``facts_deleted == 0`` always under v2).
     """
     from shared.symbol_graph_writer import write_facts  # type: ignore
 
+    # First extraction at OLD_SHA: 50 facts (caller0..caller49).
     facts_v1 = [_calls_fact(i) for i in range(50)]
     write_facts(
         workspace_id=WORKSPACE_ID,
@@ -508,6 +517,9 @@ def test_regen_deletes_previous_sha_partition(tables):
         code_maps_table_name=CODE_MAPS_TABLE,
     )
 
+    # Second extraction at NEW_SHA: 75 facts (caller0..caller74). The
+    # first 50 SKs overlap with the OLD_SHA write and upsert; the new
+    # 25 are inserted.
     facts_v2 = [_calls_fact(i) for i in range(75)]
     result = write_facts(
         workspace_id=WORKSPACE_ID,
@@ -517,36 +529,33 @@ def test_regen_deletes_previous_sha_partition(tables):
         symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
         code_maps_table_name=CODE_MAPS_TABLE,
     )
-    assert result.previous_commit_sha == OLD_SHA
-    assert result.facts_deleted == 50
+    # v2: facts_deleted is always 0. facts_written counts dedupe-unique
+    # PutItem operations the writer issued.
+    assert result.facts_deleted == 0
     assert result.facts_written == 75
     assert result.pointer_swapped is True
 
     table = tables.Table(SYMBOL_GRAPH_TABLE)
 
-    old_partition = table.query(
-        KeyConditionExpression=Key("PK").eq(f"{WORKSPACE_ID}#{REPO}#{OLD_SHA}")
+    # End state: 75 facts in the one (workspace, repo) partition. All
+    # rows -- both upserted and newly-inserted -- carry NEW_SHA on
+    # their commit_sha attribute because the second write rewrote
+    # them with the new provenance.
+    partition = table.query(
+        KeyConditionExpression=Key("PK").eq(f"{WORKSPACE_ID}#{REPO}")
     )
-    assert old_partition["Count"] == 0
-
-    new_partition = table.query(
-        KeyConditionExpression=Key("PK").eq(f"{WORKSPACE_ID}#{REPO}#{NEW_SHA}")
-    )
-    assert new_partition["Count"] == 75
+    assert partition["Count"] == 75
+    assert all(item.get("commit_sha") == NEW_SHA for item in partition["Items"])
 
 
-def test_regen_incremental_preserves_unchanged_files_in_old_partition(tables):
-    """The incremental-safe path: when a second write under NEW_SHA only
-    touches a SUBSET of the files originally written under OLD_SHA,
-    the unchanged files' facts MUST survive in the OLD_SHA partition.
+def test_facts_from_two_extractions_coexist_in_one_partition(tables):
+    """v2 schema: facts extracted under different SHAs for different
+    files coexist in the single ``(workspace, repo)`` partition with
+    their respective ``commit_sha`` attributes preserved per row.
 
-    Surfaced 2026-05-15 in production: process-repo-summary's
-    incremental filter at handler.py:917-947 queues only code-units
-    containing files that changed between last_commit_sha and
-    current_commit_sha. The old behavior (wholesale partition-delete)
-    wiped unchanged files' facts that no incremental batch would
-    rewrite under the new SHA — silent data loss for any module not
-    touched by the diff.
+    The v1 model's "old partition" / "new partition" framing is gone --
+    there is only one partition per (workspace, repo) and the row-level
+    ``commit_sha`` attribute carries provenance.
     """
     from shared.symbol_graph_writer import write_facts  # type: ignore
     from dataclasses import dataclass
@@ -570,65 +579,53 @@ def test_regen_incremental_preserves_unchanged_files_in_old_partition(tables):
             language="python",
         )
 
-    # First regen at OLD_SHA: 5 files, one fact each.
-    initial = [
+    # First extraction at SHA_A: 3 integration handlers.
+    extraction_a = [
         _fact("lambda/database-integration/handler.py"),
         _fact("lambda/jira-integration/handler.py"),
         _fact("lambda/github-integration/handler.py"),
+    ]
+    write_facts(
+        workspace_id=WORKSPACE_ID,
+        repo=REPO,
+        commit_sha=OLD_SHA,
+        facts=extraction_a,
+        symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
+        code_maps_table_name=CODE_MAPS_TABLE,
+    )
+
+    # Second extraction at SHA_B: 2 DIFFERENT files (incremental regen
+    # touching only what changed).
+    extraction_b = [
         _fact("lambda/chat/handler.py"),
         _fact("lambda/process-batch-summary/handler.py"),
     ]
     write_facts(
         workspace_id=WORKSPACE_ID,
         repo=REPO,
-        commit_sha=OLD_SHA,
-        facts=initial,
-        symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
-        code_maps_table_name=CODE_MAPS_TABLE,
-    )
-
-    # Second regen at NEW_SHA: incremental — only chat + process-batch-summary
-    # changed; the 3 integration handlers are untouched.
-    incremental = [
-        _fact("lambda/chat/handler.py", i=1),
-        _fact("lambda/process-batch-summary/handler.py", i=1),
-    ]
-    result = write_facts(
-        workspace_id=WORKSPACE_ID,
-        repo=REPO,
         commit_sha=NEW_SHA,
-        facts=incremental,
+        facts=extraction_b,
         symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
         code_maps_table_name=CODE_MAPS_TABLE,
     )
-
-    # Only the 2 changed files' OLD_SHA facts were deleted.
-    assert result.facts_deleted == 2
-    assert result.facts_written == 2
 
     table = tables.Table(SYMBOL_GRAPH_TABLE)
-
-    # OLD_SHA partition: 3 unchanged integration handlers survive.
-    old_partition = table.query(
-        KeyConditionExpression=Key("PK").eq(f"{WORKSPACE_ID}#{REPO}#{OLD_SHA}")
+    partition = table.query(
+        KeyConditionExpression=Key("PK").eq(f"{WORKSPACE_ID}#{REPO}")
     )
-    assert old_partition["Count"] == 3
-    surviving_files = {item["file_path"] for item in old_partition["Items"]}
-    assert surviving_files == {
-        "lambda/database-integration/handler.py",
-        "lambda/jira-integration/handler.py",
-        "lambda/github-integration/handler.py",
-    }
+    # All 5 facts (3 + 2) live in the one (workspace, repo) partition.
+    assert partition["Count"] == 5
 
-    # NEW_SHA partition: only the 2 changed files.
-    new_partition = table.query(
-        KeyConditionExpression=Key("PK").eq(f"{WORKSPACE_ID}#{REPO}#{NEW_SHA}")
-    )
-    assert new_partition["Count"] == 2
-    new_files = {item["file_path"] for item in new_partition["Items"]}
-    assert new_files == {
-        "lambda/chat/handler.py",
-        "lambda/process-batch-summary/handler.py",
+    # Provenance: each row's commit_sha matches the extraction that
+    # wrote it. The SHA_A rows were never touched by the SHA_B write
+    # because their SKs differ.
+    by_path = {item["file_path"]: item["commit_sha"] for item in partition["Items"]}
+    assert by_path == {
+        "lambda/database-integration/handler.py": OLD_SHA,
+        "lambda/jira-integration/handler.py": OLD_SHA,
+        "lambda/github-integration/handler.py": OLD_SHA,
+        "lambda/chat/handler.py": NEW_SHA,
+        "lambda/process-batch-summary/handler.py": NEW_SHA,
     }
 
 
@@ -638,11 +635,24 @@ def test_regen_incremental_preserves_unchanged_files_in_old_partition(tables):
 
 
 def test_failure_recovery_pointer_never_swaps_on_write_failure(tables):
-    """If the write pass raises mid-batch the pointer must stay on the
-    previous SHA — that's the contract that makes a mid-regen crash
-    leave readers in a known-good state.
+    """If the write pass raises mid-batch the legacy pointer must stay on
+    the previous SHA. Under v2 the (workspace, repo) partition itself is
+    upsert-only, but the legacy ``current_commit_sha`` pointer-swap
+    still runs as step 4 and must not advance when step 3 raised.
     """
     from shared import symbol_graph_writer  # type: ignore
+
+    def _read_legacy_pointer() -> str | None:
+        table = tables.Table(CODE_MAPS_TABLE)
+        item = table.get_item(
+            Key={
+                "PK": f"{symbol_graph_writer.POINTER_PK_PREFIX}{WORKSPACE_ID}#{REPO}",
+                "SK": symbol_graph_writer.POINTER_SK,
+            }
+        ).get("Item")
+        if not item:
+            return None
+        return item.get("current_commit_sha")
 
     facts_v1 = [_calls_fact(i) for i in range(20)]
     symbol_graph_writer.write_facts(
@@ -654,13 +664,10 @@ def test_failure_recovery_pointer_never_swaps_on_write_failure(tables):
         code_maps_table_name=CODE_MAPS_TABLE,
     )
 
-    pointer_before = symbol_graph_writer.read_current_commit_sha(
-        CODE_MAPS_TABLE, WORKSPACE_ID, REPO
-    )
+    pointer_before = _read_legacy_pointer()
     assert pointer_before == OLD_SHA
 
-    # Simulate batch-write failure at step 3 by patching the helper to
-    # raise after the delete pass.
+    # Simulate the write pass blowing up by patching the batch helper.
     facts_v2 = [_calls_fact(i) for i in range(30)]
 
     def _boom(*_a, **_kw):
@@ -679,12 +686,9 @@ def test_failure_recovery_pointer_never_swaps_on_write_failure(tables):
                 code_maps_table_name=CODE_MAPS_TABLE,
             )
 
-    pointer_after = symbol_graph_writer.read_current_commit_sha(
-        CODE_MAPS_TABLE, WORKSPACE_ID, REPO
-    )
+    pointer_after = _read_legacy_pointer()
     assert pointer_after == OLD_SHA, (
-        "Pointer must NOT advance when the write pass failed — readers "
-        "still need to resolve to the previous SHA."
+        "Legacy pointer must NOT advance when the write pass failed."
     )
 
 
@@ -760,18 +764,9 @@ def test_write_facts_rejects_missing_table_name(monkeypatch):
         )
 
 
-def test_read_current_commit_sha_missing_table_returns_none():
-    """Read path is non-fatal when the code-maps table name is empty —
-    fresh-install workspaces have no pointer yet.
-    """
-    from shared.symbol_graph_writer import read_current_commit_sha  # type: ignore
-
-    assert read_current_commit_sha("", WORKSPACE_ID, REPO) is None
-
-
 def test_first_write_no_previous_pointer(tables):
-    """First-ever write for a (workspace, repo) returns previous_sha=None
-    and skips the delete pass cleanly.
+    """First-ever write for a (workspace, repo) returns previous_sha=None,
+    facts_deleted=0 (always under v2), and pointer_swapped=True.
     """
     from shared.symbol_graph_writer import write_facts  # type: ignore
 

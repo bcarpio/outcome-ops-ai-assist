@@ -1,22 +1,22 @@
-"""Symbol-graph DynamoDB writer (plan-gkg chunk 02).
+"""Symbol-graph DynamoDB writer (plan-gkg chunk 02, v2 schema).
 
 Persists the structural ``Fact`` stream emitted by the chunk-01 extractor.
-Schema and access patterns are documented in plan-gkg/02-storage-and-schema.md.
+Schema and access patterns are documented in plan-gkg/02-storage-and-schema.md
+with the v2 refinement captured in ``plan/overview.md``.
 
-Write flow (the "delete-then-write" pattern with atomic pointer-swap):
-
-  1. Read the current SHA pointer from the code-maps state-tracking row
-     (pointer-swap Option A — reuses existing code-maps infra, no new
-     pointer item type to maintain).
-  2. Query the previous-SHA partition; batch-delete every item in
-     25-item batches.
-  3. Batch-write the new Facts under the new SHA in 25-item batches.
-  4. Atomically update the code-maps row to point at the new SHA.
-
-If step 3 fails midway the pointer is NEVER updated, so queries continue
-to see the previous SHA's facts (mixed-state is avoided). Idempotency
-holds because the sort key encodes ``kind#source#target#file#line`` — a
-second write of identical Facts produces an identical row.
+v2 schema (this module):
+  - Base PK is ``${workspace_id}#${repo}`` -- no commit_sha component.
+    ``commit_sha`` rides along as an attribute for provenance and
+    staleness display only; correctness is anchored on the SK, which
+    already uniquely identifies a fact within a (workspace, repo) via
+    ``kind#source#target#file_path#line``.
+  - Reextracting facts under a new commit SHA upserts in place via
+    matching SKs. No delete-old-partition step is needed -- the v1
+    file-scoped-delete workaround (commit 9b09390) was rendered
+    dead-code by this refactor.
+  - The pointer module (``shared.symbol_graph_pointer``) is unchanged;
+    ``graph_sha`` / ``graph_sha_committed_at`` still drive staleness
+    reporting but no longer gate correctness.
 
 Companion to ``shared/audit_writer.py``. Kept narrow and side-effect-clean
 so the call site can be unit-tested with moto under a single autouse
@@ -32,7 +32,6 @@ from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Sequence
 
 import boto3
-from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 
 logger = logging.getLogger(__name__)
@@ -43,7 +42,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 # The pointer lives in the existing code-maps state-tracking table. PK/SK
-# values are chosen to coexist with existing rows without collision —
+# values are chosen to coexist with existing rows without collision --
 # the SK constant is unique to this feature.
 POINTER_PK_PREFIX = "SYMBOL_GRAPH#"
 POINTER_SK = "POINTER"
@@ -61,10 +60,25 @@ _BATCH_SIZE = 25
 class WriteResult:
     """Summary of one regen pass.
 
-    ``facts_written`` is the number of new Fact items put. ``facts_deleted``
-    is the number of previous-SHA items removed. ``pointer_swapped`` is
-    True iff the code-maps pointer was advanced to ``new_commit_sha``;
-    False means step 3 failed and the previous SHA remains current.
+    ``facts_written`` is the number of unique Fact items upserted into the
+    (workspace, repo) partition.
+
+    ``facts_deleted`` is retained on the dataclass for back-compat with
+    callers that destructure WriteResult by position or read the field
+    directly. Under the v2 schema it is always 0 -- the writer no longer
+    runs a delete pass. Safe to remove in a follow-up cleanup chunk once
+    no caller reads it.
+
+    ``previous_commit_sha`` is also retained for back-compat. **Deprecated**
+    under v2: there is no per-SHA partition concept anymore, so this field
+    is informational only (echoes whatever the caller passed in, or None
+    when not supplied). Safe to remove in a follow-up cleanup chunk.
+
+    ``pointer_swapped`` is True iff the code-maps pointer was advanced to
+    ``new_commit_sha`` (legacy ``current_commit_sha`` attribute -- the
+    chunk-03 pointer state machine in ``shared.symbol_graph_pointer``
+    owns the modern ``graph_sha`` / ``graph_pending_sha`` lifecycle and
+    callers wanting that path pass ``skip_pointer_swap=True``).
     """
 
     facts_written: int
@@ -86,7 +100,7 @@ def _resource():
     """Return a cached DynamoDB resource.
 
     Tests can override via ``_set_resource_for_tests`` to bypass the
-    lazy ``boto3.resource`` call entirely — needed because the wider
+    lazy ``boto3.resource`` call entirely -- needed because the wider
     test suite has a cross-file sys.modules contamination
     (``test_check_handlers_init`` replaces ``sys.modules['boto3']`` with
     a MagicMock that other tests rely on). Passing a moto-backed
@@ -102,7 +116,7 @@ def _resource():
 
 
 def _set_resource_for_tests(resource) -> None:
-    """Test hook — inject a DynamoDB resource (typically moto-backed)
+    """Test hook -- inject a DynamoDB resource (typically moto-backed)
     so ``_resource()`` short-circuits the boto3.resource lookup that
     can return a MagicMock under cross-suite contamination.
     """
@@ -112,7 +126,7 @@ def _set_resource_for_tests(resource) -> None:
 
 
 def _reset_clients_for_tests() -> None:
-    """Test hook — clears both the cached resource and the test
+    """Test hook -- clears both the cached resource and the test
     override so each test gets a fresh moto-backed setup.
     """
 
@@ -122,12 +136,8 @@ def _reset_clients_for_tests() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Key construction
+# Key construction (v2 schema -- no commit_sha in base PK)
 # ---------------------------------------------------------------------------
-
-
-def _partition_pk(workspace_id: str, repo: str, commit_sha: str) -> str:
-    return f"{workspace_id}#{repo}#{commit_sha}"
 
 
 def _fact_sk(
@@ -154,19 +164,19 @@ def _split_target_prefix(target_symbol_id: str) -> Optional[Dict[str, str]]:
 
     Subpath imports use the canonical form
     ``<lang>:<package>/<subpath>::<symbol>``. The prefix is everything up
-    to the last ``/`` (or last ``::``) — that's what an enterprise
+    to the last ``/`` (or last ``::``) -- that's what an enterprise
     "find every consumer of ``@hyatt-hpe/hpe-utils/*``" query keys on.
     Symbols without a delimiter (single-module function calls) skip the
     GSI2 row entirely.
     """
 
-    # Subpath case — slash inside the module/package portion.
+    # Subpath case -- slash inside the module/package portion.
     if "/" in target_symbol_id:
         head, sep, tail = target_symbol_id.rpartition("/")
         if head and tail:
             return {"prefix": head, "suffix": tail}
 
-    # Namespace case — ``<lang>:<module>::<namespace>::<symbol>``.
+    # Namespace case -- ``<lang>:<module>::<namespace>::<symbol>``.
     if "::" in target_symbol_id:
         head, sep, tail = target_symbol_id.rpartition("::")
         if head and tail:
@@ -192,9 +202,13 @@ def _build_item(
     that exposes the documented attribute names. This keeps the writer
     library-agnostic and unit-testable without dragging the extractor
     package into the test classpath.
+
+    PK shape is v2: ``${workspace_id}#${repo}``. ``commit_sha`` is an
+    attribute only -- the SK alone uniquely identifies a fact within
+    the partition.
     """
 
-    pk = _partition_pk(workspace_id, repo, commit_sha)
+    pk = f"{workspace_id}#{repo}"
     sk = _fact_sk(
         fact.kind,
         fact.source_symbol_id,
@@ -242,34 +256,6 @@ def _pointer_key(workspace_id: str, repo: str) -> Dict[str, str]:
     }
 
 
-def read_current_commit_sha(
-    code_maps_table_name: str,
-    workspace_id: str,
-    repo: str,
-) -> Optional[str]:
-    """Return the previously-pointed-at commit SHA, or None on first regen."""
-
-    if not code_maps_table_name:
-        return None
-    try:
-        table = _resource().Table(code_maps_table_name)
-        response = table.get_item(Key=_pointer_key(workspace_id, repo))
-        item = response.get("Item")
-        if not item:
-            return None
-        sha = item.get("current_commit_sha")
-        return sha if isinstance(sha, str) and sha else None
-    except ClientError as exc:
-        logger.warning(
-            "[symbol_graph_writer] Failed to read pointer for "
-            "%s/%s: %s",
-            workspace_id,
-            repo,
-            exc,
-        )
-        return None
-
-
 def _swap_pointer(
     code_maps_table_name: str,
     workspace_id: str,
@@ -311,61 +297,6 @@ def _swap_pointer(
 # ---------------------------------------------------------------------------
 
 
-def _delete_partition(
-    symbol_graph_table_name: str,
-    workspace_id: str,
-    repo: str,
-    commit_sha: str,
-    file_paths: Optional[set] = None,
-) -> int:
-    """Query the previous-SHA partition and batch-delete items.
-
-    When ``file_paths`` is None: deletes every item in the partition
-    (legacy full-partition wipe — only safe when the upstream sync ran
-    a FULL extract, not an incremental one).
-
-    When ``file_paths`` is a set: deletes only items whose
-    ``file_path`` attribute is in the set. This is the
-    incremental-safe path — surfaced 2026-05-15 after a scheduled
-    sync with a non-null ``last_commit_sha`` triggered
-    process-repo-summary's incremental filter
-    (``handler.py:917-947``), which queues only changed code-units.
-    A wholesale partition-delete in that scenario would wipe
-    unchanged files' facts that are never re-written by the
-    incremental batches. File-scoped delete preserves them.
-
-    Returns the number of items deleted. Pagination via
-    ``LastEvaluatedKey`` is honored so partitions larger than the 1 MB
-    Query page size still drain to empty.
-    """
-
-    table = _resource().Table(symbol_graph_table_name)
-    pk = _partition_pk(workspace_id, repo, commit_sha)
-
-    deleted = 0
-    last_key: Optional[Dict[str, object]] = None
-    while True:
-        query_kwargs = {"KeyConditionExpression": Key("PK").eq(pk)}
-        if last_key:
-            query_kwargs["ExclusiveStartKey"] = last_key
-
-        response = table.query(**query_kwargs)
-        items = response.get("Items", [])
-        if file_paths is not None:
-            items = [i for i in items if i.get("file_path") in file_paths]
-        if items:
-            with table.batch_writer() as batch:
-                for item in items:
-                    batch.delete_item(Key={"PK": item["PK"], "SK": item["SK"]})
-                    deleted += 1
-
-        last_key = response.get("LastEvaluatedKey")
-        if not last_key:
-            break
-
-    return deleted
-
-
 def _write_facts_batched(
     symbol_graph_table_name: str,
     items: Sequence[Dict[str, object]],
@@ -384,7 +315,7 @@ def _write_facts_batched(
     ``(kind, source, target, file_path, line)`` tuples for a single
     source file (e.g. the same call walked twice by the Tree-sitter
     visitor under nested-scope traversal), which produces identical SKs.
-    Dedupe to the last occurrence (semantically equivalent — all
+    Dedupe to the last occurrence (semantically equivalent -- all
     duplicates carry the same content). Live evidence:
     2026-05-15 re-extract of outcome-ops-ai-assist-private's
     workspace-management batch.
@@ -427,49 +358,57 @@ def write_facts(
 ) -> WriteResult:
     """Persist a Fact stream for one (workspace, repo, commit_sha) tuple.
 
-    Steps mirror plan-gkg/02 "Write path":
-      1. Read previous SHA from the code-maps pointer (Option A) —
-         skipped when ``previous_commit_sha`` is supplied explicitly.
-      2. Batch-delete the previous-SHA partition.
-      3. Batch-write the new Facts.
-      4. Atomically swap the pointer to ``commit_sha`` — skipped when
-         ``skip_pointer_swap=True`` (chunk-03 atomic-swap path owns the
-         pointer state machine in ``shared.symbol_graph_pointer``).
+    v2 write path:
+      1. Materialize Facts to items with the new PK shape
+         (``${workspace_id}#${repo}``).
+      2. Dedupe by (PK, SK) (handled inside ``_write_facts_batched`` --
+         the chunk-01 extractor can emit duplicate Facts per source file
+         and a single batch with a duplicate (PK, SK) is rejected by
+         BatchWriteItem).
+      3. Batch-write upsert. Same-SK rows upsert in place -- no separate
+         delete step. Reextracting facts under a new SHA simply
+         overwrites the rows with the new ``commit_sha`` attribute and
+         updated ``created_at``.
+      4. Optionally swap the legacy ``current_commit_sha`` pointer (when
+         ``skip_pointer_swap=False``). The chunk-03 atomic-swap path in
+         ``shared.symbol_graph_pointer`` owns the modern ``graph_sha`` /
+         ``graph_pending_sha`` state machine and passes
+         ``skip_pointer_swap=True``.
 
-    If step 3 raises, the pointer is NOT swapped, so reads still resolve
-    to the previous SHA. If the previous SHA equals the new SHA the
-    delete pass is skipped (idempotent re-write); the write pass still
-    runs so identical Facts overwrite themselves in place.
+    If step 3 raises, the pointer is NOT swapped (step 4 only runs after
+    a clean write).
 
     Args:
         workspace_id: Workspace scope.
         repo: Repository key (``owner/repo`` or short name; the writer
             does not parse, it stores verbatim).
-        commit_sha: SHA the Facts were extracted from.
+        commit_sha: SHA the Facts were extracted from. Stored as a
+            row attribute only -- correctness is anchored on the SK.
         facts: Iterable of Fact-shaped objects (see
             ``lambda/process-batch-summary/extractor/base.py``).
         symbol_graph_table_name: DynamoDB table name. Defaults to the
             ``SYMBOL_GRAPH_TABLE`` environment variable.
         code_maps_table_name: Code-maps state-tracking table name (for
-            the pointer-swap). Defaults to the ``CODE_MAPS_TABLE``
+            the legacy pointer-swap). Defaults to the ``CODE_MAPS_TABLE``
             environment variable.
-        previous_commit_sha: Caller-supplied previous SHA. When provided
-            the writer skips the pointer-read in step 1 and uses this
-            value for the delete pass — required when the caller is
-            chunk-03's atomic-swap path (the new pointer schema lives
-            on ``graph_sha`` / ``graph_pending_sha``, not on the legacy
-            ``current_commit_sha`` field the writer reads by default).
+        previous_commit_sha: **Deprecated** under v2. Retained on the
+            signature for back-compat with callers (process-batch-summary
+            passes it from the chunk-03 pointer module). The value is
+            echoed back on the ``WriteResult`` for observability but is
+            no longer used to drive a delete pass -- the v2 schema makes
+            that step unnecessary.
         skip_pointer_swap: When True, step 4 is skipped. Chunk-03's
             ``symbol_graph_pointer.commit_swap`` owns pointer state
             and must not be clobbered by the writer's legacy put_item
             of ``current_commit_sha``.
 
     Returns:
-        ``WriteResult`` describing the regen outcome.
+        ``WriteResult`` describing the regen outcome. ``facts_deleted``
+        is always 0 under v2.
 
     Raises:
         ValueError: Required arguments are empty.
-        Any underlying ``ClientError`` from the write pass — the caller
+        Any underlying ``ClientError`` from the write pass -- the caller
         decides whether to surface or retry.
     """
 
@@ -491,44 +430,19 @@ def write_facts(
         "CODE_MAPS_TABLE", ""
     )
 
-    # Step 1: previous SHA. Caller-supplied wins over the legacy read.
-    if previous_commit_sha is not None:
-        previous_sha: Optional[str] = previous_commit_sha or None
-    else:
-        previous_sha = read_current_commit_sha(
-            code_maps_name, workspace_id, repo
-        )
+    # Step 1: materialize Facts to v2-shaped items.
+    items: List[Dict[str, object]] = [
+        _build_item(workspace_id, repo, commit_sha, fact) for fact in facts
+    ]
 
-    # Step 2: materialize Facts FIRST so we know which files this batch
-    # owns. Step 3's previous-SHA delete is file-scoped so unchanged
-    # files' facts under previous_sha survive an incremental regen.
-    items: List[Dict[str, object]] = []
-    for fact in facts:
-        items.append(_build_item(workspace_id, repo, commit_sha, fact))
-
-    file_paths_in_batch = {item["file_path"] for item in items if "file_path" in item}
-
-    # Step 3: delete the previous-SHA partition entries for files this
-    # batch owns (only if it differs and exists). Surfaced 2026-05-15:
-    # process-repo-summary's incremental filter (handler.py:917-947)
-    # queues only changed code-units, so a wholesale partition-delete
-    # would wipe facts for unchanged files that nobody is going to
-    # rewrite under the new SHA. File-scoped delete keeps them.
-    deleted = 0
-    if previous_sha and previous_sha != commit_sha:
-        deleted = _delete_partition(
-            table_name,
-            workspace_id,
-            repo,
-            previous_sha,
-            file_paths=file_paths_in_batch or None,
-        )
-
+    # Step 2-3: dedupe + batch-write upsert. No delete pass: identical
+    # SKs from a previous extraction are overwritten in place with the
+    # new commit_sha attribute.
     written = _write_facts_batched(table_name, items)
 
-    # Step 4: pointer-swap. Only after step 3 succeeded. Chunk-03's
-    # atomic-swap path passes ``skip_pointer_swap=True`` so commit_swap
-    # in symbol_graph_pointer owns the state machine end-to-end.
+    # Step 4: legacy pointer-swap. Skipped when the caller is on the
+    # chunk-03 atomic-swap path (process-batch-summary) which owns the
+    # modern pointer state machine in shared.symbol_graph_pointer.
     if skip_pointer_swap or not code_maps_name:
         swapped = False
     else:
@@ -538,8 +452,8 @@ def write_facts(
 
     return WriteResult(
         facts_written=written,
-        facts_deleted=deleted,
-        previous_commit_sha=previous_sha,
+        facts_deleted=0,
+        previous_commit_sha=previous_commit_sha or None,
         new_commit_sha=commit_sha,
         pointer_swapped=swapped,
     )
