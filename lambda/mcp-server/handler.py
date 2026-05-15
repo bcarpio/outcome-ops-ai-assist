@@ -927,50 +927,77 @@ def handle_list_workspaces(params, email):
 
 
 def handle_list_workspace_documents(params, email):
-    """Handle list_workspace_documents tool call."""
+    """Handle list_workspace_documents tool call.
+
+    The vector store is the source of truth — it holds raw docs (markdown,
+    yaml, json) plus generated code-maps and per-area summaries. We query
+    S3 Vectors with a metadata filter on workspace_id (same pattern as
+    chat's search_knowledge_base) and dedupe chunks down to distinct
+    documents by (repo, file_path).
+
+    Server-side filtering happens inside S3 Vectors via the ``filter``
+    parameter on query_vectors; the query embedding only orders results,
+    so a sentinel string ("workspace document listing") is sufficient.
+    """
     workspace_id = params.get("workspace_id", "")
     if not workspace_id:
         return {"error": "workspace_id is required"}
 
-    # Verify access
+    # Verify access — same path chat uses, includes direct membership,
+    # shared workspaces, and org-admin enumeration.
     user_ws_ids = get_user_workspace_ids(email)
     if workspace_id not in user_ws_ids:
         return {"error": "You do not have access to this workspace"}
 
-    dynamodb = _get_dynamodb()
-    table = dynamodb.Table(DYNAMODB_TABLE)
+    s3vectors = _get_s3vectors_client()
+    embedding = generate_embedding("workspace document listing")
+    if not embedding:
+        return {"error": "Failed to generate embedding for listing"}
 
     try:
-        response = table.query(
-            KeyConditionExpression="PK = :pk AND begins_with(SK, :sk)",
-            ExpressionAttributeValues={
-                ":pk": f"WS#{workspace_id}",
-                ":sk": "DOC#",
-            },
+        response = s3vectors.query_vectors(
+            vectorBucketName=S3_VECTORS_BUCKET,
+            indexName=S3_VECTORS_INDEX,
+            queryVector={"float32": embedding},
+            topK=500,
+            returnMetadata=True,
+            filter={"workspace_id": {"$eq": workspace_id}},
         )
-
-        documents = []
-        for item in response.get("Items", []):
-            documents.append({
-                "name": item.get("document_name", item.get("SK", "").replace("DOC#", "")),
-                "type": item.get("document_type", "unknown"),
-                "updated_at": item.get("updated_at", ""),
-            })
-
-        if not documents:
-            text = "No documents found in this workspace."
-        else:
-            text = f"Documents in workspace ({len(documents)}):\n\n"
-            for doc in documents:
-                text += f"- {doc['name']} ({doc['type']})"
-                if doc["updated_at"]:
-                    text += f" - updated {doc['updated_at']}"
-                text += "\n"
-
-        return {"text": text}
     except ClientError as e:
-        logger.error(f"Error listing documents: {e}")
+        logger.error(f"Error listing documents via vectors: {e}")
         return {"error": "Failed to list workspace documents"}
+
+    # Dedupe chunks down to distinct documents. The same file is
+    # typically split into many chunks; surface each file once with
+    # its content type.
+    seen = {}
+    for vector in response.get("vectors", []):
+        metadata = vector.get("metadata", {}) or {}
+        repo = metadata.get("repo", "")
+        file_path = metadata.get("file_path", "")
+        doc_type = metadata.get("type", "unknown")
+        if not file_path and not repo:
+            continue
+        key = (repo, file_path)
+        if key not in seen:
+            seen[key] = {
+                "repo": repo,
+                "file_path": file_path,
+                "type": doc_type,
+                "name": file_path.split("/")[-1] if file_path else repo,
+            }
+
+    documents = sorted(seen.values(), key=lambda d: (d["repo"], d["file_path"]))
+
+    if not documents:
+        text = "No documents found in this workspace."
+    else:
+        text = f"Documents in workspace ({len(documents)}):\n\n"
+        for doc in documents:
+            label = doc["file_path"] or doc["name"]
+            text += f"- {label} (type: {doc['type']}, repo: {doc['repo']})\n"
+
+    return {"text": text}
 
 
 def handle_get_coding_standards(params, email):

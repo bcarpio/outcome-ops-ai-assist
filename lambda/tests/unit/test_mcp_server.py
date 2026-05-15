@@ -1197,16 +1197,21 @@ class TestHandleListWorkspacesError:
             result = mcp_module.handle_list_workspaces({}, "user@example.com")
             assert "error" in result
 
-    @patch.object(mcp_module, "_get_dynamodb")
+    @patch.object(mcp_module, "_get_s3vectors_client")
+    @patch.object(mcp_module, "generate_embedding", return_value=[0.1] * 1024)
     @patch.object(mcp_module, "get_user_workspace_ids", return_value=["ws-1"])
-    def test_list_workspace_documents_client_error(self, mock_ws_ids, mock_ddb):
-        """handle_list_workspace_documents returns error on ClientError."""
+    def test_list_workspace_documents_client_error(
+        self, mock_ws_ids, mock_embed, mock_s3v
+    ):
+        """handle_list_workspace_documents returns error when the vector
+        store query raises ClientError.
+        """
         from botocore.exceptions import ClientError
 
-        table = MagicMock()
-        mock_ddb.return_value.Table.return_value = table
-        table.query.side_effect = ClientError(
-            {"Error": {"Code": "500", "Message": "fail"}}, "Query"
+        s3v = MagicMock()
+        mock_s3v.return_value = s3v
+        s3v.query_vectors.side_effect = ClientError(
+            {"Error": {"Code": "500", "Message": "fail"}}, "QueryVectors"
         )
 
         result = mcp_module.handle_list_workspace_documents(

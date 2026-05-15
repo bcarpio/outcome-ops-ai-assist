@@ -212,35 +212,89 @@ class TestMcpToolHandlers:
         assert "text" in result
         assert "no workspaces" in result["text"].lower()
 
-    def test_list_workspace_documents(self, mock_dynamodb):
-        """Test list_workspace_documents tool."""
+    def test_list_workspace_documents(self, mock_dynamodb, mock_s3vectors, mock_bedrock):
+        """list_workspace_documents queries the vector store with a
+        workspace filter, dedupes chunks by (repo, file_path), and
+        returns one entry per distinct document.
+        """
         # Mock workspace access check
         mock_dynamodb.get_item.return_value = {"Item": {"org_role": "member"}}
-        mock_dynamodb.query.side_effect = [
-            # First call: get_user_workspace_ids
-            {"Items": [{"workspace_id": "ws-1"}]},
-            # Second call: list documents
-            {"Items": [
-                {
-                    "SK": "DOC#adr-001.md",
-                    "document_name": "ADR-001: Create ADRs",
-                    "document_type": "adr",
-                    "updated_at": "2026-01-15T00:00:00Z",
-                },
-            ]},
-        ]
-        # Share-resolution path in get_user_workspace_ids paginates table.scan
-        # via LastEvaluatedKey; the test must return a real dict (no key) so
-        # the loop exits. A bare MagicMock would return a truthy MagicMock and
-        # spin forever.
+        mock_dynamodb.query.return_value = {"Items": [{"workspace_id": "ws-1"}]}
         mock_dynamodb.scan.return_value = {"Items": []}
+
+        # Two chunks of the same doc + one separate doc + one code-map.
+        # Listing should dedupe ADR-001 down to a single row.
+        mock_s3vectors.query_vectors.return_value = {
+            "vectors": [
+                {
+                    "key": "doc-1-chunk-0",
+                    "metadata": {
+                        "workspace_id": "ws-1",
+                        "repo": "my-repo",
+                        "type": "adr",
+                        "file_path": "docs/adr/ADR-001.md",
+                    },
+                },
+                {
+                    "key": "doc-1-chunk-1",
+                    "metadata": {
+                        "workspace_id": "ws-1",
+                        "repo": "my-repo",
+                        "type": "adr",
+                        "file_path": "docs/adr/ADR-001.md",
+                    },
+                },
+                {
+                    "key": "doc-2",
+                    "metadata": {
+                        "workspace_id": "ws-1",
+                        "repo": "my-repo",
+                        "type": "markdown",
+                        "file_path": "README.md",
+                    },
+                },
+                {
+                    "key": "code-map-1",
+                    "metadata": {
+                        "workspace_id": "ws-1",
+                        "repo": "my-repo",
+                        "type": "code-map",
+                        "file_path": "architectural-summary.txt",
+                    },
+                },
+            ]
+        }
 
         result = mcp_module.handle_list_workspace_documents(
             {"workspace_id": "ws-1"}, "user@example.com"
         )
 
         assert "text" in result
-        assert "ADR-001" in result["text"]
+        # Three distinct documents (ADR-001 deduped from two chunks).
+        assert "Documents in workspace (3)" in result["text"]
+        assert "docs/adr/ADR-001.md" in result["text"]
+        assert "README.md" in result["text"]
+        assert "architectural-summary.txt" in result["text"]
+        assert "type: code-map" in result["text"]
+
+        # Verify the vector store call used the workspace_id filter.
+        call_kwargs = mock_s3vectors.query_vectors.call_args[1]
+        assert call_kwargs["filter"] == {"workspace_id": {"$eq": "ws-1"}}
+        assert call_kwargs["returnMetadata"] is True
+
+    def test_list_workspace_documents_empty(self, mock_dynamodb, mock_s3vectors, mock_bedrock):
+        """Empty vector result surfaces 'No documents found'."""
+        mock_dynamodb.get_item.return_value = {"Item": {"org_role": "member"}}
+        mock_dynamodb.query.return_value = {"Items": [{"workspace_id": "ws-1"}]}
+        mock_dynamodb.scan.return_value = {"Items": []}
+        mock_s3vectors.query_vectors.return_value = {"vectors": []}
+
+        result = mcp_module.handle_list_workspace_documents(
+            {"workspace_id": "ws-1"}, "user@example.com"
+        )
+
+        assert "text" in result
+        assert "No documents found" in result["text"]
 
     def test_list_workspace_documents_no_access(self, mock_dynamodb):
         """Test list_workspace_documents when user lacks access."""
