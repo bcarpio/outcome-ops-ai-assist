@@ -128,36 +128,35 @@ def reset_mocks():
 
 
 @pytest.fixture(autouse=True)
-def stub_router_bedrock():
-    """Inject a stub Bedrock client into the chat router so
-    ``classify_intent`` short-circuits without hitting real Bedrock
-    (or moto, which does not implement the converse action).
+def stub_symbol_graph_augment():
+    """Short-circuit the symbol-graph augmentation step entirely so
+    handle_chat_stream tests never reach the router's bedrock.converse()
+    call (moto does not implement converse). test_chat exercises the
+    RAG path and does not assert on structural augmentation — the
+    dedicated test_chat_symbol_graph_augment / test_chat_router /
+    test_chat_context_builder suites cover that path.
 
-    The default response yields ``intent="pattern"`` which causes the
-    symbol-graph augment to exit before issuing any graph queries —
-    test_chat focuses on the RAG path and does not assert on
-    structural augmentation. Tests that need a different routing
-    decision can override ``stub.converse.return_value``.
+    Replace the module attribute rather than the router's bedrock client
+    so the substitution is robust across pytest collection orderings and
+    works whether or not the router module was reloaded by a sibling
+    test file mid-suite.
     """
-    import router  # type: ignore
-
-    stub = MagicMock()
-    stub.converse.return_value = {
-        "output": {
-            "message": {
-                "role": "assistant",
-                "content": [{"text": '{"intent": "pattern", "symbol": null}'}],
-            }
-        },
-        "usage": {"inputTokens": 0, "outputTokens": 0},
-        "stopReason": "end_turn",
+    empty_result = {
+        "decision": None,
+        "graph_block": "",
+        "retrievals_fired": [],
+        "graph_sha": None,
+        "graph_staleness_seconds": None,
+        "graph_result_count": None,
     }
-    router._reset_clients_for_tests()
-    router._set_bedrock_client_for_tests(stub)
+    original = handler_module._augment_context_with_symbol_graph
+    handler_module._augment_context_with_symbol_graph = MagicMock(
+        return_value=empty_result
+    )
     try:
-        yield stub
+        yield handler_module._augment_context_with_symbol_graph
     finally:
-        router._reset_clients_for_tests()
+        handler_module._augment_context_with_symbol_graph = original
 
 
 @pytest.fixture(autouse=True)
