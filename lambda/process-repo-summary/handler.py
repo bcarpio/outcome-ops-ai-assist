@@ -1012,11 +1012,24 @@ def handler(event, context):
             else:
                 s3_key = f"code-maps/{repo}/architectural-summary.txt"
 
+            # Pass through the same S3 object metadata github-sync writes
+            # for ordinary repo files (lambda/github-sync/handler.py:543).
+            # Without this, the process-documents re-ingest path falls back
+            # to folder_path.split("/")[0] and stores the vector with the
+            # bare repo name ("app.retrieveit.ai") instead of the org-
+            # prefixed identifier ("bcarpio/app.retrieveit.ai") that every
+            # other ingest path uses.
             s3_client.put_object(
                 Bucket=KB_BUCKET,
                 Key=s3_key,
                 Body=arch_summary.encode("utf-8"),
                 ExpectedBucketOwner=_get_account_id(),
+                Metadata={
+                    "source": "github",
+                    "workspace_id": workspace_id or "",
+                    "github_repo_name": repo_project,
+                    "github_repo_type": repo_type,
+                },
             )
 
             logger.info(f"Stored architectural summary for {repo} at {s3_key}")

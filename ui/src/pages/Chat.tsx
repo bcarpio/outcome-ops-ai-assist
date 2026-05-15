@@ -33,6 +33,8 @@ import {
   type Conversation,
   type Message,
   type Source,
+  type GraphSource,
+  type Routing,
   type StreamEvent,
   type SearchableWorkspace,
   type ChatMcpServer,
@@ -61,6 +63,8 @@ export default function Chat() {
   const [currentTitle, setCurrentTitle] = useState<string>('New Chat')
   const [sources, setSources] = useState<Source[]>([])
   const [showSources, setShowSources] = useState(false)
+  const [graphSources, setGraphSources] = useState<GraphSource[]>([])
+  const [routing, setRouting] = useState<Routing | null>(null)
   const [advanced, setAdvanced] = useState(false)
   const [topK, setTopK] = useState(5)
   const [showCost, setShowCost] = useState(false)
@@ -214,6 +218,8 @@ export default function Chat() {
       activeConversationRef.current = conversationId
       // Clear sources when switching conversations
       setSources([])
+      setGraphSources([])
+      setRouting(null)
       // Set title from sidebar list
       const conv = conversations.find(c => c.conversation_id === conversationId)
       if (conv) {
@@ -321,6 +327,8 @@ export default function Chat() {
               setCurrentConversationId(event.conversation_id)
               setCurrentTitle(event.title)
               setSources(event.sources)
+              setGraphSources(event.graph_sources ?? [])
+              setRouting(event.routing ?? null)
               setStatus('typing')
 
               // Update URL if new conversation
@@ -873,8 +881,46 @@ export default function Chat() {
           )}
         </div>
 
+        {/* Routing chip — surfaces which retrievals fired so the user
+            can tell RAG-only answers from graph-augmented ones. */}
+        {routing && (
+          <div className="border-t bg-gray-50 px-4 py-2 text-xs text-gray-600 flex flex-wrap items-center gap-2">
+            <span className="font-medium text-gray-700">Routed:</span>
+            <span className="px-2 py-0.5 bg-white border border-gray-200 rounded">
+              {routing.intent}
+            </span>
+            {routing.retrievals_fired.includes('graph') ? (
+              <span className="px-2 py-0.5 bg-emerald-50 border border-emerald-200 text-emerald-700 rounded">
+                Graph: {routing.graph_relation ?? 'fired'}
+                {typeof routing.graph_result_count === 'number'
+                  ? ` (${routing.graph_result_count} result${routing.graph_result_count === 1 ? '' : 's'})`
+                  : ''}
+              </span>
+            ) : (
+              <span className="px-2 py-0.5 bg-white border border-gray-200 text-gray-500 rounded">
+                Graph: skipped
+              </span>
+            )}
+            {routing.retrievals_fired.includes('rag') && (
+              <span className="px-2 py-0.5 bg-white border border-gray-200 rounded">
+                RAG: {sources.length} chunk{sources.length === 1 ? '' : 's'}
+              </span>
+            )}
+            {routing.symbol_candidate && (
+              <span className="text-gray-500">
+                · symbol: <code className="font-mono">{routing.symbol_candidate}</code>
+              </span>
+            )}
+            {typeof routing.graph_staleness_seconds === 'number' && routing.graph_staleness_seconds > 0 && (
+              <span className="text-gray-400">
+                · graph age: {Math.round(routing.graph_staleness_seconds / 60)}m
+              </span>
+            )}
+          </div>
+        )}
+
         {/* Sources */}
-        {sources.length > 0 && (
+        {(sources.length > 0 || graphSources.length > 0) && (
           <div className="border-t bg-white">
             <button
               onClick={() => setShowSources(!showSources)}
@@ -882,17 +928,32 @@ export default function Chat() {
             >
               <span className="flex items-center gap-2">
                 <FileText size={14} />
-                {sources.length} source{sources.length !== 1 ? 's' : ''} found
+                {sources.length + graphSources.length} source{sources.length + graphSources.length !== 1 ? 's' : ''} found
+                {graphSources.length > 0 && (
+                  <span className="ml-1 text-xs text-emerald-700">
+                    ({graphSources.length} from graph)
+                  </span>
+                )}
               </span>
               {showSources ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
             </button>
             {showSources && (
               <div className="px-4 pb-3 space-y-1 max-h-48 overflow-y-auto">
                 {sources.map((source, i) => (
-                  <div key={i} className="text-xs text-gray-500 flex items-center gap-2 min-w-0">
+                  <div key={`rag-${i}`} className="text-xs text-gray-500 flex items-center gap-2 min-w-0">
                     <span className="font-medium text-gray-700 shrink-0">{source.repo}</span>
                     <span className="text-gray-400 shrink-0">|</span>
                     <span className="truncate">{source.path}</span>
+                  </div>
+                ))}
+                {graphSources.map((site, i) => (
+                  <div key={`graph-${i}`} className="text-xs text-emerald-700 flex items-center gap-2 min-w-0">
+                    <span className="font-medium shrink-0">{site.repo}</span>
+                    <span className="text-emerald-400 shrink-0">|</span>
+                    <span className="truncate">
+                      {site.file_path}:{site.line}
+                    </span>
+                    <span className="text-emerald-500 shrink-0">(graph)</span>
                   </div>
                 ))}
               </div>

@@ -226,6 +226,58 @@ class TestHandler:
 
     @patch.object(repo_summary_handler, 'load_config')
     @patch.object(repo_summary_handler, 'generate_architectural_summary')
+    @patch.object(repo_summary_handler, 'generate_embedding')
+    @patch.object(repo_summary_handler, 'store_code_map_embedding')
+    @patch.object(repo_summary_handler, 's3_client')
+    @patch.object(repo_summary_handler, 'send_code_units_to_sqs')
+    def test_arch_summary_put_object_sets_repo_metadata(
+        self,
+        mock_send_sqs,
+        mock_s3,
+        mock_store,
+        mock_embed,
+        mock_summary,
+        mock_config,
+    ):
+        """The S3 PutObject for architectural-summary.txt must carry the
+        github_repo_name / source / github_repo_type metadata so the
+        process-documents re-ingest path tags the resulting vector with
+        the org-prefixed repo identifier instead of the bare repo name.
+        """
+        mock_summary.return_value = "Test architectural summary"
+        mock_embed.return_value = [0.1] * 1024
+
+        event = {
+            "Records": [{
+                "messageId": "msg-1",
+                "receiptHandle": "handle-1",
+                "body": json.dumps({
+                    "repo": "app.retrieveit.ai",
+                    "repo_project": "bcarpio/app.retrieveit.ai",
+                    "repo_type": "application",
+                    "all_files": ["file1.py"],
+                    "code_units": [],
+                    "workspace_id": "ws_engineering",
+                }),
+            }]
+        }
+
+        repo_summary_handler.handler(event, None)
+
+        # Exactly one put_object call for the architectural summary
+        # — the call must carry the Metadata kwarg with the prefixed
+        # repo identifier.
+        assert mock_s3.put_object.called
+        put_kwargs = mock_s3.put_object.call_args.kwargs
+        assert "Metadata" in put_kwargs
+        meta = put_kwargs["Metadata"]
+        assert meta["github_repo_name"] == "bcarpio/app.retrieveit.ai"
+        assert meta["source"] == "github"
+        assert meta["github_repo_type"] == "application"
+        assert meta["workspace_id"] == "ws_engineering"
+
+    @patch.object(repo_summary_handler, 'load_config')
+    @patch.object(repo_summary_handler, 'generate_architectural_summary')
     def test_handler_returns_failures(self, mock_summary, mock_config):
         """Test: Handler returns failed message IDs."""
         mock_summary.side_effect = Exception("Generation failed")

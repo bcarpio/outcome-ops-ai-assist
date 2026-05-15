@@ -685,6 +685,12 @@ def _augment_context_with_symbol_graph(
         "graph_sha": None,
         "graph_staleness_seconds": None,
         "graph_result_count": None,
+        # Structured site list for the metadata frame so the UI can
+        # render graph results in the sources panel alongside RAG hits.
+        # Populated when callers / importers / implementers fire; left
+        # empty for pattern / dependency / unresolvable-symbol paths.
+        "graph_sites": [],
+        "graph_relation": None,
     }
 
     if not GRAPH_RETRIEVAL_ENABLED:
@@ -893,7 +899,22 @@ def _augment_context_with_symbol_graph(
         out["graph_staleness_seconds"] = getattr(
             result, "staleness_seconds", None
         )
-        out["graph_result_count"] = len(getattr(result, "sites", []) or [])
+        sites = getattr(result, "sites", []) or []
+        out["graph_result_count"] = len(sites)
+        out["graph_relation"] = relation
+        # Structured site list for the metadata frame. Mirror the field
+        # shape the MCP find_callers / find_importers / find_implementers
+        # responses use so the UI can render either source identically.
+        out["graph_sites"] = [
+            {
+                "file_path": getattr(s, "file_path", "") or "",
+                "line": getattr(s, "line", 0) or 0,
+                "repo": getattr(s, "repo", "") or "",
+                "source_symbol_id": getattr(s, "source_symbol_id", "") or "",
+                "language": getattr(s, "language", "") or "",
+            }
+            for s in sites
+        ]
     except SymbolGraphUnavailable as exc:
         logger.warning(
             "[chat.augment] SymbolGraphUnavailable for %s: %s; degrading",
@@ -2048,6 +2069,41 @@ def handle_chat_stream(event: Dict) -> Generator[str, None, None]:
                 "path": path,
             })
 
+    # Graph sources — surfaced separately from RAG sources so the UI can
+    # render them in a distinct "Graph results" section and the user
+    # has visible evidence that the symbol-graph retrieval fired.
+    graph_sources = []
+    for site in graph_augment.get("graph_sites") or []:
+        graph_sources.append({
+            "repo": site.get("repo", ""),
+            "file_path": site.get("file_path", ""),
+            "line": site.get("line", 0),
+            "source_symbol_id": site.get("source_symbol_id", ""),
+            "language": site.get("language", ""),
+        })
+
+    # Routing telemetry — exposes the router's intent classification +
+    # which retrievals actually fired + graph freshness, so the UI can
+    # render a chip and the user can tell whether the answer is RAG-only
+    # or graph-augmented. Mirrors the CHAT_ROUTING_DECISION audit row
+    # but computes retrievals_fired locally so this block is independent
+    # of whether the audit-emission try above succeeded.
+    _decision = graph_augment.get("decision")
+    _retrievals = list(graph_augment.get("retrievals_fired") or [])
+    if "rag" not in _retrievals:
+        _retrievals.insert(0, "rag")
+    routing = {
+        "intent": getattr(_decision, "intent", "unknown") if _decision else "unknown",
+        "symbol_candidate": (
+            getattr(_decision, "symbol_candidate", None) if _decision else None
+        ),
+        "retrievals_fired": _retrievals,
+        "graph_relation": graph_augment.get("graph_relation"),
+        "graph_result_count": graph_augment.get("graph_result_count"),
+        "graph_sha": graph_augment.get("graph_sha"),
+        "graph_staleness_seconds": graph_augment.get("graph_staleness_seconds"),
+    }
+
     # Get title
     title = conversation.get("title", "Untitled")
 
@@ -2056,6 +2112,8 @@ def handle_chat_stream(event: Dict) -> Generator[str, None, None]:
         "type": "metadata",
         "conversation_id": conversation_id,
         "sources": sources,
+        "graph_sources": graph_sources,
+        "routing": routing,
         "title": title,
     }
     yield json.dumps(metadata) + "\n"

@@ -13,10 +13,30 @@ export interface Source {
   path: string
 }
 
+export interface GraphSource {
+  repo: string
+  file_path: string
+  line: number
+  source_symbol_id: string
+  language: string
+}
+
+export interface Routing {
+  intent: 'structural' | 'hybrid' | 'pattern' | 'dependency' | 'unknown' | string
+  symbol_candidate: string | null
+  retrievals_fired: string[]
+  graph_relation: string | null
+  graph_result_count: number | null
+  graph_sha: string | null
+  graph_staleness_seconds: number | null
+}
+
 export interface StreamMetadata {
   type: 'metadata'
   conversation_id: string
   sources: Source[]
+  graph_sources?: GraphSource[]
+  routing?: Routing
   title: string
 }
 

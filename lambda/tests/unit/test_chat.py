@@ -1126,9 +1126,90 @@ class TestHandleChatStream:
         assert "sources" in metadata
         assert metadata["sources"][0]["repo"] == "my-repo"
 
+        # Routing telemetry should always be present so the UI can render
+        # a chip — even when the graph was skipped, the user should see
+        # which retrievals fired. With the default stub_symbol_graph_augment
+        # fixture, intent is unknown and only RAG fires.
+        assert "routing" in metadata
+        assert metadata["routing"]["retrievals_fired"] == ["rag"]
+        assert metadata["routing"]["intent"] == "unknown"
+        assert "graph_sources" in metadata
+        assert metadata["graph_sources"] == []
+
         # Done should include message_id
         done = next(p for p in parsed if p["type"] == "done")
         assert "message_id" in done
+
+    def test_metadata_includes_graph_sources_when_router_fires(
+        self, mock_table, sample_embedding
+    ):
+        """When the symbol-graph augment returns sites + a decision,
+        handle_chat_stream surfaces them in metadata.graph_sources and
+        the routing chip reflects intent + retrievals_fired.
+        """
+        self._setup_mocks(mock_table, sample_embedding)
+
+        # Override the autouse stub to simulate the graph firing.
+        decision = MagicMock()
+        decision.intent = "structural"
+        decision.symbol_candidate = "report_repos_snapshot"
+        populated_augment = {
+            "decision": decision,
+            "graph_block": "## Symbol facts\n2 callers found...",
+            "retrievals_fired": ["graph"],
+            "graph_sha": "abc123",
+            "graph_staleness_seconds": 60,
+            "graph_result_count": 2,
+            "graph_relation": "callers",
+            "graph_sites": [
+                {
+                    "file_path": "lambda/github-integration/handler.py",
+                    "line": 137,
+                    "repo": "owner/repo",
+                    "source_symbol_id": "python:lambda.github_integration.handler::lambda_handler",
+                    "language": "python",
+                },
+                {
+                    "file_path": "lambda/jira-integration/handler.py",
+                    "line": 220,
+                    "repo": "owner/repo",
+                    "source_symbol_id": "python:lambda.jira_integration.handler::lambda_handler",
+                    "language": "python",
+                },
+            ],
+        }
+        handler_module._augment_context_with_symbol_graph = MagicMock(
+            return_value=populated_augment
+        )
+
+        event = {
+            "body": json.dumps({
+                "message": "Which lambdas call report_repos_snapshot?",
+                "workspace_id": "ws_test",
+                "user": {"email": "user@example.com"},
+            })
+        }
+
+        chunks = list(handle_chat_stream(event))
+        parsed = [json.loads(c.strip()) for c in chunks]
+        metadata = next(p for p in parsed if p["type"] == "metadata")
+
+        # Routing reflects what the augment helper returned.
+        assert metadata["routing"]["intent"] == "structural"
+        assert metadata["routing"]["symbol_candidate"] == "report_repos_snapshot"
+        assert metadata["routing"]["retrievals_fired"] == ["rag", "graph"]
+        assert metadata["routing"]["graph_relation"] == "callers"
+        assert metadata["routing"]["graph_result_count"] == 2
+        assert metadata["routing"]["graph_sha"] == "abc123"
+        assert metadata["routing"]["graph_staleness_seconds"] == 60
+
+        # Graph sites surface in their own sources channel so the UI
+        # can render them distinctly from RAG hits.
+        assert len(metadata["graph_sources"]) == 2
+        assert metadata["graph_sources"][0]["file_path"] == (
+            "lambda/github-integration/handler.py"
+        )
+        assert metadata["graph_sources"][0]["line"] == 137
 
     def test_existing_conversation_flow(self, mock_table, sample_embedding, sample_conversation):
         """Test flow for an existing conversation."""
