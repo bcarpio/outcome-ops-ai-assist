@@ -462,4 +462,186 @@ See also:
 - `plan-gkg/08-rollout-and-validation.md` — full spec.
 - `plan-gkg/overview.md` — why this feature exists.
 - `docs/architecture.md` — system context (graph-store callout).
+
+
+## v2 migration (one-shot, per workspace+repo)
+
+The symbol-graph table moved from per-commit-SHA partitions to a
+single `(workspace, repo)` partition. Existing data needs a one-shot
+migration. The writer code (`lambda/shared/symbol_graph_writer.py`)
+now constructs `PK = ${workspace_id}#${repo}` instead of
+`PK = ${workspace_id}#${repo}#${commit_sha}`. Reader is unchanged
+because GSI1 / GSI2 queries were already SHA-agnostic.
+
+**When to run**: after deploying the chunk-01 writer code, BEFORE
+allowing scheduled syncs to fire on the new code. If a sync runs
+between deploy and migration, you get a window where the new writer
+creates v2-shape items while old v1-shape items still exist; the
+reader returns duplicates for that window. The script picks up both
+and converges on the next pass, but minimizing the window is the
+operator's job.
+
+**Why not run from terraform**: terraform-managed migrations are a
+footgun at customer rollout (state divergence on retry, no clean
+abort path). The script is intentionally operator-run.
+
+**The script** (paste into `scripts/migrate-symbol-graph-v2.py`, run
+once, delete per `feedback_disposable_scripts.md`):
+
+```python
+#!/usr/bin/env python3
+"""One-shot migration: symbol-graph table from per-SHA PK to (workspace, repo) PK.
+
+Run AFTER chunk-01's writer code is deployed. Idempotent.
+
+Usage:
+    ENVIRONMENT=prd python scripts/migrate-symbol-graph-v2.py
+"""
+
+import os
+import boto3
+
+REGION = os.environ.get("AWS_REGION", "us-west-2")
+ENV = os.environ.get("ENVIRONMENT", "prd")
+TABLE = f"{ENV}-outcome-ops-ai-assist-symbol-graph"
+
+ddb = boto3.resource("dynamodb", region_name=REGION)
+table = ddb.Table(TABLE)
+
+
+def needs_migration(item):
+    """Old shape: PK = workspace#repo#sha. New shape: workspace#repo."""
+    pk = item.get("PK", "")
+    parts = pk.split("#")
+    # Old shape has 3+ segments with non-empty third (the commit SHA).
+    return len(parts) >= 3 and bool(parts[2])
+
+
+def new_pk(item):
+    parts = item["PK"].split("#")
+    return f"{parts[0]}#{parts[1]}"
+
+
+migrated = 0
+skipped = 0
+errors = 0
+
+print(f"Scanning {TABLE}...")
+paginator = table.meta.client.get_paginator("scan")
+for page in paginator.paginate(TableName=TABLE):
+    for item in page.get("Items", []):
+        try:
+            if not needs_migration(item):
+                skipped += 1
+                continue
+            new_item = dict(item)
+            new_item["PK"] = new_pk(item)
+            table.put_item(Item=new_item)
+            table.delete_item(Key={"PK": item["PK"], "SK": item["SK"]})
+            migrated += 1
+            if migrated % 1000 == 0:
+                print(f"  migrated={migrated} skipped={skipped} errors={errors}")
+        except Exception as e:
+            errors += 1
+            print(f"  ERROR on {item.get('PK')} / {item.get('SK')}: {e}")
+
+print(f"\nDone. migrated={migrated} skipped={skipped} errors={errors}")
+```
+
+**Sequencing**:
+
+1. Land chunk 01's commit locally + push to `origin/main`.
+2. Build images and `terraform apply` by hand.
+3. DO NOT trigger any sync yet.
+4. Run the script:
+   ```bash
+   ENVIRONMENT=prd python scripts/migrate-symbol-graph-v2.py
+   ```
+5. Wait for completion. Eyeball the migrated / skipped / errors counts.
+6. Validate (next section).
+7. Resume scheduled syncs.
+8. Delete the script:
+   ```bash
+   rm scripts/migrate-symbol-graph-v2.py
+   ```
+
+**Time estimate**: ~1 minute per 10k facts. A workspace with 60k facts
+takes ~6 minutes.
+
+**Idempotency**: rerunning is safe. Already-migrated items are skipped.
+Deletes of already-gone items are 404-silent.
+
+### Post-migration validation
+
+1. **No old-shape items remain**:
+
+   ```bash
+   python3 -c "
+   import boto3
+   t = boto3.resource('dynamodb', region_name='us-west-2').Table('prd-outcome-ops-ai-assist-symbol-graph')
+   old = 0
+   total = 0
+   for page in t.meta.client.get_paginator('scan').paginate(TableName=t.name):
+       for it in page.get('Items', []):
+           total += 1
+           parts = it['PK'].split('#')
+           if len(parts) >= 3 and parts[2]:
+               old += 1
+   print(f'old-shape items: {old} / {total}')"
+   ```
+
+   Expected: `old-shape items: 0 / <total>`.
+
+2. **MCP `find_callers` still resolves** — same query as the pre-migration
+   validation queries (Validation 1):
+
+   ```
+   mcp__outcomeops__find_callers(
+       symbol_id="python:lambda.database-integration.handler::report_repos_snapshot",
+       workspace_id="B1MgdLzM1j0YeyAqCWbyxg"
+   )
+   ```
+
+   Expected: returns the caller at `lambda/database-integration/handler.py:111`.
+
+3. **`report_repos_snapshot` returns 10 production callers** — DDB scan:
+
+   ```bash
+   python3 -c "
+   import boto3
+   ddb = boto3.client('dynamodb', region_name='us-west-2')
+   kwargs = {'TableName': 'prd-outcome-ops-ai-assist-symbol-graph',
+             'FilterExpression': '#k = :k AND contains(target_symbol_id, :s)',
+             'ExpressionAttributeNames': {'#k': 'kind'},
+             'ExpressionAttributeValues': {':k': {'S': 'calls'}, ':s': {'S': 'report_repos_snapshot'}}}
+   files = set()
+   while True:
+       r = ddb.scan(**kwargs)
+       for i in r['Items']:
+           fp = i.get('file_path',{}).get('S','')
+           if 'tests/' not in fp:
+               files.add(fp)
+       if 'LastEvaluatedKey' not in r: break
+       kwargs['ExclusiveStartKey'] = r['LastEvaluatedKey']
+   print(f'Production callers: {len(files)}/10')
+   for f in sorted(files): print(f'  {f}')"
+   ```
+
+   Expected: 10/10 (the 9 *-integration handlers + license-heartbeat-scheduler).
+
+### Rollback
+
+If the migration produces unexpected results, rollback is straightforward
+because the writer's v2 schema is forward-compatible with reads of v1
+data (reader uses GSI, which doesn't filter by PK shape):
+
+1. Stop the script (Ctrl-C). Already-migrated items stay migrated.
+2. Revert the chunk-01 commit, redeploy. v1 writer creates per-SHA-PK
+   items going forward.
+3. Either accept the brief dual-shape window or run the script in
+   reverse (write v1-shape items from v2-shape items) — straightforward
+   to invert.
+
+In practice rollback hasn't been needed; the migration is mechanical
+and idempotent.
 - `docs/features.md` — customer-facing feature description.
