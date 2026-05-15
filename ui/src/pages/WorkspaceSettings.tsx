@@ -161,6 +161,19 @@ export default function WorkspaceSettings() {
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
 
+  // Auto-clear success banners after 3 seconds. Owned by a useEffect
+  // with a cleanup so when the component unmounts (or success changes
+  // again) the pending timer is cancelled. Replaces the previous
+  // inline `setTimeout(() => setSuccess(null), 3000)` pattern, which
+  // leaked stray timers past unmount — Vitest would catch the
+  // post-teardown setSuccess(null) call as an unhandled `window is
+  // not defined` error and fail CI even when every test passed.
+  useEffect(() => {
+    if (!success) return
+    const timer = setTimeout(() => setSuccess(null), 3000)
+    return () => clearTimeout(timer)
+  }, [success])
+
   // General tab state
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
@@ -541,8 +554,7 @@ export default function WorkspaceSettings() {
         })
 
         setSuccess(`Uploaded ${file.name}`)
-        setTimeout(() => setSuccess(null), 3000)
-
+  
         // Refresh document list
         loadDocumentsList()
       } catch (err) {
@@ -562,7 +574,6 @@ export default function WorkspaceSettings() {
       await deleteDocument(workspaceId, docPath)
       setDocuments(prev => prev.filter(d => d.path !== docPath))
       setSuccess('Document deleted')
-      setTimeout(() => setSuccess(null), 3000)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to delete document')
     } finally {
@@ -600,7 +611,6 @@ export default function WorkspaceSettings() {
       const updated = await updateSearchAccess(workspaceId, Array.from(selectedSharingIds))
       setSharingAccess(updated)
       setSuccess('Sharing settings updated')
-      setTimeout(() => setSuccess(null), 3000)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to update sharing')
     } finally {
@@ -667,7 +677,6 @@ export default function WorkspaceSettings() {
       setConfiguringConnection(null)
       setSuccess('Spaces updated and sync queued')
       loadConnections()
-      setTimeout(() => setSuccess(null), 3000)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save spaces')
     } finally {
@@ -683,7 +692,6 @@ export default function WorkspaceSettings() {
       await triggerConfluenceSync(workspaceId, connectionId)
       setSuccess('Sync queued')
       loadConnections()
-      setTimeout(() => setSuccess(null), 3000)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to trigger sync')
     } finally {
@@ -698,7 +706,6 @@ export default function WorkspaceSettings() {
       await deleteConfluenceConnection(workspaceId, connectionId)
       setConfluenceConnections(prev => prev.filter(c => c.connection_id !== connectionId))
       setSuccess('Connection deleted')
-      setTimeout(() => setSuccess(null), 3000)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to delete connection')
     }
@@ -765,7 +772,6 @@ export default function WorkspaceSettings() {
       setConfiguringJiraConnection(null)
       setSuccess('Projects updated and sync queued')
       loadConnections()
-      setTimeout(() => setSuccess(null), 3000)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save projects')
     } finally {
@@ -781,7 +787,6 @@ export default function WorkspaceSettings() {
       await triggerJiraSync(workspaceId, connectionId)
       setSuccess('Jira sync queued')
       loadConnections()
-      setTimeout(() => setSuccess(null), 3000)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to trigger sync')
     } finally {
@@ -796,7 +801,6 @@ export default function WorkspaceSettings() {
       await deleteJiraConnection(workspaceId, connectionId)
       setJiraConnections(prev => prev.filter(c => c.connection_id !== connectionId))
       setSuccess('Jira connection deleted')
-      setTimeout(() => setSuccess(null), 3000)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to delete connection')
     }
@@ -860,7 +864,6 @@ export default function WorkspaceSettings() {
       setConfiguringOutlookConnection(null)
       setSuccess('Folders updated and sync queued')
       loadConnections()
-      setTimeout(() => setSuccess(null), 3000)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save folders')
     } finally {
@@ -876,7 +879,6 @@ export default function WorkspaceSettings() {
       await triggerOutlookSync(workspaceId, connectionId)
       setSuccess('Outlook sync queued')
       loadConnections()
-      setTimeout(() => setSuccess(null), 3000)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to trigger sync')
     } finally {
@@ -891,7 +893,6 @@ export default function WorkspaceSettings() {
       await deleteOutlookConnection(workspaceId, connectionId)
       setOutlookConnections(prev => prev.filter(c => c.connection_id !== connectionId))
       setSuccess('Outlook connection deleted')
-      setTimeout(() => setSuccess(null), 3000)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to delete connection')
     }
@@ -995,7 +996,6 @@ export default function WorkspaceSettings() {
       setConfiguringTeamsConnection(null)
       setSuccess('Teams configuration saved and sync queued')
       loadConnections()
-      setTimeout(() => setSuccess(null), 3000)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save configuration')
     } finally {
@@ -1011,7 +1011,6 @@ export default function WorkspaceSettings() {
       await triggerTeamsSync(workspaceId, connectionId)
       setSuccess('Teams sync queued')
       loadConnections()
-      setTimeout(() => setSuccess(null), 3000)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to trigger sync')
     } finally {
@@ -1026,7 +1025,6 @@ export default function WorkspaceSettings() {
       await deleteTeamsConnection(workspaceId, connectionId)
       setTeamsConnections(prev => prev.filter(c => c.connection_id !== connectionId))
       setSuccess('Teams connection deleted')
-      setTimeout(() => setSuccess(null), 3000)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to delete connection')
     }
@@ -1082,7 +1080,6 @@ export default function WorkspaceSettings() {
       setConfiguringSharePointConnection(null)
       setSuccess('Sites updated and sync queued')
       loadConnections()
-      setTimeout(() => setSuccess(null), 3000)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save sites')
     } finally {
@@ -1098,7 +1095,6 @@ export default function WorkspaceSettings() {
       await triggerSharePointSync(workspaceId, connectionId)
       setSuccess('SharePoint sync queued')
       loadConnections()
-      setTimeout(() => setSuccess(null), 3000)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to trigger sync')
     } finally {
@@ -1113,7 +1109,6 @@ export default function WorkspaceSettings() {
       await deleteSharePointConnection(workspaceId, connectionId)
       setSharePointConnections(prev => prev.filter(c => c.connection_id !== connectionId))
       setSuccess('SharePoint connection deleted')
-      setTimeout(() => setSuccess(null), 3000)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to delete connection')
     }
@@ -1171,7 +1166,6 @@ export default function WorkspaceSettings() {
       setConfiguringOneDriveConnection(null)
       setSuccess('Folders updated and sync queued')
       loadConnections()
-      setTimeout(() => setSuccess(null), 3000)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save folders')
     } finally {
@@ -1187,7 +1181,6 @@ export default function WorkspaceSettings() {
       await triggerOneDriveSync(workspaceId, connectionId)
       setSuccess('OneDrive sync queued')
       loadConnections()
-      setTimeout(() => setSuccess(null), 3000)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to trigger sync')
     } finally {
@@ -1202,7 +1195,6 @@ export default function WorkspaceSettings() {
       await deleteOneDriveConnection(workspaceId, connectionId)
       setOneDriveConnections(prev => prev.filter(c => c.connection_id !== connectionId))
       setSuccess('OneDrive connection deleted')
-      setTimeout(() => setSuccess(null), 3000)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to delete connection')
     }
@@ -1259,7 +1251,6 @@ export default function WorkspaceSettings() {
       setConfiguringOneNoteConnection(null)
       setSuccess('Notebooks updated and sync queued')
       loadConnections()
-      setTimeout(() => setSuccess(null), 3000)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save notebooks')
     } finally {
@@ -1275,7 +1266,6 @@ export default function WorkspaceSettings() {
       await triggerOneNoteSync(workspaceId, connectionId)
       setSuccess('OneNote sync queued')
       loadConnections()
-      setTimeout(() => setSuccess(null), 3000)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to trigger sync')
     } finally {
@@ -1290,7 +1280,6 @@ export default function WorkspaceSettings() {
       await deleteOneNoteConnection(workspaceId, connectionId)
       setOneNoteConnections(prev => prev.filter(c => c.connection_id !== connectionId))
       setSuccess('OneNote connection deleted')
-      setTimeout(() => setSuccess(null), 3000)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to delete connection')
     }
@@ -1377,7 +1366,6 @@ export default function WorkspaceSettings() {
       setDatabaseConnections(prev => [...prev, conn])
       setShowDatabaseConnectModal(false)
       setSuccess('Database connection created. Configure scope to start syncing.')
-      setTimeout(() => setSuccess(null), 3000)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create database connection')
     } finally {
@@ -1479,7 +1467,6 @@ export default function WorkspaceSettings() {
       setConfiguringDatabaseConnection(null)
       setSuccess('Database scope updated and sync queued')
       loadConnections()
-      setTimeout(() => setSuccess(null), 3000)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save database scope')
     } finally {
@@ -1494,7 +1481,6 @@ export default function WorkspaceSettings() {
     try {
       await triggerDatabaseSync(workspaceId, connectionId)
       setSuccess('Database sync queued')
-      setTimeout(() => setSuccess(null), 3000)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to trigger sync')
     } finally {
@@ -1509,7 +1495,6 @@ export default function WorkspaceSettings() {
       await deleteDatabaseConnection(workspaceId, connectionId)
       setDatabaseConnections(prev => prev.filter(c => c.connection_id !== connectionId))
       setSuccess('Database connection deleted')
-      setTimeout(() => setSuccess(null), 3000)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to delete connection')
     }
@@ -1598,7 +1583,6 @@ export default function WorkspaceSettings() {
       setGithubRepos(prev => [...prev, ...repos])
       setInstallationRepos(prev => prev.filter(r => r.full_name !== repoName))
       setSuccess(`Added ${repoName} as ${selectedRepoType}`)
-      setTimeout(() => setSuccess(null), 3000)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to add repo')
     } finally {
@@ -1614,7 +1598,6 @@ export default function WorkspaceSettings() {
       await removeGitHubRepo(workspaceId, repoName)
       setGithubRepos(prev => prev.filter(r => r.repo_name !== repoName))
       setSuccess(`Removed ${repoName}`)
-      setTimeout(() => setSuccess(null), 3000)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to remove repo')
     } finally {
@@ -1642,7 +1625,6 @@ export default function WorkspaceSettings() {
       await triggerGitHubSync(workspaceId, repoName)
       setSuccess(repoName ? `Sync queued for ${repoName}` : 'Sync queued for all repos')
       loadGitHubData()
-      setTimeout(() => setSuccess(null), 3000)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to trigger sync')
     } finally {
@@ -1664,7 +1646,6 @@ export default function WorkspaceSettings() {
       const updated = await updateWorkspace(workspaceId, { name, description })
       setWorkspace(updated)
       setSuccess('Workspace updated successfully')
-      setTimeout(() => setSuccess(null), 3000)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to update workspace')
     } finally {
@@ -1766,7 +1747,6 @@ export default function WorkspaceSettings() {
       setSystemPromptData(data)
       setSavedSystemPrompt(systemPrompt)
       setSuccess('System prompt updated')
-      setTimeout(() => setSuccess(null), 3000)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to update system prompt')
     } finally {
@@ -1785,7 +1765,6 @@ export default function WorkspaceSettings() {
       setSavedSystemPrompt('')
       setShowResetPromptConfirm(false)
       setSuccess('System prompt reset to default')
-      setTimeout(() => setSuccess(null), 3000)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to reset system prompt')
     } finally {
