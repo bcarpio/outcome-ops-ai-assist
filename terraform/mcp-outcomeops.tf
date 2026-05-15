@@ -59,6 +59,12 @@ module "mcp_outcomeops" {
     # plan/audit-completeness chunk 02 + 08: MCP server emits
     # ACTION_API_KEY_USED + ACTION_MCP_TOOL_INVOKED audit rows.
     AUDIT_TABLE = module.audit_logs_table.dynamodb_table_id
+    # plan-gkg chunk 10: symbol-graph query tools (find_callers,
+    # find_importers, find_implementers, find_definitions). The reader
+    # uses SYMBOL_GRAPH_TABLE for the Fact stream + CODE_MAPS_TABLE for
+    # the per-(workspace, repo) pointer that drives staleness reporting.
+    SYMBOL_GRAPH_TABLE = module.symbol_graph_table.dynamodb_table_id
+    CODE_MAPS_TABLE    = module.code_maps_table.dynamodb_table_id
   }
 
   ecs_cluster_arn    = module.ui_ecs.cluster_arn

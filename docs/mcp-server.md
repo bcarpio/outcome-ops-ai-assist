@@ -134,6 +134,79 @@ Convenience wrapper that formulates queries optimized for retrieving coding stan
 - `topic` (required): The topic (e.g., "Lambda handlers", "Terraform modules", "testing")
 - `workspace_id` (optional): Scope the search to a specific workspace
 
+### Symbol-graph query tools
+
+These tools answer structural questions about the source code in a workspace's
+repositories. They are backed by the symbol-graph DynamoDB table populated by
+the file-ingestion pipeline (plan-gkg). Each tool requires a `workspace_id` the
+caller is authorized for; results are scoped to that workspace.
+
+Responses are JSON-encoded text with the following shape:
+
+```json
+{
+  "sites": [
+    {
+      "file_path": "lambda/github-integration/handler.py",
+      "line": 137,
+      "repo": "owner/repo",
+      "source_symbol_id": "python:lambda.github_integration.handler::lambda_handler",
+      "language": "python"
+    }
+  ],
+  "truncated": false,
+  "graph_sha": "abc123...",
+  "staleness_seconds": 42
+}
+```
+
+`truncated` is `true` when the result hit the `limit` cap with more
+matches available. `graph_sha` is the commit SHA the answer was anchored
+on (null for multi-repo answers). `staleness_seconds` is the worst-case
+age of the underlying graph slices.
+
+#### find_callers
+
+Find every call-site of a symbol across the workspace. Answers questions like
+"Which Lambdas call `report_repos_snapshot`?"
+
+**Parameters:**
+- `symbol_id` (required): Canonical symbol ID of the target
+- `workspace_id` (required): Workspace to scope the query to
+- `limit` (optional, default 200): Maximum number of call-sites to return
+
+#### find_importers
+
+Find every importer of a module or package. Accepts an exact subpath
+(`@hyatt-hpe/hpe-utils/http2`) for exact match, or a package prefix
+(`@hyatt-hpe/hpe-utils` or `@hyatt-hpe/hpe-utils/*`) for all consumers
+of any subpath.
+
+**Parameters:**
+- `target_or_prefix` (required): Exact symbol or package prefix
+- `workspace_id` (required): Workspace to scope the query to
+- `limit` (optional, default 500): Maximum number of importer sites to return
+
+#### find_implementers
+
+Find every implementer of an interface, abstract class, or protocol.
+Answers "What classes implement `IBookingClient`?"
+
+**Parameters:**
+- `interface_id` (required): Canonical symbol ID of the interface
+- `workspace_id` (required): Workspace to scope the query to
+- `limit` (optional, default 100): Maximum number of implementer sites to return
+
+#### find_definitions
+
+Find every definition site of a symbol. Returns a list so cross-repo
+duplicates (interface re-declarations, copy-pasted code) all surface;
+an empty list means "not found" -- never null.
+
+**Parameters:**
+- `symbol` (required): Canonical symbol ID to look up
+- `workspace_id` (required): Workspace to scope the query to
+
 ### Proxied Tools (based on workspace access)
 
 Tools from MCP servers assigned to your workspaces are automatically available.

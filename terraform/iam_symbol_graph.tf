@@ -151,3 +151,56 @@ resource "aws_iam_role_policy_attachment" "generate_code_symbol_graph_reader" {
   role       = module.generate_code_lambda.lambda_role_name
   policy_arn = aws_iam_policy.symbol_graph_reader.arn
 }
+
+# plan-gkg chunk 10: the mcp-outcomeops Fargate task exposes find_callers
+# / find_importers / find_implementers / find_definitions to external
+# MCP clients. It needs the same query-only access as the consumer
+# Lambdas. Attached only when the MCP server is enabled (the module
+# count gates the task role's existence).
+resource "aws_iam_role_policy_attachment" "mcp_outcomeops_symbol_graph_reader" {
+  count = var.mcp_server_enabled ? 1 : 0
+
+  role       = module.mcp_outcomeops[0].task_role_name
+  policy_arn = aws_iam_policy.symbol_graph_reader.arn
+}
+
+# The reader also reads the code-maps table for per-(workspace, repo)
+# pointer state -- that's how QueryResult.staleness_seconds /
+# QueryResult.graph_sha get populated. The mcp-outcomeops baseline IAM
+# (terraform/mcp-outcomeops.tf) already grants Query/GetItem on the
+# workspaces table, but the code-maps table is a separate table; grant
+# read-only access here so the staleness reporting works.
+resource "aws_iam_policy" "mcp_outcomeops_code_maps_read" {
+  count = var.mcp_server_enabled ? 1 : 0
+
+  name        = "${var.environment}-${var.app_name}-mcp-outcomeops-code-maps-read"
+  description = "Read pointer state from the code-maps table for symbol-graph staleness reporting"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:Query",
+        ]
+        Resource = [
+          module.code_maps_table.dynamodb_table_arn,
+          "${module.code_maps_table.dynamodb_table_arn}/index/*",
+        ]
+      },
+    ]
+  })
+
+  tags = {
+    Purpose = "symbol-graph"
+  }
+}
+
+resource "aws_iam_role_policy_attachment" "mcp_outcomeops_code_maps_read" {
+  count = var.mcp_server_enabled ? 1 : 0
+
+  role       = module.mcp_outcomeops[0].task_role_name
+  policy_arn = aws_iam_policy.mcp_outcomeops_code_maps_read[0].arn
+}

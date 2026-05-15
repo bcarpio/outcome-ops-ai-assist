@@ -190,6 +190,119 @@ MCP_TOOLS = [
             "required": ["topic"],
         },
     },
+    # ------------------------------------------------------------------
+    # Symbol-graph query tools (plan-gkg chunk 10)
+    # Wrap the four query shapes in shared/symbol_graph_reader.py and
+    # expose them as MCP tools so external clients (Claude Code, etc.)
+    # can ask structural questions across the workspace's repos.
+    # ------------------------------------------------------------------
+    {
+        "name": "find_callers",
+        "description": (
+            "Find every call-site of a symbol across the workspace. Answers "
+            "questions like 'Which Lambdas call report_repos_snapshot?'. Returns "
+            "the source files, line numbers, and caller symbol IDs."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "symbol_id": {
+                    "type": "string",
+                    "description": (
+                        "Canonical symbol ID of the target (e.g., "
+                        "'python:lambda.shared.outcomeops_license::report_repos_snapshot')"
+                    ),
+                },
+                "workspace_id": {
+                    "type": "string",
+                    "description": "Workspace ID to scope the query to.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of call-sites to return (default 200).",
+                },
+            },
+            "required": ["symbol_id", "workspace_id"],
+        },
+    },
+    {
+        "name": "find_importers",
+        "description": (
+            "Find every importer of a target module/package across the workspace. "
+            "Pass an exact subpath (e.g., '@hyatt-hpe/hpe-utils/http2') for exact "
+            "match, or a package prefix (e.g., '@hyatt-hpe/hpe-utils' or "
+            "'@hyatt-hpe/hpe-utils/*') for all consumers of any subpath."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "target_or_prefix": {
+                    "type": "string",
+                    "description": (
+                        "Exact target symbol or package prefix to find importers of."
+                    ),
+                },
+                "workspace_id": {
+                    "type": "string",
+                    "description": "Workspace ID to scope the query to.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of importer sites to return (default 500).",
+                },
+            },
+            "required": ["target_or_prefix", "workspace_id"],
+        },
+    },
+    {
+        "name": "find_implementers",
+        "description": (
+            "Find every implementer of an interface, abstract class, or protocol "
+            "across the workspace. Answers questions like 'What classes implement "
+            "IBookingClient?'."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "interface_id": {
+                    "type": "string",
+                    "description": "Canonical symbol ID of the interface or abstract type.",
+                },
+                "workspace_id": {
+                    "type": "string",
+                    "description": "Workspace ID to scope the query to.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of implementer sites to return (default 100).",
+                },
+            },
+            "required": ["interface_id", "workspace_id"],
+        },
+    },
+    {
+        "name": "find_definitions",
+        "description": (
+            "Find every definition site of a symbol across the workspace. Returns "
+            "a list rather than a single site so cross-repo duplicates (interface "
+            "re-declarations, code duplication) all surface. An empty list means "
+            "'not found' -- never null."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "symbol": {
+                    "type": "string",
+                    "description": "Canonical symbol ID to look up definitions of.",
+                },
+                "workspace_id": {
+                    "type": "string",
+                    "description": "Workspace ID to scope the query to.",
+                },
+            },
+            "required": ["symbol", "workspace_id"],
+        },
+    },
 ]
 
 
@@ -878,11 +991,241 @@ def handle_get_coding_standards(params, email):
     return {"text": format_results(results)}
 
 
+# ============================================================================
+# Symbol-graph query handlers (plan-gkg chunk 10)
+#
+# Each wraps one query in shared/symbol_graph_reader.py. The reader is
+# imported LAZILY inside the handler so the gateway's cold-start path is
+# not coupled to its import success -- a hiccup in the reader (e.g.,
+# boto3 version skew, transient sys.modules contamination) must NOT
+# crash the MCP server.
+#
+# Workspace authorization mirrors handle_list_workspace_documents: the
+# API-key-derived email's authorized workspace set must include the
+# requested workspace_id. SymbolGraphUnavailable from the reader is
+# caught and surfaced as a JSON-RPC error payload, not a raised
+# exception (which would 500 the gateway).
+# ============================================================================
+
+
+def _query_result_to_dict(query_result) -> dict:
+    """Project a ``QueryResult`` onto the JSON shape documented for the
+    MCP tools. Mirrors chunk-04's surface: ``sites`` + ``truncated`` +
+    ``graph_sha`` + ``staleness_seconds``.
+    """
+    sites = []
+    for s in query_result.sites:
+        sites.append({
+            "file_path": s.file_path,
+            "line": s.line,
+            "repo": s.repo,
+            "source_symbol_id": s.source_symbol_id,
+            "language": s.language,
+        })
+    return {
+        "sites": sites,
+        "truncated": bool(query_result.truncated),
+        "graph_sha": query_result.graph_sha,
+        "staleness_seconds": query_result.staleness_seconds,
+    }
+
+
+def _call_sites_to_dict(call_sites) -> dict:
+    """Project a list[CallSite] (definitions()) onto the same JSON shape
+    as ``_query_result_to_dict``. ``definitions`` returns a bare list per
+    chunk-04 open Q #2; ``truncated`` / ``graph_sha`` /
+    ``staleness_seconds`` are reported as ``False`` / ``None`` / ``None``
+    so the MCP tool's response is uniformly shaped across all four
+    queries.
+    """
+    sites = []
+    for s in call_sites:
+        sites.append({
+            "file_path": s.file_path,
+            "line": s.line,
+            "repo": s.repo,
+            "source_symbol_id": s.source_symbol_id,
+            "language": s.language,
+        })
+    return {
+        "sites": sites,
+        "truncated": False,
+        "graph_sha": None,
+        "staleness_seconds": None,
+    }
+
+
+def _check_symbol_graph_workspace_access(workspace_id, email):
+    """Return None if access is allowed, else an error-payload dict.
+
+    Mirrors the access check in ``handle_list_workspace_documents``: the
+    user must be a member (direct or via cross-workspace share) of the
+    requested workspace. The symbol-graph reader itself does NOT enforce
+    auth -- the gateway does.
+    """
+    if not workspace_id:
+        return {"error": "workspace_id is required"}
+    user_ws_ids = get_user_workspace_ids(email)
+    if workspace_id not in user_ws_ids:
+        return {"error": "You do not have access to this workspace"}
+    return None
+
+
+def handle_find_callers(params, email):
+    """Handle find_callers tool call (plan-gkg chunk 10)."""
+    symbol_id = params.get("symbol_id", "")
+    workspace_id = params.get("workspace_id", "")
+    limit = int(params.get("limit", 200) or 200)
+
+    if not symbol_id:
+        return {"error": "symbol_id is required"}
+    deny = _check_symbol_graph_workspace_access(workspace_id, email)
+    if deny is not None:
+        return deny
+
+    # Lazy import: keeps mcp-server cold-start independent of the reader.
+    try:
+        from shared import symbol_graph_reader  # type: ignore
+    except Exception as exc:
+        logger.error(f"Failed to import symbol_graph_reader: {exc}", exc_info=True)
+        return {"error": "Symbol graph unavailable"}
+
+    try:
+        result = symbol_graph_reader.callers(
+            workspace_id,
+            symbol_id,
+            limit=limit,
+            symbol_graph_table_name=os.environ.get("SYMBOL_GRAPH_TABLE") or None,
+            code_maps_table_name=os.environ.get("CODE_MAPS_TABLE") or None,
+        )
+    except symbol_graph_reader.SymbolGraphUnavailable as exc:
+        logger.warning(f"Symbol graph unavailable for find_callers: {exc}")
+        return {"error": "Symbol graph unavailable"}
+    except ValueError as exc:
+        return {"error": str(exc)}
+
+    return {"text": json.dumps(_query_result_to_dict(result))}
+
+
+def handle_find_importers(params, email):
+    """Handle find_importers tool call (plan-gkg chunk 10)."""
+    target = params.get("target_or_prefix", "")
+    workspace_id = params.get("workspace_id", "")
+    limit = int(params.get("limit", 500) or 500)
+
+    if not target:
+        return {"error": "target_or_prefix is required"}
+    deny = _check_symbol_graph_workspace_access(workspace_id, email)
+    if deny is not None:
+        return deny
+
+    try:
+        from shared import symbol_graph_reader  # type: ignore
+    except Exception as exc:
+        logger.error(f"Failed to import symbol_graph_reader: {exc}", exc_info=True)
+        return {"error": "Symbol graph unavailable"}
+
+    try:
+        result = symbol_graph_reader.importers(
+            workspace_id,
+            target,
+            limit=limit,
+            symbol_graph_table_name=os.environ.get("SYMBOL_GRAPH_TABLE") or None,
+            code_maps_table_name=os.environ.get("CODE_MAPS_TABLE") or None,
+        )
+    except symbol_graph_reader.SymbolGraphUnavailable as exc:
+        logger.warning(f"Symbol graph unavailable for find_importers: {exc}")
+        return {"error": "Symbol graph unavailable"}
+    except ValueError as exc:
+        return {"error": str(exc)}
+
+    return {"text": json.dumps(_query_result_to_dict(result))}
+
+
+def handle_find_implementers(params, email):
+    """Handle find_implementers tool call (plan-gkg chunk 10)."""
+    interface_id = params.get("interface_id", "")
+    workspace_id = params.get("workspace_id", "")
+    limit = int(params.get("limit", 100) or 100)
+
+    if not interface_id:
+        return {"error": "interface_id is required"}
+    deny = _check_symbol_graph_workspace_access(workspace_id, email)
+    if deny is not None:
+        return deny
+
+    try:
+        from shared import symbol_graph_reader  # type: ignore
+    except Exception as exc:
+        logger.error(f"Failed to import symbol_graph_reader: {exc}", exc_info=True)
+        return {"error": "Symbol graph unavailable"}
+
+    try:
+        result = symbol_graph_reader.implementers(
+            workspace_id,
+            interface_id,
+            limit=limit,
+            symbol_graph_table_name=os.environ.get("SYMBOL_GRAPH_TABLE") or None,
+            code_maps_table_name=os.environ.get("CODE_MAPS_TABLE") or None,
+        )
+    except symbol_graph_reader.SymbolGraphUnavailable as exc:
+        logger.warning(f"Symbol graph unavailable for find_implementers: {exc}")
+        return {"error": "Symbol graph unavailable"}
+    except ValueError as exc:
+        return {"error": str(exc)}
+
+    return {"text": json.dumps(_query_result_to_dict(result))}
+
+
+def handle_find_definitions(params, email):
+    """Handle find_definitions tool call (plan-gkg chunk 10).
+
+    ``definitions`` returns ``list[CallSite]`` (not a QueryResult) per
+    chunk-04 open Q #2 -- cross-repo duplicates surface as separate
+    entries. We project that onto the same JSON envelope as the other
+    three queries so MCP clients see a uniform shape.
+    """
+    symbol = params.get("symbol", "")
+    workspace_id = params.get("workspace_id", "")
+
+    if not symbol:
+        return {"error": "symbol is required"}
+    deny = _check_symbol_graph_workspace_access(workspace_id, email)
+    if deny is not None:
+        return deny
+
+    try:
+        from shared import symbol_graph_reader  # type: ignore
+    except Exception as exc:
+        logger.error(f"Failed to import symbol_graph_reader: {exc}", exc_info=True)
+        return {"error": "Symbol graph unavailable"}
+
+    try:
+        sites = symbol_graph_reader.definitions(
+            workspace_id,
+            symbol,
+            symbol_graph_table_name=os.environ.get("SYMBOL_GRAPH_TABLE") or None,
+            code_maps_table_name=os.environ.get("CODE_MAPS_TABLE") or None,
+        )
+    except symbol_graph_reader.SymbolGraphUnavailable as exc:
+        logger.warning(f"Symbol graph unavailable for find_definitions: {exc}")
+        return {"error": "Symbol graph unavailable"}
+    except ValueError as exc:
+        return {"error": str(exc)}
+
+    return {"text": json.dumps(_call_sites_to_dict(sites))}
+
+
 TOOL_HANDLERS = {
     "query_knowledge_base": handle_query_knowledge_base,
     "list_workspaces": handle_list_workspaces,
     "list_workspace_documents": handle_list_workspace_documents,
     "get_coding_standards": handle_get_coding_standards,
+    # plan-gkg chunk 10: symbol-graph query tools
+    "find_callers": handle_find_callers,
+    "find_importers": handle_find_importers,
+    "find_implementers": handle_find_implementers,
+    "find_definitions": handle_find_definitions,
 }
 
 

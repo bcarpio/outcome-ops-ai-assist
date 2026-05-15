@@ -315,15 +315,25 @@ class TestMcpTools:
     """Test MCP tool definitions."""
 
     def test_all_tools_defined(self):
-        """Test that all 4 tools are defined."""
+        """Test that the expected native tools are all defined.
+
+        plan-gkg chunk 10 added four symbol-graph query tools alongside
+        the original four KB tools, so the surface is now 8.
+        """
         tools = mcp_module.MCP_TOOLS
-        assert len(tools) == 4
+        assert len(tools) == 8
         names = {t["name"] for t in tools}
         assert names == {
+            # KB tools
             "query_knowledge_base",
             "list_workspaces",
             "list_workspace_documents",
             "get_coding_standards",
+            # Symbol-graph tools (plan-gkg chunk 10)
+            "find_callers",
+            "find_importers",
+            "find_implementers",
+            "find_definitions",
         }
 
     def test_tools_have_required_fields(self):
