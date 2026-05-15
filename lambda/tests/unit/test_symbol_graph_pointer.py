@@ -265,6 +265,75 @@ def test_commit_swap_rejected_when_no_pending(code_maps_table):
     assert ok is False
 
 
+def test_commit_swap_idempotent_when_graph_sha_already_matches(code_maps_table):
+    """Parallel-batch fallback: when a SECOND batch's commit_swap runs
+    after the FIRST batch already committed (so graph_pending_sha is
+    cleared but graph_sha == new_sha), commit_swap must return True
+    rather than False. Without this idempotency, every late-arriving
+    batch in a ~30-way concurrent regen logs a spurious WARNING and
+    triggers abandon_swap in the caller, which would clear a valid
+    pointer state. Live evidence: 2026-05-15 re-extract of
+    outcome-ops-ai-assist-private.
+    """
+    from shared.symbol_graph_pointer import (  # type: ignore
+        begin_swap,
+        commit_swap,
+        read_pointer,
+    )
+
+    # First batch: begin + commit (the winner).
+    begin_swap(
+        WORKSPACE_ID, REPO, SHA_A, code_maps_table_name=CODE_MAPS_TABLE
+    )
+    first = commit_swap(
+        WORKSPACE_ID, REPO, SHA_A, code_maps_table_name=CODE_MAPS_TABLE
+    )
+    assert first is True
+
+    # Second batch's commit on the SAME sha: pending is gone (the
+    # first batch cleared it), but graph_sha already equals SHA_A.
+    # The desired end-state is met — commit_swap returns True so the
+    # caller doesn't abandon a valid pointer.
+    second = commit_swap(
+        WORKSPACE_ID, REPO, SHA_A, code_maps_table_name=CODE_MAPS_TABLE
+    )
+    assert second is True
+
+    # Pointer state unchanged across the idempotent no-op.
+    state = read_pointer(
+        WORKSPACE_ID, REPO, code_maps_table_name=CODE_MAPS_TABLE
+    )
+    assert state.graph_sha == SHA_A
+    assert state.graph_pending_sha is None
+
+
+def test_commit_swap_still_rejects_when_graph_sha_is_different(code_maps_table):
+    """Idempotent fallback must NOT swallow real conflicts. If
+    graph_sha is committed to SHA_B but the caller tries to commit
+    SHA_A (their regen lost the race to a newer regen for SHA_B),
+    commit_swap returns False so the caller can abandon cleanly.
+    """
+    from shared.symbol_graph_pointer import (  # type: ignore
+        begin_swap,
+        commit_swap,
+    )
+
+    # First regen lands at SHA_B.
+    begin_swap(
+        WORKSPACE_ID, REPO, SHA_B, code_maps_table_name=CODE_MAPS_TABLE
+    )
+    commit_swap(
+        WORKSPACE_ID, REPO, SHA_B, code_maps_table_name=CODE_MAPS_TABLE
+    )
+
+    # A stale batch from an older regen tries to commit SHA_A — real
+    # conflict, must return False.
+    ok = commit_swap(
+        WORKSPACE_ID, REPO, SHA_A, code_maps_table_name=CODE_MAPS_TABLE
+    )
+    assert ok is False
+
+
 # ===========================================================================
 # abandon_swap
 # ===========================================================================

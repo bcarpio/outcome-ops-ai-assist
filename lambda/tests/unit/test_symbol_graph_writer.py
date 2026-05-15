@@ -446,6 +446,48 @@ def test_idempotent_rewrite_same_sha_no_duplicates(tables):
 
 
 # ===========================================================================
+# Dedupe: identical (PK, SK) within one write_facts call must not
+# crash DynamoDB's BatchWriteItem with "Provided list of item keys
+# contains duplicates". Surfaced 2026-05-15 in live re-extract.
+# ===========================================================================
+
+
+def test_write_facts_dedupes_identical_facts_within_one_batch(tables):
+    """The chunk-01 extractor can emit two Facts with identical
+    (kind, source, target, file_path, line) tuples for a single
+    file (Tree-sitter walker visiting the same call twice under
+    nested-scope traversal). Identical tuples produce identical SKs.
+    Without dedupe, DynamoDB's BatchWriteItem rejects the entire
+    25-item batch with ValidationException and the writer loses
+    every fact in the batch. The dedupe step collapses identical
+    items to a single put before send.
+    """
+    from shared.symbol_graph_writer import write_facts  # type: ignore
+
+    base = _calls_fact(0)
+    # Three identical Facts + two distinct ones. Same SK -> one row.
+    facts = [base, base, base, _calls_fact(1), _calls_fact(2)]
+
+    result = write_facts(
+        workspace_id=WORKSPACE_ID,
+        repo=REPO,
+        commit_sha=NEW_SHA,
+        facts=facts,
+        symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
+        code_maps_table_name=CODE_MAPS_TABLE,
+    )
+
+    # All five Facts accepted; dedupe collapses to 3 unique items.
+    assert result.facts_written == 3
+
+    table = tables.Table(SYMBOL_GRAPH_TABLE)
+    response = table.query(
+        KeyConditionExpression=Key("PK").eq(f"{WORKSPACE_ID}#{REPO}#{NEW_SHA}")
+    )
+    assert response["Count"] == 3
+
+
+# ===========================================================================
 # Regen: writing under a new SHA deletes the old partition.
 # ===========================================================================
 

@@ -283,13 +283,27 @@ def commit_swap(
 ) -> bool:
     """Advance the pointer from pending to committed.
 
-    Conditional update: only succeeds when ``graph_pending_sha`` on the
+    Conditional update: succeeds when ``graph_pending_sha`` on the
     row equals ``new_sha`` (this regen owns the pointer). Sets
     ``graph_sha = new_sha`` and removes ``graph_pending_sha``.
 
+    **Idempotent under parallel batches**: ~30 process-batch-summary
+    Lambdas run concurrently for one repo regen, each calling
+    commit_swap on completion. The first batch's commit clears
+    ``graph_pending_sha``; subsequent batches then see "pending !=
+    new_sha" and would have rejected. To avoid log-noise + false-
+    failure semantics for the late-arriving batches, when the
+    conditional fails we check whether ``graph_sha`` is already
+    ``new_sha`` — if so, the desired end-state holds and we return
+    True (idempotent success). Real failures (pending sha belongs
+    to a DIFFERENT regen, or the row is missing entirely) still
+    return False.
+
     Returns:
-        True on success. False if the conditional failed (pending sha
-        no longer matches — abandoned, or another regen took over).
+        True on success (first writer OR idempotent late writer).
+        False if the conditional failed AND ``graph_sha`` does not
+        already equal ``new_sha`` (real conflict, abandoned regen,
+        or another regen took over).
     """
 
     if not workspace_id or not repo or not new_sha:
@@ -319,6 +333,26 @@ def commit_swap(
     except ClientError as exc:
         code = exc.response.get("Error", {}).get("Code", "")
         if code == "ConditionalCheckFailedException":
+            # Idempotent fallback: if graph_sha already equals new_sha,
+            # an earlier batch (parallel regen) committed first. The
+            # caller's intent ("this SHA is current") is satisfied; do
+            # nothing more, return True so the caller doesn't escalate
+            # to abandon_swap (which would clear a valid pointer state).
+            try:
+                row = table.get_item(Key=_pointer_key(workspace_id, repo)).get(
+                    "Item", {}
+                )
+                if row.get("graph_sha") == new_sha:
+                    logger.debug(
+                        "[symbol_graph_pointer] commit_swap idempotent "
+                        "no-op for %s/%s (graph_sha already %s)",
+                        workspace_id,
+                        repo,
+                        new_sha,
+                    )
+                    return True
+            except ClientError:
+                pass  # fall through to the False return below
             logger.warning(
                 "[symbol_graph_pointer] commit_swap rejected for %s/%s "
                 "(pending sha does not match %s)",

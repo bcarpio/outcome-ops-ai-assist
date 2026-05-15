@@ -359,10 +359,26 @@ def _write_facts_batched(
     item retries internally; we still cap the buffered size at
     ``_BATCH_SIZE`` to make the per-batch boundary explicit for failure-
     recovery testing.
+
+    **Dedupe before send**: DynamoDB's BatchWriteItem rejects the whole
+    batch with ``ValidationException: Provided list of item keys contains
+    duplicates`` when two PutItem requests target the same (PK, SK).
+    The chunk-01 extractor can emit two Facts with identical
+    ``(kind, source, target, file_path, line)`` tuples for a single
+    source file (e.g. the same call walked twice by the Tree-sitter
+    visitor under nested-scope traversal), which produces identical SKs.
+    Dedupe to the last occurrence (semantically equivalent — all
+    duplicates carry the same content). Live evidence:
+    2026-05-15 re-extract of outcome-ops-ai-assist-private's
+    workspace-management batch.
     """
 
     if not items:
         return 0
+
+    deduped: Dict[tuple, Dict[str, object]] = {}
+    for item in items:
+        deduped[(item["PK"], item["SK"])] = item
 
     table = _resource().Table(symbol_graph_table_name)
     written = 0
@@ -370,7 +386,7 @@ def _write_facts_batched(
     # at _BATCH_SIZE keeps the flush boundary deterministic for the
     # failure-recovery test.
     with table.batch_writer() as batch:
-        for item in items:
+        for item in deduped.values():
             batch.put_item(Item=item)
             written += 1
     return written
