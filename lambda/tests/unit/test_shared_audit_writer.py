@@ -288,7 +288,7 @@ class TestActionConstants:
         # 1 from OneNote + 4 from database integration
         # (DATABASE_SYNCED, DB_CONNECTION_ESTABLISHED,
         # DB_CREDENTIAL_USED, DB_CONNECTION_DELETED) + 1 from
-        # plan-gkg/09 (CHAT_ROUTING_DECISION) = 50.
+        # CHAT_ROUTING_DECISION = 50.
         assert len(ADMIN_ACTIONS) == 50
 
     def test_known_action_in_set(self):

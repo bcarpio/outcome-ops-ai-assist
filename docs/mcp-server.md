@@ -138,8 +138,11 @@ Convenience wrapper that formulates queries optimized for retrieving coding stan
 
 These tools answer structural questions about the source code in a workspace's
 repositories. They are backed by the symbol-graph DynamoDB table populated by
-the file-ingestion pipeline (plan-gkg). Each tool requires a `workspace_id` the
-caller is authorized for; results are scoped to that workspace.
+the `process-batch-summary` Lambda's extractor pass during code-map regen.
+Each tool requires a `workspace_id` the caller is authorized for; results are
+scoped to that workspace. See `docs/features.md` (Structural retrieval section)
+for the user-facing description and `docs/symbol-graph-validation.md` for the
+operator runbook.
 
 Responses are JSON-encoded text with the following shape:
 

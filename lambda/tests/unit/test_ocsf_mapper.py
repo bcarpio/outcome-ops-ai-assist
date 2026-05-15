@@ -262,10 +262,10 @@ def test_envelope_omits_feature_when_lambda_name_blank():
 
 
 def test_chat_routing_decision_maps_to_application_lifecycle_class():
-    """plan-gkg/09: CHAT_ROUTING_DECISION rows must map to OCSF
-    Application Lifecycle (6002) with the routing-decision activity_id
-    so SIEM consumers can filter on type_uid=600299 without conflating
-    with generic 6005 Application Activity events."""
+    """CHAT_ROUTING_DECISION rows must map to OCSF Application Lifecycle
+    (6002) with the routing-decision activity_id so SIEM consumers can
+    filter on type_uid=600299 without conflating with generic 6005
+    Application Activity events."""
     from ocsf_mapper import CLASS_APPLICATION_LIFECYCLE  # noqa: PLC0415
 
     image = _ddb(

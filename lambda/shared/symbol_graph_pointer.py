@@ -1,4 +1,4 @@
-"""Symbol-graph atomic-swap pointer (plan-gkg chunk 03).
+"""Symbol-graph atomic-swap pointer.
 
 Owns the begin -> commit / abandon protocol that advances the
 "current symbol-graph SHA" for a (workspace, repo) pair without ever

@@ -1,11 +1,10 @@
-"""Unit tests for ``shared.audit_writer.log_routing_decision`` (plan-gkg
-chunk 09).
+"""Unit tests for ``shared.audit_writer.log_routing_decision``.
 
 Covers:
 
 - Happy path: a fully-populated routing-decision call lands a single
   DynamoDB ``put_item`` row with the expected admin-action shape +
-  the chunk-09 details payload (``intent``, ``retrievals_fired``,
+  the routing-decision details payload (``intent``, ``retrievals_fired``,
   ``graph_*``, ``rag_chunk_count``, ``manifest_hit_count``,
   ``question_hash``).
 - PII discipline: the helper never stores the plaintext question; it

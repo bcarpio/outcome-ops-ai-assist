@@ -1,4 +1,4 @@
-"""Unit tests for the C# extractor (plan-gkg chunk 01, ADR-017 regex strategy)."""
+"""Unit tests for the C# extractor (ADR-017 regex strategy)."""
 
 from __future__ import annotations
 

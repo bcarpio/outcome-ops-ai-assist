@@ -1,7 +1,7 @@
 """End-to-end test of ``chat.handler._augment_context_with_symbol_graph``
-against a moto-backed symbol-graph table (plan-gkg chunk 05).
+against a moto-backed symbol-graph table.
 
-This is the chunk-05 "Definition of done" gate:
+This is the chat-augmentation "Definition of done" gate:
 
 > ``report_repos_snapshot`` and ``@hyatt-hpe/hpe-utils/http2`` queries
 > return correct caller / importer lists (verified end-to-end on dev
@@ -77,9 +77,9 @@ def _isolate_env(monkeypatch):
     monkeypatch.setenv("SYMBOL_GRAPH_TABLE", SYMBOL_GRAPH_TABLE)
     monkeypatch.setenv("CODE_MAPS_TABLE", CODE_MAPS_TABLE)
     monkeypatch.setenv("AUDIT_TABLE", "")
-    # plan-gkg chunk 08 standardized the kill-switch name. Tests
-    # exercise the canonical var by default and a dedicated
-    # backward-compat test below pins the legacy fallback behavior.
+    # The kill-switch name is standardized. Tests exercise the canonical
+    # var by default and a dedicated backward-compat test below pins the
+    # legacy fallback behavior.
     monkeypatch.setenv("GRAPH_RETRIEVAL_ENABLED", "true")
     monkeypatch.delenv("GRAPH_AUGMENT_ENABLED", raising=False)
     yield
@@ -340,8 +340,8 @@ def test_augment_returns_nine_callers_for_report_repos_snapshot(_inject_clients)
 
 
 def test_augment_pattern_intent_skips_graph_query(_inject_clients):
-    """Pattern intent must NOT fire the graph query (plan-gkg/05
-    routing decision table: pattern = RAG only)."""
+    """Pattern intent must NOT fire the graph query (routing decision
+    table: pattern = RAG only)."""
     _create_symbol_graph_table()
     _create_code_maps_table()
 
@@ -377,8 +377,7 @@ def test_augment_no_workspace_skips_router_and_graph(_inject_clients):
 
 def test_augment_kill_switch_disables_augmentation(monkeypatch, _inject_clients):
     """GRAPH_RETRIEVAL_ENABLED=false bypasses router + reader entirely
-    so an operator can disable in the field without redeploy
-    (plan-gkg chunk 08 standardized var name)."""
+    so an operator can disable in the field without redeploy."""
     monkeypatch.setenv("GRAPH_RETRIEVAL_ENABLED", "false")
     bedrock_stub = _inject_clients
     handler = _import_augment()
@@ -416,7 +415,7 @@ def test_augment_kill_switch_legacy_var_still_honored(
 
 def test_augment_structural_with_zero_callers_renders_empty_block(_inject_clients):
     """Empty graph result must render an explicit 'zero callers'
-    block (plan-gkg/05 'Empty graph results' -- audit unlock)."""
+    block ('Empty graph results' -- audit unlock)."""
     _create_symbol_graph_table()
     _create_code_maps_table()
 

@@ -4,9 +4,10 @@
 
 ## Context
 
-The symbol-graph extractor introduced in plan-gkg chunk 01 produces
-typed structural facts (`defines`, `imports`, `calls`, `implements`,
-`extends`) for every language the platform supports. For Python,
+The symbol-graph extractor at
+`lambda/process-batch-summary/extractor/` produces typed structural
+facts (`defines`, `imports`, `calls`, `implements`, `extends`) for
+every language the platform supports. For Python,
 TypeScript, Java, and Go the choice was straightforward: Tree-sitter
 grammars on PyPI cover the languages cleanly. For C# the precedent
 was already set by ADR-017 — regex-only, no parser library.
@@ -181,7 +182,8 @@ on the FrankRogalski grammar must be re-validated.
 - FrankRogalski/tree-sitter-abap: https://github.com/FrankRogalski/tree-sitter-abap
 - Upstream tree-sitter-abap (bit-rotted reference):
   https://github.com/sap-data-services/tree-sitter-abap
-- plan-gkg/01-symbol-extraction.md (the spec this ADR backs)
+- `lambda/process-batch-summary/extractor/abap_extractor.py` — the
+  hybrid dispatcher that ratifies this ADR.
 
 Version History:
 

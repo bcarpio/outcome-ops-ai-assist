@@ -1,8 +1,8 @@
-"""Latency benchmark for ``shared.symbol_graph_reader`` (plan-gkg chunk 04).
+"""Latency benchmark for ``shared.symbol_graph_reader``.
 
-The plan asks for a 1M-edge synthetic test. We scope this down to 10K
-edges (still 400x larger than any single functional test) for two
-reasons:
+The production target is a 1M-edge synthetic test. We scope this down
+to 10K edges (still 400x larger than any single functional test) for
+two reasons:
 
 1. Moto is single-process Python and writes do not parallelize — 1M
    put_items on moto takes minutes, well beyond the unit-suite time
@@ -14,12 +14,13 @@ reasons:
    path. 10K edges plus a fanout-of-200 callers query is enough to
    surface accidental quadratic behavior.
 
-The thresholds are **relaxed substantially from the plan's 50ms p99**
+The thresholds are **relaxed substantially from the 50ms p99 target**
 because moto adds significant per-call overhead (~50-100ms per
 200-item Query on the local mock). This is a regression guard against
 O(N^2) accidents in the reader collection path, not a
 production-latency claim. The production p99 target (< 50ms on real
-DynamoDB) is exercised in chunk 08's end-to-end benchmark.
+DynamoDB) is exercised in the end-to-end benchmark documented in
+docs/symbol-graph-validation.md.
 
 Marked ``slow`` so it can be deselected via ``pytest -m "not slow"``.
 """
@@ -73,12 +74,11 @@ def _reset_reader_clients():
     real_resource = boto3.resource("dynamodb", region_name="us-west-2")
     symbol_graph_reader._reset_clients_for_tests()
     symbol_graph_reader._set_resource_for_tests(real_resource)
-    # plan-gkg chunk 08 added ``OutcomeOps/SymbolGraph::QueryLatency``
-    # emission to ``_query_gsi``. The perf test benchmarks the reader's
-    # collection-loop algorithmic complexity, NOT moto's cloudwatch
-    # publish overhead — so we inject a no-op CW client here. The
-    # production emission is exercised by the dedicated metric-emission
-    # tests in test_symbol_graph_reader.py.
+    # ``_query_gsi`` emits ``OutcomeOps/SymbolGraph::QueryLatency``. The
+    # perf test benchmarks the reader's collection-loop algorithmic
+    # complexity, NOT moto's cloudwatch publish overhead — so we inject
+    # a no-op CW client here. The production emission is exercised by
+    # the dedicated metric-emission tests in test_symbol_graph_reader.py.
     class _NoOpCloudWatch:
         def put_metric_data(self, **_kwargs):
             return None

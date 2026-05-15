@@ -1,4 +1,4 @@
-"""Chat-side context builder (plan-gkg chunk 05).
+"""Chat-side context builder.
 
 Renders structured retrieval results into the model's input context.
 Three block shapes are produced:
@@ -24,8 +24,6 @@ embeddings, no embedding of repo/path beyond what already exists in
 the audit-pipeline path discipline. The renderer is intentionally
 side-effect-free: callers (``chat.handler``) compose blocks into the
 final system prompt + user-prompt context.
-
-Plan reference: plan-gkg/05 "Context builder" section.
 """
 
 from __future__ import annotations
@@ -59,7 +57,8 @@ GRAPH_GROUNDING_INSTRUCTION = (
 
 
 # ---------------------------------------------------------------------------
-# Staleness rendering — plan-gkg/04 "Staleness reporting" rule of thumb
+# Staleness rendering — rule-of-thumb humanization of the reader's
+# staleness_seconds output.
 # ---------------------------------------------------------------------------
 
 
@@ -122,8 +121,7 @@ RELATION_LABELS = {
 def _sort_sites_stable(sites: Iterable[CallSite]) -> List[CallSite]:
     """Stable order so the rendered block is reproducible across
     invocations and test runs. The reader doesn't promise an order
-    (plan-gkg/04 "Performance" notes results may come page-first), so
-    we sort here.
+    (results may come page-first), so we sort here.
     """
 
     return sorted(
@@ -146,9 +144,10 @@ def build_symbol_facts_block(
     importers / implementers) — controls the heading and the
     zero-result phrasing.
 
-    Empty results are rendered explicitly (plan-gkg/05 "Empty graph
-    results"). Truncation is disclosed so the model doesn't claim to
-    have an exhaustive list when it doesn't.
+    Empty results are rendered explicitly so the model doesn't claim
+    callers/importers/implementers exist when the graph says none do.
+    Truncation is disclosed so the model doesn't claim to have an
+    exhaustive list when it doesn't.
     """
 
     label = RELATION_LABELS.get(relation, relation.capitalize())
@@ -203,8 +202,7 @@ def build_symbol_definition_block(
 ) -> str:
     """Render the result of a ``definitions(symbol_candidate)`` lookup.
 
-    Two modes (plan-gkg/05 "Symbol resolution from the user's
-    question"):
+    Two modes for the user's question's symbol resolution:
 
     - **Zero matches**: "No symbol matching ``<name>`` found" — the
       chat handler still appends this block so the model surfaces the

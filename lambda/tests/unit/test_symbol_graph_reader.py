@@ -1,12 +1,12 @@
-"""Unit tests for ``shared.symbol_graph_reader`` (plan-gkg chunk 04).
+"""Unit tests for ``shared.symbol_graph_reader``.
 
 Covers the four query shapes (``callers``, ``importers``,
 ``implementers``, ``definitions``), the empty-result invariant
 (``QueryResult(sites=[], ...)`` is the answer, not ``None`` and not an
 exception), truncation, prefix vs exact ``importers``, workspace
 scoping, staleness reporting, retry/exhaustion, and the
-``report_repos_snapshot`` integration that anchors the plan's
-OutcomeOps proof case.
+``report_repos_snapshot`` integration that anchors the OutcomeOps
+proof case. See docs/symbol-graph-validation.md.
 
 Test isolation mirrors ``test_symbol_graph_writer.py`` /
 ``test_symbol_graph_pointer.py``:
@@ -337,7 +337,7 @@ def test_definitions_single_repo_returns_single_element_list(tables):
 
 def test_definitions_cross_repo_duplicate_returns_multi_element_list(tables):
     """Same symbol declared in two repos (interface re-declarations,
-    duplicated code) -> multi-element list per plan-gkg/04 open Q #2."""
+    duplicated code) -> multi-element list."""
     from shared.symbol_graph_reader import definitions  # type: ignore
 
     sym = "typescript:@org/types::IBookingClient"
@@ -917,15 +917,15 @@ def test_callers_table_name_from_env(tables, monkeypatch):
 
 
 # ===========================================================================
-# report_repos_snapshot integration — plan-gkg/04 "Definition of done"
+# report_repos_snapshot integration
 # ===========================================================================
 
 
 def test_callers_report_repos_snapshot_resolves_nine_known_callers(tables):
-    """Plan-gkg/04 DoD: callers(workspace_id, "...report_repos_snapshot")
-    returns exactly the 9 known callers (the integration handlers wired
-    in license-layer v2.0.0). Validates the OutcomeOps proof case
-    end-to-end against the reader's public surface.
+    """callers(workspace_id, "...report_repos_snapshot") returns exactly
+    the 9 known callers (the integration handlers wired in license-layer
+    v2.0.0). Validates the OutcomeOps proof case end-to-end against the
+    reader's public surface. See docs/symbol-graph-validation.md.
     """
     from shared.symbol_graph_reader import callers  # type: ignore
 

@@ -2,9 +2,9 @@
 
 Mirrors the actual platform pattern where 9 integration handlers + the
 license-heartbeat-scheduler all import and call
-``report_repos_snapshot(active_repos=...)``. The plan-gkg DoD requires
-the extractor to surface this as 10 ``calls`` Facts so the chunk-04
-query layer can identify every caller.
+``report_repos_snapshot(active_repos=...)``. The extractor must surface
+this as 10 ``calls`` Facts so the symbol-graph reader's ``callers``
+query can identify every caller.
 """
 
 from outcomeops_license import report_repos_snapshot

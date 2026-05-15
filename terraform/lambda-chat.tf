@@ -85,18 +85,18 @@ module "chat_streaming_lambda" {
       WORKSPACES_TABLE               = module.workspaces_table[0].dynamodb_table_id
       OAUTH_KMS_KEY_ARN              = aws_kms_key.oauth_tokens[0].arn
 
-      # plan-gkg chunk 05 - symbol-graph router + context builder.
-      # IAM read access is attached separately in iam_symbol_graph.tf;
-      # the env vars here let the chat handler resolve the tables
-      # without per-cold-start SSM lookups. CODE_MAPS_TABLE is used by
-      # symbol_graph_reader for the per-repo staleness pointer.
+      # Symbol-graph router + context builder. IAM read access is
+      # attached separately in iam_symbol_graph.tf; the env vars here
+      # let the chat handler resolve the tables without per-cold-start
+      # SSM lookups. CODE_MAPS_TABLE is used by symbol_graph_reader for
+      # the per-repo staleness pointer.
       SYMBOL_GRAPH_TABLE = module.symbol_graph_table.dynamodb_table_id
       CODE_MAPS_TABLE    = module.code_maps_table.dynamodb_table_id
 
-      # plan-gkg chunk 08 - platform-wide kill-switch (default ON).
-      # Operators can disable graph retrieval without redeploy by
-      # flipping this in console / SSM-backed config; the chat handler
-      # falls back to its pre-chunk-05 RAG-only behavior.
+      # Platform-wide kill-switch (default ON). Operators can disable
+      # graph retrieval without redeploy by flipping this in console /
+      # SSM-backed config; the chat handler falls back to RAG-only
+      # behavior.
       GRAPH_RETRIEVAL_ENABLED = "true"
 
       # Point requests / urllib3 / httpx / stdlib ssl + urllib.request at
@@ -226,12 +226,12 @@ module "chat_streaming_lambda" {
       resources = ["*"]
     }
 
-    # plan-gkg chunk 05 - code-maps pointer read for symbol-graph
-    # staleness reporting. The symbol_graph_reader queries the
-    # per-(workspace, repo) pointer row to compute staleness_seconds
-    # so chat answers can disclose graph freshness honestly.
-    # Read-only by design; the writer policy (in iam_symbol_graph.tf
-    # and lambda-knowledge-base.tf) handles writes.
+    # Code-maps pointer read for symbol-graph staleness reporting.
+    # The symbol_graph_reader queries the per-(workspace, repo) pointer
+    # row to compute staleness_seconds so chat answers can disclose
+    # graph freshness honestly. Read-only by design; the writer policy
+    # (in iam_symbol_graph.tf and lambda-knowledge-base.tf) handles
+    # writes.
     code_maps_pointer_read = {
       effect = "Allow"
       actions = [

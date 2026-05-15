@@ -24,11 +24,11 @@ module "process_batch_summary_lambda" {
   cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs.arn
 
   # Source code from local directory (includes shared module).
-  # plan-gkg chunk 01 added tree-sitter + per-language grammars to
-  # lambda/process-batch-summary/requirements.txt; the extractor
-  # ImportErrors without them. pip_requirements = true tells the
-  # terraform-aws-modules/lambda module to pip-install those into the
-  # deploy zip during `terraform apply`. patterns exclude test code
+  # lambda/process-batch-summary/requirements.txt pins tree-sitter +
+  # per-language grammars used by the symbol-graph extractor; the
+  # extractor ImportErrors without them. pip_requirements = true tells
+  # the terraform-aws-modules/lambda module to pip-install those into
+  # the deploy zip during `terraform apply`. patterns exclude test code
   # and venv detritus.
   source_path = [
     {

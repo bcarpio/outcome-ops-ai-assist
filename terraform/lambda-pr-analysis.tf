@@ -21,11 +21,11 @@ module "analyze_pr_lambda" {
 
   # Source code from local directory.
   #
-  # plan-gkg chunk 08: analyze-pr's structural-impact pass (chunk 06)
-  # needs the chunk-01 extractor at runtime so canonical symbol IDs
-  # produced from post-diff file content line up exactly with the
-  # graph. The extractor lives in lambda/process-batch-summary/extractor
-  # because that's where the writer runs; here we ship it as a prefixed
+  # analyze-pr's structural-impact pass needs the symbol-graph
+  # extractor at runtime so canonical symbol IDs produced from
+  # post-diff file content line up exactly with the graph. The
+  # extractor lives in lambda/process-batch-summary/extractor because
+  # that's where the writer runs; here we ship it as a prefixed
   # subdirectory so the lazy import in diff_symbol_resolver.py finds it
   # without a sys.path shim in the deployed zip. Local tests keep the
   # sys.path fallback for convenience.
@@ -51,15 +51,14 @@ module "analyze_pr_lambda" {
 
   # Environment variables.
   #
-  # plan-gkg chunk 08: wire the symbol-graph reader's two anchor
-  # tables (chunk 02 created the SSM params alongside the DDB module;
-  # we read directly from the module output rather than re-resolving
-  # SSM at cold-start). GRAPH_RETRIEVAL_ENABLED is the platform-wide
-  # kill-switch (defaults to "true" via the handler) so an operator
-  # can flip the flag without redeploy via SSM-backed env override.
-  # PR_WORKSPACE_ID is NOT wired here -- analyze-pr resolves
-  # repo -> workspace at runtime; plumbed through handler.py via the
-  # env var only as a forward-compat seam.
+  # Wire the symbol-graph reader's two anchor tables; the SSM params
+  # exist alongside the DDB module but we read directly from the module
+  # output rather than re-resolving SSM at cold-start.
+  # GRAPH_RETRIEVAL_ENABLED is the platform-wide kill-switch (defaults
+  # to "true" via the handler) so an operator can flip the flag without
+  # redeploy via SSM-backed env override. PR_WORKSPACE_ID is NOT wired
+  # here -- analyze-pr resolves repo -> workspace at runtime; plumbed
+  # through handler.py via the env var only as a forward-compat seam.
   environment_variables = {
     ENV                     = var.environment
     APP_NAME                = var.app_name

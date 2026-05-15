@@ -1,11 +1,11 @@
-"""Pre-PR caller-impact analysis for generate-code (plan-gkg chunk 07).
+"""Pre-PR caller-impact analysis for generate-code.
 
 This module is invoked on the **modify-path** only. Greenfield generation
 (new files / new symbols with no existing callers) is intentionally a
 no-op here: the symbol graph cannot have callers for code that doesn't
 exist yet, and querying it would just round-trip empty results.
 
-The flow, per plan-gkg/07-codegen-integration.md:
+The flow:
 
   1. The existing plan-generation path produces a list of files to be
      created/modified.
@@ -23,7 +23,7 @@ The graph is **best-effort**: if the reader raises
 ``SymbolGraphUnavailable``, if the workspace_id is missing, or if the
 plan can't be parsed, the impact analysis is skipped and codegen
 proceeds as before — the failure mode is "miss the early warning,"
-not "block the PR." That matches the failure-modes table in chunk 07.
+not "block the PR."
 
 Test-isolation note: This module imports ``shared.symbol_graph_reader``
 which itself uses ``boto3`` at module load time. The reader has its own
@@ -93,8 +93,8 @@ class TaskClassification:
     reviewer can audit why impact analysis fired (or didn't) without
     re-running the heuristic.
 
-    Per plan-gkg/07: when ambiguous, default to ``"modify"`` because
-    impact analysis is additive overhead, not destructive.
+    When ambiguous, default to ``"modify"`` because impact analysis
+    is additive overhead, not destructive.
     """
 
     task_type: str
@@ -118,7 +118,7 @@ def classify_task_type(
 ) -> TaskClassification:
     """Decide whether the issue + plan is greenfield or modify.
 
-    Detection (per plan-gkg/07 "Greenfield vs modify dispatch"):
+    Detection (greenfield vs modify dispatch):
 
     - Plan explicitly modifies existing files -> ``modify`` regardless
       of issue verbiage. This is the strongest signal.
@@ -129,8 +129,8 @@ def classify_task_type(
       cheap, run it).
     - Issue uses ONLY greenfield verbs ("add new", "create new") AND
       no file-modifications are planned -> ``greenfield``.
-    - Ambiguous -> ``modify`` (additive overhead, follows the
-      conservative default in chunk 07).
+    - Ambiguous -> ``modify`` (additive overhead; the conservative
+      default).
 
     Note: ``files_to_modify`` is currently empty for OutcomeOps because
     the plan schema doesn't separate create vs modify yet. The parameter
@@ -385,10 +385,11 @@ class SymbolImpact:
     error: Optional[str]
 
 
-# Per plan-gkg/07 "Failure modes" — when a single symbol's caller list
-# would exceed the prompt budget we truncate at this many entries and
-# annotate the prompt with the truncation. 200 lines up with the chunk-04
-# default for callers(); for importers() we go higher.
+# Failure-mode caps — when a single symbol's caller list would
+# exceed the prompt budget we truncate at this many entries and
+# annotate the prompt with the truncation. 200 lines up with the
+# symbol-graph reader default for callers(); for importers() we go
+# higher.
 _CALLERS_LIMIT = 200
 _IMPORTERS_LIMIT = 500
 
@@ -414,8 +415,8 @@ def analyze_caller_impact(
 
     The function is **resilient**: a ``SymbolGraphUnavailable`` (or any
     other reader exception) for one target produces a ``SymbolImpact``
-    with ``error`` set and the analysis continues with the rest. The
-    failure-modes table in plan-gkg/07 calls this out explicitly.
+    with ``error`` set and the analysis continues with the rest --
+    failure mode: skip the bad target, keep the rest.
 
     Lazy-imports the reader so module load doesn't drag in
     ``boto3``/``moto`` until impact analysis is actually exercised.
@@ -508,8 +509,7 @@ def build_impact_prompt_section(impacts: Sequence[SymbolImpact]) -> str:
     plan-generation prompt is not modified in that case (greenfield
     parity).
 
-    The output format mirrors the example in plan-gkg/07
-    "Impact-analysis prompt":
+    The output format is the impact-analysis prompt fragment:
 
       Plan analysis: your proposed changes will modify the following symbols:
 
@@ -520,8 +520,7 @@ def build_impact_prompt_section(impacts: Sequence[SymbolImpact]) -> str:
            - ...
 
     Truncated lists end with an explicit note so the model knows the
-    impact is broader than the printed list (per the chunk-07
-    failure-modes table).
+    impact is broader than the printed list.
     """
 
     real_impacts = [i for i in impacts if i.callers or i.error]
@@ -616,16 +615,15 @@ def run_impact_analysis(
 ) -> ImpactAnalysisResult:
     """End-to-end orchestrator: classify -> extract -> query -> format.
 
-    Per plan-gkg/07, this is a no-op on the greenfield path. We still
-    classify so the caller can log the decision (and so the
-    new-public-symbol capture in the greenfield branch — out of scope
-    for this chunk's prompt section — has a place to hook in later).
+    No-op on the greenfield path. We still classify so the caller
+    can log the decision (and so a future new-public-symbol capture
+    in the greenfield branch — out of scope for the impact prompt
+    section — has a place to hook in later).
 
     Returns an ``ImpactAnalysisResult`` whose ``prompt_section`` is the
     empty string when nothing should be injected. Consumers concatenate
     the section to their existing prompt only when it's truthy, so
-    greenfield prompts are unchanged (latency parity per chunk-07
-    Definition of Done).
+    greenfield prompts are unchanged (latency parity).
     """
 
     classification = classify_task_type(

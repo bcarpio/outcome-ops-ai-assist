@@ -19,8 +19,8 @@ Emits:
     and ``implements`` only when the textual context is unambiguous; in
     the ambiguous default case it emits ``extends`` for the first base
     (which the C# language requires to be the class if present) and
-    ``implements`` for the rest. This is the documented v1 trade-off in
-    ADR-020 / the plan-gkg open question.
+    ``implements`` for the rest. This is the documented v1 trade-off
+    (see ADR-017 and ADR-020).
 
 Known false-positive surfaces (per ADR-017's "tradeoffs" section):
 

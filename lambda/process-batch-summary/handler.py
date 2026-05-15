@@ -35,8 +35,8 @@ from shared.audit import COMPREHEND_MODEL_ID, log_audit_entry
 from shared.audit_writer import ACTION_DOCUMENT_INGESTED, log_admin_action
 from shared.pii import MODE_STRICT, read_workspace_mode, redact
 
-# Symbol-graph extractor (plan-gkg chunk 01). The extractor emits typed
-# Facts only — storage / SQS hand-off lands in chunks 02 and 03.
+# Symbol-graph extractor. The extractor emits typed Facts only —
+# storage and the SQS hand-off are handled downstream.
 # Path-prepend below mirrors the ``shared`` import above so the extractor
 # package resolves whether handler.py is loaded via the Lambda runtime
 # (cwd=/var/task) or via importlib.util.spec_from_file_location in tests.
@@ -782,14 +782,14 @@ def generate_batch_summary(
     Args:
         batch: Batch message containing repo, batch_type, group_name, file_paths
         fact_sink: Optional list to append symbol-graph Facts to. The
-            extractor (plan-gkg chunk 01) runs on the raw fetched bytes
-            BEFORE chunking so symbol resolution sees complete files.
-            When ``None`` the extractor pass is skipped — keeps the
-            existing call sites (tests, legacy paths) unchanged.
-        sg_filter: Per-repo symbol-graph extraction filter (plan-gkg
-            chunk 11). Applied per-file inside ``_iter_batch_facts``.
-            Default is the permissive module-level filter, so legacy
-            call sites keep their current behaviour.
+            extractor runs on the raw fetched bytes BEFORE chunking so
+            symbol resolution sees complete files. When ``None`` the
+            extractor pass is skipped — keeps the existing call sites
+            (tests, legacy paths) unchanged.
+        sg_filter: Per-repo symbol-graph extraction filter, applied
+            per-file inside ``_iter_batch_facts``. Default is the
+            permissive module-level filter, so legacy call sites keep
+            their current behaviour.
 
     Returns:
         Generated summary text
@@ -807,11 +807,11 @@ def generate_batch_summary(
         try:
             content = fetch_file_content(repo_project, file_path)
 
-            # Symbol-graph extractor pass (plan-gkg chunk 03). Run on
-            # the FULL raw content, not the chunked / truncated copy —
-            # truncation would drop symbol definitions and produce
-            # spurious "no callers" results. Best-effort, per-file
-            # try/except: an extractor crash never blocks the summary.
+            # Symbol-graph extractor pass. Run on the FULL raw content,
+            # not the chunked / truncated copy — truncation would drop
+            # symbol definitions and produce spurious "no callers"
+            # results. Best-effort, per-file try/except: an extractor
+            # crash never blocks the summary.
             if fact_sink is not None:
                 language = _language_for_path(file_path)
                 if language is not None:
@@ -1083,25 +1083,25 @@ def _emit_facts(
     commit_sha: str = "",
     previous_graph_sha: "str | None" = None,
 ) -> int:
-    """Hand the Fact stream to the symbol-graph writer (plan-gkg chunks 02/03).
+    """Hand the Fact stream to the symbol-graph writer.
 
     When ``workspace_id`` / ``repo`` / ``commit_sha`` are all present the
     Facts are persisted via the delete-then-write path in
-    ``shared.symbol_graph_writer``. The chunk-03 pointer state machine
-    in ``shared.symbol_graph_pointer`` owns the actual ``graph_sha``
+    ``shared.symbol_graph_writer``. The pointer state machine in
+    ``shared.symbol_graph_pointer`` owns the actual ``graph_sha``
     advance, so the writer is invoked with ``skip_pointer_swap=True``
     to keep the legacy ``current_commit_sha`` write from clobbering
     the new ``graph_sha`` / ``graph_pending_sha`` attributes on the
     pointer row.
 
     Args:
-        facts: Iterable of chunk-01 Facts.
+        facts: Iterable of extractor Facts.
         workspace_id / repo / commit_sha: Storage context. When any are
             missing the call is a no-op log (legacy producer path).
         previous_graph_sha: Caller-supplied previous SHA from the
-            chunk-03 pointer module. Bypasses the writer's legacy
-            pointer read so it doesn't reach for a code-maps row that
-            no longer carries the source-of-truth pointer.
+            pointer module. Bypasses the writer's legacy pointer read
+            so it doesn't reach for a code-maps row that no longer
+            carries the source-of-truth pointer.
 
     Returns the number of Facts the writer accepted (zero when storage
     was skipped). Failures are caught and logged; the symbol-graph regen
@@ -1158,9 +1158,9 @@ def _iter_batch_facts(
 ) -> Iterator[Fact]:
     """Yield Facts for a single file that already has its content in hand.
 
-    ``config`` is the per-repo extraction filter (plan-gkg chunk 11);
-    when omitted the permissive default is used so legacy call sites
-    keep their current behavior.
+    ``config`` is the per-repo extraction filter; when omitted the
+    permissive default is used so legacy call sites keep their current
+    behavior.
     """
 
     try:
@@ -1175,7 +1175,7 @@ def _load_symbol_graph_filter(
     repo_full_name: str, branch_name: str, github_token: str
 ) -> SymbolGraphFilter:
     """Load the per-repo symbol-graph extraction filter from
-    ``.outcomeops.yaml`` (plan-gkg chunk 11).
+    ``.outcomeops.yaml``.
 
     Reads ``ingestion.symbol_graph`` from the canonical Pydantic-validated
     ``RepoConfig`` (``lambda/shared/repo_config.py``) and maps the values
@@ -1240,10 +1240,10 @@ def process_batch_record(record: Dict[str, Any]) -> None:
         f"({len(batch['file_paths'])} files)"
     )
 
-    # Symbol-graph regen context (plan-gkg chunk 03). All three of
-    # workspace_id, repo, and commit_sha must be present for the
-    # atomic-swap path to engage; legacy producers that omit any of
-    # them fall through to the existing summary-only flow.
+    # Symbol-graph regen context. All three of workspace_id, repo, and
+    # commit_sha must be present for the atomic-swap path to engage;
+    # legacy producers that omit any of them fall through to the
+    # existing summary-only flow.
     sg_workspace = batch.get("workspace_id") or ""
     sg_repo = batch.get("repo") or ""
     sg_commit_sha = batch.get("commit_sha") or ""
@@ -1297,10 +1297,10 @@ def process_batch_record(record: Dict[str, Any]) -> None:
     # complete). Any extractor failure is per-file try/except inside
     # ``_iter_batch_facts`` — never blocks the summary.
     #
-    # Per-repo .outcomeops.yaml ``ingestion.symbol_graph`` knobs
-    # (plan-gkg chunk 11) only matter on the extraction path, so the
-    # filter is only loaded when we've already claimed the swap. On the
-    # legacy / sg-disabled path the filter is irrelevant.
+    # Per-repo .outcomeops.yaml ``ingestion.symbol_graph`` knobs only
+    # matter on the extraction path, so the filter is only loaded when
+    # we've already claimed the swap. On the legacy / sg-disabled path
+    # the filter is irrelevant.
     try:
         if sg_claimed:
             sg_branch = get_default_branch(sg_repo)
@@ -1360,7 +1360,7 @@ def process_batch_record(record: Dict[str, Any]) -> None:
             _abandon_symbol_graph_swap(sg_workspace, sg_repo)
         raise
 
-    # Symbol-graph write + atomic-swap commit (plan-gkg chunk 03).
+    # Symbol-graph write + atomic-swap commit.
     # Runs AFTER the summary path has fully succeeded so a regen never
     # leaves a fresh graph slice attached to a half-written summary.
     if sg_claimed:

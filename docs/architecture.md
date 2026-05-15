@@ -77,13 +77,13 @@ OutcomeOps AI Assist is a knowledge-driven code generation system that shifts de
                                              implementers)
 ```
 
-The **symbol-graph** node (right of DynamoDB) is the chunk-08
+The **symbol-graph** node (right of DynamoDB) is the
 structural-retrieval layer. It augments RAG with deterministic
-caller / importer / implementer answers; see
-`plan-gkg/overview.md` for why and `docs/symbol-graph-validation.md`
-for the operator runbook. Routing between RAG and graph is invisible
-to the user — the chat router fans out in parallel based on the
-question shape.
+caller / importer / implementer answers — see
+`docs/features.md` (Structural retrieval section) for the user-facing
+description and `docs/symbol-graph-validation.md` for the operator
+runbook. Routing between RAG and graph is invisible to the user —
+the chat router fans out in parallel based on the question shape.
 
 ## Core Components
 

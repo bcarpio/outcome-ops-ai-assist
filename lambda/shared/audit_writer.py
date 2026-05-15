@@ -121,11 +121,11 @@ ACTION_PR_ANALYZED = "PR_ANALYZED"
 ACTION_CODE_GENERATED = "CODE_GENERATED"
 ACTION_CODE_GEN_DLQ_SALVAGE_PR_CREATED = "CODE_GEN_DLQ_SALVAGE_PR_CREATED"
 
-# plan-gkg/09 — every chat turn fires a routing decision (intent +
-# retrievals fired + graph staleness). Cost of the Haiku classification
-# itself still lands via ``log_audit_entry(lambda_name="chat:router")``
-# in ``shared.audit``; this constant tags the separate "what surfaces
-# did we hit" event that ``log_routing_decision`` writes.
+# Every chat turn fires a routing decision (intent + retrievals fired
+# + graph staleness). Cost of the Haiku classification itself still
+# lands via ``log_audit_entry(lambda_name="chat:router")`` in
+# ``shared.audit``; this constant tags the separate "what surfaces did
+# we hit" event that ``log_routing_decision`` writes.
 ACTION_CHAT_ROUTING_DECISION = "CHAT_ROUTING_DECISION"
 
 # Tier 2 — nice-to-haves.
@@ -457,7 +457,7 @@ def log_source_sync(
 
 
 # ============================================================================
-# plan-gkg/09 — chat routing-decision audit
+# Chat routing-decision audit
 # ============================================================================
 
 
@@ -494,8 +494,8 @@ def log_routing_decision(
 ) -> None:
     """Emit one ``CHAT_ROUTING_DECISION`` audit row per chat turn.
 
-    Per plan-gkg/09: the **Haiku cost** of the classifier call is logged
-    separately via ``log_audit_entry(lambda_name="chat:router")`` in
+    The **Haiku cost** of the classifier call is logged separately via
+    ``log_audit_entry(lambda_name="chat:router")`` in
     ``shared.audit``. This function logs the **routing decision itself**
     — which retrieval surfaces fired, the graph anchor SHA + staleness,
     and the result counts each surface returned. Two distinct events,

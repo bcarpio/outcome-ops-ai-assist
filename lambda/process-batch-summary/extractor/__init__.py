@@ -1,5 +1,5 @@
 """
-Symbol-graph extractor package (plan-gkg chunk 01).
+Symbol-graph extractor package.
 
 Public surface:
 
@@ -12,8 +12,9 @@ in ``base.py``. The Lambda handler treats the package as a single
 entry-point: it picks the language for each file (already known to the
 batch pipeline) and asks for the Fact stream.
 
-Storage, transport, and querying are NOT this chunk's concern — see
-chunks 02-04 of plan-gkg/.
+Storage, transport, and querying live elsewhere; this module's job is
+strictly Fact emission. See ``docs/features.md`` (Structural retrieval)
+for the end-to-end picture.
 """
 
 from __future__ import annotations
@@ -72,10 +73,10 @@ def extract_facts(
     """Yield Facts for a file on disk.
 
     Skips the file outright when ``file_path`` is rejected by the
-    per-repo ``SymbolGraphFilter`` (chunk 11) — that filter folds in
-    the ADR-009 base excludes plus the repo's own include/exclude/
-    language/size knobs. When ``config`` is None the module-level
-    permissive default is used so legacy call sites are unchanged.
+    per-repo ``SymbolGraphFilter`` — that filter folds in the ADR-009
+    base excludes plus the repo's own include/exclude/language/size
+    knobs. When ``config`` is None the module-level permissive default
+    is used so legacy call sites are unchanged.
     """
 
     filt = config if config is not None else DEFAULT_SYMBOL_GRAPH_FILTER
@@ -99,9 +100,9 @@ def extract_facts_from_bytes(
 ) -> Iterator[Fact]:
     """Yield Facts for an in-memory source buffer.
 
-    Useful for the SQS-driven pipeline (chunk 03 feeds already-fetched
+    Useful for the SQS-driven pipeline, which feeds already-fetched
     file bytes through here instead of round-tripping through the local
-    filesystem). When ``config`` is None the module-level permissive
+    filesystem. When ``config`` is None the module-level permissive
     default is used so legacy call sites are unchanged.
     """
 

@@ -38,9 +38,9 @@ VENDOR_NAME = "OutcomeOps"
 # OCSF class UIDs (see https://schema.ocsf.io/)
 CLASS_ACCOUNT_CHANGE = 3001
 CLASS_AUTHENTICATION = 3002
-# plan-gkg/09 — chat routing-decision audit lands on OCSF
-# "Application Lifecycle" so a SIEM consumer can distinguish it
-# from generic 6005 "Application Activity" rows.
+# Chat routing-decision audit lands on OCSF "Application Lifecycle"
+# so a SIEM consumer can distinguish it from generic 6005 "Application
+# Activity" rows.
 CLASS_APPLICATION_LIFECYCLE = 6002
 CLASS_API_ACTIVITY = 6003
 CLASS_APPLICATION_ACTIVITY = 6005
@@ -125,10 +125,10 @@ ADMIN_ACTION_MAP: Dict[str, tuple] = {
         ACT_OTHER,
         SEV_MEDIUM,
     ),
-    # plan-gkg/09 — chat routing decision (which retrievals fired, graph
-    # staleness, result counts). Lands on OCSF Application Lifecycle
-    # 6002 with the routing-decision activity_id so SIEM consumers can
-    # filter on type_uid=600299 without conflating it with generic 6005
+    # Chat routing decision (which retrievals fired, graph staleness,
+    # result counts). Lands on OCSF Application Lifecycle 6002 with the
+    # routing-decision activity_id so SIEM consumers can filter on
+    # type_uid=600299 without conflating it with generic 6005
     # Application Activity events.
     "CHAT_ROUTING_DECISION": (
         CLASS_APPLICATION_LIFECYCLE,

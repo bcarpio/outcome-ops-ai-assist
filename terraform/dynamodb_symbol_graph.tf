@@ -1,22 +1,21 @@
 # ============================================================================
-# DynamoDB Table for the Symbol Graph (plan-gkg chunk 02)
+# DynamoDB Table for the Symbol Graph.
 #
-# Persists the structural Fact stream emitted by the chunk-01 extractor.
-# Each item is one edge (defines / imports / calls / implements / extends /
-# references) scoped to ${workspace_id}#${repo}#${commit_sha}, so a regen
+# Persists the structural Fact stream emitted by the symbol-graph
+# extractor. Each item is one edge (defines / imports / calls /
+# implements / extends / references) scoped to
+# ${workspace_id}#${repo}#${commit_sha}, so a regen
 # (delete-old + write-new) is a single-partition operation.
 #
-# Two GSIs power the dominant read paths (chunk 04 query API):
+# Two GSIs power the dominant read paths in the query API:
 #   target-kind-index   - callers(X) / importers(X) / implementers(X) by
 #                         (workspace_id, target_symbol_id) + kind prefix.
 #   target-prefix-index - subpath wildcards like
 #                         "@hyatt-hpe/hpe-utils/*" by (workspace_id,
 #                         target_prefix) with kind/repo in the sort key.
 #
-# Naming note: ADR-001/ADR-004 do not specify a GSI naming convention.
-# Plan-gkg/02 proposes ``target-kind-index`` and ``target-prefix-index``;
-# owner has been flagged. Rename via a versioned table replacement if the
-# ADR amendment lands on a different convention.
+# GSI naming convention: see ADR-021. Rename via a versioned table
+# replacement if the ADR is later amended.
 # ============================================================================
 
 module "symbol_graph_table" {

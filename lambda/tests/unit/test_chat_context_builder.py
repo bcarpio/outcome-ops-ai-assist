@@ -1,12 +1,11 @@
-"""Unit tests for ``chat.context_builder`` (plan-gkg chunk 05).
+"""Unit tests for ``chat.context_builder``.
 
 Covers:
 
 - The three block shapes (``build_symbol_facts_block``,
   ``build_symbol_definition_block``,
   ``build_graph_unavailable_block``).
-- Empty result rendering -- the audit unlock (plan-gkg/05 "Empty graph
-  results").
+- Empty result rendering -- the audit unlock for "empty graph results".
 - Truncation disclosure.
 - Staleness rendering across the rule-of-thumb buckets (<60s, <10min,
   <24h, >24h).
@@ -92,9 +91,8 @@ def test_facts_block_renders_callers_with_definition():
 
 
 def test_facts_block_renders_zero_result_explicitly():
-    """plan-gkg/05 'Empty graph results' -- never omit the empty
-    block. The audit unlock depends on the model surfacing 'zero
-    callers' honestly.
+    """'Empty graph results' -- never omit the empty block. The audit
+    unlock depends on the model surfacing 'zero callers' honestly.
     """
     result = QueryResult(
         sites=[],
@@ -186,7 +184,7 @@ def test_facts_block_sorts_sites_deterministically():
 
 
 # ===========================================================================
-# Staleness rendering buckets (plan-gkg/04 rule of thumb)
+# Staleness rendering buckets (symbol-graph reader rule of thumb)
 # ===========================================================================
 
 

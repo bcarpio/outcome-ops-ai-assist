@@ -1,4 +1,4 @@
-"""Chat-side query intent router (plan-gkg chunk 05).
+"""Chat-side query intent router.
 
 Classifies a user's chat turn into one of five intents so the chat
 Lambda can decide which retrieval surfaces fire:
@@ -23,11 +23,10 @@ answered because the model reasons over whatever results land in the
 context block.
 
 v1 implementation is a small Bedrock Haiku call (one Bedrock invocation
-per chat turn — ~$0.0001, ~$1 per workspace per 10K turns/month per
-the plan). Every invocation is audited via ``log_audit_entry()`` with
+per chat turn — ~$0.0001, ~$1 per workspace per 10K turns/month).
+Every invocation is audited via ``log_audit_entry()`` with
 ``lambda_name="chat:router"`` so router spend appears as its own line
-in per-workspace analytics, not buried inside chat total
-(plan-gkg/05 "Router cost and audit").
+in per-workspace analytics, not buried inside chat total.
 
 Question text is **never** stored in the audit stream — only a SHA256
 hash of the question lands in ``flagged_reason``, matching the
@@ -79,8 +78,7 @@ class RouterDecision:
     builder treats both as "no graph lookup possible".
 
     ``model_id`` and ``duration_ms`` are surfaced so the caller can
-    attribute the router's Bedrock spend (plan-gkg/05 "Router cost and
-    audit").
+    attribute the router's Bedrock spend per workspace + user.
     """
 
     intent: str
@@ -90,8 +88,8 @@ class RouterDecision:
 
 
 # ---------------------------------------------------------------------------
-# Router prompt (plan-gkg/05 "Router" section, verbatim except for the
-# response-format clarification and the symbol-extraction sub-prompt).
+# Router prompt — response-format clarification and the symbol-extraction
+# sub-prompt are appended on top of the intent-classification core.
 # ---------------------------------------------------------------------------
 
 
@@ -285,8 +283,8 @@ def classify_intent(
 
     Bedrock-failures degrade gracefully to ``RouterDecision(intent=
     "unknown", symbol_candidate=None, ...)`` so the chat handler falls
-    back to fan-out retrieval — the plan's stated default for
-    ``unknown`` (plan-gkg/05 routing decision table).
+    back to fan-out retrieval — the routing-decision default for
+    ``unknown``.
 
     Every successful call is logged via ``log_audit_entry()`` with
     ``lambda_name="chat:router"`` so router spend is attributable to
@@ -375,9 +373,9 @@ def classify_intent(
     input_tokens = int(usage.get("inputTokens", 0) or 0)
     output_tokens = int(usage.get("outputTokens", 0) or 0)
 
-    # Audit the spend (plan-gkg/05 "Router cost and audit"). Question
-    # text never leaves this function — only its SHA256 hash for
-    # correlation with the routing-decision stream landing in chunk 09.
+    # Audit the spend. Question text never leaves this function —
+    # only its SHA256 hash for correlation with the routing-decision
+    # audit stream.
     try:
         log_audit_entry(
             audit_table_name=audit_table_name,

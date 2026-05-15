@@ -62,7 +62,7 @@ required_adrs:
 
 # Document ingestion configuration.
 # Controls which paths are ingested and how the symbol-graph extractor
-# (plan-gkg chunk 11) treats files in this repo.
+# treats files in this repo.
 ingestion:
   # Symbol-graph extraction knobs. Precedence (top-most wins):
   #   1. enabled=false short-circuits everything

@@ -758,9 +758,9 @@ def send_code_units_to_sqs(
         workspace_id: Optional workspace ID for workspace-scoped storage
         commit_sha: Optional current repo commit SHA. When supplied
             alongside ``workspace_id``, ``process-batch-summary`` runs
-            the symbol-graph extractor + atomic-swap pointer protocol
-            (plan-gkg chunk 03). When absent, the consumer falls back
-            to the legacy summary-only path.
+            the symbol-graph extractor + atomic-swap pointer protocol.
+            When absent, the consumer falls back to the legacy
+            summary-only path.
 
     Note: orphan cleanup is NOT queued from here. The caller must invoke
     _queue_orphan_code_map_cleanup() separately with the FULL current
@@ -781,7 +781,7 @@ def send_code_units_to_sqs(
             if workspace_id:
                 message["workspace_id"] = workspace_id
             if commit_sha:
-                # Plan-gkg chunk 03 — symbol-graph regen anchors on this.
+                # Symbol-graph regen anchors on this commit SHA.
                 message["commit_sha"] = commit_sha
 
             message_body = json.dumps(message)

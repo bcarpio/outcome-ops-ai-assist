@@ -1,8 +1,9 @@
 # Symbol-Graph Retrieval — Validation Runbook
 
-This runbook walks the operator through the 8 validation queries in
-`plan-gkg/08-rollout-and-validation.md` that gate the symbol-graph
-feature's "v1 is done" milestone.
+This runbook walks the operator through the 8 validation queries that
+gate the symbol-graph feature's "v1 is done" milestone, the audit-row
+checks that confirm the routing-decision + cost-tracking story holds,
+the phase rollout sequence, and the v2 migration procedure.
 
 Run all validations **after** `terraform apply` of the chunk-08
 changes lands and **after** the per-workspace backfill script
@@ -27,8 +28,8 @@ bottom of this doc before investigating root cause.
 
 In addition to the per-validation expectations below, every chat turn
 issued during validation must produce **two** audit rows that the
-operator confirms before signing off (plan-gkg chunk 09 — the audit
-story is part of the v1 definition of done, not optional):
+operator confirms before signing off (the audit story is part of the
+v1 definition of done, not optional):
 
 1. **Cost row** — Query the audit table for `lambda_name="chat:router"`
    with a timestamp inside the validation window. Confirms the Haiku
@@ -320,8 +321,6 @@ called by something.
 
 ## Phase rollout sequence
 
-Per `plan-gkg/08`:
-
 1. **Phase 1 — Dev validation**: run validations 1, 4, 5, 6, 7, 8
    against the dev `outcome-ops-ai-assist-private` workspace after
    the dev backfill completes. Validations 2 and 3 require Hyatt /
@@ -413,7 +412,7 @@ number and a CloudWatch logs link.
   the one-touch toggle works.
 - [ ] Owner sign-off to begin customer phase 3 rollout.
 
-## Per-repo config (plan-gkg chunk 11)
+## Per-repo config
 
 Each repository can opt in or out of symbol-graph extraction through
 its `.outcomeops.yaml`. The schema lives in
@@ -459,9 +458,11 @@ batch.
 
 See also:
 
-- `plan-gkg/08-rollout-and-validation.md` — full spec.
-- `plan-gkg/overview.md` — why this feature exists.
+- `docs/features.md` — user-facing description of the structural
+  retrieval feature.
 - `docs/architecture.md` — system context (graph-store callout).
+- `docs/adr/ADR-020-abap-parser-strategy.md` — ABAP hybrid extractor.
+- `docs/adr/ADR-021-gsi-naming-symbol-graph.md` — GSI naming.
 
 
 ## v2 migration (one-shot, per workspace+repo)

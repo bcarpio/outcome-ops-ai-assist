@@ -1,4 +1,4 @@
-"""Diff-driven symbol resolver for analyze-pr (plan-gkg chunk 06).
+"""Diff-driven symbol resolver for analyze-pr.
 
 Walks a unified diff and the post-diff file content to identify which
 canonical symbols a PR mutates. Each mutated symbol is tagged with a
@@ -7,19 +7,18 @@ declaration line itself — callers likely need updates) or ``"body"``
 (the change is inside the body only — behavioral change but the
 contract is preserved).
 
-The canonical symbol IDs are produced by the chunk-01 extractor
-(``process-batch-summary.extractor``) so they line up exactly with the
-IDs the chunk-02 writer stored in DynamoDB. That alignment is what
-lets the chunk-04 reader find callers.
+The canonical symbol IDs are produced by the extractor in
+``process-batch-summary.extractor`` so they line up exactly with the
+IDs the symbol-graph writer stored in DynamoDB. That alignment is
+what lets the symbol-graph reader find callers.
 
-Plan-gkg/06 "Symbol resolution from a diff" specifies the high-level
-behavior. The implementation here is intentionally **language-agnostic
-on the diff side** — we treat the unified diff as a stream of hunks
-with file paths and (start_line, count) ranges. The language-specific
+The implementation here is intentionally **language-agnostic on the
+diff side** — we treat the unified diff as a stream of hunks with
+file paths and (start_line, count) ranges. The language-specific
 symbol extraction is delegated to the existing extractor's
 ``extract_facts_from_bytes`` so we don't re-implement parsing logic.
 
-Failure modes (per plan-gkg/06):
+Failure modes:
 
 - File with no hunks            : no targets emitted for that file.
 - Removed/binary/null file      : no targets (the writer's graph has
@@ -164,11 +163,11 @@ _HUNK_HEADER_RE = re.compile(
     r"^@@\s+-\d+(?:,\d+)?\s+\+(?P<new_start>\d+)(?:,(?P<new_count>\d+))?\s+@@"
 )
 
-# Match declaration-shaped fragments across the languages the chunk-01
-# extractor covers. False positives here are cheap (we err on the side
-# of "this is a signature change" per plan-gkg/06 "Symbol resolution
-# from a diff"). False negatives mean a signature change gets the
-# softer "body" prompt -- the failure mode we're explicitly avoiding.
+# Match declaration-shaped fragments across the languages the
+# extractor covers. False positives here are cheap (we err on the
+# side of "this is a signature change"). False negatives mean a
+# signature change gets the softer "body" prompt -- the failure mode
+# we're explicitly avoiding.
 _SIGNATURE_RE = re.compile(
     r"^[+\-]\s*("
     # Python
@@ -373,13 +372,14 @@ class FilePatch:
     content at the PR's head SHA -- we run the extractor over it so
     the canonical IDs match what's in the graph for the SAME shape
     (the writer uses the head's content too, modulo the rebuild lag
-    documented in plan-gkg/06 "Staleness handling for in-flight PRs").
+    inherent to in-flight PRs — surfaced in the rendered footer's
+    staleness phrase).
 
     ``status`` mirrors GitHub's per-file ``status`` (``"added"``,
     ``"modified"``, ``"removed"``, ``"renamed"``) -- we filter out
     ``"removed"`` because the post-diff source doesn't exist by
-    definition and v1 doesn't surface removed-symbol callers (plan-gkg/
-    06 "Removed files" notes this is on the deferred list).
+    definition and v1 doesn't surface removed-symbol callers
+    (deferred).
     """
 
     file_path: str
@@ -413,7 +413,7 @@ def resolve_targets(
 
     for patch in patches:
         if patch.status == "removed":
-            # plan-gkg/06 "Removed files" -- deferred for v1.
+            # Removed-file symbol resolution -- deferred for v1.
             continue
         if not patch.patch or not patch.post_diff_source:
             continue

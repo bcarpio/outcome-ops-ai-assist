@@ -1,5 +1,5 @@
 """
-Shared primitives for the symbol-graph extractor (chunk 01 of plan-gkg).
+Shared primitives for the symbol-graph extractor.
 
 This module defines:
 
@@ -11,10 +11,10 @@ This module defines:
     the code-unit discoverer already skipped).
   * The language registry that ``extract_facts`` dispatches through.
 
-The extractor is **emission-only** — facts are yielded; storage is the
-job of chunk 02, the SQS hand-off is the job of chunk 03, and the query
-layer is chunk 04. Keeping the Fact stream pure and language-agnostic
-here is what makes the rest of the plan composable.
+The extractor is **emission-only** — facts are yielded; storage,
+the SQS hand-off, and the query layer all live in separate modules.
+Keeping the Fact stream pure and language-agnostic here is what makes
+the surrounding pipeline composable.
 """
 
 from __future__ import annotations
@@ -29,10 +29,10 @@ from typing import Callable, Dict, Iterator, List, Optional, Set
 # ---------------------------------------------------------------------------
 
 
-# ``kind`` values mirror the wire vocabulary in plan-gkg/01-symbol-extraction.md.
-# Keeping them as plain strings (instead of an Enum) lets the dataclass stay
-# frozen-hashable and lets downstream JSON serialization happen without a
-# custom encoder.
+# ``kind`` values are the fixed wire vocabulary of the symbol-graph Fact
+# stream. Keeping them as plain strings (instead of an Enum) lets the
+# dataclass stay frozen-hashable and lets downstream JSON serialization
+# happen without a custom encoder.
 FACT_KINDS: Set[str] = {
     "defines",
     "imports",
@@ -48,8 +48,8 @@ class Fact:
     """A single typed structural edge.
 
     Every extractor — whether Tree-sitter or regex — emits ``Fact``
-    instances and nothing else. Downstream storage (chunk 02) flattens
-    these onto DynamoDB items; the query API (chunk 04) reads them back.
+    instances and nothing else. Downstream storage flattens these onto
+    DynamoDB items; the query API reads them back.
     """
 
     kind: str
@@ -83,7 +83,7 @@ def make_symbol_id(
 ) -> str:
     """Build a canonical symbol ID.
 
-    Shape (from plan-gkg/01-symbol-extraction.md):
+    Shape:
 
         ``<lang>:<package_or_module>:<class_or_namespace>?:<symbol_name>``
 
@@ -196,7 +196,7 @@ def supported_languages() -> Set[str]:
 
 
 # ---------------------------------------------------------------------------
-# Per-repo extraction filter (plan-gkg chunk 11)
+# Per-repo extraction filter
 # ---------------------------------------------------------------------------
 
 

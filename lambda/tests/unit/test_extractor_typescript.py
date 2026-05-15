@@ -1,4 +1,4 @@
-"""Unit tests for the TypeScript extractor (plan-gkg chunk 01)."""
+"""Unit tests for the TypeScript extractor."""
 
 from __future__ import annotations
 

@@ -1,8 +1,8 @@
-"""Symbol-graph DynamoDB writer (plan-gkg chunk 02, v2 schema).
+"""Symbol-graph DynamoDB writer (v2 schema).
 
-Persists the structural ``Fact`` stream emitted by the chunk-01 extractor.
-Schema and access patterns are documented in plan-gkg/02-storage-and-schema.md
-with the v2 refinement captured in ``plan/overview.md``.
+Persists the structural ``Fact`` stream emitted by the extractor.
+GSI naming and access patterns are captured in ADR-021; the operator
+runbook lives at ``docs/symbol-graph-validation.md``.
 
 v2 schema (this module):
   - Base PK is ``${workspace_id}#${repo}`` -- no commit_sha component.
@@ -20,7 +20,7 @@ v2 schema (this module):
 
 Companion to ``shared/audit_writer.py``. Kept narrow and side-effect-clean
 so the call site can be unit-tested with moto under a single autouse
-fixture (ADR-005 / plan-gkg cross-cutting standards).
+fixture (ADR-005).
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Pointer item shape (code-maps table, plan-gkg/02 Option A)
+# Pointer item shape (code-maps table)
 # ---------------------------------------------------------------------------
 
 # The pointer lives in the existing code-maps state-tracking table. PK/SK

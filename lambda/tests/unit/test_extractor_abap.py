@@ -1,4 +1,4 @@
-"""Unit tests for the ABAP hybrid extractor (plan-gkg chunk 01, ADR-020)."""
+"""Unit tests for the ABAP hybrid extractor (ADR-020)."""
 
 from __future__ import annotations
 

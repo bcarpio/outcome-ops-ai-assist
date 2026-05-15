@@ -7,8 +7,8 @@ consume it:
 
 * ``generate-code`` — uses ``RepoConfig`` to choose a code-generation
   backend and merge per-repo guidelines into prompts.
-* ``process-batch-summary`` — uses ``ingestion.symbol_graph`` (plan-gkg
-  chunk 11) to opt repos in/out of structural extraction.
+* ``process-batch-summary`` — uses ``ingestion.symbol_graph`` to opt
+  repos in/out of structural extraction.
 
 All input validation goes through Pydantic v2 BaseModels so callers get
 typed access, default fallbacks, and ``ValidationError`` on malformed
@@ -88,9 +88,11 @@ class RequiredAdrsConfig(BaseModel):
     global_adrs: List[str] = Field(default_factory=list, alias="global")
 
 
-# Languages recognized by the symbol-graph extractor (plan-gkg chunk 01).
+# Languages recognized by the symbol-graph extractor.
 # Kept in sync with ``lambda/process-batch-summary/extractor/__init__.py``
 # (each side-effect import there registers exactly one of these names).
+# Per-language strategy decisions: see ADR-017 (C# regex extractor) and
+# ADR-020 (ABAP hybrid parser).
 _SYMBOL_GRAPH_LANGUAGES = {
     "python",
     "typescript",
@@ -103,7 +105,7 @@ _SYMBOL_GRAPH_LANGUAGES = {
 
 class SymbolGraphConfig(BaseModel):
     """
-    Symbol-graph extraction configuration (plan-gkg chunk 11).
+    Symbol-graph extraction configuration.
 
     Lets a repository opt in or out of structural fact extraction without
     re-deploying the platform Lambda. Validated via Pydantic; callers
@@ -174,7 +176,7 @@ class IngestionConfig(BaseModel):
     # Defaults to ["docs"]
     docs_paths: List[str] = Field(default_factory=lambda: ["docs"])
 
-    # Symbol-graph extraction knobs (plan-gkg chunk 11).
+    # Symbol-graph extraction knobs.
     symbol_graph: SymbolGraphConfig = Field(default_factory=SymbolGraphConfig)
 
 
@@ -394,7 +396,7 @@ ingestion:
     - "docs"
     - "wiki"  # Example: wiki exports
 
-  # Symbol-graph extraction (plan-gkg chunk 11).
+  # Symbol-graph extraction.
   # Lets a repo opt in/out of structural fact extraction.
   symbol_graph:
     enabled: true

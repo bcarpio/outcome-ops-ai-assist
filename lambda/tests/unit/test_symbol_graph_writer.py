@@ -1,14 +1,14 @@
-"""Unit tests for ``shared.symbol_graph_writer`` (plan-gkg chunk 02, v2 schema).
+"""Unit tests for ``shared.symbol_graph_writer`` (v2 schema).
 
 Covers the v2 write path (SK-keyed upsert into a single (workspace, repo)
 partition), the legacy pointer-swap atomicity guarantee, idempotency on
 re-writes, and the round-trip from DynamoDB-style query patterns
-(chunk 04 leans on the same access patterns).
+(the reader leans on the same access patterns).
 
-Per ADR-005 + plan-gkg/09 the moto patches are wrapped in an
-``autouse=True`` fixture so no test can accidentally fall through to a
-real AWS endpoint. The fixture also resets the writer's lazy cached
-DynamoDB resource between tests.
+Per ADR-005 the moto patches are wrapped in an ``autouse=True`` fixture
+so no test can accidentally fall through to a real AWS endpoint. The
+fixture also resets the writer's lazy cached DynamoDB resource between
+tests.
 """
 
 from __future__ import annotations
@@ -64,7 +64,7 @@ class FactShim:
 
 
 # ---------------------------------------------------------------------------
-# Autouse fixtures — ADR-005 + plan-gkg/09 cross-cutting standard.
+# Autouse fixtures — ADR-005 cross-cutting standard.
 #
 # ``mock_aws`` patches every AWS client/resource; ``_reset_writer_clients``
 # clears the writer's lazy cache so each test sees a fresh moto resource.

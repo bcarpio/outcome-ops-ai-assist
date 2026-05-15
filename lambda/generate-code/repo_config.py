@@ -2,8 +2,8 @@
 Repository configuration shim — backwards-compat re-export.
 
 The canonical schema lives in ``lambda/shared/repo_config.py`` so that
-both ``generate-code`` and ``process-batch-summary`` (plan-gkg chunk 11)
-can consume the same Pydantic models. This module is preserved as a
+both ``generate-code`` and ``process-batch-summary`` can consume the
+same Pydantic models. This module is preserved as a
 re-export so existing imports inside ``generate-code/`` (and the test
 suite, which loads ``repo_config.py`` via ``importlib.spec_from_file_location``)
 keep working without churn.

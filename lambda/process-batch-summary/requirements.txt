@@ -1,7 +1,7 @@
 boto3>=1.36.0
 urllib3>=2.6.3
 
-# Per-repo .outcomeops.yaml parsing (plan-gkg chunk 11).
+# Per-repo .outcomeops.yaml parsing.
 # Pydantic owns the validation layer for the shared RepoConfig schema
 # in lambda/shared/repo_config.py; PyYAML only handles surface-level
 # deserialization. The pair must stay together — adding PyYAML without
@@ -14,7 +14,7 @@ urllib3>=2.6.3
 pydantic>=2.0.0
 PyYAML>=6.0.1
 
-# Symbol-graph extractor (plan-gkg chunk 01).
+# Symbol-graph extractor.
 # Tree-sitter core + per-language grammars for Python / TypeScript /
 # Java / Go. C# stays regex-only per ADR-017. ABAP uses the
 # FrankRogalski fork (procedural ABAP errors on the upstream grammar;

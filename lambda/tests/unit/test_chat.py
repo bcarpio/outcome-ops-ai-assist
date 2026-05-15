@@ -60,6 +60,7 @@ def _load_handler_module():
     handler_module._chat_table = "test-chat-table"
     handler_module._vector_bucket = "test-vector-bucket"
     handler_module._vector_index = "test-vector-index"
+    handler_module._workspaces_table = "test-workspaces-table"
     # Bypass workspace access validation in tests
     handler_module._validate_workspace_access = lambda user_email, workspace_ids: workspace_ids
 
@@ -122,7 +123,41 @@ def reset_mocks():
     handler_module._chat_table = "test-chat-table"
     handler_module._vector_bucket = "test-vector-bucket"
     handler_module._vector_index = "test-vector-index"
+    handler_module._workspaces_table = "test-workspaces-table"
     yield
+
+
+@pytest.fixture(autouse=True)
+def stub_router_bedrock():
+    """Inject a stub Bedrock client into the chat router so
+    ``classify_intent`` short-circuits without hitting real Bedrock
+    (or moto, which does not implement the converse action).
+
+    The default response yields ``intent="pattern"`` which causes the
+    symbol-graph augment to exit before issuing any graph queries —
+    test_chat focuses on the RAG path and does not assert on
+    structural augmentation. Tests that need a different routing
+    decision can override ``stub.converse.return_value``.
+    """
+    import router  # type: ignore
+
+    stub = MagicMock()
+    stub.converse.return_value = {
+        "output": {
+            "message": {
+                "role": "assistant",
+                "content": [{"text": '{"intent": "pattern", "symbol": null}'}],
+            }
+        },
+        "usage": {"inputTokens": 0, "outputTokens": 0},
+        "stopReason": "end_turn",
+    }
+    router._reset_clients_for_tests()
+    router._set_bedrock_client_for_tests(stub)
+    try:
+        yield stub
+    finally:
+        router._reset_clients_for_tests()
 
 
 @pytest.fixture(autouse=True)

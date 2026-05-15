@@ -1,10 +1,10 @@
-"""Unit tests for ``shared.symbol_graph_pointer`` (plan-gkg chunk 03).
+"""Unit tests for ``shared.symbol_graph_pointer``.
 
 Covers the atomic begin -> commit / abandon protocol that owns the
 ``graph_sha`` / ``graph_pending_sha`` state machine. The concurrent-
-regen scenario in particular is the safety-load-bearing case for the
-plan: two workers racing for the same (workspace, repo) must not be
-able to flip-flop the pointer.
+regen scenario in particular is the safety-load-bearing case: two
+workers racing for the same (workspace, repo) must not be able to
+flip-flop the pointer.
 
 Test isolation mirrors ``test_symbol_graph_writer.py``:
 

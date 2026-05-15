@@ -1,5 +1,6 @@
-"""Unit tests for the symbol-graph MCP tools on the OutcomeOps gateway
-(plan-gkg chunk 10).
+"""Unit tests for the symbol-graph MCP tools on the OutcomeOps gateway.
+
+See docs/mcp-server.md.
 
 Covers the four tool handlers exposed by ``lambda/mcp-server/handler.py``:
 

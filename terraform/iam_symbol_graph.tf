@@ -1,22 +1,21 @@
 # ============================================================================
-# IAM policies for the symbol-graph DynamoDB table (plan-gkg chunk 02)
+# IAM policies for the symbol-graph DynamoDB table.
 #
 # Per-Lambda least-privilege. The table is touched by four Lambdas:
 #
 #   process-batch-summary  - WRITE path. Reads the current pointer from
-#                            the code-maps table (chunk 03 wires the
-#                            pointer-swap), batch-writes new Facts, batch-
-#                            deletes the old partition.
+#                            the code-maps table for the pointer-swap,
+#                            batch-writes new Facts, batch-deletes the
+#                            old partition.
 #   delete-worker          - SWEEP path. Workspace/repo deletion enumerates
 #                            and batch-deletes partitions.
-#   chat / analyze-pr /    - READ-only path (chunks 05/06/07 wire the
-#   generate-code            consumers; policies attach now so the
-#                            infrastructure is ready when those chunks
-#                            land).
+#   chat / analyze-pr /    - READ-only path. Consumers are wired now so
+#   generate-code            the infrastructure is ready.
 #
-# Resource ARNs are exact (table + each GSI). No wildcards. The bundled
-# IAM in each Lambda's existing terraform-aws-modules/lambda/aws block
-# stays untouched; this file overlays a tightly-scoped policy.
+# Resource ARNs are exact (table + each GSI; GSI names governed by
+# ADR-021). No wildcards. The bundled IAM in each Lambda's existing
+# terraform-aws-modules/lambda/aws block stays untouched; this file
+# overlays a tightly-scoped policy.
 # ============================================================================
 
 # ----------------------------------------------------------------------------
@@ -152,11 +151,11 @@ resource "aws_iam_role_policy_attachment" "generate_code_symbol_graph_reader" {
   policy_arn = aws_iam_policy.symbol_graph_reader.arn
 }
 
-# plan-gkg chunk 10: the mcp-outcomeops Fargate task exposes find_callers
-# / find_importers / find_implementers / find_definitions to external
-# MCP clients. It needs the same query-only access as the consumer
-# Lambdas. Attached only when the MCP server is enabled (the module
-# count gates the task role's existence).
+# The mcp-outcomeops Fargate task exposes find_callers / find_importers
+# / find_implementers / find_definitions to external MCP clients (see
+# docs/mcp-server.md). It needs the same query-only access as the
+# consumer Lambdas. Attached only when the MCP server is enabled (the
+# module count gates the task role's existence).
 resource "aws_iam_role_policy_attachment" "mcp_outcomeops_symbol_graph_reader" {
   count = var.mcp_server_enabled ? 1 : 0
 

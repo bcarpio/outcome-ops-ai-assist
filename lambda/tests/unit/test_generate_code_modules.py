@@ -1170,14 +1170,14 @@ class TestConfigModels:
         assert cfg.docs_paths == ["docs"]
 
     def test_ingestion_config_has_symbol_graph_default(self):
-        """IngestionConfig nests a default SymbolGraphConfig (plan-gkg chunk 11)."""
+        """IngestionConfig nests a default SymbolGraphConfig."""
         cfg = IngestionConfig()
         assert isinstance(cfg.symbol_graph, SymbolGraphConfig)
         assert cfg.symbol_graph.enabled is True
 
 
 class TestSymbolGraphConfig:
-    """Pydantic schema for ``ingestion.symbol_graph`` (plan-gkg chunk 11)."""
+    """Pydantic schema for ``ingestion.symbol_graph``."""
 
     def test_defaults(self):
         cfg = SymbolGraphConfig()

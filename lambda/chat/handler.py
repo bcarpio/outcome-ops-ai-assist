@@ -43,9 +43,9 @@ from shared.audit_writer import (
 )
 from shared.prompts import build_chat_system_prompt
 
-# plan-gkg chunk 05: symbol-graph router + context builder. Imports kept
-# explicit (rather than wildcard) so the chat handler's existing test
-# suite continues to see deterministic symbol exposure.
+# Symbol-graph router + context builder. Imports kept explicit
+# (rather than wildcard) so the chat handler's existing test suite
+# continues to see deterministic symbol exposure.
 from context_builder import (
     GRAPH_GROUNDING_INSTRUCTION,
     build_graph_unavailable_block,
@@ -526,22 +526,21 @@ def _stream_error(error: str, status_code: int = 400) -> str:
 
 
 # ============================================================================
-# plan-gkg chunk 05 - Symbol-graph augmentation
+# Symbol-graph augmentation
 # ============================================================================
 
 # Env-gated kill-switch so operators can disable graph augmentation in
 # the field without redeploying. Default ON; set to "false" to skip the
-# router + reader path entirely (the chat handler falls back to its
-# pre-chunk-05 RAG-only behavior). Tracks plan-gkg/05 "Open question"
-# #1 - we may want to switch to parallel routing later, and this gate
-# lets us toggle without code change.
+# router + reader path entirely (the chat handler falls back to
+# RAG-only behavior). Leaves headroom to switch to parallel routing
+# later without a code change.
 #
-# Naming: plan-gkg/08 standardized the kill-switch on
-# ``GRAPH_RETRIEVAL_ENABLED`` so chat / analyze-pr / generate-code all
-# share the same operator-facing flag. The previous name
-# ``GRAPH_AUGMENT_ENABLED`` is still honored for backward compatibility
-# (older deploys may still set it via SSM) but the canonical name is
-# the one in the if-cascade below.
+# Naming: ``GRAPH_RETRIEVAL_ENABLED`` is the canonical kill-switch
+# shared across chat / analyze-pr / generate-code so all three
+# surfaces share the same operator-facing flag. The previous name
+# ``GRAPH_AUGMENT_ENABLED`` is still honored for backward
+# compatibility (older deploys may still set it via SSM) but the
+# canonical name is the one in the if-cascade below.
 GRAPH_RETRIEVAL_ENABLED = (
     os.environ.get(
         "GRAPH_RETRIEVAL_ENABLED",
@@ -558,7 +557,7 @@ def _fuzzy_resolve_symbol(
 ) -> List[str]:
     """Resolve a user-typed bare symbol name to its canonical ID(s).
 
-    plan-gkg/05 "Symbol resolution from the user's question":
+    Symbol resolution from the user's question:
 
     - The user typed ``"report_repos_snapshot"``.
     - The graph stores ``defines`` rows with the canonical
@@ -569,7 +568,7 @@ def _fuzzy_resolve_symbol(
     v1 implementation: scan the base table with a filter expression on
     ``kind = "defines"`` and ``workspace_id``, collect matching canonical
     IDs. This is a bounded scan in chat-interactive scope; a dedicated
-    fuzzy-name index lands in v2 (plan-gkg/05 "Defer for v2").
+    fuzzy-name index is deferred to v2.
 
     Returns the list of matching canonical symbol IDs (empty list if
     nothing matched, one-element list for unambiguous resolution,
@@ -673,14 +672,12 @@ def _augment_context_with_symbol_graph(
 
     The function is intentionally fail-soft - any Bedrock / DynamoDB
     error degrades to ``("", None)`` so the chat answer still ships.
-    Plan-gkg/05 "Failure modes" calls this out explicitly.
     """
 
-    # plan-gkg/09: also surface routing telemetry so the caller can
-    # emit a CHAT_ROUTING_DECISION audit row alongside the rag-chunk
-    # count it owns. Keys are intentionally additive — existing
-    # consumers that only read ``decision`` / ``graph_block`` are
-    # unaffected.
+    # Also surface routing telemetry so the caller can emit a
+    # CHAT_ROUTING_DECISION audit row alongside the rag-chunk count
+    # it owns. Keys are intentionally additive — existing consumers
+    # that only read ``decision`` / ``graph_block`` are unaffected.
     out: Dict[str, Any] = {
         "decision": None,
         "graph_block": "",
@@ -735,8 +732,9 @@ def _augment_context_with_symbol_graph(
         decision.duration_ms,
     )
 
-    # 2. Decide whether to fire the graph at all (plan-gkg/05 routing
-    # decision table).
+    # 2. Decide whether to fire the graph at all (routing-decision
+    # table: structural / hybrid / unknown -> fire; pattern /
+    # dependency -> skip).
     intent = decision.intent
     fires_graph = intent in ("structural", "hybrid", "unknown")
     if not fires_graph:
@@ -776,8 +774,8 @@ def _augment_context_with_symbol_graph(
         # 3a. Resolve the symbol - definitions() gives us the
         # canonical anchor + the "did you find it" signal.
         # Run for the primary workspace; cross-workspace symbol
-        # lookups can be added once the rollout proves single-
-        # workspace shape (plan-gkg/05 "Workspace scoping").
+        # lookups can be added once the rollout proves the
+        # single-workspace shape.
         defs = definitions(
             primary_ws,
             user_symbol,
@@ -785,13 +783,13 @@ def _augment_context_with_symbol_graph(
             code_maps_table_name=code_maps_table,
         )
 
-        # plan-gkg/05 "Symbol resolution from the user's question":
-        # users type bare names like "report_repos_snapshot" rather
-        # than the canonical "python:lambda.shared.outcomeops_license
+        # Symbol resolution from the user's question: users type
+        # bare names like "report_repos_snapshot" rather than the
+        # canonical "python:lambda.shared.outcomeops_license
         # ::report_repos_snapshot". When the exact lookup misses,
         # attempt a suffix-match against defines rows for the
         # workspace. v1 is a bounded scan in chat-interactive scope;
-        # a dedicated fuzzy index is deferred to v2 per the plan.
+        # a dedicated fuzzy index is deferred to v2.
         canonical_symbol = user_symbol
         if not defs:
             fuzzy = _fuzzy_resolve_symbol(
@@ -827,7 +825,7 @@ def _augment_context_with_symbol_graph(
 
         if len(defs) > 1:
             # Ambiguous - render every candidate and let the model
-            # disambiguate (plan-gkg/05 "Symbol resolution" step 3).
+            # disambiguate.
             out["graph_block"] = build_symbol_definition_block(
                 symbol_candidate=user_symbol,
                 definitions=defs,
@@ -887,9 +885,9 @@ def _augment_context_with_symbol_graph(
             result=result,
             definition_site=definition_site,
         )
-        # plan-gkg/09 routing-decision telemetry: capture which surface
-        # ran + its result count + the graph anchor staleness so the
-        # caller can emit the CHAT_ROUTING_DECISION audit row.
+        # Routing-decision telemetry: capture which surface ran + its
+        # result count + the graph anchor staleness so the caller can
+        # emit the CHAT_ROUTING_DECISION audit row.
         out["retrievals_fired"] = ["graph"]
         out["graph_sha"] = getattr(result, "graph_sha", None)
         out["graph_staleness_seconds"] = getattr(
@@ -1590,8 +1588,8 @@ def generate_answer_stream(
     Yields text chunks, tool_use dicts, and final usage dict.
     When tool_config is provided, implements a tool use loop.
 
-    ``graph_grounding`` is the plan-gkg/05 grounding clause that pins
-    the model to facts from the "Symbol facts" block in ``context``.
+    ``graph_grounding`` is the grounding clause that pins the model
+    to facts from the "Symbol facts" block in ``context``.
     Empty string when no graph block is present (pattern / dependency
     questions, or when the router skipped the augmentation path).
     """
@@ -1631,10 +1629,10 @@ When the user's question builds on something you said earlier in this conversati
 
     system_prompt = build_chat_system_prompt(workspace_prompt=workspace_prompt)
     if graph_grounding:
-        # plan-gkg/05: append the structural-grounding clause so the
-        # model treats the "Symbol facts (graph-retrieved)" block in
-        # context as ground truth. Skipped when no graph block was
-        # rendered to keep the system-prompt token count flat on
+        # Append the structural-grounding clause so the model treats
+        # the "Symbol facts (graph-retrieved)" block in context as
+        # ground truth. Skipped when no graph block was rendered to
+        # keep the system-prompt token count flat on
         # pattern/dependency turns (the bulk of chat traffic).
         system_prompt = f"{system_prompt}\n\n{graph_grounding}"
 
@@ -1981,12 +1979,12 @@ def handle_chat_stream(event: Dict) -> Generator[str, None, None]:
     # Format context
     context = format_context(search_results)
 
-    # plan-gkg chunk 05: route the question and (if structural / hybrid /
-    # unknown) augment the context with a "Symbol facts" block from the
-    # graph reader. Pattern + dependency intents skip this entirely so
-    # most chat traffic pays no extra latency. Failures degrade
-    # silently to RAG-only - the helper logs the failure mode for the
-    # rollout dashboard.
+    # Route the question and (if structural / hybrid / unknown)
+    # augment the context with a "Symbol facts" block from the
+    # graph reader. Pattern + dependency intents skip this entirely
+    # so most chat traffic pays no extra latency. Failures degrade
+    # silently to RAG-only - the helper logs the failure mode for
+    # the rollout dashboard.
     graph_augment = _augment_context_with_symbol_graph(
         request.message,
         workspace_ids,
@@ -1998,13 +1996,13 @@ def handle_chat_stream(event: Dict) -> Generator[str, None, None]:
     if graph_block:
         context = f"{context}\n\n---\n\n{graph_block}"
 
-    # plan-gkg/09: emit one CHAT_ROUTING_DECISION audit row per chat
-    # turn. Cost of the Haiku classifier itself is logged separately
-    # via log_audit_entry(lambda_name="chat:router") inside the router
-    # module; this row carries the orthogonal "what retrievals fired,
-    # how fresh was the graph, how many results" payload that the
-    # regulated-buyer audit story depends on. Question text is hashed
-    # (SHA256), never stored in plaintext.
+    # Emit one CHAT_ROUTING_DECISION audit row per chat turn. Cost
+    # of the Haiku classifier itself is logged separately via
+    # log_audit_entry(lambda_name="chat:router") inside the router
+    # module; this row carries the orthogonal "what retrievals
+    # fired, how fresh was the graph, how many results" payload
+    # that the regulated-buyer audit story depends on. Question
+    # text is hashed (SHA256), never stored in plaintext.
     try:
         _routing_decision = graph_augment.get("decision")
         _retrievals_fired = list(graph_augment.get("retrievals_fired") or [])
@@ -2076,9 +2074,9 @@ def handle_chat_stream(event: Dict) -> Generator[str, None, None]:
             tool_config=tool_config,
             tool_mapping=tool_mapping,
             workspace_prompt=workspace_prompt,
-            # plan-gkg/05: extra system-prompt clause that pins the
-            # model to graph facts when a Symbol-facts block is in
-            # context. Empty string when no graph block was rendered.
+            # Extra system-prompt clause that pins the model to graph
+            # facts when a Symbol-facts block is in context. Empty
+            # string when no graph block was rendered.
             graph_grounding=GRAPH_GROUNDING_INSTRUCTION if graph_block else "",
         ):
             if isinstance(chunk, dict):

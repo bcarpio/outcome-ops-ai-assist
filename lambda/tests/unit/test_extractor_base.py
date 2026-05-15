@@ -1,4 +1,4 @@
-"""Unit tests for the extractor base module (plan-gkg chunk 01)."""
+"""Unit tests for the extractor base module."""
 
 from __future__ import annotations
 
@@ -150,7 +150,7 @@ class TestRegistry:
 
 
 class TestSymbolGraphFilter:
-    """Per-repo extraction filter precedence (plan-gkg chunk 11)."""
+    """Per-repo extraction filter precedence."""
 
     def test_default_filter_accepts_typical_file(self):
         f = DEFAULT_SYMBOL_GRAPH_FILTER

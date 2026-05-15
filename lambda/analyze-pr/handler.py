@@ -110,9 +110,9 @@ class GitHubFile(BaseModel):
     changes: int
     # GitHub's /pulls/{n}/files response includes a ``patch`` field with
     # the unified-diff body for each file (omitted for binary diffs or
-    # very large patches). plan-gkg chunk 06 walks this for symbol
-    # resolution. Optional so the existing parse/queue path (which only
-    # needs filename + status) stays backwards-compatible.
+    # very large patches). The structural-impact pass walks this for
+    # symbol resolution. Optional so the existing parse/queue path
+    # (which only needs filename + status) stays backwards-compatible.
     patch: Optional[str] = None
 
 
@@ -225,11 +225,11 @@ def fetch_file_contents(
 ) -> Optional[bytes]:
     """Fetch the raw bytes of ``file_path`` at ``ref`` from GitHub.
 
-    Used by the plan-gkg chunk-06 structural-impact pass: the diff
-    symbol resolver runs the extractor over the **post-diff** file
-    content so canonical symbol IDs match the graph. ``ref`` is the
-    PR's head SHA for "what the symbol looks like after the change",
-    or the base SHA for staleness queries.
+    Used by the structural-impact pass: the diff symbol resolver
+    runs the extractor over the **post-diff** file content so
+    canonical symbol IDs match the graph. ``ref`` is the PR's head
+    SHA for "what the symbol looks like after the change", or the
+    base SHA for staleness queries.
 
     Returns None for missing files (e.g. removed-in-PR), binary blobs,
     or any error -- callers degrade gracefully.
@@ -652,17 +652,18 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
         logger.info(f"Changed files: {len(changed_files)}, Checks to run: {len(checks_to_run)}")
 
-        # plan-gkg chunk 06: compute the structural-impact block and post
-        # it as a PR comment. This is best-effort -- we wrap the whole
-        # pass in try/except so a graph failure can't break the existing
-        # check-queueing pipeline (plan-gkg/06 "Failure modes").
+        # Compute the structural-impact block and post it as a PR
+        # comment. This is best-effort -- we wrap the whole pass in
+        # try/except so a graph failure can't break the existing
+        # check-queueing pipeline (structural retrieval is additive
+        # context, never blocking).
         try:
             base_sha = (pr.base or {}).get("sha") if isinstance(pr.base, dict) else None
             head_sha = (pr.head or {}).get("sha") if isinstance(pr.head, dict) else None
             # Workspace_id resolution from a repo is plumbed through
-            # for forward compatibility (chunk 08 will wire repo ->
-            # workspace lookup). For now we honor an explicit env var
-            # if set, else skip.
+            # for forward compatibility (a future repo -> workspace
+            # lookup will populate it). For now we honor an explicit
+            # env var if set, else skip.
             workspace_id = os.environ.get("PR_WORKSPACE_ID", "") or None
             structural_block = _build_structural_impact_comment(
                 repository=request.repository,
@@ -771,31 +772,31 @@ def _build_structural_impact_comment(
     base_sha: Optional[str],
     head_sha: Optional[str],
 ) -> Optional[str]:
-    """Compute the plan-gkg chunk-06 structural-impact block.
+    """Compute the structural-impact block for a PR.
 
     Returns a Markdown string ready to post as a PR comment, or None
     when no block should be emitted (no mutated symbols resolved, or
     no workspace_id, or graph augmentation gated off).
 
-    Graceful degradation: any exception in the chunk-04 reader is
-    swallowed and we return ``build_unavailable_block`` so the human
-    reviewer still sees that structural retrieval failed -- the
-    review otherwise proceeds. Matches the plan's "structural section
-    omitted; review still ships" failure-mode.
+    Graceful degradation: any exception in the symbol-graph reader
+    is swallowed and we return ``build_unavailable_block`` so the
+    human reviewer still sees that structural retrieval failed --
+    the review otherwise proceeds. Structural section omitted;
+    review still ships.
 
-    Resolution of plan-gkg/overview.md open question #3: we run the
-    reader against the **base SHA** (the parent of the PR) so the
-    pre-change graph anchors caller analysis. The reader's pointer
-    aggregation already returns ``graph_sha`` / ``staleness_seconds``;
-    the staleness phrase in the rendered footer is the disclaimer.
+    We run the reader against the **base SHA** (the parent of the
+    PR) so the pre-change graph anchors caller analysis. The
+    reader's pointer aggregation already returns ``graph_sha`` /
+    ``staleness_seconds``; the staleness phrase in the rendered
+    footer is the disclaimer.
     """
 
-    # Operator kill-switch: GRAPH_RETRIEVAL_ENABLED is the platform-wide
-    # gate (plan-gkg chunk 08 standardized the name across chat /
-    # analyze-pr / generate-code). When disabled, this pass is a no-op
-    # so a rollout can be paused without redeploy. The legacy
-    # ``GRAPH_AUGMENT_ENABLED`` value is honored as a fallback so older
-    # deploys that still set the chunk-06 name continue to work.
+    # Operator kill-switch: GRAPH_RETRIEVAL_ENABLED is the
+    # platform-wide gate shared across chat / analyze-pr /
+    # generate-code. When disabled, this pass is a no-op so a
+    # rollout can be paused without redeploy. The legacy
+    # ``GRAPH_AUGMENT_ENABLED`` value is honored as a fallback so
+    # older deploys continue to work.
     _kill_switch = os.environ.get(
         "GRAPH_RETRIEVAL_ENABLED",
         os.environ.get("GRAPH_AUGMENT_ENABLED", "true"),
@@ -815,11 +816,12 @@ def _build_structural_impact_comment(
         )
         return None
     if not workspace_id:
-        # Per plan-gkg/06 + the chunk-04 reader contract: queries are
+        # Per the symbol-graph reader contract: queries are
         # workspace-scoped. analyze-pr today doesn't know which
         # workspace owns a given repository -- the lookup is plumbed
-        # through here for forward compatibility (chunk 08 will wire
-        # repo -> workspace resolution) but we no-op when it's empty.
+        # through here for forward compatibility (a future repo ->
+        # workspace resolution will fill it in) but we no-op when
+        # it's empty.
         logger.info(
             "[analyze-pr.structural] no workspace_id resolved; skipping"
         )

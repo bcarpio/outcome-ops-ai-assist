@@ -406,10 +406,10 @@ class TestProcessBatchRecord:
 
 
 class TestSymbolGraphWiring:
-    """plan-gkg chunk 03 — verify the begin_swap / extract / commit_swap
-    pointer protocol fires when (workspace_id, repo, commit_sha) are all
-    present on the SQS message, and is fully skipped when commit_sha is
-    absent (legacy producer)."""
+    """Verify the begin_swap / extract / commit_swap pointer protocol
+    fires when (workspace_id, repo, commit_sha) are all present on the
+    SQS message, and is fully skipped when commit_sha is absent (legacy
+    producer)."""
 
     @patch("process_batch_summary_handler.store_batch_summary")
     @patch("process_batch_summary_handler.generate_embedding")

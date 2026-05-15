@@ -79,8 +79,11 @@ during existing code-map regen runs, stored in DynamoDB
 RAG by `chat`, `analyze-pr`, and `generate-code`. Honestly returns
 empty sets — "no callers found in this workspace" — instead of
 fabricating a list, which is the audit unlock for the regulated
-buyer. See `plan-gkg/` for design and `docs/symbol-graph-validation.md`
-for the operator validation runbook.
+buyer. See `docs/symbol-graph-validation.md` for the operator
+validation + migration runbook, `docs/adr/ADR-020-abap-parser-strategy.md`
+for the ABAP hybrid Tree-sitter + regex decision, and
+`docs/adr/ADR-021-gsi-naming-symbol-graph.md` for the GSI naming
+convention.
 
 - **`callers(X)`** — every direct caller of a symbol, with file path
   and line.
@@ -92,6 +95,63 @@ for the operator validation runbook.
 
 Operator kill-switch: `GRAPH_RETRIEVAL_ENABLED` (default `"true"`)
 gates the graph path per Lambda; one-touch rollback without redeploy.
+
+#### Per-repo extraction config (`.outcomeops.yaml`)
+
+Repositories opt in / out and tune extraction via the
+`ingestion.symbol_graph` block of the repo's `.outcomeops.yaml`. All
+keys are optional; the defaults match the platform-wide behavior so
+repos that don't ship a yaml get the same coverage as today.
+
+```yaml
+ingestion:
+  symbol_graph:
+    # Set to false to disable extraction entirely for this repo.
+    # The handler logs a single "symbol-graph disabled by config"
+    # line per batch so operators can see why a repo has no facts.
+    enabled: true
+
+    # Glob patterns to include BEYOND the ADR-009 default set.
+    # Empty list = use only the default (lambda/**, src/**, etc.).
+    # Useful for pulling a vendored or generated tree back into
+    # scope despite the default exclude list.
+    include:
+      - "generated/sdk/**"
+
+    # Glob patterns to exclude beyond the default ADR-009 list.
+    # Exclude wins over include.
+    exclude:
+      - "lambda/tests/**"
+      - "**/legacy-vendor-pinned/**"
+
+    # Skip files larger than this many bytes before parse.
+    # Defaults to 512 KB — matches the Tree-sitter parse-cost knee
+    # in our benchmarks. Set to 0 to disable the cap.
+    max_file_bytes: 524288
+
+    # Allow-list of languages to extract. Omit / null means every
+    # registered extractor runs. Use to silence an extractor for
+    # a polyglot repo (e.g., disable c# extraction on a JS-heavy
+    # mono).
+    languages:
+      - python
+      - typescript
+      - java
+      - go
+      - csharp
+      - abap
+```
+
+The config is Pydantic-validated at extraction time
+(`lambda/shared/repo_config.py:SymbolGraphConfig`). Invalid values
+fail loudly with a `ValidationError` log line; the extractor
+gracefully degrades to the default permissive filter when the yaml
+is missing or unparseable.
+
+Operators verify the filter from CloudWatch logs on the
+`process-batch-summary` Lambda: each rejected file logs the reason
+at debug level; a disabled repo emits a single info-level
+"symbol-graph disabled by config" line per batch.
 
 ## Code generation pipeline (Jira → Code → PR → Analyze)
 

@@ -1,19 +1,19 @@
-"""Structural-impact block builder for analyze-pr (plan-gkg chunk 06).
+"""Structural-impact block builder for analyze-pr.
 
 Given the list of ``MutatedSymbol``s identified by
-``diff_symbol_resolver.resolve_targets`` and the chunk-04 query API,
-this module renders the Markdown block that gets posted on the PR
-(and, downstream, folded into the reviewer-model's prompt by the
+``diff_symbol_resolver.resolve_targets`` and the symbol-graph query
+API, this module renders the Markdown block that gets posted on the
+PR (and, downstream, folded into the reviewer-model's prompt by the
 per-check workers).
 
-The block format is documented verbatim in plan-gkg/06 "Structural-
-impact block" and reproduced below as the expected output of
-``build_impact_block``. Empty results are first-class -- a symbol with
-zero callers renders as "no known callers" rather than being silently
-omitted, matching the "honest empty-set" audit unlock that motivates
-this whole layer (plan-gkg/overview.md "Why this exists").
+``build_impact_block`` produces the expected output. Empty results
+are first-class -- a symbol with zero callers renders as "no known
+callers" rather than being silently omitted, matching the
+"honest empty-set" audit-grade behavior that motivates this whole
+layer. User-facing description: docs/features.md (Structural
+retrieval section).
 
-Failure modes (mirrors plan-gkg/06 "Failure modes"):
+Failure modes:
 
 - ``SymbolGraphUnavailable``           -> block omitted; the caller's
                                           comment-rendering function
@@ -25,11 +25,10 @@ Failure modes (mirrors plan-gkg/06 "Failure modes"):
                                           note if it wants to.
 - Stale graph                          -> block rendered AS-OF the
                                           older SHA with a disclaimer
-                                          footer; the resolution of
-                                          plan-gkg/overview.md open
-                                          question #3 ("query as-of
-                                          base SHA with a staleness
-                                          disclaimer").
+                                          footer. We query as-of the
+                                          PR's base SHA and disclose
+                                          staleness so the reviewer
+                                          knows the analysis anchor.
 """
 
 from __future__ import annotations
@@ -93,12 +92,12 @@ class SymbolReviewImpact:
 
 
 # ---------------------------------------------------------------------------
-# Limits -- mirror the chunk-04 reader defaults so this layer doesn't
-# silently impose stricter caps. callers=200 / importers=500 /
-# implementers=100 per plan-gkg/04. The analyze-pr block tends to be
-# rendered to a PR comment (40k char ceiling) AND to a model prompt
-# (token budget), so we trim each list at 50 in the rendered Markdown
-# but query the reader for the full 200 so the audit log can carry the
+# Limits -- mirror the symbol-graph reader defaults so this layer
+# doesn't silently impose stricter caps. callers=200 / importers=500
+# / implementers=100. The analyze-pr block tends to be rendered to a
+# PR comment (40k char ceiling) AND to a model prompt (token
+# budget), so we trim each list at 50 in the rendered Markdown but
+# query the reader for the full 200 so the audit log can carry the
 # exact-count tally.
 # ---------------------------------------------------------------------------
 
@@ -118,11 +117,11 @@ _RENDERED_CALLERS_CAP = 20
 
 
 def _staleness_phrase(staleness_seconds: Optional[int]) -> str:
-    """Human-readable freshness phrase. Plan-gkg/04 "Staleness reporting"
-    rule of thumb is the same shape as the chat context-builder's
-    ``_staleness_phrase`` -- we re-implement here (instead of importing
-    from ``chat.context_builder``) so analyze-pr's deploy zip doesn't
-    have to ship the chat module.
+    """Human-readable freshness phrase. Same rule-of-thumb shape as
+    the chat context-builder's ``_staleness_phrase`` -- we
+    re-implement here (instead of importing from
+    ``chat.context_builder``) so analyze-pr's deploy zip doesn't have
+    to ship the chat module.
     """
 
     if staleness_seconds is None:
@@ -141,13 +140,12 @@ def _staleness_phrase(staleness_seconds: Optional[int]) -> str:
 def _sha_footer_line(graph_sha: Optional[str], staleness_seconds: Optional[int]) -> str:
     """Render the "Graph as-of base SHA: ..." footer.
 
-    Mirrors plan-gkg/06's example output. For multi-repo answers
-    ``graph_sha`` is None and we render only the staleness phrase.
+    For multi-repo answers ``graph_sha`` is None and we render only
+    the staleness phrase.
 
-    Resolution of plan-gkg/overview.md open question #3 (recorded in
-    the chunk-06 plan and passed in by the agent runner): query
-    as-of base SHA with a "staleness" disclaimer. This function is
-    that disclaimer.
+    The analyze-pr structural pass queries the graph as-of the PR's
+    base SHA and discloses staleness here so the reviewer knows
+    which commit the analysis was anchored to.
     """
 
     phrase = _staleness_phrase(staleness_seconds)
@@ -187,7 +185,7 @@ def _is_subpath_symbol(symbol_id: str) -> bool:
     """True when the symbol ID is a package/subpath rather than a
     function/method ID. Subpath shapes go through ``importers()``;
     function/method shapes go through ``callers()``. Same heuristic
-    the generate-code impact_analysis uses (plan-gkg/07).
+    the generate-code impact_analysis uses.
     """
 
     body = symbol_id.split(":", 1)[1] if ":" in symbol_id else symbol_id
@@ -210,9 +208,8 @@ def analyze_structural_impact(
 
     Resilient: a ``SymbolGraphUnavailable`` (or any other reader
     exception) for one symbol produces a ``SymbolReviewImpact`` with
-    ``error`` set and the analysis continues with the rest. This
-    matches the "graph unavailable -> block omitted, review still
-    ships" failure-mode in plan-gkg/06.
+    ``error`` set and the analysis continues with the rest. Failure
+    mode: graph unavailable -> block omitted, review still ships.
     """
 
     if not workspace_id or not mutated:
@@ -309,9 +306,8 @@ def analyze_structural_impact(
 STRUCTURAL_IMPACT_HEADER = "## Structural impact"
 
 # Appended after the per-symbol section when the impact block ships
-# with the review prompt. Tells the reviewer-model to use the block as
-# ground truth for caller statements (graph-grounded, plan-gkg/06
-# "ADR-aware reviewer prompt").
+# with the review prompt. Tells the reviewer-model to use the block
+# as ground truth for caller statements (graph-grounded).
 REVIEWER_GROUNDING_INSTRUCTION = (
     "When commenting on caller / blast-radius impact, prefer the "
     "'Structural impact' block as ground truth -- never invent callers "
@@ -324,8 +320,8 @@ REVIEWER_GROUNDING_INSTRUCTION = (
 def _sort_callers_stable(callers: Iterable[object]) -> List[object]:
     """Stable order so the Markdown block is reproducible across runs.
 
-    The reader doesn't promise an order (plan-gkg/04 "Performance"
-    notes results may come page-first), so we sort here.
+    The reader doesn't promise an order (results may come
+    page-first), so we sort here.
     """
 
     return sorted(
@@ -408,8 +404,8 @@ def _aggregate_freshness(
     """Compute the worst-case SHA + staleness across symbols.
 
     Used for the single footer at the bottom of the block. Mirrors the
-    reader's worst-case-pointer choice (plan-gkg/04 "Staleness reporting"
-    + the reader's ``_pointer_for_workspace`` semantics).
+    reader's worst-case-pointer choice (see the reader's
+    ``_pointer_for_workspace`` semantics).
 
     Returns ``(graph_sha_or_None, max_staleness_or_None)``. If multiple
     SHAs contribute we drop the SHA (consistent with the reader: "no

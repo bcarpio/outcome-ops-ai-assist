@@ -4,8 +4,8 @@
 
 ## Context
 
-plan-gkg chunk 02 introduced a new DynamoDB table — the symbol-graph
-table — backed by two Global Secondary Indexes (GSIs):
+The symbol-graph feature introduced a new DynamoDB table — the
+symbol-graph table — backed by two Global Secondary Indexes (GSIs):
 
 - `target-kind-index` — GSI1 partition by `<workspace_id>#<target_symbol_id>`,
   range by `<kind>#<repo>#<file_path>#<line>`. Powers the
@@ -26,8 +26,8 @@ which documents the ADR process itself) prescribes:
 - `${var.environment}-${var.app_name}-<purpose>` resource naming
 - exact-action / exact-ARN IAM policies (no wildcards)
 
-That ADR is silent on **GSI naming**. plan-gkg chunk 02 needed a
-convention and shipped one that reads cleanly at the query call site
+That ADR is silent on **GSI naming**. The symbol-graph table
+shipped with a convention that reads cleanly at the query call site
 (`reader.callers(workspace_id, target_symbol_id)` selecting the
 `target-kind-index`). This ADR documents and ratifies that
 convention so future graph-adjacent tables can extend it without
@@ -120,10 +120,11 @@ DynamoDB itself prefers kebab-case for readability in the console).
 
 - ADR-018: Audit Logging Design — uses the older `GSI1` /
   `GSI2` AttributeName convention; not retro-renamed.
-- plan-gkg/02: DynamoDB schema and writer spec (defines the
-  partition-key shapes this naming convention serves).
-- plan-gkg/09: Cost tracking, audit, and standards alignment
-  (flagged the naming-convention gap that this ADR closes).
+- `terraform/dynamodb_symbol_graph.tf` and
+  `lambda/shared/symbol_graph_writer.py` — the schema and writer
+  this naming convention serves.
+- `docs/symbol-graph-validation.md` — operator runbook that uses the
+  GSI names from this convention.
 
 ## References
 
@@ -136,6 +137,6 @@ DynamoDB itself prefers kebab-case for readability in the console).
 
 Version History:
 - v1.0 (2026-05-14): Initial decision. Ratifies the `target-kind-index`
-  / `target-prefix-index` names plan-gkg chunk 02 shipped and locks
-  in the `<noun>-<discriminator>-index` shape for future graph-table
-  GSIs.
+  / `target-prefix-index` names the symbol-graph table shipped with,
+  and locks in the `<noun>-<discriminator>-index` shape for future
+  graph-table GSIs.

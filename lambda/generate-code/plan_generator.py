@@ -447,16 +447,16 @@ def generate_execution_plan(
             f"({summarization_cost.input_tokens} in, {summarization_cost.output_tokens} out)"
         )
 
-    # Pre-PR caller impact analysis (plan-gkg chunk 07).
+    # Pre-PR caller impact analysis.
     # On the modify-path, query the symbol graph for callers of each
     # symbol the plan touches so the step executors get a list of caller
     # sites that need parallel updates. Best-effort: failure here does
-    # NOT break codegen (analyze-pr is the safety net per chunk 06).
+    # NOT break codegen (analyze-pr is the safety net).
     #
-    # Operator kill-switch: GRAPH_RETRIEVAL_ENABLED is the platform-wide
-    # gate (plan-gkg chunk 08 standardized the name across chat /
-    # analyze-pr / generate-code). Default ON; set to "false" to skip
-    # the impact-analysis pass entirely. The legacy
+    # Operator kill-switch: GRAPH_RETRIEVAL_ENABLED is the
+    # platform-wide gate shared across chat / analyze-pr /
+    # generate-code. Default ON; set to "false" to skip the
+    # impact-analysis pass entirely. The legacy
     # ``GRAPH_AUGMENT_ENABLED`` value is honored as a fallback for
     # deploys that haven't been re-rolled with the canonical var.
     _graph_kill_switch = os.environ.get(
@@ -510,8 +510,8 @@ def generate_execution_plan(
                     impact_result.prompt_section,
                 )
     except Exception as exc:  # pragma: no cover - defensive
-        # Per plan-gkg/07 failure-modes: graph unavailable -> impact
-        # analysis skipped, codegen proceeds. We never let this raise.
+        # Failure mode: graph unavailable -> impact analysis
+        # skipped, codegen proceeds. We never let this raise.
         logger.warning("[plan-gen] Impact analysis pass failed: %s", exc)
 
     return plan

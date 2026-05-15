@@ -1,6 +1,6 @@
-"""Unit tests for analyze-pr structural-impact pass (plan-gkg chunk 06).
+"""Unit tests for analyze-pr structural-impact pass.
 
-Covers the four moving parts of chunk 06:
+Covers the four moving parts of the structural-impact pass:
 
   1. ``diff_symbol_resolver.parse_diff_hunks`` -- unified-diff parsing
      into (start, count, signature_lines).
@@ -106,9 +106,9 @@ def _isolate_env(monkeypatch):
     monkeypatch.setenv("SYMBOL_GRAPH_TABLE", SYMBOL_GRAPH_TABLE)
     monkeypatch.setenv("CODE_MAPS_TABLE", CODE_MAPS_TABLE)
     monkeypatch.setenv("AUDIT_TABLE", "")
-    # plan-gkg chunk 08 standardized the kill-switch name. Tests
-    # default to the canonical var and a dedicated backward-compat
-    # test below pins the legacy fallback path.
+    # The kill-switch name is standardized. Tests default to the
+    # canonical var and a dedicated backward-compat test below pins
+    # the legacy fallback path.
     monkeypatch.setenv("GRAPH_RETRIEVAL_ENABLED", "true")
     monkeypatch.delenv("GRAPH_AUGMENT_ENABLED", raising=False)
     yield
@@ -421,8 +421,8 @@ class TestResolveTargets:
     def test_removed_file_yields_no_targets(self):
         from diff_symbol_resolver import FilePatch, resolve_targets  # type: ignore
 
-        # plan-gkg/06 explicitly defers removed-file caller surfacing
-        # to v2 -- assert v1 returns empty.
+        # Removed-file caller surfacing is explicitly deferred to v2
+        # -- assert v1 returns empty.
         targets = resolve_targets(
             [
                 FilePatch(
@@ -873,15 +873,13 @@ class TestReportReposSnapshotIntegration:
             )
         # Signature note (not body note).
         assert _REVIEWER_NOTE_SIGNATURE in block
-        # Footer carries the explicit base SHA -- plan-gkg/06
-        # resolution of overview.md open Q #3.
+        # Footer carries the explicit base SHA.
         assert "Graph as-of base SHA: basesh" in block
 
     def test_body_change_uses_softer_note_for_same_symbol(self):
         """Same symbol, same callers -- but the diff is a body-only
         change. Expected: block lists the same 9 callers but uses the
-        body-change reviewer note (lower-emphasis language per
-        plan-gkg/06 "Definition of done" item #2).
+        body-change reviewer note (lower-emphasis language).
         """
         from diff_symbol_resolver import (  # type: ignore
             FilePatch,

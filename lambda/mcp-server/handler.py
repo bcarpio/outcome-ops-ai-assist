@@ -191,7 +191,7 @@ MCP_TOOLS = [
         },
     },
     # ------------------------------------------------------------------
-    # Symbol-graph query tools (plan-gkg chunk 10)
+    # Symbol-graph query tools (see docs/mcp-server.md).
     # Wrap the four query shapes in shared/symbol_graph_reader.py and
     # expose them as MCP tools so external clients (Claude Code, etc.)
     # can ask structural questions across the workspace's repos.
@@ -992,7 +992,7 @@ def handle_get_coding_standards(params, email):
 
 
 # ============================================================================
-# Symbol-graph query handlers (plan-gkg chunk 10)
+# Symbol-graph query handlers (see docs/mcp-server.md).
 #
 # Each wraps one query in shared/symbol_graph_reader.py. The reader is
 # imported LAZILY inside the handler so the gateway's cold-start path is
@@ -1010,8 +1010,8 @@ def handle_get_coding_standards(params, email):
 
 def _query_result_to_dict(query_result) -> dict:
     """Project a ``QueryResult`` onto the JSON shape documented for the
-    MCP tools. Mirrors chunk-04's surface: ``sites`` + ``truncated`` +
-    ``graph_sha`` + ``staleness_seconds``.
+    MCP tools: ``sites`` + ``truncated`` + ``graph_sha`` +
+    ``staleness_seconds``.
     """
     sites = []
     for s in query_result.sites:
@@ -1032,11 +1032,10 @@ def _query_result_to_dict(query_result) -> dict:
 
 def _call_sites_to_dict(call_sites) -> dict:
     """Project a list[CallSite] (definitions()) onto the same JSON shape
-    as ``_query_result_to_dict``. ``definitions`` returns a bare list per
-    chunk-04 open Q #2; ``truncated`` / ``graph_sha`` /
-    ``staleness_seconds`` are reported as ``False`` / ``None`` / ``None``
-    so the MCP tool's response is uniformly shaped across all four
-    queries.
+    as ``_query_result_to_dict``. ``definitions`` returns a bare list;
+    ``truncated`` / ``graph_sha`` / ``staleness_seconds`` are reported
+    as ``False`` / ``None`` / ``None`` so the MCP tool's response is
+    uniformly shaped across all four queries.
     """
     sites = []
     for s in call_sites:
@@ -1072,7 +1071,7 @@ def _check_symbol_graph_workspace_access(workspace_id, email):
 
 
 def handle_find_callers(params, email):
-    """Handle find_callers tool call (plan-gkg chunk 10)."""
+    """Handle find_callers tool call."""
     symbol_id = params.get("symbol_id", "")
     workspace_id = params.get("workspace_id", "")
     limit = int(params.get("limit", 200) or 200)
@@ -1108,7 +1107,7 @@ def handle_find_callers(params, email):
 
 
 def handle_find_importers(params, email):
-    """Handle find_importers tool call (plan-gkg chunk 10)."""
+    """Handle find_importers tool call."""
     target = params.get("target_or_prefix", "")
     workspace_id = params.get("workspace_id", "")
     limit = int(params.get("limit", 500) or 500)
@@ -1143,7 +1142,7 @@ def handle_find_importers(params, email):
 
 
 def handle_find_implementers(params, email):
-    """Handle find_implementers tool call (plan-gkg chunk 10)."""
+    """Handle find_implementers tool call."""
     interface_id = params.get("interface_id", "")
     workspace_id = params.get("workspace_id", "")
     limit = int(params.get("limit", 100) or 100)
@@ -1178,12 +1177,12 @@ def handle_find_implementers(params, email):
 
 
 def handle_find_definitions(params, email):
-    """Handle find_definitions tool call (plan-gkg chunk 10).
+    """Handle find_definitions tool call.
 
-    ``definitions`` returns ``list[CallSite]`` (not a QueryResult) per
-    chunk-04 open Q #2 -- cross-repo duplicates surface as separate
-    entries. We project that onto the same JSON envelope as the other
-    three queries so MCP clients see a uniform shape.
+    ``definitions`` returns ``list[CallSite]`` (not a QueryResult) --
+    cross-repo duplicates surface as separate entries. We project that
+    onto the same JSON envelope as the other three queries so MCP
+    clients see a uniform shape.
     """
     symbol = params.get("symbol", "")
     workspace_id = params.get("workspace_id", "")
@@ -1221,7 +1220,7 @@ TOOL_HANDLERS = {
     "list_workspaces": handle_list_workspaces,
     "list_workspace_documents": handle_list_workspace_documents,
     "get_coding_standards": handle_get_coding_standards,
-    # plan-gkg chunk 10: symbol-graph query tools
+    # Symbol-graph query tools (see docs/mcp-server.md)
     "find_callers": handle_find_callers,
     "find_importers": handle_find_importers,
     "find_implementers": handle_find_implementers,

@@ -317,8 +317,8 @@ class TestMcpTools:
     def test_all_tools_defined(self):
         """Test that the expected native tools are all defined.
 
-        plan-gkg chunk 10 added four symbol-graph query tools alongside
-        the original four KB tools, so the surface is now 8.
+        Four symbol-graph query tools sit alongside the original four KB
+        tools, so the surface is 8. See docs/mcp-server.md.
         """
         tools = mcp_module.MCP_TOOLS
         assert len(tools) == 8
@@ -329,7 +329,7 @@ class TestMcpTools:
             "list_workspaces",
             "list_workspace_documents",
             "get_coding_standards",
-            # Symbol-graph tools (plan-gkg chunk 10)
+            # Symbol-graph tools
             "find_callers",
             "find_importers",
             "find_implementers",

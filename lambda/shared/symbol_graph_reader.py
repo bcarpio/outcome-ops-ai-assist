@@ -1,8 +1,8 @@
-"""Symbol-graph DynamoDB query API (plan-gkg chunk 04).
+"""Symbol-graph DynamoDB query API.
 
-Reads the structural Fact stream persisted by chunk-02's writer. The
-public surface is intentionally narrow — four query shapes that cover
-the proven structural failure cases identified in the plan:
+Reads the structural Fact stream persisted by ``symbol_graph_writer``.
+The public surface is intentionally narrow — four query shapes that
+cover the proven structural failure cases:
 
 - ``callers(X)``        : "Which Lambdas call ``report_repos_snapshot``?"
 - ``importers(X)``      : "Which apps use ``@hyatt-hpe/hpe-utils/http2``?"
@@ -70,10 +70,11 @@ class QueryResult:
     instead of fabricating a list.
 
     ``graph_sha`` is the SHA the answer was anchored on (None for
-    workspace-wide queries that span multiple repos — see "Workspace
-    scoping" in plan-gkg/04). ``staleness_seconds`` is "seconds since
-    that SHA was committed"; for workspace-wide queries it's the
-    worst-case across repos in the workspace.
+    workspace-wide queries that span multiple repos — workspace-wide
+    queries deliberately do not pin a single SHA).
+    ``staleness_seconds`` is "seconds since that SHA was committed";
+    for workspace-wide queries it's the worst-case across repos in the
+    workspace.
     """
 
     sites: List[CallSite]
@@ -169,11 +170,11 @@ _test_cloudwatch_override = None
 def _cloudwatch():
     """Return a cached CloudWatch client (or the test override).
 
-    plan-gkg chunk 08 introduced ``OutcomeOps/SymbolGraph::QueryLatency``
-    so the latency alarm in terraform/cloudwatch_symbol_graph.tf has
-    something to compare against. We emit lazily and best-effort -- the
-    alarm is correct-by-construction (no metric = no breach), and a
-    publish error must never bubble out of a query.
+    Emits ``OutcomeOps/SymbolGraph::QueryLatency`` so the latency alarm
+    in terraform/cloudwatch_symbol_graph.tf has something to compare
+    against. We emit lazily and best-effort -- the alarm is
+    correct-by-construction (no metric = no breach), and a publish
+    error must never bubble out of a query.
     """
 
     global _cloudwatch_client
@@ -303,7 +304,7 @@ def _resolve_table_name(
 def _is_prefix_query(target: str) -> bool:
     """Distinguish prefix queries from exact-match queries for importers().
 
-    Rules (documented in plan-gkg/04 "Subpath handling"):
+    Rules:
 
     - ``"@hyatt-hpe/hpe-utils"``         : prefix (no slash AFTER the
       package boundary) — returns every consumer of any subpath. The
@@ -468,8 +469,8 @@ def _query_gsi(
     last_key: Optional[dict] = None
     truncated = False
 
-    # plan-gkg chunk 08: time the whole GSI walk (including pagination)
-    # and emit ``OutcomeOps/SymbolGraph::QueryLatency`` so the
+    # Time the whole GSI walk (including pagination) and emit
+    # ``OutcomeOps/SymbolGraph::QueryLatency`` so the
     # cloudwatch_symbol_graph.tf p99 alarm has a signal. Use a wall-clock
     # timer because that's what the alarm threshold is calibrated
     # against (200ms ceiling, 50ms target -- both in real time).
@@ -688,10 +689,10 @@ def definitions(
 ) -> List[CallSite]:
     """Return every definition of ``symbol_id`` in the workspace.
 
-    Per plan-gkg/04 open question #2 (resolved): the signature is
-    ``list[CallSite]`` rather than ``Optional[CallSite]`` so cross-repo
-    duplicates (interface re-declarations, code duplication) all
-    surface. An empty list means "not found" — never None.
+    The signature is ``list[CallSite]`` rather than ``Optional[CallSite]``
+    so cross-repo duplicates (interface re-declarations, code
+    duplication) all surface. An empty list means "not found" — never
+    None.
 
     Uses ``target-kind-index`` (GSI1) with the sort-key prefix
     ``"defines#"``. Definitions are stored as edges with kind=defines

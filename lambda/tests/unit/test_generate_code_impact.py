@@ -1,18 +1,18 @@
-"""Unit tests for ``generate_code.impact_analysis`` (plan-gkg chunk 07).
+"""Unit tests for ``generate_code.impact_analysis``.
 
 Covers:
 
 - ``classify_task_type``: modify / greenfield / ambiguous (defaults to modify)
 - ``extract_modify_targets``: Python ``module::name`` IDs + TS subpath IDs,
   signature-change heuristic, dedup
-- ``analyze_caller_impact``: graph integration via the chunk-04 reader;
-  graceful degradation when the graph is unavailable or workspace_id is
-  missing
-- ``build_impact_prompt_section``: format parity with the example in
-  plan-gkg/07
-- The **plan-gkg chunk-07 Definition of Done**: a synthetic modify-task
-  changing the signature of ``report_repos_snapshot`` produces a plan
-  that lists all 9 caller updates
+- ``analyze_caller_impact``: graph integration via the symbol-graph
+  reader; graceful degradation when the graph is unavailable or
+  workspace_id is missing
+- ``build_impact_prompt_section``: format parity with the documented
+  example
+- Definition-of-done: a synthetic modify-task changing the signature
+  of ``report_repos_snapshot`` produces a plan that lists all 9 caller
+  updates
 - Greenfield-path no-op: no graph queries fire, no impact section
   produced
 

@@ -1,4 +1,4 @@
-"""Unit tests for the Java extractor (plan-gkg chunk 01)."""
+"""Unit tests for the Java extractor."""
 
 from __future__ import annotations
 

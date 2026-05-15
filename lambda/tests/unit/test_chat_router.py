@@ -1,8 +1,8 @@
-"""Unit tests for ``chat.router`` (plan-gkg chunk 05).
+"""Unit tests for ``chat.router``.
 
 Covers:
 
-- Boeing demo classifications (Q1-Q7) -- the chunk's "Definition of
+- Boeing demo classifications (Q1-Q7) -- the router's "Definition of
   done" requires every fixture in this file to classify correctly.
 - The two proof-case structural questions (``report_repos_snapshot``
   and ``@hyatt-hpe/hpe-utils/http2``).
@@ -10,8 +10,7 @@ Covers:
 - Symbol-candidate extraction from the structured Haiku response.
 - Tolerant parsing (Markdown fences, prose-wrapped JSON, single-word
   fallback, casing).
-- Bedrock failure -> degraded ``unknown`` decision (plan's fan-out
-  default).
+- Bedrock failure -> degraded ``unknown`` decision (fan-out default).
 - Audit emission with ``lambda_name="chat:router"`` and SHA256-only
   question hash (no question text leaked).
 
@@ -337,15 +336,15 @@ def test_classify_bedrock_failure_still_emits_audit(stub_bedrock, monkeypatch):
 
 
 # ===========================================================================
-# Boeing demo fixtures -- plan-gkg/05 "Definition of done"
+# Boeing demo fixtures -- router "Definition of done"
 #
 # These tests parametrize the (question -> expected intent) table from
-# the chunk's spec. The classifier is mocked to return the expected
+# the router spec. The classifier is mocked to return the expected
 # intent; the test asserts the public ``classify_intent`` surface
 # threads the value through faithfully. This validates the contract
 # (router input/output shape) without requiring a live Haiku call --
-# the actual prompt-tuning happens in chunk-08 validation against a
-# real Bedrock client.
+# the actual prompt-tuning is validated separately against a real
+# Bedrock client. See docs/symbol-graph-validation.md.
 # ===========================================================================
 
 
@@ -372,7 +371,7 @@ BOEING_DEMO_FIXTURES = [
     ("Gap analysis vs G4A", "pattern", None),
     ("What are our Python coding standards", "pattern", None),
     ("What are our testing standards", "pattern", None),
-    # Proof cases (plan-gkg overview "Two proofs from live testing")
+    # Proof cases ("Two proofs from live testing")
     (
         "Which Lambda functions call `report_repos_snapshot`?",
         "structural",

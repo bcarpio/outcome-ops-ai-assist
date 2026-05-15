@@ -3,8 +3,8 @@ requests>=2.31.0
 urllib3>=2.6.3
 pydantic>=2.0.0
 
-# Symbol-graph extractor runtime deps (plan-gkg chunks 06 + 08).
-# diff_symbol_resolver lazy-imports the chunk-01 extractor to map
+# Symbol-graph extractor runtime deps.
+# diff_symbol_resolver lazy-imports the extractor to map
 # diff hunks to canonical symbol IDs. Same pinned set as
 # lambda/process-batch-summary/requirements.txt — keep the two in
 # sync until a shared Lambda Layer replaces the duplication.
