@@ -718,6 +718,65 @@ def definitions(
     return [_row_to_call_site(it) for it in items]
 
 
+def fuzzy_resolve_by_name(
+    workspace_id: str,
+    bare_name: str,
+    *,
+    limit: int = 25,
+    symbol_graph_table_name: Optional[str] = None,
+) -> List[str]:
+    """Return distinct canonical ``target_symbol_id`` values in the
+    workspace whose tail matches ``bare_name``.
+
+    The chat handler's symbol resolver uses this to map a user-typed
+    bare name ("require_auth") back to the canonical IDs the graph
+    actually stores ("python:lambda.auth.handler::require_auth"). The
+    GSI is partitioned by ``(workspace_id, bare_name)`` so each call
+    is a single-partition Query — bounded by actual matches, not by
+    workspace size. Replaces the pre-GSI Scan-based fuzzy resolver
+    that did not scale past a single repo per workspace.
+
+    Empty list when nothing matches; raises ``SymbolGraphUnavailable``
+    on a non-retryable DynamoDB error so the chat augment path can
+    degrade to RAG-only the same way every other reader function in
+    this module does.
+
+    ``limit`` caps the number of distinct canonicals returned;
+    chat-side disambiguation only needs the first handful. Over-fetch
+    is applied internally to account for one canonical having many
+    edges pointing at it.
+    """
+
+    if not workspace_id or not bare_name:
+        return []
+    table_name = _resolve_table_name(symbol_graph_table_name)
+
+    # Over-fetch by 4x so one heavily-edged canonical doesn't drown
+    # out the others before dedupe. Floor at 100 so the index does
+    # one decent partition read on small workspaces.
+    fetch = max(limit * 4, 100)
+
+    key_condition = Key("GSI3PK").eq(f"{workspace_id}#{bare_name}")
+    items, _truncated = _query_gsi(
+        table_name,
+        index_name="target-name-index",
+        key_condition=key_condition,
+        limit=fetch,
+    )
+
+    seen: set = set()
+    out: List[str] = []
+    for item in items:
+        tsi = item.get("target_symbol_id")
+        if not tsi or tsi in seen:
+            continue
+        seen.add(tsi)
+        out.append(tsi)
+        if len(out) >= limit:
+            break
+    return out
+
+
 __all__ = (
     "CallSite",
     "QueryResult",
@@ -726,4 +785,5 @@ __all__ = (
     "importers",
     "implementers",
     "definitions",
+    "fuzzy_resolve_by_name",
 )

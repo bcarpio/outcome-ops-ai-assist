@@ -135,6 +135,8 @@ def _create_symbol_graph_table():
             {"AttributeName": "GSI1SK", "AttributeType": "S"},
             {"AttributeName": "GSI2PK", "AttributeType": "S"},
             {"AttributeName": "GSI2SK", "AttributeType": "S"},
+            {"AttributeName": "GSI3PK", "AttributeType": "S"},
+            {"AttributeName": "GSI3SK", "AttributeType": "S"},
         ],
         KeySchema=[
             {"AttributeName": "PK", "KeyType": "HASH"},
@@ -154,6 +156,14 @@ def _create_symbol_graph_table():
                 "KeySchema": [
                     {"AttributeName": "GSI2PK", "KeyType": "HASH"},
                     {"AttributeName": "GSI2SK", "KeyType": "RANGE"},
+                ],
+                "Projection": {"ProjectionType": "ALL"},
+            },
+            {
+                "IndexName": "target-name-index",
+                "KeySchema": [
+                    {"AttributeName": "GSI3PK", "KeyType": "HASH"},
+                    {"AttributeName": "GSI3SK", "KeyType": "RANGE"},
                 ],
                 "Projection": {"ProjectionType": "ALL"},
             },
@@ -225,6 +235,22 @@ def _put_fact(
         if head and tail:
             item["GSI2PK"] = f"{workspace_id}#{head}"
             item["GSI2SK"] = f"{tail}#{kind}#{repo}#{file_path}#{line}"
+
+    # Populate GSI3 (target-name-index) so the fuzzy_resolve_by_name
+    # tests see the rows. Derivation matches the writer.
+    s = target_symbol_id
+    if ":" in s and "::" not in s.split(":", 1)[0]:
+        s = s.split(":", 1)[1]
+    for sep in ("::", ".", "/"):
+        if sep in s:
+            s = s.rsplit(sep, 1)[-1]
+    bare = s
+    if bare:
+        item["bare_name"] = bare
+        item["GSI3PK"] = f"{workspace_id}#{bare}"
+        item["GSI3SK"] = (
+            f"{target_symbol_id}#{kind}#{repo}#{file_path}#{line}"
+        )
     table.put_item(Item=item)
 
 
@@ -979,3 +1005,146 @@ def test_callers_report_repos_snapshot_resolves_nine_known_callers(tables):
     by_file = {s.file_path: s.line for s in result.sites}
     for name, file_path, line in known_callers:
         assert by_file[file_path] == line
+
+
+# ===========================================================================
+# fuzzy_resolve_by_name — chat-side bare-name resolution via target-name-index.
+# ===========================================================================
+
+
+def test_fuzzy_resolve_returns_single_canonical_for_unique_bare_name(tables):
+    """One canonical, multiple edges pointing at it -> dedupes to a
+    single-element list."""
+    from shared.symbol_graph_reader import fuzzy_resolve_by_name  # type: ignore
+
+    table = tables.Table(SYMBOL_GRAPH_TABLE)
+    canonical = "python:lambda.shared.outcomeops_license::report_repos_snapshot"
+    # One defines + several calls all pointing at the same target.
+    _put_fact(
+        table,
+        workspace_id=WORKSPACE_ID,
+        repo=REPO,
+        commit_sha="abc",
+        kind="defines",
+        source_symbol_id="python:lambda.shared.outcomeops_license::<module>",
+        target_symbol_id=canonical,
+        file_path="lambda/shared/outcomeops_license.py",
+        line=42,
+        language="python",
+    )
+    for i in range(5):
+        _put_fact(
+            table,
+            workspace_id=WORKSPACE_ID,
+            repo=REPO,
+            commit_sha="abc",
+            kind="calls",
+            source_symbol_id=f"python:lambda.caller{i}::lambda_handler",
+            target_symbol_id=canonical,
+            file_path=f"lambda/caller{i}/handler.py",
+            line=10 + i,
+            language="python",
+        )
+
+    matches = fuzzy_resolve_by_name(
+        WORKSPACE_ID,
+        "report_repos_snapshot",
+        symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
+    )
+    assert matches == [canonical]
+
+
+def test_fuzzy_resolve_returns_multiple_canonicals_for_overloaded_bare_name(tables):
+    """Two canonicals share a bare name (same function name defined in
+    two modules) -> both are returned, deduped to one entry each."""
+    from shared.symbol_graph_reader import fuzzy_resolve_by_name  # type: ignore
+
+    table = tables.Table(SYMBOL_GRAPH_TABLE)
+    auth_canonical = "python:lambda.auth.handler::handle_workspace_invite"
+    org_canonical = "python:lambda.org-management.handler::handle_workspace_invite"
+
+    _put_fact(
+        table,
+        workspace_id=WORKSPACE_ID,
+        repo=REPO,
+        commit_sha="abc",
+        kind="defines",
+        source_symbol_id="python:lambda.auth.handler::<module>",
+        target_symbol_id=auth_canonical,
+        file_path="lambda/auth/handler.py",
+        line=1454,
+        language="python",
+    )
+    _put_fact(
+        table,
+        workspace_id=WORKSPACE_ID,
+        repo=REPO,
+        commit_sha="abc",
+        kind="defines",
+        source_symbol_id="python:lambda.org-management.handler::<module>",
+        target_symbol_id=org_canonical,
+        file_path="lambda/org-management/handler.py",
+        line=3229,
+        language="python",
+    )
+
+    matches = set(
+        fuzzy_resolve_by_name(
+            WORKSPACE_ID,
+            "handle_workspace_invite",
+            symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
+        )
+    )
+    assert matches == {auth_canonical, org_canonical}
+
+
+def test_fuzzy_resolve_returns_empty_when_workspace_has_no_match(tables):
+    """No row matches the bare name -> empty list."""
+    from shared.symbol_graph_reader import fuzzy_resolve_by_name  # type: ignore
+
+    matches = fuzzy_resolve_by_name(
+        WORKSPACE_ID,
+        "no_such_function",
+        symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
+    )
+    assert matches == []
+
+
+def test_fuzzy_resolve_scopes_to_workspace(tables):
+    """A canonical in workspace A must not leak into a fuzzy resolve
+    scoped to workspace B."""
+    from shared.symbol_graph_reader import fuzzy_resolve_by_name  # type: ignore
+
+    table = tables.Table(SYMBOL_GRAPH_TABLE)
+    canonical = "python:lambda.auth.handler::require_auth"
+    _put_fact(
+        table,
+        workspace_id="ws-alpha",
+        repo=REPO,
+        commit_sha="abc",
+        kind="defines",
+        source_symbol_id="python:lambda.auth.handler::<module>",
+        target_symbol_id=canonical,
+        file_path="lambda/auth/handler.py",
+        line=588,
+        language="python",
+    )
+
+    matches = fuzzy_resolve_by_name(
+        "ws-beta",
+        "require_auth",
+        symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
+    )
+    assert matches == []
+
+
+def test_fuzzy_resolve_returns_empty_for_blank_args(tables):
+    """Defensive: empty workspace_id or bare_name returns [] without
+    a DDB call."""
+    from shared.symbol_graph_reader import fuzzy_resolve_by_name  # type: ignore
+
+    assert fuzzy_resolve_by_name("", "foo",
+        symbol_graph_table_name=SYMBOL_GRAPH_TABLE) == []
+    assert fuzzy_resolve_by_name("ws-1", "",
+        symbol_graph_table_name=SYMBOL_GRAPH_TABLE) == []
+

@@ -131,6 +131,8 @@ def _create_symbol_graph_table():
             {"AttributeName": "GSI1SK", "AttributeType": "S"},
             {"AttributeName": "GSI2PK", "AttributeType": "S"},
             {"AttributeName": "GSI2SK", "AttributeType": "S"},
+            {"AttributeName": "GSI3PK", "AttributeType": "S"},
+            {"AttributeName": "GSI3SK", "AttributeType": "S"},
         ],
         KeySchema=[
             {"AttributeName": "PK", "KeyType": "HASH"},
@@ -150,6 +152,14 @@ def _create_symbol_graph_table():
                 "KeySchema": [
                     {"AttributeName": "GSI2PK", "KeyType": "HASH"},
                     {"AttributeName": "GSI2SK", "KeyType": "RANGE"},
+                ],
+                "Projection": {"ProjectionType": "ALL"},
+            },
+            {
+                "IndexName": "target-name-index",
+                "KeySchema": [
+                    {"AttributeName": "GSI3PK", "KeyType": "HASH"},
+                    {"AttributeName": "GSI3SK", "KeyType": "RANGE"},
                 ],
                 "Projection": {"ProjectionType": "ALL"},
             },
@@ -210,6 +220,20 @@ def _put_fact(
         if head and tail:
             item["GSI2PK"] = f"{workspace_id}#{head}"
             item["GSI2SK"] = f"{tail}#{kind}#{repo}#{file_path}#{line}"
+
+    # GSI3 (target-name-index) — derivation matches the writer.
+    s = target_symbol_id
+    if ":" in s and "::" not in s.split(":", 1)[0]:
+        s = s.split(":", 1)[1]
+    for sep in ("::", ".", "/"):
+        if sep in s:
+            s = s.rsplit(sep, 1)[-1]
+    if s:
+        item["bare_name"] = s
+        item["GSI3PK"] = f"{workspace_id}#{s}"
+        item["GSI3SK"] = (
+            f"{target_symbol_id}#{kind}#{repo}#{file_path}#{line}"
+        )
     table.put_item(Item=item)
 
 

@@ -158,6 +158,39 @@ def _gsi1_sk(kind: str, repo: str, file_path: str, line: int) -> str:
     return f"{kind}#{repo}#{file_path}#{line}"
 
 
+def _derive_bare_name(target_symbol_id: str) -> str:
+    """Return the tail of a canonical symbol ID, stripped of language
+    prefix and namespace/package separators.
+
+    The chat handler's fuzzy resolver uses this attribute to map
+    user-typed bare names ("require_auth") back to canonical IDs
+    ("python:lambda.auth.handler::require_auth") via the
+    ``target-name-index`` GSI, avoiding a full-table Scan.
+
+    Examples:
+        python:lambda.auth.handler::require_auth -> require_auth
+        typescript:src.lib.api.requestMagicLink  -> requestMagicLink
+        java:com.acme.Booking::confirm           -> confirm
+        @hyatt-hpe/hpe-utils/http2               -> http2
+        bare_name_only                           -> bare_name_only
+
+    The empty-string defence keeps malformed targets from polluting
+    the GSI partition with a zero-length key.
+    """
+
+    if not target_symbol_id:
+        return ""
+    s = target_symbol_id
+    # Strip the language prefix (``python:`` / ``typescript:`` / etc.)
+    # without confusing a ``::`` namespace separator for it.
+    if ":" in s and "::" not in s.split(":", 1)[0]:
+        s = s.split(":", 1)[1]
+    for sep in ("::", ".", "/"):
+        if sep in s:
+            s = s.rsplit(sep, 1)[-1]
+    return s
+
+
 def _split_target_prefix(target_symbol_id: str) -> Optional[Dict[str, str]]:
     """Return ``{prefix, suffix}`` for a target ID, or None if no useful
     split exists.
@@ -239,6 +272,20 @@ def _build_item(
         item["GSI2PK"] = f"{workspace_id}#{split['prefix']}"
         item["GSI2SK"] = (
             f"{split['suffix']}#{fact.kind}#{repo}#{fact.file_path}#{fact.line}"
+        )
+
+    # GSI3: bare-name index. Partitioned by (workspace_id, bare_name)
+    # so the chat handler can Query for user-typed names instead of
+    # Scanning the workspace partition. Skip the GSI when bare_name
+    # is empty (defensive — keeps a zero-length partition key from
+    # leaking into the index).
+    bare = _derive_bare_name(fact.target_symbol_id)
+    if bare:
+        item["bare_name"] = bare
+        item["GSI3PK"] = f"{workspace_id}#{bare}"
+        item["GSI3SK"] = (
+            f"{fact.target_symbol_id}#{fact.kind}#{repo}"
+            f"#{fact.file_path}#{fact.line}"
         )
 
     return item

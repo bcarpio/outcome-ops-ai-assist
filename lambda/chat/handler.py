@@ -557,96 +557,54 @@ def _fuzzy_resolve_symbol(
 ) -> List[str]:
     """Resolve a user-typed bare symbol name to its canonical ID(s).
 
-    Symbol resolution from the user's question:
+    The user types ``"require_auth"``; the graph stores the canonical
+    ``"python:lambda.auth.handler::require_auth"``. Backed by the
+    ``target-name-index`` GSI on the symbol-graph table, partitioned
+    by ``(workspace_id, bare_name)`` — a single Query, bounded by
+    actual matches, replaces the original full-table Scan that did
+    not scale past a single repo per workspace.
 
-    - The user typed ``"report_repos_snapshot"``.
-    - The graph stores ``defines`` rows with the canonical
-      ``"python:lambda.shared.outcomeops_license::report_repos_snapshot"``.
-    - Exact match misses; suffix match against ``::report_repos_snapshot``
-      (or the bare name if it already contains ``::``) succeeds.
-
-    v1 implementation: scan the base table with a filter expression on
-    ``kind = "defines"`` and ``workspace_id``, collect matching canonical
-    IDs. This is a bounded scan in chat-interactive scope; a dedicated
-    fuzzy-name index is deferred to v2.
-
-    Returns the list of matching canonical symbol IDs (empty list if
-    nothing matched, one-element list for unambiguous resolution,
-    multi-element list when the bare name is overloaded).
+    Returns matching canonical symbol IDs (empty list when nothing
+    matched; multi-element list when the bare name is overloaded
+    across modules so the caller can disambiguate).
     """
 
     if not bare_name or not workspace_id or not symbol_graph_table_name:
         return []
 
-    # If the user already typed a canonical-looking ID (contains "::"
-    # or a language prefix like "python:"), assume they meant it
-    # literally; the exact-match path already handled it.
+    # If the user typed a canonical-looking ID (contains ``::``),
+    # the exact-match path already handled it; don't re-resolve.
     if "::" in bare_name:
         return []
 
     try:
-        from shared.symbol_graph_reader import _resource as _sg_resource  # type: ignore
+        from shared.symbol_graph_reader import fuzzy_resolve_by_name  # type: ignore
     except Exception as exc:  # pragma: no cover - import failure
         logger.warning("[chat.augment] reader import failed: %s", exc)
         return []
 
-    table = _sg_resource().Table(symbol_graph_table_name)
-
-    # Build the suffix patterns we'll accept. The writer stores the
-    # canonical ID in ``target_symbol_id``; suffix forms:
-    #   "::<bare_name>"       (Python-style namespaced)
-    #   ".<bare_name>"        (dotted path, JS/TS/Java without ::)
-    #   "/<bare_name>"        (subpath imports)
-    #   "<bare_name>"         (already-bare canonical)
-    # ``begins_with`` won't help (the canonical ID puts the bare name
-    # at the END of the string), so we filter client-side after
-    # scanning the workspace's defines rows.
-
-    matches: List[str] = []
     try:
-        scan_kwargs = {
-            "FilterExpression": (
-                "workspace_id = :ws AND kind = :kind"
-            ),
-            "ExpressionAttributeValues": {
-                ":ws": workspace_id,
-                ":kind": "defines",
-            },
-            "ProjectionExpression": "target_symbol_id",
-            # Bound the scan so chat-interactive latency stays sane
-            # on workspaces with very large graphs. 5k items covers
-            # the OutcomeOps / Hyatt scale; if it doesn't, the v2
-            # fuzzy index is the proper fix.
-            "Limit": 1000,
-        }
-        seen: set[str] = set()
-        scanned = 0
-        while True:
-            response = table.scan(**scan_kwargs)
-            for item in response.get("Items", []):
-                tsi = item.get("target_symbol_id", "")
-                if not tsi or tsi in seen:
-                    continue
-                seen.add(tsi)
-                # Accept canonical IDs whose tail (after the last
-                # ``::`` / ``.`` / ``/``) matches the bare name.
-                tail = tsi
-                for sep in ("::", ".", "/"):
-                    if sep in tail:
-                        tail = tail.rsplit(sep, 1)[-1]
-                if tail == bare_name:
-                    matches.append(tsi)
-            scanned += len(response.get("Items", []) or [])
-            last = response.get("LastEvaluatedKey")
-            if not last or scanned >= 5000 or len(matches) >= 25:
-                break
-            scan_kwargs["ExclusiveStartKey"] = last
+        matches = fuzzy_resolve_by_name(
+            workspace_id,
+            bare_name,
+            symbol_graph_table_name=symbol_graph_table_name,
+        )
     except Exception as exc:
         logger.warning(
             "[chat.augment] fuzzy resolve failed for %r: %s", bare_name, exc
         )
         return []
 
+    # Observability: the live diagnosis on 2026-05-15 showed we had
+    # no way to tell from CloudWatch whether fuzzy returned 0, 1, or
+    # N canonicals — fuzzy was failing silently against multi-repo
+    # workspaces. Log the count so the next time this regresses we
+    # can spot it without re-instrumenting.
+    logger.info(
+        "[chat.augment] fuzzy resolve %r -> %d canonicals",
+        bare_name,
+        len(matches),
+    )
     return matches
 
 

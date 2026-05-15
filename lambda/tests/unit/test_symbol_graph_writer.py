@@ -138,6 +138,8 @@ def _create_symbol_graph_table():
             {"AttributeName": "GSI1SK", "AttributeType": "S"},
             {"AttributeName": "GSI2PK", "AttributeType": "S"},
             {"AttributeName": "GSI2SK", "AttributeType": "S"},
+            {"AttributeName": "GSI3PK", "AttributeType": "S"},
+            {"AttributeName": "GSI3SK", "AttributeType": "S"},
         ],
         KeySchema=[
             {"AttributeName": "PK", "KeyType": "HASH"},
@@ -157,6 +159,14 @@ def _create_symbol_graph_table():
                 "KeySchema": [
                     {"AttributeName": "GSI2PK", "KeyType": "HASH"},
                     {"AttributeName": "GSI2SK", "KeyType": "RANGE"},
+                ],
+                "Projection": {"ProjectionType": "ALL"},
+            },
+            {
+                "IndexName": "target-name-index",
+                "KeySchema": [
+                    {"AttributeName": "GSI3PK", "KeyType": "HASH"},
+                    {"AttributeName": "GSI3SK", "KeyType": "RANGE"},
                 ],
                 "Projection": {"ProjectionType": "ALL"},
             },
@@ -262,6 +272,93 @@ def test_write_facts_round_trip_table_query(tables):
     assert response["Count"] == 5
     # Every row carries the commit_sha attribute (v2 provenance).
     assert all(item.get("commit_sha") == NEW_SHA for item in response["Items"])
+
+
+def test_derive_bare_name_strips_language_prefix_and_namespace():
+    """``_derive_bare_name`` is the source of truth for the bare-name
+    attribute the chat-side fuzzy resolver Queries on. Each row in
+    this table is a real shape the extractor emits today; if any
+    fails, the chat resolver will silently miss those canonicals.
+    """
+    from shared.symbol_graph_writer import _derive_bare_name  # type: ignore
+
+    cases = [
+        ("python:lambda.auth.handler::require_auth", "require_auth"),
+        ("typescript:src.lib.api.requestMagicLink", "requestMagicLink"),
+        ("java:com.acme.Booking::confirm", "confirm"),
+        ("abap:Z_CL_BOOKING::CONFIRM", "CONFIRM"),
+        ("@hyatt-hpe/hpe-utils/http2", "http2"),
+        ("bare_name_only", "bare_name_only"),
+        ("", ""),
+    ]
+    for symbol_id, expected in cases:
+        assert _derive_bare_name(symbol_id) == expected, symbol_id
+
+
+def test_build_item_emits_bare_name_and_gsi3_keys(tables):
+    """Every fact must carry ``bare_name`` plus the GSI3 keys so the
+    target-name-index Query path on the chat handler can resolve a
+    user-typed bare name back to its canonicals.
+    """
+    from shared.symbol_graph_writer import write_facts  # type: ignore
+
+    target = "python:lambda.auth.handler::require_auth"
+    facts = [_calls_fact(i, target=target) for i in range(3)]
+
+    write_facts(
+        workspace_id=WORKSPACE_ID,
+        repo=REPO,
+        commit_sha=NEW_SHA,
+        facts=facts,
+        symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
+        code_maps_table_name=CODE_MAPS_TABLE,
+    )
+
+    table = tables.Table(SYMBOL_GRAPH_TABLE)
+    response = table.query(
+        KeyConditionExpression=Key("PK").eq(f"{WORKSPACE_ID}#{REPO}")
+    )
+    assert response["Count"] == 3
+    for item in response["Items"]:
+        assert item.get("bare_name") == "require_auth"
+        assert item.get("GSI3PK") == f"{WORKSPACE_ID}#require_auth"
+        assert item.get("GSI3SK", "").startswith(f"{target}#calls#")
+
+
+def test_target_name_index_query_returns_canonical_for_bare_name(tables):
+    """End-to-end on the new GSI: write facts for two distinct
+    canonicals that share a bare name, Query target-name-index by
+    ``(workspace_id, bare_name)``, expect both canonicals back.
+    """
+    from shared.symbol_graph_writer import write_facts  # type: ignore
+
+    auth_canonical = "python:lambda.auth.handler::handle_workspace_invite"
+    org_canonical = "python:lambda.org-management.handler::handle_workspace_invite"
+
+    facts = [
+        _calls_fact(0, target=auth_canonical),
+        _calls_fact(1, target=org_canonical),
+        _calls_fact(2, target=org_canonical),
+    ]
+
+    write_facts(
+        workspace_id=WORKSPACE_ID,
+        repo=REPO,
+        commit_sha=NEW_SHA,
+        facts=facts,
+        symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
+        code_maps_table_name=CODE_MAPS_TABLE,
+    )
+
+    table = tables.Table(SYMBOL_GRAPH_TABLE)
+    response = table.query(
+        IndexName="target-name-index",
+        KeyConditionExpression=Key("GSI3PK").eq(
+            f"{WORKSPACE_ID}#handle_workspace_invite"
+        ),
+    )
+    canonicals = {item["target_symbol_id"] for item in response["Items"]}
+    assert canonicals == {auth_canonical, org_canonical}
 
 
 def test_callers_query_via_gsi1(tables):

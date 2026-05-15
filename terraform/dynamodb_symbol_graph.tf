@@ -7,12 +7,17 @@
 # ${workspace_id}#${repo}#${commit_sha}, so a regen
 # (delete-old + write-new) is a single-partition operation.
 #
-# Two GSIs power the dominant read paths in the query API:
+# Three GSIs power the dominant read paths in the query API:
 #   target-kind-index   - callers(X) / importers(X) / implementers(X) by
 #                         (workspace_id, target_symbol_id) + kind prefix.
 #   target-prefix-index - subpath wildcards like
 #                         "@hyatt-hpe/hpe-utils/*" by (workspace_id,
 #                         target_prefix) with kind/repo in the sort key.
+#   target-name-index   - fuzzy resolution by bare name (the tail of
+#                         a canonical symbol id) for the chat-side
+#                         resolver. Lets chat Query for the canonicals
+#                         that match a user-typed bare name instead of
+#                         Scanning the workspace partition.
 #
 # GSI naming convention: see ADR-021. Rename via a versioned table
 # replacement if the ADR is later amended.
@@ -56,6 +61,15 @@ module "symbol_graph_table" {
       name = "GSI2SK"
       type = "S"
     },
+    # target-name-index keys (fuzzy resolution by bare name).
+    {
+      name = "GSI3PK"
+      type = "S"
+    },
+    {
+      name = "GSI3SK"
+      type = "S"
+    },
   ]
 
   # GSI1 - target-kind-index:
@@ -64,6 +78,9 @@ module "symbol_graph_table" {
   # GSI2 - target-prefix-index:
   #   PK = "${workspace_id}#${target_prefix}"
   #   SK = "${target_suffix}#${kind}#${repo}#${file_path}#${line}"
+  # GSI3 - target-name-index:
+  #   PK = "${workspace_id}#${bare_name}"
+  #   SK = "${target_symbol_id}#${kind}#${repo}#${file_path}#${line}"
   global_secondary_indexes = [
     {
       name            = "target-kind-index"
@@ -75,6 +92,12 @@ module "symbol_graph_table" {
       name            = "target-prefix-index"
       hash_key        = "GSI2PK"
       range_key       = "GSI2SK"
+      projection_type = "ALL"
+    },
+    {
+      name            = "target-name-index"
+      hash_key        = "GSI3PK"
+      range_key       = "GSI3SK"
       projection_type = "ALL"
     },
   ]
