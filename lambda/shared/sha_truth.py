@@ -36,8 +36,29 @@ from botocore.exceptions import ClientError
 logger = logging.getLogger(__name__)
 
 
-Pipeline = Literal["code_map", "docs", "gkg"]
-_VALID_PIPELINES: tuple[str, ...] = ("code_map", "docs", "gkg")
+# Ledger-row pipeline values are finer-grained than the SHA-column
+# pipeline. The code-maps flow has two fan-out stages — github-sync
+# emits one repo-summaries message (``code_map_dispatch``);
+# process-repo-summary fans that out into N per-code-unit messages
+# (``code_map_units``). Both stages must close before
+# ``last_code_map_sha`` advances on the workspaces row.
+Pipeline = Literal["code_map_dispatch", "code_map_units", "docs", "gkg"]
+_VALID_PIPELINES: tuple[str, ...] = (
+    "code_map_dispatch",
+    "code_map_units",
+    "docs",
+    "gkg",
+)
+
+# Maps a ledger pipeline to the SHA-column pipeline it backs. The
+# workspaces row has three SHA columns; ledger rows are finer-grained
+# so the two code-map stages can be observed independently.
+_LEDGER_TO_SHA_COLUMN: dict[str, str] = {
+    "code_map_dispatch": "code_map",
+    "code_map_units": "code_map",
+    "docs": "docs",
+    "gkg": "gkg",
+}
 
 _PENDING_TTL_SECONDS = 7 * 86400  # ledger row auto-expires after 7 days
 _FAILED_TTL_SECONDS = 30 * 86400  # per-file failure row keeps 30 days
@@ -325,6 +346,46 @@ def mark_unit_failed(
         raise
 
 
+def _stage_closed(
+    workspace_id: str,
+    repo: str,
+    pipeline: str,
+    target_sha: str,
+    *,
+    allow_partial_advance: bool,
+) -> Optional[bool]:
+    """Return True if the given ledger stage is closed (completed +
+    failed >= expected, with the failed-count policy applied), False
+    if it's still in flight, or None if the row doesn't exist.
+
+    Used by ``try_advance_sha`` to check the OTHER code-map stage
+    when one stage's close fires. The ``None`` case (TTL'd row, or
+    pipeline that doesn't use a paired stage) is treated as
+    "stage not present" by the caller.
+    """
+
+    try:
+        resp = _pending_table().get_item(
+            Key={
+                "PK": _ledger_pk(workspace_id, repo),
+                "SK": _pending_sk(pipeline, target_sha),
+            },
+        )
+    except ClientError:
+        return None
+    item = resp.get("Item")
+    if not item:
+        return None
+    expected = int(item.get("expected_count", 0))
+    completed = int(item.get("completed_count", 0))
+    failed = int(item.get("failed_count", 0))
+    if completed + failed < expected:
+        return False
+    if failed > 0 and not allow_partial_advance:
+        return False
+    return True
+
+
 def try_advance_sha(
     ledger_item: dict,
     *,
@@ -333,6 +394,11 @@ def try_advance_sha(
     """Decide whether to advance the per-pipeline SHA on the
     workspaces row, given a ledger item returned by
     ``mark_unit_complete`` or ``mark_unit_failed``.
+
+    Two-stage handling for ``code_map``: both
+    ``code_map_dispatch`` and ``code_map_units`` ledger rows for
+    the SHA must be closed before ``last_code_map_sha`` advances.
+    The other stage is read via ``_stage_closed``.
 
     Idempotent: concurrent consumers closing the same batch race
     into a single advance; the conditional update fails the
@@ -351,14 +417,36 @@ def try_advance_sha(
     if failed > 0 and not allow_partial_advance:
         return AdvanceResult(False, "has_failures")
 
-    pipeline = ledger_item["pipeline"]
+    ledger_pipeline = ledger_item["pipeline"]
     target_sha = ledger_item["target_sha"]
     target_ts = int(ledger_item["target_commit_timestamp"])
     workspace_id = ledger_item["workspace_id"]
     repo = ledger_item["repo"]
 
-    column = f"last_{pipeline}_sha"
-    ts_column = f"last_{pipeline}_sha_ts"
+    sha_column_pipeline = _LEDGER_TO_SHA_COLUMN.get(ledger_pipeline)
+    if sha_column_pipeline is None:
+        raise ValueError(f"unknown ledger pipeline: {ledger_pipeline}")
+
+    # Two-stage gate for code_map: when this close fires, also check
+    # the paired stage. Skip the gate if we're already on the paired
+    # stage (otherwise we'd recurse on the row we just closed).
+    if sha_column_pipeline == "code_map":
+        paired_stage = (
+            "code_map_units"
+            if ledger_pipeline == "code_map_dispatch"
+            else "code_map_dispatch"
+        )
+        if not _stage_closed(
+            workspace_id,
+            repo,
+            paired_stage,
+            target_sha,
+            allow_partial_advance=allow_partial_advance,
+        ):
+            return AdvanceResult(False, "not_complete")
+
+    column = f"last_{sha_column_pipeline}_sha"
+    ts_column = f"last_{sha_column_pipeline}_sha_ts"
 
     try:
         _workspaces_table().update_item(

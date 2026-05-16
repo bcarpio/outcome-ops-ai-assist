@@ -1373,6 +1373,25 @@ def process_batch_record(record: Dict[str, Any]) -> None:
                 previous_graph_sha=sg_previous_graph_sha,
             )
             _commit_symbol_graph_swap(sg_workspace, sg_repo, sg_commit_sha)
+            # plan-git-truth chunk 02: synthesize a single-unit gkg ledger
+            # so last_gkg_sha on the workspaces row tracks the same SHA
+            # the pointer table just advanced to. gkg is a single-writer
+            # pipeline with no fan-out, so we open + complete + advance
+            # in three sequential DDB calls. Failure here is non-fatal:
+            # the pointer table is the gkg source of truth; the
+            # workspaces-row column is a mirror for the audit story.
+            try:
+                _advance_gkg_sha(sg_workspace, sg_repo, sg_commit_sha)
+            except Exception as gkg_exc:  # pragma: no cover - defensive
+                logger.warning(
+                    "gkg sha-truth advance failed for %s/%s@%s: %s "
+                    "(pointer table is authoritative; workspaces "
+                    "column will drift until next regen)",
+                    sg_workspace,
+                    sg_repo,
+                    sg_commit_sha,
+                    gkg_exc,
+                )
         except Exception as exc:
             # Write or commit failed — abandon the pending swap. The
             # already-written facts under the new SHA become orphans
@@ -1421,6 +1440,45 @@ def _commit_symbol_graph_swap(
         raise RuntimeError(
             f"symbol-graph commit_swap rejected for {workspace_id}/{repo}@{commit_sha}"
         )
+
+
+def _advance_gkg_sha(workspace_id: str, repo: str, commit_sha: str) -> None:
+    """Synthesize a single-unit gkg ledger entry + advance the
+    ``last_gkg_sha`` column on the workspaces row.
+
+    Plan-git-truth chunk 02: gkg is a single-writer pipeline with no
+    fan-out, so we open + complete + advance in three sequential DDB
+    calls to keep the audit contract uniform across pipelines. The
+    pointer table (``shared.symbol_graph_pointer``) remains the
+    correctness anchor; this just mirrors the SHA onto the workspaces
+    row so the audit story has all three pipeline SHAs in one place.
+
+    Commit timestamp falls back to wall-clock time — process-batch-summary
+    runs serialized per-repo (Fargate consumer with MessageGroupId),
+    so processing-time monotonicity is sufficient. If a future
+    regulated buyer needs Git commit time on this column, thread the
+    timestamp through the repo-summaries SQS message.
+    """
+    import time as _time
+
+    from shared.sha_truth import (  # type: ignore
+        PendingBatch,
+        mark_unit_complete,
+        open_pending_batch,
+        try_advance_sha,
+    )
+
+    open_pending_batch(PendingBatch(
+        workspace_id=workspace_id,
+        repo=repo,
+        pipeline="gkg",
+        target_sha=commit_sha,
+        expected_count=1,
+        target_commit_timestamp=int(_time.time()),
+    ))
+    ledger = mark_unit_complete(workspace_id, repo, "gkg", commit_sha)
+    if ledger:
+        try_advance_sha(ledger)
 
 
 def _abandon_symbol_graph_swap(workspace_id: str, repo: str) -> None:
