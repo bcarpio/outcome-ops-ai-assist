@@ -314,18 +314,40 @@ class TestSendCodeUnitsToSqs:
 
     @patch.object(rsh, 'sqs_client')
     @patch.object(rsh, 'CODE_MAPS_QUEUE_URL', 'https://sqs.example.com/queue')
-    def test_raises_on_client_error(self, mock_sqs):
-        """Test ClientError is raised on SQS failure."""
-        mock_sqs.send_message.side_effect = _make_client_error(
-            {"Error": {"Code": "QueueDoesNotExist", "Message": "gone"}},
-            "SendMessage"
+    def test_per_unit_client_error_does_not_abort_batch(self, mock_sqs):
+        """plan-git-truth chunk 02b: ClientError on a single code-unit
+        dispatch no longer re-raises. The function returns the count
+        of successful publishes; failed units are recorded out-of-band
+        via mark_unit_failed when ledger context is available.
+
+        Replaces the previous test_raises_on_client_error which
+        asserted the pre-chunk-02b behavior (re-raise → DLQ the
+        whole record). The new contract is "record the failure, keep
+        going" so the rest of the batch survives.
+        """
+        # First unit dispatch raises; second succeeds.
+        mock_sqs.send_message.side_effect = [
+            _make_client_error(
+                {"Error": {"Code": "QueueDoesNotExist", "Message": "gone"}},
+                "SendMessage",
+            ),
+            None,  # second call returns OK
+        ]
+
+        # No workspace_id / commit_sha passed -> no failed-files write,
+        # but the function still must not raise.
+        sent = rsh.send_code_units_to_sqs(
+            [
+                {"batch_type": "t", "group_name": "g1",
+                 "file_paths": ["f1"], "storage_key": "k1"},
+                {"batch_type": "t", "group_name": "g2",
+                 "file_paths": ["f2"], "storage_key": "k2"},
+            ],
+            "repo",
+            "owner/repo",
         )
-        with pytest.raises(Exception):
-            rsh.send_code_units_to_sqs(
-                [{"batch_type": "t", "group_name": "g",
-                  "file_paths": ["f"], "storage_key": "k"}],
-                "repo", "owner/repo"
-            )
+        assert sent == 1
+        assert mock_sqs.send_message.call_count == 2
 
 
 # ############################################################################

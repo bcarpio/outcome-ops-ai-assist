@@ -740,13 +740,141 @@ def _queue_orphan_code_map_cleanup(
         )
 
 
+def _open_code_map_units_ledger(
+    workspace_id: str,
+    repo: str,
+    commit_sha: str,
+    commit_timestamp: int,
+    expected_count: int,
+) -> None:
+    """Open ``PENDING#code_map_units#{sha}`` with the real fan-out
+    count once process-repo-summary knows how many code units it
+    will dispatch. Closed incrementally by ``process-batch-summary``
+    as each code-unit SQS message lands.
+
+    plan-git-truth chunk 02b: this is the second stage of the
+    two-stage code-map ledger; the first stage
+    (``code_map_dispatch``) was opened by github-sync.
+    """
+    if expected_count <= 0:
+        return
+    try:
+        from shared.sha_truth import (  # type: ignore
+            PendingBatch,
+            open_pending_batch,
+        )
+    except Exception as exc:  # pragma: no cover - import-failure path
+        logger.warning(
+            "[process-repo-summary] sha_truth import failed: %s",
+            exc,
+        )
+        return
+    try:
+        open_pending_batch(PendingBatch(
+            workspace_id=workspace_id,
+            repo=repo,
+            pipeline="code_map_units",
+            target_sha=commit_sha,
+            expected_count=expected_count,
+            target_commit_timestamp=commit_timestamp,
+        ))
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(
+            "[process-repo-summary] code_map_units ledger open failed "
+            "for %s@%s: %s",
+            repo, commit_sha, exc,
+        )
+
+
+def _close_code_map_dispatch_ledger(
+    workspace_id: str,
+    repo: str,
+    commit_sha: str,
+) -> None:
+    """Close ``PENDING#code_map_dispatch#{sha}`` once
+    process-repo-summary finishes its part of the work. The dispatch
+    stage is single-unit (github-sync's repo-summaries message →
+    one process-repo-summary invocation), so we mark complete and
+    fire try_advance_sha. The advance will only succeed when the
+    paired ``code_map_units`` stage is also fully closed.
+    """
+    try:
+        from shared.sha_truth import (  # type: ignore
+            mark_unit_complete,
+            try_advance_sha,
+        )
+    except Exception as exc:  # pragma: no cover - import-failure path
+        logger.warning(
+            "[process-repo-summary] sha_truth import failed: %s",
+            exc,
+        )
+        return
+    try:
+        ledger = mark_unit_complete(
+            workspace_id, repo, "code_map_dispatch", commit_sha
+        )
+        if ledger:
+            try_advance_sha(ledger)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(
+            "[process-repo-summary] code_map_dispatch close failed "
+            "for %s@%s: %s",
+            repo, commit_sha, exc,
+        )
+
+
+def _record_code_unit_dispatch_failure(
+    workspace_id: str,
+    repo: str,
+    commit_sha: str,
+    code_unit: Dict[str, Any],
+    failure_detail: str,
+) -> None:
+    """Write a failed-files row for a code unit that couldn't be
+    dispatched. Increments ``failed_count`` on the code_map_units
+    ledger (when it exists). Non-fatal if the ledger is missing —
+    the per-unit dispatch loop continues either way.
+    """
+    try:
+        from shared.sha_truth import mark_unit_failed  # type: ignore
+    except Exception as exc:  # pragma: no cover - import-failure path
+        logger.warning(
+            "[process-repo-summary] sha_truth import failed: %s",
+            exc,
+        )
+        return
+    file_path = (
+        code_unit.get("storage_key")
+        or code_unit.get("group_name")
+        or "<unknown-code-unit>"
+    )
+    try:
+        mark_unit_failed(
+            workspace_id,
+            repo,
+            "code_map_units",
+            commit_sha,
+            file_path=str(file_path),
+            failure_reason="sqs_send_failed",
+            failure_detail=failure_detail,
+            attempt_count=1,
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(
+            "[process-repo-summary] failed-files write failed "
+            "for %s@%s/%s: %s",
+            repo, commit_sha, file_path, exc,
+        )
+
+
 def send_code_units_to_sqs(
     code_units: List[Dict[str, Any]],
     repo: str,
     repo_project: str,
     workspace_id: Optional[str] = None,
     commit_sha: Optional[str] = None,
-):
+    commit_timestamp: Optional[int] = None,
+) -> int:
     """
     Send code units to SQS for detailed batch processing.
 
@@ -761,6 +889,22 @@ def send_code_units_to_sqs(
             the symbol-graph extractor + atomic-swap pointer protocol.
             When absent, the consumer falls back to the legacy
             summary-only path.
+        commit_timestamp: Epoch seconds of the commit being processed.
+            Threaded onto each code-unit SQS body so
+            process-batch-summary can mark its code_map_units ledger
+            with the correct monotonic-advance anchor (plan-git-truth
+            chunk 02b).
+
+    Returns:
+        Count of units successfully published to SQS. Per-unit
+        publish failures are recorded in code-map-failed-files and
+        increment ``failed_count`` on the code_map_units ledger row
+        (when ledger context is available) — they do NOT abort the
+        rest of the batch and do NOT re-raise. This is the
+        error-handling shift in plan-git-truth chunk 02b: the
+        record's other units still dispatch, the SQS message
+        succeeds, and operators see the failed units in the
+        failed-files table instead of an opaque DLQ entry.
 
     Note: orphan cleanup is NOT queued from here. The caller must invoke
     _queue_orphan_code_map_cleanup() separately with the FULL current
@@ -768,6 +912,7 @@ def send_code_units_to_sqs(
     expected_keys reflects every handler that should remain - otherwise
     incremental sync would treat all unchanged handlers as orphans.
     """
+    sent = 0
     for code_unit in code_units:
         try:
             message = {
@@ -783,6 +928,10 @@ def send_code_units_to_sqs(
             if commit_sha:
                 # Symbol-graph regen anchors on this commit SHA.
                 message["commit_sha"] = commit_sha
+            if commit_timestamp is not None:
+                # plan-git-truth chunk 02b: monotonic-advance anchor
+                # for the per-unit ledger increments downstream.
+                message["commit_timestamp"] = commit_timestamp
 
             message_body = json.dumps(message)
 
@@ -791,11 +940,29 @@ def send_code_units_to_sqs(
                 MessageBody=message_body,
             )
 
+            sent += 1
             logger.info(f"Sent code unit to SQS: {code_unit['group_name']}")
 
         except ClientError as e:
-            logger.error(f"Failed to send code unit to SQS: {e}")
-            raise
+            # plan-git-truth chunk 02b: per-unit dispatch failure does
+            # not abort the batch. Record the failure in the SHA-truth
+            # failed-files table; the rest of the units still get
+            # dispatched.
+            logger.error(
+                "Failed to send code unit to SQS for %s/%s: %s",
+                repo_project,
+                code_unit.get("group_name", "<unknown>"),
+                e,
+            )
+            if workspace_id and commit_sha:
+                _record_code_unit_dispatch_failure(
+                    workspace_id=workspace_id,
+                    repo=repo_project,
+                    commit_sha=commit_sha,
+                    code_unit=code_unit,
+                    failure_detail=str(e)[:1024],
+                )
+    return sent
 
 
 def handler(event, context):
@@ -878,6 +1045,11 @@ def handler(event, context):
             # Read commit SHAs for incremental processing
             last_commit_sha = message_body.get("last_commit_sha")
             current_commit_sha = message_body.get("current_commit_sha")
+            # plan-git-truth chunk 02b: commit_timestamp is threaded
+            # through from github-sync on the repo-summaries body so
+            # this dispatcher can open the code_map_units ledger with
+            # the correct monotonic-advance anchor.
+            current_commit_timestamp = message_body.get("commit_timestamp")
 
             # Repo branch (used for usage tracking; defaults to "main"
             # when github-sync did not include it in the message body).
@@ -1036,14 +1208,58 @@ def handler(event, context):
 
             # Send code units to SQS for detailed processing
             if code_units:
+                # plan-git-truth chunk 02b: open the units-stage ledger
+                # BEFORE the dispatch loop so per-unit failures (caught
+                # inside send_code_units_to_sqs) can increment
+                # failed_count on a row that exists. Expected count is
+                # the full unit count; mark_unit_failed inside the loop
+                # writes failed-files rows for the units that don't
+                # publish.
+                if (
+                    workspace_id
+                    and current_commit_sha
+                    and current_commit_timestamp is not None
+                ):
+                    _open_code_map_units_ledger(
+                        workspace_id=workspace_id,
+                        repo=repo_project,
+                        commit_sha=current_commit_sha,
+                        commit_timestamp=int(current_commit_timestamp),
+                        expected_count=len(code_units),
+                    )
+
                 send_code_units_to_sqs(
                     code_units,
                     repo,
                     repo_project,
                     workspace_id,
                     commit_sha=current_commit_sha,
+                    commit_timestamp=(
+                        int(current_commit_timestamp)
+                        if current_commit_timestamp is not None
+                        else None
+                    ),
                 )
                 logger.info(f"Queued {len(code_units)} code units for {repo}")
+
+            # plan-git-truth chunk 02b: close the dispatch-stage ledger
+            # AFTER opening the units-stage. The dispatch close fires
+            # try_advance_sha, which checks the units stage too — if
+            # units is open and incomplete, the advance is deferred to
+            # whichever consumer closes the last unit. If there are
+            # zero code units (rare; doc-only changes), the units
+            # stage never opens and try_advance_sha treats it as
+            # "stage not present" and blocks the advance until a
+            # subsequent regen reopens both.
+            if (
+                workspace_id
+                and current_commit_sha
+                and code_units
+                and current_commit_timestamp is not None
+            ):
+                _close_code_map_dispatch_ledger(
+                    workspace_id, repo_project, current_commit_sha
+                )
 
             # Queue code-map orphan cleanup using the FULL tree's code units
             # (pre-incremental-filter). This way the expected_keys reflects
