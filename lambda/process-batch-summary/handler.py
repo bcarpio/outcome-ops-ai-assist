@@ -1410,12 +1410,102 @@ def process_batch_record(record: Dict[str, Any]) -> None:
 
     logger.info(f"Successfully processed {batch['batch_type']} summary for {batch['group_name']}")
 
+    # plan-git-truth chunk 02b: close one unit of the code_map_units
+    # ledger row that process-repo-summary opened with expected_count =
+    # the full fan-out size. When this close drives completed_count
+    # equal to expected_count (the last unit), try_advance_sha checks
+    # the paired code_map_dispatch stage and — if both are closed —
+    # advances last_code_map_sha on the workspaces row.
+    #
+    # SHA-truth context requires repo_project (owner/repo), workspace_id,
+    # commit_sha, AND commit_timestamp. Legacy / non-workspace producers
+    # that omit any of them fall through harmlessly — the ledger row
+    # never existed for that path.
+    _mark_code_map_unit_done(batch, status="ok")
+
     # Optional cooldown period to prevent Bedrock throttling on next message
     # Useful for accounts with low Bedrock quotas; disable for enterprise accounts
     if ENABLE_BEDROCK_COOLDOWN:
         cooldown_seconds = 10
         logger.info(f"Waiting {cooldown_seconds}s cooldown before next message...")
         time.sleep(cooldown_seconds)
+
+
+def _mark_code_map_unit_done(
+    batch: Dict[str, Any],
+    *,
+    status: str,
+    failure_reason: str = "",
+    failure_detail: str = "",
+    attempt_count: int = 1,
+) -> None:
+    """Close one unit of the code_map_units ledger row for this
+    batch's (workspace, repo, commit_sha) triple.
+
+    ``status="ok"``      -> mark_unit_complete + try_advance_sha
+    ``status="failed"``  -> mark_unit_failed + try_advance_sha
+
+    Falls through silently when any of workspace_id / repo_project /
+    commit_sha is absent from the batch (legacy / non-workspace
+    code path; that producer never opened a SHA-truth ledger row
+    so the consumer has nothing to mark).
+
+    The advance is checked on both close paths so the LAST unit of
+    the batch — successful or otherwise — drives ``last_code_map_sha``
+    forward when the paired dispatch stage is also closed.
+    """
+    workspace_id = batch.get("workspace_id") or ""
+    repo_project = batch.get("repo_project") or ""
+    commit_sha = batch.get("commit_sha") or ""
+    if not (workspace_id and repo_project and commit_sha):
+        return
+
+    try:
+        from shared.sha_truth import (  # type: ignore
+            mark_unit_complete,
+            mark_unit_failed,
+            try_advance_sha,
+        )
+    except Exception as exc:  # pragma: no cover - import-failure path
+        logger.warning(
+            "[process-batch-summary] sha_truth import failed: %s",
+            exc,
+        )
+        return
+
+    try:
+        if status == "ok":
+            ledger = mark_unit_complete(
+                workspace_id, repo_project, "code_map_units", commit_sha
+            )
+        else:
+            # Use the storage_key / group_name as the file_path label so
+            # operators can locate which code unit dropped.
+            file_path = (
+                batch.get("storage_key")
+                or batch.get("group_name")
+                or "<unknown-code-unit>"
+            )
+            ledger = mark_unit_failed(
+                workspace_id,
+                repo_project,
+                "code_map_units",
+                commit_sha,
+                file_path=str(file_path),
+                failure_reason=failure_reason or "consumer_failed",
+                failure_detail=failure_detail,
+                attempt_count=attempt_count,
+            )
+        if ledger:
+            try_advance_sha(ledger)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(
+            "[process-batch-summary] sha-truth %s failed for %s@%s: %s",
+            status,
+            repo_project,
+            commit_sha,
+            exc,
+        )
 
 
 def _commit_symbol_graph_swap(
@@ -1519,15 +1609,56 @@ def handler(event, context):
     if CODE_MAPS_TABLE is None:
         load_config()
 
+    # plan-git-truth chunk 02b: SQS maxReceiveCount on the code-maps
+    # queue (terraform/sqs.tf) is 3. When a record's
+    # ApproximateReceiveCount reaches that, the next failure DLQs it
+    # invisibly. To preserve the SHA-truth contract (every code unit
+    # eventually closes the ledger as complete OR failed), we detect
+    # the last-attempt case here and write the failure to
+    # code-map-failed-files + increment failed_count BEFORE
+    # propagating the exception. Earlier-attempt failures still
+    # propagate so SQS retries normally.
+    _MAX_RECEIVE_COUNT = 3
     errors = []
 
     for record in event["Records"]:
         try:
             process_batch_record(record)
         except Exception as e:
-            logger.error(f"Error processing batch: {e}", exc_info=True)
+            arc = int(
+                record.get("attributes", {}).get(
+                    "ApproximateReceiveCount", "1"
+                )
+            )
+            logger.error(
+                "Error processing batch (ARC=%d): %s",
+                arc,
+                e,
+                exc_info=True,
+            )
+            if arc >= _MAX_RECEIVE_COUNT:
+                # Last attempt — record a permanent failure and DO
+                # NOT re-raise. The record completes at the SQS level
+                # (no DLQ) but the SHA-truth ledger reflects the
+                # permanent failure so try_advance_sha behaves
+                # correctly.
+                try:
+                    batch = json.loads(record["body"])
+                    _mark_code_map_unit_done(
+                        batch,
+                        status="failed",
+                        failure_reason="consumer_exhausted_retries",
+                        failure_detail=str(e)[:1024],
+                        attempt_count=arc,
+                    )
+                except Exception as inner_exc:  # pragma: no cover - defensive
+                    logger.warning(
+                        "Failed to record permanent failure: %s",
+                        inner_exc,
+                    )
+                continue
             errors.append(e)
-            # Continue processing other records
+            # Continue processing other records (existing behavior)
 
     # If any errors occurred, throw to trigger SQS retry
     if errors:
