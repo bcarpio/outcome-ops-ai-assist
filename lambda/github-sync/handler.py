@@ -250,8 +250,32 @@ def get_default_branch(token: str, owner: str, repo: str) -> str:
 
 
 def get_latest_commit_sha(token: str, owner: str, repo: str, branch: str) -> str:
-    """Get the SHA of the latest commit on a branch."""
+    """Get the SHA of the latest commit on a branch.
+
+    Kept for back-compat with the few legacy call sites that only need
+    the SHA. New code should call ``get_latest_commit`` which also
+    returns the commit timestamp needed for the SHA-truth ledger's
+    monotonic-advance guard.
+    """
+    sha, _ts = get_latest_commit(token, owner, repo, branch)
+    return sha
+
+
+def get_latest_commit(
+    token: str, owner: str, repo: str, branch: str
+) -> tuple[str, int]:
+    """Get the SHA + commit timestamp (epoch seconds) of the latest
+    commit on a branch.
+
+    Returns ``(sha, commit_timestamp)``. The timestamp comes from
+    ``commit.committer.date`` on the GitHub API response, parsed to
+    epoch seconds. It drives the monotonic-advance check in
+    ``shared.sha_truth.try_advance_sha`` so an older SHA finishing
+    after a newer one (DLQ-replay, retry-after-failover) does not
+    clobber the newer SHA on the workspaces row.
+    """
     import urllib.request
+    from datetime import datetime, timezone
 
     url = f"https://api.github.com/repos/{owner}/{repo}/commits/{branch}"
 
@@ -267,7 +291,26 @@ def get_latest_commit_sha(token: str, owner: str, repo: str, branch: str) -> str
     try:
         with urllib.request.urlopen(req, timeout=30) as response:
             data = json.loads(response.read().decode())
-            return data["sha"]
+            sha = data["sha"]
+            # GitHub returns ``commit.committer.date`` as an ISO-8601
+            # string with a Z suffix. Parse to epoch seconds. Falls
+            # back to wall-clock time if the field is missing for any
+            # reason — gracefully degrades the monotonic guard rather
+            # than failing the sync.
+            date_str = (
+                data.get("commit", {}).get("committer", {}).get("date")
+            )
+            if date_str:
+                ts = int(
+                    datetime.fromisoformat(
+                        date_str.replace("Z", "+00:00")
+                    )
+                    .astimezone(timezone.utc)
+                    .timestamp()
+                )
+            else:
+                ts = int(datetime.now(timezone.utc).timestamp())
+            return sha, ts
     except urllib.error.HTTPError as e:
         error_body = e.read().decode() if e.fp else ""
         logger.error(f"Failed to get latest commit: {e.code} - {error_body}")
@@ -481,25 +524,36 @@ def queue_file_for_ingestion(
     file_sha: str,
     commit_sha: str,
     repo_type: str = "application",
+    commit_timestamp: Optional[int] = None,
 ) -> bool:
-    """Queue a file for ingestion via file-ingestion queue."""
+    """Queue a file for ingestion via file-ingestion queue.
+
+    ``commit_timestamp`` (epoch seconds) rides on the message body so
+    the file-ingestion consumer can mark its docs-pipeline ledger row
+    complete with the correct monotonic-advance anchor. Optional for
+    back-compat during the chunk-02b rolling deploy — file-ingestion
+    tolerates the absence and skips the ledger call for one release.
+    """
     if not FILE_INGESTION_QUEUE:
         logger.warning("FILE_INGESTION_QUEUE not configured")
         return False
 
     try:
         sqs = _get_sqs()
+        body: Dict[str, Any] = {
+            "source": "github",
+            "workspace_id": workspace_id,
+            "repo_name": repo_name,
+            "repo_type": repo_type,  # application or standards
+            "file_path": file_path,
+            "file_sha": file_sha,
+            "commit_sha": commit_sha,
+        }
+        if commit_timestamp is not None:
+            body["commit_timestamp"] = commit_timestamp
         sqs.send_message(
             QueueUrl=FILE_INGESTION_QUEUE,
-            MessageBody=json.dumps({
-                "source": "github",
-                "workspace_id": workspace_id,
-                "repo_name": repo_name,
-                "repo_type": repo_type,  # application or standards
-                "file_path": file_path,
-                "file_sha": file_sha,
-                "commit_sha": commit_sha,
-            }),
+            MessageBody=json.dumps(body),
         )
         return True
     except ClientError as e:
@@ -616,6 +670,7 @@ def queue_repo_for_code_maps(
     all_files: List[Dict],
     last_commit_sha: Optional[str] = None,
     current_commit_sha: Optional[str] = None,
+    commit_timestamp: Optional[int] = None,
 ) -> bool:
     """
     Queue repository to repo-summaries queue for code-map generation.
@@ -662,6 +717,12 @@ def queue_repo_for_code_maps(
             message_body["last_commit_sha"] = last_commit_sha
         if current_commit_sha:
             message_body["current_commit_sha"] = current_commit_sha
+        # plan-git-truth chunk 02: commit_timestamp on the SQS body so
+        # process-repo-summary can open the code_map_units ledger row
+        # with the correct monotonic-advance anchor, and the gkg
+        # writer downstream can do the same after commit_swap.
+        if commit_timestamp is not None:
+            message_body["commit_timestamp"] = commit_timestamp
 
         sqs = _get_sqs()
         sqs.send_message(
