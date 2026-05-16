@@ -29,7 +29,7 @@ final system prompt + user-prompt context.
 from __future__ import annotations
 
 import logging
-from typing import Iterable, List, Optional
+from typing import Iterable, List, Optional, Tuple
 
 from shared.symbol_graph_reader import CallSite, QueryResult
 
@@ -238,6 +238,81 @@ def build_symbol_definition_block(
         anchor = f"{d.file_path}:{d.line}"
         tag = f"  ({d.repo})" if d.repo else ""
         lines.append(f"- {anchor}{tag}")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Multi-canonical block — when fuzzy resolution returns N>1 canonicals
+# (each Lambda defining its own local require_auth, etc.), enumerate
+# the directional results per canonical so the model can answer
+# "who calls X" across the full set instead of just stating "X is
+# defined in N places".
+# ---------------------------------------------------------------------------
+
+
+def build_multi_canonical_facts_block(
+    *,
+    symbol_candidate: str,
+    per_canonical: List[Tuple[str, Optional["CallSite"], "QueryResult"]],
+    relation: str = "callers",
+    workspace_label: str = "this workspace",
+) -> str:
+    """Render ``relation`` results for N canonicals that share a bare name.
+
+    ``per_canonical`` is a list of ``(canonical_id, definition_site,
+    query_result)`` tuples. ``definition_site`` is None if the
+    canonical has no defines edge in the graph (very rare — defensive).
+
+    Output shape matches build_symbol_facts_block on a per-canonical
+    basis, plus a top-level summary and an "across N matches" total.
+    The block is consumed by the model verbatim; ordering must be
+    stable so a deterministic answer is generated.
+    """
+
+    label = RELATION_LABELS.get(relation, relation.capitalize())
+
+    lines: List[str] = [SYMBOL_FACTS_HEADER, ""]
+    lines.append(f"Question target (resolved candidate): {symbol_candidate}")
+    lines.append("")
+    total = sum(len(r.sites) for _, _, r in per_canonical)
+    lines.append(
+        f"`{symbol_candidate}` resolves to {len(per_canonical)} distinct "
+        f"definitions in {workspace_label}. {label} across all matches: "
+        f"{total}."
+    )
+
+    # Stable sort by canonical id so the block is reproducible.
+    for canonical, def_site, result in sorted(per_canonical, key=lambda t: t[0]):
+        lines.append("")
+        lines.append(f"### {canonical}")
+        if def_site is not None:
+            lines.append(f"Defined at: {def_site.file_path}:{def_site.line}")
+        sites = _sort_sites_stable(result.sites)
+        if not sites:
+            lines.append(f"{label} in {workspace_label}: 0")
+            continue
+        truncation_suffix = " (truncated)" if result.truncated else ""
+        lines.append(
+            f"{label} ({len(sites)} site{'s' if len(sites) != 1 else ''}"
+            f"{truncation_suffix}):"
+        )
+        for site in sites:
+            anchor = f"{site.file_path}:{site.line}"
+            tag = f"  ({site.repo})" if site.repo else ""
+            lines.append(f"- {anchor}{tag}")
+
+    # Use the worst-case staleness across canonicals so the model
+    # surfaces the freshest-credible bound.
+    worst_staleness = None
+    for _, _, r in per_canonical:
+        s = getattr(r, "staleness_seconds", None)
+        if s is not None:
+            worst_staleness = s if worst_staleness is None else max(worst_staleness, s)
+    suffix = _sha_suffix(None, worst_staleness)
+    if suffix:
+        lines.append("")
+        lines.append(suffix)
+
     return "\n".join(lines)
 
 

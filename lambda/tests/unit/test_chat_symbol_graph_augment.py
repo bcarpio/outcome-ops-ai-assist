@@ -459,19 +459,19 @@ def test_augment_structural_with_zero_callers_renders_empty_block(_inject_client
     assert "Direct callers in this workspace: 0" in out["graph_block"]
 
 
-def test_augment_disambiguation_marks_graph_retrieval_fired(_inject_clients):
-    """When fuzzy returns multiple canonicals the augment renders a
-    disambiguation block instead of running callers/importers/
-    implementers. The earlier implementation forgot to set
-    ``retrievals_fired`` on this path, so the chat metadata chip
-    showed "Graph: skipped" even though the answer was clearly
-    grounded in graph data. Regression guard: this path MUST set
-    ``retrievals_fired = ["graph"]`` + ``graph_relation = "definitions"``
-    + a non-empty ``graph_sites`` list.
+def test_augment_multi_canonical_runs_callers_per_canonical_and_merges(
+    _inject_clients,
+):
+    """When fuzzy returns multiple canonicals (each Lambda defines its
+    own local ``require_auth``) the augment must run callers() for
+    every canonical and merge the results, not just render a
+    disambiguation list of definitions. The model otherwise replies
+    "I have definitions, not callers" to questions like "who calls
+    require_auth?" — which is what surfaced on prd 2026-05-16.
 
-    Discovered against prd on 2026-05-16: "which lambdas call
-    require_auth in app.retrieveit.ai" produced a definition-list
-    answer with the chip saying "Graph: skipped".
+    Sets the four telemetry fields the chat metadata frame propagates
+    to the UI chip so the user can see "Graph: callers (N results)
+    across M matches" instead of "Graph: skipped".
     """
     _create_symbol_graph_table()
     _create_code_maps_table()
@@ -481,11 +481,13 @@ def test_augment_disambiguation_marks_graph_retrieval_fired(_inject_clients):
         "structural", "require_auth"
     )
 
-    # Two distinct canonicals share the bare name -- the same shape as
-    # the prd ingest where every integration Lambda defines its own
-    # local require_auth.
+    # Two canonicals share the bare name -- the same shape as the
+    # prd ingest where every integration Lambda has its own local
+    # require_auth.
     auth_canonical = "python:lambda.auth.handler::require_auth"
     org_canonical = "python:lambda.org-management.handler::require_auth"
+
+    # Defines for both canonicals.
     _put_fact(
         workspace_id=WORKSPACE_ID,
         repo=REPO,
@@ -509,6 +511,42 @@ def test_augment_disambiguation_marks_graph_retrieval_fired(_inject_clients):
         language="python",
     )
 
+    # auth.handler::require_auth has 2 callers; org-management has 1.
+    # Merged total = 3.
+    _put_fact(
+        workspace_id=WORKSPACE_ID,
+        repo=REPO,
+        commit_sha=SHA,
+        kind="calls",
+        source_symbol_id="python:lambda.auth.handler::handle_invite",
+        target_symbol_id=auth_canonical,
+        file_path="lambda/auth/handler.py",
+        line=1325,
+        language="python",
+    )
+    _put_fact(
+        workspace_id=WORKSPACE_ID,
+        repo=REPO,
+        commit_sha=SHA,
+        kind="calls",
+        source_symbol_id="python:lambda.auth.handler::handle_workspace_invite",
+        target_symbol_id=auth_canonical,
+        file_path="lambda/auth/handler.py",
+        line=1462,
+        language="python",
+    )
+    _put_fact(
+        workspace_id=WORKSPACE_ID,
+        repo=REPO,
+        commit_sha=SHA,
+        kind="calls",
+        source_symbol_id="python:lambda.org-management.handler::lambda_handler",
+        target_symbol_id=org_canonical,
+        file_path="lambda/org-management/handler.py",
+        line=5888,
+        language="python",
+    )
+
     handler = _import_augment()
     out = handler._augment_context_with_symbol_graph(
         question="Which lambdas call require_auth?",
@@ -516,18 +554,28 @@ def test_augment_disambiguation_marks_graph_retrieval_fired(_inject_clients):
         user_id="user@x.com",
     )
 
-    # The disambiguation block must show both definition sites.
-    assert "lambda/auth/handler.py" in out["graph_block"]
-    assert "lambda/org-management/handler.py" in out["graph_block"]
+    # The block must enumerate callers per canonical (this is the
+    # functional fix on top of the telemetry fix).
+    assert "lambda/auth/handler.py:1325" in out["graph_block"]
+    assert "lambda/auth/handler.py:1462" in out["graph_block"]
+    assert "lambda/org-management/handler.py:5888" in out["graph_block"]
+    # And the per-canonical headers so the model knows which canonical
+    # owns which callers.
+    assert auth_canonical in out["graph_block"]
+    assert org_canonical in out["graph_block"]
+    # The "across all matches" summary line — total caller count
+    # across the two canonicals.
+    assert "Direct callers across all matches: 3" in out["graph_block"]
 
-    # Telemetry — the actual regression guard.
+    # Telemetry — now reports callers, not definitions.
     assert out["retrievals_fired"] == ["graph"]
-    assert out["graph_relation"] == "definitions"
-    assert out["graph_result_count"] == 2
-    paths = {s["file_path"] for s in out["graph_sites"]}
+    assert out["graph_relation"] == "callers"
+    assert out["graph_result_count"] == 3
+    paths = {(s["file_path"], s["line"]) for s in out["graph_sites"]}
     assert paths == {
-        "lambda/auth/handler.py",
-        "lambda/org-management/handler.py",
+        ("lambda/auth/handler.py", 1325),
+        ("lambda/auth/handler.py", 1462),
+        ("lambda/org-management/handler.py", 5888),
     }
 
 

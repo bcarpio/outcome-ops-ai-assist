@@ -49,6 +49,7 @@ from shared.prompts import build_chat_system_prompt
 from context_builder import (
     GRAPH_GROUNDING_INSTRUCTION,
     build_graph_unavailable_block,
+    build_multi_canonical_facts_block,
     build_symbol_definition_block,
     build_symbol_facts_block,
 )
@@ -785,33 +786,56 @@ def _augment_context_with_symbol_graph(
                     code_maps_table_name=code_maps_table,
                 )
                 if len(fuzzy) > 1:
-                    # Multiple canonical IDs match the bare name --
-                    # surface every candidate so the model can ask
-                    # the user to disambiguate.
-                    all_defs = []
+                    # Multi-canonical: each Lambda often defines its
+                    # own local copy of the same utility (require_auth,
+                    # get_auth_context, ...). Rather than emitting a
+                    # disambiguation list the model can't act on, run
+                    # the directional query for every canonical and
+                    # merge the results so questions like "who calls
+                    # require_auth" produce a complete cross-codebase
+                    # answer.
+                    per_canonical = []
+                    merged_sites_for_metadata: List[Dict[str, Any]] = []
+                    worst_staleness = None
                     for cand in fuzzy:
-                        all_defs.extend(
-                            definitions(
-                                primary_ws,
-                                cand,
-                                symbol_graph_table_name=symbol_graph_table,
-                                code_maps_table_name=code_maps_table,
-                            )
+                        cand_defs = definitions(
+                            primary_ws,
+                            cand,
+                            symbol_graph_table_name=symbol_graph_table,
+                            code_maps_table_name=code_maps_table,
                         )
-                    out["graph_block"] = build_symbol_definition_block(
+                        # First defines edge is the canonical's
+                        # primary definition site; cross-repo dupes
+                        # would surface as separate canonicals from
+                        # fuzzy already.
+                        def_site = cand_defs[0] if cand_defs else None
+                        cand_result = callers(
+                            primary_ws,
+                            cand,
+                            symbol_graph_table_name=symbol_graph_table,
+                            code_maps_table_name=code_maps_table,
+                        )
+                        per_canonical.append((cand, def_site, cand_result))
+                        merged_sites_for_metadata.extend(
+                            _site_to_dict(s) for s in cand_result.sites
+                        )
+                        s = getattr(cand_result, "staleness_seconds", None)
+                        if s is not None:
+                            worst_staleness = (
+                                s if worst_staleness is None
+                                else max(worst_staleness, s)
+                            )
+
+                    out["graph_block"] = build_multi_canonical_facts_block(
                         symbol_candidate=user_symbol,
-                        definitions=all_defs,
+                        per_canonical=per_canonical,
+                        relation="callers",
                     )
-                    # Telemetry: this path DID query the graph (one
-                    # ``definitions`` call per fuzzy match), it just
-                    # returned a disambiguation block rather than a
-                    # callers/importers/implementers block. The chip
-                    # would mislead users with "Graph: skipped" when
-                    # the answer is plainly graph-grounded.
                     out["retrievals_fired"] = ["graph"]
-                    out["graph_relation"] = "definitions"
-                    out["graph_result_count"] = len(all_defs)
-                    out["graph_sites"] = [_site_to_dict(s) for s in all_defs]
+                    out["graph_relation"] = "callers"
+                    out["graph_result_count"] = len(merged_sites_for_metadata)
+                    out["graph_sites"] = merged_sites_for_metadata
+                    out["graph_staleness_seconds"] = worst_staleness
                     return out
 
         if len(defs) > 1:
