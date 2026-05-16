@@ -259,6 +259,8 @@ export default function Chat() {
     setCurrentTitle('New Chat')
     setMessages([])
     setSources([])
+    setGraphSources([])
+    setRouting(null)
     setLastCost(null)
     setIsOwner(true)
     setOwnerEmail(null)
@@ -306,6 +308,8 @@ export default function Chat() {
     setInput('')
     setStatus('thinking')
     setSources([])
+    setGraphSources([])
+    setRouting(null)
 
     try {
       await sendChatMessage(
