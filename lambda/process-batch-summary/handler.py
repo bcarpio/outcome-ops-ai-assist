@@ -1246,6 +1246,11 @@ def process_batch_record(record: Dict[str, Any]) -> None:
     # existing summary-only flow.
     sg_workspace = batch.get("workspace_id") or ""
     sg_repo = batch.get("repo") or ""
+    # repo_project is owner/repo (the canonical SK shape used by the
+    # workspaces row and the SHA-truth ledger PK); sg_repo is the
+    # short name used by the symbol-graph table key. Both come from
+    # the same SQS body so we extract them together.
+    repo_project = batch.get("repo_project") or sg_repo
     sg_commit_sha = batch.get("commit_sha") or ""
     sg_enabled = bool(sg_workspace and sg_repo and sg_commit_sha)
 
@@ -1380,15 +1385,22 @@ def process_batch_record(record: Dict[str, Any]) -> None:
             # in three sequential DDB calls. Failure here is non-fatal:
             # the pointer table is the gkg source of truth; the
             # workspaces-row column is a mirror for the audit story.
+            #
+            # Uses repo_project (owner/repo) — NOT sg_repo (short name) —
+            # because the workspaces-row SK and the SHA-truth ledger PK
+            # both follow the GITHUB_REPO#<owner/repo> convention
+            # (feedback_ddb_repo_sk_convention). Live discovery
+            # 2026-05-16: the original sg_repo arg created a ledger row
+            # at the wrong PK and made the workspaces UpdateItem fail.
             try:
-                _advance_gkg_sha(sg_workspace, sg_repo, sg_commit_sha)
+                _advance_gkg_sha(sg_workspace, repo_project, sg_commit_sha)
             except Exception as gkg_exc:  # pragma: no cover - defensive
                 logger.warning(
                     "gkg sha-truth advance failed for %s/%s@%s: %s "
                     "(pointer table is authoritative; workspaces "
                     "column will drift until next regen)",
                     sg_workspace,
-                    sg_repo,
+                    repo_project,
                     sg_commit_sha,
                     gkg_exc,
                 )

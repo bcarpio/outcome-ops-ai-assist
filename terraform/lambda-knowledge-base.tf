@@ -107,6 +107,22 @@ module "process_batch_summary_lambda" {
       resources = local.sha_truth_table_arns
     }
 
+    # plan-git-truth chunk 02: try_advance_sha writes to the workspaces row
+    # (last_{pipeline}_sha + last_{pipeline}_sha_ts). Live discovery on
+    # 2026-05-16: AccessDeniedException blocked the SHA advance even though
+    # both ledger stages closed correctly. github-sync already had this
+    # via its own dynamodb policy block; process-batch-summary needs it
+    # added separately.
+    workspaces_sha_advance = {
+      effect = "Allow"
+      actions = [
+        "dynamodb:UpdateItem",
+      ]
+      resources = [
+        module.workspaces_table[0].dynamodb_table_arn,
+      ]
+    }
+
     # Read SSM parameters (including encrypted GitHub token)
     ssm_read = {
       effect = "Allow"
@@ -342,6 +358,19 @@ module "process_repo_summary_lambda" {
         "dynamodb:UpdateItem",
       ]
       resources = local.sha_truth_table_arns
+    }
+
+    # plan-git-truth chunk 02: try_advance_sha writes to the workspaces
+    # row. process-repo-summary fires this from inside
+    # _close_code_map_dispatch_ledger.
+    workspaces_sha_advance = {
+      effect = "Allow"
+      actions = [
+        "dynamodb:UpdateItem",
+      ]
+      resources = [
+        module.workspaces_table[0].dynamodb_table_arn,
+      ]
     }
 
     # Write to S3 knowledge base bucket

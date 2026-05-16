@@ -345,6 +345,10 @@ module "process_documents_lambda" {
       PII_REDACTION_ENABLED             = tostring(var.pii_redaction_enabled)
       COMPREHEND_PII_PRICE_PER_1M_CHARS = tostring(var.comprehend_pii_price_per_1m_chars)
       PII_REDACTION_SKIP_TYPES          = join(",", var.pii_redaction_skip_types)
+      # plan-git-truth chunk 02b/4: process-documents closes the docs
+      # ledger after vectorization. _close_docs_unit reads these tables.
+      PENDING_WORK_TABLE = module.code_map_pending_work_table.dynamodb_table_id
+      FAILED_FILES_TABLE = module.code_map_failed_files_table.dynamodb_table_id
     },
     local.outcomeops_license_env,
   )
@@ -360,6 +364,28 @@ module "process_documents_lambda" {
       ]
       resources = [
         "${module.knowledge_base_bucket.s3_bucket_arn}/workspaces/*"
+      ]
+    }
+
+    # plan-git-truth chunk 02b/4: SHA-truth ledger (pending-work +
+    # failed-files) + workspaces-row advance.
+    sha_truth = {
+      effect = "Allow"
+      actions = [
+        "dynamodb:GetItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+      ]
+      resources = local.sha_truth_table_arns
+    }
+
+    workspaces_sha_advance = {
+      effect = "Allow"
+      actions = [
+        "dynamodb:UpdateItem",
+      ]
+      resources = [
+        module.workspaces_table[0].dynamodb_table_arn,
       ]
     }
 
