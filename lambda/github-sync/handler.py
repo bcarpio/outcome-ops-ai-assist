@@ -605,8 +605,17 @@ def upload_file_to_s3(
     content: str,
     repo_type: str = "standards",
     doc_type: Optional[str] = None,
+    commit_timestamp: Optional[int] = None,
 ) -> Optional[str]:
-    """Upload a standards repo file directly to S3 for indexing."""
+    """Upload a standards repo file directly to S3 for indexing.
+
+    ``commit_timestamp`` (epoch seconds) lands as an S3 object
+    metadata header so process-documents can use it as the
+    monotonic-advance anchor when it closes the docs ledger after
+    vectorization. Required for the active/passive HA failover
+    contract -- a failover mid-vectorization must see the SHA
+    still at the previous commit until every chunk lands.
+    """
     if not KB_BUCKET:
         logger.warning("KB_BUCKET not configured")
         return None
@@ -640,6 +649,9 @@ def upload_file_to_s3(
     }
     if doc_type:
         metadata["github_doc_type"] = doc_type
+    if commit_timestamp is not None:
+        # S3 object metadata values are strings.
+        metadata["github_commit_timestamp"] = str(commit_timestamp)
 
     try:
         _get_s3().put_object(
@@ -859,32 +871,39 @@ def _mark_code_map_dispatch_failed(
         )
 
 
-def _advance_docs_sha_sync(
+def _open_docs_pending_batch(
     workspace_id: str,
     repo_name: str,
     current_sha: str,
     current_commit_timestamp: int,
+    docs_uploaded: int,
 ) -> None:
-    """Synchronous docs-pipeline advance for the path where github-sync
-    uploads files directly to S3 (standards repos + the doc-file
-    subset of application repos). There's no SQS fan-out for that
-    path, so the dispatch and completion collapse: open + complete +
-    advance in three sequential DDB calls.
+    """Open ``PENDING#docs#{sha}`` with ``expected_count = docs_uploaded``.
 
-    Failure is logged but non-fatal — the S3 uploads are already
-    durable; the workspaces-row column is a mirror for the audit
-    story.
+    Closed incrementally by process-documents as each S3 object is
+    vectorized. Only the last close advances ``last_docs_sha`` on the
+    workspaces row, so the SHA on the row means "all docs are in the
+    vector index" — NOT "all docs landed in S3."
+
+    The stricter contract matters for active/passive HA failover: if
+    the primary region dies mid-vectorization, the secondary region's
+    new primary needs to see ``last_docs_sha`` still at the previous
+    SHA so it can re-trigger or wait. Advancing on S3 upload alone
+    would lose the in-flight vectorization work silently.
+
+    Failure to open is logged but non-fatal -- the S3 uploads are
+    durable regardless; the ledger row is operator observability.
     """
+    if docs_uploaded <= 0:
+        return
     try:
         from shared.sha_truth import (  # type: ignore
             PendingBatch,
-            mark_unit_complete,
             open_pending_batch,
-            try_advance_sha,
         )
     except Exception as exc:  # pragma: no cover - import-failure path
         logger.warning(
-            "[github-sync] sha_truth import failed: %s; skipping docs advance",
+            "[github-sync] sha_truth import failed: %s; skipping docs open",
             exc,
         )
         return
@@ -894,17 +913,12 @@ def _advance_docs_sha_sync(
             repo=repo_name,
             pipeline="docs",
             target_sha=current_sha,
-            expected_count=1,
+            expected_count=docs_uploaded,
             target_commit_timestamp=current_commit_timestamp,
         ))
-        ledger = mark_unit_complete(
-            workspace_id, repo_name, "docs", current_sha
-        )
-        if ledger:
-            try_advance_sha(ledger)
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning(
-            "[github-sync] docs advance failed for %s@%s: %s",
+            "[github-sync] docs ledger open failed for %s@%s: %s",
             repo_name, current_sha, exc,
         )
 
@@ -1171,6 +1185,7 @@ def _process_standards_repo(
             content=content,
             repo_type=repo_type,
             doc_type="adr",
+            commit_timestamp=current_commit_timestamp,
         )
         if s3_key:
             uploaded += 1
@@ -1179,12 +1194,13 @@ def _process_standards_repo(
     current_file_paths = [f["path"] for f in files_to_process]
     _queue_orphan_detection(workspace_id, repo_name, current_file_paths)
 
-    # plan-git-truth chunk 02: synthesize a single-unit docs ledger
-    # entry now that the synchronous S3 uploads have finished. Standards
-    # repos have no SQS fan-out; "dispatched" and "completed" collapse
-    # into one step so the ledger row opens + closes immediately.
-    _advance_docs_sha_sync(
-        workspace_id, repo_name, current_sha, current_commit_timestamp
+    # plan-git-truth chunk 02b/4: open the docs ledger with the actual
+    # upload count and let process-documents close it incrementally as
+    # each S3 object is vectorized. last_docs_sha advances only when
+    # the last vector lands -- not when github-sync's S3 PUT returns.
+    _open_docs_pending_batch(
+        workspace_id, repo_name, current_sha,
+        current_commit_timestamp, uploaded,
     )
 
     update_sync_status(
@@ -1252,6 +1268,7 @@ def _process_application_repo(
             content=content,
             repo_type="application",
             doc_type=doc_type,
+            commit_timestamp=current_commit_timestamp,
         )
         if s3_key:
             docs_uploaded += 1
@@ -1263,17 +1280,16 @@ def _process_application_repo(
     current_doc_paths = [f["path"] for f in doc_files]
     _queue_orphan_detection(workspace_id, repo_name, current_doc_paths)
 
-    # plan-git-truth chunk 02: open the docs-pipeline ledger BEFORE
-    # the S3 uploads (the loop above) advance through it. Application
-    # repos do upload docs synchronously to S3, but unlike standards
-    # repos those docs ALSO get re-vectorized via S3 → process-documents
-    # (the file-ingestion queue is the doc dispatch for the
-    # application-doc subset that lives behind file-ingestion, not
-    # used here — see ``queue_file_for_ingestion``). The synchronous
-    # S3 path closes its own ledger via ``_advance_docs_sha_sync``.
+    # plan-git-truth chunk 02b/4: open the docs ledger with the
+    # actual upload count. process-documents (S3-event-triggered)
+    # closes one unit per successful vector write; last_docs_sha
+    # advances only when the last vector lands. Required for the
+    # HA-failover guarantee: a failover mid-vectorization sees the
+    # SHA still at the previous commit and re-triggers correctly.
     if docs_uploaded:
-        _advance_docs_sha_sync(
-            workspace_id, repo_name, current_sha, current_commit_timestamp
+        _open_docs_pending_batch(
+            workspace_id, repo_name, current_sha,
+            current_commit_timestamp, docs_uploaded,
         )
 
     # plan-git-truth chunk 02: open the code_map_dispatch ledger row

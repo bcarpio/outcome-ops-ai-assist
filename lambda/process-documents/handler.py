@@ -774,6 +774,80 @@ def _emit_ingest_audit(
         )
 
 
+def _close_docs_unit(
+    workspace_id: str,
+    source: str,
+    metadata: Dict[str, str],
+    *,
+    status: str,
+    file_path: str = "",
+    failure_reason: str = "",
+    failure_detail: str = "",
+) -> None:
+    """Close one unit of the docs SHA-truth ledger after a successful
+    (or permanently failed) vector write.
+
+    plan-git-truth chunk 02b/4: github-sync opens
+    ``PENDING#docs#{sha}`` with ``expected_count = uploaded count``.
+    Each process-documents invocation closes one unit; the last
+    close advances ``last_docs_sha`` on the workspaces row. The
+    stricter contract (SHA only advances after every vector lands)
+    is required by the active/passive HA failover story — a mid-
+    vectorization failover must see the SHA still at the previous
+    commit so the secondary region picks up where the primary
+    left off.
+
+    Only fires for github sources today. confluence/jira/etc. don't
+    have a Git SHA concept; tracking those under SHA-truth needs a
+    separate ledger design (a sync-id, not a commit_sha).
+    """
+    if source != "github":
+        return
+    repo = metadata.get("github_repo_name") or ""
+    commit_sha = metadata.get("github_commit_sha") or ""
+    if not (workspace_id and repo and commit_sha):
+        return
+
+    try:
+        from shared.sha_truth import (  # type: ignore
+            mark_unit_complete,
+            mark_unit_failed,
+            try_advance_sha,
+        )
+    except Exception as exc:  # pragma: no cover - import-failure path
+        logger.warning(
+            "[process-documents] sha_truth import failed: %s", exc
+        )
+        return
+
+    try:
+        if status == "ok":
+            ledger = mark_unit_complete(
+                workspace_id, repo, "docs", commit_sha
+            )
+        else:
+            ledger = mark_unit_failed(
+                workspace_id,
+                repo,
+                "docs",
+                commit_sha,
+                file_path=file_path or "<unknown-doc>",
+                failure_reason=failure_reason or "process_documents_failed",
+                failure_detail=failure_detail,
+                attempt_count=1,
+            )
+        if ledger:
+            try_advance_sha(ledger)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(
+            "[process-documents] sha-truth %s failed for %s@%s: %s",
+            status,
+            repo,
+            commit_sha,
+            exc,
+        )
+
+
 def process_document(bucket: str, key: str) -> Dict[str, Any]:
     """
     Process a single document from S3.
@@ -796,6 +870,10 @@ def process_document(bucket: str, key: str) -> Dict[str, Any]:
     filename = key_info["filename"]
 
     logger.info(f"Processing document: {key}")
+
+    # Hoisted outside the try so the except path can pass it to
+    # _close_docs_unit for failure-mode SHA-truth bookkeeping.
+    metadata: Dict[str, str] = {}
 
     try:
         # Get object from S3
@@ -865,6 +943,15 @@ def process_document(bucket: str, key: str) -> Dict[str, Any]:
             metadata=metadata,
         )
 
+        # plan-git-truth chunk 02b/4: close one unit of the docs
+        # ledger that github-sync opened with expected_count =
+        # uploaded count. last_docs_sha advances only when every
+        # vector lands -- critical for HA failover so a mid-flight
+        # vectorization is observable in the SHA columns.
+        _close_docs_unit(
+            workspace_id, source, metadata, status="ok"
+        )
+
         return {
             "status": "success",
             "key": key,
@@ -875,6 +962,21 @@ def process_document(bucket: str, key: str) -> Dict[str, Any]:
 
     except ClientError as e:
         logger.error(f"Error processing document {key}: {e}")
+        # plan-git-truth chunk 02b/4: record the per-doc failure on
+        # the ledger so try_advance_sha eventually closes the batch
+        # (otherwise a single permanent S3/Bedrock failure would
+        # wedge the SHA forever).
+        _close_docs_unit(
+            workspace_id,
+            source,
+            metadata,
+            status="failed",
+            file_path=key,
+            failure_reason=e.response.get("Error", {}).get(
+                "Code", "process_documents_client_error"
+            ),
+            failure_detail=str(e)[:1024],
+        )
         return {"status": "error", "key": key, "error": str(e)}
 
 
