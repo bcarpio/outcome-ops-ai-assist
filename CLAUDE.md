@@ -72,12 +72,22 @@ The KB contains: ADRs, READMEs, code maps, infrastructure patterns, handler patt
   user-facing docs. Plan directories are working artifacts for in-flight implementation
   and are routinely deleted once the work ships.
 - A comment that says "see plan-foo/02 for the contract" becomes a dangling pointer the
-  moment the plan dir is removed. The provenance belongs in the **ADR** (`docs/adr/`),
-  the **operator runbook** (`docs/*.md`), or the **commit message** — never in the code
-  itself.
+  moment the plan dir is removed. The provenance belongs in the **ADR** (`docs/adr/`)
+  or the **commit message** — never in the code itself.
 - If you're about to write a comment referencing a plan dir, instead: either cite the
   ADR that captured the decision, or write the rationale inline and let the commit
   history carry the rest.
+
+### Temporary migration files do NOT belong in `docs/`
+- **`docs/` is customer-facing.** Anything that ships into the customer's deploy bundle
+  (or could be read by a customer browsing the repo) belongs there. Migration scripts,
+  one-shot backfill procedures, and runbooks for internal sandbox catch-up DO NOT.
+- These belong in `plan/` (gitignored). When the work is shipped and the migration is
+  run, the script + the plan dir get deleted together (per
+  [[feedback_disposable_scripts]] and the plans-vs-ADRs split).
+- If the migration logic is genuinely customer-relevant (e.g., a schema upgrade
+  customers running their own deploys must perform), it goes in an **ADR** — not a
+  loose markdown file under `docs/runbooks/`. ADRs are the durable artifact.
 
 ### Git Discipline
 - **NEVER push** - Only commit. The user will push.
