@@ -149,6 +149,10 @@ module "file_ingestion_lambda" {
       OAUTH_KMS_KEY_ARN = aws_kms_key.oauth_tokens[0].arn
       # AUDIT_TABLE for log_license_fail_open() regression detector (ADR-019)
       AUDIT_TABLE = module.audit_logs_table.dynamodb_table_id
+      # plan-git-truth chunk 01: SHA-truth ledger tables. Wired but not
+      # yet imported; chunk 02 lights up the docs-pipeline consumer.
+      PENDING_WORK_TABLE = module.code_map_pending_work_table.dynamodb_table_id
+      FAILED_FILES_TABLE = module.code_map_failed_files_table.dynamodb_table_id
     },
     local.outcomeops_license_env,
   )
@@ -182,6 +186,17 @@ module "file_ingestion_lambda" {
           module.workspaces_table[0].dynamodb_table_arn,
           "${module.workspaces_table[0].dynamodb_table_arn}/index/*"
         ]
+      }
+
+      # plan-git-truth chunk 01: SHA-truth ledger.
+      sha_truth = {
+        effect = "Allow"
+        actions = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+        ]
+        resources = local.sha_truth_table_arns
       }
 
       # SSM for OAuth configuration
