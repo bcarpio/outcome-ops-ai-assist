@@ -646,3 +646,69 @@ data (reader uses GSI, which doesn't filter by PK shape):
 In practice rollback hasn't been needed; the migration is mechanical
 and idempotent.
 - `docs/features.md` — customer-facing feature description.
+
+## Fuzzy-resolve health (target-name-index)
+
+The chat handler resolves user-typed bare names ("require_auth")
+to canonical IDs ("python:lambda.auth.handler::require_auth") via
+the `target-name-index` GSI on the symbol-graph table. The GSI is
+partitioned by `(workspace_id, bare_name)`, so each resolve is a
+single-partition Query bounded by actual matches — replaces the
+original Scan-based fuzzy that did not scale past one repo per
+workspace.
+
+### Verify the GSI is populated for a workspace
+
+```bash
+TABLE=$(aws ssm get-parameter \
+  --name "/${ENV}/${APP}/dynamodb/symbol-graph-table" \
+  --query Parameter.Value --output text)
+
+aws dynamodb query \
+  --table-name "$TABLE" \
+  --index-name target-name-index \
+  --key-condition-expression "GSI3PK = :pk" \
+  --expression-attribute-values '{":pk":{"S":"<workspace_id>#<bare_name>"}}' \
+  --select COUNT
+```
+
+Pick a bare name you know exists in the workspace (e.g.
+`require_auth` for any Python codebase, `lambda_handler` for
+AWS-shaped repos). A non-zero `Count` confirms the GSI is
+populated.
+
+### Symptom: chat says "Graph: callers (0 results)" for a name that obviously has callers
+
+Three things to check, in order:
+
+1. **IAM** — the chat Lambda role needs `dynamodb:Query` on
+   `arn:aws:dynamodb:*:*:table/<symbol-graph-table>/index/target-name-index`.
+   Without it the reader catches `AccessDeniedException`, returns
+   `[]`, and the augment falls through to a bare-name caller
+   query that always misses. Look for
+   `[chat.augment] fuzzy resolve failed for ...` in the chat
+   Lambda log group. The exact-ARN policy lives in
+   `terraform/iam_symbol_graph.tf` (`local.symbol_graph_arns`).
+2. **Writer redeploy** — `bare_name` is populated at write time
+   by `lambda/shared/symbol_graph_writer.py`. If
+   `process-batch-summary` is running an image older than the
+   writer change, facts written after the redeploy will lack
+   `bare_name` and the GSI will stay empty for those rows.
+   Disconnect + reconnect the affected repo to force a fresh
+   ingest under the new writer.
+3. **Re-ingest scope** — incremental regen only re-extracts
+   changed files. If the file holding the canonical was
+   unchanged since the writer redeploy, its facts retain the
+   pre-redeploy attribute set. Disconnect + reconnect bypasses
+   incremental detection.
+
+The chat handler logs the per-request fuzzy result:
+
+```
+[chat.augment] fuzzy resolve '<bare_name>' -> <N> canonicals
+```
+
+Grep CloudWatch for that line around the time of the failing
+chat turn — `N=0` means no GSI3 rows; `N>=1` means the fuzzy
+succeeded and the empty-result path is somewhere downstream
+(canonical has no callers, IAM on a different ARN, etc.).

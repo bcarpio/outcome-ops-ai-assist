@@ -65,8 +65,17 @@ DynamoDB itself prefers kebab-case for readability in the console).
 
 ### Existing names that conform
 
-- `target-kind-index` (symbol-graph table, GSI1)
-- `target-prefix-index` (symbol-graph table, GSI2)
+- `target-kind-index` (symbol-graph table, GSI1) — partitioned by
+  `(workspace_id, target_symbol_id)`; backs callers / importers /
+  implementers / definitions queries.
+- `target-prefix-index` (symbol-graph table, GSI2) — partitioned by
+  `(workspace_id, package_head)`; backs subpath-import wildcard
+  queries.
+- `target-name-index` (symbol-graph table, GSI3) — partitioned by
+  `(workspace_id, bare_name)`; backs the chat-side fuzzy resolver
+  that maps user-typed bare names ("require_auth") to canonical IDs
+  without a full-table Scan. Bounded by actual matches per Query
+  rather than by workspace size.
 
 ### Names a future contributor would derive
 
@@ -140,3 +149,9 @@ Version History:
   / `target-prefix-index` names the symbol-graph table shipped with,
   and locks in the `<noun>-<discriminator>-index` shape for future
   graph-table GSIs.
+- v1.1 (2026-05-16): Adds `target-name-index` to the list of
+  conforming names. Same shape, same table; partitions by
+  `(workspace_id, bare_name)` to replace the chat handler's
+  Scan-based fuzzy resolver with a Query bounded by actual matches.
+  Naming convention itself is unchanged — this is a pure additive
+  amendment, not a re-evaluation.

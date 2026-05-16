@@ -371,11 +371,11 @@ class TestMcpTools:
     def test_all_tools_defined(self):
         """Test that the expected native tools are all defined.
 
-        Four symbol-graph query tools sit alongside the original four KB
-        tools, so the surface is 8. See docs/mcp-server.md.
+        Five symbol-graph query tools sit alongside the original four KB
+        tools, so the surface is 9. See docs/mcp-server.md.
         """
         tools = mcp_module.MCP_TOOLS
-        assert len(tools) == 8
+        assert len(tools) == 9
         names = {t["name"] for t in tools}
         assert names == {
             # KB tools
@@ -388,6 +388,7 @@ class TestMcpTools:
             "find_importers",
             "find_implementers",
             "find_definitions",
+            "find_symbol_by_name",
         }
 
     def test_tools_have_required_fields(self):

@@ -153,6 +153,58 @@ Operators verify the filter from CloudWatch logs on the
 at debug level; a disabled repo emits a single info-level
 "symbol-graph disabled by config" line per batch.
 
+#### Bare-name fuzzy resolution
+
+Users in chat type bare names ("which lambdas call `require_auth`?")
+while the graph stores canonical IDs
+(`python:lambda.auth.handler::require_auth`). A third GSI on the
+symbol-graph table — `target-name-index`, partitioned by
+`(workspace_id, bare_name)` — backs a single-partition Query
+that maps bare names to the set of matching canonicals. Scales
+with the number of matches per bare name, not with workspace
+size, so the resolver works at the regulated-customer scale of
+50–100 repos per workspace where a Scan-based approach silently
+truncates. ADR-021 governs the GSI naming.
+
+When a bare name resolves to multiple canonicals (every
+integration Lambda defining its own local `require_auth`,
+cross-module copies, etc.) the chat handler runs `callers()`
+against each canonical and merges the results, so the answer to
+"who calls X" is a complete cross-codebase inventory partitioned
+by which local copy each call site targets — not a "X is defined
+in N places" disambiguation prompt the model can't answer with.
+
+#### Routing transparency in chat UI
+
+Every chat response renders a routing chip above the sources panel
+that surfaces what the symbol-graph router decided and which
+retrievals fired. Eliminates the "did this answer come from the
+graph or just RAG?" question regulated buyers ask during audits.
+
+The chip shows:
+- **Intent**: one of `structural` / `hybrid` / `pattern` /
+  `dependency` / `unknown` — the symbol-graph router's
+  classification of the question shape.
+- **Retrievals fired**: `RAG: N chunks` always; `Graph: <relation>
+  (N results)` when the graph was queried; `Graph: skipped` when
+  the router chose RAG-only (pattern / dependency questions).
+  `<relation>` is `callers` / `importers` / `implementers` /
+  `definitions` depending on which symbol-graph query ran.
+- **Symbol candidate**: the bare name the router extracted from
+  the question, when one was found.
+- **Graph age**: the worst-case staleness across queried graph
+  partitions when the answer would be sensitive to it (e.g.,
+  "graph age: 23m").
+
+Graph results land in the chat metadata frame as
+`graph_sources[]`, distinct from the RAG `sources[]`, so the
+sources panel renders them with a different visual treatment
+(emerald tint vs. neutral). The user can tell at a glance which
+file/line citations are graph-grounded (deterministic — the
+symbol-graph table says X calls Y) vs vector-grounded
+(probabilistic — the chunk that matched the question contained
+text about Y).
+
 ## Code generation pipeline (Jira → Code → PR → Analyze)
 
 End-to-end loop that turns a Jira ticket into a reviewed PR with

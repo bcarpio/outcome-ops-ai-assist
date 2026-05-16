@@ -210,6 +210,40 @@ an empty list means "not found" -- never null.
 - `symbol` (required): Canonical symbol ID to look up
 - `workspace_id` (required): Workspace to scope the query to
 
+#### find_symbol_by_name
+
+Resolve a user-typed bare name (e.g., `require_auth`) to the set of
+canonical symbol IDs that match it. The four directional tools above
+all require canonical IDs; this tool maps bare names to canonicals
+so an MCP client that only has the local function name (the user
+typed it, or it came out of a model) can chain into them. Backed by
+the `target-name-index` GSI for single-partition reads bounded by
+actual matches.
+
+Response shape:
+
+```json
+{
+  "canonicals": [
+    "python:lambda.auth.handler::require_auth",
+    "python:lambda.org-management.handler::require_auth"
+  ]
+}
+```
+
+Typical client pattern: call `find_symbol_by_name(bare_name)` first,
+then call `find_callers(canonical)` for each returned canonical and
+merge the results. The chat handler does the equivalent fan-out
+internally for in-chat questions; external MCP clients (Claude Code,
+Cursor, etc.) opt in via this tool.
+
+**Parameters:**
+- `bare_name` (required): Function or class name as a user would
+  type it -- no language prefix, namespace, or package
+- `workspace_id` (required): Workspace to scope the query to
+- `limit` (optional, default 25): Maximum distinct canonicals to
+  return
+
 ### Proxied Tools (based on workspace access)
 
 Tools from MCP servers assigned to your workspaces are automatically available.

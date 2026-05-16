@@ -303,6 +303,45 @@ MCP_TOOLS = [
             "required": ["symbol", "workspace_id"],
         },
     },
+    {
+        "name": "find_symbol_by_name",
+        "description": (
+            "Resolve a user-typed bare name ('require_auth') to the set of "
+            "canonical symbol IDs that match it ('python:lambda.auth.handler::"
+            "require_auth', 'python:lambda.org-management.handler::require_auth', "
+            "...). Use this when the caller knows the local function name but "
+            "not the full canonical ID -- pass the result into find_callers / "
+            "find_importers / find_implementers / find_definitions for each "
+            "returned canonical. Backed by the target-name-index GSI for "
+            "single-partition reads bounded by actual matches."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "bare_name": {
+                    "type": "string",
+                    "description": (
+                        "The bare function or class name as a user would type "
+                        "it (e.g., 'require_auth'). No namespace, package, or "
+                        "language prefix."
+                    ),
+                },
+                "workspace_id": {
+                    "type": "string",
+                    "description": "Workspace ID to scope the query to.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": (
+                        "Maximum distinct canonicals to return (default 25). "
+                        "Bare names are rarely overloaded beyond a handful of "
+                        "modules; the default cap is intentional."
+                    ),
+                },
+            },
+            "required": ["bare_name", "workspace_id"],
+        },
+    },
 ]
 
 
@@ -1242,6 +1281,55 @@ def handle_find_definitions(params, email):
     return {"text": json.dumps(_call_sites_to_dict(sites))}
 
 
+def handle_find_symbol_by_name(params, email):
+    """Resolve a user-typed bare name to the set of canonical
+    symbol IDs that match it.
+
+    The four directional tools (find_callers / find_importers /
+    find_implementers / find_definitions) all take a CANONICAL ID
+    (`python:lambda.auth.handler::require_auth`). Callers who only
+    have the bare name ("require_auth") use this tool first to map
+    to the canonical set, then issue a directional query per
+    canonical. The chat handler does the equivalent internally;
+    this exposes the same resolver to external MCP clients.
+    """
+    bare_name = params.get("bare_name", "")
+    workspace_id = params.get("workspace_id", "")
+    limit = params.get("limit", 25)
+
+    if not bare_name:
+        return {"error": "bare_name is required"}
+    deny = _check_symbol_graph_workspace_access(workspace_id, email)
+    if deny is not None:
+        return deny
+
+    try:
+        from shared import symbol_graph_reader  # type: ignore
+    except Exception as exc:
+        logger.error(
+            f"Failed to import symbol_graph_reader: {exc}", exc_info=True
+        )
+        return {"error": "Symbol graph unavailable"}
+
+    try:
+        canonicals = symbol_graph_reader.fuzzy_resolve_by_name(
+            workspace_id,
+            bare_name,
+            limit=int(limit) if limit else 25,
+            symbol_graph_table_name=os.environ.get("SYMBOL_GRAPH_TABLE")
+            or None,
+        )
+    except symbol_graph_reader.SymbolGraphUnavailable as exc:
+        logger.warning(
+            f"Symbol graph unavailable for find_symbol_by_name: {exc}"
+        )
+        return {"error": "Symbol graph unavailable"}
+    except ValueError as exc:
+        return {"error": str(exc)}
+
+    return {"text": json.dumps({"canonicals": canonicals})}
+
+
 TOOL_HANDLERS = {
     "query_knowledge_base": handle_query_knowledge_base,
     "list_workspaces": handle_list_workspaces,
@@ -1252,6 +1340,7 @@ TOOL_HANDLERS = {
     "find_importers": handle_find_importers,
     "find_implementers": handle_find_implementers,
     "find_definitions": handle_find_definitions,
+    "find_symbol_by_name": handle_find_symbol_by_name,
 }
 
 

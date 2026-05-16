@@ -176,6 +176,8 @@ def _create_symbol_graph_table():
             {"AttributeName": "GSI1SK", "AttributeType": "S"},
             {"AttributeName": "GSI2PK", "AttributeType": "S"},
             {"AttributeName": "GSI2SK", "AttributeType": "S"},
+            {"AttributeName": "GSI3PK", "AttributeType": "S"},
+            {"AttributeName": "GSI3SK", "AttributeType": "S"},
         ],
         KeySchema=[
             {"AttributeName": "PK", "KeyType": "HASH"},
@@ -195,6 +197,14 @@ def _create_symbol_graph_table():
                 "KeySchema": [
                     {"AttributeName": "GSI2PK", "KeyType": "HASH"},
                     {"AttributeName": "GSI2SK", "KeyType": "RANGE"},
+                ],
+                "Projection": {"ProjectionType": "ALL"},
+            },
+            {
+                "IndexName": "target-name-index",
+                "KeySchema": [
+                    {"AttributeName": "GSI3PK", "KeyType": "HASH"},
+                    {"AttributeName": "GSI3SK", "KeyType": "RANGE"},
                 ],
                 "Projection": {"ProjectionType": "ALL"},
             },
@@ -263,6 +273,21 @@ def _put_fact(
         if head and tail:
             item["GSI2PK"] = f"{workspace_id}#{head}"
             item["GSI2SK"] = f"{tail}#{kind}#{repo}#{file_path}#{line}"
+
+    # GSI3 (target-name-index) — derivation matches the writer in
+    # shared.symbol_graph_writer._derive_bare_name.
+    s = target_symbol_id
+    if ":" in s and "::" not in s.split(":", 1)[0]:
+        s = s.split(":", 1)[1]
+    for sep in ("::", ".", "/"):
+        if sep in s:
+            s = s.rsplit(sep, 1)[-1]
+    if s:
+        item["bare_name"] = s
+        item["GSI3PK"] = f"{workspace_id}#{s}"
+        item["GSI3SK"] = (
+            f"{target_symbol_id}#{kind}#{repo}#{file_path}#{line}"
+        )
     table.put_item(Item=item)
 
 
@@ -774,14 +799,106 @@ class TestRequiredArgs:
 
 
 # ===========================================================================
-# tools/list advertises the four new tools
+# find_symbol_by_name — bare-name fuzzy resolution
+# ===========================================================================
+
+
+class TestFindSymbolByName:
+
+    def test_empty_workspace_returns_empty_canonicals(self, tables):
+        """No defines rows for the bare name -> empty list."""
+        with _patch_user_workspaces([WORKSPACE_ID]):
+            result = mcp_module.handle_find_symbol_by_name(
+                {"bare_name": "nothing_here", "workspace_id": WORKSPACE_ID},
+                USER_EMAIL,
+            )
+        payload = json.loads(result["text"])
+        assert payload == {"canonicals": []}
+
+    def test_overloaded_bare_name_returns_all_canonicals(self, tables):
+        """Multiple Lambdas defining the same bare name -> every
+        canonical surfaces. Matches the prd shape that motivated
+        the chat-side fuzzy resolver."""
+        auth = "python:lambda.auth.handler::require_auth"
+        org = "python:lambda.org-management.handler::require_auth"
+        table = tables.Table(SYMBOL_GRAPH_TABLE)
+        for canonical, file_path, line in [
+            (auth, "lambda/auth/handler.py", 588),
+            (org, "lambda/org-management/handler.py", 660),
+        ]:
+            _put_fact(
+                table,
+                workspace_id=WORKSPACE_ID,
+                repo=REPO,
+                commit_sha=SHA,
+                kind="defines",
+                source_symbol_id=f"{canonical.rsplit('::', 1)[0]}::<module>",
+                target_symbol_id=canonical,
+                file_path=file_path,
+                line=line,
+                language="python",
+            )
+
+        with _patch_user_workspaces([WORKSPACE_ID]):
+            result = mcp_module.handle_find_symbol_by_name(
+                {
+                    "bare_name": "require_auth",
+                    "workspace_id": WORKSPACE_ID,
+                },
+                USER_EMAIL,
+            )
+        payload = json.loads(result["text"])
+        assert set(payload["canonicals"]) == {auth, org}
+
+    def test_workspace_auth_denied(self, tables):
+        with _patch_user_workspaces([OTHER_WORKSPACE_ID]):
+            result = mcp_module.handle_find_symbol_by_name(
+                {"bare_name": "require_auth", "workspace_id": WORKSPACE_ID},
+                USER_EMAIL,
+            )
+        assert "error" in result
+        assert "text" not in result
+
+    def test_missing_bare_name(self, tables):
+        with _patch_user_workspaces([WORKSPACE_ID]):
+            result = mcp_module.handle_find_symbol_by_name(
+                {"workspace_id": WORKSPACE_ID},
+                USER_EMAIL,
+            )
+        assert "error" in result
+        assert "bare_name" in result["error"]
+
+    def test_symbol_graph_unavailable(self, tables):
+        from shared import symbol_graph_reader  # type: ignore
+
+        with _patch_user_workspaces([WORKSPACE_ID]):
+            with patch.object(
+                symbol_graph_reader,
+                "fuzzy_resolve_by_name",
+                side_effect=symbol_graph_reader.SymbolGraphUnavailable(
+                    "ddb down"
+                ),
+            ):
+                result = mcp_module.handle_find_symbol_by_name(
+                    {
+                        "bare_name": "require_auth",
+                        "workspace_id": WORKSPACE_ID,
+                    },
+                    USER_EMAIL,
+                )
+        assert "error" in result
+        assert "unavailable" in result["error"].lower()
+
+
+# ===========================================================================
+# tools/list advertises the five tools
 # ===========================================================================
 
 
 class TestToolsListAdvertisement:
 
-    def test_all_four_tools_advertised(self):
-        """``MCP_TOOLS`` must include the four chunk-10 tools so
+    def test_all_tools_advertised(self):
+        """``MCP_TOOLS`` must include every symbol-graph tool so
         external MCP clients can discover them via tools/list."""
         names = {t["name"] for t in mcp_module.MCP_TOOLS}
         assert {
@@ -789,14 +906,19 @@ class TestToolsListAdvertisement:
             "find_importers",
             "find_implementers",
             "find_definitions",
+            "find_symbol_by_name",
         }.issubset(names)
 
-    def test_all_four_handlers_registered(self):
+    def test_all_handlers_registered(self):
         """The tools/call dispatch table must contain a handler for each."""
-        assert "find_callers" in mcp_module.TOOL_HANDLERS
-        assert "find_importers" in mcp_module.TOOL_HANDLERS
-        assert "find_implementers" in mcp_module.TOOL_HANDLERS
-        assert "find_definitions" in mcp_module.TOOL_HANDLERS
+        for name in (
+            "find_callers",
+            "find_importers",
+            "find_implementers",
+            "find_definitions",
+            "find_symbol_by_name",
+        ):
+            assert name in mcp_module.TOOL_HANDLERS
 
 
 # ===========================================================================
