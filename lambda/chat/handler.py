@@ -550,6 +550,23 @@ GRAPH_RETRIEVAL_ENABLED = (
 )
 
 
+def _site_to_dict(site) -> Dict[str, Any]:
+    """Flatten a ``CallSite`` (or definition site) onto the dict shape
+    the metadata frame expects.
+
+    Used in both the callers/importers/implementers success path AND
+    the multi-canonical disambiguation paths so the UI receives an
+    identical structure regardless of which branch the augment took.
+    """
+    return {
+        "file_path": getattr(site, "file_path", "") or "",
+        "line": getattr(site, "line", 0) or 0,
+        "repo": getattr(site, "repo", "") or "",
+        "source_symbol_id": getattr(site, "source_symbol_id", "") or "",
+        "language": getattr(site, "language", "") or "",
+    }
+
+
 def _fuzzy_resolve_symbol(
     workspace_id: str,
     bare_name: str,
@@ -785,6 +802,16 @@ def _augment_context_with_symbol_graph(
                         symbol_candidate=user_symbol,
                         definitions=all_defs,
                     )
+                    # Telemetry: this path DID query the graph (one
+                    # ``definitions`` call per fuzzy match), it just
+                    # returned a disambiguation block rather than a
+                    # callers/importers/implementers block. The chip
+                    # would mislead users with "Graph: skipped" when
+                    # the answer is plainly graph-grounded.
+                    out["retrievals_fired"] = ["graph"]
+                    out["graph_relation"] = "definitions"
+                    out["graph_result_count"] = len(all_defs)
+                    out["graph_sites"] = [_site_to_dict(s) for s in all_defs]
                     return out
 
         if len(defs) > 1:
@@ -794,6 +821,10 @@ def _augment_context_with_symbol_graph(
                 symbol_candidate=user_symbol,
                 definitions=defs,
             )
+            out["retrievals_fired"] = ["graph"]
+            out["graph_relation"] = "definitions"
+            out["graph_result_count"] = len(defs)
+            out["graph_sites"] = [_site_to_dict(s) for s in defs]
             return out
 
         definition_site = defs[0] if defs else None
@@ -860,19 +891,10 @@ def _augment_context_with_symbol_graph(
         sites = getattr(result, "sites", []) or []
         out["graph_result_count"] = len(sites)
         out["graph_relation"] = relation
-        # Structured site list for the metadata frame. Mirror the field
-        # shape the MCP find_callers / find_importers / find_implementers
-        # responses use so the UI can render either source identically.
-        out["graph_sites"] = [
-            {
-                "file_path": getattr(s, "file_path", "") or "",
-                "line": getattr(s, "line", 0) or 0,
-                "repo": getattr(s, "repo", "") or "",
-                "source_symbol_id": getattr(s, "source_symbol_id", "") or "",
-                "language": getattr(s, "language", "") or "",
-            }
-            for s in sites
-        ]
+        # Structured site list for the metadata frame. Shape matches
+        # the MCP find_callers / find_importers / find_implementers
+        # responses so the UI renders either source identically.
+        out["graph_sites"] = [_site_to_dict(s) for s in sites]
     except SymbolGraphUnavailable as exc:
         logger.warning(
             "[chat.augment] SymbolGraphUnavailable for %s: %s; degrading",

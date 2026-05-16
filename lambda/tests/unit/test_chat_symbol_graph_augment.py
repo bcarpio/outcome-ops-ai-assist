@@ -459,6 +459,78 @@ def test_augment_structural_with_zero_callers_renders_empty_block(_inject_client
     assert "Direct callers in this workspace: 0" in out["graph_block"]
 
 
+def test_augment_disambiguation_marks_graph_retrieval_fired(_inject_clients):
+    """When fuzzy returns multiple canonicals the augment renders a
+    disambiguation block instead of running callers/importers/
+    implementers. The earlier implementation forgot to set
+    ``retrievals_fired`` on this path, so the chat metadata chip
+    showed "Graph: skipped" even though the answer was clearly
+    grounded in graph data. Regression guard: this path MUST set
+    ``retrievals_fired = ["graph"]`` + ``graph_relation = "definitions"``
+    + a non-empty ``graph_sites`` list.
+
+    Discovered against prd on 2026-05-16: "which lambdas call
+    require_auth in app.retrieveit.ai" produced a definition-list
+    answer with the chip saying "Graph: skipped".
+    """
+    _create_symbol_graph_table()
+    _create_code_maps_table()
+
+    bedrock_stub = _inject_clients
+    bedrock_stub.converse.return_value = _bedrock_response(
+        "structural", "require_auth"
+    )
+
+    # Two distinct canonicals share the bare name -- the same shape as
+    # the prd ingest where every integration Lambda defines its own
+    # local require_auth.
+    auth_canonical = "python:lambda.auth.handler::require_auth"
+    org_canonical = "python:lambda.org-management.handler::require_auth"
+    _put_fact(
+        workspace_id=WORKSPACE_ID,
+        repo=REPO,
+        commit_sha=SHA,
+        kind="defines",
+        source_symbol_id="python:lambda.auth.handler::<module>",
+        target_symbol_id=auth_canonical,
+        file_path="lambda/auth/handler.py",
+        line=588,
+        language="python",
+    )
+    _put_fact(
+        workspace_id=WORKSPACE_ID,
+        repo=REPO,
+        commit_sha=SHA,
+        kind="defines",
+        source_symbol_id="python:lambda.org-management.handler::<module>",
+        target_symbol_id=org_canonical,
+        file_path="lambda/org-management/handler.py",
+        line=660,
+        language="python",
+    )
+
+    handler = _import_augment()
+    out = handler._augment_context_with_symbol_graph(
+        question="Which lambdas call require_auth?",
+        workspace_ids=[WORKSPACE_ID],
+        user_id="user@x.com",
+    )
+
+    # The disambiguation block must show both definition sites.
+    assert "lambda/auth/handler.py" in out["graph_block"]
+    assert "lambda/org-management/handler.py" in out["graph_block"]
+
+    # Telemetry — the actual regression guard.
+    assert out["retrievals_fired"] == ["graph"]
+    assert out["graph_relation"] == "definitions"
+    assert out["graph_result_count"] == 2
+    paths = {s["file_path"] for s in out["graph_sites"]}
+    assert paths == {
+        "lambda/auth/handler.py",
+        "lambda/org-management/handler.py",
+    }
+
+
 def test_augment_importer_routes_on_subpath_symbol(_inject_clients):
     """A slash-shaped symbol switches the query from callers() to
     importers() -- the Hyatt proof case."""
