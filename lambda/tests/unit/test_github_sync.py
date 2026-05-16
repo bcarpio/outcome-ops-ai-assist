@@ -1098,6 +1098,7 @@ class TestProcessStandardsRepo:
             repo_type="standards",
             tree=tree,
             current_sha="commit123",
+            current_commit_timestamp=1700000000,
             token="fake_token",
             owner="acme",
             repo_short="standards",
@@ -1115,9 +1116,13 @@ class TestProcessStandardsRepo:
         # All standards files get doc_type="adr"
         for c in mock_upload.call_args_list:
             assert c[1]["doc_type"] == "adr"
-        mock_update_status.assert_called_once_with(
-            "ws_test", "acme/standards", "success", commit_sha="commit123"
-        )
+        # plan-git-truth chunk 02 added diagnostic kwargs; assert by
+        # positional shape + the legacy commit_sha kwarg, allow the
+        # extra diagnostic kwargs.
+        mock_update_status.assert_called_once()
+        args, kwargs = mock_update_status.call_args
+        assert args == ("ws_test", "acme/standards", "success")
+        assert kwargs.get("commit_sha") == "commit123"
 
     @patch.object(handler_module, "update_sync_status")
     @patch.object(handler_module, "upload_file_to_s3")
@@ -1138,6 +1143,7 @@ class TestProcessStandardsRepo:
             repo_type="standards",
             tree=tree,
             current_sha="commit123",
+            current_commit_timestamp=1700000000,
             token="fake_token",
             owner="acme",
             repo_short="standards",
@@ -1167,6 +1173,7 @@ class TestProcessStandardsRepo:
             repo_type="standards",
             tree=tree,
             current_sha="commit123",
+            current_commit_timestamp=1700000000,
             token="fake_token",
             owner="acme",
             repo_short="standards",
@@ -1220,6 +1227,7 @@ class TestProcessApplicationRepo:
             default_branch="main",
             tree=tree,
             current_sha="commit123",
+            current_commit_timestamp=1700000000,
         )
 
         assert result["status"] == "success"
@@ -1230,9 +1238,11 @@ class TestProcessApplicationRepo:
         # All tree items are passed to queue_repo_for_code_maps
         assert result["files_queued"] == 3
         mock_queue_code_maps.assert_called_once()
-        mock_update_status.assert_called_once_with(
-            "ws_test", "acme/my-repo", "success", commit_sha="commit123"
-        )
+        # plan-git-truth chunk 02 added diagnostic kwargs.
+        mock_update_status.assert_called_once()
+        args, kwargs = mock_update_status.call_args
+        assert args == ("ws_test", "acme/my-repo", "success")
+        assert kwargs.get("commit_sha") == "commit123"
 
     @patch.object(handler_module, "update_sync_status")
     @patch.object(handler_module, "queue_repo_for_code_maps")
@@ -1269,6 +1279,7 @@ class TestProcessApplicationRepo:
             default_branch="main",
             tree=tree,
             current_sha="commit123",
+            current_commit_timestamp=1700000000,
         )
 
         # Check upload calls for doc_type classification
@@ -1314,13 +1325,21 @@ class TestProcessApplicationRepo:
             default_branch="main",
             tree=tree,
             current_sha="commit123",
+            current_commit_timestamp=1700000000,
         )
 
         assert result["status"] == "error"
         assert "Failed to queue" in result["error"]
-        mock_update_status.assert_called_once_with(
-            "ws_test", "acme/my-repo", "failed", "Failed to queue to repo-summaries"
+        # plan-git-truth chunk 02 added diagnostic kwargs
+        # (last_failed_sha + last_failure_reason).
+        mock_update_status.assert_called_once()
+        args, kwargs = mock_update_status.call_args
+        assert args == (
+            "ws_test", "acme/my-repo", "failed",
+            "Failed to queue to repo-summaries",
         )
+        assert kwargs.get("last_failed_sha") == "commit123"
+        assert kwargs.get("last_failure_reason") == "sqs_send_failed"
 
     @patch.object(handler_module, "update_sync_status")
     @patch.object(handler_module, "queue_repo_for_code_maps")
@@ -1355,6 +1374,7 @@ class TestProcessApplicationRepo:
             default_branch="main",
             tree=tree,
             current_sha="commit123",
+            current_commit_timestamp=1700000000,
         )
 
         assert result["status"] == "success"
@@ -1372,7 +1392,7 @@ class TestProcessSyncRequest:
 
     @patch.object(handler_module, "_process_application_repo")
     @patch.object(handler_module, "get_repo_tree")
-    @patch.object(handler_module, "get_latest_commit_sha")
+    @patch.object(handler_module, "get_latest_commit")
     @patch.object(handler_module, "get_default_branch")
     @patch.object(handler_module, "get_installation_token")
     @patch.object(handler_module, "update_sync_status")
@@ -1394,7 +1414,7 @@ class TestProcessSyncRequest:
         }
         mock_get_token.return_value = "fake_token"
         mock_get_branch.return_value = "main"
-        mock_get_sha.return_value = "abc123"
+        mock_get_sha.return_value = ("abc123", 1700000000)
         mock_get_tree.return_value = [{"path": "main.py", "type": "blob"}]
         mock_process_app.return_value = {
             "status": "success",
@@ -1416,7 +1436,7 @@ class TestProcessSyncRequest:
 
     @patch.object(handler_module, "_process_standards_repo")
     @patch.object(handler_module, "get_repo_tree")
-    @patch.object(handler_module, "get_latest_commit_sha")
+    @patch.object(handler_module, "get_latest_commit")
     @patch.object(handler_module, "get_default_branch")
     @patch.object(handler_module, "get_installation_token")
     @patch.object(handler_module, "update_sync_status")
@@ -1438,7 +1458,7 @@ class TestProcessSyncRequest:
         }
         mock_get_token.return_value = "fake_token"
         mock_get_branch.return_value = "main"
-        mock_get_sha.return_value = "abc123"
+        mock_get_sha.return_value = ("abc123", 1700000000)
         mock_get_tree.return_value = []
         mock_process_std.return_value = {
             "status": "success",
@@ -1487,7 +1507,7 @@ class TestProcessSyncRequest:
         assert result["status"] == "skipped"
         assert "disabled" in result["reason"].lower()
 
-    @patch.object(handler_module, "get_latest_commit_sha")
+    @patch.object(handler_module, "get_latest_commit")
     @patch.object(handler_module, "get_default_branch")
     @patch.object(handler_module, "get_installation_token")
     @patch.object(handler_module, "update_sync_status")
@@ -1508,7 +1528,7 @@ class TestProcessSyncRequest:
         }
         mock_get_token.return_value = "fake_token"
         mock_get_branch.return_value = "main"
-        mock_get_sha.return_value = "same_sha_123"
+        mock_get_sha.return_value = ("same_sha_123", 1700000000)
 
         result = process_sync_request({
             "workspace_id": "ws_test",

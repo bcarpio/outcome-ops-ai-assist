@@ -396,8 +396,25 @@ def update_sync_status(
     status: str,
     error: Optional[str] = None,
     commit_sha: Optional[str] = None,
+    last_attempted_sha: Optional[str] = None,
+    last_dispatched_sha: Optional[str] = None,
+    last_failed_sha: Optional[str] = None,
+    last_failure_reason: Optional[str] = None,
 ) -> None:
-    """Update sync status for a repo."""
+    """Update sync status for a repo.
+
+    plan-git-truth chunk 02 adds the diagnostic columns
+    ``last_attempted_sha`` / ``last_dispatched_sha`` /
+    ``last_failed_sha`` / ``last_failed_at`` / ``last_failure_reason``
+    so operators can see what github-sync tried, what it dispatched,
+    and what failed -- separate from the per-pipeline columns
+    (``last_code_map_sha`` / ``last_docs_sha`` / ``last_gkg_sha``)
+    which only advance on actual downstream completion.
+
+    The legacy ``commit_sha`` parameter still writes ``last_commit_sha``
+    for back-compat with the UI; chunk-04 (future, separate plan)
+    removes both the parameter and the column.
+    """
     table = _get_dynamodb().Table(WORKSPACES_TABLE)
 
     set_parts = ["last_sync_status = :status", "updated_at = :now"]
@@ -420,6 +437,24 @@ def update_sync_status(
     if commit_sha is not None:
         set_parts.append("last_commit_sha = :sha")
         expr_values[":sha"] = commit_sha
+
+    if last_attempted_sha is not None:
+        set_parts.append("last_attempted_sha = :att_sha")
+        expr_values[":att_sha"] = last_attempted_sha
+
+    if last_dispatched_sha is not None:
+        set_parts.append("last_dispatched_sha = :disp_sha")
+        expr_values[":disp_sha"] = last_dispatched_sha
+
+    if last_failed_sha is not None:
+        set_parts.append("last_failed_sha = :fail_sha")
+        set_parts.append("last_failed_at = :fail_at")
+        expr_values[":fail_sha"] = last_failed_sha
+        expr_values[":fail_at"] = int(time.time())
+
+    if last_failure_reason is not None:
+        set_parts.append("last_failure_reason = :fail_reason")
+        expr_values[":fail_reason"] = last_failure_reason
 
     update_expr = "SET " + ", ".join(set_parts)
     if remove_parts:
@@ -741,6 +776,140 @@ def queue_repo_for_code_maps(
 
 
 # ============================================================================
+# SHA-truth ledger helpers (plan-git-truth chunk 02)
+#
+# These are thin wrappers around shared.sha_truth that absorb the
+# import side-effect cost and the ledger-failure swallowing pattern.
+# Ledger writes must not break the sync path -- the workspaces row is
+# a mirror for the audit story; the SHA truth is in the per-pipeline
+# ledger tables themselves.
+# ============================================================================
+
+
+def _open_code_map_dispatch_ledger(
+    workspace_id: str,
+    repo_name: str,
+    current_sha: str,
+    current_commit_timestamp: int,
+) -> None:
+    """Open ``PENDING#code_map_dispatch#{sha}`` before publishing the
+    repo-summaries SQS message. process-repo-summary closes it when
+    it finishes consuming the message."""
+    try:
+        from shared.sha_truth import (  # type: ignore
+            PendingBatch,
+            open_pending_batch,
+        )
+    except Exception as exc:  # pragma: no cover - import-failure path
+        logger.warning(
+            "[github-sync] sha_truth import failed: %s; skipping ledger open",
+            exc,
+        )
+        return
+    try:
+        open_pending_batch(PendingBatch(
+            workspace_id=workspace_id,
+            repo=repo_name,
+            pipeline="code_map_dispatch",
+            target_sha=current_sha,
+            expected_count=1,
+            target_commit_timestamp=current_commit_timestamp,
+        ))
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(
+            "[github-sync] code_map_dispatch ledger open failed for %s@%s: %s",
+            repo_name, current_sha, exc,
+        )
+
+
+def _mark_code_map_dispatch_failed(
+    workspace_id: str,
+    repo_name: str,
+    current_sha: str,
+    failure_reason: str,
+    failure_detail: str,
+) -> None:
+    """Close the code_map_dispatch ledger as failed when SQS publish
+    fails. Without this the SHA would wedge with the dispatch row
+    open until TTL — operators wouldn't see the failure on the
+    pending ledger until they investigated."""
+    try:
+        from shared.sha_truth import mark_unit_failed  # type: ignore
+    except Exception as exc:  # pragma: no cover - import-failure path
+        logger.warning(
+            "[github-sync] sha_truth import failed: %s; skipping ledger close",
+            exc,
+        )
+        return
+    try:
+        mark_unit_failed(
+            workspace_id,
+            repo_name,
+            "code_map_dispatch",
+            current_sha,
+            file_path="<repo-summaries-message>",
+            failure_reason=failure_reason,
+            failure_detail=failure_detail,
+            attempt_count=1,
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(
+            "[github-sync] code_map_dispatch ledger close failed for %s@%s: %s",
+            repo_name, current_sha, exc,
+        )
+
+
+def _advance_docs_sha_sync(
+    workspace_id: str,
+    repo_name: str,
+    current_sha: str,
+    current_commit_timestamp: int,
+) -> None:
+    """Synchronous docs-pipeline advance for the path where github-sync
+    uploads files directly to S3 (standards repos + the doc-file
+    subset of application repos). There's no SQS fan-out for that
+    path, so the dispatch and completion collapse: open + complete +
+    advance in three sequential DDB calls.
+
+    Failure is logged but non-fatal — the S3 uploads are already
+    durable; the workspaces-row column is a mirror for the audit
+    story.
+    """
+    try:
+        from shared.sha_truth import (  # type: ignore
+            PendingBatch,
+            mark_unit_complete,
+            open_pending_batch,
+            try_advance_sha,
+        )
+    except Exception as exc:  # pragma: no cover - import-failure path
+        logger.warning(
+            "[github-sync] sha_truth import failed: %s; skipping docs advance",
+            exc,
+        )
+        return
+    try:
+        open_pending_batch(PendingBatch(
+            workspace_id=workspace_id,
+            repo=repo_name,
+            pipeline="docs",
+            target_sha=current_sha,
+            expected_count=1,
+            target_commit_timestamp=current_commit_timestamp,
+        ))
+        ledger = mark_unit_complete(
+            workspace_id, repo_name, "docs", current_sha
+        )
+        if ledger:
+            try_advance_sha(ledger)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(
+            "[github-sync] docs advance failed for %s@%s: %s",
+            repo_name, current_sha, exc,
+        )
+
+
+# ============================================================================
 # Sync Logic
 # ============================================================================
 
@@ -823,15 +992,35 @@ def process_sync_request(message: Dict) -> Dict:
             update_sync_status(workspace_id, repo_name, "failed", "Invalid repo name format")
             return {"status": "error", "error": "Invalid repo name format"}
 
-        # Get default branch and latest commit
+        # Get default branch and latest commit (plan-git-truth chunk 02:
+        # commit_timestamp drives the monotonic-advance check downstream).
         default_branch = get_default_branch(token, owner, repo_short)
-        current_sha = get_latest_commit_sha(token, owner, repo_short, default_branch)
+        current_sha, current_commit_timestamp = get_latest_commit(
+            token, owner, repo_short, default_branch
+        )
+
+        # plan-git-truth chunk 02: record what we attempted before any
+        # SQS dispatch so a sync that dies mid-flight is observable.
+        # last_attempted_sha is a diagnostic — distinct from
+        # last_{pipeline}_sha which only advances on real completion.
+        update_sync_status(
+            workspace_id,
+            repo_name,
+            "in_progress",
+            last_attempted_sha=current_sha,
+        )
 
         # Check if already synced this commit
         last_sha = repo.get("last_commit_sha")
         if last_sha == current_sha:
             logger.info(f"No changes since last sync ({current_sha[:7]})")
-            update_sync_status(workspace_id, repo_name, "success", commit_sha=current_sha)
+            # No SQS dispatch happens, so no ledger row is opened. We
+            # still keep last_commit_sha in sync as the legacy mirror,
+            # but skip the per-pipeline columns since this path didn't
+            # actually re-run any pipeline.
+            update_sync_status(
+                workspace_id, repo_name, "success", commit_sha=current_sha
+            )
             log_source_sync(
                 audit_table_name=os.environ.get("AUDIT_TABLE", ""),
                 source="github",
@@ -863,6 +1052,7 @@ def process_sync_request(message: Dict) -> Dict:
                 repo_type=repo_type,
                 tree=tree,
                 current_sha=current_sha,
+                current_commit_timestamp=current_commit_timestamp,
                 token=token,
                 owner=owner,
                 repo_short=repo_short,
@@ -881,6 +1071,7 @@ def process_sync_request(message: Dict) -> Dict:
                 default_branch=default_branch,
                 tree=tree,
                 current_sha=current_sha,
+                current_commit_timestamp=current_commit_timestamp,
                 last_commit_sha=last_sha,
             )
 
@@ -935,6 +1126,7 @@ def _process_standards_repo(
     repo_type: str,
     tree: List[Dict],
     current_sha: str,
+    current_commit_timestamp: int,
     token: str,
     owner: str,
     repo_short: str,
@@ -946,6 +1138,13 @@ def _process_standards_repo(
     Standards repos contain ADRs, docs, YAML, JSON, XML that should be
     ingested as documents for the knowledge base. Files are uploaded to S3
     where the process-documents Lambda picks them up for embedding/indexing.
+
+    plan-git-truth chunk 02: Standards repos write directly to S3 (no
+    file-ingestion SQS dispatch), so there's no docs-pipeline ledger to
+    open here. The S3 PutObject is synchronous; success means the doc
+    is in the knowledge base immediately. ``last_docs_sha`` is advanced
+    inline on success since the dispatch and completion are the same
+    step.
     """
     # Filter to doc files (md, yaml, json, txt, html, pdf, etc.)
     files_to_process = [f for f in tree if should_process_doc_file(f)]
@@ -980,8 +1179,21 @@ def _process_standards_repo(
     current_file_paths = [f["path"] for f in files_to_process]
     _queue_orphan_detection(workspace_id, repo_name, current_file_paths)
 
-    # Update sync status
-    update_sync_status(workspace_id, repo_name, "success", commit_sha=current_sha)
+    # plan-git-truth chunk 02: synthesize a single-unit docs ledger
+    # entry now that the synchronous S3 uploads have finished. Standards
+    # repos have no SQS fan-out; "dispatched" and "completed" collapse
+    # into one step so the ledger row opens + closes immediately.
+    _advance_docs_sha_sync(
+        workspace_id, repo_name, current_sha, current_commit_timestamp
+    )
+
+    update_sync_status(
+        workspace_id,
+        repo_name,
+        "success",
+        commit_sha=current_sha,
+        last_dispatched_sha=current_sha,
+    )
 
     logger.info(f"Standards sync complete: {uploaded} files uploaded to S3 for {repo_name}")
     return {
@@ -1003,6 +1215,7 @@ def _process_application_repo(
     default_branch: str,
     tree: List[Dict],
     current_sha: str,
+    current_commit_timestamp: int,
     last_commit_sha: Optional[str] = None,
 ) -> Dict:
     """
@@ -1050,7 +1263,27 @@ def _process_application_repo(
     current_doc_paths = [f["path"] for f in doc_files]
     _queue_orphan_detection(workspace_id, repo_name, current_doc_paths)
 
-    # Queue repo to repo-summaries queue for code-map generation
+    # plan-git-truth chunk 02: open the docs-pipeline ledger BEFORE
+    # the S3 uploads (the loop above) advance through it. Application
+    # repos do upload docs synchronously to S3, but unlike standards
+    # repos those docs ALSO get re-vectorized via S3 → process-documents
+    # (the file-ingestion queue is the doc dispatch for the
+    # application-doc subset that lives behind file-ingestion, not
+    # used here — see ``queue_file_for_ingestion``). The synchronous
+    # S3 path closes its own ledger via ``_advance_docs_sha_sync``.
+    if docs_uploaded:
+        _advance_docs_sha_sync(
+            workspace_id, repo_name, current_sha, current_commit_timestamp
+        )
+
+    # plan-git-truth chunk 02: open the code_map_dispatch ledger row
+    # BEFORE publishing the repo-summaries SQS message. If the
+    # send_message fails, mark_unit_failed below closes it as failed
+    # so try_advance_sha never trips on a half-open dispatch.
+    _open_code_map_dispatch_ledger(
+        workspace_id, repo_name, current_sha, current_commit_timestamp
+    )
+
     if queue_repo_for_code_maps(
         workspace_id=workspace_id,
         repo_name=repo_name,
@@ -1059,8 +1292,15 @@ def _process_application_repo(
         all_files=tree,
         last_commit_sha=last_commit_sha,
         current_commit_sha=current_sha,
+        commit_timestamp=current_commit_timestamp,
     ):
-        update_sync_status(workspace_id, repo_name, "success", commit_sha=current_sha)
+        update_sync_status(
+            workspace_id,
+            repo_name,
+            "success",
+            commit_sha=current_sha,
+            last_dispatched_sha=current_sha,
+        )
         logger.info(f"Application sync complete: queued {repo_name} for code-map generation, {docs_uploaded} docs uploaded")
         return {
             "status": "success",
@@ -1070,8 +1310,24 @@ def _process_application_repo(
             "commit_sha": current_sha,
         }
     else:
-        # Queue failed, mark as error
-        update_sync_status(workspace_id, repo_name, "failed", "Failed to queue to repo-summaries")
+        # SQS publish failed. Close the dispatch ledger row as failed
+        # so the SHA never advances — better to wedge visibly than
+        # silently advance past a SHA whose work never happened.
+        _mark_code_map_dispatch_failed(
+            workspace_id,
+            repo_name,
+            current_sha,
+            failure_reason="sqs_send_failed",
+            failure_detail="queue_repo_for_code_maps returned False",
+        )
+        update_sync_status(
+            workspace_id,
+            repo_name,
+            "failed",
+            "Failed to queue to repo-summaries",
+            last_failed_sha=current_sha,
+            last_failure_reason="sqs_send_failed",
+        )
         return {
             "status": "error",
             "error": "Failed to queue to repo-summaries queue",
