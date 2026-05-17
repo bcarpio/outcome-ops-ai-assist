@@ -1378,32 +1378,15 @@ def process_batch_record(record: Dict[str, Any]) -> None:
                 previous_graph_sha=sg_previous_graph_sha,
             )
             _commit_symbol_graph_swap(sg_workspace, sg_repo, sg_commit_sha)
-            # plan-git-truth chunk 02: synthesize a single-unit gkg ledger
-            # so last_gkg_sha on the workspaces row tracks the same SHA
-            # the pointer table just advanced to. gkg is a single-writer
-            # pipeline with no fan-out, so we open + complete + advance
-            # in three sequential DDB calls. Failure here is non-fatal:
-            # the pointer table is the gkg source of truth; the
-            # workspaces-row column is a mirror for the audit story.
-            #
-            # Uses repo_project (owner/repo) — NOT sg_repo (short name) —
-            # because the workspaces-row SK and the SHA-truth ledger PK
-            # both follow the GITHUB_REPO#<owner/repo> convention
-            # (feedback_ddb_repo_sk_convention). Live discovery
-            # 2026-05-16: the original sg_repo arg created a ledger row
-            # at the wrong PK and made the workspaces UpdateItem fail.
-            try:
-                _advance_gkg_sha(sg_workspace, repo_project, sg_commit_sha)
-            except Exception as gkg_exc:  # pragma: no cover - defensive
-                logger.warning(
-                    "gkg sha-truth advance failed for %s/%s@%s: %s "
-                    "(pointer table is authoritative; workspaces "
-                    "column will drift until next regen)",
-                    sg_workspace,
-                    repo_project,
-                    sg_commit_sha,
-                    gkg_exc,
-                )
+            # NOTE: _advance_gkg_sha used to fire here per-batch, which
+            # caused the gkg ledger row to read N+0/1 instead of 1+0/1
+            # (each batch increments completed_count past expected_count).
+            # Functionally idempotent via the monotonic guard, but
+            # operators scanning the ledger row would see numbers that
+            # don't add up. Live discovery 2026-05-17. gkg advance now
+            # fires from _mark_code_map_unit_done's "last close" branch
+            # so it runs exactly once per (workspace, repo, commit_sha)
+            # batch.
         except Exception as exc:
             # Write or commit failed — abandon the pending swap. The
             # already-written facts under the new SHA become orphans
@@ -1510,6 +1493,31 @@ def _mark_code_map_unit_done(
             )
         if ledger:
             try_advance_sha(ledger)
+            # Fire-once gkg advance: when this close drives the
+            # code_map_units ledger to completed + failed >= expected,
+            # this batch IS the last one for the (workspace, repo,
+            # commit_sha) triple. Synthesize the gkg ledger here so
+            # it runs exactly once instead of per code unit. The
+            # gkg pointer table is the symbol-graph correctness
+            # anchor; the workspaces last_gkg_sha column is a mirror
+            # for the audit story, so this best-effort failure
+            # mode is acceptable.
+            try:
+                expected = int(ledger.get("expected_count", 0))
+                completed = int(ledger.get("completed_count", 0))
+                failed = int(ledger.get("failed_count", 0))
+                if expected > 0 and (completed + failed) >= expected:
+                    _advance_gkg_sha(workspace_id, repo_project, commit_sha)
+            except Exception as gkg_exc:  # pragma: no cover - defensive
+                logger.warning(
+                    "gkg sha-truth advance failed for %s/%s@%s: %s "
+                    "(pointer table is authoritative; workspaces "
+                    "column will drift until next regen)",
+                    workspace_id,
+                    repo_project,
+                    commit_sha,
+                    gkg_exc,
+                )
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning(
             "[process-batch-summary] sha-truth %s failed for %s@%s: %s",
