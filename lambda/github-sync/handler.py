@@ -871,6 +871,47 @@ def _mark_code_map_dispatch_failed(
         )
 
 
+def _mark_docs_unit_fetch_failed(
+    workspace_id: str,
+    repo_name: str,
+    current_sha: str,
+    file_path: str,
+) -> None:
+    """Mark a docs ledger unit as failed when github-sync can't fetch
+    the file content from the GitHub API or the S3 PutObject fails.
+
+    Required for plan-git-truth chunk 02b/4 (race fix): the ledger is
+    opened BEFORE the upload loop with expected_count = len(doc_files),
+    so any file that fails to upload still needs its unit closed —
+    otherwise expected_count > completed_count + failed_count forever
+    and try_advance_sha stays at "not_complete."
+    """
+    try:
+        from shared.sha_truth import mark_unit_failed  # type: ignore
+    except Exception as exc:  # pragma: no cover - import-failure path
+        logger.warning(
+            "[github-sync] sha_truth import failed: %s",
+            exc,
+        )
+        return
+    try:
+        mark_unit_failed(
+            workspace_id,
+            repo_name,
+            "docs",
+            current_sha,
+            file_path=file_path,
+            failure_reason="github_fetch_or_s3_put_failed",
+            failure_detail="",
+            attempt_count=1,
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(
+            "[github-sync] docs unit-failed mark failed for %s@%s/%s: %s",
+            repo_name, current_sha, file_path, exc,
+        )
+
+
 def _open_docs_pending_batch(
     workspace_id: str,
     repo_name: str,
@@ -1164,6 +1205,23 @@ def _process_standards_repo(
     files_to_process = [f for f in tree if should_process_doc_file(f)]
     logger.info(f"Processing {len(files_to_process)} files for standards repo")
 
+    # plan-git-truth chunk 02b/4 (race fix 2026-05-17): open the docs
+    # ledger BEFORE the upload loop. S3 PUTs trigger process-documents
+    # asynchronously and the first few invocations can finish
+    # vectorizing + call mark_unit_complete before github-sync's loop
+    # has even finished, let alone opened the ledger row. Opening
+    # before the loop guarantees the row exists when the first
+    # process-documents fires.
+    #
+    # expected_count is the upper bound (every file_to_process). If
+    # some uploads fail (get_file_content returns None), we
+    # mark_unit_failed for that file_path so the ledger eventually
+    # closes at completed + failed == expected.
+    _open_docs_pending_batch(
+        workspace_id, repo_name, current_sha,
+        current_commit_timestamp, len(files_to_process),
+    )
+
     # Fetch and upload files directly to S3
     uploaded = 0
     for file_item in files_to_process:
@@ -1173,6 +1231,9 @@ def _process_standards_repo(
         content = get_file_content(token, owner, repo_short, file_path, default_branch)
         if content is None:
             logger.warning(f"Could not fetch content for {file_path}, skipping")
+            _mark_docs_unit_fetch_failed(
+                workspace_id, repo_name, current_sha, file_path,
+            )
             continue
 
         # Upload to S3 - all standards repo files are ADRs/standards
@@ -1189,19 +1250,14 @@ def _process_standards_repo(
         )
         if s3_key:
             uploaded += 1
+        else:
+            _mark_docs_unit_fetch_failed(
+                workspace_id, repo_name, current_sha, file_path,
+            )
 
     # Queue orphan detection to clean up deleted files
     current_file_paths = [f["path"] for f in files_to_process]
     _queue_orphan_detection(workspace_id, repo_name, current_file_paths)
-
-    # plan-git-truth chunk 02b/4: open the docs ledger with the actual
-    # upload count and let process-documents close it incrementally as
-    # each S3 object is vectorized. last_docs_sha advances only when
-    # the last vector lands -- not when github-sync's S3 PUT returns.
-    _open_docs_pending_batch(
-        workspace_id, repo_name, current_sha,
-        current_commit_timestamp, uploaded,
-    )
 
     update_sync_status(
         workspace_id,
@@ -1251,12 +1307,29 @@ def _process_application_repo(
 
     # Upload doc files to S3 for knowledge base indexing
     doc_files = [f for f in tree if should_process_doc_file(f)]
+
+    # plan-git-truth chunk 02b/4 (race fix 2026-05-17): open the docs
+    # ledger BEFORE the upload loop with expected_count = len(doc_files).
+    # S3 PUTs trigger process-documents asynchronously and the first
+    # invocations can finish vectorizing + call mark_unit_complete
+    # before this loop has even uploaded all the files, let alone
+    # opened the ledger row. Pre-opening guarantees the row exists
+    # when the first process-documents fires.
+    if doc_files:
+        _open_docs_pending_batch(
+            workspace_id, repo_name, current_sha,
+            current_commit_timestamp, len(doc_files),
+        )
+
     docs_uploaded = 0
     for file_item in doc_files:
         file_path = file_item["path"]
         content = get_file_content(token, owner, repo_short, file_path, default_branch)
         if content is None:
             logger.warning(f"Could not fetch content for {file_path}, skipping")
+            _mark_docs_unit_fetch_failed(
+                workspace_id, repo_name, current_sha, file_path,
+            )
             continue
         doc_type = classify_doc_type(file_path, standards_paths)
         s3_key = upload_file_to_s3(
@@ -1272,6 +1345,10 @@ def _process_application_repo(
         )
         if s3_key:
             docs_uploaded += 1
+        else:
+            _mark_docs_unit_fetch_failed(
+                workspace_id, repo_name, current_sha, file_path,
+            )
 
     if docs_uploaded:
         logger.info(f"Uploaded {docs_uploaded} doc files to S3 for {repo_name}")
@@ -1279,18 +1356,6 @@ def _process_application_repo(
     # Queue orphan detection to clean up deleted doc files
     current_doc_paths = [f["path"] for f in doc_files]
     _queue_orphan_detection(workspace_id, repo_name, current_doc_paths)
-
-    # plan-git-truth chunk 02b/4: open the docs ledger with the
-    # actual upload count. process-documents (S3-event-triggered)
-    # closes one unit per successful vector write; last_docs_sha
-    # advances only when the last vector lands. Required for the
-    # HA-failover guarantee: a failover mid-vectorization sees the
-    # SHA still at the previous commit and re-triggers correctly.
-    if docs_uploaded:
-        _open_docs_pending_batch(
-            workspace_id, repo_name, current_sha,
-            current_commit_timestamp, docs_uploaded,
-        )
 
     # plan-git-truth chunk 02: open the code_map_dispatch ledger row
     # BEFORE publishing the repo-summaries SQS message. If the
