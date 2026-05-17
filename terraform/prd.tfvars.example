@@ -1,6 +1,16 @@
 environment = "prd"
 aws_region  = "us-west-2"
 
+# Optional HA: set secondary_region to enable active/passive replication
+# across two AWS regions. Leave commented (or set to "") for single-region.
+# When set, every stateful resource (DDB, SQS, S3, S3 Vectors, AppConfig)
+# is provisioned in both regions and EventBridge cross-region rules
+# replicate writes between them. Failover is operator-driven via the
+# AppConfig console (see docs/HA.md). The two regions must both support
+# the Bedrock model selected by bedrock_model_id and S3 Vectors; verify
+# in the AWS console before setting.
+# secondary_region = "us-east-1"
+
 # GitHub repos are now managed via workspace UI, not Terraform
 # Add repos to workspaces using the GitHub App integration
 # Repo types: "application" for full apps (code-maps), "standards" for ADR-only repos (file-ingestion)

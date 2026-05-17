@@ -15,7 +15,45 @@ variable "app_name" {
 
 variable "aws_region" {
   type        = string
-  description = "AWS region"
+  description = "Primary AWS region for this deployment. Terraform providers are configured against this region."
+}
+
+# Optional HA: when set, every stateful resource is provisioned
+# in both regions, the platform runs cross-region replication
+# via EventBridge, and an AppConfig flag in each region
+# controls which is currently active.
+variable "secondary_region" {
+  type        = string
+  description = "Secondary AWS region for HA active/passive deployment. Set to \"\" or omit for single-region (default)."
+  default     = ""
+}
+
+# Initial AppConfig role values per region at first deploy. Primary
+# region starts "active", secondary starts "passive". Operators flip
+# these values during failover via the AWS AppConfig console — they
+# do NOT update tfvars or re-run terraform during failover (see
+# docs/HA.md). The lifecycle block on the AppConfig
+# hosted_configuration_version ignores changes to content after
+# first apply, so subsequent terraform applies won't clobber an
+# operator-driven flip.
+variable "initial_region_role_primary" {
+  type        = string
+  description = "Initial AppConfig role for the primary region: \"active\" or \"passive\"."
+  default     = "active"
+  validation {
+    condition     = contains(["active", "passive"], var.initial_region_role_primary)
+    error_message = "initial_region_role_primary must be active or passive"
+  }
+}
+
+variable "initial_region_role_secondary" {
+  type        = string
+  description = "Initial AppConfig role for the secondary region: \"active\" or \"passive\"."
+  default     = "passive"
+  validation {
+    condition     = contains(["active", "passive"], var.initial_region_role_secondary)
+    error_message = "initial_region_role_secondary must be active or passive"
+  }
 }
 
 variable "github_usernames_to_tag" {
