@@ -81,8 +81,11 @@ lambda/terraform-layer/bin/
 
 # Local-only planning notes (chunked design specs handed to autonomous
 # agents; per the EXECUTE.md convention they stay out of git so the
-# repo doesn't accumulate stale plans next to shipped code).
+# repo doesn't accumulate stale plans next to shipped code). `plan/`
+# is the default working dir; `plan-<name>/` is used only when a
+# second plan needs to run alongside one already in `plan/`.
 plan/
+plan-*/
 lambda/.license-layer-staging/
 
 # Customer CA bundles fetched from SSM SecureString at image-build time
