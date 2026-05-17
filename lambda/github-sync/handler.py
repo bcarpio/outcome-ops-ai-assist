@@ -354,6 +354,89 @@ def get_file_content(token: str, owner: str, repo: str, path: str, ref: str) -> 
 # ============================================================================
 
 
+def fetch_changed_files(
+    token: str, owner: str, repo_short: str, base_sha: str, head_sha: str
+) -> Optional[set[str]]:
+    """Return the set of file paths added/modified between two SHAs.
+
+    Calls GitHub's compare API and returns the union of added,
+    modified, renamed, and copied file paths (the docs that may need
+    re-uploading). Removed files are NOT included — the existing
+    ``_queue_orphan_detection`` path cleans up deletions separately.
+
+    Returns ``None`` on API failure so the caller can fall back to a
+    full re-upload (safe degradation: same as today's behavior). An
+    empty set is a successful "no files changed" result, which is the
+    happy path for docs-static / code-only commits.
+
+    plan-doc-incremental: mirrors the ``detect_changes`` semantic that
+    process-repo-summary already uses for code-unit filtering, so the
+    docs pipeline matches the code-maps pipeline's incremental
+    behavior. Without this, every commit-changes tick re-uploads and
+    re-vectorizes every doc in the repo even when only Lambda code
+    changed — pure Bedrock waste.
+    """
+    import urllib.parse
+    import urllib.request
+
+    url = (
+        f"https://api.github.com/repos/{owner}/{repo_short}/compare/"
+        f"{base_sha}...{head_sha}"
+    )
+
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=30) as response:
+            data = json.loads(response.read().decode())
+    except urllib.error.HTTPError as e:
+        # 404 happens when the base SHA is unreachable (rebased away,
+        # force-pushed, or first-sync edge case). Treat as "unknown",
+        # caller falls back to full upload.
+        if e.code == 404:
+            logger.info(
+                "[github-sync] compare %s...%s returned 404; "
+                "falling back to full doc upload",
+                base_sha[:7], head_sha[:7],
+            )
+            return None
+        logger.warning(
+            "[github-sync] compare %s...%s failed (%d); "
+            "falling back to full doc upload",
+            base_sha[:7], head_sha[:7], e.code,
+        )
+        return None
+    except Exception as e:
+        logger.warning(
+            "[github-sync] compare %s...%s failed (%s); "
+            "falling back to full doc upload",
+            base_sha[:7], head_sha[:7], e,
+        )
+        return None
+
+    # GitHub's compare API paginates large diffs (>300 files by
+    # default). For typical commits the full list fits in one page;
+    # for unusually large diffs we accept truncation -- the worst case
+    # is "we re-upload some unchanged docs," same as today's behavior.
+    changed: set[str] = set()
+    for f in data.get("files", []):
+        status = f.get("status", "")
+        if status in ("added", "modified", "renamed", "copied"):
+            path = f.get("filename")
+            if path:
+                changed.add(path)
+            # Renamed files also carry previous_filename — that's a
+            # delete handled by orphan detection, not a re-upload.
+    return changed
+
+
 def fetch_ingestion_config(token: str, owner: str, repo_short: str, ref: str) -> List[str]:
     """Fetch standards_paths from .outcomeops.yaml. Returns list of paths."""
     content = get_file_content(token, owner, repo_short, ".outcomeops.yaml", ref)
@@ -871,6 +954,78 @@ def _mark_code_map_dispatch_failed(
         )
 
 
+def _filter_docs_to_changed(
+    token: str,
+    owner: str,
+    repo_short: str,
+    all_doc_files: List[Dict],
+    last_commit_sha: Optional[str],
+    current_sha: str,
+) -> List[Dict]:
+    """Narrow a doc-file list to only files changed between
+    ``last_commit_sha`` and ``current_sha``.
+
+    On first-sync (no last_commit_sha) or compare-API failure, returns
+    the full list — safe fall-back to the pre-incremental behavior.
+    """
+    if not last_commit_sha or not all_doc_files:
+        return all_doc_files
+    changed_paths = fetch_changed_files(
+        token, owner, repo_short, last_commit_sha, current_sha,
+    )
+    if changed_paths is None:
+        return all_doc_files
+    return [f for f in all_doc_files if f.get("path") in changed_paths]
+
+
+def _advance_docs_sha_no_changes(
+    workspace_id: str,
+    repo_name: str,
+    current_sha: str,
+    current_commit_timestamp: int,
+) -> None:
+    """Advance ``last_docs_sha`` directly when zero docs changed at
+    this SHA. No ledger row is opened (there's nothing to wait on);
+    the workspaces row gets a single conditional UpdateItem with the
+    monotonic guard so a stale concurrent run can't roll it back.
+
+    Audit-trail invariant: if no ``PENDING#docs#{sha}`` row exists
+    but ``last_docs_sha=={sha}``, the docs pipeline did zero work for
+    that commit (no doc files changed) — distinct from "pipeline ran,
+    143 docs vectorized" which leaves the closed ledger row visible
+    until TTL.
+    """
+    import time as _time
+
+    try:
+        ddb = _get_dynamodb()
+        ddb.Table(WORKSPACES_TABLE).update_item(
+            Key={
+                "PK": f"WS#{workspace_id}",
+                "SK": f"GITHUB_REPO#{repo_name}",
+            },
+            UpdateExpression=(
+                "SET last_docs_sha = :sha, last_docs_sha_ts = :ts"
+            ),
+            ConditionExpression=(
+                "attribute_not_exists(last_docs_sha_ts) "
+                "OR last_docs_sha_ts < :ts"
+            ),
+            ExpressionAttributeValues={
+                ":sha": current_sha,
+                ":ts": current_commit_timestamp,
+            },
+        )
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            # Newer SHA already advanced past us — harmless.
+            return
+        logger.warning(
+            "[github-sync] no-change docs advance failed for %s@%s: %s",
+            repo_name, current_sha, exc,
+        )
+
+
 def _mark_docs_unit_fetch_failed(
     workspace_id: str,
     repo_name: str,
@@ -1112,6 +1267,7 @@ def process_sync_request(message: Dict) -> Dict:
                 owner=owner,
                 repo_short=repo_short,
                 default_branch=default_branch,
+                last_commit_sha=last_sha,
             )
         else:
             # Application repos: Discover code units and queue to repo-summaries queue
@@ -1186,6 +1342,7 @@ def _process_standards_repo(
     owner: str,
     repo_short: str,
     default_branch: str,
+    last_commit_sha: Optional[str] = None,
 ) -> Dict:
     """
     Process a standards repo by uploading files directly to S3.
@@ -1202,8 +1359,21 @@ def _process_standards_repo(
     step.
     """
     # Filter to doc files (md, yaml, json, txt, html, pdf, etc.)
-    files_to_process = [f for f in tree if should_process_doc_file(f)]
-    logger.info(f"Processing {len(files_to_process)} files for standards repo")
+    all_doc_files = [f for f in tree if should_process_doc_file(f)]
+
+    # plan-doc-incremental: when we have a base SHA, narrow the doc
+    # set to only files that changed in the (base, head) range. Same
+    # semantic process-repo-summary already uses for code units via
+    # backend.detect_changes — without this, every commit-changes
+    # tick re-uploads + re-vectorizes every doc in the repo.
+    files_to_process = _filter_docs_to_changed(
+        token, owner, repo_short,
+        all_doc_files, last_commit_sha, current_sha,
+    )
+    logger.info(
+        f"Processing {len(files_to_process)} of {len(all_doc_files)} "
+        f"doc files for standards repo"
+    )
 
     # plan-git-truth chunk 02b/4 (race fix 2026-05-17): open the docs
     # ledger BEFORE the upload loop. S3 PUTs trigger process-documents
@@ -1213,14 +1383,21 @@ def _process_standards_repo(
     # before the loop guarantees the row exists when the first
     # process-documents fires.
     #
-    # expected_count is the upper bound (every file_to_process). If
-    # some uploads fail (get_file_content returns None), we
-    # mark_unit_failed for that file_path so the ledger eventually
-    # closes at completed + failed == expected.
-    _open_docs_pending_batch(
-        workspace_id, repo_name, current_sha,
-        current_commit_timestamp, len(files_to_process),
-    )
+    # When no docs changed (filtered list is empty), skip the ledger
+    # entirely and advance last_docs_sha directly. The pipeline did
+    # zero work for docs at this SHA — recording that as
+    # "expected=0/completed=0" wouldn't fit the invariant; a direct
+    # advance does.
+    if files_to_process:
+        _open_docs_pending_batch(
+            workspace_id, repo_name, current_sha,
+            current_commit_timestamp, len(files_to_process),
+        )
+    else:
+        _advance_docs_sha_no_changes(
+            workspace_id, repo_name, current_sha,
+            current_commit_timestamp,
+        )
 
     # Fetch and upload files directly to S3
     uploaded = 0
@@ -1306,7 +1483,19 @@ def _process_application_repo(
     logger.info(f"Standards paths for {repo_name}: {standards_paths}")
 
     # Upload doc files to S3 for knowledge base indexing
-    doc_files = [f for f in tree if should_process_doc_file(f)]
+    all_doc_files = [f for f in tree if should_process_doc_file(f)]
+
+    # plan-doc-incremental: filter to changed docs only. See the
+    # _process_standards_repo branch above for the rationale.
+    doc_files = _filter_docs_to_changed(
+        token, owner, repo_short,
+        all_doc_files, last_commit_sha, current_sha,
+    )
+    if len(doc_files) < len(all_doc_files):
+        logger.info(
+            f"Incremental doc upload: {len(doc_files)} of "
+            f"{len(all_doc_files)} doc files changed since {last_commit_sha[:7] if last_commit_sha else '<none>'}"
+        )
 
     # plan-git-truth chunk 02b/4 (race fix 2026-05-17): open the docs
     # ledger BEFORE the upload loop with expected_count = len(doc_files).
@@ -1319,6 +1508,14 @@ def _process_application_repo(
         _open_docs_pending_batch(
             workspace_id, repo_name, current_sha,
             current_commit_timestamp, len(doc_files),
+        )
+    else:
+        # Zero docs changed at this SHA. Skip the ledger entirely
+        # and advance last_docs_sha directly — see standards-repo
+        # branch above.
+        _advance_docs_sha_no_changes(
+            workspace_id, repo_name, current_sha,
+            current_commit_timestamp,
         )
 
     docs_uploaded = 0

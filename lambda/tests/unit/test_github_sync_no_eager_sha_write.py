@@ -159,6 +159,15 @@ def test_github_sync_does_not_advance_per_pipeline_sha_on_dispatch(tables):
         "_test_gs",
         _LAMBDA_ROOT / "github-sync" / "handler.py",
     )
+    # plan-doc-incremental: include a doc file in the mocked tree so
+    # the docs ledger path opens (instead of the no-change short-
+    # circuit that advances last_docs_sha directly). The point of
+    # this regression test is to verify the per-pipeline SHA columns
+    # stay at OLD when CONSUMERS haven't run; the no-change short-
+    # circuit is a different code path tested elsewhere.
+    fetch_changed_patch = patch.object(
+        gs, "fetch_changed_files", return_value={"src/main.py", "README.md"}
+    )
 
     with patch.object(gs, "get_installation_token", return_value="tok"):
         with patch.object(gs, "get_default_branch", return_value="main"):
@@ -177,7 +186,17 @@ def test_github_sync_does_not_advance_per_pipeline_sha_on_dispatch(tables):
                             "sha": "blob1",
                             "size": 100,
                         },
+                        {
+                            "path": "README.md",
+                            "type": "blob",
+                            "sha": "blob2",
+                            "size": 200,
+                        },
                     ],
+                ), fetch_changed_patch, patch.object(
+                    gs, "get_file_content", return_value="# README\n\nsome content"
+                ), patch.object(
+                    gs, "upload_file_to_s3", return_value="some-s3-key"
                 ):
                     with patch.object(
                         gs, "queue_repo_for_code_maps", return_value=True
