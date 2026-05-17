@@ -890,6 +890,15 @@ def process_document(bucket: str, key: str) -> Dict[str, Any]:
 
         if not text or len(text) < 50:
             logger.warning(f"Insufficient text content in {filename}")
+            # plan-git-truth chunk 02b/4 race fix #2 (2026-05-17): every
+            # github-sync-uploaded doc has a corresponding unit on the
+            # docs ledger. If we early-return here without closing the
+            # unit, the ledger sits below expected_count forever and
+            # last_docs_sha never advances. Closing as
+            # mark_unit_complete is the right semantic — the file IS
+            # done with this commit (we deliberately skipped vectorizing
+            # tiny files), the commit isn't blocked on it.
+            _close_docs_unit(workspace_id, source, metadata, status="ok")
             return {"status": "skipped", "reason": "Insufficient content", "key": key}
 
         # PII redaction (plan/ chunk 05). Scrub PII from `text` BEFORE
