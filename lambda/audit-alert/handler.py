@@ -25,6 +25,25 @@ def handler(event, context):
     The event source mapping filter ensures only INSERT events with
     status="refusal" reach this handler.
     """
+    # HA chunk 9j: only the active region sends SNS alerts. Both
+    # regions' DDB streams fire on replicated audit-log writes;
+    # without this gate, customers would see DOUBLED refusal-alert
+    # emails (one per region) per refusal.
+    try:
+        from shared.active_region import is_active_region  # type: ignore
+
+        if not is_active_region():
+            logger.info(
+                "[audit-alert] region is passive; skipping alert dispatch "
+                "(active region handles SNS publishes)"
+            )
+            return {"statusCode": 200, "body": "passive-region-skip"}
+    except ImportError:
+        # shared/ not bundled into this Lambda's zip yet — fall through.
+        # The is_active_region check is defense-in-depth; absence just
+        # means both regions alert until shared/ is bundled.
+        pass
+
     if not SNS_TOPIC_ARN:
         logger.warning("[audit-alert] SNS_TOPIC_ARN not configured, skipping")
         return {"statusCode": 200, "body": "No SNS topic configured"}

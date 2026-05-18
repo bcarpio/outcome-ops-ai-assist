@@ -199,6 +199,21 @@ def _emit_threshold_audit(
 
 
 def handler(event, context):
+    # HA chunk 9j: only the active region sends daily cost-threshold
+    # SNS alerts. Without this gate, customers would receive doubled
+    # daily emails because both regions' EventBridge crons fire and
+    # both regions' analytics tables hold replicated cost data.
+    try:
+        from shared.active_region import is_active_region  # type: ignore
+
+        if not is_active_region():
+            logger.info(
+                "[cost-alert] region is passive; skipping daily-roll-up alert"
+            )
+            return {"statusCode": 200, "body": "passive-region-skip"}
+    except ImportError:
+        pass
+
     if not ANALYTICS_TABLE or not WORKSPACES_TABLE:
         logger.warning("[cost-alert] Tables not configured; skipping")
         return {"statusCode": 200, "body": "Tables not configured"}

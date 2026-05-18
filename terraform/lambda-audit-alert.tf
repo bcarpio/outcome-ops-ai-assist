@@ -19,8 +19,18 @@ module "audit_alert_lambda" {
   cloudwatch_logs_retention_in_days = 7
   cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs.arn
 
-  # Source code from local directory
-  source_path = "${path.module}/../lambda/audit-alert"
+  # Source code from local directory + shared/ for the HA chunk 9j
+  # is_active_region() gate at the top of handler.py.
+  source_path = [
+    {
+      path             = "${path.module}/../lambda/audit-alert"
+      pip_requirements = false
+    },
+    {
+      path          = "${path.module}/../lambda/shared"
+      prefix_in_zip = "shared"
+    },
+  ]
 
   # Suppress verbose archive output
   quiet_archive_local_exec = true
