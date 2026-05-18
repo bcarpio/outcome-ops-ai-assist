@@ -432,16 +432,18 @@ module "onedrive_scheduler_lambda" {
   # Suppress verbose archive output
   quiet_archive_local_exec = true
 
-  environment_variables = {
+  environment_variables = merge({
     ENV                 = var.environment
     APP_NAME            = var.app_name
     WORKSPACES_TABLE    = module.workspaces_table[0].dynamodb_table_id
     ONEDRIVE_SYNC_QUEUE = aws_sqs_queue.onedrive_sync[0].url
-  }
+    },
+    local.ha_scheduler_env,
+  )
 
   # IAM permissions
   attach_policy_statements = true
-  policy_statements = {
+  policy_statements = merge({
     # DynamoDB for scanning connections
     dynamodb = {
       effect = "Allow"
@@ -463,7 +465,9 @@ module "onedrive_scheduler_lambda" {
         aws_sqs_queue.onedrive_sync[0].arn
       ]
     }
-  }
+    },
+    local.ha_scheduler_iam,
+  )
 
   tags = {
     Purpose = "onedrive-scheduler"

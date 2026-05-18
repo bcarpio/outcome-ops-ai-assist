@@ -94,6 +94,12 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     """EventBridge-triggered handler for hourly OneDrive sync scheduling."""
     logger.info("OneDrive scheduler invoked")
 
+    from shared.active_region import is_active_region  # type: ignore
+
+    if not is_active_region():
+        logger.info("[onedrive-scheduler] region is passive; skipping this tick")
+        return {"statusCode": 200, "body": "passive-region-skip"}
+
     if not ONEDRIVE_SYNC_QUEUE:
         logger.error("ONEDRIVE_SYNC_QUEUE not configured")
         return {"statusCode": 500, "body": "Queue not configured"}

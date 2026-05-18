@@ -49,9 +49,26 @@ from botocore.exceptions import ClientError
 logger = logging.getLogger(__name__)
 
 
-APPCONFIG_APP_ID = os.environ.get("APPCONFIG_APPLICATION_ID", "")
-APPCONFIG_ENV_ID = os.environ.get("APPCONFIG_ENVIRONMENT_ID", "")
-APPCONFIG_PROFILE_ID = os.environ.get("APPCONFIG_CONFIGURATION_PROFILE_ID", "")
+def _appconfig_ids() -> tuple[str, str, str]:
+    """Read the AppConfig identifiers from env at call time.
+
+    Read lazily so unit tests that swap env vars between tests see
+    fresh values without needing to importlib.reload() this module.
+    """
+
+    return (
+        os.environ.get("APPCONFIG_APPLICATION_ID", ""),
+        os.environ.get("APPCONFIG_ENVIRONMENT_ID", ""),
+        os.environ.get("APPCONFIG_CONFIGURATION_PROFILE_ID", ""),
+    )
+
+
+# Module-level shims for backwards compatibility with tests that
+# imported these as constants. Reads are still lazy via _appconfig_ids
+# at call sites in this module; these globals are not consulted.
+APPCONFIG_APP_ID = ""
+APPCONFIG_ENV_ID = ""
+APPCONFIG_PROFILE_ID = ""
 
 _CACHE_TTL_SECONDS = 30
 
@@ -98,10 +115,11 @@ def _reset_for_tests() -> None:
 def _start_session() -> str:
     """Begin a new AppConfigData session and return the initial token."""
 
+    app_id, env_id, profile_id = _appconfig_ids()
     response = _client().start_configuration_session(
-        ApplicationIdentifier=APPCONFIG_APP_ID,
-        EnvironmentIdentifier=APPCONFIG_ENV_ID,
-        ConfigurationProfileIdentifier=APPCONFIG_PROFILE_ID,
+        ApplicationIdentifier=app_id,
+        EnvironmentIdentifier=env_id,
+        ConfigurationProfileIdentifier=profile_id,
     )
     return response["InitialConfigurationToken"]
 
@@ -182,7 +200,8 @@ def get_region_role() -> str:
     "active" without any AWS call.
     """
 
-    if not (APPCONFIG_APP_ID and APPCONFIG_ENV_ID and APPCONFIG_PROFILE_ID):
+    app_id, env_id, profile_id = _appconfig_ids()
+    if not (app_id and env_id and profile_id):
         return "active"
 
     now = time.time()
@@ -228,7 +247,8 @@ def get_activated_at() -> Optional[int]:
     been read successfully or if the single-region fast-path is active.
     """
 
-    if not (APPCONFIG_APP_ID and APPCONFIG_ENV_ID and APPCONFIG_PROFILE_ID):
+    app_id, env_id, profile_id = _appconfig_ids()
+    if not (app_id and env_id and profile_id):
         return None
 
     if _role_cache["value"] is None:

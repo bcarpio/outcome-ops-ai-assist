@@ -436,17 +436,19 @@ module "outlook_scheduler_lambda" {
   # Suppress verbose archive output
   quiet_archive_local_exec = true
 
-  environment_variables = {
+  environment_variables = merge({
     ENV                = var.environment
     APP_NAME           = var.app_name
     WORKSPACES_TABLE   = module.workspaces_table[0].dynamodb_table_id
     OUTLOOK_SYNC_QUEUE = aws_sqs_queue.outlook_sync[0].url
     AUDIT_TABLE        = module.audit_logs_table.dynamodb_table_id
-  }
+    },
+    local.ha_scheduler_env,
+  )
 
   # IAM permissions
   attach_policy_statements = true
-  policy_statements = {
+  policy_statements = merge({
     # DynamoDB for scanning connections
     dynamodb = {
       effect = "Allow"
@@ -479,7 +481,9 @@ module "outlook_scheduler_lambda" {
         module.audit_logs_table.dynamodb_table_arn
       ]
     }
-  }
+    },
+    local.ha_scheduler_iam,
+  )
 
   tags = {
     Purpose = "outlook-scheduler"

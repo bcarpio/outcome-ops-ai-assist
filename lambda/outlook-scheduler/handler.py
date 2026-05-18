@@ -111,6 +111,12 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     """
     logger.info("Outlook scheduler invoked")
 
+    from shared.active_region import is_active_region  # type: ignore
+
+    if not is_active_region():
+        logger.info("[outlook-scheduler] region is passive; skipping this tick")
+        return {"statusCode": 200, "body": "passive-region-skip"}
+
     if not OUTLOOK_SYNC_QUEUE:
         logger.error("OUTLOOK_SYNC_QUEUE not configured")
         return {"statusCode": 500, "body": "Queue not configured"}

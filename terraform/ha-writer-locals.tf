@@ -23,6 +23,31 @@
 # ============================================================================
 
 locals {
+  # Env vars + IAM merged into every scheduler Lambda's module. Reads
+  # the local-region AppConfig role and short-circuits if the region is
+  # passive. The Python-side gate uses shared.active_region.is_active_region().
+  # Single-region deploys (var.secondary_region == "") get empty values
+  # here, which makes is_active_region() return True (no AppConfig call).
+  ha_scheduler_env = var.secondary_region != "" ? {
+    APPCONFIG_APPLICATION_ID           = aws_appconfig_application.ha.id
+    APPCONFIG_ENVIRONMENT_ID           = aws_appconfig_environment.ha.environment_id
+    APPCONFIG_CONFIGURATION_PROFILE_ID = aws_appconfig_configuration_profile.ha_active_region.configuration_profile_id
+    THIS_REGION                        = var.aws_region
+  } : {}
+
+  ha_scheduler_iam = var.secondary_region != "" ? {
+    ha_appconfig_read = {
+      effect = "Allow"
+      actions = [
+        "appconfig:StartConfigurationSession",
+        "appconfig:GetLatestConfiguration",
+      ]
+      resources = [
+        "arn:aws:appconfig:${var.aws_region}:${data.aws_caller_identity.current.account_id}:application/${aws_appconfig_application.ha.id}/environment/${aws_appconfig_environment.ha.environment_id}/configuration/${aws_appconfig_configuration_profile.ha_active_region.configuration_profile_id}",
+      ]
+    }
+  } : {}
+
   # Env vars merged into every writer Lambda's environment_variables block.
   # Lambdas reading this block don't need to know about HA at all — the
   # presence of REPLICATION_EVENT_BUS_NAME triggers shared.dual_write to

@@ -374,15 +374,17 @@ module "database_scheduler_lambda" {
 
   quiet_archive_local_exec = true
 
-  environment_variables = {
+  environment_variables = merge({
     ENV                 = var.environment
     APP_NAME            = var.app_name
     WORKSPACES_TABLE    = module.workspaces_table[0].dynamodb_table_id
     DATABASE_SYNC_QUEUE = aws_sqs_queue.database_sync[0].url
-  }
+    },
+    local.ha_scheduler_env,
+  )
 
   attach_policy_statements = true
-  policy_statements = {
+  policy_statements = merge({
     dynamodb = {
       effect = "Allow"
       actions = [
@@ -402,7 +404,9 @@ module "database_scheduler_lambda" {
         aws_sqs_queue.database_sync[0].arn
       ]
     }
-  }
+    },
+    local.ha_scheduler_iam,
+  )
 
   tags = {
     Purpose = "database-scheduler"

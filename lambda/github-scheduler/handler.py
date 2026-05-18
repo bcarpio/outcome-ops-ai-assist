@@ -134,6 +134,14 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     """
     logger.info("GitHub scheduler invoked")
 
+    # HA gating: passive region skips its tick. Single-region deploys
+    # (no AppConfig env vars set) return True from is_active_region().
+    from shared.active_region import is_active_region  # type: ignore
+
+    if not is_active_region():
+        logger.info("[github-scheduler] region is passive; skipping this tick")
+        return {"statusCode": 200, "body": "passive-region-skip"}
+
     # Log event details for debugging
     event_source = event.get("source", "unknown")
     event_detail_type = event.get("detail-type", "unknown")

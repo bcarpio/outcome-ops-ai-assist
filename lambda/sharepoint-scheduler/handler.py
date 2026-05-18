@@ -88,6 +88,12 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     """EventBridge-triggered handler for hourly SharePoint sync scheduling."""
     logger.info("SharePoint scheduler invoked")
 
+    from shared.active_region import is_active_region  # type: ignore
+
+    if not is_active_region():
+        logger.info("[sharepoint-scheduler] region is passive; skipping this tick")
+        return {"statusCode": 200, "body": "passive-region-skip"}
+
     if not SHAREPOINT_SYNC_QUEUE:
         logger.error("SHAREPOINT_SYNC_QUEUE not configured")
         return {"statusCode": 500, "body": "Queue not configured"}
