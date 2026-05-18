@@ -19,6 +19,23 @@ operator runbook for failover, failback, and incident response.
   serve from whichever region the URL hits. Reads do not check
   AppConfig.
 
+## Operator env vars
+
+Every `make ha-*` target reads the same set of env vars. Either prefix
+each invocation (as shown throughout this doc) or export them once at
+the top of your shell session:
+
+```bash
+export AWS_PROFILE=ops
+export ENV=prd
+export APP=outcome-ops-ai-assist
+export PRIMARY=us-west-2
+export SECONDARY=us-east-1
+```
+
+Some targets read additional vars (e.g. `ha-replay-dlq` needs `REGION`
+and `QUEUE`); those are called out per-section.
+
 ## Setup
 
 ### Required tfvars
@@ -51,7 +68,13 @@ emitted.
   + OAuth client secrets with `PLACEHOLDER_CONFIGURE_ME` and
   `lifecycle.ignore_changes=[value]`. Operators must `aws ssm
   put-parameter --overwrite` each region's values manually.
-- Run `make ha-list-secrets` to see what's left to populate.
+- Run the list-secrets helper to see what's left to populate:
+
+  ```bash
+  AWS_PROFILE=ops ENV=prd APP=outcome-ops-ai-assist \
+      PRIMARY=us-west-2 SECONDARY=us-east-1 \
+      make ha-list-secrets
+  ```
 
 ### Day-0 HA vs. add-later HA
 
@@ -77,8 +100,13 @@ AWS_PROFILE=ops \
 Or scope it down to specific resources for iterative testing:
 
 ```bash
-ARGS="--tables workspaces,audit-logs --dry-run" make ha-bootstrap
-ARGS="--skip-s3 --skip-vectors --tables workspaces" make ha-bootstrap
+AWS_PROFILE=ops ENV=prd APP=outcome-ops-ai-assist \
+    PRIMARY=us-west-2 SECONDARY=us-east-1 \
+    ARGS="--tables workspaces,audit-logs --dry-run" make ha-bootstrap
+
+AWS_PROFILE=ops ENV=prd APP=outcome-ops-ai-assist \
+    PRIMARY=us-west-2 SECONDARY=us-east-1 \
+    ARGS="--skip-s3 --skip-vectors --tables workspaces" make ha-bootstrap
 ```
 
 The bootstrap is idempotent — re-running it is safe; existing rows in
@@ -105,7 +133,9 @@ key). You can run it multiple times if a region was unreachable mid-run.
 ### Check status
 
 ```bash
-make ha-status
+AWS_PROFILE=ops ENV=prd APP=outcome-ops-ai-assist \
+    PRIMARY=us-west-2 SECONDARY=us-east-1 \
+    make ha-status
 ```
 
 Reports:
@@ -122,7 +152,9 @@ docstring).
 
 1. **Verify safety**:
    ```bash
-   make ha-status
+   AWS_PROFILE=ops ENV=prd APP=outcome-ops-ai-assist \
+       PRIMARY=us-west-2 SECONDARY=us-east-1 \
+       make ha-status
    ```
    Confirm: verdict line says `SAFE TO FLIP`. If DLQ has messages or
    replication is lagging, investigate first.
@@ -145,7 +177,9 @@ docstring).
 
 4. **Confirm clean state**:
    ```bash
-   make ha-status
+   AWS_PROFILE=ops ENV=prd APP=outcome-ops-ai-assist \
+       PRIMARY=us-west-2 SECONDARY=us-east-1 \
+       make ha-status
    ```
    Should show "exactly one region active" and no split-brain.
 
@@ -156,7 +190,12 @@ docstring).
 
 Same procedure in reverse, after replication has caught up:
 
-1. `make ha-status` confirms in-sync + empty DLQs.
+1. Confirm in-sync + empty DLQs:
+   ```bash
+   AWS_PROFILE=ops ENV=prd APP=outcome-ops-ai-assist \
+       PRIMARY=us-west-2 SECONDARY=us-east-1 \
+       make ha-status
+   ```
 2. Flip the becoming-passive (currently active) region to `passive`
    FIRST.
 3. Flip the becoming-active (currently passive) region to `active`.
@@ -170,17 +209,27 @@ next tick after re-activation catches up.
 
 ### DLQ has messages
 
-`make ha-status` exits with code 2. Inspect:
+`make ha-status` exits with code 2. Drain the DLQ once the underlying
+issue is fixed (note this target needs extra `REGION` and `QUEUE`
+vars on top of the standard set):
 
 ```bash
-# Drain the DLQ once the underlying issue is fixed
-AWS_PROFILE=ops ENV=prd APP=outcome-ops-ai-assist \\
-  REGION=us-east-1 \\
-  QUEUE=prd-outcome-ops-ai-assist-replication-applier-dlq \\
-  make ha-replay-dlq
+AWS_PROFILE=ops ENV=prd APP=outcome-ops-ai-assist \
+    PRIMARY=us-west-2 SECONDARY=us-east-1 \
+    REGION=us-east-1 \
+    QUEUE=prd-outcome-ops-ai-assist-replication-applier-dlq \
+    ARGS="--dry-run" make ha-replay-dlq
 ```
 
-Use `--dry-run` first to see what would be replayed.
+Inspect dry-run output, then drop `ARGS="--dry-run"` to actually
+replay. The `REGION`/`QUEUE` pair targets a specific DLQ; pick from:
+
+- `${ENV}-${APP}-replication-to-secondary-dlq` (in PRIMARY) —
+  events the primary couldn't deliver to secondary's bus.
+- `${ENV}-${APP}-replication-to-primary-dlq` (in SECONDARY) —
+  events the secondary couldn't deliver to primary's bus.
+- `${ENV}-${APP}-replication-applier-dlq` (in either region) —
+  events the applier Lambda failed to apply locally.
 
 ### AppConfig flags disagree (split-brain)
 
@@ -202,7 +251,13 @@ maintenance windows; otherwise flip the intended-active region to
 
 Exit code 5. The reachable region's role still applies. Schedulers in
 the unreachable region fail-closed (no work runs there) until
-AppConfig recovers. Once it does, re-run `make ha-status`.
+AppConfig recovers. Once it does, re-run:
+
+```bash
+AWS_PROFILE=ops ENV=prd APP=outcome-ops-ai-assist \
+    PRIMARY=us-west-2 SECONDARY=us-east-1 \
+    make ha-status
+```
 
 ### Lambda errors after failover
 
@@ -215,7 +270,14 @@ Common causes:
   AccessDeniedException in CloudWatch. Fix: extend the IAM resources
   list to include the now-active region's ARNs.
 - **SecureString placeholder**: an OAuth secret was never populated in
-  the now-active region. Run `make ha-list-secrets` and populate.
+  the now-active region. Run:
+  ```bash
+  AWS_PROFILE=ops ENV=prd APP=outcome-ops-ai-assist \
+      PRIMARY=us-west-2 SECONDARY=us-east-1 \
+      make ha-list-secrets
+  ```
+  and `aws ssm put-parameter --overwrite` each value that's still at
+  `PLACEHOLDER_CONFIGURE_ME`.
 
 ## Caveats
 
