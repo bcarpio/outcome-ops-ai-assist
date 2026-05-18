@@ -90,6 +90,106 @@ resource "aws_appconfig_deployment" "initial" {
   }
 }
 
+# ============================================================================
+# Secondary-region AppConfig copy (HA mode only).
+# Each region's AppConfig is independent. Operator flips each one
+# separately during failover via the AppConfig console.
+# ============================================================================
+
+resource "aws_appconfig_application" "ha_secondary" {
+  count = var.secondary_region != "" ? 1 : 0
+
+  provider = aws.secondary
+
+  name        = "${var.environment}-${var.app_name}-ha"
+  description = "Active/passive region flag for ${var.app_name} (secondary)"
+
+  tags = {
+    Purpose = "ha-replication"
+  }
+}
+
+resource "aws_appconfig_environment" "ha_secondary" {
+  count = var.secondary_region != "" ? 1 : 0
+
+  provider = aws.secondary
+
+  application_id = aws_appconfig_application.ha_secondary[0].id
+  name           = var.environment
+
+  tags = {
+    Purpose = "ha-replication"
+  }
+}
+
+resource "aws_appconfig_configuration_profile" "ha_active_region_secondary" {
+  count = var.secondary_region != "" ? 1 : 0
+
+  provider = aws.secondary
+
+  application_id = aws_appconfig_application.ha_secondary[0].id
+  name           = "active-region"
+  location_uri   = "hosted"
+  type           = "AWS.Freeform"
+
+  tags = {
+    Purpose = "ha-replication"
+  }
+}
+
+resource "aws_appconfig_deployment_strategy" "instant_secondary" {
+  count = var.secondary_region != "" ? 1 : 0
+
+  provider = aws.secondary
+
+  name                           = "${var.environment}-${var.app_name}-ha-instant"
+  deployment_duration_in_minutes = 0
+  final_bake_time_in_minutes     = 0
+  growth_factor                  = 100
+  replicate_to                   = "NONE"
+
+  tags = {
+    Purpose = "ha-replication"
+  }
+}
+
+resource "aws_appconfig_hosted_configuration_version" "initial_secondary" {
+  count = var.secondary_region != "" ? 1 : 0
+
+  provider = aws.secondary
+
+  application_id           = aws_appconfig_application.ha_secondary[0].id
+  configuration_profile_id = aws_appconfig_configuration_profile.ha_active_region_secondary[0].configuration_profile_id
+  content_type             = "application/json"
+
+  content = jsonencode({
+    schema_version = 1
+    role           = var.initial_region_role_secondary
+    activated_at   = timestamp()
+  })
+
+  lifecycle {
+    ignore_changes = [content]
+  }
+}
+
+resource "aws_appconfig_deployment" "initial_secondary" {
+  count = var.secondary_region != "" ? 1 : 0
+
+  provider = aws.secondary
+
+  application_id           = aws_appconfig_application.ha_secondary[0].id
+  environment_id           = aws_appconfig_environment.ha_secondary[0].environment_id
+  deployment_strategy_id   = aws_appconfig_deployment_strategy.instant_secondary[0].id
+  configuration_profile_id = aws_appconfig_configuration_profile.ha_active_region_secondary[0].configuration_profile_id
+  configuration_version    = aws_appconfig_hosted_configuration_version.initial_secondary[0].version_number
+  description              = "Initial active-region flag (secondary)"
+
+  tags = {
+    Purpose = "ha-replication"
+  }
+}
+
 # Outputs consumed by Lambda environments (chunk 06 + chunk 07 wire these
 # into the writer + scheduler env-var blocks).
 output "appconfig_application_id" {
@@ -105,4 +205,19 @@ output "appconfig_environment_id" {
 output "appconfig_configuration_profile_id" {
   description = "AppConfig configuration-profile id for the HA role flag"
   value       = aws_appconfig_configuration_profile.ha_active_region.configuration_profile_id
+}
+
+output "appconfig_application_id_secondary" {
+  description = "AppConfig application id in the secondary region (null when HA disabled)"
+  value       = var.secondary_region != "" ? aws_appconfig_application.ha_secondary[0].id : null
+}
+
+output "appconfig_environment_id_secondary" {
+  description = "AppConfig environment id in the secondary region (null when HA disabled)"
+  value       = var.secondary_region != "" ? aws_appconfig_environment.ha_secondary[0].environment_id : null
+}
+
+output "appconfig_configuration_profile_id_secondary" {
+  description = "AppConfig configuration-profile id in the secondary region (null when HA disabled)"
+  value       = var.secondary_region != "" ? aws_appconfig_configuration_profile.ha_active_region_secondary[0].configuration_profile_id : null
 }

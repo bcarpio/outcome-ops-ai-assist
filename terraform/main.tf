@@ -17,6 +17,30 @@ provider "aws" {
         Environment = var.environment
         Application = var.app_name
         ManagedBy   = "Terraform"
+        Region      = "primary"
+      },
+      var.tags
+    )
+  }
+}
+
+# Secondary-region provider for HA active/passive deployments.
+# When var.secondary_region is "", this alias points at the primary
+# region — resources gated on var.secondary_region != "" simply
+# won't be created, so the alias never gets used. Defining it
+# unconditionally lets downstream modules reference
+# `providers = { aws = aws.secondary }` without conditional plumbing.
+provider "aws" {
+  alias  = "secondary"
+  region = var.secondary_region != "" ? var.secondary_region : var.aws_region
+
+  default_tags {
+    tags = merge(
+      {
+        Environment = var.environment
+        Application = var.app_name
+        ManagedBy   = "Terraform"
+        Region      = "secondary"
       },
       var.tags
     )
