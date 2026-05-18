@@ -271,6 +271,150 @@ Common causes:
   and `aws ssm put-parameter --overwrite` each value that's still at
   `PLACEHOLDER_CONFIGURE_ME`.
 
+## Compute-plane HA (full service continuity)
+
+Replicating data alone is not enough — to keep the product *usable*
+during a primary outage the compute plane (Lambdas + Fargate + ALB +
+DNS) must also exist in the secondary region. The compute plane
+deploys in lockstep with the data plane: when `secondary_region` is
+set in tfvars, terraform creates a complete second copy of every
+runtime resource.
+
+### What runs in the secondary region
+
+- **UI Fargate** (`ui-fargate-secondary.tf`) — Fargate Spot cluster
+  with the same React+Express image as primary. Env vars point at the
+  secondary's own Function URLs. `THIS_REGION` is injected so the UI
+  knows which region served it.
+- **All 9 *-integration Lambdas** (`lambda-integrations-secondary.tf`)
+  — github / confluence / jira / outlook / teams / sharepoint /
+  onedrive / onenote / database. Each has its own Function URL +
+  SSM URL parameter so the OAuth-callback handlers in either region
+  can answer.
+- **chat-streaming + workspace-management** (`lambda-chat-workspace-secondary.tf`)
+  — symbol-graph reader IAM is inlined per-region.
+- **Writer Lambdas** (`lambda-writers-secondary.tf`) — file-ingestion,
+  process-documents (with S3 event notification on secondary's
+  uploads bucket), delete-worker, process-batch-summary,
+  process-repo-summary.
+- **10 schedulers + hourly EventBridge rules** (`lambda-schedulers-secondary.tf`).
+- **9 sync workers** (`lambda-sync-workers-secondary.tf`).
+- **Background Lambdas** (`lambda-background-secondary.tf`) —
+  audit-alert, analytics-aggregator, analytics-cost-alert.
+- **MCP-outcomeops + MCP-sonarqube + security-scanner Fargates**
+  (`fargate-secondary.tf`) — Cloud Map private DNS namespace
+  per-region.
+- **Regional SNS topics** for audit + cost alerts. Same subscription
+  emails reconfigured by terraform — operators will see double-sub
+  confirmations during initial apply.
+
+### Passive-mode gating
+
+The secondary region's resources EXIST and serve traffic, but
+non-trivial mutating work is gated by `is_active_region()` (a thin
+AppConfig-backed check in `lambda/shared/active_region.py`) so the
+passive region does not produce duplicate side effects.
+
+What's gated:
+
+- **Schedulers** (e.g. github-scheduler, jira-scheduler) return early
+  when passive — only the active region's hourly tick fires sync
+  workers.
+- **audit-alert + analytics-cost-alert** return early when passive —
+  only the active region's copy publishes SNS alerts. (Without this,
+  every refusal would fire two emails.)
+- **audit-stream-publisher** returns early when passive — only the
+  active region exports OCSF to Kinesis. (Without this, customer
+  SIEMs would see doubled events per audit row.)
+- **All admin mutation routes** in `workspace-management` and each
+  `*-integration` lambda return HTTP 403 via
+  `shared.region_guard.guard_active()` when called against a passive
+  region. The blocked-mutation attempt is itself recorded as an
+  audit row with action `ADMIN_MUTATION_BLOCKED_PASSIVE` so operators
+  can see who hit a bad URL during a flip.
+
+What's NOT gated (intentionally runs in both regions):
+
+- **chat-streaming + workspace-management reads** — `/api/chat`,
+  `/api/conversations/...`, `/api/audit/...`, `/api/analytics/...`,
+  `find_callers`, `list_workspaces`, etc. Reads serve from whichever
+  region the URL hits. Users hitting the secondary during a flip see
+  their conversation history because dual-write kept it in sync.
+- **analytics-aggregator** — both regions process their own
+  replicated audit-logs DDB stream into their own analytics-table so
+  per-region dashboards stay consistent regardless of which region
+  is active.
+- **replication-applier** — the inverse of dual-write; both regions
+  always need the receive-side wired up.
+
+### UI passive-mode signal
+
+The UI fetches `/api/region/role` at app load (cached for the
+session) and renders an amber top-of-page banner when served by the
+passive region:
+
+> **Read-only mode.** This UI is served by the passive region
+> (us-east-2). Admin actions are disabled. Chat, search, audit
+> viewing, and analytics continue to work.
+
+The most prominent mutation buttons (`Workspaces`/New, `Connect
+GitHub`, per-repo Sync, per-repo Remove) auto-disable via
+`<MutationButton>` and swap their hover tooltip to an explainer. The
+remaining mutation buttons across the integration tabs still render
+but are caught by the backend's `region_guard` 403 — the user sees a
+clear error toast, not silent data corruption.
+
+### DNS / hostname behavior across failover
+
+Two stable region-pinned hostnames + one canonical hostname:
+
+- `outcomeops1.<domain>` — always points at the primary region's ALB.
+- `outcomeops2.<domain>` — always points at the secondary region's ALB.
+- `outcomeops.<domain>` — canonical hostname; alias points at
+  whichever region is currently `active`.
+
+The two region-pinned hostnames are admin escape hatches — they let
+the operator hit a specific region's UI even when AppConfig is in a
+weird state. Day-to-day traffic uses the canonical hostname.
+
+OAuth redirects use the canonical hostname only, so failover (flip
+AppConfig + flip canonical DNS A-record) does not require
+re-registering any OAuth app or restarting any session. The ACM cert
+on each ALB has SANs covering both that region's pinned hostname AND
+the canonical hostname, so SNI keeps working when the canonical alias
+flips.
+
+### Cross-region image / layer replication
+
+- **ECR** uses `aws_ecr_replication_configuration` so primary-built
+  images appear in the secondary region's ECR within minutes. The
+  Fargate services in either region pull from their own region's
+  registry.
+- **Lambda layers** (license layer + platform_ca CA-bundle layer) are
+  published per-region. The `outcomeops_license_layer_arn_secondary`
+  tfvars value is the secondary-region ARN published by the license
+  server's per-account push (see ADR-019 for the license-layer
+  topology).
+
+### Failover order across regions
+
+For a clean failover, flip in this order:
+
+1. **Flip AppConfig** in both regions (the becoming-passive region
+   first, then the becoming-active region — see "Failback procedure"
+   above).
+2. **Flip the canonical DNS A-record** in Route 53 from the old-active
+   region's ALB to the new-active region's ALB. The two region-pinned
+   hostnames never change.
+3. **Run `make ha-status`** to verify exactly one region is `active`,
+   no split-brain, no DLQ backlog.
+
+Both AppConfig flips and the DNS flip are load-bearing: AppConfig
+gates the schedulers + region_guard, DNS routes user traffic. Skipping
+the DNS flip leaves the canonical hostname pointing at a passive UI
+that will refuse mutations — the read-side will still work but the
+operator UX is confusing.
+
 ## Caveats
 
 - **Replication lag** — ~5 minutes is normal under steady-state load.

@@ -182,6 +182,96 @@ def lambda_handler(event, context):
   base architecture; some customers may layer it on top of the
   application-managed HA but the platform itself doesn't depend on it.
 
+## Addendum (2026-05-18): Compute-plane HA
+
+The initial ADR scoped HA to the **data plane** (DDB / S3 / S3 Vectors
+replication + AppConfig role flag). For full service continuity the
+**compute plane** (Lambdas + Fargate + ALB + DNS) must also be
+replicated. This addendum documents that extension; the data-plane
+decisions above are unchanged.
+
+### Decisions
+
+- **Replicate every runtime resource into the secondary region** when
+  `secondary_region` is set in tfvars. The complete list is enumerated
+  in [docs/HA.md → Compute-plane HA](../HA.md#compute-plane-ha-full-service-continuity);
+  it covers UI Fargate, all 9 *-integration Lambdas, chat-streaming +
+  workspace-management, writer Lambdas, schedulers, sync workers,
+  background Lambdas (audit-alert, analytics-aggregator,
+  analytics-cost-alert), and the MCP + scanner Fargates with a Cloud
+  Map private DNS namespace per-region.
+
+- **Passive-mode gating via `is_active_region()`** for resources whose
+  side effects would double otherwise:
+    - Schedulers, audit-alert, audit-stream-publisher, and
+      analytics-cost-alert return early when passive.
+    - analytics-aggregator runs in BOTH regions because each region
+      maintains its own analytics-table for region-local dashboards.
+    - replication-applier runs in BOTH regions (it's the receive side
+      of dual-write).
+
+- **Backend mutation guard via `shared.region_guard.guard_active()`**
+  on every admin mutation route in workspace-management and the 9
+  *-integration Lambdas. Blocked attempts return HTTP 403 and emit an
+  audit row with action `ADMIN_MUTATION_BLOCKED_PASSIVE`. The audit
+  trail makes a flip-window mis-click visible after the fact.
+
+- **UI passive-mode signal via `/api/region/role`** — the UI fetches
+  region role at app load and renders a sticky amber banner when
+  passive. The most prominent mutation buttons auto-disable via a
+  `<MutationButton>` wrapper. Belt-and-suspenders: the UI hides the
+  button, the backend returns 403 if anyone hits the API directly.
+
+- **DNS topology**: two stable region-pinned hostnames
+  (`outcomeops1.<domain>`, `outcomeops2.<domain>`) as admin escape
+  hatches, plus a canonical hostname (`outcomeops.<domain>`) whose
+  Route 53 A-record alias is flipped during failover. The canonical
+  hostname is the only one OAuth apps know about, so failover does NOT
+  require re-registering any OAuth integration. Each ALB's ACM cert
+  carries SANs for both its region-pinned hostname and the canonical
+  hostname.
+
+- **ECR cross-region replication** via
+  `aws_ecr_replication_configuration` so primary-built UI / MCP /
+  scanner images appear in the secondary region within minutes. Each
+  region's Fargate services pull from their own region's registry.
+
+- **Failover is a three-step operator action**: flip both AppConfig
+  role flags AND flip the canonical DNS A-record. All three are
+  load-bearing; skipping any of them leaves the system in a
+  half-flipped state. Procedure detail lives in [docs/HA.md](../HA.md).
+
+### Why these particular gates
+
+Replication carries audit writes between regions. Without
+`is_active_region()` on audit-alert, every refusal would trigger TWO
+SNS emails. Without it on analytics-cost-alert, every daily roll-up
+would email twice. Without it on audit-stream-publisher, customer
+SIEMs would see every event twice. Schedulers are gated so cron-style
+work runs in one place — running github-scheduler in both regions
+would double every PR-analysis trigger.
+
+analytics-aggregator is INTENTIONALLY ungated: it materializes
+audit-rows into per-day rollups in DDB, which we want available in
+the local region's dashboards regardless of which region is currently
+active. Both regions process their own DDB stream into their own
+analytics-table.
+
+### Out of scope (for this addendum)
+
+- **Multi-region KMS for OAuth tokens** — OAuth access/refresh tokens
+  are encrypted in the primary region's KMS key; the secondary region
+  cannot decrypt without an `aws_kms_replica_key`. Failover today
+  works for everything except actively-mid-flight OAuth refresh in
+  the now-active region. Tracked separately as plan-ha chunk 13.
+
+- **Kinesis cross-region stream for OCSF export** — the OCSF
+  audit-stream-publisher is currently disabled in the owner's prd
+  (`audit_stream_export_enabled = false`). When a customer turns on
+  SIEM export AND HA, a Kinesis stream must be created in the
+  secondary region and `audit-stream-publisher` ungated. That's a
+  future chunk.
+
 ## References
 
 - [docs/HA.md](../HA.md) — operator runbook
@@ -190,7 +280,13 @@ def lambda_handler(event, context):
 - `terraform/lambda-replication-applier.tf` — replicator Lambda
 - `lambda/shared/dual_write.py` — writer-side helper
 - `lambda/shared/active_region.py` — scheduler-side helper
+- `lambda/shared/region_guard.py` — mutation-route guard
+- `lambda/shared/audit_writer.py` — `ADMIN_MUTATION_BLOCKED_PASSIVE` action
 - `lambda/replication-applier/handler.py` — applier
+- `ui/src/lib/regionRole.ts` — UI region-role client
+- `ui/src/components/RegionBanner.tsx` — passive-mode banner
+- `ui/src/components/MutationButton.tsx` — auto-disabling button
 - `scripts/ha-status` — operator status CLI
 - `scripts/ha-replay-dlq` — DLQ drain CLI
 - `scripts/ha-list-secrets` — SSM SecureString population check
+- `scripts/ha-bootstrap` — add-later initial-sync script
