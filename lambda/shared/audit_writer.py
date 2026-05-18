@@ -69,10 +69,16 @@ ACTION_LOGIN_SUCCEEDED = "LOGIN_SUCCEEDED"
 ACTION_API_KEY_USED = "API_KEY_USED"
 ACTION_MCP_JWT_VALIDATED = "MCP_JWT_VALIDATED"
 
-# License layer regression detector (ADR-019 Decision 4). Steady-state
+## License layer regression detector (ADR-019 Decision 4). Steady-state
 # count is zero - any occurrence means a Lambda was deployed without
 # the outcomeops_license layer attached, which is a deploy bug.
 ACTION_LICENSE_FAIL_OPEN = "LICENSE_FAIL_OPEN"
+
+# HA passive-mode block (chunk 9c). Steady-state count is zero in
+# active region; non-zero in passive region during a failover drill
+# or post-failover until the operator flips. Operators WANT these on
+# the audit dashboard — NOT in HIDDEN_DASHBOARD_ACTIONS.
+ACTION_ADMIN_MUTATION_BLOCKED_PASSIVE = "ADMIN_MUTATION_BLOCKED_PASSIVE"
 
 # Source-system sync triggers — one row per Lambda invocation, parent
 # event for the per-file DOCUMENT_INGESTED rows that follow.
@@ -153,6 +159,7 @@ ADMIN_ACTIONS = frozenset(
         ACTION_API_KEY_USED,
         ACTION_MCP_JWT_VALIDATED,
         ACTION_LICENSE_FAIL_OPEN,
+        ACTION_ADMIN_MUTATION_BLOCKED_PASSIVE,
         ACTION_REPO_SYNCED,
         ACTION_CONFLUENCE_SYNCED,
         ACTION_JIRA_SYNCED,
