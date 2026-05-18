@@ -18,4 +18,11 @@ locals {
     module.code_map_pending_work_table.dynamodb_table_arn,
     module.code_map_failed_files_table.dynamodb_table_arn,
   ]
+
+  # Secondary-region parallels for HA writer Lambdas (chunk 9e). Empty
+  # when secondary_region is unset; populated otherwise.
+  sha_truth_table_arns_secondary = var.secondary_region != "" ? [
+    module.code_map_pending_work_table_secondary[0].dynamodb_table_arn,
+    module.code_map_failed_files_table_secondary[0].dynamodb_table_arn,
+  ] : []
 }
