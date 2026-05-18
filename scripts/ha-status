@@ -1,0 +1,282 @@
+#!/usr/bin/env python3
+"""HA status CLI for OutcomeOps deployments.
+
+Compares per-(workspace, repo) SHA state across primary and secondary
+regions, reports EventBridge replication DLQ depths, and confirms both
+regions' AppConfig active-region flag agrees.
+
+Usage:
+    AWS_PROFILE=customer-ops \\
+        ENV=prd APP=outcome-ops-ai-assist \\
+        PRIMARY=us-west-2 SECONDARY=us-east-1 \\
+        ./scripts/ha-status
+
+Exit codes:
+    0  in sync, safe to flip
+    1  replication lag > 5 min (mention in alarms / wait)
+    2  DLQ has messages (replication wedged)
+    3  AppConfig disagrees between regions (split-brain — both active)
+    4  AppConfig disagrees (both passive — partial-failover state)
+    5  Partial visibility (one region's AppConfig unreachable)
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+import time
+from typing import Dict, List, Optional, Tuple
+
+import boto3
+from botocore.exceptions import ClientError
+
+
+def _env(name: str, fallback: str = "") -> str:
+    val = os.environ.get(name, fallback).strip()
+    if not val:
+        print(f"ERROR: {name} env var is required", file=sys.stderr)
+        sys.exit(2)
+    return val
+
+
+ENV = _env("ENV")
+APP = _env("APP", "outcome-ops-ai-assist")
+PRIMARY = _env("PRIMARY")
+SECONDARY = os.environ.get("SECONDARY", "").strip()
+
+
+def workspaces_table_name() -> str:
+    return f"{ENV}-{APP}-workspaces"
+
+
+def applier_dlq_name() -> str:
+    return f"{ENV}-{APP}-replication-applier-dlq"
+
+
+def to_secondary_dlq_name() -> str:
+    return f"{ENV}-{APP}-replication-to-secondary-dlq"
+
+
+def to_primary_dlq_name() -> str:
+    return f"{ENV}-{APP}-replication-to-primary-dlq"
+
+
+def _scan_sha_columns(region: str) -> List[Dict]:
+    """Pull (workspace, repo, code_map sha, docs sha, gkg sha) rows."""
+
+    ddb = boto3.resource("dynamodb", region_name=region)
+    table = ddb.Table(workspaces_table_name())
+    rows: List[Dict] = []
+    scan_kwargs: Dict = {
+        "FilterExpression": "begins_with(SK, :sk)",
+        "ExpressionAttributeValues": {":sk": "GITHUB_REPO#"},
+    }
+    while True:
+        resp = table.scan(**scan_kwargs)
+        for item in resp.get("Items", []):
+            rows.append(
+                {
+                    "workspace_id": item.get("PK", "").replace("WS#", ""),
+                    "repo": item.get("SK", "").replace("GITHUB_REPO#", ""),
+                    "last_code_map_sha": item.get("last_code_map_sha"),
+                    "last_code_map_sha_ts": item.get("last_code_map_sha_ts"),
+                    "last_docs_sha": item.get("last_docs_sha"),
+                    "last_docs_sha_ts": item.get("last_docs_sha_ts"),
+                    "last_gkg_sha": item.get("last_gkg_sha"),
+                    "last_gkg_sha_ts": item.get("last_gkg_sha_ts"),
+                }
+            )
+        last_key = resp.get("LastEvaluatedKey")
+        if not last_key:
+            break
+        scan_kwargs["ExclusiveStartKey"] = last_key
+    return rows
+
+
+def _dlq_depth(region: str, queue_name: str) -> Optional[int]:
+    sqs = boto3.client("sqs", region_name=region)
+    try:
+        url = sqs.get_queue_url(QueueName=queue_name)["QueueUrl"]
+        attrs = sqs.get_queue_attributes(
+            QueueUrl=url, AttributeNames=["ApproximateNumberOfMessagesVisible"]
+        )
+        return int(attrs["Attributes"]["ApproximateNumberOfMessagesVisible"])
+    except ClientError as exc:
+        code = exc.response.get("Error", {}).get("Code", "")
+        if code == "AWS.SimpleQueueService.NonExistentQueue":
+            return None
+        raise
+
+
+def _read_appconfig_role(region: str) -> Optional[Tuple[str, Optional[int]]]:
+    """Returns (role, activated_at_epoch) or None when AppConfig is unreachable."""
+
+    try:
+        ssm = boto3.client("ssm", region_name=region)
+        param_resp = ssm.get_parameter(Name=f"/{ENV}/{APP}/ha/replication-event-bus-name")
+        # AppConfig IDs aren't in SSM in our setup; we discover them via the
+        # AppConfig API directly.
+        appconfig = boto3.client("appconfig", region_name=region)
+        apps = appconfig.list_applications()["Items"]
+        target_app = next(
+            (a for a in apps if a["Name"] == f"{ENV}-{APP}-ha"), None
+        )
+        if not target_app:
+            return None
+        envs = appconfig.list_environments(ApplicationId=target_app["Id"])["Items"]
+        target_env = next((e for e in envs if e["Name"] == ENV), None)
+        if not target_env:
+            return None
+        profiles = appconfig.list_configuration_profiles(ApplicationId=target_app["Id"])[
+            "Items"
+        ]
+        target_profile = next(
+            (p for p in profiles if p["Name"] == "active-region"), None
+        )
+        if not target_profile:
+            return None
+
+        appconfigdata = boto3.client("appconfigdata", region_name=region)
+        session = appconfigdata.start_configuration_session(
+            ApplicationIdentifier=target_app["Id"],
+            EnvironmentIdentifier=target_env["Id"],
+            ConfigurationProfileIdentifier=target_profile["Id"],
+        )
+        token = session["InitialConfigurationToken"]
+        resp = appconfigdata.get_latest_configuration(ConfigurationToken=token)
+        body = resp.get("Configuration")
+        if body is None:
+            return None
+        raw = body.read() if hasattr(body, "read") else body
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8")
+        parsed = json.loads(raw)
+        role = parsed.get("role", "passive")
+        activated_at = parsed.get("activated_at")
+        ts: Optional[int] = None
+        if isinstance(activated_at, (int, float)):
+            ts = int(activated_at)
+        elif isinstance(activated_at, str) and activated_at:
+            try:
+                ts = int(
+                    time.mktime(time.strptime(activated_at[:19], "%Y-%m-%dT%H:%M:%S"))
+                )
+            except (ValueError, OverflowError):
+                ts = None
+        return role, ts
+    except ClientError:
+        return None
+
+
+def _format_row(row: Dict, label: str) -> str:
+    return f"  {label:<12} ws={row['workspace_id'][:8]}  repo={row['repo']:<40}  cm={row.get('last_code_map_sha') or '-'} docs={row.get('last_docs_sha') or '-'} gkg={row.get('last_gkg_sha') or '-'}"
+
+
+def _diff_rows(primary_rows: List[Dict], secondary_rows: List[Dict]) -> Tuple[int, int]:
+    """Returns (lagging_count, in_sync_count)."""
+
+    primary_index = {(r["workspace_id"], r["repo"]): r for r in primary_rows}
+    secondary_index = {(r["workspace_id"], r["repo"]): r for r in secondary_rows}
+    keys = set(primary_index.keys()) | set(secondary_index.keys())
+    lagging = 0
+    in_sync = 0
+    for key in sorted(keys):
+        p = primary_index.get(key, {})
+        s = secondary_index.get(key, {})
+        all_match = (
+            p.get("last_code_map_sha") == s.get("last_code_map_sha")
+            and p.get("last_docs_sha") == s.get("last_docs_sha")
+            and p.get("last_gkg_sha") == s.get("last_gkg_sha")
+        )
+        if all_match:
+            in_sync += 1
+        else:
+            lagging += 1
+            print(f"  LAG ws={key[0][:8]} repo={key[1]}")
+            print(f"      primary  : cm={p.get('last_code_map_sha')} docs={p.get('last_docs_sha')} gkg={p.get('last_gkg_sha')}")
+            print(f"      secondary: cm={s.get('last_code_map_sha')} docs={s.get('last_docs_sha')} gkg={s.get('last_gkg_sha')}")
+    return lagging, in_sync
+
+
+def main() -> int:
+    print(f"HA status for {ENV}-{APP}")
+    print()
+    print(f"  primary  region: {PRIMARY}")
+    print(f"  secondary region: {SECONDARY or '(not configured — single-region mode)'}")
+    print()
+
+    if not SECONDARY:
+        print("Single-region deployment; nothing to compare.")
+        return 0
+
+    # AppConfig role per region.
+    print("AppConfig role per region:")
+    primary_role = _read_appconfig_role(PRIMARY)
+    secondary_role = _read_appconfig_role(SECONDARY)
+    print(
+        f"  primary  ({PRIMARY}): "
+        f"{primary_role[0] if primary_role else '<unreachable>'}"
+        f"  activated_at={primary_role[1] if primary_role else '-'}"
+    )
+    print(
+        f"  secondary ({SECONDARY}): "
+        f"{secondary_role[0] if secondary_role else '<unreachable>'}"
+        f"  activated_at={secondary_role[1] if secondary_role else '-'}"
+    )
+
+    if primary_role is None or secondary_role is None:
+        print("  -> partial visibility (one region's AppConfig unreachable)")
+        return 5
+
+    if primary_role[0] == "active" and secondary_role[0] == "active":
+        print("  -> SPLIT-BRAIN: both regions active. Flip the one with the OLDER activated_at to passive.")
+        appconfig_exit = 3
+    elif primary_role[0] == "passive" and secondary_role[0] == "passive":
+        print("  -> both passive: no region is running scheduled work. Likely partial-failover state.")
+        appconfig_exit = 4
+    else:
+        print(f"  -> clean (exactly one region active: {'primary' if primary_role[0] == 'active' else 'secondary'})")
+        appconfig_exit = 0
+    print()
+
+    # SHA-truth replication.
+    print("SHA replication:")
+    primary_rows = _scan_sha_columns(PRIMARY)
+    secondary_rows = _scan_sha_columns(SECONDARY)
+    lagging, in_sync = _diff_rows(primary_rows, secondary_rows)
+    print(f"  {in_sync} in-sync, {lagging} lagging")
+    print()
+
+    # DLQ depths.
+    print("DLQ depths:")
+    p_to_s_dlq = _dlq_depth(PRIMARY, to_secondary_dlq_name()) or 0
+    s_to_p_dlq = _dlq_depth(SECONDARY, to_primary_dlq_name()) or 0
+    p_applier_dlq = _dlq_depth(PRIMARY, applier_dlq_name()) or 0
+    s_applier_dlq = _dlq_depth(SECONDARY, applier_dlq_name()) or 0
+    print(f"  primary->secondary DLQ: {p_to_s_dlq}")
+    print(f"  secondary->primary DLQ: {s_to_p_dlq}")
+    print(f"  primary applier DLQ:   {p_applier_dlq}")
+    print(f"  secondary applier DLQ: {s_applier_dlq}")
+    dlq_total = p_to_s_dlq + s_to_p_dlq + p_applier_dlq + s_applier_dlq
+    if dlq_total > 0:
+        print(f"  -> {dlq_total} messages awaiting attention")
+    else:
+        print("  -> empty")
+    print()
+
+    # Verdict.
+    if appconfig_exit != 0:
+        return appconfig_exit
+    if dlq_total > 0:
+        print("Verdict: DLQ has messages — investigate before flipping")
+        return 2
+    if lagging > 0:
+        print("Verdict: replication lagging — wait for catch-up before flipping")
+        return 1
+    print("Verdict: SAFE TO FLIP")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

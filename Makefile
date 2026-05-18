@@ -1,4 +1,4 @@
-.PHONY: help setup install fmt lint validate test test-unit test-integration test-coverage test-ui audit build-run-tests-image build-ui-image build-mcp-server-image build-snyk-image build-database-images build-runtime-layer build-terraform-layer build-all-layers build-platform-layer build-all-images pre-deploy clean all
+.PHONY: help setup install fmt lint validate test test-unit test-integration test-coverage test-ui audit build-run-tests-image build-ui-image build-mcp-server-image build-snyk-image build-database-images build-runtime-layer build-terraform-layer build-all-layers build-platform-layer build-all-images pre-deploy clean all ha-status ha-replay-dlq ha-list-secrets
 
 APP_NAME ?= outcome-ops-ai-assist
 AWS_REGION ?= us-west-2
@@ -189,6 +189,21 @@ test-ui:
 audit:
 	@echo "Running npm audit on UI dependencies..."
 	cd ui && npm audit --audit-level=high
+
+# ============================================================================
+# HA Operator Tooling
+# Wrapper targets around scripts/ha-* for operator convenience.
+# Required env vars: ENV, APP, PRIMARY, SECONDARY (optional for status).
+# ============================================================================
+
+ha-status:
+	@./scripts/ha-status
+
+ha-replay-dlq:
+	@./scripts/ha-replay-dlq
+
+ha-list-secrets:
+	@./scripts/ha-list-secrets
 
 # ============================================================================
 # Container Images
