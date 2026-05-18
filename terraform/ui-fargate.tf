@@ -396,6 +396,255 @@ resource "aws_lb_listener" "https" {
   }
 }
 
+# ============================================================================
+# Secondary-region UI ALB + listeners (HA chunk 9b)
+# ----------------------------------------------------------------------------
+# Mirror of the primary ALB/SG/listener block above, under the
+# aws.secondary provider. Gated on var.secondary_region != "" AND
+# var.ui_vpc_id_secondary != "" so 9a's outputs (ECR replication,
+# Route53 scaffolding) can apply before the operator has finished
+# building the secondary VPC.
+#
+# Target groups attach in 9h (UI Fargate ECS service) / 9i (MCP +
+# scanner Fargates). Until then the ALB listener responds with a 503
+# default to any traffic that lands on outcomeops2.${domain}.
+# ============================================================================
+
+locals {
+  # Gate the secondary ALB on the operator having actually provisioned
+  # the secondary VPC. Until then 9b's resources stay dormant so the
+  # 9a apply (ECR replication / Route53 / ACM) succeeds standalone.
+  deploy_ui_secondary = (
+    var.deploy_ui
+    && var.secondary_region != ""
+    && var.ui_vpc_id_secondary != ""
+  )
+}
+
+data "aws_vpc" "ui_secondary" {
+  count = local.deploy_ui_secondary ? 1 : 0
+
+  provider = aws.secondary
+
+  id = var.ui_vpc_id_secondary
+}
+
+# OIDC client secret in secondary. Read-only data source matches the
+# primary pattern (data "aws_ssm_parameter" "oidc_client_secret"):
+# operator creates the SecureString in us-east-2 manually BEFORE
+# applying 9b. `make ha-list-secrets` (chunk 9l) will check both
+# regions. If the parameter doesn't exist, terraform plan fails with
+# a clear error and the operator runs:
+#   aws ssm put-parameter --region us-east-2 --type SecureString \
+#     --name /${env}/${app}/oidc/client-secret --value "<value>"
+data "aws_ssm_parameter" "oidc_client_secret_secondary" {
+  count = local.deploy_ui_secondary && local.use_oidc ? 1 : 0
+
+  provider = aws.secondary
+
+  name = local.oidc_ssm_path
+}
+
+module "ui_alb_sg_secondary" {
+  source  = "terraform-aws-modules/security-group/aws"
+  version = "5.1.0"
+
+  create = local.deploy_ui_secondary
+
+  providers = {
+    aws = aws.secondary
+  }
+
+  name        = "${var.environment}-${var.app_name}-ui-alb"
+  description = "Security group for UI ALB (secondary region)"
+  vpc_id      = var.ui_vpc_id_secondary
+
+  ingress_with_cidr_blocks = local.deploy_ui_secondary ? [
+    {
+      from_port   = 80
+      to_port     = 80
+      protocol    = "tcp"
+      description = var.ui_alb_internal ? "HTTP from VPC" : "HTTP from anywhere"
+      cidr_blocks = var.ui_alb_internal ? data.aws_vpc.ui_secondary[0].cidr_block : "0.0.0.0/0"
+    },
+    {
+      from_port   = 443
+      to_port     = 443
+      protocol    = "tcp"
+      description = var.ui_alb_internal ? "HTTPS from VPC" : "HTTPS from anywhere"
+      cidr_blocks = var.ui_alb_internal ? data.aws_vpc.ui_secondary[0].cidr_block : "0.0.0.0/0"
+    }
+  ] : []
+
+  egress_rules = ["all-all"]
+
+  tags = {
+    Purpose = "ui-alb"
+  }
+}
+
+module "ui_fargate_sg_secondary" {
+  source  = "terraform-aws-modules/security-group/aws"
+  version = "5.1.0"
+
+  create = local.deploy_ui_secondary
+
+  providers = {
+    aws = aws.secondary
+  }
+
+  name        = "${var.environment}-${var.app_name}-ui-fargate"
+  description = "Security group for UI Fargate tasks (secondary region)"
+  vpc_id      = var.ui_vpc_id_secondary
+
+  ingress_with_source_security_group_id = local.deploy_ui_secondary ? [
+    {
+      from_port                = 3000
+      to_port                  = 3000
+      protocol                 = "tcp"
+      description              = "HTTP from ALB"
+      source_security_group_id = module.ui_alb_sg_secondary.security_group_id
+    }
+  ] : []
+
+  egress_rules = ["all-all"]
+
+  tags = {
+    Purpose = "ui-fargate"
+  }
+}
+
+module "ui_alb_secondary" {
+  source  = "terraform-aws-modules/alb/aws"
+  version = "9.4.0"
+
+  create = local.deploy_ui_secondary
+
+  providers = {
+    aws = aws.secondary
+  }
+
+  name               = "${var.environment}-${var.app_name}-ui"
+  load_balancer_type = "application"
+  internal           = var.ui_alb_internal
+
+  vpc_id  = var.ui_vpc_id_secondary
+  subnets = var.ui_private_subnet_ids_secondary
+
+  security_groups = local.deploy_ui_secondary ? [module.ui_alb_sg_secondary.security_group_id] : []
+
+  drop_invalid_header_fields = false
+  enable_deletion_protection = false
+
+  # When OIDC is disabled, create HTTP listener via module.
+  # When OIDC is enabled, listeners are created as separate resources below.
+  listeners = local.use_oidc ? {} : {
+    http = {
+      port     = 80
+      protocol = "HTTP"
+      forward = {
+        target_group_key = "ui"
+      }
+    }
+  }
+
+  target_groups = {
+    ui = {
+      name              = "${var.environment}-${var.app_name}-ui"
+      protocol          = "HTTP"
+      port              = 3000
+      target_type       = "ip"
+      create_attachment = false # ECS service handles attachment in chunk 9h
+
+      health_check = {
+        enabled             = true
+        healthy_threshold   = 2
+        interval            = 30
+        matcher             = "200"
+        path                = "/health"
+        port                = "traffic-port"
+        protocol            = "HTTP"
+        timeout             = 5
+        unhealthy_threshold = 3
+      }
+    }
+  }
+
+  tags = {
+    Purpose = "ui-internal-alb"
+  }
+}
+
+resource "aws_lb_listener" "http_redirect_secondary" {
+  count = local.deploy_ui_secondary && local.use_oidc ? 1 : 0
+
+  provider = aws.secondary
+
+  load_balancer_arn = module.ui_alb_secondary.arn
+  port              = 80
+  protocol          = "HTTP"
+
+  default_action {
+    type = "redirect"
+
+    redirect {
+      port        = "443"
+      protocol    = "HTTPS"
+      status_code = "HTTP_301"
+    }
+  }
+}
+
+resource "aws_lb_listener" "https_secondary" {
+  count = local.deploy_ui_secondary && local.use_oidc ? 1 : 0
+
+  provider = aws.secondary
+
+  load_balancer_arn = module.ui_alb_secondary.arn
+  port              = 443
+  protocol          = "HTTPS"
+  ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
+  certificate_arn   = local.ui_cert_arn_secondary
+
+  default_action {
+    type  = "authenticate-oidc"
+    order = 1
+
+    authenticate_oidc {
+      authorization_endpoint = "https://login.microsoftonline.com/${var.oidc_tenant_id}/oauth2/v2.0/authorize"
+      token_endpoint         = "https://login.microsoftonline.com/${var.oidc_tenant_id}/oauth2/v2.0/token"
+      user_info_endpoint     = "https://graph.microsoft.com/oidc/userinfo"
+      issuer                 = "https://login.microsoftonline.com/${var.oidc_tenant_id}/v2.0"
+      client_id              = var.oidc_client_id
+      client_secret          = data.aws_ssm_parameter.oidc_client_secret_secondary[0].value
+      scope                  = "openid email profile"
+    }
+  }
+
+  default_action {
+    type             = "forward"
+    order            = 2
+    target_group_arn = module.ui_alb_secondary.target_groups["ui"].arn
+  }
+}
+
+# HA chunk 9b: regional hostname for secondary. Operator escape hatch
+# for deep-linking to us-east-2 specifically (e.g. to verify the
+# secondary ALB is healthy before flipping DNS). End users hit the
+# canonical URL; this is admin-only.
+resource "aws_route53_record" "ui_secondary" {
+  count   = local.manage_route53 && local.deploy_ui_secondary ? 1 : 0
+  zone_id = data.aws_route53_zone.main[0].zone_id
+  name    = "${var.ui_subdomain}2.${var.domain}"
+  type    = "A"
+
+  alias {
+    name                   = module.ui_alb_secondary.dns_name
+    zone_id                = module.ui_alb_secondary.zone_id
+    evaluate_target_health = true
+  }
+}
+
 # -----------------------------------------------------------------------------
 # OAuth Callback Bypass - skip OIDC for external provider redirects
 # GitHub, Confluence, and Jira redirect back with code/state params that
