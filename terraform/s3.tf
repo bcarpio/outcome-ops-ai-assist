@@ -77,3 +77,98 @@ output "knowledge_base_bucket_arn" {
   description = "ARN of the knowledge base S3 bucket"
   value       = module.knowledge_base_bucket.s3_bucket_arn
 }
+
+# ============================================================================
+# Secondary-region copy (HA mode only).
+# S3 bucket names are globally unique, so the secondary bucket has a
+# `-secondary` suffix. The replicator-applier (chunk 05) does
+# cross-region GetObject from the source bucket and PutObject into the
+# local bucket, so the two buckets stay in sync via application-layer
+# dual-write — not S3 Cross-Region Replication (the latter introduces
+# eventual-consistency we don't want under failover).
+# ============================================================================
+
+# trivy:ignore:AVD-AWS-0132 -- CMK encryption is optional via enable_cmk_encryption toggle
+module "knowledge_base_bucket_secondary" {
+  source  = "terraform-aws-modules/s3-bucket/aws"
+  version = "4.1.1"
+
+  create_bucket = var.secondary_region != ""
+
+  providers = {
+    aws = aws.secondary
+  }
+
+  bucket = "${var.environment}-${var.app_name}-kb-${data.aws_caller_identity.current.account_id}-secondary"
+
+  versioning = {
+    enabled = true
+  }
+
+  lifecycle_rule = [
+    {
+      id     = "expire-old-versions"
+      status = "Enabled"
+      noncurrent_version_expiration = {
+        days = 30
+      }
+      abort_incomplete_multipart_upload_days = 7
+    }
+  ]
+
+  server_side_encryption_configuration = {
+    rule = {
+      apply_server_side_encryption_by_default = {
+        sse_algorithm     = var.enable_cmk_encryption ? "aws:kms" : "AES256"
+        kms_master_key_id = local.data_cmk_arn_secondary
+      }
+      bucket_key_enabled = var.enable_cmk_encryption
+    }
+  }
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+
+  cors_rule = [
+    {
+      allowed_headers = ["*"]
+      allowed_methods = ["PUT", "POST"]
+      allowed_origins = concat(
+        var.domain != "" ? ["https://*.${var.domain}"] : [],
+        var.cors_allowed_origins
+      )
+      expose_headers  = ["ETag"]
+      max_age_seconds = 3600
+    }
+  ]
+
+  tags = {
+    Purpose = "knowledge-base"
+  }
+}
+
+resource "aws_ssm_parameter" "knowledge_base_bucket_secondary" {
+  count = var.secondary_region != "" ? 1 : 0
+
+  provider = aws.secondary
+
+  name  = "/${var.environment}/${var.app_name}/s3/knowledge-base-bucket"
+  type  = "String"
+  value = module.knowledge_base_bucket_secondary.s3_bucket_id
+
+  tags = {
+    Purpose = "knowledge-base-bucket-name"
+  }
+}
+
+output "knowledge_base_bucket_name_secondary" {
+  description = "Name of the secondary-region knowledge base S3 bucket (null when HA disabled)"
+  value       = var.secondary_region != "" ? module.knowledge_base_bucket_secondary.s3_bucket_id : null
+}
+
+output "knowledge_base_bucket_arn_secondary" {
+  description = "ARN of the secondary-region knowledge base S3 bucket (null when HA disabled)"
+  value       = var.secondary_region != "" ? module.knowledge_base_bucket_secondary.s3_bucket_arn : null
+}
