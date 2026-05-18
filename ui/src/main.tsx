@@ -11,12 +11,14 @@ import AnalyticsBudgets from './pages/AnalyticsBudgets'
 import Audit from './pages/Audit'
 import Settings from './pages/Settings'
 import AiDisclosureModal from './components/AiDisclosureModal'
+import RegionBanner from './components/RegionBanner'
 import './index.css'
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   // StrictMode disabled - causes double API calls in dev mode
   // Re-enable for debugging lifecycle issues if needed
   <BrowserRouter>
+    <RegionBanner />
     <AiDisclosureModal />
     <Routes>
       <Route path="/" element={<Chat />} />

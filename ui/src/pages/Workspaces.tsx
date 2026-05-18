@@ -12,6 +12,7 @@ import {
   type Workspace,
 } from '../lib/api'
 import AdminNav from '../components/AdminNav'
+import MutationButton from '../components/MutationButton'
 
 export default function Workspaces() {
   const navigate = useNavigate()
@@ -76,13 +77,13 @@ export default function Workspaces() {
           </div>
           <div className="flex items-center gap-3">
             {isOrgAdmin && (
-              <button
+              <MutationButton
                 onClick={() => setShowCreateModal(true)}
-                className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <Plus size={18} />
                 New Workspace
-              </button>
+              </MutationButton>
             )}
             <AdminNav />
           </div>
@@ -102,13 +103,13 @@ export default function Workspaces() {
             {isOrgAdmin ? (
               <>
                 <p className="mt-2 text-gray-500">Create a workspace to organize your repos and integrations</p>
-                <button
+                <MutationButton
                   onClick={() => setShowCreateModal(true)}
-                  className="mt-6 inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                  className="mt-6 inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   <Plus size={18} />
                   Create Your First Workspace
-                </button>
+                </MutationButton>
               </>
             ) : (
               <p className="mt-2 text-gray-500">Ask an org admin to add you to a workspace</p>

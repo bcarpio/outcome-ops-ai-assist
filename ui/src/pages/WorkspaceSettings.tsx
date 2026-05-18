@@ -145,6 +145,7 @@ import {
   type PrivacyMode,
 } from '../lib/api'
 import AdminNav from '../components/AdminNav'
+import MutationButton from '../components/MutationButton'
 
 type Tab = 'general' | 'members' | 'integrations' | 'sharing' | 'documents' | 'advanced'
 
@@ -2113,10 +2114,10 @@ export default function WorkspaceSettings() {
                   </div>
                 </div>
                 {isAdmin && githubInstallations.length === 0 && (
-                  <button
+                  <MutationButton
                     onClick={handleConnectGitHub}
                     disabled={connectingGitHub}
-                    className="flex items-center gap-2 px-3 py-1.5 text-sm bg-gray-900 text-white rounded-lg hover:bg-gray-800 disabled:opacity-50 transition-colors"
+                    className="flex items-center gap-2 px-3 py-1.5 text-sm bg-gray-900 text-white rounded-lg hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                   >
                     {connectingGitHub ? (
                       <Loader2 size={16} className="animate-spin" />
@@ -2124,7 +2125,7 @@ export default function WorkspaceSettings() {
                       <Plus size={16} />
                     )}
                     Connect GitHub
-                  </button>
+                  </MutationButton>
                 )}
               </div>
               {loadingGitHub ? (
@@ -2215,10 +2216,10 @@ export default function WorkspaceSettings() {
                             )}
                             {isAdmin && (
                               <>
-                                <button
+                                <MutationButton
                                   onClick={() => handleTriggerGitHubSync(repo.repo_name)}
                                   disabled={syncingGitHub === repo.repo_name || (repo.repo_type !== 'standards' && !repo.include_code_maps)}
-                                  className="p-1.5 text-gray-500 hover:bg-gray-100 rounded transition-colors disabled:opacity-50"
+                                  className="p-1.5 text-gray-500 hover:bg-gray-100 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                                   title="Sync now"
                                 >
                                   {syncingGitHub === repo.repo_name ? (
@@ -2226,11 +2227,11 @@ export default function WorkspaceSettings() {
                                   ) : (
                                     <RefreshCw size={16} />
                                   )}
-                                </button>
-                                <button
+                                </MutationButton>
+                                <MutationButton
                                   onClick={() => handleRemoveGitHubRepo(repo.repo_name)}
                                   disabled={removingGitHubRepo === repo.repo_name}
-                                  className="p-1.5 text-red-500 hover:bg-red-50 rounded transition-colors disabled:opacity-50"
+                                  className="p-1.5 text-red-500 hover:bg-red-50 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                                   title="Remove repo"
                                 >
                                   {removingGitHubRepo === repo.repo_name ? (
@@ -2238,7 +2239,7 @@ export default function WorkspaceSettings() {
                                   ) : (
                                     <Trash2 size={16} />
                                   )}
-                                </button>
+                                </MutationButton>
                               </>
                             )}
                           </div>
