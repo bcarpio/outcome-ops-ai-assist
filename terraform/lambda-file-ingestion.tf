@@ -155,6 +155,7 @@ module "file_ingestion_lambda" {
       FAILED_FILES_TABLE = module.code_map_failed_files_table.dynamodb_table_id
     },
     local.outcomeops_license_env,
+    local.ha_writer_env,
   )
 
   # IAM permissions
@@ -260,6 +261,7 @@ module "file_ingestion_lambda" {
       }
     },
     local.outcomeops_license_iam,
+    local.ha_writer_events_iam,
   )
 
   tags = {
@@ -351,6 +353,7 @@ module "process_documents_lambda" {
       FAILED_FILES_TABLE = module.code_map_failed_files_table.dynamodb_table_id
     },
     local.outcomeops_license_env,
+    local.ha_writer_env,
   )
 
   # IAM permissions
@@ -468,6 +471,7 @@ module "process_documents_lambda" {
     }
     },
     local.outcomeops_license_iam,
+    local.ha_writer_events_iam,
   )
 
   tags = {
@@ -541,15 +545,18 @@ module "delete_worker_lambda" {
   # Suppress verbose archive output
   quiet_archive_local_exec = true
 
-  environment_variables = {
-    ENV       = var.environment
-    APP_NAME  = var.app_name
-    KB_BUCKET = module.knowledge_base_bucket.s3_bucket_id
-  }
+  environment_variables = merge(
+    {
+      ENV       = var.environment
+      APP_NAME  = var.app_name
+      KB_BUCKET = module.knowledge_base_bucket.s3_bucket_id
+    },
+    local.ha_writer_env,
+  )
 
   # IAM permissions
   attach_policy_statements = true
-  policy_statements = {
+  policy_statements = merge({
     # S3 for listing and deleting documents
     s3_kb = {
       effect = "Allow"
@@ -601,7 +608,9 @@ module "delete_worker_lambda" {
         aws_sqs_queue.delete_queue[0].arn
       ]
     }
-  }
+    },
+    local.ha_writer_events_iam,
+  )
 
   tags = {
     Purpose = "delete-worker"

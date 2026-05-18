@@ -109,6 +109,7 @@ module "chat_streaming_lambda" {
       SSL_CERT_FILE      = "/opt/ca-bundle.pem"
     },
     local.outcomeops_license_env,
+    local.ha_writer_env,
   )
 
   # IAM permissions. Merged with the shared license-layer IAM block
@@ -260,6 +261,7 @@ module "chat_streaming_lambda" {
     }
     },
     local.outcomeops_license_iam,
+    local.ha_writer_events_iam,
   )
 
   tags = {

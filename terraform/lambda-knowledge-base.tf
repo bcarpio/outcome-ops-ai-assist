@@ -51,7 +51,7 @@ module "process_batch_summary_lambda" {
   quiet_archive_local_exec = true
 
   # Environment variables
-  environment_variables = {
+  environment_variables = merge({
     ENV                               = var.environment
     APP_NAME                          = var.app_name
     EVENT_BUS_NAME                    = aws_cloudwatch_event_bus.automation.name
@@ -77,11 +77,13 @@ module "process_batch_summary_lambda" {
     # not yet imported; chunk 02 lights it up.
     PENDING_WORK_TABLE = module.code_map_pending_work_table.dynamodb_table_id
     FAILED_FILES_TABLE = module.code_map_failed_files_table.dynamodb_table_id
-  }
+    },
+    local.ha_writer_env,
+  )
 
   # IAM permissions
   attach_policy_statements = true
-  policy_statements = {
+  policy_statements = merge({
     # Write to DynamoDB code maps table
     dynamodb_write = {
       effect = "Allow"
@@ -225,7 +227,9 @@ module "process_batch_summary_lambda" {
       ]
       resources = ["*"]
     }
-  }
+    },
+    local.ha_writer_events_iam,
+  )
 
   tags = {
     Purpose = "process-batch-summary"
@@ -330,6 +334,7 @@ module "process_repo_summary_lambda" {
       FAILED_FILES_TABLE = module.code_map_failed_files_table.dynamodb_table_id
     },
     local.outcomeops_license_env,
+    local.ha_writer_env,
   )
 
   # IAM permissions
@@ -503,6 +508,7 @@ module "process_repo_summary_lambda" {
     }
     },
     local.outcomeops_license_iam,
+    local.ha_writer_events_iam,
   )
 
   tags = {

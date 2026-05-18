@@ -266,6 +266,7 @@ module "github_sync_lambda" {
       FAILED_FILES_TABLE = module.code_map_failed_files_table.dynamodb_table_id
     },
     local.outcomeops_license_env,
+    local.ha_writer_env,
   )
 
   # IAM permissions
@@ -372,6 +373,7 @@ module "github_sync_lambda" {
       }
     },
     local.outcomeops_license_iam,
+    local.ha_writer_events_iam,
   )
 
   tags = {

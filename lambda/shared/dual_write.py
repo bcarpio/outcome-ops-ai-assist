@@ -323,7 +323,29 @@ def ddb_delete_item(table_name: str, key: dict, **kwargs) -> None:
     _emit("ddb_delete_item", table=table_name, key=key, args=kwargs)
 
 
-def s3_put_object(bucket: str, key: str, body: bytes, **kwargs) -> None:
+def s3_put_object(
+    bucket: Optional[str] = None,
+    key: Optional[str] = None,
+    body: Optional[bytes] = None,
+    **kwargs,
+) -> None:
+    """Local S3 PutObject + replication emit.
+
+    Accepts both lowercase keyword args (bucket/key/body) and the boto3
+    PascalCase form (Bucket/Key/Body) by popping the PascalCase
+    versions out of **kwargs. Callers can therefore pass either shape
+    without a translation layer at the call site.
+    """
+
+    if "Bucket" in kwargs:
+        bucket = kwargs.pop("Bucket")
+    if "Key" in kwargs:
+        key = kwargs.pop("Key")
+    if "Body" in kwargs:
+        body = kwargs.pop("Body")
+    if bucket is None or key is None or body is None:
+        raise TypeError("s3_put_object requires bucket, key, and body")
+
     _s3_client().put_object(Bucket=bucket, Key=key, Body=body, **kwargs)
     _emit(
         "s3_put_object",
