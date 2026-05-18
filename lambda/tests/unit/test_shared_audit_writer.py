@@ -56,10 +56,20 @@ CATEGORY_AUTH = audit_writer.CATEGORY_AUTH
 
 @pytest.fixture(autouse=True)
 def reset_mocks():
-    """Reset mocks between tests; keep module pinned to our mock resource."""
+    """Reset mocks between tests; pin the mock on dual_write.
+
+    audit_writer routes writes through ``shared.dual_write`` post-HA
+    refactor; injecting the mock on dual_write._dynamodb covers the
+    swapped-in code path.
+    """
     mock_dynamodb_resource.reset_mock()
     audit_writer._dynamodb_resource = mock_dynamodb_resource
+
+    from shared import dual_write  # type: ignore
+
+    dual_write._set_clients_for_tests(dynamodb=mock_dynamodb_resource)
     yield
+    dual_write._reset_clients_for_tests()
 
 
 @pytest.fixture

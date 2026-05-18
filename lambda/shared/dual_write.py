@@ -213,6 +213,103 @@ def ddb_put_item(table_name: str, item: dict, **kwargs) -> None:
     _emit("ddb_put_item", table=table_name, args={"Item": item, **kwargs})
 
 
+def ddb_batch_put_items(table_name: str, items: list) -> int:
+    """Batch-put items via DDB BatchWriteItem and emit one event per item.
+
+    Mirrors the ``table.batch_writer()`` shape used by callers like
+    ``shared.symbol_graph_writer``: writes the full set locally with
+    automatic 25-item chunking and unprocessed-item retries, then
+    emits a replication event per item. EventBridge PutEvents is
+    batched 10-per-call (the PutEvents API limit) to stay under the
+    account quota for large symbol-graph regens.
+
+    Returns the count of items actually written.
+    """
+
+    if not items:
+        return 0
+
+    table = _ddb().Table(table_name)
+    written = 0
+    with table.batch_writer() as batch:
+        for item in items:
+            batch.put_item(Item=item)
+            written += 1
+
+    if REPLICATION_EVENT_BUS_NAME:
+        _emit_batch_for_items(table_name, items)
+
+    return written
+
+
+def _emit_batch_for_items(table_name: str, items: list) -> None:
+    """Helper: PutEvents-batched (10 per call) emissions for a list of items.
+
+    Each item becomes one ddb_put_item event. Failures are logged and
+    swallowed — the local write already succeeded.
+    """
+
+    if not REPLICATION_EVENT_BUS_NAME or not items:
+        return
+
+    PUT_EVENTS_BATCH = 10
+    entries: list = []
+    for item in items:
+        payload = {
+            "version": _EVENT_SCHEMA_VERSION,
+            "operation": "ddb_put_item",
+            "source_region": THIS_REGION,
+            "emitted_at": int(time.time()),
+            "table": table_name,
+            "args": {"Item": item},
+        }
+        try:
+            payload_str = json.dumps(payload, default=_json_default)
+        except (TypeError, ValueError):
+            payload_str = json.dumps(
+                {
+                    "version": _EVENT_SCHEMA_VERSION,
+                    "operation": "ddb_put_item",
+                    "source_region": THIS_REGION,
+                    "emitted_at": int(time.time()),
+                    "unserializable": True,
+                    "table": table_name,
+                }
+            )
+        if len(payload_str.encode("utf-8")) > _PAYLOAD_MAX_BYTES:
+            payload_str = json.dumps(
+                {
+                    "version": _EVENT_SCHEMA_VERSION,
+                    "operation": "ddb_put_item",
+                    "source_region": THIS_REGION,
+                    "emitted_at": int(time.time()),
+                    "oversized": True,
+                    "table": table_name,
+                }
+            )
+        entries.append(
+            {
+                "Source": f"{ENVIRONMENT}.{APP_NAME}.ha-replication",
+                "DetailType": "ddb_put_item",
+                "EventBusName": REPLICATION_EVENT_BUS_NAME,
+                "Detail": payload_str,
+            }
+        )
+
+    for chunk_start in range(0, len(entries), PUT_EVENTS_BATCH):
+        chunk = entries[chunk_start : chunk_start + PUT_EVENTS_BATCH]
+        try:
+            _events_client().put_events(Entries=chunk)
+        except ClientError as exc:
+            logger.warning(
+                "[dual_write] batch emit failed for %s: %s "
+                "(local write succeeded; passive region will lag for %d items)",
+                table_name,
+                exc.response.get("Error", {}).get("Code", "unknown"),
+                len(chunk),
+            )
+
+
 def ddb_update_item(table_name: str, key: dict, **kwargs) -> dict:
     table = _ddb().Table(table_name)
     resp = table.update_item(Key=key, **kwargs)

@@ -34,6 +34,8 @@ from typing import Dict, Iterable, List, Optional, Sequence
 import boto3
 from botocore.exceptions import ClientError
 
+from shared import dual_write
+
 logger = logging.getLogger(__name__)
 
 
@@ -320,13 +322,13 @@ def _swap_pointer(
         )
         return False
     try:
-        table = _resource().Table(code_maps_table_name)
-        table.put_item(
-            Item={
+        dual_write.ddb_put_item(
+            code_maps_table_name,
+            {
                 **_pointer_key(workspace_id, repo),
                 "current_commit_sha": new_commit_sha,
                 "updated_at": int(time.time()),
-            }
+            },
         )
         return True
     except ClientError as exc:
@@ -375,16 +377,16 @@ def _write_facts_batched(
     for item in items:
         deduped[(item["PK"], item["SK"])] = item
 
-    table = _resource().Table(symbol_graph_table_name)
-    written = 0
-    # batch_writer respects the 25-item ceiling internally, but capping
-    # at _BATCH_SIZE keeps the flush boundary deterministic for the
-    # failure-recovery test.
-    with table.batch_writer() as batch:
-        for item in deduped.values():
-            batch.put_item(Item=item)
-            written += 1
-    return written
+    # dual_write.ddb_batch_put_items does the local batch_writer flush
+    # (same 25-item-chunked BatchWriteItem semantics) AND emits one
+    # cross-region replication event per item (batched 10-per
+    # PutEvents call). Under single-region mode (no replication bus),
+    # the emit is a no-op and the cost is identical to the prior
+    # batch_writer-only path.
+    return dual_write.ddb_batch_put_items(
+        symbol_graph_table_name,
+        list(deduped.values()),
+    )
 
 
 # ---------------------------------------------------------------------------

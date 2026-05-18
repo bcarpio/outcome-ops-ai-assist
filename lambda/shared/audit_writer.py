@@ -28,19 +28,11 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 import boto3
+from botocore.exceptions import ClientError
+
+from shared import dual_write
 
 logger = logging.getLogger(__name__)
-
-# Lazy-initialized DynamoDB resource (one per container)
-_dynamodb_resource = None
-
-
-def _get_dynamodb_table(table_name: str):
-    """Get or create DynamoDB Table resource."""
-    global _dynamodb_resource
-    if _dynamodb_resource is None:
-        _dynamodb_resource = boto3.resource("dynamodb")
-    return _dynamodb_resource.Table(table_name)
 
 
 # ============================================================================
@@ -372,8 +364,23 @@ def log_admin_action(
         if details:
             item["details"] = details
 
-        table = _get_dynamodb_table(audit_table_name)
-        table.put_item(Item=item)
+        # ConditionExpression="attribute_not_exists(SK)" makes the write
+        # safely idempotent under EventBridge replay: the passive region's
+        # applier replays the same put-item, the SK collision triggers
+        # CCF, and the applier swallows it as "already applied." SK
+        # carries an 8-byte random request_id so legitimate distinct
+        # rows never collide.
+        try:
+            dual_write.ddb_put_item(
+                audit_table_name,
+                item,
+                ConditionExpression="attribute_not_exists(SK)",
+            )
+        except ClientError as ce:
+            if ce.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+                # Replay collision — the row already exists. No-op.
+                return
+            raise
 
         logger.debug(
             f"[audit_writer] Logged {category}/{action} ws={workspace_id} user={user_email}"

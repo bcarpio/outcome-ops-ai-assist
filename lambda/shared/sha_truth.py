@@ -33,6 +33,8 @@ from typing import Literal, Optional
 import boto3
 from botocore.exceptions import ClientError
 
+from shared import dual_write
+
 logger = logging.getLogger(__name__)
 
 
@@ -221,8 +223,9 @@ def open_pending_batch(batch: PendingBatch) -> None:
         "ttl": now + _PENDING_TTL_SECONDS,
     }
     try:
-        _pending_table().put_item(
-            Item=item,
+        dual_write.ddb_put_item(
+            os.environ["PENDING_WORK_TABLE"],
+            item,
             ConditionExpression="attribute_not_exists(SK)",
         )
     except ClientError as exc:
@@ -257,8 +260,9 @@ def mark_unit_complete(
         raise ValueError(f"invalid pipeline: {pipeline}")
 
     try:
-        resp = _pending_table().update_item(
-            Key={
+        resp = dual_write.ddb_update_item(
+            os.environ["PENDING_WORK_TABLE"],
+            {
                 "PK": _ledger_pk(workspace_id, repo),
                 "SK": _pending_sk(pipeline, target_sha),
             },
@@ -310,8 +314,9 @@ def mark_unit_failed(
 
     now = int(time.time())
     detail = (failure_detail or "")[:_FAILURE_DETAIL_MAX_CHARS]
-    _failed_table().put_item(
-        Item={
+    dual_write.ddb_put_item(
+        os.environ["FAILED_FILES_TABLE"],
+        {
             "PK": _ledger_pk(workspace_id, repo),
             "SK": _failed_sk(target_sha, pipeline, file_path),
             "workspace_id": workspace_id,
@@ -327,8 +332,9 @@ def mark_unit_failed(
         },
     )
     try:
-        resp = _pending_table().update_item(
-            Key={
+        resp = dual_write.ddb_update_item(
+            os.environ["PENDING_WORK_TABLE"],
+            {
                 "PK": _ledger_pk(workspace_id, repo),
                 "SK": _pending_sk(pipeline, target_sha),
             },
@@ -449,8 +455,9 @@ def try_advance_sha(
     ts_column = f"last_{sha_column_pipeline}_sha_ts"
 
     try:
-        _workspaces_table().update_item(
-            Key={"PK": _ws_pk(workspace_id), "SK": _ws_sk(repo)},
+        dual_write.ddb_update_item(
+            os.environ["WORKSPACES_TABLE"],
+            {"PK": _ws_pk(workspace_id), "SK": _ws_sk(repo)},
             UpdateExpression=f"SET {column} = :sha, {ts_column} = :ts",
             ConditionExpression=(
                 f"attribute_not_exists({ts_column}) OR {ts_column} < :ts"

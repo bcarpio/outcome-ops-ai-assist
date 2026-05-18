@@ -9,7 +9,7 @@ propagation path.
 
 from __future__ import annotations
 
-import importlib
+import importlib.util
 import io
 import sys
 from pathlib import Path
@@ -20,14 +20,28 @@ from botocore.exceptions import ClientError
 
 
 _LAMBDA_ROOT = Path(__file__).resolve().parents[2]
-_APPLIER_DIR = _LAMBDA_ROOT / "replication-applier"
-for p in (str(_LAMBDA_ROOT), str(_APPLIER_DIR)):
-    if p not in sys.path:
-        sys.path.insert(0, p)
+_APPLIER_PATH = _LAMBDA_ROOT / "replication-applier" / "handler.py"
 
 
 THIS_REGION = "us-west-2"
 OTHER_REGION = "us-east-1"
+
+
+def _load_applier_module():
+    """Load replication-applier/handler.py under a unique module name so
+    it doesn't collide with other Lambdas' handler.py in the full
+    unit-suite run (every Lambda has a handler.py)."""
+
+    if "replication_applier_handler" in sys.modules:
+        del sys.modules["replication_applier_handler"]
+
+    spec = importlib.util.spec_from_file_location(
+        "replication_applier_handler", str(_APPLIER_PATH)
+    )
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["replication_applier_handler"] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 @pytest.fixture(autouse=True)
@@ -36,14 +50,10 @@ def _applier(monkeypatch):
     monkeypatch.setenv("AWS_REGION", THIS_REGION)
     monkeypatch.setenv("LOCAL_KB_BUCKET", "dev-app-kb-secondary")
 
-    if "handler" in sys.modules:
-        del sys.modules["handler"]
-    import handler  # type: ignore  # noqa: E402
-
-    importlib.reload(handler)
-    handler._reset_clients_for_tests()
-    yield handler
-    handler._reset_clients_for_tests()
+    module = _load_applier_module()
+    module._reset_clients_for_tests()
+    yield module
+    module._reset_clients_for_tests()
 
 
 def _event(detail: dict) -> dict:
