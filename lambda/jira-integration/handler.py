@@ -34,6 +34,11 @@ from shared.audit_writer import (  # noqa: E402
     log_admin_action,
 )
 from shared.license_repos import get_active_repos_for_customer  # noqa: E402
+from shared.region_guard import (  # noqa: E402
+    RegionPassiveError,
+    guard_active,
+    passive_response,
+)
 
 # ADR-019: license layer is the source of truth for repo limits. Wrap
 # the import in try/except so the module still loads when the layer is
@@ -834,6 +839,10 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             if http_method == "GET":
                 return handle_list_projects(event)
             if http_method == "PUT":
+                try:
+                    guard_active("jira_update_projects", workspace_id=parts[1])
+                except RegionPassiveError:
+                    return passive_response("jira_update_projects")
                 return handle_update_projects(event)
 
         # Sync route: /workspaces/{id}/jira/connections/{connId}/sync
@@ -846,6 +855,10 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             and http_method == "POST"
         ):
             event["pathParameters"] = {"id": parts[1], "connectionId": parts[4]}
+            try:
+                guard_active("jira_trigger_sync", workspace_id=parts[1])
+            except RegionPassiveError:
+                return passive_response("jira_trigger_sync")
             return handle_sync(event)
 
         # Disconnect route: /workspaces/{id}/jira/connections/{connId}
@@ -857,6 +870,10 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             and http_method == "DELETE"
         ):
             event["pathParameters"] = {"id": parts[1], "connectionId": parts[4]}
+            try:
+                guard_active("jira_disconnect", workspace_id=parts[1])
+            except RegionPassiveError:
+                return passive_response("jira_disconnect")
             return handle_disconnect(event)
 
         return _error(404, "Not found")

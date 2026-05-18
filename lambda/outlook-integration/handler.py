@@ -34,6 +34,11 @@ from shared.audit_writer import (  # noqa: E402
     log_admin_action,
 )
 from shared.license_repos import get_active_repos_for_customer  # noqa: E402
+from shared.region_guard import (  # noqa: E402
+    RegionPassiveError,
+    guard_active,
+    passive_response,
+)
 
 # ADR-019: license layer is the source of truth for repo limits. Wrap
 # the import in try/except so the module still loads when the layer is
@@ -750,6 +755,14 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         and parts[5] == "folders"
         and http_method == "PUT"
     ):
+        try:
+            guard_active(
+                "outlook_update_folders",
+                user_email=user_email,
+                workspace_id=parts[1],
+            )
+        except RegionPassiveError:
+            return passive_response("outlook_update_folders")
         return update_folders(user_email, parts[1], parts[4], body)
 
     # POST /workspaces/{id}/outlook/connections/{connId}/sync
@@ -761,6 +774,14 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         and parts[5] == "sync"
         and http_method == "POST"
     ):
+        try:
+            guard_active(
+                "outlook_trigger_sync",
+                user_email=user_email,
+                workspace_id=parts[1],
+            )
+        except RegionPassiveError:
+            return passive_response("outlook_trigger_sync")
         return trigger_sync(user_email, parts[1], parts[4])
 
     # DELETE /workspaces/{id}/outlook/connections/{connId}
@@ -771,6 +792,14 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         and parts[3] == "connections"
         and http_method == "DELETE"
     ):
+        try:
+            guard_active(
+                "outlook_delete_connection",
+                user_email=user_email,
+                workspace_id=parts[1],
+            )
+        except RegionPassiveError:
+            return passive_response("outlook_delete_connection")
         return delete_connection(user_email, parts[1], parts[4])
 
     return _error(404, "Not found")

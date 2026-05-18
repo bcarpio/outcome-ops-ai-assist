@@ -34,6 +34,11 @@ from botocore.exceptions import ClientError
 # at zip root via terraform source_path (see lambda-github.tf).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared.license_repos import get_active_repos_for_customer  # noqa: E402
+from shared.region_guard import (  # noqa: E402
+    RegionPassiveError,
+    guard_active,
+    passive_response,
+)
 
 # ADR-019: license layer is the source of truth for repo limits. Wrap
 # the import in try/except so the module still loads when the layer is
@@ -983,6 +988,10 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             if http_method == "GET":
                 return handle_list_repos(event)
             if http_method == "POST":
+                try:
+                    guard_active("github_add_repos", workspace_id=parts[1])
+                except RegionPassiveError:
+                    return passive_response("github_add_repos")
                 return handle_add_repos(event)
 
         # Single repo routes: /workspaces/{id}/github/repos/{name}
@@ -996,8 +1005,16 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             repo_name = "/".join(parts[4:])
             event["pathParameters"] = {"id": parts[1], "repoName": repo_name}
             if http_method == "PUT":
+                try:
+                    guard_active("github_update_repo", workspace_id=parts[1])
+                except RegionPassiveError:
+                    return passive_response("github_update_repo")
                 return handle_update_repo(event)
             if http_method == "DELETE":
+                try:
+                    guard_active("github_delete_repo", workspace_id=parts[1])
+                except RegionPassiveError:
+                    return passive_response("github_delete_repo")
                 return handle_delete_repo(event)
 
         # Sync route: /workspaces/{id}/github/sync
@@ -1009,6 +1026,10 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             and http_method == "POST"
         ):
             event["pathParameters"] = {"id": parts[1]}
+            try:
+                guard_active("github_trigger_sync", workspace_id=parts[1])
+            except RegionPassiveError:
+                return passive_response("github_trigger_sync")
             return handle_trigger_sync(event)
 
         return _error(404, "Not found")
