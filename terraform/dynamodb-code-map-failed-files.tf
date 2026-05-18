@@ -69,3 +69,68 @@ output "code_map_failed_files_table_arn" {
   description = "ARN of the SHA-truth failed-files DynamoDB table"
   value       = module.code_map_failed_files_table.dynamodb_table_arn
 }
+
+# ============================================================================
+# Secondary-region copy (HA mode only).
+# ============================================================================
+
+module "code_map_failed_files_table_secondary" {
+  source  = "terraform-aws-modules/dynamodb-table/aws"
+  version = "4.0.0"
+
+  count = var.secondary_region != "" ? 1 : 0
+
+  providers = {
+    aws = aws.secondary
+  }
+
+  name      = "${var.environment}-${var.app_name}-code-map-failed-files"
+  hash_key  = "PK"
+  range_key = "SK"
+
+  deletion_protection_enabled = false
+
+  attributes = [
+    {
+      name = "PK"
+      type = "S"
+    },
+    {
+      name = "SK"
+      type = "S"
+    },
+  ]
+
+  ttl_enabled        = true
+  ttl_attribute_name = "ttl"
+
+  billing_mode = "PAY_PER_REQUEST"
+
+  point_in_time_recovery_enabled = true
+
+  server_side_encryption_enabled     = true
+  server_side_encryption_kms_key_arn = local.data_cmk_arn_secondary
+
+  tags = {
+    Purpose = "sha-truth-failed-files"
+  }
+}
+
+resource "aws_ssm_parameter" "code_map_failed_files_table_name_secondary" {
+  count = var.secondary_region != "" ? 1 : 0
+
+  provider = aws.secondary
+
+  name  = "/${var.environment}/${var.app_name}/dynamodb/code-map-failed-files-table"
+  type  = "String"
+  value = module.code_map_failed_files_table_secondary[0].dynamodb_table_id
+
+  tags = {
+    Purpose = "sha-truth-failed-files"
+  }
+}
+
+output "code_map_failed_files_table_arn_secondary" {
+  description = "ARN of the secondary-region SHA-truth failed-files DDB table (null when HA disabled)"
+  value       = var.secondary_region != "" ? module.code_map_failed_files_table_secondary[0].dynamodb_table_arn : null
+}

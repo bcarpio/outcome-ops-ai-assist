@@ -116,3 +116,86 @@ output "initial_org_admin_email" {
   description = "Email of the initial org admin (if configured)"
   value       = var.enable_workspaces && var.initial_org_admin_email != "" ? var.initial_org_admin_email : null
 }
+
+# ============================================================================
+# Secondary-region copy (HA mode only).
+# Identical schema, same name, secondary KMS, secondary AWS provider.
+# Initial-org-admin bootstrap item is NOT replicated here — the dual-write
+# helper (chunk 04) will copy the row over via EventBridge on first
+# write, so we don't risk diverging the initial bootstrap state.
+# ============================================================================
+
+module "workspaces_table_secondary" {
+  source  = "terraform-aws-modules/dynamodb-table/aws"
+  version = "4.0.0"
+
+  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+
+  providers = {
+    aws = aws.secondary
+  }
+
+  name      = "${var.environment}-${var.app_name}-workspaces"
+  hash_key  = "PK"
+  range_key = "SK"
+
+  deletion_protection_enabled = false
+
+  attributes = [
+    {
+      name = "PK"
+      type = "S"
+    },
+    {
+      name = "SK"
+      type = "S"
+    },
+    {
+      name = "GSI1PK"
+      type = "S"
+    },
+    {
+      name = "GSI1SK"
+      type = "S"
+    }
+  ]
+
+  global_secondary_indexes = [
+    {
+      name            = "GSI1"
+      hash_key        = "GSI1PK"
+      range_key       = "GSI1SK"
+      projection_type = "ALL"
+    }
+  ]
+
+  billing_mode = "PAY_PER_REQUEST"
+
+  point_in_time_recovery_enabled = true
+
+  server_side_encryption_enabled     = true
+  server_side_encryption_kms_key_arn = local.data_cmk_arn_secondary
+
+  tags = {
+    Purpose = "workspaces"
+  }
+}
+
+resource "aws_ssm_parameter" "workspaces_table_name_secondary" {
+  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+
+  provider = aws.secondary
+
+  name  = "/${var.environment}/${var.app_name}/dynamodb/workspaces-table"
+  type  = "String"
+  value = module.workspaces_table_secondary[0].dynamodb_table_id
+
+  tags = {
+    Purpose = "workspaces-table-name"
+  }
+}
+
+output "workspaces_table_arn_secondary" {
+  description = "ARN of the secondary-region workspaces DDB table (null when HA disabled)"
+  value       = (var.enable_workspaces && var.secondary_region != "") ? module.workspaces_table_secondary[0].dynamodb_table_arn : null
+}
