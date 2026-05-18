@@ -1,4 +1,4 @@
-.PHONY: help setup install fmt lint validate test test-unit test-integration test-coverage test-ui audit build-run-tests-image build-ui-image build-mcp-server-image build-snyk-image build-database-images build-runtime-layer build-terraform-layer build-all-layers build-platform-layer build-all-images pre-deploy clean all ha-status ha-replay-dlq ha-list-secrets ha-bootstrap
+.PHONY: help setup install fmt lint validate test test-unit test-integration test-coverage test-ui audit build-run-tests-image build-ui-image build-mcp-server-image build-snyk-image build-database-images build-runtime-layer build-terraform-layer build-all-layers build-platform-layer build-all-images pre-deploy clean all ha-status ha-replay-dlq ha-list-secrets ha-bootstrap _ha-env-check
 
 APP_NAME ?= outcome-ops-ai-assist
 AWS_REGION ?= us-west-2
@@ -192,21 +192,59 @@ audit:
 
 # ============================================================================
 # HA Operator Tooling
-# Wrapper targets around scripts/ha-* for operator convenience.
-# Required env vars: ENV, APP, PRIMARY, SECONDARY (optional for status).
+#
+# Wrapper targets around scripts/ha-*. ENV is the only required input
+# (no default — different envs have different tfvars). PRIMARY,
+# SECONDARY, and APP are resolved automatically from
+# terraform/${ENV}.tfvars; pass them as env vars to override.
+#
+# Usage:
+#     ENV=prd make ha-status
+#     ENV=prd make ha-list-secrets
+#     ENV=prd ARGS="--dry-run" make ha-bootstrap
+#     ENV=prd REGION=us-east-2 QUEUE=... make ha-replay-dlq
 # ============================================================================
 
-ha-status:
-	@./scripts/ha-status
+HA_TFVARS = terraform/$(ENV).tfvars
 
-ha-replay-dlq:
-	@./scripts/ha-replay-dlq
+# awk -F'"' splits each line on double-quote. The pattern matches an
+# uncommented `key = "value"` line (^[[:space:]]* ensures # is not at
+# col 0). The print emits the captured value; `exit` stops after the
+# first match.
+HA_PRIMARY   := $(or $(PRIMARY),$(shell awk -F'"' '/^[[:space:]]*aws_region[[:space:]]*=/ {print $$2; exit}' $(HA_TFVARS) 2>/dev/null))
+HA_SECONDARY := $(or $(SECONDARY),$(shell awk -F'"' '/^[[:space:]]*secondary_region[[:space:]]*=/ {print $$2; exit}' $(HA_TFVARS) 2>/dev/null))
+HA_APP       := $(or $(APP),$(shell awk -F'"' '/^[[:space:]]*app_name[[:space:]]*=/ {print $$2; exit}' $(HA_TFVARS) 2>/dev/null),outcome-ops-ai-assist)
 
-ha-list-secrets:
-	@./scripts/ha-list-secrets
+_ha-env-check:
+	@if [ -z "$(ENV)" ]; then \
+		echo "ERROR: ENV is required. Example: make ha-status ENV=prd" >&2; \
+		exit 2; \
+	fi
+	@if [ ! -f "$(HA_TFVARS)" ]; then \
+		echo "ERROR: $(HA_TFVARS) not found. Either create it or pass PRIMARY/SECONDARY explicitly." >&2; \
+		exit 2; \
+	fi
+	@if [ -z "$(HA_PRIMARY)" ]; then \
+		echo "ERROR: could not resolve primary region. Set PRIMARY=... or add aws_region in $(HA_TFVARS)." >&2; \
+		exit 2; \
+	fi
 
-ha-bootstrap:
-	@./scripts/ha-bootstrap.py $(ARGS)
+ha-status: _ha-env-check
+	@ENV=$(ENV) APP=$(HA_APP) PRIMARY=$(HA_PRIMARY) SECONDARY=$(HA_SECONDARY) ./scripts/ha-status
+
+ha-list-secrets: _ha-env-check
+	@ENV=$(ENV) APP=$(HA_APP) PRIMARY=$(HA_PRIMARY) SECONDARY=$(HA_SECONDARY) ./scripts/ha-list-secrets
+
+ha-bootstrap: _ha-env-check
+	@ENV=$(ENV) APP=$(HA_APP) PRIMARY=$(HA_PRIMARY) SECONDARY=$(HA_SECONDARY) ./scripts/ha-bootstrap.py $(ARGS)
+
+ha-replay-dlq: _ha-env-check
+	@if [ -z "$(REGION)" ] || [ -z "$(QUEUE)" ]; then \
+		echo "ERROR: ha-replay-dlq requires REGION and QUEUE. Example:" >&2; \
+		echo "  ENV=prd REGION=us-east-2 QUEUE=prd-outcome-ops-ai-assist-replication-applier-dlq make ha-replay-dlq" >&2; \
+		exit 2; \
+	fi
+	@ENV=$(ENV) APP=$(HA_APP) REGION=$(REGION) QUEUE=$(QUEUE) ./scripts/ha-replay-dlq $(ARGS)
 
 # ============================================================================
 # Container Images
