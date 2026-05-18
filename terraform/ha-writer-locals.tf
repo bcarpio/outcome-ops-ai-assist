@@ -69,4 +69,46 @@ locals {
       resources = [aws_cloudwatch_event_bus.replication.arn]
     }
   } : {}
+
+  # ----------------------------------------------------------------------------
+  # Secondary-region variants (HA chunk 9c).
+  # Lambdas deployed under aws.secondary read THESE env vars + IAM,
+  # which point at the secondary region's bus / AppConfig / region name.
+  # Gated on var.secondary_region != "" — empty in single-region mode.
+  # ----------------------------------------------------------------------------
+
+  ha_scheduler_env_secondary = var.secondary_region != "" ? {
+    APPCONFIG_APPLICATION_ID           = aws_appconfig_application.ha_secondary[0].id
+    APPCONFIG_ENVIRONMENT_ID           = aws_appconfig_environment.ha_secondary[0].environment_id
+    APPCONFIG_CONFIGURATION_PROFILE_ID = aws_appconfig_configuration_profile.ha_active_region_secondary[0].configuration_profile_id
+    THIS_REGION                        = var.secondary_region
+  } : {}
+
+  ha_scheduler_iam_secondary = var.secondary_region != "" ? {
+    ha_appconfig_read = {
+      effect = "Allow"
+      actions = [
+        "appconfig:StartConfigurationSession",
+        "appconfig:GetLatestConfiguration",
+      ]
+      resources = [
+        "arn:aws:appconfig:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:application/${aws_appconfig_application.ha_secondary[0].id}/environment/${aws_appconfig_environment.ha_secondary[0].environment_id}/configuration/${aws_appconfig_configuration_profile.ha_active_region_secondary[0].configuration_profile_id}",
+      ]
+    }
+  } : {}
+
+  ha_writer_env_secondary = var.secondary_region != "" ? {
+    REPLICATION_EVENT_BUS_NAME = aws_cloudwatch_event_bus.replication_secondary[0].name
+    THIS_REGION                = var.secondary_region
+    PRIMARY_REGION             = var.aws_region
+    SECONDARY_REGION           = var.secondary_region
+  } : {}
+
+  ha_writer_events_iam_secondary = var.secondary_region != "" ? {
+    ha_events_putevents = {
+      effect    = "Allow"
+      actions   = ["events:PutEvents"]
+      resources = [aws_cloudwatch_event_bus.replication_secondary[0].arn]
+    }
+  } : {}
 }
