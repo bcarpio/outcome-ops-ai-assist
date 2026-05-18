@@ -40,3 +40,35 @@ output "platform_ca_layer_arn" {
   description = "ARN of the platform-CA Lambda Layer. Attached to every Lambda that calls back into the UI ALB so REQUESTS_CA_BUNDLE / SSL_CERT_FILE can resolve to /opt/ca-bundle.pem."
   value       = aws_lambda_layer_version.platform_ca.arn
 }
+
+# ============================================================================
+# Secondary-region platform-CA layer (HA chunk 9d)
+# ----------------------------------------------------------------------------
+# Lambda layers are regional. The secondary chat + workspace-management
+# Lambdas (chunk 9d) attach the platform-CA layer for BYO-CA trust; that
+# requires a parallel layer in us-east-2 with the same merged PEM.
+#
+# Same source zip (built by `make build-platform-layer`) — replication is
+# operator-driven: after `make build-platform-layer` updates the zip,
+# `terraform apply` re-publishes BOTH layers (primary + secondary) since
+# the source_code_hash on each changes. No manual cross-region copy needed.
+# ============================================================================
+
+resource "aws_lambda_layer_version" "platform_ca_secondary" {
+  count = var.secondary_region != "" ? 1 : 0
+
+  provider = aws.secondary
+
+  layer_name       = "${var.environment}-${var.app_name}-platform-ca"
+  filename         = "${path.module}/../build/platform-ca-layer/layer.zip"
+  source_code_hash = filebase64sha256("${path.module}/../build/platform-ca-layer/layer.zip")
+
+  compatible_runtimes = ["python3.12"]
+
+  description = "PEM-merged trust bundle (secondary region). Mount path: /opt/ca-bundle.pem."
+}
+
+output "platform_ca_layer_arn_secondary" {
+  description = "ARN of the secondary-region platform-CA Lambda Layer (null when HA disabled)"
+  value       = var.secondary_region != "" ? aws_lambda_layer_version.platform_ca_secondary[0].arn : null
+}

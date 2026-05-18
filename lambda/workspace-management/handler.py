@@ -95,6 +95,11 @@ from shared.active_region import (
     get_activated_at,
     get_region_role,
 )
+from shared.region_guard import (
+    RegionPassiveError,
+    guard_active,
+    passive_response,
+)
 from shared.audit_writer import (
     ACTION_API_KEY_CREATED,
     ACTION_API_KEY_REVOKED,
@@ -4991,9 +4996,26 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     except json.JSONDecodeError:
         body = {}
 
+    # HA chunk 9d: small closure that wraps the passive-mode guard so
+    # each mutation route is a one-liner.  Returns None when active
+    # (caller proceeds normally), or the 403 passive_response dict when
+    # the local region is passive (caller returns that directly).
+    def _guard_or_block(operation: str, workspace_id: str = "") -> Optional[Dict]:
+        try:
+            guard_active(
+                operation,
+                user_email=user_email,
+                workspace_id=workspace_id,
+            )
+            return None
+        except RegionPassiveError:
+            return passive_response(operation)
+
     try:
         # Route: POST /workspaces
         if parts == ("workspaces",) and http_method == "POST":
+            if blocked := _guard_or_block("create_workspace"):
+                return blocked
             request = CreateWorkspaceRequest(**body)
             return create_workspace(user_email, request, audit_ctx)
 
@@ -5007,11 +5029,15 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
 
         # Route: PATCH /workspaces/{id}
         if len(parts) == 2 and parts[0] == "workspaces" and http_method == "PATCH":
+            if blocked := _guard_or_block("update_workspace", parts[1]):
+                return blocked
             request = UpdateWorkspaceRequest(**body)
             return update_workspace(user_email, parts[1], request, audit_ctx)
 
         # Route: DELETE /workspaces/{id}
         if len(parts) == 2 and parts[0] == "workspaces" and http_method == "DELETE":
+            if blocked := _guard_or_block("delete_workspace", parts[1]):
+                return blocked
             return delete_workspace(user_email, parts[1], audit_ctx)
 
         # Route: POST /workspaces/{id}/members
@@ -5021,6 +5047,8 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             and parts[2] == "members"
             and http_method == "POST"
         ):
+            if blocked := _guard_or_block("add_member", parts[1]):
+                return blocked
             request = AddMemberRequest(**body)
             return add_member(user_email, parts[1], request, audit_ctx)
 
@@ -5040,6 +5068,8 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             and parts[2] == "members"
             and http_method == "PATCH"
         ):
+            if blocked := _guard_or_block("update_member", parts[1]):
+                return blocked
             member_email = unquote(parts[3])
             request = UpdateMemberRequest(**body)
             return update_member(user_email, parts[1], member_email, request)
@@ -5051,6 +5081,8 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             and parts[2] == "members"
             and http_method == "DELETE"
         ):
+            if blocked := _guard_or_block("remove_member", parts[1]):
+                return blocked
             member_email = unquote(parts[3])
             return remove_member(user_email, parts[1], member_email, audit_ctx)
 
@@ -5080,6 +5112,8 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             and parts[2] == "repos"
             and http_method == "POST"
         ):
+            if blocked := _guard_or_block("add_repo", parts[1]):
+                return blocked
             request = AddRepoRequest(**body)
             return add_repo(user_email, parts[1], request, audit_ctx)
 
@@ -5090,6 +5124,8 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             and parts[2] == "repos"
             and http_method == "DELETE"
         ):
+            if blocked := _guard_or_block("remove_repo", parts[1]):
+                return blocked
             repo_name = unquote(parts[3])
             return remove_repo(user_email, parts[1], repo_name, audit_ctx)
 
@@ -5105,6 +5141,8 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             and parts[3] == "upload"
             and http_method == "POST"
         ):
+            if blocked := _guard_or_block("document_upload", parts[1]):
+                return blocked
             request = DocumentUploadRequest(**body)
             return get_document_upload_url(user_email, parts[1], request)
 
@@ -5128,6 +5166,8 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             and parts[2] == "documents"
             and http_method == "DELETE"
         ):
+            if blocked := _guard_or_block("delete_document", parts[1]):
+                return blocked
             # Reconstruct the document path (everything after 'documents')
             document_path = "/".join(unquote(p) for p in parts[3:])
             return delete_document(
@@ -5154,6 +5194,8 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             and parts[2] == "sharing"
             and http_method == "PUT"
         ):
+            if blocked := _guard_or_block("update_sharing", parts[1]):
+                return blocked
             request = UpdateSharingRequest(**body)
             return update_search_access(user_email, parts[1], request, audit_ctx)
 
@@ -5187,6 +5229,8 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             and parts[2] == "system-prompt"
             and http_method == "PUT"
         ):
+            if blocked := _guard_or_block("update_system_prompt", parts[1]):
+                return blocked
             return handle_update_system_prompt(parts[1], user_email, body, audit_ctx)
 
         # Route: GET /workspaces/{id}/budget
@@ -5205,6 +5249,8 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             and parts[2] == "budget"
             and http_method == "PUT"
         ):
+            if blocked := _guard_or_block("update_budget", parts[1]):
+                return blocked
             return update_workspace_budget(user_email, parts[1], body, audit_ctx)
 
         # Route: GET /workspaces/{id}/privacy
@@ -5223,6 +5269,8 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             and parts[2] == "privacy"
             and http_method == "PUT"
         ):
+            if blocked := _guard_or_block("update_privacy", parts[1]):
+                return blocked
             return update_workspace_privacy(
                 user_email, parts[1], body, audit_ctx,
             )
@@ -5234,6 +5282,8 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             and parts[2] == "system-prompt"
             and http_method == "DELETE"
         ):
+            if blocked := _guard_or_block("reset_system_prompt", parts[1]):
+                return blocked
             return handle_reset_system_prompt(parts[1], user_email, audit_ctx)
 
         # ====================================================================
@@ -5256,6 +5306,8 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
 
         # Route: POST /org/members
         if parts == ("org", "members") and http_method == "POST":
+            if blocked := _guard_or_block("add_org_member"):
+                return blocked
             request = AddOrgMemberRequest(**body)
             return add_org_member(user_email, request, audit_ctx)
 
@@ -5266,6 +5318,8 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             and parts[1] == "members"
             and http_method == "PATCH"
         ):
+            if blocked := _guard_or_block("update_org_member"):
+                return blocked
             member_email = unquote(parts[2])
             request = UpdateOrgMemberRequest(**body)
             return update_org_member(user_email, member_email, request)
@@ -5277,6 +5331,8 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             and parts[1] == "members"
             and http_method == "DELETE"
         ):
+            if blocked := _guard_or_block("remove_org_member"):
+                return blocked
             member_email = unquote(parts[2])
             return remove_org_member(user_email, member_email, audit_ctx)
 
@@ -5298,6 +5354,8 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
 
         # Route: POST /mcp/servers
         if parts == ("mcp", "servers") and http_method == "POST":
+            if blocked := _guard_or_block("create_mcp_server"):
+                return blocked
             return create_mcp_server(user_email, body, audit_ctx)
 
         # Route: GET /mcp/servers
@@ -5320,6 +5378,8 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             and parts[1] == "servers"
             and http_method == "PATCH"
         ):
+            if blocked := _guard_or_block("update_mcp_server"):
+                return blocked
             return update_mcp_server(user_email, parts[2], body, audit_ctx)
 
         # Route: DELETE /mcp/servers/{id}
@@ -5329,6 +5389,8 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             and parts[1] == "servers"
             and http_method == "DELETE"
         ):
+            if blocked := _guard_or_block("delete_mcp_server"):
+                return blocked
             return delete_mcp_server(user_email, parts[2], audit_ctx)
 
         # Route: POST /mcp/servers/{id}/refresh
@@ -5339,6 +5401,8 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             and parts[3] == "refresh"
             and http_method == "POST"
         ):
+            if blocked := _guard_or_block("refresh_mcp_tools"):
+                return blocked
             return refresh_mcp_tools(user_email, parts[2])
 
         # Route: GET /mcp/servers/{id}/workspaces
@@ -5362,6 +5426,8 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             and parts[2] == "mcp-servers"
             and http_method == "POST"
         ):
+            if blocked := _guard_or_block("assign_mcp_to_workspace", parts[1]):
+                return blocked
             return assign_mcp_to_workspace(user_email, parts[1], body, audit_ctx)
 
         # Route: GET /workspaces/{id}/mcp-servers
@@ -5380,6 +5446,8 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             and parts[2] == "mcp-servers"
             and http_method == "DELETE"
         ):
+            if blocked := _guard_or_block("remove_mcp_from_workspace", parts[1]):
+                return blocked
             return remove_mcp_from_workspace(user_email, parts[1], parts[3], audit_ctx)
 
         # Route: GET /chat/mcp-servers
@@ -5392,6 +5460,8 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
 
         # Route: POST /api-keys
         if parts == ("api-keys",) and http_method == "POST":
+            if blocked := _guard_or_block("create_api_key"):
+                return blocked
             return create_api_key(user_email, body, audit_ctx)
 
         # Route: GET /api-keys
@@ -5465,6 +5535,8 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             and parts[0] == "api-keys"
             and http_method == "DELETE"
         ):
+            if blocked := _guard_or_block("revoke_api_key"):
+                return blocked
             return revoke_api_key(user_email, parts[1], audit_ctx)
 
         return _error(404, "Not found")
