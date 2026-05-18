@@ -608,3 +608,60 @@ output "outlook_scheduler_lambda_arn" {
   description = "ARN of the Outlook scheduler Lambda function"
   value       = var.enable_workspaces ? module.outlook_scheduler_lambda[0].lambda_function_arn : null
 }
+
+# ============================================================================
+# Secondary-region copy of the Microsoft OAuth SSM SecureString (HA mode).
+# Microsoft OAuth credentials are shared across Outlook / OneDrive /
+# OneNote / Teams / SharePoint, so the secret lives in lambda-outlook.tf
+# and the other integration files reference the same parameter name.
+# Operator populates each region's value independently post-apply.
+# ============================================================================
+
+resource "aws_ssm_parameter" "microsoft_client_id_secondary" {
+  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+
+  provider = aws.secondary
+
+  name        = "/${var.environment}/${var.app_name}/oauth/microsoft/client-id"
+  description = "Microsoft OAuth App Client ID - secondary region"
+  type        = "String"
+  value       = var.microsoft_oauth_client_id != "" ? var.microsoft_oauth_client_id : "PLACEHOLDER_CONFIGURE_ME"
+
+  tags = {
+    Purpose = "microsoft-oauth"
+  }
+}
+
+resource "aws_ssm_parameter" "microsoft_client_secret_secondary" {
+  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+
+  provider = aws.secondary
+
+  name        = "/${var.environment}/${var.app_name}/oauth/microsoft/client-secret"
+  description = "Microsoft OAuth App Client Secret - secondary region"
+  type        = "SecureString"
+  value       = "PLACEHOLDER_CONFIGURE_ME"
+
+  lifecycle {
+    ignore_changes = [value]
+  }
+
+  tags = {
+    Purpose = "microsoft-oauth"
+  }
+}
+
+resource "aws_ssm_parameter" "microsoft_callback_url_secondary" {
+  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+
+  provider = aws.secondary
+
+  name        = "/${var.environment}/${var.app_name}/oauth/microsoft/callback-url"
+  description = "OAuth callback URL for Outlook - secondary region"
+  type        = "String"
+  value       = var.domain != "" ? "https://${local.fqdn}/api/outlook/callback" : "PLACEHOLDER_CONFIGURE_ME"
+
+  tags = {
+    Purpose = "microsoft-oauth"
+  }
+}

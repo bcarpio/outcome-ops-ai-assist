@@ -590,3 +590,60 @@ output "confluence_scheduler_lambda_arn" {
   description = "ARN of the Confluence scheduler Lambda function"
   value       = var.enable_workspaces ? module.confluence_scheduler_lambda[0].lambda_function_arn : null
 }
+
+# ============================================================================
+# Secondary-region copy of the Atlassian OAuth SSM SecureString (HA mode).
+# Atlassian OAuth credentials are shared across Confluence / Jira, so the
+# secret lives in lambda-confluence.tf and lambda-jira.tf references the
+# same parameter name. Operator populates each region's value
+# independently post-apply.
+# ============================================================================
+
+resource "aws_ssm_parameter" "atlassian_client_id_secondary" {
+  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+
+  provider = aws.secondary
+
+  name        = "/${var.environment}/${var.app_name}/oauth/atlassian/client-id"
+  description = "Atlassian OAuth App Client ID - secondary region"
+  type        = "String"
+  value       = var.atlassian_oauth_client_id != "" ? var.atlassian_oauth_client_id : "PLACEHOLDER_CONFIGURE_ME"
+
+  tags = {
+    Purpose = "atlassian-oauth"
+  }
+}
+
+resource "aws_ssm_parameter" "atlassian_client_secret_secondary" {
+  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+
+  provider = aws.secondary
+
+  name        = "/${var.environment}/${var.app_name}/oauth/atlassian/client-secret"
+  description = "Atlassian OAuth App Client Secret - secondary region"
+  type        = "SecureString"
+  value       = "PLACEHOLDER_CONFIGURE_ME"
+
+  lifecycle {
+    ignore_changes = [value]
+  }
+
+  tags = {
+    Purpose = "atlassian-oauth"
+  }
+}
+
+resource "aws_ssm_parameter" "atlassian_callback_url_secondary" {
+  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+
+  provider = aws.secondary
+
+  name        = "/${var.environment}/${var.app_name}/oauth/atlassian/callback-url"
+  description = "OAuth callback URL for Confluence - secondary region"
+  type        = "String"
+  value       = var.domain != "" ? "https://${local.fqdn}/api/confluence/callback" : "PLACEHOLDER_CONFIGURE_ME"
+
+  tags = {
+    Purpose = "atlassian-oauth"
+  }
+}

@@ -660,3 +660,119 @@ output "github_scheduler_lambda_arn" {
   description = "ARN of the GitHub scheduler Lambda function"
   value       = var.enable_workspaces ? module.github_scheduler_lambda[0].lambda_function_arn : null
 }
+
+# ============================================================================
+# Secondary-region copies of operator-populated SSM SecureStrings (HA mode).
+# Operator must populate each region's value separately via
+# `aws ssm put-parameter --overwrite ... --region us-east-1`. The
+# `make ha-list-secrets` helper in chunk 08 reports which parameters
+# are still at PLACEHOLDER_CONFIGURE_ME.
+# ============================================================================
+
+resource "aws_ssm_parameter" "github_private_key_secondary" {
+  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+
+  provider = aws.secondary
+
+  name        = "/${var.environment}/${var.app_name}/github/private-key"
+  description = "GitHub App private key (PEM format) - secondary region"
+  type        = "SecureString"
+  value       = "PLACEHOLDER_CONFIGURE_ME"
+  overwrite   = true
+
+  lifecycle {
+    ignore_changes = [value]
+  }
+
+  tags = {
+    Purpose = "github-app"
+  }
+}
+
+resource "aws_ssm_parameter" "github_client_id_secondary" {
+  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+
+  provider = aws.secondary
+
+  name        = "/${var.environment}/${var.app_name}/github/client-id"
+  description = "GitHub App OAuth client ID - secondary region"
+  type        = "String"
+  value       = var.github_client_id != "" ? var.github_client_id : "PLACEHOLDER_CONFIGURE_ME"
+  overwrite   = true
+
+  tags = {
+    Purpose = "github-app"
+  }
+}
+
+resource "aws_ssm_parameter" "github_client_secret_secondary" {
+  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+
+  provider = aws.secondary
+
+  name        = "/${var.environment}/${var.app_name}/github/client-secret"
+  description = "GitHub App OAuth client secret - secondary region"
+  type        = "SecureString"
+  value       = "PLACEHOLDER_CONFIGURE_ME"
+  overwrite   = true
+
+  lifecycle {
+    ignore_changes = [value]
+  }
+
+  tags = {
+    Purpose = "github-app"
+  }
+}
+
+resource "aws_ssm_parameter" "github_webhook_secret_secondary" {
+  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+
+  provider = aws.secondary
+
+  name        = "/${var.environment}/${var.app_name}/github/webhook-secret"
+  description = "GitHub App webhook secret - secondary region"
+  type        = "SecureString"
+  value       = "PLACEHOLDER_CONFIGURE_ME"
+  overwrite   = true
+
+  lifecycle {
+    ignore_changes = [value]
+  }
+
+  tags = {
+    Purpose = "github-app"
+  }
+}
+
+resource "aws_ssm_parameter" "github_callback_url_secondary" {
+  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+
+  provider = aws.secondary
+
+  name        = "/${var.environment}/${var.app_name}/github/callback-url"
+  description = "OAuth callback URL for GitHub - secondary region"
+  type        = "String"
+  value       = var.domain != "" ? "https://${local.fqdn}/api/github/callback" : "PLACEHOLDER_CONFIGURE_ME"
+  overwrite   = true
+
+  tags = {
+    Purpose = "github-app"
+  }
+}
+
+resource "aws_ssm_parameter" "github_app_slug_secondary" {
+  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+
+  provider = aws.secondary
+
+  name        = "/${var.environment}/${var.app_name}/github/app-slug"
+  description = "GitHub App URL slug - secondary region"
+  type        = "String"
+  value       = var.github_app_slug != "" ? var.github_app_slug : "PLACEHOLDER_CONFIGURE_ME"
+  overwrite   = true
+
+  tags = {
+    Purpose = "github-app"
+  }
+}
