@@ -100,6 +100,57 @@ class TestHealthCheck:
 
 
 # ============================================================================
+# Region Role (HA chunk 9a)
+# ============================================================================
+
+
+class TestRegionRoleRoute:
+    """HA chunk 9a: /api/region/role FastAPI wiring."""
+
+    def test_region_role_forwards_to_handler(self):
+        mock_handler = _setup_mock_handler(
+            _mock_lambda_response(
+                200, {"role": "active", "region": "us-west-2", "activated_at": None}
+            )
+        )
+        try:
+            client = TestClient(app)
+            response = client.get("/api/region/role")
+            assert response.status_code == 200
+            assert response.json() == {
+                "role": "active",
+                "region": "us-west-2",
+                "activated_at": None,
+            }
+
+            event = mock_handler.call_args[0][0]
+            assert event["requestContext"]["http"]["method"] == "GET"
+            assert event["requestContext"]["http"]["path"] == "/api/region/role"
+        finally:
+            _cleanup_handler()
+
+    def test_region_role_passes_through_passive(self):
+        mock_handler = _setup_mock_handler(
+            _mock_lambda_response(
+                200,
+                {
+                    "role": "passive",
+                    "region": "us-east-2",
+                    "activated_at": 1_700_000_000,
+                },
+            )
+        )
+        try:
+            client = TestClient(app)
+            response = client.get("/api/region/role")
+            assert response.status_code == 200
+            assert response.json()["role"] == "passive"
+            assert response.json()["activated_at"] == 1_700_000_000
+        finally:
+            _cleanup_handler()
+
+
+# ============================================================================
 # _build_event / _parse_response helpers
 # ============================================================================
 

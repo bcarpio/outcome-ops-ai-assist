@@ -77,6 +77,25 @@ def _parse_response(result: dict) -> JSONResponse:
 
 
 # ============================================================================
+# HA Region Role (chunk 9a)
+# ============================================================================
+
+
+@app.get("/api/region/role")
+async def get_region_role_endpoint(request: Request):
+    """Return the local region's HA role. Public — no auth required.
+
+    UI polls this every 5 minutes to drive the PassiveRegionBanner.
+    Single-region deployments always return ``"active"``.
+    """
+    from handler import lambda_handler
+
+    event = _build_event(request, "GET", "/api/region/role")
+    result = lambda_handler(event, None)
+    return _parse_response(result)
+
+
+# ============================================================================
 # Workspace Routes
 # ============================================================================
 

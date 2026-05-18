@@ -144,6 +144,21 @@ variable "outcomeops_license_layer_arn" {
   }
 }
 
+# Secondary-region copy of the license-validator layer. The license server
+# push-replicates the layer to every region per AWS account, so for
+# single-account multi-region deploys (the owner's prd) the operator
+# fetches the us-east-2 ARN via:
+#   aws lambda list-layer-versions --region us-east-2 \
+#     --layer-name ${env}-outcomeops-license-validator-v2-0-0
+# and pastes it into prd.tfvars. Required when secondary_region is set;
+# chat + integration handler Lambdas in secondary fail-close on license
+# validation without this.
+variable "outcomeops_license_layer_arn_secondary" {
+  type        = string
+  description = "ARN of the OutcomeOps license validator Lambda layer in the secondary region (ADR-019). Required before chunk 9c (secondary integration Lambdas) can apply; chunk 9a (ECR / Route53 / ACM) doesn't consume it."
+  default     = ""
+}
+
 variable "outcomeops_license_ssm_param" {
   type        = string
   description = "SSM parameter path for the OutcomeOps license key"
@@ -302,6 +317,32 @@ variable "ui_private_subnet_ids" {
 
 variable "ui_container_image" {
   description = "Container image for UI (nginx + React build)"
+  type        = string
+  default     = ""
+}
+
+# ----------------------------------------------------------------------------
+# Multi-region UI ingress (HA chunk 9)
+# Operator-provided VPC + subnets in the secondary region. ECR cross-region
+# replication (terraform/ecr.tf) handles image syncing automatically; the
+# *_secondary container image var below is optional and defaults to the
+# primary image URI with the region rewritten.
+# ----------------------------------------------------------------------------
+
+variable "ui_vpc_id_secondary" {
+  description = "VPC ID in the secondary region for the UI ALB + Fargate. Required before chunk 9b (secondary ALB) can apply; chunk 9a (ECR replication / Route53 / ACM) doesn't consume it."
+  type        = string
+  default     = ""
+}
+
+variable "ui_private_subnet_ids_secondary" {
+  description = "Private subnet IDs in the secondary region for UI Fargate tasks. At least two subnets across AZs are needed for ECS spread. Required before chunk 9b."
+  type        = list(string)
+  default     = []
+}
+
+variable "ui_container_image_secondary" {
+  description = "ECR image URI in the secondary region for the chat UI. Defaults to the same digest as ui_container_image, with the region substring rewritten."
   type        = string
   default     = ""
 }

@@ -1386,6 +1386,89 @@ class TestListAllWorkspacesForSharing:
         assert body["workspaces"][0]["workspace_id"] == "ws2"
 
 
+class TestRegionRole:
+    """HA chunk 9a: /api/region/role endpoint.
+
+    The endpoint bypasses auth and returns the local region's HA role
+    (active|passive). Single-region deployments always return "active"
+    via shared.active_region's fast-path (AppConfig env vars unset).
+    """
+
+    @patch("workspace_management_handler.get_activated_at")
+    @patch("workspace_management_handler.get_region_role")
+    def test_region_role_returns_role_region_and_activated_at(
+        self, mock_get_role, mock_get_activated_at
+    ):
+        mock_get_role.return_value = "active"
+        mock_get_activated_at.return_value = None
+
+        with patch.dict(os.environ, {"AWS_REGION": "us-west-2"}, clear=False):
+            event = {
+                "httpMethod": "GET",
+                "path": "/api/region/role",
+                "headers": {},
+                "body": "{}",
+            }
+            result = lambda_handler(event, None)
+
+        assert result["statusCode"] == 200
+        body = json.loads(result["body"])
+        assert body["role"] == "active"
+        assert body["region"] == "us-west-2"
+        assert body["activated_at"] is None
+
+    @patch("workspace_management_handler.get_activated_at")
+    @patch("workspace_management_handler.get_region_role")
+    def test_region_role_returns_passive_when_appconfig_says_passive(
+        self, mock_get_role, mock_get_activated_at
+    ):
+        mock_get_role.return_value = "passive"
+        mock_get_activated_at.return_value = 1_700_000_000
+
+        event = {
+            "httpMethod": "GET",
+            "path": "/api/region/role",
+            "headers": {},
+            "body": "{}",
+        }
+        result = lambda_handler(event, None)
+
+        assert result["statusCode"] == 200
+        body = json.loads(result["body"])
+        assert body["role"] == "passive"
+        assert body["activated_at"] == 1_700_000_000
+
+    @patch("workspace_management_handler.get_activated_at")
+    @patch("workspace_management_handler.get_region_role")
+    def test_region_role_bypasses_user_auth(self, mock_get_role, mock_get_activated_at):
+        """The endpoint must work without x-user-email being set."""
+        mock_get_role.return_value = "active"
+        mock_get_activated_at.return_value = None
+
+        event = {
+            "httpMethod": "GET",
+            "path": "/api/region/role",
+            "headers": {},  # no x-user-email
+            "body": "{}",
+        }
+        result = lambda_handler(event, None)
+
+        # Other routes return 401 with no user header; this one returns 200.
+        assert result["statusCode"] == 200
+
+    def test_region_role_non_get_still_requires_auth(self):
+        """POST to the same path falls through to the auth check (401)."""
+        event = {
+            "httpMethod": "POST",
+            "path": "/api/region/role",
+            "headers": {},
+            "body": "{}",
+        }
+        result = lambda_handler(event, None)
+        # No x-user-email -> 401 from the regular auth path.
+        assert result["statusCode"] == 401
+
+
 class TestSearchableWorkspaces:
     """Test searchable workspaces for chat."""
 

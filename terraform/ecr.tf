@@ -246,3 +246,39 @@ output "database_sync_ecr_repository_url" {
   description = "ECR repository URL for database-sync Lambda container image"
   value       = var.enable_workspaces ? aws_ecr_repository.database_sync[0].repository_url : null
 }
+
+# ============================================================================
+# ECR Cross-Region Replication (HA chunk 9a)
+# ----------------------------------------------------------------------------
+# When secondary_region is set, replicate the platform images from the
+# primary registry to the secondary region. AWS handles syncing on every
+# image push automatically; first replication for existing images can take
+# 5-15 minutes per image.
+#
+# Replication is configured at the REGISTRY level (one config per account
+# per region). The PREFIX_MATCH filter scopes replication to this app's
+# repositories only, so customer images in the same account aren't
+# replicated unintentionally.
+#
+# Verify post-apply with:
+#   aws ecr describe-images --region <secondary> \
+#     --repository-name <env>-<app>-chat-ui
+# ============================================================================
+
+resource "aws_ecr_replication_configuration" "ha" {
+  count = var.secondary_region != "" ? 1 : 0
+
+  replication_configuration {
+    rule {
+      destination {
+        region      = var.secondary_region
+        registry_id = data.aws_caller_identity.current.account_id
+      }
+
+      repository_filter {
+        filter      = "${var.environment}-${var.app_name}-"
+        filter_type = "PREFIX_MATCH"
+      }
+    }
+  }
+}

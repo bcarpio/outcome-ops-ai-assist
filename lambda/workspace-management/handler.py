@@ -91,6 +91,10 @@ import boto3
 from botocore.exceptions import ClientError
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
+from shared.active_region import (
+    get_activated_at,
+    get_region_role,
+)
 from shared.audit_writer import (
     ACTION_API_KEY_CREATED,
     ACTION_API_KEY_REVOKED,
@@ -492,6 +496,31 @@ def _parse_path(path: str) -> Tuple[str, ...]:
     """Parse path into components."""
     parts = [p for p in path.strip("/").split("/") if p]
     return tuple(parts)
+
+
+def get_region_role_response() -> Dict:
+    """Return the local region's HA role and a few diagnostic fields.
+
+    Consumed by the UI's PassiveRegionBanner (HA chunk 9k) and by the
+    operator status tooling. Single-region deployments (AppConfig env
+    vars unset) always return ``"active"`` via the fast-path in
+    ``shared.active_region``.
+
+    No side effects, no audit row written — this endpoint is polled
+    every 5 minutes by the UI and would otherwise dominate the audit
+    log volume.
+    """
+
+    return _response(
+        200,
+        {
+            "role": get_region_role(),
+            "region": os.environ.get(
+                "THIS_REGION", os.environ.get("AWS_REGION", "")
+            ),
+            "activated_at": get_activated_at(),
+        },
+    )
 
 
 # ============================================================================
@@ -4920,6 +4949,22 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         event.get("path")
         or event.get("requestContext", {}).get("http", {}).get("path", "/")
     )
+
+    # HA chunk 9a: region-role endpoint bypasses auth. UI fetches this
+    # before login state matters; gating it on x-user-email would create
+    # a circular dependency (UI needs to know region role to render the
+    # login page correctly). The response is non-sensitive: it tells
+    # the caller which AWS region they reached + whether that region
+    # is currently active. AppConfig role is operator-controlled and
+    # already public information from an operator-tooling perspective.
+    if (
+        _parse_path(path) == ("api", "region", "role")
+        and (
+            event.get("httpMethod") == "GET"
+            or event.get("requestContext", {}).get("http", {}).get("method") == "GET"
+        )
+    ):
+        return get_region_role_response()
 
     # Get user email from header
     user_email = _get_user_from_request(event)

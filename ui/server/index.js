@@ -676,6 +676,9 @@ async function proxyWorkspaceRequest(req, res, method, path) {
   }
 }
 
+// HA region role (chunk 9a) — polled by UI PassiveRegionBanner
+app.get("/api/region/role", (req, res) => proxyWorkspaceRequest(req, res, "GET", "/api/region/role"));
+
 // Workspace CRUD
 app.post("/api/workspaces", (req, res) => proxyWorkspaceRequest(req, res, "POST", "/workspaces"));
 app.get("/api/workspaces", (req, res) => proxyWorkspaceRequest(req, res, "GET", "/workspaces"));

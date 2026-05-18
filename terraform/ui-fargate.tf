@@ -149,6 +149,80 @@ resource "aws_acm_certificate_validation" "ui" {
   validation_record_fqdns = [for record in aws_route53_record.cert_validation : record.fqdn]
 }
 
+# ============================================================================
+# Secondary-region ACM certificate (HA chunk 9a)
+# ----------------------------------------------------------------------------
+# ACM is regional; the secondary ALB (chunk 9b) needs its own cert in
+# us-east-2. The cert covers BOTH the regional hostname
+# (outcomeops2.${domain}) AND the canonical hostname
+# (outcomeops.${domain}) — because after failover, users hit the
+# canonical URL which resolves via DNS to the secondary ALB, and that
+# ALB's listener needs a cert that matches the SNI hostname the
+# browser sends (which is the canonical, not the regional).
+#
+# DNS validation records live in the primary's Route53 zone (Route53
+# is global; the zone is in our primary account).
+# ============================================================================
+
+resource "aws_acm_certificate" "ui_secondary" {
+  count = local.issue_acm_cert && var.secondary_region != "" ? 1 : 0
+
+  provider = aws.secondary
+
+  domain_name = "${var.ui_subdomain}2.${var.domain}"
+  subject_alternative_names = [
+    local.fqdn, # canonical, so SNI from outcomeops.${domain} matches after failover
+  ]
+  validation_method = "DNS"
+
+  tags = {
+    Name    = "${var.environment}-${var.app_name}-ui-secondary"
+    Purpose = "ui-tls-secondary"
+  }
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+resource "aws_route53_record" "cert_validation_secondary" {
+  for_each = local.issue_acm_cert && var.secondary_region != "" ? {
+    for dvo in aws_acm_certificate.ui_secondary[0].domain_validation_options : dvo.domain_name => {
+      name   = dvo.resource_record_name
+      record = dvo.resource_record_value
+      type   = dvo.resource_record_type
+    }
+  } : {}
+
+  allow_overwrite = true
+  name            = each.value.name
+  records         = [each.value.record]
+  ttl             = 60
+  type            = each.value.type
+  zone_id         = data.aws_route53_zone.main[0].zone_id
+}
+
+resource "aws_acm_certificate_validation" "ui_secondary" {
+  count = local.issue_acm_cert && var.secondary_region != "" ? 1 : 0
+
+  provider = aws.secondary
+
+  certificate_arn         = aws_acm_certificate.ui_secondary[0].arn
+  validation_record_fqdns = [for r in aws_route53_record.cert_validation_secondary : r.fqdn]
+}
+
+locals {
+  # ARN of the secondary-region cert the secondary ALB listener (chunk 9b)
+  # consumes. Empty when HA is disabled OR when BYO cert (no auto-issue).
+  # When BYO, operator provides a secondary cert via a separate tfvar
+  # (deferred until a customer actually asks for BYO + HA).
+  ui_cert_arn_secondary = (
+    local.issue_acm_cert && var.secondary_region != ""
+    ? aws_acm_certificate_validation.ui_secondary[0].certificate_arn
+    : ""
+  )
+}
+
 resource "aws_route53_record" "ui" {
   count   = local.manage_route53 ? 1 : 0
   zone_id = data.aws_route53_zone.main[0].zone_id
@@ -160,7 +234,37 @@ resource "aws_route53_record" "ui" {
     zone_id                = module.ui_alb.zone_id
     evaluate_target_health = true
   }
+
+  lifecycle {
+    # HA chunk 9a: operator-driven failover flips this record's alias
+    # target between the two regional ALBs via the AWS console. Without
+    # ignore_changes a subsequent terraform apply would revert the
+    # operator's flip. The canonical hostname stays terraform-managed
+    # at create time (initial alias points at the primary ALB);
+    # mutations on the alias block are operator-only post-creation.
+    ignore_changes = [alias]
+  }
 }
+
+# HA chunk 9a: regional hostname for primary. Operator escape hatch
+# for deep-linking to us-west-2 specifically (e.g. to verify the
+# primary ALB is healthy during a failover drill). The canonical
+# `outcomeops.${domain}` is what end users hit; this is admin-only.
+resource "aws_route53_record" "ui_primary" {
+  count   = local.manage_route53 && var.secondary_region != "" ? 1 : 0
+  zone_id = data.aws_route53_zone.main[0].zone_id
+  name    = "${var.ui_subdomain}1.${var.domain}"
+  type    = "A"
+
+  alias {
+    name                   = module.ui_alb.dns_name
+    zone_id                = module.ui_alb.zone_id
+    evaluate_target_health = true
+  }
+}
+
+# Secondary regional hostname is declared in 9b once
+# module.ui_alb_secondary exists.
 
 # -----------------------------------------------------------------------------
 # OIDC Client Secret from SSM (read-only - must be created manually)
