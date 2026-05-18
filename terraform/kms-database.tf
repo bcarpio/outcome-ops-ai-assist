@@ -18,6 +18,13 @@ resource "aws_kms_key" "db_credentials" {
   deletion_window_in_days = 7
   enable_key_rotation     = true
 
+  # Multi-region so the secondary region's database-* Lambdas can
+  # decrypt ciphertext written by the primary region (and vice versa)
+  # after failover. See HA.md for the operator migration path
+  # (scripts/ha-kms-migrate.py) when retrofitting an existing
+  # single-region deployment.
+  multi_region = true
+
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
@@ -81,17 +88,21 @@ output "db_credential_kms_key_arn" {
 }
 
 # ============================================================================
-# Secondary-region DB credential KMS key (HA mode only).
+# Secondary-region DB credential KMS replica (HA mode only).
+#
+# Multi-region replica of the primary key — same key material, different
+# region. Database credentials encrypted in either region are decryptable
+# in either region.
 # ============================================================================
 
-resource "aws_kms_key" "db_credentials_secondary" {
+resource "aws_kms_replica_key" "db_credentials_secondary" {
   count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
 
   provider = aws.secondary
 
-  description             = "KMS key for database credential encryption - ${var.environment} (secondary)"
+  primary_key_arn         = aws_kms_key.db_credentials[0].arn
+  description             = "KMS replica for database credential encryption - ${var.environment} (secondary)"
   deletion_window_in_days = 7
-  enable_key_rotation     = true
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -137,7 +148,7 @@ resource "aws_kms_alias" "db_credentials_secondary" {
   provider = aws.secondary
 
   name          = "alias/${var.environment}-${var.app_name}-db-credentials"
-  target_key_id = aws_kms_key.db_credentials_secondary[0].key_id
+  target_key_id = aws_kms_replica_key.db_credentials_secondary[0].key_id
 }
 
 resource "aws_ssm_parameter" "db_credential_kms_key_arn_secondary" {
@@ -147,7 +158,7 @@ resource "aws_ssm_parameter" "db_credential_kms_key_arn_secondary" {
 
   name  = "/${var.environment}/${var.app_name}/kms/db-credential-key-arn"
   type  = "String"
-  value = aws_kms_key.db_credentials_secondary[0].arn
+  value = aws_kms_replica_key.db_credentials_secondary[0].arn
 
   tags = {
     Purpose = "db-credential-kms-key-arn"
@@ -155,6 +166,6 @@ resource "aws_ssm_parameter" "db_credential_kms_key_arn_secondary" {
 }
 
 output "db_credential_kms_key_arn_secondary" {
-  description = "ARN of the secondary-region KMS key for database credential encryption (null when HA disabled)"
-  value       = (var.enable_workspaces && var.secondary_region != "") ? aws_kms_key.db_credentials_secondary[0].arn : null
+  description = "ARN of the secondary-region KMS replica for database credential encryption (null when HA disabled)"
+  value       = (var.enable_workspaces && var.secondary_region != "") ? aws_kms_replica_key.db_credentials_secondary[0].arn : null
 }

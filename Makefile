@@ -1,4 +1,4 @@
-.PHONY: help setup install fmt lint validate test test-unit test-integration test-coverage test-ui audit build-run-tests-image build-ui-image build-mcp-server-image build-snyk-image build-database-images build-runtime-layer build-terraform-layer build-all-layers build-platform-layer build-all-images pre-deploy clean all ha-status ha-replay-dlq ha-list-secrets ha-bootstrap _ha-env-check
+.PHONY: help setup install fmt lint validate test test-unit test-integration test-coverage test-ui audit build-run-tests-image build-ui-image build-mcp-server-image build-snyk-image build-database-images build-runtime-layer build-terraform-layer build-all-layers build-platform-layer build-all-images pre-deploy clean all ha-status ha-replay-dlq ha-list-secrets ha-bootstrap ha-kms-migrate _ha-env-check
 
 APP_NAME ?= outcome-ops-ai-assist
 AWS_REGION ?= us-west-2
@@ -202,6 +202,7 @@ audit:
 #     ENV=prd make ha-status
 #     ENV=prd make ha-list-secrets
 #     ENV=prd ARGS="--dry-run" make ha-bootstrap
+#     ENV=prd ARGS="--plan" make ha-kms-migrate
 #     ENV=prd REGION=us-east-2 QUEUE=... make ha-replay-dlq
 # ============================================================================
 
@@ -237,6 +238,9 @@ ha-list-secrets: _ha-env-check
 
 ha-bootstrap: _ha-env-check
 	@ENV=$(ENV) APP=$(HA_APP) PRIMARY=$(HA_PRIMARY) SECONDARY=$(HA_SECONDARY) ./scripts/ha-bootstrap.py $(ARGS)
+
+ha-kms-migrate: _ha-env-check
+	@ENV=$(ENV) APP=$(HA_APP) PRIMARY=$(HA_PRIMARY) SECONDARY=$(HA_SECONDARY) ./scripts/ha-kms-migrate.py $(ARGS)
 
 ha-replay-dlq: _ha-env-check
 	@if [ -z "$(REGION)" ] || [ -z "$(QUEUE)" ]; then \

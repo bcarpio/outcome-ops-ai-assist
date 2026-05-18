@@ -415,6 +415,92 @@ the DNS flip leaves the canonical hostname pointing at a passive UI
 that will refuse mutations — the read-side will still work but the
 operator UX is confusing.
 
+## Multi-region KMS for credentials
+
+OAuth access/refresh tokens and database connection credentials are
+encrypted with customer-owned KMS keys before being written to
+DynamoDB. For HA, those keys must be **multi-region** so the secondary
+region can decrypt ciphertext written in the primary (and vice versa)
+after a failover. The KMS configuration (`terraform/kms-oauth.tf` and
+`terraform/kms-database.tf`) declares the primary keys as
+`multi_region = true` and the secondary keys as
+`aws_kms_replica_key` resources pointing at the primary's ARN.
+
+### Day-0 HA: nothing to migrate
+
+If `secondary_region` is set in tfvars from the very first apply, the
+keys come up as multi-region from day-0. No migration step is needed —
+there are no existing ciphertext blobs to re-encrypt.
+
+### Add-later HA: pre-migrate before applying
+
+`multi_region` is a **create-time** KMS flag — a single-region key
+cannot be retrofitted in place. Applying the multi-region KMS change
+against an existing single-region deployment would destroy the old
+key, breaking decryption of every OAuth token and DB credential
+written before the change.
+
+Run `ha-kms-migrate` BEFORE `terraform apply`:
+
+```bash
+# Inventory affected rows (read-only)
+AWS_PROFILE=ops ENV=prd ARGS="--plan" make ha-kms-migrate
+
+# Re-encrypt them under a new MRK
+AWS_PROFILE=ops ENV=prd ARGS="--execute" make ha-kms-migrate
+```
+
+The `--execute` step:
+1. Creates a new multi-region KMS key in the primary region (tagged
+   for idempotency — re-running the script reuses the same pending
+   key).
+2. Scans the workspaces table for every OAuth token row
+   (`{GITHUB,CONFLUENCE,JIRA,OUTLOOK,TEAMS,SHAREPOINT,ONEDRIVE,ONENOTE}_TOKEN#*`)
+   and every database-credential row (`DB_CREDENTIAL#*`).
+3. Decrypts each `encrypted_*` attribute under the OLD key,
+   re-encrypts it under the NEW MRK, and writes the row back.
+4. Prints the new MRK ARN for the next steps.
+
+After `ha-kms-migrate --execute` reports success:
+
+```bash
+# 1. Point SSM at the new key
+aws ssm put-parameter --overwrite --type String \
+    --region "$PRIMARY" \
+    --name "/${ENV}/${APP}/kms/oauth-key-arn" \
+    --value "<new_mrk_arn_from_script_output>"
+
+# (and the same for /kms/db-credential-key-arn if DB credentials were
+# part of the migration)
+
+# 2. Roll the affected Lambdas so they pick up the new SSM value
+#    (force a redeploy via terraform-touched env vars OR
+#    aws lambda update-function-configuration ... --description ...)
+
+# 3. NOW it's safe to terraform apply — the new MRK is already in
+#    place + already protecting the data. Terraform will reconcile
+#    state and create the secondary-region replica.
+terraform apply -var-file="${ENV}.tfvars"
+```
+
+After `terraform apply` and once `make ha-status` reports clean
+replication, the OLD single-region key can be deleted via the AWS
+console (7-day deletion window — plenty of time to roll back if
+anything went sideways).
+
+### What if I skip the migration?
+
+The secondary-region resources still come up, but any Lambda in the
+secondary region that tries to decrypt a token written in the primary
+region will get `KMSAccessDeniedException` / `KMSInvalidStateException`
+errors. Users would see "OAuth token expired, please reconnect" toasts
+post-failover for every integration. The data isn't lost — it's just
+opaque ciphertext until you migrate or until users re-authorize.
+
+For a sandbox / non-production deployment where re-authorization is
+acceptable, skipping `ha-kms-migrate` is a legitimate trade-off. For
+customer-facing prod, run the migration first.
+
 ## Caveats
 
 - **Replication lag** — ~5 minutes is normal under steady-state load.

@@ -52,7 +52,7 @@ module "file_ingestion_lambda_secondary" {
       APP_NAME           = var.app_name
       WORKSPACES_TABLE   = module.workspaces_table_secondary[0].dynamodb_table_id
       KB_BUCKET          = module.knowledge_base_bucket_secondary.s3_bucket_id
-      OAUTH_KMS_KEY_ARN  = aws_kms_key.oauth_tokens_secondary[0].arn
+      OAUTH_KMS_KEY_ARN  = aws_kms_replica_key.oauth_tokens_secondary[0].arn
       AUDIT_TABLE        = module.audit_logs_table_secondary[0].dynamodb_table_id
       PENDING_WORK_TABLE = module.code_map_pending_work_table_secondary[0].dynamodb_table_id
       FAILED_FILES_TABLE = module.code_map_failed_files_table_secondary[0].dynamodb_table_id
@@ -90,7 +90,7 @@ module "file_ingestion_lambda_secondary" {
       kms_oauth = {
         effect    = "Allow"
         actions   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
-        resources = [aws_kms_key.oauth_tokens_secondary[0].arn]
+        resources = [aws_kms_replica_key.oauth_tokens_secondary[0].arn]
       }
       kms_ssm = {
         effect    = "Allow"

@@ -97,7 +97,7 @@ module "chat_streaming_lambda_secondary" {
       RERANK_MIN_SCORE               = tostring(var.rerank_min_score)
       RAG_MAX_DOC_CHARS              = tostring(var.rag_max_doc_chars)
       WORKSPACES_TABLE               = module.workspaces_table_secondary[0].dynamodb_table_id
-      OAUTH_KMS_KEY_ARN              = aws_kms_key.oauth_tokens_secondary[0].arn
+      OAUTH_KMS_KEY_ARN              = aws_kms_replica_key.oauth_tokens_secondary[0].arn
       SYMBOL_GRAPH_TABLE             = module.symbol_graph_table_secondary[0].dynamodb_table_id
       CODE_MAPS_TABLE                = module.code_maps_table_secondary[0].dynamodb_table_id
       GRAPH_RETRIEVAL_ENABLED        = "true"
@@ -152,7 +152,7 @@ module "chat_streaming_lambda_secondary" {
     oauth_kms_decrypt = {
       effect    = "Allow"
       actions   = ["kms:Decrypt"]
-      resources = [aws_kms_key.oauth_tokens_secondary[0].arn]
+      resources = [aws_kms_replica_key.oauth_tokens_secondary[0].arn]
     }
     bedrock_rerank = {
       effect    = "Allow"
@@ -284,7 +284,7 @@ module "workspace_management_lambda_secondary" {
       PORT                         = "8000"
       KB_BUCKET                    = module.knowledge_base_bucket_secondary.s3_bucket_id
       DELETE_QUEUE_URL             = aws_sqs_queue.delete_queue_secondary[0].url
-      OAUTH_KMS_KEY_ARN            = aws_kms_key.oauth_tokens_secondary[0].arn
+      OAUTH_KMS_KEY_ARN            = aws_kms_replica_key.oauth_tokens_secondary[0].arn
       AUDIT_TABLE                  = module.audit_logs_table_secondary[0].dynamodb_table_id
       ANALYTICS_TABLE              = module.analytics_table_secondary[0].dynamodb_table_id
       PII_REDACTION_ENABLED        = tostring(var.pii_redaction_enabled)
@@ -340,7 +340,7 @@ module "workspace_management_lambda_secondary" {
       oauth_kms = {
         effect    = "Allow"
         actions   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey"]
-        resources = [aws_kms_key.oauth_tokens_secondary[0].arn]
+        resources = [aws_kms_replica_key.oauth_tokens_secondary[0].arn]
       }
       sqs_send = {
         effect    = "Allow"

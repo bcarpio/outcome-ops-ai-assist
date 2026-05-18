@@ -179,7 +179,7 @@ module "confluence_sync_lambda_secondary" {
       ENV                  = var.environment
       APP_NAME             = var.app_name
       WORKSPACES_TABLE     = module.workspaces_table_secondary[0].dynamodb_table_id
-      OAUTH_KMS_KEY_ARN    = aws_kms_key.oauth_tokens_secondary[0].arn
+      OAUTH_KMS_KEY_ARN    = aws_kms_replica_key.oauth_tokens_secondary[0].arn
       FILE_INGESTION_QUEUE = aws_sqs_queue.file_ingestion_secondary[0].url
       DELETE_QUEUE         = aws_sqs_queue.delete_queue_secondary[0].url
       AUDIT_TABLE          = module.audit_logs_table_secondary[0].dynamodb_table_id
@@ -207,7 +207,7 @@ module "confluence_sync_lambda_secondary" {
       kms_oauth = {
         effect    = "Allow"
         actions   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
-        resources = [aws_kms_key.oauth_tokens_secondary[0].arn]
+        resources = [aws_kms_replica_key.oauth_tokens_secondary[0].arn]
       }
       kms_ssm = {
         effect    = "Allow"
@@ -282,7 +282,7 @@ module "jira_sync_lambda_secondary" {
       ENV                  = var.environment
       APP_NAME             = var.app_name
       WORKSPACES_TABLE     = module.workspaces_table_secondary[0].dynamodb_table_id
-      OAUTH_KMS_KEY_ARN    = aws_kms_key.oauth_tokens_secondary[0].arn
+      OAUTH_KMS_KEY_ARN    = aws_kms_replica_key.oauth_tokens_secondary[0].arn
       FILE_INGESTION_QUEUE = aws_sqs_queue.file_ingestion_secondary[0].url
       DELETE_QUEUE         = aws_sqs_queue.delete_queue_secondary[0].url
       AUDIT_TABLE          = module.audit_logs_table_secondary[0].dynamodb_table_id
@@ -310,7 +310,7 @@ module "jira_sync_lambda_secondary" {
       kms_oauth = {
         effect    = "Allow"
         actions   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
-        resources = [aws_kms_key.oauth_tokens_secondary[0].arn]
+        resources = [aws_kms_replica_key.oauth_tokens_secondary[0].arn]
       }
       kms_ssm = {
         effect    = "Allow"
@@ -387,7 +387,7 @@ module "outlook_sync_lambda_secondary" {
       ENV                  = var.environment
       APP_NAME             = var.app_name
       WORKSPACES_TABLE     = module.workspaces_table_secondary[0].dynamodb_table_id
-      OAUTH_KMS_KEY_ARN    = aws_kms_key.oauth_tokens_secondary[0].arn
+      OAUTH_KMS_KEY_ARN    = aws_kms_replica_key.oauth_tokens_secondary[0].arn
       FILE_INGESTION_QUEUE = aws_sqs_queue.file_ingestion_secondary[0].url
       DELETE_QUEUE         = aws_sqs_queue.delete_queue_secondary[0].url
       AUDIT_TABLE          = module.audit_logs_table_secondary[0].dynamodb_table_id
@@ -415,7 +415,7 @@ module "outlook_sync_lambda_secondary" {
       kms_oauth = {
         effect    = "Allow"
         actions   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
-        resources = [aws_kms_key.oauth_tokens_secondary[0].arn]
+        resources = [aws_kms_replica_key.oauth_tokens_secondary[0].arn]
       }
       kms_ssm = {
         effect    = "Allow"
@@ -487,7 +487,7 @@ module "teams_sync_lambda_secondary" {
       ENV                  = var.environment
       APP_NAME             = var.app_name
       WORKSPACES_TABLE     = module.workspaces_table_secondary[0].dynamodb_table_id
-      OAUTH_KMS_KEY_ARN    = aws_kms_key.oauth_tokens_secondary[0].arn
+      OAUTH_KMS_KEY_ARN    = aws_kms_replica_key.oauth_tokens_secondary[0].arn
       FILE_INGESTION_QUEUE = aws_sqs_queue.file_ingestion_secondary[0].url
       DELETE_QUEUE         = aws_sqs_queue.delete_queue_secondary[0].url
       AUDIT_TABLE          = module.audit_logs_table_secondary[0].dynamodb_table_id
@@ -515,7 +515,7 @@ module "teams_sync_lambda_secondary" {
       kms_oauth = {
         effect    = "Allow"
         actions   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
-        resources = [aws_kms_key.oauth_tokens_secondary[0].arn]
+        resources = [aws_kms_replica_key.oauth_tokens_secondary[0].arn]
       }
       kms_ssm = {
         effect    = "Allow"
@@ -587,7 +587,7 @@ module "sharepoint_sync_lambda_secondary" {
       ENV                  = var.environment
       APP_NAME             = var.app_name
       WORKSPACES_TABLE     = module.workspaces_table_secondary[0].dynamodb_table_id
-      OAUTH_KMS_KEY_ARN    = aws_kms_key.oauth_tokens_secondary[0].arn
+      OAUTH_KMS_KEY_ARN    = aws_kms_replica_key.oauth_tokens_secondary[0].arn
       FILE_INGESTION_QUEUE = aws_sqs_queue.file_ingestion_secondary[0].url
       DELETE_QUEUE         = aws_sqs_queue.delete_queue_secondary[0].url
       AUDIT_TABLE          = module.audit_logs_table_secondary[0].dynamodb_table_id
@@ -615,7 +615,7 @@ module "sharepoint_sync_lambda_secondary" {
       kms_oauth = {
         effect    = "Allow"
         actions   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
-        resources = [aws_kms_key.oauth_tokens_secondary[0].arn]
+        resources = [aws_kms_replica_key.oauth_tokens_secondary[0].arn]
       }
       kms_ssm = {
         effect    = "Allow"
@@ -687,7 +687,7 @@ module "onedrive_sync_lambda_secondary" {
       ENV                  = var.environment
       APP_NAME             = var.app_name
       WORKSPACES_TABLE     = module.workspaces_table_secondary[0].dynamodb_table_id
-      OAUTH_KMS_KEY_ARN    = aws_kms_key.oauth_tokens_secondary[0].arn
+      OAUTH_KMS_KEY_ARN    = aws_kms_replica_key.oauth_tokens_secondary[0].arn
       FILE_INGESTION_QUEUE = aws_sqs_queue.file_ingestion_secondary[0].url
       DELETE_QUEUE         = aws_sqs_queue.delete_queue_secondary[0].url
       AUDIT_TABLE          = module.audit_logs_table_secondary[0].dynamodb_table_id
@@ -715,7 +715,7 @@ module "onedrive_sync_lambda_secondary" {
       kms_oauth = {
         effect    = "Allow"
         actions   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
-        resources = [aws_kms_key.oauth_tokens_secondary[0].arn]
+        resources = [aws_kms_replica_key.oauth_tokens_secondary[0].arn]
       }
       kms_ssm = {
         effect    = "Allow"
@@ -787,7 +787,7 @@ module "onenote_sync_lambda_secondary" {
       ENV                  = var.environment
       APP_NAME             = var.app_name
       WORKSPACES_TABLE     = module.workspaces_table_secondary[0].dynamodb_table_id
-      OAUTH_KMS_KEY_ARN    = aws_kms_key.oauth_tokens_secondary[0].arn
+      OAUTH_KMS_KEY_ARN    = aws_kms_replica_key.oauth_tokens_secondary[0].arn
       FILE_INGESTION_QUEUE = aws_sqs_queue.file_ingestion_secondary[0].url
       DELETE_QUEUE         = aws_sqs_queue.delete_queue_secondary[0].url
       AUDIT_TABLE          = module.audit_logs_table_secondary[0].dynamodb_table_id
@@ -815,7 +815,7 @@ module "onenote_sync_lambda_secondary" {
       kms_oauth = {
         effect    = "Allow"
         actions   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
-        resources = [aws_kms_key.oauth_tokens_secondary[0].arn]
+        resources = [aws_kms_replica_key.oauth_tokens_secondary[0].arn]
       }
       kms_ssm = {
         effect    = "Allow"
@@ -890,7 +890,7 @@ module "database_sync_lambda_secondary" {
       ENV                       = var.environment
       APP_NAME                  = var.app_name
       WORKSPACES_TABLE          = module.workspaces_table_secondary[0].dynamodb_table_id
-      DB_CREDENTIAL_KMS_KEY_ARN = aws_kms_key.db_credentials_secondary[0].arn
+      DB_CREDENTIAL_KMS_KEY_ARN = aws_kms_replica_key.db_credentials_secondary[0].arn
       FILE_INGESTION_QUEUE      = aws_sqs_queue.file_ingestion_secondary[0].url
       DELETE_QUEUE              = aws_sqs_queue.delete_queue_secondary[0].url
       AUDIT_TABLE               = module.audit_logs_table_secondary[0].dynamodb_table_id
@@ -913,7 +913,7 @@ module "database_sync_lambda_secondary" {
       kms_credentials = {
         effect    = "Allow"
         actions   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey"]
-        resources = [aws_kms_key.db_credentials_secondary[0].arn]
+        resources = [aws_kms_replica_key.db_credentials_secondary[0].arn]
       }
       sqs_receive = {
         effect    = "Allow"
