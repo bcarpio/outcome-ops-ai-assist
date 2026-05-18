@@ -53,6 +53,40 @@ emitted.
   put-parameter --overwrite` each region's values manually.
 - Run `make ha-list-secrets` to see what's left to populate.
 
+### Day-0 HA vs. add-later HA
+
+**Day-0 (HA enabled at first deploy):** secondary tables/buckets are
+created empty AND no data exists in primary yet, so the dual-write
+transport keeps both regions in lockstep from the first write. No
+bootstrap needed.
+
+**Add-later (HA enabled against an existing single-region deployment):**
+primary already holds months of data; secondary tables/buckets are
+created empty by terraform. The dual-write transport only fires on
+NEW writes — anything already in primary will NEVER appear in
+secondary on its own. Failover at that point would lose history. Run
+the bootstrap script ONCE before any failover test:
+
+```bash
+AWS_PROFILE=ops \
+    ENV=prd APP=outcome-ops-ai-assist \
+    PRIMARY=us-west-2 SECONDARY=us-east-1 \
+    make ha-bootstrap
+```
+
+Or scope it down to specific resources for iterative testing:
+
+```bash
+ARGS="--tables workspaces,audit-logs --dry-run" make ha-bootstrap
+ARGS="--skip-s3 --skip-vectors --tables workspaces" make ha-bootstrap
+```
+
+The bootstrap is idempotent — re-running it is safe; existing rows in
+secondary are not clobbered (DDB PutItem uses
+`ConditionExpression="attribute_not_exists(PK)"`; S3 CopyObject
+re-writes the same key; S3 Vectors PutVectors overwrites with the same
+key). You can run it multiple times if a region was unreachable mid-run.
+
 ## Day-to-day operation
 
 - The **active** region runs:
