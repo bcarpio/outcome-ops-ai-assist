@@ -420,7 +420,11 @@ module "jira_scheduler_lambda" {
         "!\\.venv/.*",
         "!.*\\.pyc",
       ]
-    }
+    },
+    {
+      path          = "${path.module}/../lambda/shared"
+      prefix_in_zip = "shared"
+    },
   ]
 
   # CloudWatch Logs retention and encryption

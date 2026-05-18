@@ -414,7 +414,7 @@ module "github_scheduler_lambda" {
   timeout       = 60
   memory_size   = 256
 
-  # Source code
+  # Source code (chunk 07 adds shared.active_region import; bundle shared/)
   source_path = [
     {
       path             = "${path.module}/../lambda/github-scheduler"
@@ -425,7 +425,11 @@ module "github_scheduler_lambda" {
         "!\\.venv/.*",
         "!.*\\.pyc",
       ]
-    }
+    },
+    {
+      path          = "${path.module}/../lambda/shared"
+      prefix_in_zip = "shared"
+    },
   ]
 
   # CloudWatch Logs retention and encryption

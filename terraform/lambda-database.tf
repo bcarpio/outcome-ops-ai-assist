@@ -366,7 +366,11 @@ module "database_scheduler_lambda" {
         "!\\.venv/.*",
         "!.*\\.pyc",
       ]
-    }
+    },
+    {
+      path          = "${path.module}/../lambda/shared"
+      prefix_in_zip = "shared"
+    },
   ]
 
   cloudwatch_logs_retention_in_days = 7
