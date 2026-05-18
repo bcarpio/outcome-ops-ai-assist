@@ -326,3 +326,319 @@ output "repo_summaries_dlq_arn" {
   description = "ARN of the repository summaries dead letter queue"
   value       = module.repo_summaries_dlq.queue_arn
 }
+
+# ============================================================================
+# Secondary-region queue copies (HA mode only).
+# All four queue/DLQ pairs above get parallel copies under aws.secondary
+# when var.secondary_region is set. Identical names so operator commands
+# `aws sqs get-queue-url --queue-name ${env}-${app}-code-maps-queue
+# --region us-east-1` work the same as primary. Empty queues cost
+# nothing; dual-write traffic begins in chunk 06.
+# ============================================================================
+
+# --- code-maps (standard) ---
+
+module "code_maps_dlq_secondary" {
+  source  = "terraform-aws-modules/sqs/aws"
+  version = "4.3.0"
+
+  create = var.secondary_region != ""
+
+  providers = {
+    aws = aws.secondary
+  }
+
+  name = "${var.environment}-${var.app_name}-code-maps-dlq"
+
+  sqs_managed_sse_enabled = var.enable_cmk_encryption ? false : true
+  kms_master_key_id       = local.data_cmk_arn_secondary
+
+  tags = {
+    Purpose = "code-maps-dlq"
+  }
+}
+
+module "code_maps_queue_secondary" {
+  source  = "terraform-aws-modules/sqs/aws"
+  version = "4.3.0"
+
+  create = var.secondary_region != ""
+
+  providers = {
+    aws = aws.secondary
+  }
+
+  name                       = "${var.environment}-${var.app_name}-code-maps-queue"
+  visibility_timeout_seconds = 900
+
+  sqs_managed_sse_enabled = var.enable_cmk_encryption ? false : true
+  kms_master_key_id       = local.data_cmk_arn_secondary
+
+  redrive_policy = {
+    deadLetterTargetArn = module.code_maps_dlq_secondary.queue_arn
+    maxReceiveCount     = 3
+  }
+
+  tags = {
+    Purpose = "code-maps-queue"
+  }
+}
+
+resource "aws_ssm_parameter" "code_maps_queue_url_secondary" {
+  count = var.secondary_region != "" ? 1 : 0
+
+  provider = aws.secondary
+
+  name        = "/${var.environment}/${var.app_name}/sqs/code-maps-queue-url"
+  type        = "String"
+  value       = module.code_maps_queue_secondary.queue_url
+  description = "URL of the code maps batch processing queue"
+
+  tags = {
+    Purpose = "code-maps-queue-url"
+  }
+}
+
+# --- pr-checks (FIFO) ---
+
+module "pr_checks_dlq_secondary" {
+  source  = "terraform-aws-modules/sqs/aws"
+  version = "4.3.0"
+
+  create = var.secondary_region != ""
+
+  providers = {
+    aws = aws.secondary
+  }
+
+  name                        = "${var.environment}-${var.app_name}-pr-checks-dlq.fifo"
+  fifo_queue                  = true
+  content_based_deduplication = true
+
+  sqs_managed_sse_enabled = var.enable_cmk_encryption ? false : true
+  kms_master_key_id       = local.data_cmk_arn_secondary
+
+  tags = {
+    Purpose = "pr-checks-dlq"
+  }
+}
+
+module "pr_checks_queue_secondary" {
+  source  = "terraform-aws-modules/sqs/aws"
+  version = "4.3.0"
+
+  create = var.secondary_region != ""
+
+  providers = {
+    aws = aws.secondary
+  }
+
+  name                        = "${var.environment}-${var.app_name}-pr-checks-queue.fifo"
+  fifo_queue                  = true
+  content_based_deduplication = false
+  visibility_timeout_seconds  = 720
+
+  sqs_managed_sse_enabled = var.enable_cmk_encryption ? false : true
+  kms_master_key_id       = local.data_cmk_arn_secondary
+
+  redrive_policy = {
+    deadLetterTargetArn = module.pr_checks_dlq_secondary.queue_arn
+    maxReceiveCount     = 3
+  }
+
+  tags = {
+    Purpose = "pr-checks-queue"
+  }
+}
+
+resource "aws_ssm_parameter" "pr_checks_queue_url_secondary" {
+  count = var.secondary_region != "" ? 1 : 0
+
+  provider = aws.secondary
+
+  name        = "/${var.environment}/${var.app_name}/sqs/pr-checks-queue-url"
+  type        = "String"
+  value       = module.pr_checks_queue_secondary.queue_url
+  description = "URL of the PR checks processing queue"
+
+  tags = {
+    Purpose = "pr-checks-queue-url"
+  }
+}
+
+# --- code-generation (FIFO) ---
+
+module "code_generation_dlq_secondary" {
+  source  = "terraform-aws-modules/sqs/aws"
+  version = "4.3.0"
+
+  create = var.secondary_region != ""
+
+  providers = {
+    aws = aws.secondary
+  }
+
+  name                        = "${var.environment}-${var.app_name}-code-generation-dlq.fifo"
+  fifo_queue                  = true
+  content_based_deduplication = true
+  visibility_timeout_seconds  = 90
+
+  sqs_managed_sse_enabled = var.enable_cmk_encryption ? false : true
+  kms_master_key_id       = local.data_cmk_arn_secondary
+
+  tags = {
+    Purpose = "code-generation-dlq"
+  }
+}
+
+module "code_generation_queue_secondary" {
+  source  = "terraform-aws-modules/sqs/aws"
+  version = "4.3.0"
+
+  create = var.secondary_region != ""
+
+  providers = {
+    aws = aws.secondary
+  }
+
+  name                        = "${var.environment}-${var.app_name}-code-generation-queue.fifo"
+  fifo_queue                  = true
+  content_based_deduplication = false
+  visibility_timeout_seconds  = 900
+
+  sqs_managed_sse_enabled = var.enable_cmk_encryption ? false : true
+  kms_master_key_id       = local.data_cmk_arn_secondary
+
+  redrive_policy = {
+    deadLetterTargetArn = module.code_generation_dlq_secondary.queue_arn
+    maxReceiveCount     = 4
+  }
+
+  tags = {
+    Purpose = "code-generation-queue"
+  }
+}
+
+resource "aws_ssm_parameter" "code_generation_queue_url_secondary" {
+  count = var.secondary_region != "" ? 1 : 0
+
+  provider = aws.secondary
+
+  name        = "/${var.environment}/${var.app_name}/sqs/code-generation-queue-url"
+  type        = "String"
+  value       = module.code_generation_queue_secondary.queue_url
+  description = "URL of the code generation step execution queue"
+
+  tags = {
+    Purpose = "code-generation-queue-url"
+  }
+}
+
+# --- repo-summaries (FIFO) ---
+
+module "repo_summaries_dlq_secondary" {
+  source  = "terraform-aws-modules/sqs/aws"
+  version = "4.3.0"
+
+  create = var.secondary_region != ""
+
+  providers = {
+    aws = aws.secondary
+  }
+
+  name                        = "${var.environment}-${var.app_name}-repo-summaries-dlq.fifo"
+  fifo_queue                  = true
+  content_based_deduplication = true
+
+  sqs_managed_sse_enabled = var.enable_cmk_encryption ? false : true
+  kms_master_key_id       = local.data_cmk_arn_secondary
+
+  tags = {
+    Purpose = "repo-summaries-dlq"
+  }
+}
+
+module "repo_summaries_queue_secondary" {
+  source  = "terraform-aws-modules/sqs/aws"
+  version = "4.3.0"
+
+  create = var.secondary_region != ""
+
+  providers = {
+    aws = aws.secondary
+  }
+
+  name                        = "${var.environment}-${var.app_name}-repo-summaries-queue.fifo"
+  fifo_queue                  = true
+  content_based_deduplication = false
+  visibility_timeout_seconds  = 600
+
+  sqs_managed_sse_enabled = var.enable_cmk_encryption ? false : true
+  kms_master_key_id       = local.data_cmk_arn_secondary
+
+  redrive_policy = {
+    deadLetterTargetArn = module.repo_summaries_dlq_secondary.queue_arn
+    maxReceiveCount     = 3
+  }
+
+  tags = {
+    Purpose = "repo-summaries-queue"
+  }
+}
+
+resource "aws_ssm_parameter" "repo_summaries_queue_url_secondary" {
+  count = var.secondary_region != "" ? 1 : 0
+
+  provider = aws.secondary
+
+  name        = "/${var.environment}/${var.app_name}/sqs/repo-summaries-queue-url"
+  type        = "String"
+  value       = module.repo_summaries_queue_secondary.queue_url
+  description = "URL of the repository architectural summaries queue"
+
+  tags = {
+    Purpose = "repo-summaries-queue-url"
+  }
+}
+
+# --- Secondary outputs (null when HA disabled) ---
+
+output "code_maps_queue_arn_secondary" {
+  description = "ARN of the secondary-region code-maps queue (null when HA disabled)"
+  value       = var.secondary_region != "" ? module.code_maps_queue_secondary.queue_arn : null
+}
+
+output "code_maps_dlq_arn_secondary" {
+  description = "ARN of the secondary-region code-maps DLQ (null when HA disabled)"
+  value       = var.secondary_region != "" ? module.code_maps_dlq_secondary.queue_arn : null
+}
+
+output "pr_checks_queue_arn_secondary" {
+  description = "ARN of the secondary-region pr-checks queue (null when HA disabled)"
+  value       = var.secondary_region != "" ? module.pr_checks_queue_secondary.queue_arn : null
+}
+
+output "pr_checks_dlq_arn_secondary" {
+  description = "ARN of the secondary-region pr-checks DLQ (null when HA disabled)"
+  value       = var.secondary_region != "" ? module.pr_checks_dlq_secondary.queue_arn : null
+}
+
+output "code_generation_queue_arn_secondary" {
+  description = "ARN of the secondary-region code-generation queue (null when HA disabled)"
+  value       = var.secondary_region != "" ? module.code_generation_queue_secondary.queue_arn : null
+}
+
+output "code_generation_dlq_arn_secondary" {
+  description = "ARN of the secondary-region code-generation DLQ (null when HA disabled)"
+  value       = var.secondary_region != "" ? module.code_generation_dlq_secondary.queue_arn : null
+}
+
+output "repo_summaries_queue_arn_secondary" {
+  description = "ARN of the secondary-region repo-summaries queue (null when HA disabled)"
+  value       = var.secondary_region != "" ? module.repo_summaries_queue_secondary.queue_arn : null
+}
+
+output "repo_summaries_dlq_arn_secondary" {
+  description = "ARN of the secondary-region repo-summaries DLQ (null when HA disabled)"
+  value       = var.secondary_region != "" ? module.repo_summaries_dlq_secondary.queue_arn : null
+}
