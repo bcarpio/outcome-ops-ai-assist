@@ -1,0 +1,950 @@
+# ============================================================================
+# Secondary-region sync worker Lambdas (HA chunk 9g)
+# ----------------------------------------------------------------------------
+# 9 SQS-triggered sync workers under aws.secondary, consuming from the
+# secondary's integration-sync queues (chunk 02g).
+#
+# Idle until secondary becomes active and schedulers in secondary
+# (chunk 9f) fire and enqueue work. Data they produce (workspaces
+# updates, audit logs, S3 KB uploads) replicates back to primary via
+# dual_write (chunks 04/06a).
+#
+# All gated on var.enable_workspaces && var.secondary_region != "".
+#
+# OAuth-token decryption gotcha: tokens encrypted in primary's
+# oauth_tokens KMS key are NOT decryptable in secondary. After
+# failover, users re-establish OAuth integrations. Chunk 13
+# (multi-region KMS) fixes this.
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# github-sync (secondary)
+# ----------------------------------------------------------------------------
+
+module "github_sync_lambda_secondary" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "8.1.2"
+
+  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+
+  providers = {
+    aws = aws.secondary
+  }
+
+  function_name = "${var.environment}-${var.app_name}-github-sync"
+  description   = "GitHub repo sync (secondary region)"
+  handler       = "handler.lambda_handler"
+  runtime       = "python3.12"
+  timeout       = 900
+  memory_size   = 1024
+
+  source_path = [
+    { path = "${path.module}/../lambda/github-sync", pip_requirements = true, patterns = ["!tests/.*", "!__pycache__/.*", "!\\.venv/.*", "!requirements-dev\\.txt", "!.*\\.pyc", "!\\.pytest_cache/.*"] },
+    { path = "${path.module}/../lambda/shared", prefix_in_zip = "shared" },
+  ]
+
+  cloudwatch_logs_retention_in_days = 7
+  cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs_secondary[0].arn
+  quiet_archive_local_exec          = true
+
+  layers = [var.outcomeops_license_layer_arn_secondary]
+
+  environment_variables = merge(
+    {
+      ENV                  = var.environment
+      APP_NAME             = var.app_name
+      WORKSPACES_TABLE     = module.workspaces_table_secondary[0].dynamodb_table_id
+      FILE_INGESTION_QUEUE = aws_sqs_queue.file_ingestion_secondary[0].url
+      REPO_SUMMARIES_QUEUE = module.repo_summaries_queue_secondary.queue_url
+      DELETE_QUEUE         = aws_sqs_queue.delete_queue_secondary[0].url
+      KB_BUCKET            = module.knowledge_base_bucket_secondary.s3_bucket_id
+      AUDIT_TABLE          = module.audit_logs_table_secondary[0].dynamodb_table_id
+      PENDING_WORK_TABLE   = module.code_map_pending_work_table_secondary[0].dynamodb_table_id
+      FAILED_FILES_TABLE   = module.code_map_failed_files_table_secondary[0].dynamodb_table_id
+    },
+    local.outcomeops_license_env,
+    local.ha_writer_env_secondary,
+  )
+
+  attach_policy_statements = true
+  policy_statements = merge(
+    {
+      dynamodb = {
+        effect  = "Allow"
+        actions = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query"]
+        resources = [
+          module.workspaces_table_secondary[0].dynamodb_table_arn,
+          "${module.workspaces_table_secondary[0].dynamodb_table_arn}/index/*",
+        ]
+      }
+      sha_truth = {
+        effect    = "Allow"
+        actions   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"]
+        resources = local.sha_truth_table_arns_secondary
+      }
+      ssm_read = {
+        effect    = "Allow"
+        actions   = ["ssm:GetParameter", "ssm:GetParameters"]
+        resources = ["arn:aws:ssm:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/*"]
+      }
+      kms_ssm = {
+        effect    = "Allow"
+        actions   = ["kms:Decrypt"]
+        resources = ["arn:aws:kms:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:alias/aws/ssm"]
+      }
+      sqs_receive = {
+        effect    = "Allow"
+        actions   = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"]
+        resources = [aws_sqs_queue.github_sync_secondary[0].arn]
+      }
+      sqs_send = {
+        effect  = "Allow"
+        actions = ["sqs:SendMessage"]
+        resources = [
+          aws_sqs_queue.file_ingestion_secondary[0].arn,
+          module.repo_summaries_queue_secondary.queue_arn,
+          aws_sqs_queue.delete_queue_secondary[0].arn,
+        ]
+      }
+      s3_kb = {
+        effect    = "Allow"
+        actions   = ["s3:PutObject"]
+        resources = ["${module.knowledge_base_bucket_secondary.s3_bucket_arn}/workspaces/*"]
+      }
+      dynamodb_audit = {
+        effect    = "Allow"
+        actions   = ["dynamodb:PutItem"]
+        resources = [module.audit_logs_table_secondary[0].dynamodb_table_arn]
+      }
+    },
+    local.outcomeops_license_iam,
+    local.ha_writer_events_iam_secondary,
+  )
+
+  tags = { Purpose = "github-sync" }
+}
+
+resource "aws_lambda_event_source_mapping" "github_sync_secondary" {
+  count    = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  provider = aws.secondary
+
+  event_source_arn = aws_sqs_queue.github_sync_secondary[0].arn
+  function_name    = module.github_sync_lambda_secondary[0].lambda_function_name
+
+  batch_size                         = 1
+  maximum_batching_window_in_seconds = 0
+
+  scaling_config {
+    maximum_concurrency = 5
+  }
+}
+
+# ----------------------------------------------------------------------------
+# OAuth-flavor sync workers (Confluence, Jira, Outlook, Teams, SharePoint,
+# OneDrive, OneNote). All share: oauth_tokens_secondary KMS + file_ingestion +
+# delete_queue. SSM-read scope per OAuth provider (Atlassian or Microsoft).
+# ----------------------------------------------------------------------------
+
+# Confluence sync (secondary)
+module "confluence_sync_lambda_secondary" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "8.1.2"
+
+  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+
+  providers = {
+    aws = aws.secondary
+  }
+
+  function_name = "${var.environment}-${var.app_name}-confluence-sync"
+  description   = "Confluence sync (secondary region)"
+  handler       = "handler.lambda_handler"
+  runtime       = "python3.12"
+  timeout       = 900
+  memory_size   = 1024
+
+  source_path = [
+    { path = "${path.module}/../lambda/confluence-sync", pip_requirements = true, patterns = ["!tests/.*", "!__pycache__/.*", "!\\.venv/.*", "!.*\\.pyc"] },
+    { path = "${path.module}/../lambda/shared", prefix_in_zip = "shared" },
+  ]
+
+  cloudwatch_logs_retention_in_days = 7
+  cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs_secondary[0].arn
+  quiet_archive_local_exec          = true
+
+  layers = [var.outcomeops_license_layer_arn_secondary]
+
+  environment_variables = merge(
+    {
+      ENV                  = var.environment
+      APP_NAME             = var.app_name
+      WORKSPACES_TABLE     = module.workspaces_table_secondary[0].dynamodb_table_id
+      OAUTH_KMS_KEY_ARN    = aws_kms_key.oauth_tokens_secondary[0].arn
+      FILE_INGESTION_QUEUE = aws_sqs_queue.file_ingestion_secondary[0].url
+      DELETE_QUEUE         = aws_sqs_queue.delete_queue_secondary[0].url
+      AUDIT_TABLE          = module.audit_logs_table_secondary[0].dynamodb_table_id
+    },
+    local.outcomeops_license_env,
+    local.ha_writer_env_secondary,
+  )
+
+  attach_policy_statements = true
+  policy_statements = merge(
+    {
+      dynamodb = {
+        effect  = "Allow"
+        actions = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query"]
+        resources = [
+          module.workspaces_table_secondary[0].dynamodb_table_arn,
+          "${module.workspaces_table_secondary[0].dynamodb_table_arn}/index/*",
+        ]
+      }
+      ssm_read = {
+        effect    = "Allow"
+        actions   = ["ssm:GetParameter", "ssm:GetParameters"]
+        resources = ["arn:aws:ssm:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/oauth/atlassian/*"]
+      }
+      kms_oauth = {
+        effect    = "Allow"
+        actions   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
+        resources = [aws_kms_key.oauth_tokens_secondary[0].arn]
+      }
+      kms_ssm = {
+        effect    = "Allow"
+        actions   = ["kms:Decrypt"]
+        resources = ["arn:aws:kms:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:alias/aws/ssm"]
+      }
+      sqs_receive = {
+        effect    = "Allow"
+        actions   = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"]
+        resources = [aws_sqs_queue.confluence_sync_secondary[0].arn]
+      }
+      sqs_send = {
+        effect    = "Allow"
+        actions   = ["sqs:SendMessage"]
+        resources = [aws_sqs_queue.file_ingestion_secondary[0].arn, aws_sqs_queue.delete_queue_secondary[0].arn]
+      }
+      dynamodb_audit = {
+        effect    = "Allow"
+        actions   = ["dynamodb:PutItem"]
+        resources = [module.audit_logs_table_secondary[0].dynamodb_table_arn]
+      }
+    },
+    local.outcomeops_license_iam,
+    local.ha_writer_events_iam_secondary,
+  )
+
+  tags = { Purpose = "confluence-sync" }
+}
+
+resource "aws_lambda_event_source_mapping" "confluence_sync_secondary" {
+  count            = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  provider         = aws.secondary
+  event_source_arn = aws_sqs_queue.confluence_sync_secondary[0].arn
+  function_name    = module.confluence_sync_lambda_secondary[0].lambda_function_name
+  batch_size       = 1
+  scaling_config {
+    maximum_concurrency = 5
+  }
+}
+
+# Jira sync (secondary)
+module "jira_sync_lambda_secondary" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "8.1.2"
+
+  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+
+  providers = {
+    aws = aws.secondary
+  }
+
+  function_name = "${var.environment}-${var.app_name}-jira-sync"
+  description   = "Jira sync (secondary region)"
+  handler       = "handler.lambda_handler"
+  runtime       = "python3.12"
+  timeout       = 900
+  memory_size   = 1024
+
+  source_path = [
+    { path = "${path.module}/../lambda/jira-sync", pip_requirements = true, patterns = ["!tests/.*", "!__pycache__/.*", "!\\.venv/.*", "!.*\\.pyc"] },
+    { path = "${path.module}/../lambda/shared", prefix_in_zip = "shared" },
+  ]
+
+  cloudwatch_logs_retention_in_days = 7
+  cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs_secondary[0].arn
+  quiet_archive_local_exec          = true
+
+  layers = [var.outcomeops_license_layer_arn_secondary]
+
+  environment_variables = merge(
+    {
+      ENV                  = var.environment
+      APP_NAME             = var.app_name
+      WORKSPACES_TABLE     = module.workspaces_table_secondary[0].dynamodb_table_id
+      OAUTH_KMS_KEY_ARN    = aws_kms_key.oauth_tokens_secondary[0].arn
+      FILE_INGESTION_QUEUE = aws_sqs_queue.file_ingestion_secondary[0].url
+      DELETE_QUEUE         = aws_sqs_queue.delete_queue_secondary[0].url
+      AUDIT_TABLE          = module.audit_logs_table_secondary[0].dynamodb_table_id
+    },
+    local.outcomeops_license_env,
+    local.ha_writer_env_secondary,
+  )
+
+  attach_policy_statements = true
+  policy_statements = merge(
+    {
+      dynamodb = {
+        effect  = "Allow"
+        actions = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query"]
+        resources = [
+          module.workspaces_table_secondary[0].dynamodb_table_arn,
+          "${module.workspaces_table_secondary[0].dynamodb_table_arn}/index/*",
+        ]
+      }
+      ssm_read = {
+        effect    = "Allow"
+        actions   = ["ssm:GetParameter", "ssm:GetParameters"]
+        resources = ["arn:aws:ssm:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/oauth/atlassian/*"]
+      }
+      kms_oauth = {
+        effect    = "Allow"
+        actions   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
+        resources = [aws_kms_key.oauth_tokens_secondary[0].arn]
+      }
+      kms_ssm = {
+        effect    = "Allow"
+        actions   = ["kms:Decrypt"]
+        resources = ["arn:aws:kms:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:alias/aws/ssm"]
+      }
+      sqs_receive = {
+        effect    = "Allow"
+        actions   = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"]
+        resources = [aws_sqs_queue.jira_sync_secondary[0].arn]
+      }
+      sqs_send = {
+        effect    = "Allow"
+        actions   = ["sqs:SendMessage"]
+        resources = [aws_sqs_queue.file_ingestion_secondary[0].arn, aws_sqs_queue.delete_queue_secondary[0].arn]
+      }
+      dynamodb_audit = {
+        effect    = "Allow"
+        actions   = ["dynamodb:PutItem"]
+        resources = [module.audit_logs_table_secondary[0].dynamodb_table_arn]
+      }
+    },
+    local.outcomeops_license_iam,
+    local.ha_writer_events_iam_secondary,
+  )
+
+  tags = { Purpose = "jira-sync" }
+}
+
+resource "aws_lambda_event_source_mapping" "jira_sync_secondary" {
+  count            = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  provider         = aws.secondary
+  event_source_arn = aws_sqs_queue.jira_sync_secondary[0].arn
+  function_name    = module.jira_sync_lambda_secondary[0].lambda_function_name
+  batch_size       = 1
+  scaling_config {
+    maximum_concurrency = 5
+  }
+}
+
+# ----------------------------------------------------------------------------
+# Microsoft-flavor sync workers (Outlook, Teams, SharePoint, OneDrive, OneNote)
+# Same shape as Atlassian-flavor but SSM scope is /oauth/microsoft/* and
+# the queue/env-var names differ per integration.
+# ----------------------------------------------------------------------------
+
+module "outlook_sync_lambda_secondary" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "8.1.2"
+
+  count     = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  providers = { aws = aws.secondary }
+
+  function_name = "${var.environment}-${var.app_name}-outlook-sync"
+  description   = "Outlook sync (secondary region)"
+  handler       = "handler.lambda_handler"
+  runtime       = "python3.12"
+  timeout       = 900
+  memory_size   = 1024
+
+  source_path = [
+    { path = "${path.module}/../lambda/outlook-sync", pip_requirements = true, patterns = ["!tests/.*", "!__pycache__/.*", "!\\.venv/.*", "!.*\\.pyc"] },
+    { path = "${path.module}/../lambda/shared", prefix_in_zip = "shared" },
+  ]
+
+  cloudwatch_logs_retention_in_days = 7
+  cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs_secondary[0].arn
+  quiet_archive_local_exec          = true
+
+  layers = [var.outcomeops_license_layer_arn_secondary]
+
+  environment_variables = merge(
+    {
+      ENV                  = var.environment
+      APP_NAME             = var.app_name
+      WORKSPACES_TABLE     = module.workspaces_table_secondary[0].dynamodb_table_id
+      OAUTH_KMS_KEY_ARN    = aws_kms_key.oauth_tokens_secondary[0].arn
+      FILE_INGESTION_QUEUE = aws_sqs_queue.file_ingestion_secondary[0].url
+      DELETE_QUEUE         = aws_sqs_queue.delete_queue_secondary[0].url
+      AUDIT_TABLE          = module.audit_logs_table_secondary[0].dynamodb_table_id
+    },
+    local.outcomeops_license_env,
+    local.ha_writer_env_secondary,
+  )
+
+  attach_policy_statements = true
+  policy_statements = merge(
+    {
+      dynamodb = {
+        effect  = "Allow"
+        actions = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query"]
+        resources = [
+          module.workspaces_table_secondary[0].dynamodb_table_arn,
+          "${module.workspaces_table_secondary[0].dynamodb_table_arn}/index/*",
+        ]
+      }
+      ssm_read = {
+        effect    = "Allow"
+        actions   = ["ssm:GetParameter", "ssm:GetParameters"]
+        resources = ["arn:aws:ssm:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/oauth/microsoft/*"]
+      }
+      kms_oauth = {
+        effect    = "Allow"
+        actions   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
+        resources = [aws_kms_key.oauth_tokens_secondary[0].arn]
+      }
+      kms_ssm = {
+        effect    = "Allow"
+        actions   = ["kms:Decrypt"]
+        resources = ["arn:aws:kms:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:alias/aws/ssm"]
+      }
+      sqs_receive = {
+        effect    = "Allow"
+        actions   = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"]
+        resources = [aws_sqs_queue.outlook_sync_secondary[0].arn]
+      }
+      sqs_send = {
+        effect    = "Allow"
+        actions   = ["sqs:SendMessage"]
+        resources = [aws_sqs_queue.file_ingestion_secondary[0].arn, aws_sqs_queue.delete_queue_secondary[0].arn]
+      }
+      dynamodb_audit = {
+        effect    = "Allow"
+        actions   = ["dynamodb:PutItem"]
+        resources = [module.audit_logs_table_secondary[0].dynamodb_table_arn]
+      }
+    },
+    local.outcomeops_license_iam,
+    local.ha_writer_events_iam_secondary,
+  )
+
+  tags = { Purpose = "outlook-sync" }
+}
+
+resource "aws_lambda_event_source_mapping" "outlook_sync_secondary" {
+  count            = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  provider         = aws.secondary
+  event_source_arn = aws_sqs_queue.outlook_sync_secondary[0].arn
+  function_name    = module.outlook_sync_lambda_secondary[0].lambda_function_name
+  batch_size       = 1
+  scaling_config {
+    maximum_concurrency = 5
+  }
+}
+
+# Teams sync
+module "teams_sync_lambda_secondary" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "8.1.2"
+
+  count     = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  providers = { aws = aws.secondary }
+
+  function_name = "${var.environment}-${var.app_name}-teams-sync"
+  description   = "Teams sync (secondary region)"
+  handler       = "handler.lambda_handler"
+  runtime       = "python3.12"
+  timeout       = 900
+  memory_size   = 1024
+
+  source_path = [
+    { path = "${path.module}/../lambda/teams-sync", pip_requirements = true, patterns = ["!tests/.*", "!__pycache__/.*", "!\\.venv/.*", "!.*\\.pyc"] },
+    { path = "${path.module}/../lambda/shared", prefix_in_zip = "shared" },
+  ]
+
+  cloudwatch_logs_retention_in_days = 7
+  cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs_secondary[0].arn
+  quiet_archive_local_exec          = true
+
+  layers = [var.outcomeops_license_layer_arn_secondary]
+
+  environment_variables = merge(
+    {
+      ENV                  = var.environment
+      APP_NAME             = var.app_name
+      WORKSPACES_TABLE     = module.workspaces_table_secondary[0].dynamodb_table_id
+      OAUTH_KMS_KEY_ARN    = aws_kms_key.oauth_tokens_secondary[0].arn
+      FILE_INGESTION_QUEUE = aws_sqs_queue.file_ingestion_secondary[0].url
+      DELETE_QUEUE         = aws_sqs_queue.delete_queue_secondary[0].url
+      AUDIT_TABLE          = module.audit_logs_table_secondary[0].dynamodb_table_id
+    },
+    local.outcomeops_license_env,
+    local.ha_writer_env_secondary,
+  )
+
+  attach_policy_statements = true
+  policy_statements = merge(
+    {
+      dynamodb = {
+        effect  = "Allow"
+        actions = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query"]
+        resources = [
+          module.workspaces_table_secondary[0].dynamodb_table_arn,
+          "${module.workspaces_table_secondary[0].dynamodb_table_arn}/index/*",
+        ]
+      }
+      ssm_read = {
+        effect    = "Allow"
+        actions   = ["ssm:GetParameter", "ssm:GetParameters"]
+        resources = ["arn:aws:ssm:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/oauth/microsoft/*"]
+      }
+      kms_oauth = {
+        effect    = "Allow"
+        actions   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
+        resources = [aws_kms_key.oauth_tokens_secondary[0].arn]
+      }
+      kms_ssm = {
+        effect    = "Allow"
+        actions   = ["kms:Decrypt"]
+        resources = ["arn:aws:kms:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:alias/aws/ssm"]
+      }
+      sqs_receive = {
+        effect    = "Allow"
+        actions   = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"]
+        resources = [aws_sqs_queue.teams_sync_secondary[0].arn]
+      }
+      sqs_send = {
+        effect    = "Allow"
+        actions   = ["sqs:SendMessage"]
+        resources = [aws_sqs_queue.file_ingestion_secondary[0].arn, aws_sqs_queue.delete_queue_secondary[0].arn]
+      }
+      dynamodb_audit = {
+        effect    = "Allow"
+        actions   = ["dynamodb:PutItem"]
+        resources = [module.audit_logs_table_secondary[0].dynamodb_table_arn]
+      }
+    },
+    local.outcomeops_license_iam,
+    local.ha_writer_events_iam_secondary,
+  )
+
+  tags = { Purpose = "teams-sync" }
+}
+
+resource "aws_lambda_event_source_mapping" "teams_sync_secondary" {
+  count            = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  provider         = aws.secondary
+  event_source_arn = aws_sqs_queue.teams_sync_secondary[0].arn
+  function_name    = module.teams_sync_lambda_secondary[0].lambda_function_name
+  batch_size       = 1
+  scaling_config {
+    maximum_concurrency = 5
+  }
+}
+
+# SharePoint sync
+module "sharepoint_sync_lambda_secondary" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "8.1.2"
+
+  count     = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  providers = { aws = aws.secondary }
+
+  function_name = "${var.environment}-${var.app_name}-sharepoint-sync"
+  description   = "SharePoint sync (secondary region)"
+  handler       = "handler.lambda_handler"
+  runtime       = "python3.12"
+  timeout       = 900
+  memory_size   = 1024
+
+  source_path = [
+    { path = "${path.module}/../lambda/sharepoint-sync", pip_requirements = true, patterns = ["!tests/.*", "!__pycache__/.*", "!\\.venv/.*", "!.*\\.pyc"] },
+    { path = "${path.module}/../lambda/shared", prefix_in_zip = "shared" },
+  ]
+
+  cloudwatch_logs_retention_in_days = 7
+  cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs_secondary[0].arn
+  quiet_archive_local_exec          = true
+
+  layers = [var.outcomeops_license_layer_arn_secondary]
+
+  environment_variables = merge(
+    {
+      ENV                  = var.environment
+      APP_NAME             = var.app_name
+      WORKSPACES_TABLE     = module.workspaces_table_secondary[0].dynamodb_table_id
+      OAUTH_KMS_KEY_ARN    = aws_kms_key.oauth_tokens_secondary[0].arn
+      FILE_INGESTION_QUEUE = aws_sqs_queue.file_ingestion_secondary[0].url
+      DELETE_QUEUE         = aws_sqs_queue.delete_queue_secondary[0].url
+      AUDIT_TABLE          = module.audit_logs_table_secondary[0].dynamodb_table_id
+    },
+    local.outcomeops_license_env,
+    local.ha_writer_env_secondary,
+  )
+
+  attach_policy_statements = true
+  policy_statements = merge(
+    {
+      dynamodb = {
+        effect  = "Allow"
+        actions = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query"]
+        resources = [
+          module.workspaces_table_secondary[0].dynamodb_table_arn,
+          "${module.workspaces_table_secondary[0].dynamodb_table_arn}/index/*",
+        ]
+      }
+      ssm_read = {
+        effect    = "Allow"
+        actions   = ["ssm:GetParameter", "ssm:GetParameters"]
+        resources = ["arn:aws:ssm:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/oauth/microsoft/*"]
+      }
+      kms_oauth = {
+        effect    = "Allow"
+        actions   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
+        resources = [aws_kms_key.oauth_tokens_secondary[0].arn]
+      }
+      kms_ssm = {
+        effect    = "Allow"
+        actions   = ["kms:Decrypt"]
+        resources = ["arn:aws:kms:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:alias/aws/ssm"]
+      }
+      sqs_receive = {
+        effect    = "Allow"
+        actions   = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"]
+        resources = [aws_sqs_queue.sharepoint_sync_secondary[0].arn]
+      }
+      sqs_send = {
+        effect    = "Allow"
+        actions   = ["sqs:SendMessage"]
+        resources = [aws_sqs_queue.file_ingestion_secondary[0].arn, aws_sqs_queue.delete_queue_secondary[0].arn]
+      }
+      dynamodb_audit = {
+        effect    = "Allow"
+        actions   = ["dynamodb:PutItem"]
+        resources = [module.audit_logs_table_secondary[0].dynamodb_table_arn]
+      }
+    },
+    local.outcomeops_license_iam,
+    local.ha_writer_events_iam_secondary,
+  )
+
+  tags = { Purpose = "sharepoint-sync" }
+}
+
+resource "aws_lambda_event_source_mapping" "sharepoint_sync_secondary" {
+  count            = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  provider         = aws.secondary
+  event_source_arn = aws_sqs_queue.sharepoint_sync_secondary[0].arn
+  function_name    = module.sharepoint_sync_lambda_secondary[0].lambda_function_name
+  batch_size       = 1
+  scaling_config {
+    maximum_concurrency = 5
+  }
+}
+
+# OneDrive sync
+module "onedrive_sync_lambda_secondary" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "8.1.2"
+
+  count     = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  providers = { aws = aws.secondary }
+
+  function_name = "${var.environment}-${var.app_name}-onedrive-sync"
+  description   = "OneDrive sync (secondary region)"
+  handler       = "handler.lambda_handler"
+  runtime       = "python3.12"
+  timeout       = 900
+  memory_size   = 1024
+
+  source_path = [
+    { path = "${path.module}/../lambda/onedrive-sync", pip_requirements = true, patterns = ["!tests/.*", "!__pycache__/.*", "!\\.venv/.*", "!.*\\.pyc"] },
+    { path = "${path.module}/../lambda/shared", prefix_in_zip = "shared" },
+  ]
+
+  cloudwatch_logs_retention_in_days = 7
+  cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs_secondary[0].arn
+  quiet_archive_local_exec          = true
+
+  layers = [var.outcomeops_license_layer_arn_secondary]
+
+  environment_variables = merge(
+    {
+      ENV                  = var.environment
+      APP_NAME             = var.app_name
+      WORKSPACES_TABLE     = module.workspaces_table_secondary[0].dynamodb_table_id
+      OAUTH_KMS_KEY_ARN    = aws_kms_key.oauth_tokens_secondary[0].arn
+      FILE_INGESTION_QUEUE = aws_sqs_queue.file_ingestion_secondary[0].url
+      DELETE_QUEUE         = aws_sqs_queue.delete_queue_secondary[0].url
+      AUDIT_TABLE          = module.audit_logs_table_secondary[0].dynamodb_table_id
+    },
+    local.outcomeops_license_env,
+    local.ha_writer_env_secondary,
+  )
+
+  attach_policy_statements = true
+  policy_statements = merge(
+    {
+      dynamodb = {
+        effect  = "Allow"
+        actions = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query"]
+        resources = [
+          module.workspaces_table_secondary[0].dynamodb_table_arn,
+          "${module.workspaces_table_secondary[0].dynamodb_table_arn}/index/*",
+        ]
+      }
+      ssm_read = {
+        effect    = "Allow"
+        actions   = ["ssm:GetParameter", "ssm:GetParameters"]
+        resources = ["arn:aws:ssm:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/oauth/microsoft/*"]
+      }
+      kms_oauth = {
+        effect    = "Allow"
+        actions   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
+        resources = [aws_kms_key.oauth_tokens_secondary[0].arn]
+      }
+      kms_ssm = {
+        effect    = "Allow"
+        actions   = ["kms:Decrypt"]
+        resources = ["arn:aws:kms:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:alias/aws/ssm"]
+      }
+      sqs_receive = {
+        effect    = "Allow"
+        actions   = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"]
+        resources = [aws_sqs_queue.onedrive_sync_secondary[0].arn]
+      }
+      sqs_send = {
+        effect    = "Allow"
+        actions   = ["sqs:SendMessage"]
+        resources = [aws_sqs_queue.file_ingestion_secondary[0].arn, aws_sqs_queue.delete_queue_secondary[0].arn]
+      }
+      dynamodb_audit = {
+        effect    = "Allow"
+        actions   = ["dynamodb:PutItem"]
+        resources = [module.audit_logs_table_secondary[0].dynamodb_table_arn]
+      }
+    },
+    local.outcomeops_license_iam,
+    local.ha_writer_events_iam_secondary,
+  )
+
+  tags = { Purpose = "onedrive-sync" }
+}
+
+resource "aws_lambda_event_source_mapping" "onedrive_sync_secondary" {
+  count            = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  provider         = aws.secondary
+  event_source_arn = aws_sqs_queue.onedrive_sync_secondary[0].arn
+  function_name    = module.onedrive_sync_lambda_secondary[0].lambda_function_name
+  batch_size       = 1
+  scaling_config {
+    maximum_concurrency = 5
+  }
+}
+
+# OneNote sync
+module "onenote_sync_lambda_secondary" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "8.1.2"
+
+  count     = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  providers = { aws = aws.secondary }
+
+  function_name = "${var.environment}-${var.app_name}-onenote-sync"
+  description   = "OneNote sync (secondary region)"
+  handler       = "handler.lambda_handler"
+  runtime       = "python3.12"
+  timeout       = 900
+  memory_size   = 1024
+
+  source_path = [
+    { path = "${path.module}/../lambda/onenote-sync", pip_requirements = true, patterns = ["!tests/.*", "!__pycache__/.*", "!\\.venv/.*", "!.*\\.pyc"] },
+    { path = "${path.module}/../lambda/shared", prefix_in_zip = "shared" },
+  ]
+
+  cloudwatch_logs_retention_in_days = 7
+  cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs_secondary[0].arn
+  quiet_archive_local_exec          = true
+
+  layers = [var.outcomeops_license_layer_arn_secondary]
+
+  environment_variables = merge(
+    {
+      ENV                  = var.environment
+      APP_NAME             = var.app_name
+      WORKSPACES_TABLE     = module.workspaces_table_secondary[0].dynamodb_table_id
+      OAUTH_KMS_KEY_ARN    = aws_kms_key.oauth_tokens_secondary[0].arn
+      FILE_INGESTION_QUEUE = aws_sqs_queue.file_ingestion_secondary[0].url
+      DELETE_QUEUE         = aws_sqs_queue.delete_queue_secondary[0].url
+      AUDIT_TABLE          = module.audit_logs_table_secondary[0].dynamodb_table_id
+    },
+    local.outcomeops_license_env,
+    local.ha_writer_env_secondary,
+  )
+
+  attach_policy_statements = true
+  policy_statements = merge(
+    {
+      dynamodb = {
+        effect  = "Allow"
+        actions = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query"]
+        resources = [
+          module.workspaces_table_secondary[0].dynamodb_table_arn,
+          "${module.workspaces_table_secondary[0].dynamodb_table_arn}/index/*",
+        ]
+      }
+      ssm_read = {
+        effect    = "Allow"
+        actions   = ["ssm:GetParameter", "ssm:GetParameters"]
+        resources = ["arn:aws:ssm:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/oauth/microsoft/*"]
+      }
+      kms_oauth = {
+        effect    = "Allow"
+        actions   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
+        resources = [aws_kms_key.oauth_tokens_secondary[0].arn]
+      }
+      kms_ssm = {
+        effect    = "Allow"
+        actions   = ["kms:Decrypt"]
+        resources = ["arn:aws:kms:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:alias/aws/ssm"]
+      }
+      sqs_receive = {
+        effect    = "Allow"
+        actions   = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"]
+        resources = [aws_sqs_queue.onenote_sync_secondary[0].arn]
+      }
+      sqs_send = {
+        effect    = "Allow"
+        actions   = ["sqs:SendMessage"]
+        resources = [aws_sqs_queue.file_ingestion_secondary[0].arn, aws_sqs_queue.delete_queue_secondary[0].arn]
+      }
+      dynamodb_audit = {
+        effect    = "Allow"
+        actions   = ["dynamodb:PutItem"]
+        resources = [module.audit_logs_table_secondary[0].dynamodb_table_arn]
+      }
+    },
+    local.outcomeops_license_iam,
+    local.ha_writer_events_iam_secondary,
+  )
+
+  tags = { Purpose = "onenote-sync" }
+}
+
+resource "aws_lambda_event_source_mapping" "onenote_sync_secondary" {
+  count            = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  provider         = aws.secondary
+  event_source_arn = aws_sqs_queue.onenote_sync_secondary[0].arn
+  function_name    = module.onenote_sync_lambda_secondary[0].lambda_function_name
+  batch_size       = 1
+  scaling_config {
+    maximum_concurrency = 5
+  }
+}
+
+# ----------------------------------------------------------------------------
+# Database sync (secondary). Uses db_credentials_secondary KMS (not oauth).
+# ----------------------------------------------------------------------------
+
+module "database_sync_lambda_secondary" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "8.1.2"
+
+  count     = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  providers = { aws = aws.secondary }
+
+  function_name = "${var.environment}-${var.app_name}-database-sync"
+  description   = "Database sync (secondary region)"
+  handler       = "handler.lambda_handler"
+  runtime       = "python3.12"
+  timeout       = 900
+  memory_size   = 1024
+
+  source_path = [
+    { path = "${path.module}/../lambda/database-sync", pip_requirements = true, patterns = ["!tests/.*", "!__pycache__/.*", "!\\.venv/.*", "!.*\\.pyc"] },
+    { path = "${path.module}/../lambda/shared", prefix_in_zip = "shared" },
+  ]
+
+  cloudwatch_logs_retention_in_days = 7
+  cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs_secondary[0].arn
+  quiet_archive_local_exec          = true
+
+  layers = [var.outcomeops_license_layer_arn_secondary]
+
+  environment_variables = merge(
+    {
+      ENV                       = var.environment
+      APP_NAME                  = var.app_name
+      WORKSPACES_TABLE          = module.workspaces_table_secondary[0].dynamodb_table_id
+      DB_CREDENTIAL_KMS_KEY_ARN = aws_kms_key.db_credentials_secondary[0].arn
+      FILE_INGESTION_QUEUE      = aws_sqs_queue.file_ingestion_secondary[0].url
+      DELETE_QUEUE              = aws_sqs_queue.delete_queue_secondary[0].url
+      AUDIT_TABLE               = module.audit_logs_table_secondary[0].dynamodb_table_id
+    },
+    local.outcomeops_license_env,
+    local.ha_writer_env_secondary,
+  )
+
+  attach_policy_statements = true
+  policy_statements = merge(
+    {
+      dynamodb = {
+        effect  = "Allow"
+        actions = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query"]
+        resources = [
+          module.workspaces_table_secondary[0].dynamodb_table_arn,
+          "${module.workspaces_table_secondary[0].dynamodb_table_arn}/index/*",
+        ]
+      }
+      kms_credentials = {
+        effect    = "Allow"
+        actions   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey"]
+        resources = [aws_kms_key.db_credentials_secondary[0].arn]
+      }
+      sqs_receive = {
+        effect    = "Allow"
+        actions   = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"]
+        resources = [aws_sqs_queue.database_sync_secondary[0].arn]
+      }
+      sqs_send = {
+        effect    = "Allow"
+        actions   = ["sqs:SendMessage"]
+        resources = [aws_sqs_queue.file_ingestion_secondary[0].arn, aws_sqs_queue.delete_queue_secondary[0].arn]
+      }
+      dynamodb_audit = {
+        effect    = "Allow"
+        actions   = ["dynamodb:PutItem"]
+        resources = [module.audit_logs_table_secondary[0].dynamodb_table_arn]
+      }
+    },
+    local.outcomeops_license_iam,
+    local.ha_writer_events_iam_secondary,
+  )
+
+  tags = { Purpose = "database-sync" }
+}
+
+resource "aws_lambda_event_source_mapping" "database_sync_secondary" {
+  count            = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  provider         = aws.secondary
+  event_source_arn = aws_sqs_queue.database_sync_secondary[0].arn
+  function_name    = module.database_sync_lambda_secondary[0].lambda_function_name
+  batch_size       = 1
+  scaling_config {
+    maximum_concurrency = 5
+  }
+}
