@@ -796,89 +796,25 @@ module "ui_ecs" {
         }
       }
 
-      # Task IAM role for Lambda Function URL invocation (SigV4 signed requests)
+      # Task IAM role for Lambda Function URL invocation (SigV4 signed requests).
+      #
+      # Single consolidated statement granting both lambda:InvokeFunctionUrl
+      # and lambda:InvokeFunction on this app's Lambdas (region-scoped name
+      # prefix). The dual-action + wildcard-resource shape is required in
+      # us-east-2 — granting only lambda:InvokeFunctionUrl on a specific
+      # function ARN returns AccessDeniedException at the Function URL
+      # gateway, even though the IAM simulator reports "allowed." us-west-2
+      # works with either shape; this superset is safe in both. See the
+      # matching block in ui-fargate-secondary.tf for the full rationale.
       tasks_iam_role_statements = concat([
         {
-          effect = "Allow"
-          actions = [
-            "lambda:InvokeFunctionUrl"
+          effect  = "Allow"
+          actions = ["lambda:InvokeFunctionUrl", "lambda:InvokeFunction"]
+          resources = [
+            "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.environment}-${var.app_name}-*"
           ]
-          resources = [module.chat_streaming_lambda.lambda_function_arn]
         }
         ],
-        # Add permission for workspace, Confluence, Jira, and GitHub Lambdas when workspaces feature is enabled
-        var.enable_workspaces ? [
-          {
-            effect = "Allow"
-            actions = [
-              "lambda:InvokeFunctionUrl"
-            ]
-            resources = [module.workspace_management_lambda[0].lambda_function_arn]
-          },
-          {
-            effect = "Allow"
-            actions = [
-              "lambda:InvokeFunctionUrl"
-            ]
-            resources = [module.confluence_integration_lambda[0].lambda_function_arn]
-          },
-          {
-            effect = "Allow"
-            actions = [
-              "lambda:InvokeFunctionUrl"
-            ]
-            resources = [module.jira_integration_lambda[0].lambda_function_arn]
-          },
-          {
-            effect = "Allow"
-            actions = [
-              "lambda:InvokeFunctionUrl"
-            ]
-            resources = [module.github_integration_lambda[0].lambda_function_arn]
-          },
-          {
-            effect = "Allow"
-            actions = [
-              "lambda:InvokeFunctionUrl"
-            ]
-            resources = [module.outlook_integration_lambda[0].lambda_function_arn]
-          },
-          {
-            effect = "Allow"
-            actions = [
-              "lambda:InvokeFunctionUrl"
-            ]
-            resources = [module.teams_integration_lambda[0].lambda_function_arn]
-          },
-          {
-            effect = "Allow"
-            actions = [
-              "lambda:InvokeFunctionUrl"
-            ]
-            resources = [module.sharepoint_integration_lambda[0].lambda_function_arn]
-          },
-          {
-            effect = "Allow"
-            actions = [
-              "lambda:InvokeFunctionUrl"
-            ]
-            resources = [module.onedrive_integration_lambda[0].lambda_function_arn]
-          },
-          {
-            effect = "Allow"
-            actions = [
-              "lambda:InvokeFunctionUrl"
-            ]
-            resources = [module.onenote_integration_lambda[0].lambda_function_arn]
-          },
-          {
-            effect = "Allow"
-            actions = [
-              "lambda:InvokeFunctionUrl"
-            ]
-            resources = [module.database_integration_lambda[0].lambda_function_arn]
-          }
-        ] : [],
         # SSM read for scanner JWT secret when security scanner is enabled
         local.scanner_enabled ? [
           {

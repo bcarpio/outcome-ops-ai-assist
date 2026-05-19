@@ -176,64 +176,32 @@ module "ui_ecs_secondary" {
 
       tasks_iam_role_statements = concat(
         [
+          # Lambda Function URL invokes (single consolidated statement).
+          #
+          # us-east-2 evaluates Function URL authorization differently than
+          # us-west-2: granting lambda:InvokeFunctionUrl on a SPECIFIC
+          # function ARN returns AccessDeniedException at the URL gateway,
+          # even though the IAM simulator reports "allowed." Two changes
+          # are required for us-east-2 to authorize:
+          #   1. Both lambda:InvokeFunctionUrl AND lambda:InvokeFunction
+          #      must be granted (the gateway internally re-checks via
+          #      Invoke).
+          #   2. The Resource must use a region-scoped wildcard (the
+          #      application's name prefix is sufficient); explicit
+          #      function ARNs and `function:NAME*` suffixes both fail.
+          # us-west-2 works with either shape; the broader pattern below
+          # is a superset so it's safe in both regions. Bisected empirically.
+          # The primary's task role (ui-fargate.tf) uses the same shape for
+          # symmetry and to defend against this behavior rolling out to
+          # other regions.
           {
-            effect    = "Allow"
-            actions   = ["lambda:InvokeFunctionUrl"]
-            resources = [module.chat_streaming_lambda_secondary[0].lambda_function_arn]
+            effect  = "Allow"
+            actions = ["lambda:InvokeFunctionUrl", "lambda:InvokeFunction"]
+            resources = [
+              "arn:aws:lambda:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:function:${var.environment}-${var.app_name}-*"
+            ]
           }
         ],
-        var.enable_workspaces ? [
-          {
-            effect    = "Allow"
-            actions   = ["lambda:InvokeFunctionUrl"]
-            resources = [module.workspace_management_lambda_secondary[0].lambda_function_arn]
-          },
-          {
-            effect    = "Allow"
-            actions   = ["lambda:InvokeFunctionUrl"]
-            resources = [module.confluence_integration_lambda_secondary[0].lambda_function_arn]
-          },
-          {
-            effect    = "Allow"
-            actions   = ["lambda:InvokeFunctionUrl"]
-            resources = [module.jira_integration_lambda_secondary[0].lambda_function_arn]
-          },
-          {
-            effect    = "Allow"
-            actions   = ["lambda:InvokeFunctionUrl"]
-            resources = [module.github_integration_lambda_secondary[0].lambda_function_arn]
-          },
-          {
-            effect    = "Allow"
-            actions   = ["lambda:InvokeFunctionUrl"]
-            resources = [module.outlook_integration_lambda_secondary[0].lambda_function_arn]
-          },
-          {
-            effect    = "Allow"
-            actions   = ["lambda:InvokeFunctionUrl"]
-            resources = [module.teams_integration_lambda_secondary[0].lambda_function_arn]
-          },
-          {
-            effect    = "Allow"
-            actions   = ["lambda:InvokeFunctionUrl"]
-            resources = [module.sharepoint_integration_lambda_secondary[0].lambda_function_arn]
-          },
-          {
-            effect    = "Allow"
-            actions   = ["lambda:InvokeFunctionUrl"]
-            resources = [module.onedrive_integration_lambda_secondary[0].lambda_function_arn]
-          },
-          {
-            effect    = "Allow"
-            actions   = ["lambda:InvokeFunctionUrl"]
-            resources = [module.onenote_integration_lambda_secondary[0].lambda_function_arn]
-          },
-          {
-            effect    = "Allow"
-            actions   = ["lambda:InvokeFunctionUrl"]
-            resources = [module.database_integration_lambda_secondary[0].lambda_function_arn]
-          }
-        ] : [],
         # Scanner JWT SSM access — secondary copy of the SSM param ships
         # in chunk 9i. Grant by ARN-pattern since the resource may not
         # exist yet when this Fargate applies; chunk 9i landing fills it.
