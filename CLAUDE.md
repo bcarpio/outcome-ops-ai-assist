@@ -54,6 +54,27 @@ The KB contains: ADRs, READMEs, code maps, infrastructure patterns, handler patt
 ./scripts/outcome-ops-assist --env prd "What are our Lambda handler standards?"
 ```
 
+## Environment Semantics
+
+The repo's `terraform/*.tfvars` map to environments, not customers:
+
+- **`prd.tfvars`** targets the **repo owner's personal AWS account**, not a real
+  customer production. It is effectively the maintainer's dev/diagnostics sandbox —
+  the only running instance where in-flight work (HA, replication, new integrations)
+  can be exercised end-to-end against live AWS services. Worst case for an outage is
+  re-ingesting the owner's own repos to regenerate code-maps; Claude Code sessions
+  can read ADRs directly from the source repo while the MCP server is down.
+- **`dev.tfvars`** is a parallel deploy in the same AWS account, used for
+  lower-stakes experiments.
+- **Real customer production** runs in *the customer's* AWS account, not here. The
+  repo never has direct access to it; changes propagate via the customer's own CI/CD
+  bringing this codebase up.
+
+**Implication for troubleshooting:** be willing to do real diagnostic work against
+`prd` — sample DLQs, redrive queues, restart Fargate services, even purge if needed.
+You are not poking a customer environment. Discuss truly destructive moves (DDB
+table delete, KMS key destroy) before acting, but ordinary triage is in-scope.
+
 ## Essential Workflow Rules
 
 ### Ask, Don't Guess
