@@ -60,13 +60,41 @@ from __future__ import annotations
 
 import argparse
 import os
+import random
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Optional, Tuple
 
 import boto3
+from botocore.config import Config
 from botocore.exceptions import ClientError
+
+
+# Shared boto3 config with adaptive retries. "adaptive" mode tracks
+# throttling responses and dynamically slows down requests to stay
+# under the table's actual ceiling — much smoother than the default
+# fixed exponential backoff. max_attempts=10 gives us room for sustained
+# bursts (audit-logs at ~66k items + 25-way parallelism hits the
+# on-demand burst ceiling repeatedly). Applied to every boto3 client
+# and resource in this script.
+BOTO_CONFIG = Config(
+    retries={"max_attempts": 10, "mode": "adaptive"},
+    # Default read timeout (60s) is fine; keep connect_timeout snappy.
+    connect_timeout=5,
+    read_timeout=60,
+)
+
+# Throttling error codes that warrant an explicit application-level
+# retry on top of boto3's SDK-level retry budget. We hit these when
+# sustained writes exceed the on-demand burst capacity faster than
+# adaptive mode can ramp down.
+_THROTTLE_CODES = frozenset({
+    "ThrottlingException",
+    "ProvisionedThroughputExceededException",
+    "RequestLimitExceeded",
+    "TransactionConflictException",
+})
 
 
 # ---------------------------------------------------------------------------
@@ -143,19 +171,39 @@ def _scan_paginated(table) -> List[dict]:
 
 
 def _put_item_idempotent(table, item: dict) -> Tuple[bool, Optional[str]]:
-    """PutItem with ``attribute_not_exists(PK)``. Returns (wrote_new, error)."""
+    """PutItem with ``attribute_not_exists(PK)``. Returns (wrote_new, error).
 
-    try:
-        table.put_item(
-            Item=item,
-            ConditionExpression="attribute_not_exists(PK)",
-        )
-        return True, None
-    except ClientError as exc:
-        code = exc.response.get("Error", {}).get("Code", "")
-        if code == "ConditionalCheckFailedException":
-            return False, None
-        return False, code
+    Belt-and-suspenders retry on top of boto3's adaptive SDK retries:
+    if a throttling error escapes the SDK budget (10 attempts), we
+    retry up to 5 more times here with full-jitter exponential
+    backoff. ConditionalCheckFailedException is the expected
+    "already-present" signal and returns (False, None) on the first
+    attempt — never retried.
+    """
+
+    max_app_retries = 5
+    for attempt in range(max_app_retries + 1):
+        try:
+            table.put_item(
+                Item=item,
+                ConditionExpression="attribute_not_exists(PK)",
+            )
+            return True, None
+        except ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code", "")
+            if code == "ConditionalCheckFailedException":
+                return False, None
+            if code in _THROTTLE_CODES and attempt < max_app_retries:
+                # Full-jitter backoff: random in [0, base * 2**attempt),
+                # capped at 30s. The randomization spreads concurrent
+                # workers so they don't synchronize into a stampede.
+                delay = random.uniform(
+                    0.0, min(30.0, 0.5 * (2 ** attempt))
+                )
+                time.sleep(delay)
+                continue
+            return False, code
+    return False, "exhausted-retries"
 
 
 def _bootstrap_table(
@@ -176,8 +224,8 @@ def _bootstrap_table(
     suffix = TABLE_INVENTORY[short_name]
     table_name = _table_name(env, app, suffix)
 
-    primary_ddb = boto3.resource("dynamodb", region_name=primary_region)
-    secondary_ddb = boto3.resource("dynamodb", region_name=secondary_region)
+    primary_ddb = boto3.resource("dynamodb", region_name=primary_region, config=BOTO_CONFIG)
+    secondary_ddb = boto3.resource("dynamodb", region_name=secondary_region, config=BOTO_CONFIG)
     primary_table = primary_ddb.Table(table_name)
     secondary_table = secondary_ddb.Table(table_name)
 
@@ -250,8 +298,8 @@ def _bootstrap_s3_kb(
     dst_bucket = _kb_bucket_secondary(env, app, account_id)
 
     print(f"  listing {src_bucket} ({primary_region})...")
-    primary_s3 = boto3.client("s3", region_name=primary_region)
-    secondary_s3 = boto3.client("s3", region_name=secondary_region)
+    primary_s3 = boto3.client("s3", region_name=primary_region, config=BOTO_CONFIG)
+    secondary_s3 = boto3.client("s3", region_name=secondary_region, config=BOTO_CONFIG)
 
     keys: List[str] = []
     paginator = primary_s3.get_paginator("list_objects_v2")
@@ -317,8 +365,8 @@ def _bootstrap_vectors(
     bucket = _vector_bucket(env, app)
     index = _vector_index()
 
-    primary_s3v = boto3.client("s3vectors", region_name=primary_region)
-    secondary_s3v = boto3.client("s3vectors", region_name=secondary_region)
+    primary_s3v = boto3.client("s3vectors", region_name=primary_region, config=BOTO_CONFIG)
+    secondary_s3v = boto3.client("s3vectors", region_name=secondary_region, config=BOTO_CONFIG)
 
     print(f"  listing vectors in {bucket}/{index} ({primary_region})...")
 
@@ -399,7 +447,7 @@ def main() -> int:
     secondary = _env("SECONDARY")
 
     # Resolve account id from STS (the secondary bucket name includes it).
-    sts = boto3.client("sts", region_name=primary)
+    sts = boto3.client("sts", region_name=primary, config=BOTO_CONFIG)
     account_id = sts.get_caller_identity()["Account"]
 
     print(f"HA bootstrap for {env}-{app}")
