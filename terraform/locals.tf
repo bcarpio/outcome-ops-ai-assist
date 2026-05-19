@@ -12,16 +12,28 @@ locals {
     OUTCOMEOPS_USAGE_ENABLED      = "true"
   }
 
+  # When HA is on, the license SSM param lives in BOTH regions so
+  # secondary-region Lambdas can read it locally (cross-region SSM reads
+  # would couple secondary availability to primary). Grant access to
+  # both region ARNs in the same statement; without this, secondary
+  # Lambdas attaching this policy get only the primary-region ARN and
+  # fail license validation with AccessDeniedException.
   outcomeops_license_iam = {
     outcomeops_license_ssm_read = {
-      effect    = "Allow"
-      actions   = ["ssm:GetParameter"]
-      resources = ["arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${var.outcomeops_license_ssm_param}"]
+      effect  = "Allow"
+      actions = ["ssm:GetParameter"]
+      resources = compact([
+        "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${var.outcomeops_license_ssm_param}",
+        var.secondary_region != "" ? "arn:aws:ssm:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:parameter${var.outcomeops_license_ssm_param}" : "",
+      ])
     }
     outcomeops_license_kms_decrypt = {
-      effect    = "Allow"
-      actions   = ["kms:Decrypt"]
-      resources = ["arn:aws:kms:${var.aws_region}:${data.aws_caller_identity.current.account_id}:alias/aws/ssm"]
+      effect  = "Allow"
+      actions = ["kms:Decrypt"]
+      resources = compact([
+        "arn:aws:kms:${var.aws_region}:${data.aws_caller_identity.current.account_id}:alias/aws/ssm",
+        var.secondary_region != "" ? "arn:aws:kms:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:alias/aws/ssm" : "",
+      ])
     }
   }
 }
