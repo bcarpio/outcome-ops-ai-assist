@@ -132,8 +132,15 @@ variable "health_check_matcher" {
 }
 
 # Security
+# Map of caller-defined label → security group ID. Was list(string) but
+# that made for_each fail at plan time during -target bootstrap applies:
+# any unknown element value marks the whole list as unknown, and
+# `for_each` requires its KEY set to be known. Map keys are static
+# (caller-supplied strings); values can be computed (resource attrs) —
+# which is exactly what terraform recommends for "unknown values in
+# for_each."
 variable "allowed_security_group_ids" {
-  type        = list(string)
-  description = "Security group IDs allowed to reach this MCP server"
-  default     = []
+  type        = map(string)
+  description = "Map of label → security group ID. Labels are arbitrary stable strings used as for_each keys; values are the SG IDs allowed to reach this MCP server."
+  default     = {}
 }

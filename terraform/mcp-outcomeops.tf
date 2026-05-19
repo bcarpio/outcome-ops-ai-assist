@@ -82,7 +82,17 @@ module "mcp_outcomeops" {
   alb_listener_rule_priority = 3
   mcp_path_pattern           = "/mcp/v1"
 
-  allowed_security_group_ids = [module.ui_alb_sg.security_group_id]
+  allowed_security_group_ids = {
+    ui_alb = module.ui_alb_sg.security_group_id
+  }
+}
+
+# State migration: the mcp-server module switched aws_security_group_rule.mcp_ingress
+# from `count`-indexed to `for_each`-keyed. Without this, terraform plans a
+# destroy + recreate for the existing rule.
+moved {
+  from = module.mcp_outcomeops[0].aws_security_group_rule.mcp_ingress[0]
+  to   = module.mcp_outcomeops[0].aws_security_group_rule.mcp_ingress["ui_alb"]
 }
 
 # -----------------------------------------------------------------------------

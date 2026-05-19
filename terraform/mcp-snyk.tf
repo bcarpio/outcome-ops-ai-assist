@@ -81,10 +81,10 @@ module "mcp_snyk" {
   # conditional + compact() keeps the disable path
   # (mcp_server_enabled = false) clean when module.mcp_outcomeops has
   # zero instances.
-  allowed_security_group_ids = compact([
-    module.ui_alb_sg.security_group_id,
-    var.mcp_server_enabled ? module.mcp_outcomeops[0].security_group_id : "",
-  ])
+  allowed_security_group_ids = merge(
+    { ui_alb = module.ui_alb_sg.security_group_id },
+    var.mcp_server_enabled ? { mcp_outcomeops = module.mcp_outcomeops[0].security_group_id } : {},
+  )
 }
 
 # -----------------------------------------------------------------------------

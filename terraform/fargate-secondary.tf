@@ -112,7 +112,9 @@ module "mcp_outcomeops_secondary" {
   alb_listener_rule_priority = 3
   mcp_path_pattern           = "/mcp/v1"
 
-  allowed_security_group_ids = [module.ui_alb_sg_secondary.security_group_id]
+  allowed_security_group_ids = {
+    ui_alb = module.ui_alb_sg_secondary.security_group_id
+  }
 }
 
 resource "aws_iam_role_policy" "mcp_outcomeops_secondary" {
@@ -274,10 +276,10 @@ module "mcp_sonarqube_secondary" {
   alb_listener_rule_priority = 7
   mcp_path_pattern           = "/mcp"
 
-  allowed_security_group_ids = compact([
-    module.ui_alb_sg_secondary.security_group_id,
-    var.mcp_server_enabled ? module.mcp_outcomeops_secondary[0].security_group_id : "",
-  ])
+  allowed_security_group_ids = merge(
+    { ui_alb = module.ui_alb_sg_secondary.security_group_id },
+    var.mcp_server_enabled ? { mcp_outcomeops = module.mcp_outcomeops_secondary[0].security_group_id } : {},
+  )
 }
 
 # Operator must pre-create the SonarQube token in secondary's SSM before

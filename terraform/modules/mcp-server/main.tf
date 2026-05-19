@@ -29,12 +29,11 @@ resource "aws_security_group" "mcp" {
 }
 
 resource "aws_security_group_rule" "mcp_ingress" {
-  # Indexed for_each so the rule count is known-at-plan-time from the
-  # caller's list LENGTH (which is structural) even when individual
-  # source_security_group_id values are still computed (e.g., during a
-  # -target=ECR-only bootstrap apply where the upstream security group
-  # hasn't been created yet).
-  for_each = { for idx, sg_id in var.allowed_security_group_ids : tostring(idx) => sg_id }
+  # for_each on the caller's label→SG-ID map. Keys are static strings
+  # picked by the caller (e.g. "ui_alb", "mcp_outcomeops"), so the
+  # instance set is known at plan time even when the SG IDs themselves
+  # are computed during a -target bootstrap apply.
+  for_each = var.allowed_security_group_ids
 
   type                     = "ingress"
   from_port                = var.container_port
@@ -42,7 +41,7 @@ resource "aws_security_group_rule" "mcp_ingress" {
   protocol                 = "tcp"
   source_security_group_id = each.value
   security_group_id        = aws_security_group.mcp.id
-  description              = "Allow inbound from authorized callers"
+  description              = "Allow inbound from ${each.key}"
 }
 
 resource "aws_security_group_rule" "mcp_egress" {

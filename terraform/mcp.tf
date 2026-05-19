@@ -91,10 +91,24 @@ module "mcp_sonarqube" {
   # conditional + compact() keeps the disable path
   # (mcp_server_enabled = false) clean when module.mcp_outcomeops has
   # zero instances.
-  allowed_security_group_ids = compact([
-    module.ui_alb_sg.security_group_id,
-    var.mcp_server_enabled ? module.mcp_outcomeops[0].security_group_id : "",
-  ])
+  allowed_security_group_ids = merge(
+    { ui_alb = module.ui_alb_sg.security_group_id },
+    var.mcp_server_enabled ? { mcp_outcomeops = module.mcp_outcomeops[0].security_group_id } : {},
+  )
+}
+
+# State migration: the mcp-server module switched aws_security_group_rule.mcp_ingress
+# from `count`-indexed to `for_each`-keyed. Without these terraform plans a
+# destroy + recreate. The OLD caller order was [ui_alb_sg, mcp_outcomeops_sg],
+# so [0] → "ui_alb" and [1] → "mcp_outcomeops".
+moved {
+  from = module.mcp_sonarqube[0].aws_security_group_rule.mcp_ingress[0]
+  to   = module.mcp_sonarqube[0].aws_security_group_rule.mcp_ingress["ui_alb"]
+}
+
+moved {
+  from = module.mcp_sonarqube[0].aws_security_group_rule.mcp_ingress[1]
+  to   = module.mcp_sonarqube[0].aws_security_group_rule.mcp_ingress["mcp_outcomeops"]
 }
 
 # -----------------------------------------------------------------------------
