@@ -85,10 +85,11 @@ resource "aws_cloudwatch_event_target" "replicate_to_secondary" {
     arn = aws_sqs_queue.replication_to_secondary_dlq[0].arn
   }
 
-  retry_policy {
-    maximum_retry_attempts       = 185
-    maximum_event_age_in_seconds = 86400
-  }
+  # retry_policy intentionally omitted: EventBridge rejects it for
+  # event-bus-to-event-bus targets (only invocation targets accept it).
+  # AWS uses default 24h retry / 185 attempts under the hood anyway,
+  # which matches what we'd have configured. Beyond that the DLQ above
+  # catches the event for ha-replay-dlq to drain.
 }
 
 resource "aws_iam_role" "event_bus_cross_region_putter_to_secondary" {
@@ -266,10 +267,7 @@ resource "aws_cloudwatch_event_target" "replicate_to_primary" {
     arn = aws_sqs_queue.replication_to_primary_dlq[0].arn
   }
 
-  retry_policy {
-    maximum_retry_attempts       = 185
-    maximum_event_age_in_seconds = 86400
-  }
+  # retry_policy intentionally omitted — see replicate_to_secondary above.
 }
 
 resource "aws_iam_role" "event_bus_cross_region_putter_to_primary" {

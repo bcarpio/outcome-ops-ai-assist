@@ -35,6 +35,7 @@ module "github_integration_lambda_secondary" {
   }
 
   function_name = "${var.environment}-${var.app_name}-github-integration"
+  role_name     = "${var.environment}-${var.app_name}-github-integration-secondary"
   description   = "GitHub App OAuth and connection management (secondary region)"
   handler       = "handler.lambda_handler"
   runtime       = "python3.12"
@@ -161,6 +162,7 @@ module "confluence_integration_lambda_secondary" {
   }
 
   function_name = "${var.environment}-${var.app_name}-confluence-integration"
+  role_name     = "${var.environment}-${var.app_name}-confluence-integration-secondary"
   description   = "Confluence OAuth and connection management (secondary region)"
   handler       = "handler.lambda_handler"
   runtime       = "python3.12"
@@ -282,6 +284,7 @@ module "jira_integration_lambda_secondary" {
   }
 
   function_name = "${var.environment}-${var.app_name}-jira-integration"
+  role_name     = "${var.environment}-${var.app_name}-jira-integration-secondary"
   description   = "Jira OAuth and connection management (secondary region)"
   handler       = "handler.lambda_handler"
   runtime       = "python3.12"
@@ -403,6 +406,7 @@ module "outlook_integration_lambda_secondary" {
   }
 
   function_name = "${var.environment}-${var.app_name}-outlook-integration"
+  role_name     = "${var.environment}-${var.app_name}-outlook-integration-secondary"
   description   = "Outlook OAuth and connection management (secondary region)"
   handler       = "handler.lambda_handler"
   runtime       = "python3.12"
@@ -522,6 +526,7 @@ module "teams_integration_lambda_secondary" {
   }
 
   function_name = "${var.environment}-${var.app_name}-teams-integration"
+  role_name     = "${var.environment}-${var.app_name}-teams-integration-secondary"
   description   = "Microsoft Teams OAuth and connection management (secondary region)"
   handler       = "handler.lambda_handler"
   runtime       = "python3.12"
@@ -641,6 +646,7 @@ module "sharepoint_integration_lambda_secondary" {
   }
 
   function_name = "${var.environment}-${var.app_name}-sharepoint-integration"
+  role_name     = "${var.environment}-${var.app_name}-sharepoint-integration-secondary"
   description   = "SharePoint OAuth and connection management (secondary region)"
   handler       = "handler.lambda_handler"
   runtime       = "python3.12"
@@ -760,6 +766,7 @@ module "onedrive_integration_lambda_secondary" {
   }
 
   function_name = "${var.environment}-${var.app_name}-onedrive-integration"
+  role_name     = "${var.environment}-${var.app_name}-onedrive-integration-secondary"
   description   = "OneDrive OAuth and connection management (secondary region)"
   handler       = "handler.lambda_handler"
   runtime       = "python3.12"
@@ -879,6 +886,7 @@ module "onenote_integration_lambda_secondary" {
   }
 
   function_name = "${var.environment}-${var.app_name}-onenote-integration"
+  role_name     = "${var.environment}-${var.app_name}-onenote-integration-secondary"
   description   = "OneNote OAuth and connection management (secondary region)"
   handler       = "handler.lambda_handler"
   runtime       = "python3.12"
@@ -1007,6 +1015,7 @@ module "database_integration_lambda_secondary" {
   }
 
   function_name = "${var.environment}-${var.app_name}-database-integration"
+  role_name     = "${var.environment}-${var.app_name}-database-integration-secondary"
   description   = "Database connection management (secondary region)"
   timeout       = 60
   memory_size   = 1024

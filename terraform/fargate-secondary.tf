@@ -112,6 +112,8 @@ module "mcp_outcomeops_secondary" {
   alb_listener_rule_priority = 3
   mcp_path_pattern           = "/mcp/v1"
 
+  role_name_suffix = "-secondary"
+
   allowed_security_group_ids = {
     ui_alb = module.ui_alb_sg_secondary.security_group_id
   }
@@ -276,6 +278,8 @@ module "mcp_sonarqube_secondary" {
   alb_listener_rule_priority = 7
   mcp_path_pattern           = "/mcp"
 
+  role_name_suffix = "-secondary"
+
   allowed_security_group_ids = merge(
     { ui_alb = module.ui_alb_sg_secondary.security_group_id },
     var.mcp_server_enabled ? { mcp_outcomeops = module.mcp_outcomeops_secondary[0].security_group_id } : {},
@@ -341,6 +345,7 @@ module "security_scanner_lambda_secondary" {
   }
 
   function_name = "${var.environment}-${var.app_name}-security-scanner"
+  role_name     = "${var.environment}-${var.app_name}-security-scanner-secondary"
   description   = "Security scanner auth endpoint (secondary region)"
   handler       = "handler.lambda_handler"
   runtime       = "python3.12"

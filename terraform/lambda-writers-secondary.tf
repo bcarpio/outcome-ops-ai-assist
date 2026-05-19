@@ -29,6 +29,7 @@ module "file_ingestion_lambda_secondary" {
   }
 
   function_name = "${var.environment}-${var.app_name}-file-ingestion"
+  role_name     = "${var.environment}-${var.app_name}-file-ingestion-secondary"
   description   = "Central file ingestion (secondary region)"
   handler       = "handler.lambda_handler"
   runtime       = "python3.12"
@@ -144,6 +145,7 @@ module "process_documents_lambda_secondary" {
   }
 
   function_name = "${var.environment}-${var.app_name}-process-documents"
+  role_name     = "${var.environment}-${var.app_name}-process-documents-secondary"
   description   = "Document embedding and vector storage (secondary region)"
   handler       = "handler.lambda_handler"
   runtime       = "python3.12"
@@ -286,6 +288,7 @@ module "delete_worker_lambda_secondary" {
   }
 
   function_name = "${var.environment}-${var.app_name}-delete-worker"
+  role_name     = "${var.environment}-${var.app_name}-delete-worker-secondary"
   description   = "S3 + S3 Vectors delete worker (secondary region)"
   handler       = "handler.lambda_handler"
   runtime       = "python3.12"
@@ -368,6 +371,7 @@ module "process_batch_summary_lambda_secondary" {
   }
 
   function_name = "${var.environment}-${var.app_name}-process-batch-summary"
+  role_name     = "${var.environment}-${var.app_name}-process-batch-summary-secondary"
   description   = "Per-batch architectural summary + symbol-graph regen (secondary region)"
   handler       = "handler.lambda_handler"
   runtime       = "python3.12"
@@ -509,6 +513,7 @@ module "process_repo_summary_lambda_secondary" {
   }
 
   function_name = "${var.environment}-${var.app_name}-process-repo-summary"
+  role_name     = "${var.environment}-${var.app_name}-process-repo-summary-secondary"
   description   = "Per-repo architectural summary + code-unit fan-out (secondary region)"
   handler       = "handler.lambda_handler"
   runtime       = "python3.12"

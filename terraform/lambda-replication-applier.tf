@@ -52,11 +52,14 @@ module "replication_applier" {
   count = var.secondary_region != "" ? 1 : 0
 
   function_name = "${var.environment}-${var.app_name}-replication-applier"
-  description   = "Applies cross-region replication events to local DDB / S3 / S3 Vectors"
-  handler       = "handler.lambda_handler"
-  runtime       = "python3.12"
-  timeout       = 60
-  memory_size   = 512
+  # Primary: keep the default role name (matches function_name) so the
+  # already-deployed IAM role isn't renamed. Only the SECONDARY applier
+  # needs a -secondary suffix to avoid collision (IAM is global).
+  description = "Applies cross-region replication events to local DDB / S3 / S3 Vectors"
+  handler     = "handler.lambda_handler"
+  runtime     = "python3.12"
+  timeout     = 60
+  memory_size = 512
 
   source_path = [
     {
@@ -79,7 +82,12 @@ module "replication_applier" {
   }
 
   attach_policy_statements = true
-  policy_statements = {
+  # IMPORTANT: `policy_statements` map entries must each have non-null
+  # actions. Use merge() to conditionally INCLUDE kms_use rather than
+  # mapping its key to null — the lambda module passes the map straight
+  # into the inline policy, and a null entry makes IAM reject the policy
+  # with "Policy statement must contain actions" (MalformedPolicyDocument).
+  policy_statements = merge({
     dynamodb_write = {
       effect    = "Allow"
       actions   = ["dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem"]
@@ -104,12 +112,15 @@ module "replication_applier" {
       actions   = ["s3vectors:PutVectors", "s3vectors:DeleteVectors"]
       resources = [aws_s3vectors_index.knowledge_base.index_arn]
     }
-    kms_use = var.enable_cmk_encryption ? {
-      effect    = "Allow"
-      actions   = ["kms:Decrypt", "kms:GenerateDataKey"]
-      resources = [local.data_cmk_arn]
-    } : null
-  }
+    },
+    var.enable_cmk_encryption ? {
+      kms_use = {
+        effect    = "Allow"
+        actions   = ["kms:Decrypt", "kms:GenerateDataKey"]
+        resources = [local.data_cmk_arn]
+      }
+    } : {},
+  )
 
   tags = {
     Purpose = "ha-replication"
@@ -238,6 +249,7 @@ module "replication_applier_secondary" {
   }
 
   function_name = "${var.environment}-${var.app_name}-replication-applier"
+  role_name     = "${var.environment}-${var.app_name}-replication-applier-secondary"
   description   = "Applies cross-region replication events to local DDB / S3 / S3 Vectors (secondary region)"
   handler       = "handler.lambda_handler"
   runtime       = "python3.12"
@@ -265,7 +277,8 @@ module "replication_applier_secondary" {
   }
 
   attach_policy_statements = true
-  policy_statements = {
+  # See note on primary above re merge() vs ternary-to-null.
+  policy_statements = merge({
     dynamodb_write = {
       effect    = "Allow"
       actions   = ["dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem"]
@@ -287,12 +300,15 @@ module "replication_applier_secondary" {
       actions   = ["s3vectors:PutVectors", "s3vectors:DeleteVectors"]
       resources = [aws_s3vectors_index.knowledge_base_secondary[0].index_arn]
     }
-    kms_use = var.enable_cmk_encryption ? {
-      effect    = "Allow"
-      actions   = ["kms:Decrypt", "kms:GenerateDataKey"]
-      resources = [local.data_cmk_arn_secondary]
-    } : null
-  }
+    },
+    var.enable_cmk_encryption ? {
+      kms_use = {
+        effect    = "Allow"
+        actions   = ["kms:Decrypt", "kms:GenerateDataKey"]
+        resources = [local.data_cmk_arn_secondary]
+      }
+    } : {},
+  )
 
   tags = {
     Purpose = "ha-replication"

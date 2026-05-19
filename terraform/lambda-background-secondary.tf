@@ -93,6 +93,7 @@ module "audit_alert_lambda_secondary" {
   }
 
   function_name = "${var.environment}-${var.app_name}-audit-alert"
+  role_name     = "${var.environment}-${var.app_name}-audit-alert-secondary"
   description   = "Send SNS alerts for AI refusals (secondary region)"
   handler       = "handler.handler"
   runtime       = "python3.12"
@@ -188,6 +189,7 @@ module "analytics_aggregator_lambda_secondary" {
   }
 
   function_name = "${var.environment}-${var.app_name}-analytics-aggregator"
+  role_name     = "${var.environment}-${var.app_name}-analytics-aggregator-secondary"
   description   = "Aggregate audit-log writes into daily analytics rolls (secondary region)"
   handler       = "handler.handler"
   runtime       = "python3.12"
@@ -263,6 +265,7 @@ module "analytics_cost_alert_lambda_secondary" {
   }
 
   function_name = "${var.environment}-${var.app_name}-analytics-cost-alert"
+  role_name     = "${var.environment}-${var.app_name}-analytics-cost-alert-secondary"
   description   = "Daily cost-threshold alert (secondary region)"
   handler       = "handler.handler"
   runtime       = "python3.12"

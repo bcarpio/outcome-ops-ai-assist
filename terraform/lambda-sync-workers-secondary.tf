@@ -32,6 +32,7 @@ module "github_sync_lambda_secondary" {
   }
 
   function_name = "${var.environment}-${var.app_name}-github-sync"
+  role_name     = "${var.environment}-${var.app_name}-github-sync-secondary"
   description   = "GitHub repo sync (secondary region)"
   handler       = "handler.lambda_handler"
   runtime       = "python3.12"
@@ -157,6 +158,7 @@ module "confluence_sync_lambda_secondary" {
   }
 
   function_name = "${var.environment}-${var.app_name}-confluence-sync"
+  role_name     = "${var.environment}-${var.app_name}-confluence-sync-secondary"
   description   = "Confluence sync (secondary region)"
   handler       = "handler.lambda_handler"
   runtime       = "python3.12"
@@ -260,6 +262,7 @@ module "jira_sync_lambda_secondary" {
   }
 
   function_name = "${var.environment}-${var.app_name}-jira-sync"
+  role_name     = "${var.environment}-${var.app_name}-jira-sync-secondary"
   description   = "Jira sync (secondary region)"
   handler       = "handler.lambda_handler"
   runtime       = "python3.12"
@@ -365,6 +368,7 @@ module "outlook_sync_lambda_secondary" {
   providers = { aws = aws.secondary }
 
   function_name = "${var.environment}-${var.app_name}-outlook-sync"
+  role_name     = "${var.environment}-${var.app_name}-outlook-sync-secondary"
   description   = "Outlook sync (secondary region)"
   handler       = "handler.lambda_handler"
   runtime       = "python3.12"
@@ -465,6 +469,7 @@ module "teams_sync_lambda_secondary" {
   providers = { aws = aws.secondary }
 
   function_name = "${var.environment}-${var.app_name}-teams-sync"
+  role_name     = "${var.environment}-${var.app_name}-teams-sync-secondary"
   description   = "Teams sync (secondary region)"
   handler       = "handler.lambda_handler"
   runtime       = "python3.12"
@@ -565,6 +570,7 @@ module "sharepoint_sync_lambda_secondary" {
   providers = { aws = aws.secondary }
 
   function_name = "${var.environment}-${var.app_name}-sharepoint-sync"
+  role_name     = "${var.environment}-${var.app_name}-sharepoint-sync-secondary"
   description   = "SharePoint sync (secondary region)"
   handler       = "handler.lambda_handler"
   runtime       = "python3.12"
@@ -665,6 +671,7 @@ module "onedrive_sync_lambda_secondary" {
   providers = { aws = aws.secondary }
 
   function_name = "${var.environment}-${var.app_name}-onedrive-sync"
+  role_name     = "${var.environment}-${var.app_name}-onedrive-sync-secondary"
   description   = "OneDrive sync (secondary region)"
   handler       = "handler.lambda_handler"
   runtime       = "python3.12"
@@ -765,6 +772,7 @@ module "onenote_sync_lambda_secondary" {
   providers = { aws = aws.secondary }
 
   function_name = "${var.environment}-${var.app_name}-onenote-sync"
+  role_name     = "${var.environment}-${var.app_name}-onenote-sync-secondary"
   description   = "OneNote sync (secondary region)"
   handler       = "handler.lambda_handler"
   runtime       = "python3.12"
@@ -876,6 +884,7 @@ module "database_sync_lambda_secondary" {
   providers = { aws = aws.secondary }
 
   function_name = "${var.environment}-${var.app_name}-database-sync"
+  role_name     = "${var.environment}-${var.app_name}-database-sync-secondary"
   description   = "Database sync (secondary region)"
   timeout       = 900
   memory_size   = 1024

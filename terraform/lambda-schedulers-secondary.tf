@@ -30,6 +30,7 @@ module "github_scheduler_lambda_secondary" {
   }
 
   function_name = "${var.environment}-${var.app_name}-github-scheduler"
+  role_name     = "${var.environment}-${var.app_name}-github-scheduler-secondary"
   description   = "Hourly scheduler for GitHub sync jobs (secondary region)"
   handler       = "handler.lambda_handler"
   runtime       = "python3.12"
@@ -118,6 +119,7 @@ module "confluence_scheduler_lambda_secondary" {
   }
 
   function_name = "${var.environment}-${var.app_name}-confluence-scheduler"
+  role_name     = "${var.environment}-${var.app_name}-confluence-scheduler-secondary"
   description   = "Hourly scheduler for Confluence sync jobs (secondary region)"
   handler       = "handler.lambda_handler"
   runtime       = "python3.12"
@@ -206,6 +208,7 @@ module "jira_scheduler_lambda_secondary" {
   }
 
   function_name = "${var.environment}-${var.app_name}-jira-scheduler"
+  role_name     = "${var.environment}-${var.app_name}-jira-scheduler-secondary"
   description   = "Hourly scheduler for Jira sync jobs (secondary region)"
   handler       = "handler.lambda_handler"
   runtime       = "python3.12"
@@ -294,6 +297,7 @@ module "database_scheduler_lambda_secondary" {
   }
 
   function_name = "${var.environment}-${var.app_name}-database-scheduler"
+  role_name     = "${var.environment}-${var.app_name}-database-scheduler-secondary"
   description   = "Hourly scheduler for database sync jobs (secondary region)"
   handler       = "handler.lambda_handler"
   runtime       = "python3.12"
@@ -384,6 +388,7 @@ module "outlook_scheduler_lambda_secondary" {
   }
 
   function_name = "${var.environment}-${var.app_name}-outlook-scheduler"
+  role_name     = "${var.environment}-${var.app_name}-outlook-scheduler-secondary"
   description   = "Hourly scheduler for Outlook sync jobs (secondary region)"
   handler       = "handler.lambda_handler"
   runtime       = "python3.12"
@@ -474,6 +479,7 @@ module "teams_scheduler_lambda_secondary" {
   }
 
   function_name = "${var.environment}-${var.app_name}-teams-scheduler"
+  role_name     = "${var.environment}-${var.app_name}-teams-scheduler-secondary"
   description   = "Hourly scheduler for Teams sync jobs (secondary region)"
   handler       = "handler.lambda_handler"
   runtime       = "python3.12"
@@ -558,6 +564,7 @@ module "sharepoint_scheduler_lambda_secondary" {
   }
 
   function_name = "${var.environment}-${var.app_name}-sharepoint-scheduler"
+  role_name     = "${var.environment}-${var.app_name}-sharepoint-scheduler-secondary"
   description   = "Hourly scheduler for SharePoint sync jobs (secondary region)"
   handler       = "handler.lambda_handler"
   runtime       = "python3.12"
@@ -642,6 +649,7 @@ module "onedrive_scheduler_lambda_secondary" {
   }
 
   function_name = "${var.environment}-${var.app_name}-onedrive-scheduler"
+  role_name     = "${var.environment}-${var.app_name}-onedrive-scheduler-secondary"
   description   = "Hourly scheduler for OneDrive sync jobs (secondary region)"
   handler       = "handler.lambda_handler"
   runtime       = "python3.12"
@@ -726,6 +734,7 @@ module "onenote_scheduler_lambda_secondary" {
   }
 
   function_name = "${var.environment}-${var.app_name}-onenote-scheduler"
+  role_name     = "${var.environment}-${var.app_name}-onenote-scheduler-secondary"
   description   = "Hourly scheduler for OneNote sync jobs (secondary region)"
   handler       = "handler.lambda_handler"
   runtime       = "python3.12"
@@ -817,6 +826,7 @@ module "license_heartbeat_scheduler_lambda_secondary" {
   }
 
   function_name = "${var.environment}-${var.app_name}-license-heartbeat-scheduler"
+  role_name     = "${var.environment}-${var.app_name}-license-heartbeat-scheduler-secondary"
   description   = "Hourly license-server snapshot heartbeat (secondary region)"
   handler       = "handler.lambda_handler"
   runtime       = "python3.12"

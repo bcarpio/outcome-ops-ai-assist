@@ -99,6 +99,18 @@ variable "alb_listener_arn" {
   default     = ""
 }
 
+# Suffix appended to IAM role names (and only to role names) so primary
+# and secondary instances of this module can coexist in the same AWS
+# account. IAM is global per account; without a suffix the secondary
+# region tries to create roles with the same name as primary and
+# CreateRole returns 409 EntityAlreadyExists. Pass "-secondary" from
+# the HA secondary-region callers; leave empty for primary.
+variable "role_name_suffix" {
+  type        = string
+  description = "Suffix appended to IAM role names (e.g., \"-secondary\" for the HA secondary region). Empty preserves the original names."
+  default     = ""
+}
+
 # Explicit boolean for whether to create the ALB target group + listener
 # rule. When omitted, falls back to `alb_listener_arn != ""` for backwards
 # compat. The reason to pass this explicitly: under a `terraform apply

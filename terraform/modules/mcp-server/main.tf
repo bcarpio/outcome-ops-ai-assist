@@ -82,7 +82,7 @@ data "aws_iam_policy_document" "ecs_assume" {
 }
 
 resource "aws_iam_role" "execution" {
-  name               = "${local.server_full}-exec"
+  name               = "${local.server_full}-exec${var.role_name_suffix}"
   assume_role_policy = data.aws_iam_policy_document.ecs_assume.json
 
   tags = {
@@ -119,7 +119,7 @@ resource "aws_iam_role_policy" "execution_ssm" {
 # -----------------------------------------------------------------------------
 
 resource "aws_iam_role" "task" {
-  name               = "${local.server_full}-task"
+  name               = "${local.server_full}-task${var.role_name_suffix}"
   assume_role_policy = data.aws_iam_policy_document.ecs_assume.json
 
   tags = {

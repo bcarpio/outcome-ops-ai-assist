@@ -41,6 +41,7 @@ module "chat_streaming_lambda_secondary" {
   }
 
   function_name = "${var.environment}-${var.app_name}-chat-streaming"
+  role_name     = "${var.environment}-${var.app_name}-chat-streaming-secondary"
   description   = "Streaming chat interface (secondary region)"
   handler       = "run.sh"
   runtime       = "python3.12"
@@ -247,6 +248,7 @@ module "workspace_management_lambda_secondary" {
   }
 
   function_name = "${var.environment}-${var.app_name}-workspace-management"
+  role_name     = "${var.environment}-${var.app_name}-workspace-management-secondary"
   description   = "Workspace management (secondary region)"
   handler       = "run.sh"
   runtime       = "python3.12"
