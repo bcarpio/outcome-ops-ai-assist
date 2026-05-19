@@ -80,6 +80,7 @@ module "mcp_sonarqube" {
   service_discovery_namespace_name = aws_service_discovery_private_dns_namespace.mcp[0].name
 
   # ALB routing - Lambda calls MCP through ALB, bypassing OIDC
+  use_alb                    = var.deploy_ui
   alb_listener_arn           = local.mcp_alb_listener_arn
   alb_listener_rule_priority = 7
   mcp_path_pattern           = "/mcp"

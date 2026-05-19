@@ -107,6 +107,7 @@ module "mcp_outcomeops_secondary" {
   service_discovery_namespace_id   = aws_service_discovery_private_dns_namespace.mcp_secondary[0].id
   service_discovery_namespace_name = aws_service_discovery_private_dns_namespace.mcp_secondary[0].name
 
+  use_alb                    = local.deploy_ui_secondary
   alb_listener_arn           = local.mcp_alb_listener_arn_secondary
   alb_listener_rule_priority = 3
   mcp_path_pattern           = "/mcp/v1"
@@ -268,6 +269,7 @@ module "mcp_sonarqube_secondary" {
   service_discovery_namespace_id   = aws_service_discovery_private_dns_namespace.mcp_secondary[0].id
   service_discovery_namespace_name = aws_service_discovery_private_dns_namespace.mcp_secondary[0].name
 
+  use_alb                    = local.deploy_ui_secondary
   alb_listener_arn           = local.mcp_alb_listener_arn_secondary
   alb_listener_rule_priority = 7
   mcp_path_pattern           = "/mcp"

@@ -99,6 +99,20 @@ variable "alb_listener_arn" {
   default     = ""
 }
 
+# Explicit boolean for whether to create the ALB target group + listener
+# rule. When omitted, falls back to `alb_listener_arn != ""` for backwards
+# compat. The reason to pass this explicitly: under a `terraform apply
+# -target=...` plan, the caller's `alb_listener_arn` may resolve from a
+# not-yet-created listener resource whose ARN is unknown, which makes
+# `local.use_alb` itself unknown and breaks `count = local.use_alb ? 1 : 0`.
+# Passing a known boolean from the caller keeps the count
+# computable-at-plan-time even during targeted bootstraps.
+variable "use_alb" {
+  type        = bool
+  description = "Whether to create the ALB target group + listener rule. When null, derived from alb_listener_arn != \"\"."
+  default     = null
+}
+
 variable "alb_listener_rule_priority" {
   type        = number
   description = "Priority for the ALB listener rule"

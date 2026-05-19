@@ -7,7 +7,10 @@
 locals {
   name_prefix = "${var.environment}-${var.app_name}"
   server_full = "${local.name_prefix}-mcp-${var.server_name}"
-  use_alb     = var.alb_listener_arn != ""
+  # Prefer the explicit var.use_alb when the caller passed it (HA
+  # multi-region path); fall back to the legacy "arn is non-empty"
+  # derivation for single-region callers that haven't been updated.
+  use_alb = var.use_alb != null ? var.use_alb : var.alb_listener_arn != ""
 }
 
 # -----------------------------------------------------------------------------
@@ -26,13 +29,18 @@ resource "aws_security_group" "mcp" {
 }
 
 resource "aws_security_group_rule" "mcp_ingress" {
-  count = length(var.allowed_security_group_ids)
+  # Indexed for_each so the rule count is known-at-plan-time from the
+  # caller's list LENGTH (which is structural) even when individual
+  # source_security_group_id values are still computed (e.g., during a
+  # -target=ECR-only bootstrap apply where the upstream security group
+  # hasn't been created yet).
+  for_each = { for idx, sg_id in var.allowed_security_group_ids : tostring(idx) => sg_id }
 
   type                     = "ingress"
   from_port                = var.container_port
   to_port                  = var.container_port
   protocol                 = "tcp"
-  source_security_group_id = var.allowed_security_group_ids[count.index]
+  source_security_group_id = each.value
   security_group_id        = aws_security_group.mcp.id
   description              = "Allow inbound from authorized callers"
 }
