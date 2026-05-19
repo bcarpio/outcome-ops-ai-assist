@@ -99,9 +99,9 @@ def _dlq_depth(region: str, queue_name: str) -> Optional[int]:
     try:
         url = sqs.get_queue_url(QueueName=queue_name)["QueueUrl"]
         attrs = sqs.get_queue_attributes(
-            QueueUrl=url, AttributeNames=["ApproximateNumberOfMessagesVisible"]
+            QueueUrl=url, AttributeNames=["ApproximateNumberOfMessages"]
         )
-        return int(attrs["Attributes"]["ApproximateNumberOfMessagesVisible"])
+        return int(attrs["Attributes"]["ApproximateNumberOfMessages"])
     except ClientError as exc:
         code = exc.response.get("Error", {}).get("Code", "")
         if code == "AWS.SimpleQueueService.NonExistentQueue":
