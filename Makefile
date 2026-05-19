@@ -340,13 +340,14 @@ build-mcp-server-image:
 	$(eval ECR_REPO_SECONDARY := $(shell cd terraform && terraform output -raw mcp_server_ecr_url_secondary 2>/dev/null))
 	$(eval AWS_ACCOUNT := $(shell aws sts get-caller-identity --query Account --output text))
 	$(eval BUILD_SECONDARY_REGION := $(shell awk -F'"' '/^[[:space:]]*secondary_region[[:space:]]*=/ {print $$2; exit}' terraform/$(ENVIRONMENT).tfvars 2>/dev/null))
-	aws ecr get-login-password --region $(AWS_REGION) | docker login --username AWS --password-stdin $(AWS_ACCOUNT).dkr.ecr.$(AWS_REGION).amazonaws.com
-	# Build context is `lambda/` so the image can also COPY shared/
-	# for audit-writer access. Dockerfile path is relative to the
-	# new context.
-	docker build -f lambda/mcp-server/Dockerfile -t $(ECR_REPO):latest lambda/
-	docker push $(ECR_REPO):latest
-	@if [ -n "$(BUILD_SECONDARY_REGION)" ] && [ -n "$(ECR_REPO_SECONDARY)" ]; then \
+	@if [ -z "$(ECR_REPO)" ] || [ "$(ECR_REPO)" = "null" ]; then \
+	   echo "Skipping build-mcp-server-image — mcp_server_ecr_url output is empty (mcp_server_enabled=false?)."; \
+	   exit 0; \
+	 fi; \
+	 aws ecr get-login-password --region $(AWS_REGION) | docker login --username AWS --password-stdin $(AWS_ACCOUNT).dkr.ecr.$(AWS_REGION).amazonaws.com && \
+	 docker build -f lambda/mcp-server/Dockerfile -t $(ECR_REPO):latest lambda/ && \
+	 docker push $(ECR_REPO):latest
+	@if [ -n "$(BUILD_SECONDARY_REGION)" ] && [ -n "$(ECR_REPO_SECONDARY)" ] && [ "$(ECR_REPO_SECONDARY)" != "null" ]; then \
 	   echo ""; \
 	   echo "HA multi-region push: ${BUILD_SECONDARY_REGION}"; \
 	   aws ecr get-login-password --region $(BUILD_SECONDARY_REGION) \
@@ -365,18 +366,29 @@ build-snyk-image:
 		echo "       ENVIRONMENT=prd make build-snyk-image"; \
 		exit 1; \
 	fi
-	@echo "Ensuring ECR repository exists for environment: $$ENVIRONMENT"
-	@cd terraform && \
-		terraform init -input=false > /dev/null 2>&1 && \
-		(terraform workspace select $$ENVIRONMENT 2>/dev/null || terraform workspace new $$ENVIRONMENT) && \
-		terraform apply -var-file=$$ENVIRONMENT.tfvars -target=aws_ecr_repository.mcp_snyk -auto-approve
-	@echo ""
-	@echo "Building Snyk MCP server container image for environment: $$ENVIRONMENT"
+	@SNYK_ENABLED=$$(awk -F'=' '/^[[:space:]]*mcp_snyk_enabled[[:space:]]*=/ {gsub(/[[:space:]]/, "", $$2); print $$2; exit}' terraform/$$ENVIRONMENT.tfvars 2>/dev/null); \
+	 if [ "$$SNYK_ENABLED" != "true" ]; then \
+	   echo "Skipping build-snyk-image — mcp_snyk_enabled=$$SNYK_ENABLED in terraform/$$ENVIRONMENT.tfvars (only builds when true)."; \
+	   exit 0; \
+	 fi; \
+	 echo "Ensuring ECR repository exists for environment: $$ENVIRONMENT"; \
+	 cd terraform && \
+	   terraform init -input=false > /dev/null 2>&1 && \
+	   (terraform workspace select $$ENVIRONMENT 2>/dev/null || terraform workspace new $$ENVIRONMENT) && \
+	   terraform apply -var-file=$$ENVIRONMENT.tfvars -target=aws_ecr_repository.mcp_snyk -auto-approve
+	@SNYK_ENABLED=$$(awk -F'=' '/^[[:space:]]*mcp_snyk_enabled[[:space:]]*=/ {gsub(/[[:space:]]/, "", $$2); print $$2; exit}' terraform/$$ENVIRONMENT.tfvars 2>/dev/null); \
+	 [ "$$SNYK_ENABLED" != "true" ] && exit 0; \
+	 echo ""; \
+	 echo "Building Snyk MCP server container image for environment: $$ENVIRONMENT"
 	$(eval ECR_REPO := $(shell cd terraform && terraform output -raw mcp_snyk_ecr_url 2>/dev/null))
 	$(eval AWS_ACCOUNT := $(shell aws sts get-caller-identity --query Account --output text))
-	aws ecr get-login-password --region $(AWS_REGION) | docker login --username AWS --password-stdin $(AWS_ACCOUNT).dkr.ecr.$(AWS_REGION).amazonaws.com
-	docker build -t $(ECR_REPO):latest containers/mcp-snyk/
-	docker push $(ECR_REPO):latest
+	@if [ -z "$(ECR_REPO)" ] || [ "$(ECR_REPO)" = "null" ]; then \
+	   echo "Skipping build-snyk-image — mcp_snyk_ecr_url output is empty (mcp_snyk_enabled=false?)."; \
+	   exit 0; \
+	 fi; \
+	 aws ecr get-login-password --region $(AWS_REGION) | docker login --username AWS --password-stdin $(AWS_ACCOUNT).dkr.ecr.$(AWS_REGION).amazonaws.com && \
+	 docker build -t $(ECR_REPO):latest containers/mcp-snyk/ && \
+	 docker push $(ECR_REPO):latest
 
 # ============================================================================
 # Lambda layers — installed packages / binaries published as Lambda layer
