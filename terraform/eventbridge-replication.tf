@@ -62,8 +62,15 @@ resource "aws_cloudwatch_event_rule" "replicate_to_secondary" {
   event_bus_name = aws_cloudwatch_event_bus.replication.name
   description    = "Forward HA replication events to the secondary region"
 
+  # detail.source_region filter prevents loops: only forward events that
+  # originated in primary. Without it, an event forwarded primary->secondary
+  # would also match the symmetric replicate-to-primary rule on secondary's
+  # bus and bounce back, hitting EventBridge's THIRD_REGION_HOP guard.
   event_pattern = jsonencode({
     source = ["${var.environment}.${var.app_name}.ha-replication"]
+    detail = {
+      source_region = [var.aws_region]
+    }
   })
 
   tags = {
@@ -242,8 +249,15 @@ resource "aws_cloudwatch_event_rule" "replicate_to_primary" {
   event_bus_name = aws_cloudwatch_event_bus.replication_secondary[0].name
   description    = "Forward HA replication events to the primary region"
 
+  # detail.source_region filter prevents loops: only forward events that
+  # originated in secondary. Without it, a primary->secondary forwarded
+  # event would re-match here and bounce back, hitting EventBridge's
+  # THIRD_REGION_HOP guard.
   event_pattern = jsonencode({
     source = ["${var.environment}.${var.app_name}.ha-replication"]
+    detail = {
+      source_region = [var.secondary_region]
+    }
   })
 
   tags = {
