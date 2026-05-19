@@ -23,11 +23,21 @@ set -euo pipefail
 ENVIRONMENT="${ENVIRONMENT:-}"
 APP_NAME="${APP_NAME:-outcome-ops-ai-assist}"
 AWS_REGION="${AWS_REGION:-us-west-2}"
+# When SECONDARY_REGION is set (env var OR --secondary-region flag), each
+# image built for AWS_REGION is also re-tagged + pushed to that region's
+# ECR, and the image-tag SSM parameter is written there too. This is how
+# the HA bootstrap (docs/HA.md) pre-seeds both regions before the full
+# terraform apply.
+SECONDARY_REGION="${SECONDARY_REGION:-}"
 
 while [[ $# -gt 0 ]]; do
   case $1 in
     --env)
       ENVIRONMENT="$2"
+      shift 2
+      ;;
+    --secondary-region)
+      SECONDARY_REGION="$2"
       shift 2
       ;;
     *)
@@ -184,9 +194,16 @@ fi
 # ECR login (once for both images)
 # ----------------------------------------------------------------------------
 echo ""
-echo "Logging in to ECR..."
+echo "Logging in to ECR (${AWS_REGION})..."
 aws ecr get-login-password --region "${AWS_REGION}" \
   | docker login --username AWS --password-stdin "${REGISTRY}"
+
+if [[ -n "${SECONDARY_REGION}" ]]; then
+  SECONDARY_REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${SECONDARY_REGION}.amazonaws.com"
+  echo "Logging in to ECR (${SECONDARY_REGION}) for HA multi-region push..."
+  aws ecr get-login-password --region "${SECONDARY_REGION}" \
+    | docker login --username AWS --password-stdin "${SECONDARY_REGISTRY}"
+fi
 
 # ----------------------------------------------------------------------------
 # Helper: build + push one image and write its tag to SSM
@@ -216,7 +233,7 @@ build_one() {
   echo "Pushing: ${full_image}"
   docker push "${full_image}"
 
-  echo "Storing image tag in SSM: ${ssm_param} = ${image_tag}"
+  echo "Storing image tag in SSM (${AWS_REGION}): ${ssm_param} = ${image_tag}"
   aws ssm put-parameter \
     --name "${ssm_param}" \
     --value "${image_tag}" \
@@ -224,6 +241,22 @@ build_one() {
     --overwrite \
     --region "${AWS_REGION}" \
     > /dev/null
+
+  if [[ -n "${SECONDARY_REGION}" ]]; then
+    local secondary_image="${SECONDARY_REGISTRY}/${repo_name}:${image_tag}"
+    echo "Re-tagging for ${SECONDARY_REGION}: ${secondary_image}"
+    docker tag "${full_image}" "${secondary_image}"
+    echo "Pushing: ${secondary_image}"
+    docker push "${secondary_image}"
+    echo "Storing image tag in SSM (${SECONDARY_REGION}): ${ssm_param} = ${image_tag}"
+    aws ssm put-parameter \
+      --name "${ssm_param}" \
+      --value "${image_tag}" \
+      --type String \
+      --overwrite \
+      --region "${SECONDARY_REGION}" \
+      > /dev/null
+  fi
 }
 
 build_one database-integration

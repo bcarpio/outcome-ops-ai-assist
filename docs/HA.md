@@ -415,6 +415,139 @@ the DNS flip leaves the canonical hostname pointing at a passive UI
 that will refuse mutations — the read-side will still work but the
 operator UX is confusing.
 
+## Bootstrap: pushing images + layers to the secondary region
+
+Before the full `terraform apply` can succeed against an HA-enabled
+deployment, the secondary region needs:
+
+1. **The license-validator Lambda layer** in the secondary region's
+   account/region. The license server pushes a copy to every region
+   it knows about once an account is enrolled, so this is usually
+   already in place when you flip on HA. Fetch the ARN:
+
+   ```bash
+   AWS_REGION=us-east-2 aws lambda list-layer-versions \
+       --layer-name prd-outcomeops-license-validator-v2-0-0 \
+       --query 'LayerVersions[0].LayerVersionArn' \
+       --output text
+   ```
+
+   Drop that ARN into the `outcomeops_license_layer_arn_secondary`
+   line of your tfvars (replacing the `PLACEHOLDER` value).
+
+2. **Container images** in the secondary region's ECR for every
+   container-based service:
+
+   | Image | Used by |
+   |---|---|
+   | `chat-ui` | UI Fargate (secondary) |
+   | `mcp-outcomeops` | MCP Fargate (secondary) |
+   | `database-integration` | Container Lambda (secondary) |
+   | `database-sync` | Container Lambda (secondary) |
+
+   The Makefile `build-*` targets are HA-aware: they read
+   `secondary_region` from `terraform/${ENVIRONMENT}.tfvars`
+   automatically, bootstrap the matching `aws_ecr_repository.*_secondary`
+   via a targeted apply, and re-tag + push the same image (no
+   second build) to both regions.
+
+   ```bash
+   ENVIRONMENT=prd make build-ui-image          # → us-west-2 + us-east-2
+   ENVIRONMENT=prd make build-mcp-server-image  # → us-west-2 + us-east-2
+   ENVIRONMENT=prd make build-database-images   # → us-west-2 + us-east-2
+   ```
+
+   Or in one shot:
+
+   ```bash
+   ENVIRONMENT=prd make build-all-images
+   ```
+
+   Each script prints "HA enabled (secondary_region=…)" when it
+   detects the tfvars setting, so it's obvious whether the
+   multi-region push fired.
+
+3. **Lambda layer zips that terraform publishes from local files**
+   (today: `platform_ca`). These need to exist on disk BEFORE
+   apply — terraform reads the zip and publishes the same content to
+   both regions in one shot. Build once:
+
+   ```bash
+   make build-platform-layer
+   ```
+
+   No region flag needed — the file gets read by both
+   `aws_lambda_layer_version.platform_ca` and
+   `aws_lambda_layer_version.platform_ca_secondary` during apply.
+
+### Why explicit dual-push instead of relying on ECR replication
+
+The terraform also declares
+`aws_ecr_replication_configuration.ha`, which auto-replicates **new
+pushes** from the primary registry to the secondary. That handles the
+ongoing day-to-day case: a developer rebuilds, pushes to us-west-2,
+and AWS quietly carries the digest to us-east-2 within minutes.
+
+It does NOT cover the bootstrap. Replication applies only to image
+pushes that happen AFTER the replication config exists. Images
+already sitting in the primary registry (the chat-ui image you built
+months ago, etc.) are not retroactively copied. So for the very first
+HA apply the operator needs to push fresh, which is exactly what
+`make build-*` does here.
+
+The dual-push path stays useful even after the bootstrap: it lets you
+target a specific secondary-region image tag deterministically rather
+than waiting for AWS's async replication queue.
+
+### Order of operations for an add-later HA deployment
+
+This is your case if you already have prd running single-region and
+are now enabling HA:
+
+```bash
+# 1. Set secondary_region in tfvars (and ui_vpc_id_secondary +
+#    ui_private_subnet_ids_secondary + ui_container_image_secondary).
+
+# 2. Fetch + update the secondary-region license layer ARN.
+AWS_REGION=us-east-2 aws lambda list-layer-versions \
+    --layer-name prd-outcomeops-license-validator-v2-0-0 \
+    --query 'LayerVersions[0].LayerVersionArn' --output text
+# → paste into outcomeops_license_layer_arn_secondary in tfvars
+
+# 3. Push every container image to both regions in one command.
+ENVIRONMENT=prd make build-all-images
+
+# 4. (Optional) Re-encrypt OAuth tokens / DB credentials under the
+#    soon-to-be-MRK KMS keys. Skip if you're fine reconnecting
+#    integrations after apply (see "Multi-region KMS" below).
+AWS_PROFILE=ops ENV=prd ARGS="--plan"    make ha-kms-migrate
+AWS_PROFILE=ops ENV=prd ARGS="--execute" make ha-kms-migrate
+
+# 5. Full apply.
+cd terraform && terraform apply -var-file=prd.tfvars
+```
+
+### Order of operations for a Day-0 HA deployment
+
+This is a brand-new customer who's enabling HA on first install:
+
+```bash
+# 1. tfvars: set both aws_region and secondary_region; populate VPC,
+#    subnet, license-layer fields for both regions.
+
+# 2. Layers: build the local zips (read by terraform from disk).
+make build-platform-layer
+
+# 3. Container images: push to both regions in one command.
+ENVIRONMENT=prd make build-all-images
+
+# 4. Full apply.
+cd terraform && terraform apply -var-file=prd.tfvars
+```
+
+No `ha-kms-migrate` needed for day-0 — there are no existing tokens to
+re-encrypt.
+
 ## Multi-region KMS for credentials
 
 OAuth access/refresh tokens and database connection credentials are

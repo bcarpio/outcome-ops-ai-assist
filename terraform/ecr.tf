@@ -265,6 +265,178 @@ output "database_sync_ecr_repository_url" {
 #     --repository-name <env>-<app>-chat-ui
 # ============================================================================
 
+# ============================================================================
+# Secondary-region ECR Repositories (HA mode only)
+# ----------------------------------------------------------------------------
+# Targets for the multi-region build scripts. Each Makefile build-*-image
+# target bootstraps the primary-region repo via
+# `terraform apply -target=aws_ecr_repository.X` AND, when secondary_region
+# is set, also bootstraps the matching `_secondary` repo via
+# `-target=aws_ecr_repository.X_secondary`.
+#
+# Operator flow for an add-later HA deployment:
+#   1. Set secondary_region in tfvars.
+#   2. Run `ENVIRONMENT=prd make build-all-images` — Makefile auto-detects
+#      the secondary region from tfvars and builds + pushes each image to
+#      BOTH regions in one command. Each target creates its secondary
+#      ECR repo via -target as needed.
+#   3. Fetch the secondary-region license-layer ARN, update tfvars.
+#   4. Run the full `terraform apply`. The secondary Fargate services and
+#      container Lambdas find their images already in place and start
+#      cleanly.
+#
+# Why declared here AND replicated:
+#   - The replication config (`aws_ecr_replication_configuration.ha`)
+#     handles ongoing day-to-day pushes — a developer rebuilds, pushes to
+#     primary, and AWS automatically replicates the new digest to the
+#     secondary repos created here.
+#   - The explicit secondary repos make bootstrap deterministic: builds
+#     work whether or not replication has caught up, and operators can
+#     point a fresh secondary deploy at known-good image tags without
+#     waiting on AWS's async replication queue.
+# ============================================================================
+
+resource "aws_ecr_repository" "chat_ui_secondary" {
+  count = var.deploy_ui && var.secondary_region != "" ? 1 : 0
+
+  provider = aws.secondary
+
+  name                 = "${var.environment}-${var.app_name}-chat-ui"
+  image_tag_mutability = "MUTABLE"
+  force_delete         = true
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+
+  encryption_configuration {
+    encryption_type = var.enable_cmk_encryption ? "KMS" : "AES256"
+    kms_key         = local.data_cmk_arn_secondary
+  }
+
+  tags = { Purpose = "chat-ui" }
+}
+
+resource "aws_ecr_lifecycle_policy" "chat_ui_secondary" {
+  count = var.deploy_ui && var.secondary_region != "" ? 1 : 0
+
+  provider = aws.secondary
+
+  repository = aws_ecr_repository.chat_ui_secondary[0].name
+
+  policy = jsonencode({
+    rules = [{
+      rulePriority = 1
+      description  = "Keep last 10 images"
+      selection = {
+        tagStatus   = "any"
+        countType   = "imageCountMoreThan"
+        countNumber = 10
+      }
+      action = { type = "expire" }
+    }]
+  })
+}
+
+resource "aws_ecr_repository" "database_integration_secondary" {
+  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+
+  provider = aws.secondary
+
+  name                 = "${var.environment}-${var.app_name}-database-integration"
+  image_tag_mutability = "IMMUTABLE"
+  force_delete         = true
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+
+  encryption_configuration {
+    encryption_type = var.enable_cmk_encryption ? "KMS" : "AES256"
+    kms_key         = local.data_cmk_arn_secondary
+  }
+
+  tags = { Purpose = "database-integration-lambda" }
+}
+
+resource "aws_ecr_lifecycle_policy" "database_integration_secondary" {
+  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+
+  provider = aws.secondary
+
+  repository = aws_ecr_repository.database_integration_secondary[0].name
+
+  policy = jsonencode({
+    rules = [{
+      rulePriority = 1
+      description  = "Keep last 5 images"
+      selection = {
+        tagStatus   = "any"
+        countType   = "imageCountMoreThan"
+        countNumber = 5
+      }
+      action = { type = "expire" }
+    }]
+  })
+}
+
+resource "aws_ecr_repository" "database_sync_secondary" {
+  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+
+  provider = aws.secondary
+
+  name                 = "${var.environment}-${var.app_name}-database-sync"
+  image_tag_mutability = "IMMUTABLE"
+  force_delete         = true
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+
+  encryption_configuration {
+    encryption_type = var.enable_cmk_encryption ? "KMS" : "AES256"
+    kms_key         = local.data_cmk_arn_secondary
+  }
+
+  tags = { Purpose = "database-sync-lambda" }
+}
+
+resource "aws_ecr_lifecycle_policy" "database_sync_secondary" {
+  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+
+  provider = aws.secondary
+
+  repository = aws_ecr_repository.database_sync_secondary[0].name
+
+  policy = jsonencode({
+    rules = [{
+      rulePriority = 1
+      description  = "Keep last 5 images"
+      selection = {
+        tagStatus   = "any"
+        countType   = "imageCountMoreThan"
+        countNumber = 5
+      }
+      action = { type = "expire" }
+    }]
+  })
+}
+
+output "chat_ui_ecr_repository_url_secondary" {
+  description = "Secondary-region ECR repository URL for chat UI container image (null when HA disabled)"
+  value       = (var.deploy_ui && var.secondary_region != "") ? aws_ecr_repository.chat_ui_secondary[0].repository_url : null
+}
+
+output "database_integration_ecr_repository_url_secondary" {
+  description = "Secondary-region ECR repository URL for database-integration Lambda container image (null when HA disabled)"
+  value       = (var.enable_workspaces && var.secondary_region != "") ? aws_ecr_repository.database_integration_secondary[0].repository_url : null
+}
+
+output "database_sync_ecr_repository_url_secondary" {
+  description = "Secondary-region ECR repository URL for database-sync Lambda container image (null when HA disabled)"
+  value       = (var.enable_workspaces && var.secondary_region != "") ? aws_ecr_repository.database_sync_secondary[0].repository_url : null
+}
+
 resource "aws_ecr_replication_configuration" "ha" {
   count = var.secondary_region != "" ? 1 : 0
 

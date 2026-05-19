@@ -858,7 +858,15 @@ resource "aws_lambda_event_source_mapping" "onenote_sync_secondary" {
 
 # ----------------------------------------------------------------------------
 # Database sync (secondary). Uses db_credentials_secondary KMS (not oauth).
+# Container Lambda — engine drivers exceed the 250 MB layer cap, same
+# reasoning as the primary deployment.
 # ----------------------------------------------------------------------------
+
+data "aws_ssm_parameter" "database_sync_image_tag_secondary" {
+  count    = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  provider = aws.secondary
+  name     = "/${var.environment}/${var.app_name}/database-sync/image-tag"
+}
 
 module "database_sync_lambda_secondary" {
   source  = "terraform-aws-modules/lambda/aws"
@@ -869,21 +877,17 @@ module "database_sync_lambda_secondary" {
 
   function_name = "${var.environment}-${var.app_name}-database-sync"
   description   = "Database sync (secondary region)"
-  handler       = "handler.lambda_handler"
-  runtime       = "python3.12"
   timeout       = 900
   memory_size   = 1024
+  publish       = true
 
-  source_path = [
-    { path = "${path.module}/../lambda/database-sync", pip_requirements = true, patterns = ["!tests/.*", "!__pycache__/.*", "!\\.venv/.*", "!.*\\.pyc"] },
-    { path = "${path.module}/../lambda/shared", prefix_in_zip = "shared" },
-  ]
+  create_package = false
+  package_type   = "Image"
+  image_uri      = "${aws_ecr_repository.database_sync_secondary[0].repository_url}:${data.aws_ssm_parameter.database_sync_image_tag_secondary[0].value}"
+  architectures  = ["x86_64"]
 
   cloudwatch_logs_retention_in_days = 7
   cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs_secondary[0].arn
-  quiet_archive_local_exec          = true
-
-  layers = [var.outcomeops_license_layer_arn_secondary]
 
   environment_variables = merge(
     {

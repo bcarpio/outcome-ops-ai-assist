@@ -185,3 +185,35 @@ output "mcp_server_url" {
   description = "URL of the OutcomeOps MCP server (for MCP client configuration)"
   value       = var.mcp_server_enabled ? "${local.mcp_base_url}/mcp/v1" : null
 }
+
+# -----------------------------------------------------------------------------
+# Secondary-region ECR repository for the OutcomeOps MCP server image
+# (HA mode only). Bootstrapped via `make build-mcp-server-image` with the
+# multi-region path turned on by the presence of secondary_region in tfvars.
+# -----------------------------------------------------------------------------
+
+resource "aws_ecr_repository" "mcp_outcomeops_secondary" {
+  count = var.mcp_server_enabled && var.secondary_region != "" ? 1 : 0
+
+  provider = aws.secondary
+
+  name                 = "${var.environment}-${var.app_name}-mcp-outcomeops"
+  image_tag_mutability = "MUTABLE"
+  force_delete         = true
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+
+  encryption_configuration {
+    encryption_type = var.enable_cmk_encryption ? "KMS" : "AES256"
+    kms_key         = local.data_cmk_arn_secondary
+  }
+
+  tags = { Purpose = "mcp-outcomeops" }
+}
+
+output "mcp_server_ecr_url_secondary" {
+  description = "Secondary-region ECR repository URL for the OutcomeOps MCP server image (null when HA disabled)"
+  value       = (var.mcp_server_enabled && var.secondary_region != "") ? aws_ecr_repository.mcp_outcomeops_secondary[0].repository_url : null
+}

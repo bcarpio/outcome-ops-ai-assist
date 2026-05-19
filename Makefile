@@ -276,6 +276,10 @@ build-run-tests-image:
 	./scripts/build-run-tests-image.sh --env $$ENVIRONMENT
 
 # Build chat UI container image (nginx + React)
+# Auto-detects secondary_region in ${ENVIRONMENT}.tfvars and, when set,
+# also bootstraps the secondary-region ECR repo and pushes the same
+# image to it (single build, dual push). Required for HA bootstrap so
+# the secondary UI Fargate can pull on first task start.
 # Usage: ENVIRONMENT=dev make build-ui-image
 #        ENVIRONMENT=prd make build-ui-image
 build-ui-image:
@@ -286,15 +290,26 @@ build-ui-image:
 		exit 1; \
 	fi
 	@echo "Ensuring ECR repository exists for environment: $$ENVIRONMENT"
-	@cd terraform && \
-		terraform init -input=false > /dev/null 2>&1 && \
-		(terraform workspace select $$ENVIRONMENT 2>/dev/null || terraform workspace new $$ENVIRONMENT) && \
-		terraform apply -var-file=$$ENVIRONMENT.tfvars -target=aws_ecr_repository.chat_ui -auto-approve
+	@SR=$$(awk -F'"' '/^[[:space:]]*secondary_region[[:space:]]*=/ {print $$2; exit}' terraform/$$ENVIRONMENT.tfvars 2>/dev/null); \
+	 EXTRA=""; \
+	 if [ -n "$$SR" ]; then \
+	   EXTRA="-target=aws_ecr_repository.chat_ui_secondary"; \
+	   echo "HA enabled (secondary_region=$$SR); bootstrapping secondary ECR too."; \
+	 fi; \
+	 cd terraform && \
+	   terraform init -input=false > /dev/null 2>&1 && \
+	   (terraform workspace select $$ENVIRONMENT 2>/dev/null || terraform workspace new $$ENVIRONMENT) && \
+	   terraform apply -var-file=$$ENVIRONMENT.tfvars -target=aws_ecr_repository.chat_ui $$EXTRA -auto-approve
 	@echo ""
 	@echo "Building chat UI container image for environment: $$ENVIRONMENT"
-	./scripts/build-ui-image.sh --env $$ENVIRONMENT
+	@SR=$$(awk -F'"' '/^[[:space:]]*secondary_region[[:space:]]*=/ {print $$2; exit}' terraform/$$ENVIRONMENT.tfvars 2>/dev/null); \
+	 SECONDARY_REGION=$$SR ./scripts/build-ui-image.sh --env $$ENVIRONMENT
 
 # Build OutcomeOps MCP server container image
+# Auto-detects secondary_region in ${ENVIRONMENT}.tfvars and, when set,
+# also bootstraps the secondary-region ECR repo and pushes the same
+# image to it. The secondary MCP Fargate (HA mode) pulls from its own
+# region's registry.
 # Usage: ENVIRONMENT=dev make build-mcp-server-image
 #        ENVIRONMENT=prd make build-mcp-server-image
 build-mcp-server-image:
@@ -305,20 +320,36 @@ build-mcp-server-image:
 		exit 1; \
 	fi
 	@echo "Ensuring ECR repository exists for environment: $$ENVIRONMENT"
-	@cd terraform && \
-		terraform init -input=false > /dev/null 2>&1 && \
-		(terraform workspace select $$ENVIRONMENT 2>/dev/null || terraform workspace new $$ENVIRONMENT) && \
-		terraform apply -var-file=$$ENVIRONMENT.tfvars -target=aws_ecr_repository.mcp_outcomeops -auto-approve
+	@SR=$$(awk -F'"' '/^[[:space:]]*secondary_region[[:space:]]*=/ {print $$2; exit}' terraform/$$ENVIRONMENT.tfvars 2>/dev/null); \
+	 EXTRA=""; \
+	 if [ -n "$$SR" ]; then \
+	   EXTRA="-target=aws_ecr_repository.mcp_outcomeops_secondary"; \
+	   echo "HA enabled (secondary_region=$$SR); bootstrapping secondary ECR too."; \
+	 fi; \
+	 cd terraform && \
+	   terraform init -input=false > /dev/null 2>&1 && \
+	   (terraform workspace select $$ENVIRONMENT 2>/dev/null || terraform workspace new $$ENVIRONMENT) && \
+	   terraform apply -var-file=$$ENVIRONMENT.tfvars -target=aws_ecr_repository.mcp_outcomeops $$EXTRA -auto-approve
 	@echo ""
 	@echo "Building OutcomeOps MCP server container image for environment: $$ENVIRONMENT"
 	$(eval ECR_REPO := $(shell cd terraform && terraform output -raw mcp_server_ecr_url 2>/dev/null))
+	$(eval ECR_REPO_SECONDARY := $(shell cd terraform && terraform output -raw mcp_server_ecr_url_secondary 2>/dev/null))
 	$(eval AWS_ACCOUNT := $(shell aws sts get-caller-identity --query Account --output text))
+	$(eval BUILD_SECONDARY_REGION := $(shell awk -F'"' '/^[[:space:]]*secondary_region[[:space:]]*=/ {print $$2; exit}' terraform/$(ENVIRONMENT).tfvars 2>/dev/null))
 	aws ecr get-login-password --region $(AWS_REGION) | docker login --username AWS --password-stdin $(AWS_ACCOUNT).dkr.ecr.$(AWS_REGION).amazonaws.com
 	# Build context is `lambda/` so the image can also COPY shared/
 	# for audit-writer access. Dockerfile path is relative to the
 	# new context.
 	docker build -f lambda/mcp-server/Dockerfile -t $(ECR_REPO):latest lambda/
 	docker push $(ECR_REPO):latest
+	@if [ -n "$(BUILD_SECONDARY_REGION)" ] && [ -n "$(ECR_REPO_SECONDARY)" ]; then \
+	   echo ""; \
+	   echo "HA multi-region push: ${BUILD_SECONDARY_REGION}"; \
+	   aws ecr get-login-password --region $(BUILD_SECONDARY_REGION) \
+	     | docker login --username AWS --password-stdin $(AWS_ACCOUNT).dkr.ecr.$(BUILD_SECONDARY_REGION).amazonaws.com; \
+	   docker tag $(ECR_REPO):latest $(ECR_REPO_SECONDARY):latest; \
+	   docker push $(ECR_REPO_SECONDARY):latest; \
+	 fi
 
 # Build Snyk MCP server container image
 # Usage: ENVIRONMENT=dev make build-snyk-image
@@ -379,16 +410,24 @@ build-database-images:
 		exit 1; \
 	fi
 	@echo "Ensuring ECR repositories exist for environment: $$ENVIRONMENT"
-	@cd terraform && \
-		terraform init -input=false > /dev/null 2>&1 && \
-		(terraform workspace select $$ENVIRONMENT 2>/dev/null || terraform workspace new $$ENVIRONMENT) && \
-		terraform apply -var-file=$$ENVIRONMENT.tfvars \
-			-target=aws_ecr_repository.database_integration \
-			-target=aws_ecr_repository.database_sync \
-			-auto-approve
+	@SR=$$(awk -F'"' '/^[[:space:]]*secondary_region[[:space:]]*=/ {print $$2; exit}' terraform/$$ENVIRONMENT.tfvars 2>/dev/null); \
+	 EXTRA=""; \
+	 if [ -n "$$SR" ]; then \
+	   EXTRA="-target=aws_ecr_repository.database_integration_secondary -target=aws_ecr_repository.database_sync_secondary"; \
+	   echo "HA enabled (secondary_region=$$SR); bootstrapping secondary ECR repos too."; \
+	 fi; \
+	 cd terraform && \
+	   terraform init -input=false > /dev/null 2>&1 && \
+	   (terraform workspace select $$ENVIRONMENT 2>/dev/null || terraform workspace new $$ENVIRONMENT) && \
+	   terraform apply -var-file=$$ENVIRONMENT.tfvars \
+	     -target=aws_ecr_repository.database_integration \
+	     -target=aws_ecr_repository.database_sync \
+	     $$EXTRA \
+	     -auto-approve
 	@echo ""
 	@echo "Building database container images for environment: $$ENVIRONMENT"
-	./scripts/build-database-images.sh --env $$ENVIRONMENT
+	@SR=$$(awk -F'"' '/^[[:space:]]*secondary_region[[:space:]]*=/ {print $$2; exit}' terraform/$$ENVIRONMENT.tfvars 2>/dev/null); \
+	 SECONDARY_REGION=$$SR ./scripts/build-database-images.sh --env $$ENVIRONMENT
 
 # Build the platform-CA Lambda Layer (Mozilla certifi + customer roots from
 # platform_ca_bundle_ssm_param_arns). The layer is attached to every platform

@@ -986,7 +986,15 @@ resource "aws_ssm_parameter" "onenote_integration_url_secondary" {
 # ----------------------------------------------------------------------------
 # Database integration (secondary)
 # Distinct from the others: uses db_credentials KMS key (not oauth_tokens).
+# Container Lambda — engine drivers (Postgres/MySQL/MSSQL) exceed Lambda's
+# 250 MB unzipped layer cap, so we ship as an image like the primary.
 # ----------------------------------------------------------------------------
+
+data "aws_ssm_parameter" "database_integration_image_tag_secondary" {
+  count    = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  provider = aws.secondary
+  name     = "/${var.environment}/${var.app_name}/database-integration/image-tag"
+}
 
 module "database_integration_lambda_secondary" {
   source  = "terraform-aws-modules/lambda/aws"
@@ -1000,21 +1008,20 @@ module "database_integration_lambda_secondary" {
 
   function_name = "${var.environment}-${var.app_name}-database-integration"
   description   = "Database connection management (secondary region)"
-  handler       = "handler.lambda_handler"
-  runtime       = "python3.12"
   timeout       = 60
-  memory_size   = 512
+  memory_size   = 1024
+  publish       = true
 
-  source_path = [
-    { path = "${path.module}/../lambda/database-integration", pip_requirements = true, patterns = ["!tests/.*", "!__pycache__/.*", "!\\.venv/.*", "!.*\\.pyc"] },
-    { path = "${path.module}/../lambda/shared", prefix_in_zip = "shared" }
-  ]
+  create_package = false
+  package_type   = "Image"
+  image_uri      = "${aws_ecr_repository.database_integration_secondary[0].repository_url}:${data.aws_ssm_parameter.database_integration_image_tag_secondary[0].value}"
+  architectures  = ["x86_64"]
 
   cloudwatch_logs_retention_in_days = 7
   cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs_secondary[0].arn
-  quiet_archive_local_exec          = true
 
-  layers = [var.outcomeops_license_layer_arn_secondary]
+  # Container Lambdas cannot attach external layers; license-validator
+  # logic must be baked into the image. Primary follows the same model.
 
   environment_variables = merge(
     {
