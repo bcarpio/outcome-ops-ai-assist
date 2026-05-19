@@ -162,7 +162,7 @@ variable "outcomeops_license_layer_arn_secondary" {
 variable "outcomeops_license_ssm_param" {
   type        = string
   description = "SSM parameter path for the OutcomeOps license key"
-  default     = "/outcomeops/license/key"
+  default     = "/outcome-ops-ai-assist/license/key"
 }
 
 variable "outcomeops_license_server_url" {

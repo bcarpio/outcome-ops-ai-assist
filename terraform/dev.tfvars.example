@@ -275,7 +275,7 @@ github_usernames_to_tag = "yourusername"
 # outcomeops_license_server_url = "https://license.example.com"
 
 # SSM parameter path for the license key.
-# outcomeops_license_ssm_param = "/outcomeops/license/key"
+# outcomeops_license_ssm_param = "/outcome-ops-ai-assist/license/key"
 
 # ============================================================================
 # Encryption (CMK)
