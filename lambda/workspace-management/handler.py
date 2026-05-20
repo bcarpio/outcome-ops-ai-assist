@@ -100,6 +100,7 @@ from shared.region_guard import (
     guard_active,
     passive_response,
 )
+from shared import dual_write
 from shared.audit_writer import (
     ACTION_API_KEY_CREATED,
     ACTION_API_KEY_REVOKED,
@@ -611,9 +612,10 @@ def create_workspace(
 
     try:
         # Write both items
-        with table.batch_writer() as batch:
-            batch.put_item(Item=workspace_item)
-            batch.put_item(Item=member_item)
+        dual_write.ddb_batch_put_items(
+            _get_workspaces_table(),
+            [workspace_item, member_item],
+        )
 
         ctx = audit_ctx or {}
         log_admin_action(
@@ -744,8 +746,9 @@ def update_workspace(
         update_parts.append("updated_at = :ua")
         expr_values[":ua"] = now
 
-        table.update_item(
-            Key={"PK": f"WS#{workspace_id}", "SK": "METADATA"},
+        dual_write.ddb_update_item(
+            _get_workspaces_table(),
+            {"PK": f"WS#{workspace_id}", "SK": "METADATA"},
             UpdateExpression="SET " + ", ".join(update_parts),
             ExpressionAttributeNames={"#n": "name"} if request.name else {},
             ExpressionAttributeValues=expr_values,
@@ -805,11 +808,16 @@ def delete_workspace(
         ).get("Items", [])
 
         # Delete all items
-        with table.batch_writer() as batch:
-            for item in ws_items:
-                batch.delete_item(Key={"PK": item["PK"], "SK": item["SK"]})
-            for item in member_items:
-                batch.delete_item(Key={"PK": item["PK"], "SK": item["SK"]})
+        for item in ws_items:
+            dual_write.ddb_delete_item(
+                _get_workspaces_table(),
+                {"PK": item["PK"], "SK": item["SK"]},
+            )
+        for item in member_items:
+            dual_write.ddb_delete_item(
+                _get_workspaces_table(),
+                {"PK": item["PK"], "SK": item["SK"]},
+            )
 
         ctx = audit_ctx or {}
         log_admin_action(
@@ -925,7 +933,7 @@ def add_member(
             "joined_at": now,
         }
 
-        table.put_item(Item=member_item)
+        dual_write.ddb_put_item(_get_workspaces_table(), member_item)
 
         ctx = audit_ctx or {}
         log_admin_action(
@@ -1013,8 +1021,9 @@ def update_member(
             if admin_count <= 1:
                 return _error(400, "Cannot demote the last admin of a workspace")
 
-        table.update_item(
-            Key={"PK": f"USER#{member_email}", "SK": f"WS_MEMBER#{workspace_id}"},
+        dual_write.ddb_update_item(
+            _get_workspaces_table(),
+            {"PK": f"USER#{member_email}", "SK": f"WS_MEMBER#{workspace_id}"},
             UpdateExpression="SET #r = :role",
             ExpressionAttributeNames={"#r": "role"},
             ExpressionAttributeValues={":role": request.role},
@@ -1063,8 +1072,9 @@ def remove_member(
             if admin_count <= 1:
                 return _error(400, "Cannot remove the last admin from a workspace")
 
-        table.delete_item(
-            Key={"PK": f"USER#{member_email}", "SK": f"WS_MEMBER#{workspace_id}"}
+        dual_write.ddb_delete_item(
+            _get_workspaces_table(),
+            {"PK": f"USER#{member_email}", "SK": f"WS_MEMBER#{workspace_id}"},
         )
 
         ctx = audit_ctx or {}
@@ -1145,8 +1155,9 @@ def add_repo(
         }
 
         # Use condition to prevent overwrite
-        table.put_item(
-            Item=repo_item,
+        dual_write.ddb_put_item(
+            _get_workspaces_table(),
+            repo_item,
             ConditionExpression="attribute_not_exists(PK)",
         )
 
@@ -1185,8 +1196,9 @@ def remove_repo(
         if not _is_workspace_admin(table, user_email, workspace_id):
             return _error(403, "Only workspace admins can remove repos")
 
-        table.delete_item(
-            Key={"PK": f"WS#{workspace_id}", "SK": f"GITHUB_REPO#{repo_name}"}
+        dual_write.ddb_delete_item(
+            _get_workspaces_table(),
+            {"PK": f"WS#{workspace_id}", "SK": f"GITHUB_REPO#{repo_name}"},
         )
 
         # Queue cleanup of S3 documents and vector embeddings for this repo
@@ -1355,8 +1367,9 @@ def update_search_access(
         # Update workspace metadata
         now = datetime.now(timezone.utc).isoformat()
         new_allowed = list(request.search_allowed_workspaces)
-        table.update_item(
-            Key={"PK": f"WS#{workspace_id}", "SK": "METADATA"},
+        dual_write.ddb_update_item(
+            _get_workspaces_table(),
+            {"PK": f"WS#{workspace_id}", "SK": "METADATA"},
             UpdateExpression="SET search_allowed_workspaces = :saw, updated_at = :ua",
             ExpressionAttributeValues={
                 ":saw": new_allowed,
@@ -1600,7 +1613,7 @@ def add_org_member(
             "invited_by": user_email,
         }
 
-        table.put_item(Item=member_item)
+        dual_write.ddb_put_item(_get_workspaces_table(), member_item)
 
         ctx = audit_ctx or {}
         log_admin_action(
@@ -1652,8 +1665,9 @@ def update_org_member(
         if not existing:
             return _error(404, "Org member not found")
 
-        table.update_item(
-            Key={"PK": f"USER#{member_email}", "SK": "ORG_MEMBER"},
+        dual_write.ddb_update_item(
+            _get_workspaces_table(),
+            {"PK": f"USER#{member_email}", "SK": "ORG_MEMBER"},
             UpdateExpression="SET org_role = :role",
             ExpressionAttributeValues={":role": request.org_role},
         )
@@ -1696,7 +1710,10 @@ def remove_org_member(
         # Remove org membership record if it exists (org admins have one)
         existing = _get_org_membership(table, member_email)
         if existing:
-            table.delete_item(Key={"PK": f"USER#{member_email}", "SK": "ORG_MEMBER"})
+            dual_write.ddb_delete_item(
+                _get_workspaces_table(),
+                {"PK": f"USER#{member_email}", "SK": "ORG_MEMBER"},
+            )
 
         # Remove all workspace memberships for this user
         ws_response = table.query(
@@ -1707,7 +1724,10 @@ def remove_org_member(
             },
         )
         for item in ws_response.get("Items", []):
-            table.delete_item(Key={"PK": item["PK"], "SK": item["SK"]})
+            dual_write.ddb_delete_item(
+                _get_workspaces_table(),
+                {"PK": item["PK"], "SK": item["SK"]},
+            )
 
         ctx = audit_ctx or {}
         log_admin_action(
@@ -2260,17 +2280,21 @@ def _cache_tool_manifest(table, mcp_id: str, tools: list) -> None:
     now = datetime.now(timezone.utc).isoformat()
 
     # Write TOOLS item
-    table.put_item(Item={
-        "PK": f"MCP#{mcp_id}",
-        "SK": "TOOLS",
-        "tools": tools,
-        "tool_count": len(tools),
-        "fetched_at": now,
-    })
+    dual_write.ddb_put_item(
+        _get_workspaces_table(),
+        {
+            "PK": f"MCP#{mcp_id}",
+            "SK": "TOOLS",
+            "tools": tools,
+            "tool_count": len(tools),
+            "fetched_at": now,
+        },
+    )
 
     # Update METADATA with tool count and refresh time
-    table.update_item(
-        Key={"PK": f"MCP#{mcp_id}", "SK": "METADATA"},
+    dual_write.ddb_update_item(
+        _get_workspaces_table(),
+        {"PK": f"MCP#{mcp_id}", "SK": "METADATA"},
         UpdateExpression="SET last_refreshed_at = :lr, tool_count = :tc, #s = :s",
         ExpressionAttributeNames={"#s": "status"},
         ExpressionAttributeValues={
@@ -2339,7 +2363,7 @@ def create_mcp_server(
     if encrypted_credentials:
         item["encrypted_credentials"] = encrypted_credentials
 
-    table.put_item(Item=item)
+    dual_write.ddb_put_item(_get_workspaces_table(), item)
     logger.info(f"[workspace_handler] Created MCP server: {mcp_id} ({request.name})")
 
     # Try to fetch tools (non-blocking - server is created regardless)
@@ -2350,8 +2374,9 @@ def create_mcp_server(
         item["status"] = "active"
     except Exception as e:
         logger.warning(f"[workspace_handler] Failed to fetch tools for MCP server {mcp_id}: {e}")
-        table.update_item(
-            Key={"PK": f"MCP#{mcp_id}", "SK": "METADATA"},
+        dual_write.ddb_update_item(
+            _get_workspaces_table(),
+            {"PK": f"MCP#{mcp_id}", "SK": "METADATA"},
             UpdateExpression="SET #s = :s",
             ExpressionAttributeNames={"#s": "status"},
             ExpressionAttributeValues={":s": "error"},
@@ -2499,15 +2524,19 @@ def update_mcp_server(
             expr_values[":rid"] = request.refresh_interval_days
             changed_fields.append("refresh_interval_days")
 
+        update_key = {"PK": f"MCP#{mcp_id}", "SK": "METADATA"}
         update_kwargs = {
-            "Key": {"PK": f"MCP#{mcp_id}", "SK": "METADATA"},
             "UpdateExpression": "SET " + ", ".join(update_parts),
             "ExpressionAttributeValues": expr_values,
         }
         if expr_names:
             update_kwargs["ExpressionAttributeNames"] = expr_names
 
-        table.update_item(**update_kwargs)
+        dual_write.ddb_update_item(
+            _get_workspaces_table(),
+            update_key,
+            **update_kwargs,
+        )
 
         ctx = audit_ctx or {}
         log_admin_action(
@@ -2553,9 +2582,14 @@ def delete_mcp_server(
 
     try:
         # Delete METADATA and TOOLS items
-        with table.batch_writer() as batch:
-            batch.delete_item(Key={"PK": f"MCP#{mcp_id}", "SK": "METADATA"})
-            batch.delete_item(Key={"PK": f"MCP#{mcp_id}", "SK": "TOOLS"})
+        dual_write.ddb_delete_item(
+            _get_workspaces_table(),
+            {"PK": f"MCP#{mcp_id}", "SK": "METADATA"},
+        )
+        dual_write.ddb_delete_item(
+            _get_workspaces_table(),
+            {"PK": f"MCP#{mcp_id}", "SK": "TOOLS"},
+        )
 
         # Find and delete all workspace assignments via GSI
         assignments = table.query(
@@ -2565,9 +2599,11 @@ def delete_mcp_server(
         ).get("Items", [])
 
         if assignments:
-            with table.batch_writer() as batch:
-                for item in assignments:
-                    batch.delete_item(Key={"PK": item["PK"], "SK": item["SK"]})
+            for item in assignments:
+                dual_write.ddb_delete_item(
+                    _get_workspaces_table(),
+                    {"PK": item["PK"], "SK": item["SK"]},
+                )
 
         ctx = audit_ctx or {}
         log_admin_action(
@@ -2619,8 +2655,9 @@ def refresh_mcp_tools(user_email: str, mcp_id: str) -> Dict:
         return get_mcp_server(user_email, mcp_id)
     except Exception as e:
         logger.warning(f"[workspace_handler] Failed to refresh tools for MCP server {mcp_id}: {e}")
-        table.update_item(
-            Key={"PK": f"MCP#{mcp_id}", "SK": "METADATA"},
+        dual_write.ddb_update_item(
+            _get_workspaces_table(),
+            {"PK": f"MCP#{mcp_id}", "SK": "METADATA"},
             UpdateExpression="SET #s = :s",
             ExpressionAttributeNames={"#s": "status"},
             ExpressionAttributeValues={":s": "error"},
@@ -2686,7 +2723,7 @@ def assign_mcp_to_workspace(
             "assigned_by": user_email,
         }
 
-        table.put_item(Item=item)
+        dual_write.ddb_put_item(_get_workspaces_table(), item)
         logger.info("[workspace_handler] Assigned MCP %s to workspace %s", mcp_id, workspace_id)
 
         ctx = audit_ctx or {}
@@ -2736,7 +2773,10 @@ def remove_mcp_from_workspace(
         except ClientError:
             pass
 
-        table.delete_item(Key={"PK": f"WS#{workspace_id}", "SK": f"MCP_SERVER#{mcp_id}"})
+        dual_write.ddb_delete_item(
+            _get_workspaces_table(),
+            {"PK": f"WS#{workspace_id}", "SK": f"MCP_SERVER#{mcp_id}"},
+        )
         logger.info(f"[workspace_handler] Removed MCP {mcp_id} from workspace {workspace_id}")
 
         ctx = audit_ctx or {}
@@ -2951,7 +2991,7 @@ def create_api_key(
             ).isoformat()
             item["expires_at"] = expires_at
 
-        table.put_item(Item=item)
+        dual_write.ddb_put_item(_get_workspaces_table(), item)
         logger.info(f"[workspace_handler] Created API key {key_id} for {user_email}")
 
         response_body = {
@@ -3031,8 +3071,9 @@ def revoke_api_key(
 
     try:
         now = datetime.now(timezone.utc).isoformat()
-        update_response = table.update_item(
-            Key={"PK": f"USER#{user_email}", "SK": f"API_KEY#{key_id}"},
+        update_response = dual_write.ddb_update_item(
+            _get_workspaces_table(),
+            {"PK": f"USER#{user_email}", "SK": f"API_KEY#{key_id}"},
             UpdateExpression="SET #status = :status, revoked_at = :revoked_at",
             ExpressionAttributeNames={"#status": "status"},
             ExpressionAttributeValues={
@@ -3132,8 +3173,9 @@ def validate_api_key(
 
         # Update last_used_at (best-effort)
         try:
-            table.update_item(
-                Key={"PK": item["PK"], "SK": item["SK"]},
+            dual_write.ddb_update_item(
+                _get_workspaces_table(),
+                {"PK": item["PK"], "SK": item["SK"]},
                 UpdateExpression="SET last_used_at = :now",
                 ExpressionAttributeValues={
                     ":now": datetime.now(timezone.utc).isoformat(),
@@ -3303,8 +3345,9 @@ def handle_update_system_prompt(
         now = datetime.now(timezone.utc).isoformat()
 
         # Update workspace metadata
-        table.update_item(
-            Key={"PK": f"WS#{workspace_id}", "SK": "METADATA"},
+        dual_write.ddb_update_item(
+            _get_workspaces_table(),
+            {"PK": f"WS#{workspace_id}", "SK": "METADATA"},
             UpdateExpression="SET custom_system_prompt = :p, custom_prompt_updated_at = :t, custom_prompt_updated_by = :u, updated_at = :t",
             ExpressionAttributeValues={
                 ":p": custom_system_prompt,
@@ -3362,8 +3405,9 @@ def handle_reset_system_prompt(
         now = datetime.now(timezone.utc).isoformat()
 
         # Remove custom prompt attributes
-        table.update_item(
-            Key={"PK": f"WS#{workspace_id}", "SK": "METADATA"},
+        dual_write.ddb_update_item(
+            _get_workspaces_table(),
+            {"PK": f"WS#{workspace_id}", "SK": "METADATA"},
             UpdateExpression="REMOVE custom_system_prompt, custom_prompt_updated_at, custom_prompt_updated_by SET updated_at = :t",
             ExpressionAttributeValues={":t": now},
         )
@@ -3482,8 +3526,9 @@ def update_workspace_budget(
         ctx = audit_ctx or {}
 
         if budget is None:
-            table.update_item(
-                Key={"PK": f"WS#{workspace_id}", "SK": "METADATA"},
+            dual_write.ddb_update_item(
+                _get_workspaces_table(),
+                {"PK": f"WS#{workspace_id}", "SK": "METADATA"},
                 UpdateExpression=(
                     "REMOVE monthly_budget_usd, budget_updated_by "
                     "SET budget_updated_at = :t, updated_at = :t"
@@ -3511,8 +3556,9 @@ def update_workspace_budget(
                 "is_default": True,
             })
 
-        table.update_item(
-            Key={"PK": f"WS#{workspace_id}", "SK": "METADATA"},
+        dual_write.ddb_update_item(
+            _get_workspaces_table(),
+            {"PK": f"WS#{workspace_id}", "SK": "METADATA"},
             UpdateExpression=(
                 "SET monthly_budget_usd = :b, budget_updated_at = :t, "
                 "budget_updated_by = :u, updated_at = :t"
@@ -3635,8 +3681,9 @@ def update_workspace_privacy(
         now = datetime.now(timezone.utc).isoformat()
         ctx = audit_ctx or {}
 
-        table.update_item(
-            Key={"PK": f"WS#{workspace_id}", "SK": "METADATA"},
+        dual_write.ddb_update_item(
+            _get_workspaces_table(),
+            {"PK": f"WS#{workspace_id}", "SK": "METADATA"},
             UpdateExpression=(
                 "SET privacy_mode = :m, privacy_mode_updated_at = :t, "
                 "privacy_mode_updated_by = :u, updated_at = :t"

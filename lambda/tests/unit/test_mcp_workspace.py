@@ -530,7 +530,7 @@ class TestMcpServerErrors:
         assert "Failed to update MCP server" in body["error"]
 
     def test_delete_mcp_server_dynamodb_error(self, mock_table):
-        """Test that ClientError during batch_writer delete returns 500."""
+        """Test that ClientError during delete returns 500."""
         def get_side_effect(**kwargs):
             key = kwargs.get("Key", {})
             sk = key.get("SK", "")
@@ -542,12 +542,7 @@ class TestMcpServerErrors:
 
         mock_table.get_item.side_effect = get_side_effect
 
-        # Make batch_writer context manager raise ClientError
-        mock_batch = MagicMock()
-        mock_batch.__enter__ = MagicMock(return_value=mock_batch)
-        mock_batch.__exit__ = MagicMock(return_value=False)
-        mock_batch.delete_item.side_effect = self._client_error()
-        mock_table.batch_writer.return_value = mock_batch
+        mock_table.delete_item.side_effect = self._client_error()
 
         result = delete_mcp_server("admin@example.com", "abc")
         assert result["statusCode"] == 500
@@ -729,15 +724,10 @@ class TestMcpLogging:
 
         mock_table.get_item.side_effect = get_side_effect
 
-        # Make batch_writer raise ClientError
-        mock_batch = MagicMock()
-        mock_batch.__enter__ = MagicMock(return_value=mock_batch)
-        mock_batch.__exit__ = MagicMock(return_value=False)
-        mock_batch.delete_item.side_effect = BotoClientError(
+        mock_table.delete_item.side_effect = BotoClientError(
             {"Error": {"Code": "InternalServerError", "Message": "Test"}},
-            "BatchWriteItem",
+            "DeleteItem",
         )
-        mock_table.batch_writer.return_value = mock_batch
 
         with patch.object(handler_module, 'logger') as mock_logger:
             result = delete_mcp_server("admin@example.com", "abc")
