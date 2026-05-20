@@ -29,6 +29,7 @@ from botocore.exceptions import ClientError
 
 # Make shared/ importable; deploy package now bundles lambda/shared/.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from shared import dual_write  # noqa: E402
 from shared.audit_writer import (  # noqa: E402
     ACTION_OAUTH_CONNECTION_ESTABLISHED,
     log_admin_action,
@@ -373,7 +374,7 @@ def handle_callback(event: Dict, body: Dict = None) -> Dict:
     }
 
     try:
-        table.put_item(Item=connection)
+        dual_write.ddb_put_item(WORKSPACES_TABLE, connection)
 
         # Save tokens
         save_tokens(connection_id, access_token, refresh_token, expires_in)
@@ -528,8 +529,9 @@ def update_folders(
     now = datetime.now(timezone.utc).isoformat()
 
     try:
-        table.update_item(
-            Key={
+        dual_write.ddb_update_item(
+            WORKSPACES_TABLE,
+            {
                 "PK": f"WS#{workspace_id}",
                 "SK": f"OUTLOOK_CONNECTION#{connection_id}",
             },
@@ -573,8 +575,9 @@ def trigger_sync(user_email: str, workspace_id: str, connection_id: str) -> Dict
         return _error(400, "No folders selected for sync")
 
     try:
-        table.update_item(
-            Key={
+        dual_write.ddb_update_item(
+            WORKSPACES_TABLE,
+            {
                 "PK": f"WS#{workspace_id}",
                 "SK": f"OUTLOOK_CONNECTION#{connection_id}",
             },
@@ -628,11 +631,12 @@ def delete_connection(user_email: str, workspace_id: str, connection_id: str) ->
             logger.info(f"Queued deletion of {len(selected_folders)} folders for connection {connection_id}")
 
         # Delete connection
-        table.delete_item(
-            Key={
+        dual_write.ddb_delete_item(
+            WORKSPACES_TABLE,
+            {
                 "PK": f"WS#{workspace_id}",
                 "SK": f"OUTLOOK_CONNECTION#{connection_id}",
-            }
+            },
         )
 
         # Delete tokens

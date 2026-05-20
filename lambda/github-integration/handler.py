@@ -33,6 +33,7 @@ from botocore.exceptions import ClientError
 # Make shared/ importable; deploy package now bundles lambda/shared/
 # at zip root via terraform source_path (see lambda-github.tf).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from shared import dual_write  # noqa: E402
 from shared.license_repos import get_active_repos_for_customer  # noqa: E402
 from shared.region_guard import (  # noqa: E402
     RegionPassiveError,
@@ -219,10 +220,10 @@ def save_installation(
 ) -> None:
     """Save a GitHub App installation to DynamoDB."""
     now = _now_iso()
-    table = _get_dynamodb().Table(WORKSPACES_TABLE)
 
-    table.put_item(
-        Item={
+    dual_write.ddb_put_item(
+        WORKSPACES_TABLE,
+        {
             "PK": f"WS#{workspace_id}",
             "SK": f"GITHUB_INSTALLATION#{installation_id}",
             "installation_id": installation_id,
@@ -232,7 +233,7 @@ def save_installation(
             "permissions": permissions,
             "created_by": created_by,
             "created_at": now,
-        }
+        },
     )
     logger.info("Saved GitHub installation %s for workspace %s", installation_id, workspace_id)
 
@@ -261,9 +262,9 @@ def list_installations(workspace_id: str) -> List[Dict]:
 
 def delete_installation(workspace_id: str, installation_id: str) -> None:
     """Delete an installation."""
-    table = _get_dynamodb().Table(WORKSPACES_TABLE)
-    table.delete_item(
-        Key={"PK": f"WS#{workspace_id}", "SK": f"GITHUB_INSTALLATION#{installation_id}"}
+    dual_write.ddb_delete_item(
+        WORKSPACES_TABLE,
+        {"PK": f"WS#{workspace_id}", "SK": f"GITHUB_INSTALLATION#{installation_id}"},
     )
     logger.info(f"Deleted GitHub installation {installation_id}")
 
@@ -278,7 +279,6 @@ def save_repo(
 ) -> Dict:
     """Save a GitHub repo to workspace."""
     now = _now_iso()
-    table = _get_dynamodb().Table(WORKSPACES_TABLE)
 
     item = {
         "PK": f"WS#{workspace_id}",
@@ -297,7 +297,7 @@ def save_repo(
         "added_by": added_by,
     }
 
-    table.put_item(Item=item)
+    dual_write.ddb_put_item(WORKSPACES_TABLE, item)
     logger.info(f"Saved GitHub repo {repo_name} (type={repo_type}) for workspace {workspace_id}")
     return item
 
@@ -331,8 +331,6 @@ def update_repo(
     enabled: Optional[bool] = None,
 ) -> None:
     """Update repo settings."""
-    table = _get_dynamodb().Table(WORKSPACES_TABLE)
-
     update_parts = ["updated_at = :now"]
     expr_values = {":now": _now_iso()}
 
@@ -343,8 +341,9 @@ def update_repo(
         update_parts.append("enabled = :enabled")
         expr_values[":enabled"] = enabled
 
-    table.update_item(
-        Key={"PK": f"WS#{workspace_id}", "SK": f"GITHUB_REPO#{repo_name}"},
+    dual_write.ddb_update_item(
+        WORKSPACES_TABLE,
+        {"PK": f"WS#{workspace_id}", "SK": f"GITHUB_REPO#{repo_name}"},
         UpdateExpression="SET " + ", ".join(update_parts),
         ExpressionAttributeValues=expr_values,
     )
@@ -358,8 +357,6 @@ def update_repo_sync_status(
     commit_sha: Optional[str] = None,
 ) -> None:
     """Update sync status for a repo."""
-    table = _get_dynamodb().Table(WORKSPACES_TABLE)
-
     set_parts = ["last_sync_status = :status", "updated_at = :now"]
     remove_parts = []
     expr_values = {
@@ -386,21 +383,25 @@ def update_repo_sync_status(
         update_expr += " REMOVE " + ", ".join(remove_parts)
 
     try:
-        table.update_item(
-            Key={"PK": f"WS#{workspace_id}", "SK": f"GITHUB_REPO#{repo_name}"},
+        dual_write.ddb_update_item(
+            WORKSPACES_TABLE,
+            {"PK": f"WS#{workspace_id}", "SK": f"GITHUB_REPO#{repo_name}"},
             UpdateExpression=update_expr,
             ExpressionAttributeValues=expr_values,
             ConditionExpression="attribute_exists(repo_name)",
         )
-    except table.meta.client.exceptions.ConditionalCheckFailedException:
-        logger.warning("Skipping sync status update for deleted repo %s in workspace %s", repo_name, workspace_id)
+    except ClientError as e:
+        if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            logger.warning("Skipping sync status update for deleted repo %s in workspace %s", repo_name, workspace_id)
+        else:
+            raise
 
 
 def delete_repo(workspace_id: str, repo_name: str) -> None:
     """Delete a repo from workspace."""
-    table = _get_dynamodb().Table(WORKSPACES_TABLE)
-    table.delete_item(
-        Key={"PK": f"WS#{workspace_id}", "SK": f"GITHUB_REPO#{repo_name}"}
+    dual_write.ddb_delete_item(
+        WORKSPACES_TABLE,
+        {"PK": f"WS#{workspace_id}", "SK": f"GITHUB_REPO#{repo_name}"},
     )
     logger.info(f"Deleted GitHub repo {repo_name} from workspace {workspace_id}")
 

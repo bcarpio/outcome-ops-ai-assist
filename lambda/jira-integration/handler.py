@@ -29,6 +29,7 @@ from botocore.exceptions import ClientError
 
 # Make shared/ importable; deploy package now bundles lambda/shared/.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from shared import dual_write  # noqa: E402
 from shared.audit_writer import (  # noqa: E402
     ACTION_OAUTH_CONNECTION_ESTABLISHED,
     log_admin_action,
@@ -225,10 +226,10 @@ def save_connection(
 ) -> None:
     """Save a Jira connection."""
     now = _now_iso()
-    table = _get_dynamodb().Table(WORKSPACES_TABLE)
 
-    table.put_item(
-        Item={
+    dual_write.ddb_put_item(
+        WORKSPACES_TABLE,
+        {
             "PK": f"WS#{workspace_id}",
             "SK": f"JIRA_CONNECTION#{connection_id}",
             "connection_id": connection_id,
@@ -246,7 +247,7 @@ def save_connection(
             "created_by": created_by,
             "created_at": now,
             "updated_at": now,
-        }
+        },
     )
     logger.info("Saved Jira connection %s for workspace %s", connection_id, workspace_id)
 
@@ -275,9 +276,9 @@ def list_connections(workspace_id: str) -> List[Dict]:
 
 def delete_connection(workspace_id: str, connection_id: str) -> None:
     """Delete a connection."""
-    table = _get_dynamodb().Table(WORKSPACES_TABLE)
-    table.delete_item(
-        Key={"PK": f"WS#{workspace_id}", "SK": f"JIRA_CONNECTION#{connection_id}"}
+    dual_write.ddb_delete_item(
+        WORKSPACES_TABLE,
+        {"PK": f"WS#{workspace_id}", "SK": f"JIRA_CONNECTION#{connection_id}"},
     )
     logger.info(f"Deleted Jira connection {connection_id}")
 
@@ -290,9 +291,9 @@ def update_connection_projects(
     include_comments: bool,
 ) -> None:
     """Update selected projects for a connection."""
-    table = _get_dynamodb().Table(WORKSPACES_TABLE)
-    table.update_item(
-        Key={"PK": f"WS#{workspace_id}", "SK": f"JIRA_CONNECTION#{connection_id}"},
+    dual_write.ddb_update_item(
+        WORKSPACES_TABLE,
+        {"PK": f"WS#{workspace_id}", "SK": f"JIRA_CONNECTION#{connection_id}"},
         UpdateExpression="SET selected_projects = :projects, include_attachments = :attachments, include_comments = :comments, updated_at = :now",
         ExpressionAttributeValues={
             ":projects": selected_projects,
@@ -311,8 +312,6 @@ def update_sync_status(
     issue_count: Optional[int] = None,
 ) -> None:
     """Update sync status for a connection."""
-    table = _get_dynamodb().Table(WORKSPACES_TABLE)
-
     update_expr = "SET last_sync_status = :status, updated_at = :now"
     expr_values = {
         ":status": status,
@@ -333,8 +332,9 @@ def update_sync_status(
         update_expr += ", issue_count = :count"
         expr_values[":count"] = issue_count
 
-    table.update_item(
-        Key={"PK": f"WS#{workspace_id}", "SK": f"JIRA_CONNECTION#{connection_id}"},
+    dual_write.ddb_update_item(
+        WORKSPACES_TABLE,
+        {"PK": f"WS#{workspace_id}", "SK": f"JIRA_CONNECTION#{connection_id}"},
         UpdateExpression=update_expr,
         ExpressionAttributeValues=expr_values,
     )
