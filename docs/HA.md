@@ -326,7 +326,15 @@ What's gated:
   every refusal would fire two emails.)
 - **audit-stream-publisher** returns early when passive — only the
   active region exports OCSF to Kinesis. (Without this, customer
-  SIEMs would see doubled events per audit row.)
+  SIEMs would see doubled events per audit row.) Under HA with
+  `audit_stream_export_enabled = true`, BOTH regions run a Kinesis
+  stream + publisher; the gate makes emission exactly-once at the
+  active region. The customer's SIEM consumer attaches to BOTH stream
+  ARNs (`audit_export_stream_arn` + `audit_export_stream_arn_secondary`
+  terraform outputs) continuously — only the active region's stream
+  carries data, so the passive one is empty (no duplicates, no
+  consumer failover step). Export follows the active region. See
+  ADR-022 "Audit-stream export under HA".
 - **All admin mutation routes** in `workspace-management` and each
   `*-integration` lambda return HTTP 403 via
   `shared.region_guard.guard_active()` when called against a passive

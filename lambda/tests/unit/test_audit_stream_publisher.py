@@ -74,6 +74,50 @@ def test_publishes_records_to_kinesis():
     assert result["batchItemFailures"] == []
 
 
+def test_passive_region_skips_publish():
+    """HA: only the active region exports to Kinesis. When this region is
+    passive, the publisher must process the batch but emit nothing — both
+    regions' DDB streams fire on every (replicated) row, so a passive emit
+    would double the events the customer SIEM sees. The dual-region
+    audit-stream-export design (ADR-022) depends on this gate."""
+    import shared.active_region as active_region
+
+    h = _load_handler()
+    mock_kinesis = MagicMock()
+    h._kinesis = mock_kinesis
+
+    orig = active_region.is_active_region
+    active_region.is_active_region = lambda: False
+    try:
+        event = {"Records": [_make_record(request_id="r-1"), _make_record(request_id="r-2")]}
+        result = h.handler(event, None)
+    finally:
+        active_region.is_active_region = orig
+
+    mock_kinesis.put_records.assert_not_called()
+    assert result["batchItemFailures"] == []
+
+
+def test_active_region_publishes():
+    """Symmetry: when active, the gate passes and records publish."""
+    import shared.active_region as active_region
+
+    h = _load_handler()
+    mock_kinesis = MagicMock()
+    mock_kinesis.put_records.return_value = {"FailedRecordCount": 0, "Records": []}
+    h._kinesis = mock_kinesis
+
+    orig = active_region.is_active_region
+    active_region.is_active_region = lambda: True
+    try:
+        result = h.handler({"Records": [_make_record(request_id="r-1")]}, None)
+    finally:
+        active_region.is_active_region = orig
+
+    mock_kinesis.put_records.assert_called_once()
+    assert result["batchItemFailures"] == []
+
+
 def test_skips_modify_and_remove_events():
     h = _load_handler()
     mock_kinesis = MagicMock()

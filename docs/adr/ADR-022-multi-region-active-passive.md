@@ -363,12 +363,63 @@ analytics-table.
   works for everything except actively-mid-flight OAuth refresh in
   the now-active region. Tracked separately as plan-ha chunk 13.
 
-- **Kinesis cross-region stream for OCSF export** — the OCSF
-  audit-stream-publisher is currently disabled in the owner's prd
-  (`audit_stream_export_enabled = false`). When a customer turns on
-  SIEM export AND HA, a Kinesis stream must be created in the
-  secondary region and `audit-stream-publisher` ungated. That's a
-  future chunk.
+- **Kinesis cross-region stream for OCSF export** — RESOLVED
+  2026-05-20; see the addendum below. (Originally deferred: the OCSF
+  audit-stream-publisher is disabled in the owner's prd via
+  `audit_stream_export_enabled = false`, so the gap only affects a
+  customer running SIEM export AND HA.)
+
+## Addendum (2026-05-20): Audit-stream export under HA
+
+Closes the Kinesis item the compute-plane addendum left out of scope.
+
+**Problem.** SIEM export (`audit_stream_export_enabled = true`) shipped
+single-region: one Kinesis stream + one `audit-stream-publisher`, both
+in the primary region. Under HA, after a failover the secondary region
+would have no stream and no publisher, so the customer's OCSF→SIEM feed
+would go dark for as long as the secondary was active. (Audit rows still
+landed in DDB and replicated — no audit-data loss — but the live SIEM
+feed stopped.)
+
+**Design — both regions, gated emission.** Both regions run an
+identical Kinesis stream + `audit-stream-publisher` + DDB-stream
+event-source-mapping, gated on `audit_stream_export_enabled &&
+secondary_region != ""`. The publisher self-gates on
+`is_active_region()`:
+
+- Both regions' audit-logs DDB streams fire on every row — the active
+  region on the original write, the passive region when the
+  replication-applier replays it. Without the gate the SIEM would see
+  each event twice.
+- So emission is **exactly-once at the active region**: whichever
+  region is active publishes to its local stream; the other region's
+  publisher processes its DDB-stream records and returns early.
+- This is the same gate the publisher already had (chunk 9j); this
+  addendum only adds the secondary infrastructure
+  (`terraform/audit-stream-export-secondary.tf`) and the
+  secondary-region AppConfig env (`ha_scheduler_env_secondary`) the
+  publisher needs for `is_active_region()` to read the real role.
+
+**Customer consumption — wire up both stream ARNs.** Kinesis is
+regional and cannot be made multi-region, so there are two regional
+streams (`audit_export_stream_arn`, `audit_export_stream_arn_secondary`,
+both terraform outputs). The customer's SIEM consumer attaches to
+**both** continuously. Because only the active region emits at any
+instant, the passive stream is empty — no duplicates, no consumer-side
+failover action. The export simply follows the active region.
+
+**Edge cases.**
+- *Handoff window.* `is_active_region()` is AppConfig-cached ~30s, so
+  during a flip the old-active publisher may keep emitting for up to
+  ~30s while the new-active spins up — a brief window of possible
+  duplicate emission, never a gap. OCSF envelopes are timestamped and
+  carry a stable event id, so the SIEM dedups. Export is therefore
+  at-least-once across a failover, which is the right posture for a
+  security feed.
+- *No backfill needed in the happy path.* Each audit row is written in
+  exactly one region (the active one at write time) and published by
+  that region's publisher draining its own local DDB stream (24h
+  retention covers transient publisher downtime).
 
 ## References
 
