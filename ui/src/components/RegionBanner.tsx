@@ -27,8 +27,8 @@ export default function RegionBanner() {
         <strong>Read-only mode.</strong> This UI is served by the passive region
         {region ? ` (${region})` : ''}. Admin actions (creating workspaces,
         adding repositories, connecting integrations, syncing, removing data)
-        are disabled. Chat, search, audit viewing, and analytics continue to
-        work.
+        and chat (which writes conversation history) are disabled here. Search,
+        document viewing, audit logs, and analytics continue to work.
         {primaryRegion ? (
           <>
             {' '}

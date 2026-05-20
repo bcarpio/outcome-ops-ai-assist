@@ -15,9 +15,10 @@ operator runbook for failover, failback, and incident response.
 - **Operator-driven failover via AppConfig** — each region's local
   AppConfig holds an `active`/`passive` role flag. Failover is a
   human-flipped AppConfig deployment, not a terraform apply.
-- **Local-region reads** — chat / MCP / find_callers / list_workspace_documents
-  serve from whichever region the URL hits. Reads do not check
-  AppConfig.
+- **Local-region reads** — chat history reads / MCP / find_callers /
+  list_workspace_documents serve from whichever region the URL hits.
+  Reads do not check AppConfig. (Chat *writes* — posting a message —
+  ARE gated to the active region; see the passive-mode section below.)
 
 ## Operator env vars
 
@@ -332,14 +333,27 @@ What's gated:
   region. The blocked-mutation attempt is itself recorded as an
   audit row with action `ADMIN_MUTATION_BLOCKED_PASSIVE` so operators
   can see who hit a bad URL during a flip.
+- **chat mutation routes** — `POST /` (the streaming chat path, which
+  creates a conversation + writes each message), `PUT
+  /conversations/{id}/share`, and `DELETE /conversations/{id}` are
+  gated the same way. The streaming path returns the 403 as an in-band
+  NDJSON error event (`{"error":"region_passive","status_code":403}`).
+  Chat is gated because it WRITES conversation history; see ADR-022's
+  2026-05-20 "passive is fully passive" addendum. The
+  `ADMIN_MUTATION_BLOCKED_PASSIVE` audit row that records the blocked
+  attempt stays LOCAL to the passive region — `dual_write._emit` no
+  longer originates replication from a passive region, so these
+  forensic rows do not pollute the active region's audit/analytics.
 
 What's NOT gated (intentionally runs in both regions):
 
-- **chat-streaming + workspace-management reads** — `/api/chat`,
-  `/api/conversations/...`, `/api/audit/...`, `/api/analytics/...`,
-  `find_callers`, `list_workspaces`, etc. Reads serve from whichever
-  region the URL hits. Users hitting the secondary during a flip see
-  their conversation history because dual-write kept it in sync.
+- **chat + workspace-management READS** — `GET /conversations/...`
+  (view conversation history), `GET /shared`, `/api/audit/...`,
+  `/api/analytics/...`, `find_callers`, `list_workspaces`, etc. Reads
+  serve from whichever region the URL hits and are never gated. Users
+  hitting the secondary during a flip can still READ their
+  conversation history because dual-write kept it in sync — they just
+  can't post a new message there (that's a gated write; see above).
 - **analytics-aggregator** — both regions process their own
   replicated audit-logs DDB stream into their own analytics-table so
   per-region dashboards stay consistent regardless of which region
