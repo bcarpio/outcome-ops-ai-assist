@@ -135,9 +135,30 @@ def _emit(operation: str, **detail) -> None:
 
     Logs + swallows on error. The local write already happened; callers
     shouldn't fail an operation because the replication emit hiccupped.
+
+    Only the ACTIVE region originates replication. Replication is one-way
+    (active -> passive) at any instant; the passive region applies the
+    active region's events via the replication-applier (which writes
+    directly, not through this module) and must NOT emit events of its
+    own. Without this gate a passive-region local write — e.g. the
+    ADMIN_MUTATION_BLOCKED_PASSIVE forensic audit row that region_guard
+    records for blocked mutation attempts — would replicate back to the
+    active region, polluting the audit / analytics tables with
+    bidirectional data. Such forensic rows stay local to the region
+    where they happened (per ADR-022). is_active_region() returns True
+    for single-region deploys (AppConfig env unset), so this is a no-op
+    outside HA.
     """
 
     if not REPLICATION_EVENT_BUS_NAME:
+        return
+
+    # Lazy import: shared.active_region pulls in boto3 + AppConfig client
+    # construction; keep it off dual_write's import path for callers that
+    # never emit. No circular import — active_region doesn't import here.
+    from shared.active_region import is_active_region
+
+    if not is_active_region():
         return
 
     payload = {

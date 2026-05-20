@@ -176,6 +176,43 @@ def test_no_bus_configured_skips_emit(_ha_module, monkeypatch):
     events.put_events.assert_not_called()
 
 
+def test_passive_region_writes_locally_but_does_not_emit(_ha_module, monkeypatch):
+    """A passive region must not originate replication. The local write
+    still happens (e.g. an ADMIN_MUTATION_BLOCKED_PASSIVE forensic row),
+    but no EventBridge event is emitted — that would replicate the row
+    back to the active region (the bidirectional-audit hazard ADR-022
+    rejects)."""
+    import shared.active_region as active_region
+
+    monkeypatch.setattr(active_region, "is_active_region", lambda: False)
+
+    resource, table = _stub_ddb_with_table()
+    events = MagicMock()
+    _ha_module._set_clients_for_tests(dynamodb=resource, events=events)
+
+    _ha_module.ddb_put_item("audit-logs", {"PK": "X", "action": "ADMIN_MUTATION_BLOCKED_PASSIVE"})
+
+    # Local write happened; replication emit suppressed.
+    table.put_item.assert_called_once()
+    events.put_events.assert_not_called()
+
+
+def test_active_region_emits(_ha_module, monkeypatch):
+    """Symmetry check: when the local region is active, emission proceeds."""
+    import shared.active_region as active_region
+
+    monkeypatch.setattr(active_region, "is_active_region", lambda: True)
+
+    resource, table = _stub_ddb_with_table()
+    events = MagicMock()
+    _ha_module._set_clients_for_tests(dynamodb=resource, events=events)
+
+    _ha_module.ddb_put_item("widgets", {"PK": "X"})
+
+    table.put_item.assert_called_once()
+    events.put_events.assert_called_once()
+
+
 def test_emit_failure_does_not_raise(_ha_module):
     resource, table = _stub_ddb_with_table()
     events = MagicMock()
