@@ -2082,14 +2082,14 @@ export default function WorkspaceSettings() {
                           <option value="member">Member</option>
                           <option value="workspace_admin">Admin</option>
                         </select>
-                        <button
+                        <MutationButton
                           onClick={() => handleRemoveMember(member.user_email)}
                           className={`p-1.5 rounded transition-colors ${isLastAdmin ? 'text-gray-300 cursor-not-allowed' : 'text-red-500 hover:bg-red-50'}`}
                           title={isLastAdmin ? 'Cannot remove the last admin' : 'Remove member'}
                           disabled={isLastAdmin}
                         >
                           <UserMinus size={18} />
-                        </button>
+                        </MutationButton>
                       </div>
                     )}
                   </li>
@@ -3303,7 +3303,7 @@ export default function WorkspaceSettings() {
                         </div>
                       </div>
                       {isAdmin && (
-                        <button
+                        <MutationButton
                           onClick={() => handleDeleteDocument(doc.path)}
                           disabled={deletingDoc === doc.path}
                           className="p-2 text-red-500 hover:bg-red-50 rounded transition-colors disabled:opacity-50"
@@ -3314,7 +3314,7 @@ export default function WorkspaceSettings() {
                           ) : (
                             <Trash2 size={16} />
                           )}
-                        </button>
+                        </MutationButton>
                       )}
                     </li>
                   ))}
@@ -3447,14 +3447,14 @@ export default function WorkspaceSettings() {
               >
                 Cancel
               </button>
-              <button
+              <MutationButton
                 onClick={handleDelete}
                 disabled={deleting}
                 className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50 transition-colors flex items-center gap-2"
               >
                 {deleting && <Loader2 size={16} className="animate-spin" />}
                 Delete
-              </button>
+              </MutationButton>
             </div>
           </div>
         </div>
@@ -3571,14 +3571,14 @@ export default function WorkspaceSettings() {
               >
                 Cancel
               </button>
-              <button
+              <MutationButton
                 onClick={handleAddMember}
                 disabled={!newMemberEmail.trim() || addingMember}
                 className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors flex items-center gap-2"
               >
                 {addingMember && <Loader2 size={16} className="animate-spin" />}
                 Add
-              </button>
+              </MutationButton>
             </div>
           </div>
         </div>
@@ -4349,14 +4349,14 @@ export default function WorkspaceSettings() {
               )}
             </div>
             <div className="px-6 py-4 bg-gray-50 rounded-b-lg flex items-center justify-between border-t">
-              <button
+              <MutationButton
                 onClick={handleValidateDatabase}
                 disabled={dbValidating || !dbConnectHost || !dbConnectDatabaseName || !dbConnectUsername}
-                className="px-3 py-1.5 text-sm border border-blue-600 text-blue-600 rounded-lg hover:bg-blue-50 disabled:opacity-50 transition-colors flex items-center gap-2"
+                className="px-3 py-1.5 text-sm border border-blue-600 text-blue-600 rounded-lg hover:bg-blue-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
               >
                 {dbValidating && <Loader2 size={14} className="animate-spin" />}
                 Test connection
-              </button>
+              </MutationButton>
               <div className="flex gap-3">
                 <button
                   onClick={() => setShowDatabaseConnectModal(false)}
