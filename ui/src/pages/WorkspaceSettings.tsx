@@ -1901,14 +1901,14 @@ export default function WorkspaceSettings() {
               </div>
               {isAdmin && (
                 <div className="flex justify-end">
-                  <button
+                  <MutationButton
                     onClick={handleSaveGeneral}
                     disabled={saving}
                     className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors flex items-center gap-2"
                   >
                     {saving && <Loader2 size={16} className="animate-spin" />}
                     Save Changes
-                  </button>
+                  </MutationButton>
                 </div>
               )}
             </div>
@@ -2152,13 +2152,13 @@ export default function WorkspaceSettings() {
                           </div>
                         </div>
                         {isAdmin && (
-                          <button
+                          <MutationButton
                             onClick={() => openGitHubRepoModal(inst)}
-                            className="flex items-center gap-2 px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                            className="flex items-center gap-2 px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                           >
                             <Plus size={16} />
                             Add Repos
-                          </button>
+                          </MutationButton>
                         )}
                       </div>
                     </div>
@@ -2262,7 +2262,7 @@ export default function WorkspaceSettings() {
                   </div>
                 </div>
                 {isAdmin && confluenceConnections.length === 0 && (
-                  <button
+                  <MutationButton
                     onClick={handleConnectConfluence}
                     disabled={connectingConfluence}
                     className="flex items-center gap-2 px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
@@ -2273,7 +2273,7 @@ export default function WorkspaceSettings() {
                       <Plus size={16} />
                     )}
                     Connect
-                  </button>
+                  </MutationButton>
                 )}
               </div>
               {loadingConnections ? (
@@ -2334,7 +2334,7 @@ export default function WorkspaceSettings() {
                             >
                               Configure
                             </button>
-                            <button
+                            <MutationButton
                               onClick={() => handleTriggerSync(conn.connection_id)}
                               disabled={syncing === conn.connection_id || (conn.selected_spaces || []).length === 0}
                               className="p-1.5 text-gray-500 hover:bg-gray-100 rounded transition-colors disabled:opacity-50"
@@ -2345,14 +2345,14 @@ export default function WorkspaceSettings() {
                               ) : (
                                 <RefreshCw size={16} />
                               )}
-                            </button>
-                            <button
+                            </MutationButton>
+                            <MutationButton
                               onClick={() => handleDeleteConnection(conn.connection_id)}
                               className="p-1.5 text-red-500 hover:bg-red-50 rounded transition-colors"
                               title="Disconnect"
                             >
                               <Trash2 size={16} />
-                            </button>
+                            </MutationButton>
                           </div>
                         )}
                       </div>
@@ -2375,7 +2375,7 @@ export default function WorkspaceSettings() {
                   </div>
                 </div>
                 {isAdmin && jiraConnections.length === 0 && (
-                  <button
+                  <MutationButton
                     onClick={handleConnectJira}
                     disabled={connectingJira}
                     className="flex items-center gap-2 px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
@@ -2386,7 +2386,7 @@ export default function WorkspaceSettings() {
                       <Plus size={16} />
                     )}
                     Connect
-                  </button>
+                  </MutationButton>
                 )}
               </div>
               {loadingConnections ? (
@@ -2450,7 +2450,7 @@ export default function WorkspaceSettings() {
                             >
                               Configure
                             </button>
-                            <button
+                            <MutationButton
                               onClick={() => handleTriggerJiraSync(conn.connection_id)}
                               disabled={syncingJira === conn.connection_id || (conn.selected_projects || []).length === 0}
                               className="p-1.5 text-gray-500 hover:bg-gray-100 rounded transition-colors disabled:opacity-50"
@@ -2461,14 +2461,14 @@ export default function WorkspaceSettings() {
                               ) : (
                                 <RefreshCw size={16} />
                               )}
-                            </button>
-                            <button
+                            </MutationButton>
+                            <MutationButton
                               onClick={() => handleDeleteJiraConnection(conn.connection_id)}
                               className="p-1.5 text-red-500 hover:bg-red-50 rounded transition-colors"
                               title="Disconnect"
                             >
                               <Trash2 size={16} />
-                            </button>
+                            </MutationButton>
                           </div>
                         )}
                       </div>
@@ -2491,7 +2491,7 @@ export default function WorkspaceSettings() {
                   </div>
                 </div>
                 {isAdmin && outlookConnections.length === 0 && (
-                  <button
+                  <MutationButton
                     onClick={handleConnectOutlook}
                     disabled={connectingOutlook}
                     className="flex items-center gap-2 px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
@@ -2502,7 +2502,7 @@ export default function WorkspaceSettings() {
                       <Plus size={16} />
                     )}
                     Connect
-                  </button>
+                  </MutationButton>
                 )}
               </div>
               {loadingConnections ? (
@@ -2559,7 +2559,7 @@ export default function WorkspaceSettings() {
                             >
                               Configure
                             </button>
-                            <button
+                            <MutationButton
                               onClick={() => handleTriggerOutlookSync(conn.connection_id)}
                               disabled={syncingOutlook === conn.connection_id || (conn.selected_folders || []).length === 0}
                               className="p-1.5 text-gray-500 hover:bg-gray-100 rounded transition-colors disabled:opacity-50"
@@ -2570,14 +2570,14 @@ export default function WorkspaceSettings() {
                               ) : (
                                 <RefreshCw size={16} />
                               )}
-                            </button>
-                            <button
+                            </MutationButton>
+                            <MutationButton
                               onClick={() => handleDeleteOutlookConnection(conn.connection_id)}
                               className="p-1.5 text-red-500 hover:bg-red-50 rounded transition-colors"
                               title="Disconnect"
                             >
                               <Trash2 size={16} />
-                            </button>
+                            </MutationButton>
                           </div>
                         )}
                       </div>
@@ -2600,7 +2600,7 @@ export default function WorkspaceSettings() {
                   </div>
                 </div>
                 {isAdmin && teamsConnections.length === 0 && (
-                  <button
+                  <MutationButton
                     onClick={handleConnectTeams}
                     disabled={connectingTeams}
                     className="flex items-center gap-2 px-3 py-1.5 text-sm bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 transition-colors"
@@ -2611,7 +2611,7 @@ export default function WorkspaceSettings() {
                       <Plus size={16} />
                     )}
                     Connect
-                  </button>
+                  </MutationButton>
                 )}
               </div>
               {loadingConnections ? (
@@ -2669,7 +2669,7 @@ export default function WorkspaceSettings() {
                             >
                               Configure
                             </button>
-                            <button
+                            <MutationButton
                               onClick={() => handleTriggerTeamsSync(conn.connection_id)}
                               disabled={syncingTeams === conn.connection_id || (conn.config?.include_channels || []).length === 0}
                               className="p-1.5 text-gray-500 hover:bg-gray-100 rounded transition-colors disabled:opacity-50"
@@ -2680,14 +2680,14 @@ export default function WorkspaceSettings() {
                               ) : (
                                 <RefreshCw size={16} />
                               )}
-                            </button>
-                            <button
+                            </MutationButton>
+                            <MutationButton
                               onClick={() => handleDeleteTeamsConnection(conn.connection_id)}
                               className="p-1.5 text-red-500 hover:bg-red-50 rounded transition-colors"
                               title="Disconnect"
                             >
                               <Trash2 size={16} />
-                            </button>
+                            </MutationButton>
                           </div>
                         )}
                       </div>
@@ -2710,7 +2710,7 @@ export default function WorkspaceSettings() {
                   </div>
                 </div>
                 {isAdmin && sharePointConnections.length === 0 && (
-                  <button
+                  <MutationButton
                     onClick={handleConnectSharePoint}
                     disabled={connectingSharePoint}
                     className="flex items-center gap-2 px-3 py-1.5 text-sm bg-teal-600 text-white rounded-lg hover:bg-teal-700 disabled:opacity-50 transition-colors"
@@ -2721,7 +2721,7 @@ export default function WorkspaceSettings() {
                       <Plus size={16} />
                     )}
                     Connect
-                  </button>
+                  </MutationButton>
                 )}
               </div>
               {loadingConnections ? (
@@ -2779,7 +2779,7 @@ export default function WorkspaceSettings() {
                             >
                               Configure
                             </button>
-                            <button
+                            <MutationButton
                               onClick={() => handleTriggerSharePointSync(conn.connection_id)}
                               disabled={syncingSharePoint === conn.connection_id || (conn.selected_sites || []).length === 0}
                               className="p-1.5 text-gray-500 hover:bg-gray-100 rounded transition-colors disabled:opacity-50"
@@ -2790,14 +2790,14 @@ export default function WorkspaceSettings() {
                               ) : (
                                 <RefreshCw size={16} />
                               )}
-                            </button>
-                            <button
+                            </MutationButton>
+                            <MutationButton
                               onClick={() => handleDeleteSharePointConnection(conn.connection_id)}
                               className="p-1.5 text-red-500 hover:bg-red-50 rounded transition-colors"
                               title="Disconnect"
                             >
                               <Trash2 size={16} />
-                            </button>
+                            </MutationButton>
                           </div>
                         )}
                       </div>
@@ -2820,7 +2820,7 @@ export default function WorkspaceSettings() {
                   </div>
                 </div>
                 {isAdmin && oneDriveConnections.length === 0 && (
-                  <button
+                  <MutationButton
                     onClick={handleConnectOneDrive}
                     disabled={connectingOneDrive}
                     className="flex items-center gap-2 px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
@@ -2831,7 +2831,7 @@ export default function WorkspaceSettings() {
                       <Plus size={16} />
                     )}
                     Connect
-                  </button>
+                  </MutationButton>
                 )}
               </div>
               {loadingConnections ? (
@@ -2888,7 +2888,7 @@ export default function WorkspaceSettings() {
                             >
                               Configure
                             </button>
-                            <button
+                            <MutationButton
                               onClick={() => handleTriggerOneDriveSync(conn.connection_id)}
                               disabled={syncingOneDrive === conn.connection_id || (conn.selected_folders || []).length === 0}
                               className="p-1.5 text-gray-500 hover:bg-gray-100 rounded transition-colors disabled:opacity-50"
@@ -2899,14 +2899,14 @@ export default function WorkspaceSettings() {
                               ) : (
                                 <RefreshCw size={16} />
                               )}
-                            </button>
-                            <button
+                            </MutationButton>
+                            <MutationButton
                               onClick={() => handleDeleteOneDriveConnection(conn.connection_id)}
                               className="p-1.5 text-red-500 hover:bg-red-50 rounded transition-colors"
                               title="Disconnect"
                             >
                               <Trash2 size={16} />
-                            </button>
+                            </MutationButton>
                           </div>
                         )}
                       </div>
@@ -2929,7 +2929,7 @@ export default function WorkspaceSettings() {
                   </div>
                 </div>
                 {isAdmin && oneNoteConnections.length === 0 && (
-                  <button
+                  <MutationButton
                     onClick={handleConnectOneNote}
                     disabled={connectingOneNote}
                     className="flex items-center gap-2 px-3 py-1.5 text-sm bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 transition-colors"
@@ -2940,7 +2940,7 @@ export default function WorkspaceSettings() {
                       <Plus size={16} />
                     )}
                     Connect
-                  </button>
+                  </MutationButton>
                 )}
               </div>
               {loadingConnections ? (
@@ -2997,7 +2997,7 @@ export default function WorkspaceSettings() {
                             >
                               Configure
                             </button>
-                            <button
+                            <MutationButton
                               onClick={() => handleTriggerOneNoteSync(conn.connection_id)}
                               disabled={syncingOneNote === conn.connection_id || (conn.selected_notebooks || []).length === 0}
                               className="p-1.5 text-gray-500 hover:bg-gray-100 rounded transition-colors disabled:opacity-50"
@@ -3008,14 +3008,14 @@ export default function WorkspaceSettings() {
                               ) : (
                                 <RefreshCw size={16} />
                               )}
-                            </button>
-                            <button
+                            </MutationButton>
+                            <MutationButton
                               onClick={() => handleDeleteOneNoteConnection(conn.connection_id)}
                               className="p-1.5 text-red-500 hover:bg-red-50 rounded transition-colors"
                               title="Disconnect"
                             >
                               <Trash2 size={16} />
-                            </button>
+                            </MutationButton>
                           </div>
                         )}
                       </div>
@@ -3038,13 +3038,13 @@ export default function WorkspaceSettings() {
                   </div>
                 </div>
                 {isAdmin && (
-                  <button
+                  <MutationButton
                     onClick={openDatabaseConnectModal}
                     className="flex items-center gap-2 px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
                   >
                     <Plus size={16} />
                     Connect
-                  </button>
+                  </MutationButton>
                 )}
               </div>
               {loadingConnections ? (
@@ -3125,7 +3125,7 @@ export default function WorkspaceSettings() {
                             >
                               Configure
                             </button>
-                            <button
+                            <MutationButton
                               onClick={() => handleTriggerDatabaseSync(conn.connection_id)}
                               disabled={syncingDatabase === conn.connection_id || (conn.scope_config?.introspection?.include || []).length === 0}
                               className="p-1.5 text-gray-500 hover:bg-gray-100 rounded transition-colors disabled:opacity-50"
@@ -3136,14 +3136,14 @@ export default function WorkspaceSettings() {
                               ) : (
                                 <RefreshCw size={16} />
                               )}
-                            </button>
-                            <button
+                            </MutationButton>
+                            <MutationButton
                               onClick={() => handleDeleteDatabaseConnection(conn.connection_id)}
                               className="p-1.5 text-red-500 hover:bg-red-50 rounded transition-colors"
                               title="Disconnect"
                             >
                               <Trash2 size={16} />
-                            </button>
+                            </MutationButton>
                           </div>
                         )}
                       </div>
@@ -3203,14 +3203,14 @@ export default function WorkspaceSettings() {
                   <p className="text-sm text-gray-500">
                     {selectedSharingIds.size} workspace{selectedSharingIds.size !== 1 ? 's' : ''} can search this workspace
                   </p>
-                  <button
+                  <MutationButton
                     onClick={handleSaveSharing}
                     disabled={savingSharing}
                     className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors flex items-center gap-2"
                   >
                     {savingSharing && <Loader2 size={16} className="animate-spin" />}
                     Save Changes
-                  </button>
+                  </MutationButton>
                 </div>
               </>
             )}
@@ -3377,14 +3377,14 @@ export default function WorkspaceSettings() {
                       </div>
 
                       <div className="flex items-center gap-3 pt-2">
-                        <button
+                        <MutationButton
                           onClick={handleSaveSystemPrompt}
                           disabled={savingSystemPrompt || systemPrompt === savedSystemPrompt}
                           className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors flex items-center gap-2"
                         >
                           {savingSystemPrompt && <Loader2 size={16} className="animate-spin" />}
                           Save Changes
-                        </button>
+                        </MutationButton>
                         <button
                           onClick={() => setShowResetPromptConfirm(true)}
                           disabled={resettingSystemPrompt || !savedSystemPrompt}
@@ -3651,14 +3651,14 @@ export default function WorkspaceSettings() {
                 >
                   Cancel
                 </button>
-                <button
+                <MutationButton
                   onClick={handleSaveSpaces}
                   disabled={savingSpaces || selectedSpaces.size === 0}
                   className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors flex items-center gap-2"
                 >
                   {savingSpaces && <Loader2 size={16} className="animate-spin" />}
                   Save & Sync
-                </button>
+                </MutationButton>
               </div>
             </div>
           </div>
@@ -3744,14 +3744,14 @@ export default function WorkspaceSettings() {
                 >
                   Cancel
                 </button>
-                <button
+                <MutationButton
                   onClick={handleSaveProjects}
                   disabled={savingProjects || selectedProjects.size === 0}
                   className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors flex items-center gap-2"
                 >
                   {savingProjects && <Loader2 size={16} className="animate-spin" />}
                   Save & Sync
-                </button>
+                </MutationButton>
               </div>
             </div>
           </div>
@@ -3816,14 +3816,14 @@ export default function WorkspaceSettings() {
                 >
                   Cancel
                 </button>
-                <button
+                <MutationButton
                   onClick={handleSaveFolders}
                   disabled={savingFolders || selectedFolders.size === 0}
                   className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors flex items-center gap-2"
                 >
                   {savingFolders && <Loader2 size={16} className="animate-spin" />}
                   Save & Sync
-                </button>
+                </MutationButton>
               </div>
             </div>
           </div>
@@ -3970,14 +3970,14 @@ export default function WorkspaceSettings() {
                 >
                   Cancel
                 </button>
-                <button
+                <MutationButton
                   onClick={handleSaveTeamsConfig}
                   disabled={savingTeamsConfig || selectedChannels.length === 0}
                   className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 transition-colors flex items-center gap-2"
                 >
                   {savingTeamsConfig && <Loader2 size={16} className="animate-spin" />}
                   Save & Sync
-                </button>
+                </MutationButton>
               </div>
             </div>
           </div>
@@ -4050,14 +4050,14 @@ export default function WorkspaceSettings() {
                 >
                   Cancel
                 </button>
-                <button
+                <MutationButton
                   onClick={handleSaveSPSites}
                   disabled={savingSPSites || selectedSPSites.size === 0}
                   className="px-4 py-2 bg-teal-600 text-white rounded-lg hover:bg-teal-700 disabled:opacity-50 transition-colors flex items-center gap-2"
                 >
                   {savingSPSites && <Loader2 size={16} className="animate-spin" />}
                   Save & Sync
-                </button>
+                </MutationButton>
               </div>
             </div>
           </div>
@@ -4117,14 +4117,14 @@ export default function WorkspaceSettings() {
                 >
                   Cancel
                 </button>
-                <button
+                <MutationButton
                   onClick={handleSaveODFolders}
                   disabled={savingODFolders || selectedODFolders.size === 0}
                   className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors flex items-center gap-2"
                 >
                   {savingODFolders && <Loader2 size={16} className="animate-spin" />}
                   Save & Sync
-                </button>
+                </MutationButton>
               </div>
             </div>
           </div>
@@ -4204,14 +4204,14 @@ export default function WorkspaceSettings() {
                 >
                   Cancel
                 </button>
-                <button
+                <MutationButton
                   onClick={handleSaveONNotebooks}
                   disabled={savingONNotebooks || selectedONNotebooks.size === 0}
                   className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 transition-colors flex items-center gap-2"
                 >
                   {savingONNotebooks && <Loader2 size={16} className="animate-spin" />}
                   Save & Sync
-                </button>
+                </MutationButton>
               </div>
             </div>
           </div>
@@ -4364,14 +4364,14 @@ export default function WorkspaceSettings() {
                 >
                   Cancel
                 </button>
-                <button
+                <MutationButton
                   onClick={handleCreateDatabaseConnection}
                   disabled={dbCreating || !dbConnectHost || !dbConnectDatabaseName || !dbConnectUsername || !dbConnectPassword}
                   className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors flex items-center gap-2"
                 >
                   {dbCreating && <Loader2 size={16} className="animate-spin" />}
                   Save connection
-                </button>
+                </MutationButton>
               </div>
             </div>
           </div>
@@ -4485,14 +4485,14 @@ export default function WorkspaceSettings() {
                 >
                   Cancel
                 </button>
-                <button
+                <MutationButton
                   onClick={handleSaveDatabaseScope}
                   disabled={savingDatabaseScope || databaseIntrospectSchemas.size === 0}
                   className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors flex items-center gap-2"
                 >
                   {savingDatabaseScope && <Loader2 size={16} className="animate-spin" />}
                   Save & Sync
-                </button>
+                </MutationButton>
               </div>
             </div>
           </div>
@@ -4566,10 +4566,10 @@ export default function WorkspaceSettings() {
                           </p>
                         </div>
                       </div>
-                      <button
+                      <MutationButton
                         onClick={() => handleAddGitHubRepo(repo.full_name)}
                         disabled={addingGitHubRepo === repo.full_name}
-                        className="ml-4 px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors flex items-center gap-1"
+                        className="ml-4 px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center gap-1"
                       >
                         {addingGitHubRepo === repo.full_name ? (
                           <Loader2 size={14} className="animate-spin" />
@@ -4577,7 +4577,7 @@ export default function WorkspaceSettings() {
                           <Plus size={14} />
                         )}
                         Add
-                      </button>
+                      </MutationButton>
                     </li>
                   ))}
                 </ul>

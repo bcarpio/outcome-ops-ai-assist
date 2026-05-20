@@ -43,6 +43,7 @@ import {
 import AllChatsModal from '../components/AllChatsModal'
 import ShareDialog from '../components/ShareDialog'
 import SharedConversationsList from '../components/SharedConversationsList'
+import { useRegionRole } from '../lib/regionRole'
 
 interface DisplayMessage extends Message {
   isStreaming?: boolean
@@ -53,6 +54,14 @@ type Status = 'idle' | 'thinking' | 'searching' | 'typing' | 'tool_use'
 export default function Chat() {
   const { conversationId } = useParams()
   const navigate = useNavigate()
+
+  // HA region role. Chat WRITES (posting a message creates a conversation
+  // + message rows) are gated to the active region by the backend
+  // (shared.region_guard); when this UI is served by the passive region
+  // the composer is disabled so users don't type a message that the
+  // streaming endpoint would only reject with a region_passive 403.
+  const { role: regionRole } = useRegionRole()
+  const isPassiveRegion = regionRole === 'passive'
 
   // State
   const [conversations, setConversations] = useState<Conversation[]>([])
@@ -288,6 +297,10 @@ export default function Chat() {
   // Send message
   async function handleSend() {
     if (!input.trim() || status !== 'idle') return
+    // Passive region: chat is a gated write. Don't even attempt the
+    // call — the backend would return region_passive. Belt-and-
+    // suspenders with the disabled composer (covers the Enter key).
+    if (isPassiveRegion) return
 
     const userMessage: DisplayMessage = {
       message_id: `temp-${Date.now()}`,
@@ -986,11 +999,13 @@ export default function Chat() {
                 e.target.style.height = Math.min(e.target.scrollHeight, 300) + 'px'
               }}
               onKeyDown={handleKeyDown}
-              placeholder="Ask about your codebase..."
+              placeholder={isPassiveRegion
+                ? 'Chat is unavailable in the passive region — failover to the active region to start or continue a conversation.'
+                : 'Ask about your codebase...'}
               rows={1}
-              className="flex-1 resize-y rounded-xl border border-gray-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              className="flex-1 resize-y rounded-xl border border-gray-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-100 disabled:cursor-not-allowed"
               style={{ minHeight: '48px', maxHeight: '300px' }}
-              disabled={status !== 'idle'}
+              disabled={status !== 'idle' || isPassiveRegion}
             />
             {/* Search depth selector */}
             <div className="relative">
@@ -1038,7 +1053,8 @@ export default function Chat() {
             {/* Send button */}
             <button
               onClick={handleSend}
-              disabled={!input.trim() || status !== 'idle'}
+              disabled={!input.trim() || status !== 'idle' || isPassiveRegion}
+              title={isPassiveRegion ? 'Chat is disabled in the passive region' : undefined}
               className="p-3 bg-blue-600 text-white rounded-xl hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
               {status !== 'idle' ? (
@@ -1054,7 +1070,9 @@ export default function Chat() {
               {status === 'thinking' && 'Searching knowledge base...'}
               {status === 'typing' && 'Generating response...'}
               {status === 'tool_use' && activeToolCall && `Calling ${activeToolCall}...`}
-              {status === 'idle' && 'Enter to send, Shift+Enter for new line'}
+              {status === 'idle' && (isPassiveRegion
+                ? 'Read-only (passive region): viewing history works; sending is disabled.'
+                : 'Enter to send, Shift+Enter for new line')}
             </div>
             <div className="flex items-center gap-3">
               {showCost && lastCost && (
