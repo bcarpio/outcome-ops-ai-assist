@@ -33,6 +33,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 
 # Add shared module to path for Lambda deployment
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from shared import dual_write
 from shared.audit import log_audit_entry
 from shared.audit_writer import (
     ACTION_CONVERSATION_DELETED,
@@ -42,6 +43,11 @@ from shared.audit_writer import (
     log_routing_decision,
 )
 from shared.prompts import build_chat_system_prompt
+from shared.region_guard import (
+    RegionPassiveError,
+    guard_active,
+    passive_response,
+)
 
 # Symbol-graph router + context builder. Imports kept explicit
 # (rather than wildcard) so the chat handler's existing test suite
@@ -978,9 +984,6 @@ def get_conversation(conversation_id: str) -> Optional[Dict]:
 
 def create_conversation(title: str, user_id: str = None, workspace_id: str = None) -> Dict:
     """Create a new conversation."""
-    dynamodb = _get_dynamodb()
-    table = dynamodb.Table(_get_chat_table())
-
     conversation_id = generate_id()
     now = datetime.now(timezone.utc).isoformat()
 
@@ -1001,21 +1004,19 @@ def create_conversation(title: str, user_id: str = None, workspace_id: str = Non
     if workspace_id:
         item["workspace_id"] = workspace_id
 
-    table.put_item(Item=item)
+    dual_write.ddb_put_item(_get_chat_table(), item)
     logger.info(f"Created conversation: {conversation_id} (user: {user_id}, workspace: {workspace_id})")
     return item
 
 
 def update_conversation(conversation_id: str, message_count: int):
     """Update conversation message count and timestamp, and sync share items."""
-    dynamodb = _get_dynamodb()
-    table = dynamodb.Table(_get_chat_table())
-
     now = datetime.now(timezone.utc).isoformat()
 
     try:
-        table.update_item(
-            Key={"PK": f"CONV#{conversation_id}", "SK": "METADATA"},
+        dual_write.ddb_update_item(
+            _get_chat_table(),
+            {"PK": f"CONV#{conversation_id}", "SK": "METADATA"},
             UpdateExpression="SET message_count = :mc, updated_at = :ua, GSI2SK = :gsi2sk",
             ExpressionAttributeValues={
                 ":mc": message_count,
@@ -1056,9 +1057,6 @@ def get_conversation_messages(conversation_id: str, limit: int = 10) -> List[Dic
 
 def save_message(conversation_id: str, role: str, content: str, sources: List[Dict] = None):
     """Save a message to the conversation."""
-    dynamodb = _get_dynamodb()
-    table = dynamodb.Table(_get_chat_table())
-
     message_id = generate_id()
     now = datetime.now(timezone.utc).isoformat()
 
@@ -1073,7 +1071,7 @@ def save_message(conversation_id: str, role: str, content: str, sources: List[Di
     if sources:
         item["sources"] = sources
 
-    table.put_item(Item=item)
+    dual_write.ddb_put_item(_get_chat_table(), item)
     return message_id
 
 
@@ -1558,14 +1556,12 @@ def format_memory_context(memory_results: List[Dict]) -> str:
 
 def update_memory_chunk_count(conversation_id: str, chunk_count: int):
     """Update the memory chunk count for a conversation."""
-    dynamodb = _get_dynamodb()
-    table = dynamodb.Table(_get_chat_table())
-
     now = datetime.now(timezone.utc).isoformat()
 
     try:
-        table.update_item(
-            Key={"PK": f"CONV#{conversation_id}", "SK": "METADATA"},
+        dual_write.ddb_update_item(
+            _get_chat_table(),
+            {"PK": f"CONV#{conversation_id}", "SK": "METADATA"},
             UpdateExpression="SET memory_chunk_count = :mcc, updated_at = :ua, GSI2SK = :gsi2sk",
             ExpressionAttributeValues={
                 ":mcc": chunk_count,
@@ -1826,6 +1822,19 @@ def handle_chat_stream(event: Dict) -> Generator[str, None, None]:
     user_id = None
     if request.user:
         user_id = request.user.get("email")
+
+    # Passive-region gate. Chat streaming creates conversations and writes
+    # messages; both are state-mutating, so this path is gated like any
+    # other user-facing mutation. The canonical URL DNS-flips to the
+    # active region during failover, so legitimate end users hit the
+    # active region's stream and pass the gate. Hits on outcomeops1 /
+    # outcomeops2 while that region is passive yield the standard 403
+    # NDJSON error + an ADMIN_MUTATION_BLOCKED_PASSIVE audit row.
+    try:
+        guard_active("chat_stream", user_email=user_id or "")
+    except RegionPassiveError:
+        yield _stream_error("region_passive", 403) + "\n"
+        return
 
     # Pull source_ip / user_agent off the synthesized requestContext so
     # bedrock audit rows can record the browser IP. main.py:_extract_browser_ctx
@@ -2283,6 +2292,10 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         cursor = query_params.get("cursor")
         return list_conversations(user_id=user_id, limit=limit, cursor=cursor)
     elif path.endswith("/share") and path.startswith("/conversations/") and http_method == "PUT":
+        try:
+            guard_active("chat_share_conversation")
+        except RegionPassiveError:
+            return passive_response("chat_share_conversation")
         conv_id = path.split("/")[-2]
         return handle_share_conversation(conv_id, user_id=user_id, body=body)
     elif path == "/shared" and http_method == "GET":
@@ -2291,6 +2304,10 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         conv_id = path.split("/")[-1]
         return get_conversation_with_messages(conv_id, user_id=user_id)
     elif path.startswith("/conversations/") and not path.endswith("/share") and http_method == "DELETE":
+        try:
+            guard_active("chat_delete_conversation")
+        except RegionPassiveError:
+            return passive_response("chat_delete_conversation")
         conv_id = path.split("/")[-1]
         return delete_conversation(conv_id, user_id=user_id, audit_ctx=audit_ctx)
     else:
@@ -2358,8 +2375,9 @@ def _sync_share_items(
 
         for item in share_items:
             try:
-                table.update_item(
-                    Key={"PK": item["PK"], "SK": item["SK"]},
+                dual_write.ddb_update_item(
+                    _get_chat_table(),
+                    {"PK": item["PK"], "SK": item["SK"]},
                     UpdateExpression=update_expr,
                     ExpressionAttributeValues=expr_values,
                 )
@@ -2405,18 +2423,19 @@ def handle_share_conversation(
         if not workspace_ids:
             # --- Unshare all ---
             # Delete all existing SHARE items
-            with table.batch_writer() as batch:
-                for ws_id in existing_shared:
-                    batch.delete_item(
-                        Key={
-                            "PK": f"CONV#{conversation_id}",
-                            "SK": f"SHARE#{ws_id}",
-                        }
-                    )
+            for ws_id in existing_shared:
+                dual_write.ddb_delete_item(
+                    _get_chat_table(),
+                    {
+                        "PK": f"CONV#{conversation_id}",
+                        "SK": f"SHARE#{ws_id}",
+                    },
+                )
 
             # Remove shared_workspace_ids and shared_at from METADATA
-            table.update_item(
-                Key={"PK": f"CONV#{conversation_id}", "SK": "METADATA"},
+            dual_write.ddb_update_item(
+                _get_chat_table(),
+                {"PK": f"CONV#{conversation_id}", "SK": "METADATA"},
                 UpdateExpression="REMOVE shared_workspace_ids, shared_at",
             )
 
@@ -2445,31 +2464,32 @@ def handle_share_conversation(
         # Delete old SHARE items that are no longer in the new set
         to_remove = existing_shared - set(authorized_ws)
         if to_remove:
-            with table.batch_writer() as batch:
-                for ws_id in to_remove:
-                    batch.delete_item(
-                        Key={
-                            "PK": f"CONV#{conversation_id}",
-                            "SK": f"SHARE#{ws_id}",
-                        }
-                    )
+            for ws_id in to_remove:
+                dual_write.ddb_delete_item(
+                    _get_chat_table(),
+                    {
+                        "PK": f"CONV#{conversation_id}",
+                        "SK": f"SHARE#{ws_id}",
+                    },
+                )
 
         # Write SHARE items for each authorized workspace
-        with table.batch_writer() as batch:
-            for ws_id in authorized_ws:
-                share_item = {
-                    "PK": f"CONV#{conversation_id}",
-                    "SK": f"SHARE#{ws_id}",
-                    "GSI3PK": f"WS_SHARE#{ws_id}",
-                    "GSI3SK": f"CONV#{updated_at}",
-                    "conversation_id": conversation_id,
-                    "title": conversation.get("title", ""),
-                    "message_count": conversation.get("message_count", 0),
-                    "user_id": user_id,
-                    "updated_at": updated_at,
-                    "shared_at": now,
-                }
-                batch.put_item(Item=share_item)
+        share_items = [
+            {
+                "PK": f"CONV#{conversation_id}",
+                "SK": f"SHARE#{ws_id}",
+                "GSI3PK": f"WS_SHARE#{ws_id}",
+                "GSI3SK": f"CONV#{updated_at}",
+                "conversation_id": conversation_id,
+                "title": conversation.get("title", ""),
+                "message_count": conversation.get("message_count", 0),
+                "user_id": user_id,
+                "updated_at": updated_at,
+                "shared_at": now,
+            }
+            for ws_id in authorized_ws
+        ]
+        dual_write.ddb_batch_put_items(_get_chat_table(), share_items)
 
         # Update METADATA: replace shared_workspace_ids, preserve original shared_at
         existing_shared_at = conversation.get("shared_at")
@@ -2479,8 +2499,9 @@ def handle_share_conversation(
             update_expr += ", shared_at = :sat"
             expr_values[":sat"] = now
 
-        table.update_item(
-            Key={"PK": f"CONV#{conversation_id}", "SK": "METADATA"},
+        dual_write.ddb_update_item(
+            _get_chat_table(),
+            {"PK": f"CONV#{conversation_id}", "SK": "METADATA"},
             UpdateExpression=update_expr,
             ExpressionAttributeValues=expr_values,
         )
@@ -2842,9 +2863,11 @@ def delete_conversation(
             )
 
         # Delete all items (messages, metadata, SHARE# items)
-        with table.batch_writer() as batch:
-            for item in items:
-                batch.delete_item(Key={"PK": item["PK"], "SK": item["SK"]})
+        for item in items:
+            dual_write.ddb_delete_item(
+                _get_chat_table(),
+                {"PK": item["PK"], "SK": item["SK"]},
+            )
 
         logger.info(f"Deleted conversation: {conversation_id}")
 
