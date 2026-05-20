@@ -15,6 +15,7 @@ Stores results in DynamoDB and posts comments to PR.
 import json
 import logging
 import os
+import sys
 from datetime import datetime
 from typing import Any, Dict, List, Literal
 from enum import Enum
@@ -23,6 +24,11 @@ import boto3
 import requests
 from botocore.exceptions import ClientError
 from pydantic import BaseModel, Field, field_validator
+
+# shared/ is bundled into the deploy zip at the package root by
+# terraform source_path (see lambda-pr-analysis.tf).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from shared import dual_write  # noqa: E402
 
 # Import check handlers
 from check_handlers import (
@@ -171,8 +177,6 @@ def store_check_result(result: CheckResult) -> None:
     Raises:
         ClientError: If DynamoDB operation fails
     """
-    table = dynamodb.Table(DYNAMODB_TABLE)
-
     item = {
         "PK": result.PK,
         "SK": result.SK,
@@ -187,7 +191,7 @@ def store_check_result(result: CheckResult) -> None:
         item["commentUrl"] = result.comment_url
 
     try:
-        table.put_item(Item=item)
+        dual_write.ddb_put_item(DYNAMODB_TABLE, item)
         logger.info(f"Stored check result: {result.PK} / {result.SK}")
 
     except ClientError as e:

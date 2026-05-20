@@ -27,6 +27,7 @@ from botocore.exceptions import ClientError
 # Make shared/ importable. Image is built with context=lambda/ so
 # shared/ is COPYed alongside this file at /app/shared/.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from shared import dual_write  # type: ignore  # noqa: E402
 try:
     from shared.audit_writer import (  # type: ignore
         ACTION_API_KEY_USED,
@@ -399,8 +400,9 @@ def validate_api_key(api_key, source_ip=""):
 
         # Update last_used_at (best-effort)
         try:
-            table.update_item(
-                Key={"PK": item["PK"], "SK": item["SK"]},
+            dual_write.ddb_update_item(
+                DYNAMODB_TABLE,
+                {"PK": item["PK"], "SK": item["SK"]},
                 UpdateExpression="SET last_used_at = :now",
                 ExpressionAttributeValues={
                     ":now": datetime.now(timezone.utc).isoformat(),
