@@ -790,3 +790,29 @@ resource "aws_ssm_parameter" "github_app_slug_secondary" {
     Purpose = "github-app"
   }
 }
+
+# github/app-id was the one GitHub App config param missing in the
+# secondary region — its sibling _secondary resources (private-key,
+# client-id, client-secret, webhook-secret, callback-url, app-slug) all
+# exist, but app-id was overlooked. github_app.generate_jwt() reads
+# /github/app-id from SSM, so without this the secondary region's
+# github-integration raises "GitHub App ID not configured" (HTTP 500)
+# on any installation-token operation (list repos, add repo, sync)
+# the moment the secondary becomes active. It's a String (not a
+# secret), so terraform manages it directly here — not via
+# ha-sync-secrets, which only carries SecureStrings.
+resource "aws_ssm_parameter" "github_app_id_secondary" {
+  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+
+  provider = aws.secondary
+
+  name        = "/${var.environment}/${var.app_name}/github/app-id"
+  description = "GitHub App ID - secondary region"
+  type        = "String"
+  value       = var.github_app_id != "" ? var.github_app_id : "PLACEHOLDER_CONFIGURE_ME"
+  overwrite   = true
+
+  tags = {
+    Purpose = "github-app"
+  }
+}
