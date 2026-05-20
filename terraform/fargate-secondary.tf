@@ -85,7 +85,7 @@ module "mcp_outcomeops_secondary" {
   cpu             = 512
   memory          = 1024
 
-  environment_variables = {
+  environment_variables = merge({
     PORT               = "8080"
     AWS_DEFAULT_REGION = var.secondary_region
     DYNAMODB_TABLE     = module.workspaces_table_secondary[0].dynamodb_table_id
@@ -97,7 +97,11 @@ module "mcp_outcomeops_secondary" {
     AUDIT_TABLE        = module.audit_logs_table_secondary[0].dynamodb_table_id
     SYMBOL_GRAPH_TABLE = module.symbol_graph_table_secondary[0].dynamodb_table_id
     CODE_MAPS_TABLE    = module.code_maps_table_secondary[0].dynamodb_table_id
-  }
+    },
+    # HA dual-write: emit to the SECONDARY region's replication bus when
+    # this region is active post-failover.
+    local.ha_writer_env_secondary,
+  )
 
   ecs_cluster_arn    = module.ui_ecs_secondary.cluster_arn
   vpc_id             = var.ui_vpc_id_secondary
@@ -223,6 +227,18 @@ resource "aws_iam_role_policy" "mcp_outcomeops_secondary" {
         ]
         Resource = [
           module.audit_logs_table_secondary[0].dynamodb_table_arn,
+        ]
+      },
+      {
+        # HA dual-write: emit api-key last_used_at replication events to
+        # the secondary region's bus when active post-failover.
+        Sid    = "HAEventsPutEvents"
+        Effect = "Allow"
+        Action = [
+          "events:PutEvents",
+        ]
+        Resource = [
+          aws_cloudwatch_event_bus.replication_secondary[0].arn,
         ]
       },
     ]

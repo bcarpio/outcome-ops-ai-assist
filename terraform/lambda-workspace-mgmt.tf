@@ -58,7 +58,7 @@ module "workspace_management_lambda" {
   quiet_archive_local_exec = true
 
   # Environment variables for LWA
-  environment_variables = {
+  environment_variables = merge({
     ENV                          = var.environment
     APP_NAME                     = var.app_name
     AWS_LAMBDA_EXEC_WRAPPER      = "/opt/bootstrap"
@@ -79,11 +79,16 @@ module "workspace_management_lambda" {
     # `requests` honors REQUESTS_CA_BUNDLE and stdlib honors SSL_CERT_FILE.
     REQUESTS_CA_BUNDLE = "/opt/ca-bundle.pem"
     SSL_CERT_FILE      = "/opt/ca-bundle.pem"
-  }
+    },
+    # HA dual-write: REPLICATION_EVENT_BUS_NAME + THIS_REGION so
+    # shared.dual_write emits replication events for the handler's
+    # mutations. Empty in single-region mode (var.secondary_region == "").
+    local.ha_writer_env,
+  )
 
   # IAM permissions
   attach_policy_statements = true
-  policy_statements = {
+  policy_statements = merge({
     # DynamoDB for workspaces table
     dynamodb = {
       effect = "Allow"
@@ -192,7 +197,11 @@ module "workspace_management_lambda" {
         aws_sqs_queue.delete_queue[0].arn
       ]
     }
-  }
+    },
+    # HA dual-write: events:PutEvents on the local replication bus.
+    # Empty (no-op) in single-region mode.
+    local.ha_writer_events_iam,
+  )
 
   tags = {
     Purpose = "workspace-management"

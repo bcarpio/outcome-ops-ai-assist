@@ -47,7 +47,7 @@ module "mcp_outcomeops" {
   cpu             = 512
   memory          = 1024
 
-  environment_variables = {
+  environment_variables = merge({
     PORT               = "8080"
     AWS_DEFAULT_REGION = var.aws_region
     DYNAMODB_TABLE     = module.workspaces_table[0].dynamodb_table_id
@@ -66,7 +66,12 @@ module "mcp_outcomeops" {
     # staleness reporting.
     SYMBOL_GRAPH_TABLE = module.symbol_graph_table.dynamodb_table_id
     CODE_MAPS_TABLE    = module.code_maps_table.dynamodb_table_id
-  }
+    },
+    # HA dual-write: the MCP server routes its api-key last_used_at
+    # write through shared.dual_write; these env vars make it emit a
+    # replication event. Empty in single-region mode.
+    local.ha_writer_env,
+  )
 
   ecs_cluster_arn    = module.ui_ecs.cluster_arn
   vpc_id             = var.ui_vpc_id
@@ -178,6 +183,29 @@ resource "aws_iam_role_policy" "mcp_outcomeops" {
         Resource = [
           module.audit_logs_table.dynamodb_table_arn
         ]
+      }
+    ]
+  })
+}
+
+# HA dual-write: grant the MCP task role events:PutEvents on the local
+# replication bus so its dual_write.ddb_update_item (api-key last_used_at)
+# emits a replication event. Gated on HA mode; in single-region the env
+# var is empty and dual_write._emit short-circuits anyway.
+resource "aws_iam_role_policy" "mcp_outcomeops_ha_events" {
+  count = var.mcp_server_enabled && var.secondary_region != "" ? 1 : 0
+
+  name = "${var.environment}-${var.app_name}-mcp-outcomeops-ha-events"
+  role = module.mcp_outcomeops[0].task_role_name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "HAEventsPutEvents"
+        Effect   = "Allow"
+        Action   = ["events:PutEvents"]
+        Resource = [aws_cloudwatch_event_bus.replication.arn]
       }
     ]
   })

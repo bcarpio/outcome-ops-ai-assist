@@ -54,6 +54,7 @@ module "sharepoint_integration_lambda" {
       AUDIT_TABLE           = module.audit_logs_table.dynamodb_table_id
     },
     local.outcomeops_license_env,
+    local.ha_writer_env,
   )
 
   # IAM permissions
@@ -136,6 +137,7 @@ module "sharepoint_integration_lambda" {
       }
     },
     local.outcomeops_license_iam,
+    local.ha_writer_events_iam,
   )
 
   tags = {
@@ -276,6 +278,7 @@ module "sharepoint_sync_lambda" {
       AUDIT_TABLE           = module.audit_logs_table.dynamodb_table_id
     },
     local.outcomeops_license_env,
+    local.ha_writer_env,
   )
 
   # IAM permissions
@@ -371,6 +374,7 @@ module "sharepoint_sync_lambda" {
       }
     },
     local.outcomeops_license_iam,
+    local.ha_writer_events_iam,
   )
 
   tags = {

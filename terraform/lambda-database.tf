@@ -66,6 +66,7 @@ module "database_integration_lambda" {
       AUDIT_TABLE               = module.audit_logs_table.dynamodb_table_id
     },
     local.outcomeops_license_env,
+    local.ha_writer_env,
   )
 
   attach_policy_statements = true
@@ -120,6 +121,7 @@ module "database_integration_lambda" {
       }
     },
     local.outcomeops_license_iam,
+    local.ha_writer_events_iam,
   )
 
   tags = {
@@ -241,6 +243,7 @@ module "database_sync_lambda" {
       DATABASE_DRIFT_TOPIC_ARN = length(aws_sns_topic.database_drift) > 0 ? aws_sns_topic.database_drift[0].arn : ""
     },
     local.outcomeops_license_env,
+    local.ha_writer_env,
   )
 
   attach_policy_statements = true
@@ -318,6 +321,7 @@ module "database_sync_lambda" {
       }
     },
     local.outcomeops_license_iam,
+    local.ha_writer_events_iam,
   )
 
   tags = {

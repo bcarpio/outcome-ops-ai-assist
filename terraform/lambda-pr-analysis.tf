@@ -152,7 +152,7 @@ module "process_pr_check_lambda" {
   quiet_archive_local_exec = true
 
   # Environment variables
-  environment_variables = {
+  environment_variables = merge({
     ENV                           = var.environment
     APP_NAME                      = var.app_name
     AUDIT_TABLE                   = module.audit_logs_table.dynamodb_table_id
@@ -162,11 +162,14 @@ module "process_pr_check_lambda" {
     BEDROCK_ADVANCED_OUTPUT_PRICE = tostring(var.bedrock_advanced_output_price)
     BEDROCK_BASIC_INPUT_PRICE     = tostring(var.bedrock_basic_input_price)
     BEDROCK_BASIC_OUTPUT_PRICE    = tostring(var.bedrock_basic_output_price)
-  }
+    },
+    # HA dual-write: emit replication events for the check-result row.
+    local.ha_writer_env,
+  )
 
   # IAM permissions
   attach_policy_statements = true
-  policy_statements = {
+  policy_statements = merge({
     # Write to DynamoDB code maps table
     dynamodb_write = {
       effect = "Allow"
@@ -259,7 +262,10 @@ module "process_pr_check_lambda" {
         module.audit_logs_table.dynamodb_table_arn
       ]
     }
-  }
+    },
+    # HA dual-write: events:PutEvents on the local replication bus.
+    local.ha_writer_events_iam,
+  )
 
   tags = {
     Purpose = "process-pr-check"
