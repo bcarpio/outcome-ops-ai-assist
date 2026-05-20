@@ -55,6 +55,7 @@ module "onedrive_integration_lambda" {
     },
     local.outcomeops_license_env,
     local.ha_writer_env,
+    local.ha_scheduler_env,
   )
 
   # IAM permissions
@@ -138,6 +139,7 @@ module "onedrive_integration_lambda" {
     },
     local.outcomeops_license_iam,
     local.ha_writer_events_iam,
+    local.ha_scheduler_iam,
   )
 
   tags = {

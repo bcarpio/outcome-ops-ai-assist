@@ -67,6 +67,7 @@ module "database_integration_lambda" {
     },
     local.outcomeops_license_env,
     local.ha_writer_env,
+    local.ha_scheduler_env,
   )
 
   attach_policy_statements = true
@@ -122,6 +123,7 @@ module "database_integration_lambda" {
     },
     local.outcomeops_license_iam,
     local.ha_writer_events_iam,
+    local.ha_scheduler_iam,
   )
 
   tags = {

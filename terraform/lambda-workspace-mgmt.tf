@@ -84,6 +84,7 @@ module "workspace_management_lambda" {
     # shared.dual_write emits replication events for the handler's
     # mutations. Empty in single-region mode (var.secondary_region == "").
     local.ha_writer_env,
+    local.ha_scheduler_env,
   )
 
   # IAM permissions
@@ -201,6 +202,7 @@ module "workspace_management_lambda" {
     # HA dual-write: events:PutEvents on the local replication bus.
     # Empty (no-op) in single-region mode.
     local.ha_writer_events_iam,
+    local.ha_scheduler_iam,
   )
 
   tags = {
