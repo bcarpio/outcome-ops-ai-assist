@@ -239,3 +239,36 @@ def test_github_sync_does_not_advance_per_pipeline_sha_on_dispatch(tables):
     assert pending is not None
     assert int(pending["expected_count"]) == 1
     assert int(pending["completed_count"]) == 0
+
+
+def test_no_change_docs_advance_routes_through_dual_write(tables):
+    """Regression pin: ``_advance_docs_sha_no_changes`` must advance
+    ``last_docs_sha`` via ``shared.dual_write`` — NOT a direct
+    ``table.update_item``.
+
+    A direct write bypasses the EventBridge replication emit, so the
+    HA secondary's ``last_docs_sha`` never advances for commits that
+    touch zero doc files — it drifts behind permanently until a commit
+    DOES change docs. This is the exact bug that left one repo lagging
+    in prd (the no-change shortcut went straight to boto3 and escaped
+    the dual-write sweep because it called ``ddb.Table(...).update_item``
+    rather than ``table.update_item``). Pin it so it can't regress.
+    """
+    _seed_ws_row(tables)
+
+    gs = _load_module_as(
+        "_test_gs_nochange",
+        _LAMBDA_ROOT / "github-sync" / "handler.py",
+    )
+
+    with patch.object(gs.dual_write, "ddb_update_item") as mock_dw:
+        gs._advance_docs_sha_no_changes(WORKSPACE_ID, REPO, NEW_SHA, 200)
+
+    # The write went through dual_write (which emits the replication
+    # event), not a direct table call.
+    mock_dw.assert_called_once()
+    call = mock_dw.call_args
+    assert call.args[0] == WORKSPACES_TABLE
+    assert call.args[1] == {"PK": f"WS#{WORKSPACE_ID}", "SK": f"GITHUB_REPO#{REPO}"}
+    assert ":sha" in call.kwargs["ExpressionAttributeValues"]
+    assert call.kwargs["ExpressionAttributeValues"][":sha"] == NEW_SHA

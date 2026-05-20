@@ -1000,9 +1000,17 @@ def _advance_docs_sha_no_changes(
     import time as _time
 
     try:
-        ddb = _get_dynamodb()
-        ddb.Table(WORKSPACES_TABLE).update_item(
-            Key={
+        # Must go through dual_write: this is the "commit changed zero doc
+        # files" shortcut that advances last_docs_sha without running the
+        # docs pipeline. A direct table.update_item here bypasses the
+        # EventBridge emit, so the secondary's last_docs_sha never advances
+        # for no-doc-change commits — it drifts behind permanently until a
+        # commit DOES touch docs (which replicates via the normal
+        # process-documents -> sha_truth -> dual_write path). The applier
+        # replays the same conditional update on the secondary.
+        dual_write.ddb_update_item(
+            WORKSPACES_TABLE,
+            {
                 "PK": f"WS#{workspace_id}",
                 "SK": f"GITHUB_REPO#{repo_name}",
             },
