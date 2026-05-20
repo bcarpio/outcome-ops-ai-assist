@@ -39,11 +39,20 @@ module "audit_stream_publisher_lambda" {
 
   quiet_archive_local_exec = true
 
-  environment_variables = {
-    ENV                      = var.environment
-    APP_NAME                 = var.app_name
-    AUDIT_EXPORT_STREAM_NAME = local.audit_export_stream_name
-  }
+  environment_variables = merge(
+    {
+      ENV                      = var.environment
+      APP_NAME                 = var.app_name
+      AUDIT_EXPORT_STREAM_NAME = local.audit_export_stream_name
+    },
+    # AppConfig role-read env so is_active_region() evaluates THIS
+    # region's role. Without it the publisher takes the single-region
+    # fast-path (always "active") and would keep emitting after this
+    # region is flipped to passive — the customer SIEM (consuming both
+    # regional streams) would then see doubled events. Empty in
+    # single-region mode.
+    local.ha_scheduler_env,
+  )
 
   attach_policy_statements = true
   policy_statements = merge(
@@ -85,6 +94,8 @@ module "audit_stream_publisher_lambda" {
         resources = [local.data_cmk_arn]
       }
     } : {},
+    # appconfig:GetLatestConfiguration for the is_active_region() read above.
+    local.ha_scheduler_iam,
   )
 
   tags = {
