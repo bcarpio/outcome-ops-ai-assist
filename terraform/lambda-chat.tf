@@ -110,6 +110,14 @@ module "chat_streaming_lambda" {
     },
     local.outcomeops_license_env,
     local.ha_writer_env,
+    # AppConfig role-read env so shared.region_guard.guard_active() on the
+    # chat mutation routes (chunk 05) actually evaluates the local
+    # region's active/passive role. Without this, is_active_region()
+    # takes the single-region fast-path (returns True) and passive-region
+    # chats would write + replicate — the bidirectional behavior ADR-022
+    # explicitly rejects. Post-failover this region becomes passive and
+    # the gate must fire here too.
+    local.ha_scheduler_env,
   )
 
   # IAM permissions. Merged with the shared license-layer IAM block
@@ -262,6 +270,8 @@ module "chat_streaming_lambda" {
     },
     local.outcomeops_license_iam,
     local.ha_writer_events_iam,
+    # appconfig:GetLatestConfiguration for the region-role read above.
+    local.ha_scheduler_iam,
   )
 
   tags = {

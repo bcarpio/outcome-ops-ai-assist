@@ -107,6 +107,13 @@ module "chat_streaming_lambda_secondary" {
     },
     local.outcomeops_license_env,
     local.ha_writer_env_secondary,
+    # AppConfig role-read env so region_guard.guard_active() on the chat
+    # mutation routes evaluates THIS region's role. Without it,
+    # is_active_region() short-circuits to True and passive-region chats
+    # write + replicate to primary (the bidirectional behavior ADR-022
+    # rejects). The secondary is passive in steady state, so this is the
+    # gate that must fire today.
+    local.ha_scheduler_env_secondary,
   )
 
   attach_policy_statements = true
@@ -197,6 +204,8 @@ module "chat_streaming_lambda_secondary" {
     },
     local.outcomeops_license_iam,
     local.ha_writer_events_iam_secondary,
+    # appconfig:GetLatestConfiguration for the region-role read above.
+    local.ha_scheduler_iam_secondary,
   )
 
   tags = { Purpose = "chat-streaming" }
