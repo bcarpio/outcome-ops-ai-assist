@@ -40,6 +40,7 @@ from botocore.exceptions import ClientError
 # resolves both at Lambda runtime (zip layout) and under pytest from the
 # repo root. Mirrors process-documents/handler.py.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from shared import dual_write  # noqa: E402
 from shared.audit_writer import log_license_fail_open
 
 # Configure logging
@@ -268,7 +269,7 @@ def process_confluence_page(
         if sync_id:
             metadata["sync_id"] = sync_id
 
-        s3_client.put_object(
+        dual_write.s3_put_object(
             Bucket=KB_BUCKET,
             Key=s3_key,
             Body=full_html.encode("utf-8"),
@@ -358,7 +359,7 @@ def process_confluence_attachment(
         if sync_id:
             metadata["sync_id"] = sync_id
 
-        s3_client.put_object(
+        dual_write.s3_put_object(
             Bucket=KB_BUCKET,
             Key=s3_key,
             Body=content,
@@ -568,7 +569,7 @@ def process_jira_issue(
         if sync_id:
             metadata["sync_id"] = sync_id
 
-        s3_client.put_object(
+        dual_write.s3_put_object(
             Bucket=KB_BUCKET,
             Key=s3_key,
             Body=full_html.encode("utf-8"),
@@ -658,7 +659,7 @@ def process_jira_attachment(
         if sync_id:
             metadata["sync_id"] = sync_id
 
-        s3_client.put_object(
+        dual_write.s3_put_object(
             Bucket=KB_BUCKET,
             Key=s3_key,
             Body=content,
@@ -767,7 +768,7 @@ def process_outlook_email(
         if sync_id:
             metadata["sync_id"] = sync_id
 
-        s3_client.put_object(
+        dual_write.s3_put_object(
             Bucket=KB_BUCKET,
             Key=s3_key,
             Body=full_html.encode("utf-8"),
@@ -852,7 +853,7 @@ def process_outlook_attachment(
         if sync_id:
             metadata["sync_id"] = sync_id
 
-        s3_client.put_object(
+        dual_write.s3_put_object(
             Bucket=KB_BUCKET,
             Key=s3_key,
             Body=content,
@@ -916,7 +917,7 @@ def process_teams_message(
         if sync_id:
             metadata["sync_id"] = sync_id
 
-        s3_client.put_object(
+        dual_write.s3_put_object(
             Bucket=KB_BUCKET,
             Key=s3_key,
             Body=body_content.encode("utf-8"),
@@ -982,7 +983,7 @@ def process_teams_file(
         if sync_id:
             metadata["sync_id"] = sync_id
 
-        s3_client.put_object(
+        dual_write.s3_put_object(
             Bucket=KB_BUCKET,
             Key=s3_key,
             Body=content,
@@ -1056,7 +1057,7 @@ def process_sharepoint_file(
         if sync_id:
             metadata["sync_id"] = sync_id
 
-        s3_client.put_object(
+        dual_write.s3_put_object(
             Bucket=KB_BUCKET,
             Key=s3_key,
             Body=content,
@@ -1138,7 +1139,7 @@ def process_onedrive_file(
         if sync_id:
             metadata["sync_id"] = sync_id
 
-        s3_client.put_object(
+        dual_write.s3_put_object(
             Bucket=KB_BUCKET,
             Key=s3_key,
             Body=content,
@@ -1224,7 +1225,7 @@ def process_onenote_page(
         metadata["sync_id"] = sync_id
 
     try:
-        s3_client.put_object(
+        dual_write.s3_put_object(
             Bucket=KB_BUCKET,
             Key=s3_key,
             Body=content_html.encode("utf-8"),
@@ -1342,7 +1343,7 @@ def process_database_artifact(
         metadata["sync_id"] = sync_id
 
     try:
-        s3_client.put_object(
+        dual_write.s3_put_object(
             Bucket=KB_BUCKET,
             Key=s3_key,
             Body=clean_yaml.encode("utf-8"),
@@ -1420,7 +1421,7 @@ def process_sharepoint_page(
         if sync_id:
             metadata["sync_id"] = sync_id
 
-        s3_client.put_object(
+        dual_write.s3_put_object(
             Bucket=KB_BUCKET,
             Key=s3_key,
             Body=full_html.encode("utf-8"),

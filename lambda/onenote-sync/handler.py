@@ -34,6 +34,7 @@ import boto3
 
 # Make shared/ importable; deploy package now bundles lambda/shared/.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from shared import dual_write  # noqa: E402
 from shared.audit_writer import log_license_fail_open, log_source_sync  # noqa: E402
 from botocore.exceptions import ClientError
 
@@ -161,8 +162,9 @@ def update_connection_status(
         update_expr += " REMOVE last_sync_error"
 
     try:
-        table.update_item(
-            Key={
+        dual_write.ddb_update_item(
+            WORKSPACES_TABLE,
+            {
                 "PK": f"WS#{workspace_id}",
                 "SK": f"ONENOTE_CONNECTION#{connection_id}",
             },

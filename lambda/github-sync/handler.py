@@ -30,6 +30,7 @@ from botocore.exceptions import ClientError
 
 # Make shared/ importable; deploy package now bundles lambda/shared/.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from shared import dual_write  # noqa: E402
 from shared.audit_writer import log_license_fail_open, log_source_sync  # noqa: E402
 
 # ADR-019: license validator + enforcement + usage tracking come from the
@@ -544,8 +545,9 @@ def update_sync_status(
         update_expr += " REMOVE " + ", ".join(remove_parts)
 
     try:
-        table.update_item(
-            Key={"PK": f"WS#{workspace_id}", "SK": f"GITHUB_REPO#{repo_name}"},
+        dual_write.ddb_update_item(
+            WORKSPACES_TABLE,
+            {"PK": f"WS#{workspace_id}", "SK": f"GITHUB_REPO#{repo_name}"},
             UpdateExpression=update_expr,
             ExpressionAttributeValues=expr_values,
             ConditionExpression="attribute_exists(repo_name)",

@@ -38,6 +38,36 @@ import inspect
 import pytest
 
 
+def _walk_stack_for(dual_write, accessors: tuple[str, ...], resources: tuple[str, ...]):
+    """Walk the call stack outward looking for handler-supplied
+    boto3 wrappers in frame `f_globals`.
+
+    ``accessors`` are names of zero-arg callables that return the
+    resource (``_get_dynamodb`` etc.); when found, they are CALLED.
+    ``resources`` are names that hold the resource/client object
+    directly (``dynamodb``, ``s3_client``); when found, they are
+    returned AS-IS.
+
+    Reads `f_globals` directly to bypass `sys.modules` (which can
+    only hold one instance per module name even when multiple test
+    files have loaded the same handler under that name).
+    """
+    import inspect
+    for frame_info in inspect.stack()[1:]:
+        g = frame_info.frame.f_globals
+        if g is dual_write.__dict__:
+            continue
+        for name in accessors:
+            fn = g.get(name)
+            if fn is not None:
+                return fn()
+        for name in resources:
+            obj = g.get(name)
+            if obj is not None:
+                return obj
+    return None
+
+
 @pytest.fixture(autouse=True)
 def _route_dual_write_through_handler(monkeypatch):
     from shared import dual_write
@@ -48,22 +78,29 @@ def _route_dual_write_through_handler(monkeypatch):
             return dual_write._dynamodb
 
         # 2. Walk the call stack outward and look at each frame's
-        #    `f_globals` for a `_get_dynamodb` symbol. Reading
-        #    `f_globals` directly bypasses `sys.modules`, which
-        #    matters because each test file loads its OWN instance of
-        #    the same handler module under the same `sys.modules`
-        #    name, and only the most-recently-loaded one is in
-        #    `sys.modules` even when an older one is currently
-        #    executing. `frame.f_globals` is the actual loaded module
-        #    dict for the function on that frame, so `@patch` on the
-        #    test's loaded instance is visible regardless.
-        for frame_info in inspect.stack()[1:]:
-            g = frame_info.frame.f_globals
-            if g is dual_write.__dict__:
-                continue
-            fn = g.get("_get_dynamodb")
-            if callable(fn):
-                return fn()
+        #    `f_globals` for a handler-supplied DynamoDB resource.
+        #    Reading `f_globals` directly bypasses `sys.modules`,
+        #    which matters because each test file loads its OWN
+        #    instance of the same handler module under the same
+        #    `sys.modules` name, and only the most-recently-loaded
+        #    one is in `sys.modules` even when an older one is
+        #    currently executing. `frame.f_globals` is the actual
+        #    loaded module dict for the function on that frame, so
+        #    `@patch` on the test's loaded instance — or a test that
+        #    overwrites a `dynamodb` module global directly — is
+        #    visible regardless.
+        #
+        #    Handlers expose the resource in one of two shapes:
+        #     - `_get_dynamodb()` accessor (workspace-management,
+        #       most integration handlers).
+        #     - `dynamodb` module global (sync workers, file-ingestion).
+        resolved = _walk_stack_for(
+            dual_write,
+            accessors=("_get_dynamodb",),
+            resources=("dynamodb",),
+        )
+        if resolved is not None:
+            return resolved
 
         # 3. Default: lazy boto3 (intercepted by autouse moto wrap).
         import boto3
@@ -71,7 +108,28 @@ def _route_dual_write_through_handler(monkeypatch):
         dual_write._dynamodb = boto3.resource("dynamodb")
         return dual_write._dynamodb
 
+    def _s3_resolver():
+        # 1. Honor explicit `_set_clients_for_tests(s3=...)`.
+        if dual_write._s3 is not None:
+            return dual_write._s3
+
+        # 2. Stack-walk for an `s3_client` (file-ingestion's pattern).
+        resolved = _walk_stack_for(
+            dual_write,
+            accessors=(),
+            resources=("s3_client",),
+        )
+        if resolved is not None:
+            return resolved
+
+        # 3. Default: lazy boto3 (intercepted by autouse moto wrap).
+        import boto3
+
+        dual_write._s3 = boto3.client("s3")
+        return dual_write._s3
+
     monkeypatch.setattr(dual_write, "_ddb", _ddb_resolver)
+    monkeypatch.setattr(dual_write, "_s3_client", _s3_resolver)
     # dual_write reads REPLICATION_EVENT_BUS_NAME at import time and
     # short-circuits `_emit` when it's empty. Patch the module global
     # (the env-var alone is too late post-import) so tests never try
