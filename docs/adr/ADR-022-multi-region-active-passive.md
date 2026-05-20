@@ -182,6 +182,104 @@ def lambda_handler(event, context):
   base architecture; some customers may layer it on top of the
   application-managed HA but the platform itself doesn't depend on it.
 
+## Addendum (2026-05-20): Passive is fully passive
+
+This addendum supersedes a sub-decision recorded in the
+**2026-05-18 Compute-plane HA addendum** below:
+
+> Original (2026-05-18): "Backend mutation guard via
+> `shared.region_guard.guard_active()` on every admin mutation route
+> in workspace-management and the 9 *-integration Lambdas."
+
+That enumeration deliberately excluded the chat handler. The
+exclusion was justified on the reasoning that chat memory writes are
+*user-facing* (not admin), and dual-write would replicate them
+transparently — gating would "defeat the purpose of HA." The exclusion
+is **superseded as of 2026-05-20**.
+
+### What changed and why
+
+Live testing on 2026-05-19 surfaced two issues:
+
+1. **The exclusion was aspirational.** A code audit revealed that
+   chat (and ~25 other handlers covering ~130 write call sites) wrote
+   directly via boto3 `table.put_item` etc., never through
+   `shared.dual_write`. The "chat memory replicates transparently"
+   claim was never true; the secondary region only held whatever
+   `scripts/ha-bootstrap.py` had snapshot-copied. The follow-up plan
+   (`plan/dual-write-completion`, commits `6b7c982`, `95d914e`,
+   `0dd309e`, `95ea4aa`, `55747b2`) routes every handler through
+   `dual_write` to actually replicate.
+
+2. **Ungated chat would require bidirectional replication.** The
+   original reasoning conflated two access patterns. End users hit
+   the **canonical URL** `outcomeops.<domain>`, which DNS-flips to
+   whichever region is currently active. The only callers on the
+   regional hostnames (`outcomeops1` / `outcomeops2`) are operators
+   using documented escape hatches for verification — they don't
+   need to write chats, they need to read. Keeping chat ungated
+   would force the system to support writes originating in either
+   region, which means replay-idempotent `ConditionExpression` on
+   every chat write, concurrent-write conflict resolution
+   (browser tabs in both regions racing on the same conversation),
+   and audit/analytics/spend tracking all inheriting that
+   bidirectional complexity.
+
+Gating chat collapses the architecture to **one-way replication**
+(active → passive) for every handler. Mid-failover, the old-active
+region (now `passive` per AppConfig but still receiving traffic
+until DNS catches up) returns 403 from `region_guard`, correctly
+preventing split-brain. The 403 window is seconds-to-minutes; users
+retry, DNS settles, they reach the new active. This is the SAME
+behavior already shipped for workspace-management mutations and the
+9 integration handlers — chat now behaves identically.
+
+### Updated gated-routes list
+
+Replaces the 2026-05-18 enumeration:
+
+- **workspace-management** — all admin mutation routes (workspaces,
+  members, repos, org members, MCP-server CRUD, API keys, system
+  prompts, budgets, privacy mode).
+- **9 *-integration handlers** — github, confluence, jira, outlook,
+  teams, sharepoint, onedrive, onenote, database. Connect, update
+  selected scopes, trigger sync, disconnect.
+- **chat** *(new in this addendum)* — `PUT /conversations/{id}/share`,
+  `DELETE /conversations/{id}`, and the streaming chat path
+  (`handle_chat_stream`, which writes new conversation rows + each
+  message). Read routes (`GET /conversations`, `GET
+  /conversations/{id}`, `GET /shared`) stay ungated.
+
+Blocked attempts on any gated route return HTTP 403 with body
+`{"error": "region_passive", ...}` and emit an audit row with action
+`ADMIN_MUTATION_BLOCKED_PASSIVE`. For the chat streaming path the
+403 is delivered as an NDJSON error event (the streaming envelope's
+in-band failure shape) rather than an HTTP status — the audit row is
+identical.
+
+### Implementation commits
+
+Chunks 01–05 of the dual-write-completion follow-up:
+
+- `6b7c982` workspace-management writes through `dual_write` + the
+  unit-scoped test conftest fixture that lets existing handler-layer
+  mocks intercept dual_write writes.
+- `95d914e` 9 integration handlers through `dual_write`.
+- `0dd309e` sync workers + file-ingestion through `dual_write`
+  (plus the `dynamodb` / `s3_client` module-global cases in the
+  conftest resolver).
+- `95ea4aa` process-pr-check + mcp-server (Fargate container)
+  through `dual_write`. Analytics + security-scanner stay direct as
+  per-region derived state (documented in commit body).
+- `55747b2` chat handler through `dual_write` AND `region_guard` on
+  the three mutation entry points, with new unit-test coverage in
+  `lambda/tests/unit/test_chat_region_guard.py`.
+
+After this addendum, **every handler writing replicable state goes
+through `dual_write`** and **every user-facing mutation route is
+gated by `region_guard`**. The only intentional exclusions are
+documented in the chunk-04 commit body (per-region derived state).
+
 ## Addendum (2026-05-18): Compute-plane HA
 
 The initial ADR scoped HA to the **data plane** (DDB / S3 / S3 Vectors
