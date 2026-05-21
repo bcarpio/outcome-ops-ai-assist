@@ -309,6 +309,10 @@ module "delete_worker_lambda_secondary" {
       ENV       = var.environment
       APP_NAME  = var.app_name
       KB_BUCKET = module.knowledge_base_bucket_secondary.s3_bucket_id
+      # delete_symbol_graph cleans the secondary region's facts + pointer
+      # when repo-delete messages are dispatched here (delete-bug 02).
+      SYMBOL_GRAPH_TABLE = module.symbol_graph_table_secondary[0].dynamodb_table_id
+      CODE_MAPS_TABLE    = module.code_maps_table_secondary[0].dynamodb_table_id
     },
     local.ha_writer_env_secondary,
   )
@@ -316,6 +320,14 @@ module "delete_worker_lambda_secondary" {
   attach_policy_statements = true
   policy_statements = merge(
     {
+      dynamodb_symbol_graph = {
+        effect  = "Allow"
+        actions = ["dynamodb:Query", "dynamodb:DeleteItem"]
+        resources = [
+          module.symbol_graph_table_secondary[0].dynamodb_table_arn,
+          module.code_maps_table_secondary[0].dynamodb_table_arn,
+        ]
+      }
       s3_kb = {
         effect  = "Allow"
         actions = ["s3:GetObject", "s3:DeleteObject", "s3:DeleteObjects", "s3:ListBucket"]

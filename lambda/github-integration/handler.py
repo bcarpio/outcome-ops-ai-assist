@@ -34,6 +34,7 @@ from botocore.exceptions import ClientError
 # at zip root via terraform source_path (see lambda-github.tf).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared import dual_write  # noqa: E402
+from shared.delete_dispatch import dispatch_repo_delete, region_from_sqs_url  # noqa: E402
 from shared.license_repos import get_active_repos_for_customer  # noqa: E402
 from shared.region_guard import (  # noqa: E402
     RegionPassiveError,
@@ -67,10 +68,15 @@ APP_NAME = os.environ.get("APP_NAME", "outcome-ops-ai-assist")
 WORKSPACES_TABLE = os.environ.get("WORKSPACES_TABLE")
 GITHUB_SYNC_QUEUE = os.environ.get("GITHUB_SYNC_QUEUE")
 DELETE_QUEUE = os.environ.get("DELETE_QUEUE")
+# Secondary-region delete queue (HA). Repo-delete messages go to both so
+# each region's delete-worker cleans its own stores (delete-bug 02).
+# Empty in single-region mode.
+DELETE_QUEUE_SECONDARY = os.environ.get("DELETE_QUEUE_SECONDARY")
 
 # Cached clients
 _dynamodb = None
 _sqs = None
+_sqs_secondary = None
 
 
 def _get_dynamodb():
@@ -85,6 +91,18 @@ def _get_sqs():
     if _sqs is None:
         _sqs = boto3.client("sqs")
     return _sqs
+
+
+def _get_sqs_secondary():
+    """SQS client targeting the secondary-region delete queue, or None
+    when not configured. Region is derived from the queue URL."""
+    global _sqs_secondary
+    if not DELETE_QUEUE_SECONDARY:
+        return None
+    if _sqs_secondary is None:
+        region = region_from_sqs_url(DELETE_QUEUE_SECONDARY)
+        _sqs_secondary = boto3.client("sqs", region_name=region) if region else None
+    return _sqs_secondary
 
 
 def _snapshot_active_repos() -> None:
@@ -446,33 +464,18 @@ def queue_delete_job(workspace_id: str, repo_name: str) -> None:
         logger.warning("DELETE_QUEUE not configured")
         return
 
-    repo_bare = repo_name.split("/", 1)[1] if "/" in repo_name else repo_name
-    sqs = _get_sqs()
+    # Dispatch the full cleanup (owner + bare KB prefixes + symbol graph)
+    # to the primary queue and, under HA, the secondary queue — so each
+    # region's delete-worker cleans its own stores (delete-bug 01/02/03).
+    targets = [(_get_sqs(), DELETE_QUEUE)]
+    secondary = _get_sqs_secondary()
+    if secondary is not None:
+        targets.append((secondary, DELETE_QUEUE_SECONDARY))
 
-    def _send(body):
-        sqs.send_message(QueueUrl=DELETE_QUEUE, MessageBody=json.dumps(body))
-
-    _send({
-        "action": "delete_prefix",
-        "workspace_id": workspace_id,
-        "source": "github",
-        "prefix": repo_name + "/",
-    })
-    if repo_bare != repo_name:
-        _send({
-            "action": "delete_prefix",
-            "workspace_id": workspace_id,
-            "source": "github",
-            "prefix": repo_bare + "/",
-        })
-    _send({
-        "action": "delete_symbol_graph",
-        "workspace_id": workspace_id,
-        "repo_bare": repo_bare,
-    })
+    sent = dispatch_repo_delete(workspace_id, repo_name, targets)
     logger.info(
-        f"Queued full cleanup for {workspace_id}/{repo_name} "
-        f"(KB owner+bare prefixes + symbol graph)"
+        f"Queued full cleanup for {workspace_id}/{repo_name}: {sent} "
+        f"message(s) across {len(targets)} region(s)"
     )
 
 

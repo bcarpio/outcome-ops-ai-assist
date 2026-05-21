@@ -66,9 +66,12 @@ module "workspace_management_lambda" {
     PORT                         = "8000"
     KB_BUCKET                    = module.knowledge_base_bucket.s3_bucket_id
     DELETE_QUEUE_URL             = aws_sqs_queue.delete_queue[0].url
-    OAUTH_KMS_KEY_ARN            = aws_kms_key.oauth_tokens[0].arn
-    AUDIT_TABLE                  = module.audit_logs_table.dynamodb_table_id
-    ANALYTICS_TABLE              = module.analytics_table.dynamodb_table_id
+    # Secondary-region delete queue (HA) so repo-delete cleanup reaches
+    # both regions (delete-bug 02). Empty in single-region mode.
+    DELETE_QUEUE_URL_SECONDARY = var.secondary_region != "" ? aws_sqs_queue.delete_queue_secondary[0].url : ""
+    OAUTH_KMS_KEY_ARN          = aws_kms_key.oauth_tokens[0].arn
+    AUDIT_TABLE                = module.audit_logs_table.dynamodb_table_id
+    ANALYTICS_TABLE            = module.analytics_table.dynamodb_table_id
     # PII redaction posture (read for GET /workspaces/{id}/privacy so the
     # UI knows whether to render the toggle). plan/ chunk 07.
     PII_REDACTION_ENABLED = tostring(var.pii_redaction_enabled)
@@ -188,15 +191,16 @@ module "workspace_management_lambda" {
       ]
     }
 
-    # SQS for sending delete messages
+    # SQS for sending delete messages (primary + secondary queue under HA).
     sqs_send = {
       effect = "Allow"
       actions = [
         "sqs:SendMessage"
       ]
-      resources = [
-        aws_sqs_queue.delete_queue[0].arn
-      ]
+      resources = concat(
+        [aws_sqs_queue.delete_queue[0].arn],
+        var.secondary_region != "" ? [aws_sqs_queue.delete_queue_secondary[0].arn] : [],
+      )
     }
     },
     # HA dual-write: events:PutEvents on the local replication bus.

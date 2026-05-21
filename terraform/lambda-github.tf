@@ -50,7 +50,10 @@ module "github_integration_lambda" {
       WORKSPACES_TABLE  = module.workspaces_table[0].dynamodb_table_id
       GITHUB_SYNC_QUEUE = aws_sqs_queue.github_sync[0].url
       DELETE_QUEUE      = aws_sqs_queue.delete_queue[0].url
-      AUDIT_TABLE       = module.audit_logs_table.dynamodb_table_id
+      # Secondary-region delete queue (HA) so repo-delete cleanup reaches
+      # both regions (delete-bug 02). Empty in single-region mode.
+      DELETE_QUEUE_SECONDARY = var.secondary_region != "" ? aws_sqs_queue.delete_queue_secondary[0].url : ""
+      AUDIT_TABLE            = module.audit_logs_table.dynamodb_table_id
     },
     local.outcomeops_license_env,
     local.ha_writer_env,
@@ -100,16 +103,19 @@ module "github_integration_lambda" {
         ]
       }
 
-      # SQS for sync and delete queues
+      # SQS for sync + delete queues (+ secondary delete queue under HA).
       sqs_send = {
         effect = "Allow"
         actions = [
           "sqs:SendMessage"
         ]
-        resources = [
-          aws_sqs_queue.github_sync[0].arn,
-          aws_sqs_queue.delete_queue[0].arn
-        ]
+        resources = concat(
+          [
+            aws_sqs_queue.github_sync[0].arn,
+            aws_sqs_queue.delete_queue[0].arn,
+          ],
+          var.secondary_region != "" ? [aws_sqs_queue.delete_queue_secondary[0].arn] : [],
+        )
       }
 
       # DynamoDB audit log writes (plan/audit-completeness)

@@ -101,6 +101,7 @@ from shared.region_guard import (
     passive_response,
 )
 from shared import dual_write
+from shared.delete_dispatch import dispatch_repo_delete, region_from_sqs_url
 from shared.audit_writer import (
     ACTION_API_KEY_CREATED,
     ACTION_API_KEY_REVOKED,
@@ -154,6 +155,7 @@ _dynamodb = None
 _ssm_client = None
 _s3_client = None
 _sqs_client = None
+_sqs_client_secondary = None
 _github_client = None
 _workspaces_table = None
 _kb_bucket = None
@@ -197,6 +199,23 @@ def _get_sqs_client():
     if _sqs_client is None:
         _sqs_client = boto3.client("sqs")
     return _sqs_client
+
+
+def _get_secondary_delete_queue():
+    """(sqs_client, queue_url) for the secondary-region delete queue, or
+    (None, "") when not configured (single-region). Region derived from
+    the URL. Repo-delete messages go here too so the secondary
+    delete-worker cleans its region (delete-bug 02)."""
+    global _sqs_client_secondary
+    url = os.environ.get("DELETE_QUEUE_URL_SECONDARY", "")
+    if not url:
+        return None, ""
+    if _sqs_client_secondary is None:
+        region = region_from_sqs_url(url)
+        _sqs_client_secondary = (
+            boto3.client("sqs", region_name=region) if region else None
+        )
+    return _sqs_client_secondary, url
 
 
 def _get_kb_bucket() -> str:
@@ -1201,45 +1220,21 @@ def remove_repo(
             {"PK": f"WS#{workspace_id}", "SK": f"GITHUB_REPO#{repo_name}"},
         )
 
-        # Queue cleanup of all of this repo's data. repo_name is
-        # owner-prefixed ("owner/repo"); the bare name ("repo") is what
-        # the symbol-graph table and some legacy KB keys use.
-        repo_bare = repo_name.split("/", 1)[1] if "/" in repo_name else repo_name
+        # Queue full cleanup (KB owner+bare prefixes + symbol graph) to
+        # the primary queue and, under HA, the secondary queue so each
+        # region's delete-worker cleans its own stores (delete-bug
+        # 01/02/03). Shared dispatcher keeps this in sync with the
+        # github-integration removal path.
         queue_url = _get_delete_queue_url()
         if queue_url:
-            sqs_client = _get_sqs_client()
-
-            def _queue_delete(body):
-                sqs_client.send_message(
-                    QueueUrl=queue_url, MessageBody=json.dumps(body)
-                )
-
-            # KB docs + vectors under the owner-prefixed prefix.
-            _queue_delete({
-                "action": "delete_prefix",
-                "workspace_id": workspace_id,
-                "source": "github",
-                "prefix": repo_name + "/",
-            })
-            # Legacy bare-name KB keys (e.g. architectural-summary.txt is
-            # written under github/{repo}/ with no owner). Skip when there
-            # is no owner prefix (same prefix).
-            if repo_bare != repo_name:
-                _queue_delete({
-                    "action": "delete_prefix",
-                    "workspace_id": workspace_id,
-                    "source": "github",
-                    "prefix": repo_bare + "/",
-                })
-            # Symbol-graph facts + code-maps pointer (keyed by bare name).
-            _queue_delete({
-                "action": "delete_symbol_graph",
-                "workspace_id": workspace_id,
-                "repo_bare": repo_bare,
-            })
+            targets = [(_get_sqs_client(), queue_url)]
+            sec_client, sec_url = _get_secondary_delete_queue()
+            if sec_client is not None and sec_url:
+                targets.append((sec_client, sec_url))
+            sent = dispatch_repo_delete(workspace_id, repo_name, targets)
             logger.info(
-                f"Queued full cleanup for {workspace_id}/github/{repo_name} "
-                f"(KB owner+bare prefixes + symbol graph)"
+                f"Queued full cleanup for {workspace_id}/github/{repo_name}: "
+                f"{sent} message(s) across {len(targets)} region(s)"
             )
 
         ctx = audit_ctx or {}
