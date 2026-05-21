@@ -88,8 +88,18 @@ def make_snippet(text: str, query: str, *, max_tokens: int = 500) -> str:
         used += cost
 
     snippet = " ".join(window).strip()
+    # Hard char-level ceiling. Boundary-less content — JSON, minified
+    # assets, a single very long line — can be one giant "sentence" the
+    # loop above appends whole (the first sentence is always taken). Cap
+    # it so one chunk can't blow the per-result budget and starve the
+    # rest of the response. This is the guard that keeps a package-lock
+    # chunk from eating the whole token budget.
+    if len(snippet) > budget_chars:
+        snippet = snippet[:budget_chars].rstrip()
+        suffix = " …"
+    else:
+        suffix = " …" if best_start + len(window) < len(sentences) else ""
     prefix = "… " if best_start > 0 else ""
-    suffix = " …" if best_start + len(window) < len(sentences) else ""
     return f"{prefix}{snippet}{suffix}"
 
 

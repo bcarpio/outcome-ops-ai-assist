@@ -63,6 +63,18 @@ def test_make_snippet_targets_query_relevant_window():
     assert "MAGIC_LINK_EXPIRY" in out
 
 
+def test_make_snippet_hard_caps_boundaryless_content():
+    """JSON / minified content has almost no sentence boundaries, so the
+    whole blob is one 'sentence'. The snippet must still be char-capped
+    near the budget (a package-lock chunk must not eat the whole budget)."""
+    blob = '{"a":1,"b":2,"c":3,' * 2000  # ~36KB, no sentence breaks
+    out = retrieval.make_snippet(blob, "dependency", max_tokens=500)
+    # budget = 500 tokens * 4 chars = 2000 chars; allow small slack for
+    # the ellipsis suffix.
+    assert len(out) <= 2000 + 4
+    assert len(out) < len(blob)
+
+
 def test_make_snippet_prefix_fallback_when_no_query_overlap():
     text = " ".join(f"alpha{i} beta{i} gamma{i}." for i in range(100))
     out = retrieval.make_snippet(text, "zzz-no-overlap", max_tokens=10)
