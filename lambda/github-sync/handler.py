@@ -1451,8 +1451,15 @@ def _process_standards_repo(
                 workspace_id, repo_name, current_sha, file_path,
             )
 
-    # Queue orphan detection to clean up deleted files
-    current_file_paths = [f["path"] for f in files_to_process]
+    # Queue orphan detection to clean up files removed from the repo.
+    # CRITICAL: the "keep" set must be ALL docs currently in the repo
+    # (all_doc_files), NOT the incrementally-changed subset
+    # (files_to_process). Orphan detection deletes every KB object under
+    # the repo prefix that is NOT in current_ids; passing the changed
+    # subset made the delete-worker treat every UNCHANGED doc as an
+    # orphan and delete it — silent data loss on any incremental sync
+    # where only some docs changed.
+    current_file_paths = [f["path"] for f in all_doc_files]
     _queue_orphan_detection(workspace_id, repo_name, current_file_paths)
 
     update_sync_status(
@@ -1569,8 +1576,11 @@ def _process_application_repo(
     if docs_uploaded:
         logger.info(f"Uploaded {docs_uploaded} doc files to S3 for {repo_name}")
 
-    # Queue orphan detection to clean up deleted doc files
-    current_doc_paths = [f["path"] for f in doc_files]
+    # Queue orphan detection with the FULL current doc set (all_doc_files),
+    # NOT the incremental `doc_files` subset — passing the changed subset
+    # would orphan-delete every unchanged doc (data loss). See the
+    # matching note in the standards-repo path.
+    current_doc_paths = [f["path"] for f in all_doc_files]
     _queue_orphan_detection(workspace_id, repo_name, current_doc_paths)
 
     # plan-git-truth chunk 02: open the code_map_dispatch ledger row

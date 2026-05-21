@@ -1124,6 +1124,55 @@ class TestProcessStandardsRepo:
         assert args == ("ws_test", "acme/standards", "success")
         assert kwargs.get("commit_sha") == "commit123"
 
+    @patch.object(handler_module, "_open_docs_pending_batch")
+    @patch.object(handler_module, "_queue_orphan_detection")
+    @patch.object(handler_module, "fetch_changed_files")
+    @patch.object(handler_module, "update_sync_status")
+    @patch.object(handler_module, "upload_file_to_s3")
+    @patch.object(handler_module, "get_file_content")
+    def test_standards_incremental_sync_does_not_orphan_unchanged_docs(
+        self, mock_get_content, mock_upload, mock_update_status,
+        mock_changed, mock_orphan, mock_open_ledger,
+    ):
+        """Regression: an INCREMENTAL standards sync (only some docs
+        changed) must pass the FULL current doc set to orphan detection,
+        not just the changed subset. Passing the changed subset made the
+        delete-worker treat every unchanged doc as an orphan and delete
+        it — the data loss observed in prd (a workspace's KB dropped from
+        12 docs to the 4 that changed)."""
+        mock_get_content.return_value = "# content"
+        mock_upload.side_effect = lambda **kw: f"workspaces/ws/.../{kw['file_path']}"
+        # Repo tree has 3 docs; only ONE changed since last sync.
+        tree = [
+            {"path": "docs/adr/001.md", "type": "blob", "sha": "a", "size": 100},
+            {"path": "docs/adr/002.md", "type": "blob", "sha": "b", "size": 100},
+            {"path": "docs/adr/003.md", "type": "blob", "sha": "c", "size": 100},
+        ]
+        mock_changed.return_value = {"docs/adr/003.md"}  # only 003 changed
+
+        result = _process_standards_repo(
+            workspace_id="ws_test",
+            repo_name="acme/standards",
+            repo_type="standards",
+            tree=tree,
+            current_sha="newsha",
+            current_commit_timestamp=1700000000,
+            token="fake_token",
+            owner="acme",
+            repo_short="standards",
+            default_branch="main",
+            last_commit_sha="oldsha",  # triggers the incremental path
+        )
+
+        assert result["status"] == "success"
+        # Only the changed doc is uploaded (incremental is preserved)...
+        assert result["files_uploaded"] == 1
+        # ...but orphan detection's keep-set is the FULL tree, so the
+        # unchanged 001/002 are NOT deleted.
+        mock_orphan.assert_called_once()
+        keep_set = set(mock_orphan.call_args[0][2])
+        assert keep_set == {"docs/adr/001.md", "docs/adr/002.md", "docs/adr/003.md"}
+
     @patch.object(handler_module, "update_sync_status")
     @patch.object(handler_module, "upload_file_to_s3")
     @patch.object(handler_module, "get_file_content")
