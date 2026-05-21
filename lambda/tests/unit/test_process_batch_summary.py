@@ -726,3 +726,53 @@ def test_build_batch_prompt_appends_literal_discipline():
         "totally-unknown-type", "owner/repo", "grp", "<<files>>"
     )
     assert "DO NOT TRANSCRIBE SPECIFIC LITERAL VALUES" in fallback
+
+
+def _fact(kind, src, tgt, fp, line):
+    return handler_module.Fact(
+        kind=kind, source_symbol_id=src, target_symbol_id=tgt,
+        file_path=fp, line=line, language="python",
+    )
+
+
+def test_render_graph_grounding_empty_returns_blank():
+    assert handler_module._render_graph_grounding([]) == ""
+
+
+def test_render_graph_grounding_lists_verified_symbols():
+    facts = [
+        _fact("defines", "python:m::<module>", "python:m::create_magic_token", "lambda/auth/handler.py", 514),
+        _fact("calls", "python:m::create_magic_token", "python:secrets::token_urlsafe", "lambda/auth/handler.py", 522),
+        # call to a symbol defined in-group should NOT show as outbound
+        _fact("calls", "python:m::handle_verify", "python:m::create_magic_token", "lambda/auth/handler.py", 1300),
+    ]
+    block = handler_module._render_graph_grounding(facts)
+    assert "VERIFIED SYMBOLS" in block
+    assert "Do NOT introduce" in block
+    # Defined symbol carries its real file:line (kills wrong-line attribution).
+    assert "python:m::create_magic_token  (lambda/auth/handler.py:514)" in block
+    # Outbound call to an external symbol is surfaced...
+    assert "python:secrets::token_urlsafe" in block
+    # ...but the in-group call target is not listed as outbound.
+    assert block.count("python:m::create_magic_token") == 1
+
+
+def test_build_batch_prompt_injects_grounding_before_discipline():
+    facts = [_fact("defines", "python:m::<module>", "python:m::foo", "f.py", 3)]
+    grounding = handler_module._render_graph_grounding(facts)
+    prompt = handler_module._build_batch_prompt(
+        "handler-group", "owner/repo", "auth", "<<files>>", grounding
+    )
+    assert "VERIFIED SYMBOLS" in prompt
+    # Grounding precedes the task body, which precedes the literal discipline.
+    assert prompt.index("VERIFIED SYMBOLS") < prompt.index("Analyze the auth")
+    assert prompt.index("Analyze the auth") < prompt.index("DO NOT TRANSCRIBE")
+
+
+def test_build_batch_prompt_no_grounding_unchanged_shape():
+    # Backward-compat: no grounding -> no VERIFIED SYMBOLS section.
+    prompt = handler_module._build_batch_prompt(
+        "handler-group", "owner/repo", "auth", "<<files>>"
+    )
+    assert "VERIFIED SYMBOLS" not in prompt
+    assert "DO NOT TRANSCRIBE" in prompt

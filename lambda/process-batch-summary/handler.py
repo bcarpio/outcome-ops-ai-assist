@@ -319,8 +319,78 @@ def _format_file_content(fc: Dict[str, Any]) -> str:
     return f"File: {fc['path']}{chunk_info}{char_range}\n```\n{fc['content']}\n{truncated}```\n"
 
 
+# Graph-first grounding: cap how many verified symbols/refs we inline so
+# the skeleton anchors the summary without bloating the prompt (ADR-027
+# follow-up — the symbol graph is parser-extracted ground truth for names,
+# relationships, and file:line).
+_GROUNDING_MAX_DEFINES = 120
+_GROUNDING_MAX_REFS = 60
+_GROUNDING_REF_LABELS = {
+    "calls": "Calls (outbound)",
+    "imports": "Imports",
+    "implements": "Implements",
+}
+
+
+def _render_graph_grounding(facts: "list[Fact]") -> str:
+    """Render parser-extracted facts as a verified-symbol skeleton for the
+    code-map prompt (graph-first generation).
+
+    The symbol graph is ground truth for symbol names, relationships, and
+    file:line. Handing it to the summarizer with a "use only these"
+    constraint stops invented symbols, hallucinated cross-references, and
+    wrong call-site attribution. Bounded so it anchors without bloating
+    the prompt. Returns "" when no facts (e.g. fact_sink not provided),
+    leaving the prompt unchanged for legacy/test paths.
+    """
+    if not facts:
+        return ""
+    defined_ids = {f.target_symbol_id for f in facts if f.kind == "defines"}
+    defines: List = []
+    seen = set()
+    outbound: Dict[str, set] = {}
+    for f in facts:
+        if f.kind == "defines":
+            key = (f.target_symbol_id, f.file_path, f.line)
+            if key not in seen:
+                seen.add(key)
+                defines.append(key)
+        elif f.kind in _GROUNDING_REF_LABELS:
+            # Outbound references only — targets not defined in this group.
+            if f.target_symbol_id not in defined_ids:
+                outbound.setdefault(f.kind, set()).add(f.target_symbol_id)
+    if not defines and not outbound:
+        return ""
+    lines = [
+        "## VERIFIED SYMBOLS (parser-extracted ground truth — use these EXACTLY)",
+        "",
+        "These were extracted from the actual source by the parser. Use these "
+        "exact symbol names and file:line locations. Do NOT introduce a "
+        "function, class, call, import, or cross-reference that is not listed "
+        "here; if tempted to, omit it. This is the authoritative structure — "
+        "the source files below are for narrative and behavior only.",
+    ]
+    if defines:
+        lines.append("")
+        lines.append("Defined in this group:")
+        for sym, fp, ln in sorted(defines)[:_GROUNDING_MAX_DEFINES]:
+            lines.append(f"- {sym}  ({fp}:{ln})")
+    for kind in ("calls", "imports", "implements"):
+        targets = sorted(outbound.get(kind, ()))[:_GROUNDING_MAX_REFS]
+        if targets:
+            lines.append("")
+            lines.append(f"{_GROUNDING_REF_LABELS[kind]}:")
+            for t in targets:
+                lines.append(f"- {t}")
+    return "\n".join(lines)
+
+
 def _build_batch_prompt(
-    batch_type: str, repo: str, group_name: str, files_section: str
+    batch_type: str,
+    repo: str,
+    group_name: str,
+    files_section: str,
+    graph_grounding: str = "",
 ) -> str:
     """Build prompt based on batch type with the given files section."""
     prompt_templates = {
@@ -720,9 +790,12 @@ For each test file:
         batch_type,
         f"Summarize these {group_name} files for {repo}.\n\n{files_section}"
     )
-    # Append the literal-omission discipline (ADR-027) so no batch type
-    # freezes a specific value or exact string constant into the code-map.
-    return f"{base_prompt}\n\n{CODE_MAP_LITERAL_DISCIPLINE}"
+    # Verified symbols first (graph-first ground truth), then the task +
+    # source, then the literal-omission discipline (ADR-027) last as the
+    # override. Grounding is empty when no facts were extracted (legacy/
+    # test paths) — prompt is then unchanged.
+    grounding_section = f"{graph_grounding}\n\n" if graph_grounding else ""
+    return f"{grounding_section}{base_prompt}\n\n{CODE_MAP_LITERAL_DISCIPLINE}"
 
 
 def _call_bedrock_and_audit(prompt: str, group_name: str) -> str:
@@ -810,6 +883,10 @@ def generate_batch_summary(
 
     # Fetch all file contents
     file_contents = []
+    # This batch's extracted facts, accumulated for graph-first grounding
+    # of the map prompt (alongside the caller's fact_sink, which may span
+    # batches or be None).
+    batch_facts: List = []
 
     for file_path in file_paths:
         try:
@@ -823,11 +900,13 @@ def generate_batch_summary(
             if fact_sink is not None:
                 language = _language_for_path(file_path)
                 if language is not None:
-                    fact_sink.extend(
+                    file_facts = list(
                         _iter_batch_facts(
                             file_path, language, content, sg_filter
                         )
                     )
+                    batch_facts.extend(file_facts)
+                    fact_sink.extend(file_facts)
 
             # Chunk large files instead of skipping them
             chunks = chunk_large_content(content, file_path)
@@ -840,9 +919,16 @@ def generate_batch_summary(
     if not file_contents:
         return "No files available for analysis"
 
+    # Graph-first grounding: the verified skeleton extracted above anchors
+    # the summary's structure (names, edges, file:line). Empty when no
+    # facts were extracted (fact_sink None) — prompt then unchanged.
+    grounding = _render_graph_grounding(batch_facts)
+
     # Build full prompt and check token estimate
     files_section = "\n".join([_format_file_content(fc) for fc in file_contents])
-    prompt = _build_batch_prompt(batch_type, repo, group_name, files_section)
+    prompt = _build_batch_prompt(
+        batch_type, repo, group_name, files_section, grounding
+    )
     estimated_tokens = estimate_tokens(prompt)
 
     if estimated_tokens <= MAX_PROMPT_TOKENS:
@@ -880,7 +966,9 @@ def generate_batch_summary(
     for i, sub_fc_list in enumerate(sub_batches, 1):
         logger.info(f"Processing sub-batch {i}/{len(sub_batches)} ({len(sub_fc_list)} file chunks)")
         sub_files_section = "\n".join([_format_file_content(fc) for fc in sub_fc_list])
-        sub_prompt = _build_batch_prompt(batch_type, repo, group_name, sub_files_section)
+        sub_prompt = _build_batch_prompt(
+            batch_type, repo, group_name, sub_files_section, grounding
+        )
         sub_summary = _call_bedrock_and_audit(
             sub_prompt, f"{group_name} (sub-batch {i}/{len(sub_batches)})"
         )
