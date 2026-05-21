@@ -431,22 +431,49 @@ def queue_sync_job(workspace_id: str, repo_name: str, installation_id: str) -> N
 
 
 def queue_delete_job(workspace_id: str, repo_name: str) -> None:
-    """Queue a delete job for repo documents."""
+    """Queue full cleanup for a removed repo.
+
+    ``repo_name`` is owner-prefixed ("owner/repo"). A repo's data spans
+    three shapes that a single owner-prefix delete misses:
+    - KB docs/vectors under the owner prefix (github/{owner}/{repo}/)
+    - legacy bare-name KB objects (github/{repo}/, e.g. the
+      architectural-summary.txt) — NOT under the owner prefix
+    - symbol-graph facts + the code-maps pointer (DynamoDB, keyed by the
+      BARE repo name) — delete_prefix only touches S3 + s3vectors
+    Queue all three so removal is complete (delete-bug 01/03).
+    """
     if not DELETE_QUEUE:
         logger.warning("DELETE_QUEUE not configured")
         return
 
+    repo_bare = repo_name.split("/", 1)[1] if "/" in repo_name else repo_name
     sqs = _get_sqs()
-    sqs.send_message(
-        QueueUrl=DELETE_QUEUE,
-        MessageBody=json.dumps({
+
+    def _send(body):
+        sqs.send_message(QueueUrl=DELETE_QUEUE, MessageBody=json.dumps(body))
+
+    _send({
+        "action": "delete_prefix",
+        "workspace_id": workspace_id,
+        "source": "github",
+        "prefix": repo_name + "/",
+    })
+    if repo_bare != repo_name:
+        _send({
             "action": "delete_prefix",
             "workspace_id": workspace_id,
             "source": "github",
-            "prefix": repo_name,
-        }),
+            "prefix": repo_bare + "/",
+        })
+    _send({
+        "action": "delete_symbol_graph",
+        "workspace_id": workspace_id,
+        "repo_bare": repo_bare,
+    })
+    logger.info(
+        f"Queued full cleanup for {workspace_id}/{repo_name} "
+        f"(KB owner+bare prefixes + symbol graph)"
     )
-    logger.info(f"Queued delete job for {workspace_id}/{repo_name}")
 
 
 # ============================================================================

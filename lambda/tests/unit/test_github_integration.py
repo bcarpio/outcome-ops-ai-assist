@@ -680,13 +680,19 @@ class TestSqsOperations:
 
         queue_delete_job("ws_test", "test-org/my-repo")
 
-        mock_sqs.send_message.assert_called_once()
-        call_kwargs = mock_sqs.send_message.call_args[1]
-        msg_body = json.loads(call_kwargs["MessageBody"])
-        assert msg_body["action"] == "delete_prefix"
-        assert msg_body["workspace_id"] == "ws_test"
-        assert msg_body["source"] == "github"
-        assert msg_body["prefix"] == "test-org/my-repo"
+        # Full cleanup: owner-prefix + bare-name delete_prefix + symbol-graph
+        # (delete-bug 01/03 — a single owner-prefix delete left bare-name
+        # KB objects and ~46k symbol-graph facts behind).
+        bodies = [
+            json.loads(c.kwargs["MessageBody"])
+            for c in mock_sqs.send_message.call_args_list
+        ]
+        assert len(bodies) == 3
+        assert all(b["workspace_id"] == "ws_test" for b in bodies)
+        prefixes = {b["prefix"] for b in bodies if b["action"] == "delete_prefix"}
+        assert prefixes == {"test-org/my-repo/", "my-repo/"}  # owner + bare
+        sg = [b for b in bodies if b["action"] == "delete_symbol_graph"]
+        assert len(sg) == 1 and sg[0]["repo_bare"] == "my-repo"
 
     def test_queue_delete_job_no_queue_configured(self):
         """Test no-op when delete queue not configured."""
