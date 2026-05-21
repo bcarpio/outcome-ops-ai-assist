@@ -639,3 +639,105 @@ def test_augment_importer_routes_on_subpath_symbol(_inject_clients):
     )
     assert "Importers (1 site" in out["graph_block"]
     assert "apps/app1/index.ts:7" in out["graph_block"]
+
+
+# ===========================================================================
+# Chunk 02 — graph-fire backstop on a resolved symbol
+# ===========================================================================
+
+
+def test_augment_pattern_intent_with_resolved_symbol_fires_graph(_inject_clients):
+    """Router says PATTERN, but the extracted symbol resolves in the
+    graph — the backstop fires the graph anyway (resolution beats the
+    intent guess)."""
+    _create_symbol_graph_table()
+    _create_code_maps_table()
+
+    bedrock_stub = _inject_clients
+    bedrock_stub.converse.return_value = _bedrock_response("pattern", "require_auth")
+
+    canonical = "python:lambda.auth.handler::require_auth"
+    _put_fact(
+        workspace_id=WORKSPACE_ID, repo=REPO, commit_sha=SHA, kind="defines",
+        source_symbol_id="python:lambda.auth.handler::<module>",
+        target_symbol_id=canonical, file_path="lambda/auth/handler.py", line=588,
+    )
+    _put_fact(
+        workspace_id=WORKSPACE_ID, repo=REPO, commit_sha=SHA, kind="calls",
+        source_symbol_id="python:lambda.auth.handler::handle_invite",
+        target_symbol_id=canonical, file_path="lambda/auth/handler.py", line=1325,
+    )
+
+    handler = _import_augment()
+    out = handler._augment_context_with_symbol_graph(
+        question="Is require_auth implemented to our auth standard?",
+        workspace_ids=[WORKSPACE_ID],
+        user_id="user@x.com",
+    )
+    assert out["decision"].intent == "pattern"
+    # Backstop fired: graph ran despite PATTERN intent.
+    assert out["graph_skip_reason"] is None
+    assert "backstop:resolved_symbol" in out["retrievals_fired"]
+    assert "lambda/auth/handler.py:1325" in out["graph_block"]
+
+
+def test_augment_pattern_intent_with_unresolved_symbol_skips_graph(_inject_clients):
+    """Router says PATTERN and the extracted symbol does NOT resolve —
+    trust the router and skip, with reason 'backstop_no_resolve'."""
+    _create_symbol_graph_table()
+    _create_code_maps_table()
+
+    bedrock_stub = _inject_clients
+    bedrock_stub.converse.return_value = _bedrock_response("pattern", "nonexistent_sym")
+
+    handler = _import_augment()
+    out = handler._augment_context_with_symbol_graph(
+        question="What are our auth standards for nonexistent_sym?",
+        workspace_ids=[WORKSPACE_ID],
+        user_id="user@x.com",
+    )
+    assert out["decision"].intent == "pattern"
+    assert out["graph_skip_reason"] == "backstop_no_resolve"
+    assert out["graph_block"] == ""
+
+
+# ===========================================================================
+# Chunk 07 — multi-workspace fan-out
+# ===========================================================================
+
+
+def test_augment_fans_out_across_workspaces(_inject_clients):
+    """Symbol defined only in a SECOND selected workspace (not the first)
+    must still resolve — the graph fans out across all workspace_ids,
+    not just workspace_ids[0]."""
+    _create_symbol_graph_table()
+    _create_code_maps_table()
+
+    bedrock_stub = _inject_clients
+    bedrock_stub.converse.return_value = _bedrock_response("structural", "require_auth")
+
+    ws_a = "ws-empty-first"
+    ws_b = "ws-has-symbol"
+    canonical = "python:lambda.auth.handler::require_auth"
+    # Seed require_auth ONLY in ws_b.
+    _put_fact(
+        workspace_id=ws_b, repo=REPO, commit_sha=SHA, kind="defines",
+        source_symbol_id="python:lambda.auth.handler::<module>",
+        target_symbol_id=canonical, file_path="lambda/auth/handler.py", line=588,
+    )
+    _put_fact(
+        workspace_id=ws_b, repo=REPO, commit_sha=SHA, kind="calls",
+        source_symbol_id="python:lambda.auth.handler::handle_invite",
+        target_symbol_id=canonical, file_path="lambda/auth/handler.py", line=1325,
+    )
+
+    handler = _import_augment()
+    # ws_a is FIRST and has no facts; pre-fan-out this returned 0.
+    out = handler._augment_context_with_symbol_graph(
+        question="Which lambdas call require_auth?",
+        workspace_ids=[ws_a, ws_b],
+        user_id="user@x.com",
+    )
+    assert out["graph_skip_reason"] is None
+    assert out["graph_result_count"] == 1
+    assert "lambda/auth/handler.py:1325" in out["graph_block"]

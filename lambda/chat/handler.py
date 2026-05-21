@@ -24,7 +24,7 @@ import secrets
 import sys
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, Generator, List, Optional
+from typing import Any, Dict, Generator, List, Optional, Tuple
 
 import boto3
 from botocore.config import Config
@@ -729,35 +729,12 @@ def _augment_context_with_symbol_graph(
         decision.duration_ms,
     )
 
-    # 2. Decide whether to fire the graph at all (routing-decision
-    # table: structural / hybrid / unknown -> fire; pattern /
-    # dependency -> skip).
+    # 2. Resolve the graph tables up front — both the chunk-02 backstop
+    # probe and the main query path need them. (routing-decision table:
+    # structural / hybrid / unknown -> fire on intent; pattern /
+    # dependency -> skip unless the backstop resolves the symbol.)
     intent = decision.intent
-    fires_graph = intent in ("structural", "hybrid", "unknown")
-    if not fires_graph:
-        out["graph_skip_reason"] = (
-            "intent_pattern" if intent == "pattern" else "intent_dependency"
-        )
-        return out
-
-    # Without a symbol candidate the graph queries have nothing to
-    # anchor on - still emit an explicit "no symbol identified" block
-    # so the model surfaces it rather than fabricating.
-    if not decision.symbol_candidate:
-        # For "unknown" we silently skip - those questions are
-        # already going through fan-out and a "no symbol identified"
-        # block would be noisy. For "structural" / "hybrid" we
-        # render the resolved-candidate block per the plan.
-        out["graph_skip_reason"] = "no_symbol"
-        if intent == "unknown":
-            return out
-        out["graph_block"] = build_symbol_definition_block(
-            symbol_candidate="(none extracted from question)",
-            definitions=[],
-        )
-        return out
-
-    user_symbol = decision.symbol_candidate
+    fires_by_intent = intent in ("structural", "hybrid", "unknown")
     code_maps_table = os.environ.get("CODE_MAPS_TABLE", "") or None
     symbol_graph_table = os.environ.get("SYMBOL_GRAPH_TABLE", "") or None
 
@@ -772,191 +749,186 @@ def _augment_context_with_symbol_graph(
         out["graph_skip_reason"] = "no_table"
         return out
 
-    try:
-        # 3a. Resolve the symbol - definitions() gives us the
-        # canonical anchor + the "did you find it" signal.
-        # Run for the primary workspace; cross-workspace symbol
-        # lookups can be added once the rollout proves the
-        # single-workspace shape.
-        defs = definitions(
-            primary_ws,
-            user_symbol,
+    # Without a symbol candidate the graph has nothing to anchor on.
+    # skip-intent + no symbol = a plain pattern/dependency skip;
+    # fire-intent + no symbol = render an explicit "no symbol" block so
+    # the model surfaces it rather than fabricating.
+    if not decision.symbol_candidate:
+        if not fires_by_intent:
+            out["graph_skip_reason"] = (
+                "intent_pattern" if intent == "pattern" else "intent_dependency"
+            )
+            return out
+        out["graph_skip_reason"] = "no_symbol"
+        if intent == "unknown":
+            return out
+        out["graph_block"] = build_symbol_definition_block(
+            symbol_candidate="(none extracted from question)",
+            definitions=[],
+        )
+        return out
+
+    user_symbol = decision.symbol_candidate
+    is_subpath = "/" in user_symbol
+    is_interface_shaped = user_symbol.lower().startswith(("i", "abstract"))
+    ws_label = (
+        "this workspace" if len(workspace_ids) == 1 else "the selected workspaces"
+    )
+
+    def _query(relation_fn, ws, target):
+        return relation_fn(
+            ws,
+            target,
             symbol_graph_table_name=symbol_graph_table,
             code_maps_table_name=code_maps_table,
         )
 
-        # Symbol resolution from the user's question: users type
-        # bare names like "report_repos_snapshot" rather than the
-        # canonical "python:lambda.shared.outcomeops_license
-        # ::report_repos_snapshot". When the exact lookup misses,
-        # attempt a suffix-match against defines rows for the
-        # workspace. v1 is a bounded scan in chat-interactive scope;
-        # a dedicated fuzzy index is deferred to v2.
-        canonical_symbol = user_symbol
-        if not defs:
-            fuzzy = _fuzzy_resolve_symbol(
-                primary_ws, user_symbol, symbol_graph_table
+    def _resolve_in(ws):
+        # Exact match first (user typed a canonical-looking id); else
+        # fuzzy-resolve the bare name to its canonical id(s) via the
+        # GSI3 bare-name index (a single-partition query, cheap).
+        if definitions(
+            ws,
+            user_symbol,
+            symbol_graph_table_name=symbol_graph_table,
+            code_maps_table_name=code_maps_table,
+        ):
+            return [user_symbol]
+        return _fuzzy_resolve_symbol(ws, user_symbol, symbol_graph_table)
+
+    try:
+        # 3a. Fan out symbol resolution across ALL selected workspaces.
+        # RAG already queries every selected workspace; the graph must
+        # too, or a portfolio-wide question silently misses every
+        # workspace except the first. Subpath symbols (with "/") ARE
+        # their own canonical id, so they're queried directly.
+        targets: List[Tuple[str, str]] = []
+        if is_subpath:
+            targets = [(ws, user_symbol) for ws in workspace_ids]
+        else:
+            for ws in workspace_ids:
+                for canonical in _resolve_in(ws):
+                    targets.append((ws, canonical))
+
+        # 3b. Fire decision + backstop. The router may say skip
+        # (PATTERN/DEPENDENCY), but if the extracted bare symbol actually
+        # resolves in some selected workspace's graph, that resolution is
+        # a stronger signal than the intent guess — fire anyway. Subpath
+        # symbols are dependency-shaped; trust the router on those.
+        if not fires_by_intent:
+            if targets and not is_subpath:
+                out["retrievals_fired"].append("backstop:resolved_symbol")
+                logger.info(
+                    "[chat.augment] backstop fired: intent=%s symbol=%s "
+                    "resolved to %d workspace-target(s); running graph",
+                    intent,
+                    user_symbol,
+                    len(targets),
+                )
+            else:
+                out["graph_skip_reason"] = (
+                    "backstop_no_resolve"
+                    if not is_subpath
+                    else ("intent_pattern" if intent == "pattern" else "intent_dependency")
+                )
+                return out
+
+        # 3c. Bare name that resolved in NO workspace but intent said
+        # fire: run the bare name (returns empty) so we emit an explicit
+        # "0 results" block per empty-set discipline rather than letting
+        # the model fabricate.
+        if not targets:
+            empty = _query(callers, workspace_ids[0], user_symbol)
+            out["graph_block"] = build_symbol_facts_block(
+                relation="callers",
+                target_symbol_id=user_symbol,
+                result=empty,
+                definition_site=None,
+                workspace_label=ws_label,
             )
-            if fuzzy:
-                canonical_symbol = fuzzy[0]
-                defs = definitions(
-                    primary_ws,
-                    canonical_symbol,
+            if "graph" not in out["retrievals_fired"]:
+                out["retrievals_fired"].insert(0, "graph")
+            out["graph_relation"] = "callers"
+            out["graph_sha"] = getattr(empty, "graph_sha", None)
+            out["graph_staleness_seconds"] = getattr(empty, "staleness_seconds", None)
+            out["graph_result_count"] = len(getattr(empty, "sites", []) or [])
+            out["graph_sites"] = []
+            return out
+
+        # 3d. Run the directional relation per (workspace, target),
+        # merging into one block. importers for package paths;
+        # interface-shaped names run both implementers + callers and keep
+        # whichever surfaced more; else callers.
+        def _run(relation_fn):
+            per_canonical: List[Any] = []
+            merged: List[Dict[str, Any]] = []
+            worst = None
+            for ws, target in targets:
+                cand_defs = definitions(
+                    ws,
+                    target,
                     symbol_graph_table_name=symbol_graph_table,
                     code_maps_table_name=code_maps_table,
                 )
-                if len(fuzzy) > 1:
-                    # Multi-canonical: each Lambda often defines its
-                    # own local copy of the same utility (require_auth,
-                    # get_auth_context, ...). Rather than emitting a
-                    # disambiguation list the model can't act on, run
-                    # the directional query for every canonical and
-                    # merge the results so questions like "who calls
-                    # require_auth" produce a complete cross-codebase
-                    # answer.
-                    per_canonical = []
-                    merged_sites_for_metadata: List[Dict[str, Any]] = []
-                    worst_staleness = None
-                    for cand in fuzzy:
-                        cand_defs = definitions(
-                            primary_ws,
-                            cand,
-                            symbol_graph_table_name=symbol_graph_table,
-                            code_maps_table_name=code_maps_table,
-                        )
-                        # First defines edge is the canonical's
-                        # primary definition site; cross-repo dupes
-                        # would surface as separate canonicals from
-                        # fuzzy already.
-                        def_site = cand_defs[0] if cand_defs else None
-                        cand_result = callers(
-                            primary_ws,
-                            cand,
-                            symbol_graph_table_name=symbol_graph_table,
-                            code_maps_table_name=code_maps_table,
-                        )
-                        per_canonical.append((cand, def_site, cand_result))
-                        merged_sites_for_metadata.extend(
-                            _site_to_dict(s) for s in cand_result.sites
-                        )
-                        s = getattr(cand_result, "staleness_seconds", None)
-                        if s is not None:
-                            worst_staleness = (
-                                s if worst_staleness is None
-                                else max(worst_staleness, s)
-                            )
+                def_site = cand_defs[0] if cand_defs else None
+                result = _query(relation_fn, ws, target)
+                per_canonical.append((target, def_site, result))
+                merged.extend(_site_to_dict(s) for s in result.sites)
+                s = getattr(result, "staleness_seconds", None)
+                if s is not None:
+                    worst = s if worst is None else max(worst, s)
+            return per_canonical, merged, worst
 
-                    out["graph_block"] = build_multi_canonical_facts_block(
-                        symbol_candidate=user_symbol,
-                        per_canonical=per_canonical,
-                        relation="callers",
-                    )
-                    out["retrievals_fired"] = ["graph"]
-                    out["graph_relation"] = "callers"
-                    out["graph_result_count"] = len(merged_sites_for_metadata)
-                    out["graph_sites"] = merged_sites_for_metadata
-                    out["graph_staleness_seconds"] = worst_staleness
-                    return out
-
-        if len(defs) > 1:
-            # Ambiguous - render every candidate and let the model
-            # disambiguate.
-            out["graph_block"] = build_symbol_definition_block(
-                symbol_candidate=user_symbol,
-                definitions=defs,
-            )
-            out["retrievals_fired"] = ["graph"]
-            out["graph_relation"] = "definitions"
-            out["graph_result_count"] = len(defs)
-            out["graph_sites"] = [_site_to_dict(s) for s in defs]
-            return out
-
-        definition_site = defs[0] if defs else None
-        symbol = canonical_symbol
-
-        # 3b. Run the directional query the user asked for. The
-        # router only distinguishes intents, not directions, so we
-        # default to callers and switch to importers when the
-        # symbol looks like a package path (slash present).
-        if "/" in symbol:
-            result = importers(
-                primary_ws,
-                symbol,
-                symbol_graph_table_name=symbol_graph_table,
-                code_maps_table_name=code_maps_table,
-            )
+        if is_subpath:
             relation = "importers"
-        elif symbol.lower().startswith(("i", "abstract")):
-            # Heuristic: interface-shaped names get the implementers
-            # query in addition to / instead of callers. v1 picks
-            # whichever returns more results so we don't return an
-            # empty implementers block for a regular function whose
-            # name happens to start with "I". The router test
-            # fixtures cover both shapes.
-            impls = implementers(
-                primary_ws,
-                symbol,
-                symbol_graph_table_name=symbol_graph_table,
-                code_maps_table_name=code_maps_table,
-            )
-            calls = callers(
-                primary_ws,
-                symbol,
-                symbol_graph_table_name=symbol_graph_table,
-                code_maps_table_name=code_maps_table,
-            )
-            if len(impls.sites) >= len(calls.sites):
-                result, relation = impls, "implementers"
+            per_canonical, merged, worst = _run(importers)
+        elif is_interface_shaped:
+            impl_pc, impl_merged, impl_worst = _run(implementers)
+            call_pc, call_merged, call_worst = _run(callers)
+            if sum(len(r.sites) for _, _, r in impl_pc) >= sum(
+                len(r.sites) for _, _, r in call_pc
+            ):
+                relation, per_canonical, merged, worst = (
+                    "implementers", impl_pc, impl_merged, impl_worst,
+                )
             else:
-                result, relation = calls, "callers"
+                relation, per_canonical, merged, worst = (
+                    "callers", call_pc, call_merged, call_worst,
+                )
         else:
-            result = callers(
-                primary_ws,
-                symbol,
-                symbol_graph_table_name=symbol_graph_table,
-                code_maps_table_name=code_maps_table,
-            )
             relation = "callers"
+            per_canonical, merged, worst = _run(callers)
 
-        out["graph_block"] = build_symbol_facts_block(
+        out["graph_block"] = build_multi_canonical_facts_block(
+            symbol_candidate=user_symbol,
+            per_canonical=per_canonical,
             relation=relation,
-            target_symbol_id=symbol,
-            result=result,
-            definition_site=definition_site,
+            workspace_label=ws_label,
         )
-        # Routing-decision telemetry: capture which surface ran + its
-        # result count + the graph anchor staleness so the caller can
-        # emit the CHAT_ROUTING_DECISION audit row.
-        out["retrievals_fired"] = ["graph"]
-        out["graph_sha"] = getattr(result, "graph_sha", None)
-        out["graph_staleness_seconds"] = getattr(
-            result, "staleness_seconds", None
-        )
-        sites = getattr(result, "sites", []) or []
-        out["graph_result_count"] = len(sites)
+        if "graph" not in out["retrievals_fired"]:
+            out["retrievals_fired"].insert(0, "graph")
         out["graph_relation"] = relation
-        # Structured site list for the metadata frame. Shape matches
-        # the MCP find_callers / find_importers / find_implementers
-        # responses so the UI renders either source identically.
-        out["graph_sites"] = [_site_to_dict(s) for s in sites]
+        out["graph_result_count"] = len(merged)
+        out["graph_sites"] = merged
+        out["graph_staleness_seconds"] = worst
     except SymbolGraphUnavailable as exc:
         logger.warning(
             "[chat.augment] SymbolGraphUnavailable for %s: %s; degrading",
-            symbol,
+            user_symbol,
             exc,
         )
         out["graph_skip_reason"] = "query_error"
         out["graph_block"] = build_graph_unavailable_block(
-            target_symbol_id=symbol
+            target_symbol_id=user_symbol
         )
-    except Exception as exc:  # pragma: no cover - defensive
+    except Exception:  # pragma: no cover - defensive
         logger.exception(
             "[chat.augment] unexpected error querying symbol graph for %s",
-            symbol,
+            user_symbol,
         )
         out["graph_skip_reason"] = "query_error"
         out["graph_block"] = build_graph_unavailable_block(
-            target_symbol_id=symbol
+            target_symbol_id=user_symbol
         )
 
     return out

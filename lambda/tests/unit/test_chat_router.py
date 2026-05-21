@@ -480,3 +480,52 @@ def test_router_passes_question_as_user_message(stub_bedrock):
     # Temperature is deterministic and max tokens is tight.
     assert call_kwargs["inferenceConfig"]["temperature"] == 0.0
     assert call_kwargs["inferenceConfig"]["maxTokens"] == 128
+
+
+# ===========================================================================
+# Chunk 01 — router prompt versioning (verification -> HYBRID, v1 rollback)
+# ===========================================================================
+
+
+def test_router_prompt_default_is_v2():
+    """Default prompt is v2: verification/audit/gap-analysis is HYBRID."""
+    from router import _router_system_prompt  # type: ignore
+
+    prompt = _router_system_prompt()
+    assert "VERIFIES, AUDITS, or GAP-ANALYZES" in prompt
+    # PATTERN is narrowed to define/explain/summarize in v2.
+    assert "DEFINE, EXPLAIN, or SUMMARIZE" in prompt
+
+
+def test_router_prompt_v1_rollback(monkeypatch):
+    """CHAT_ROUTER_PROMPT_VERSION=v1 restores the original taxonomy."""
+    from router import _router_system_prompt, _ROUTER_SYSTEM_PROMPT_V1  # type: ignore
+
+    monkeypatch.setenv("CHAT_ROUTER_PROMPT_VERSION", "v1")
+    prompt = _router_system_prompt()
+    assert prompt == _ROUTER_SYSTEM_PROMPT_V1
+    # v1 lumps compliance/gap-analysis under PATTERN (the bug v2 fixes).
+    assert "compliance, gap analysis, ADR synthesis" in prompt
+    assert "VERIFIES, AUDITS, or GAP-ANALYZES" not in prompt
+
+
+def test_classify_sends_v2_prompt_by_default(stub_bedrock):
+    _classify_with_response(
+        stub_bedrock,
+        '{"intent": "hybrid", "symbol": "magic_link"}',
+        "Is the magic_link flow secure?",
+    )
+    system_text = stub_bedrock.converse.call_args.kwargs["system"][0]["text"]
+    assert "VERIFIES, AUDITS, or GAP-ANALYZES" in system_text
+
+
+def test_classify_sends_v1_prompt_when_flagged(stub_bedrock, monkeypatch):
+    monkeypatch.setenv("CHAT_ROUTER_PROMPT_VERSION", "v1")
+    _classify_with_response(
+        stub_bedrock,
+        '{"intent": "pattern", "symbol": null}',
+        "Gap analysis on analytics",
+    )
+    system_text = stub_bedrock.converse.call_args.kwargs["system"][0]["text"]
+    assert "compliance, gap analysis, ADR synthesis" in system_text
+    assert "VERIFIES, AUDITS, or GAP-ANALYZES" not in system_text

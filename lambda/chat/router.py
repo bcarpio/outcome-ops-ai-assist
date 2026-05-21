@@ -93,7 +93,12 @@ class RouterDecision:
 # ---------------------------------------------------------------------------
 
 
-_ROUTER_SYSTEM_PROMPT = """You classify a single user question into one of \
+# v1 — the original taxonomy. Kept for instant rollback via
+# CHAT_ROUTER_PROMPT_VERSION=v1 if v2's HYBRID reclassification
+# over-fires. Note v1 lumps "compliance, gap analysis" under PATTERN,
+# which deterministically skips the graph for security-audit questions
+# (the bug ADR-024 fixes).
+_ROUTER_SYSTEM_PROMPT_V1 = """You classify a single user question into one of \
 five query intents so a downstream retrieval system knows which indexes to \
 search.
 
@@ -129,6 +134,65 @@ symbol, set "symbol" to null.
 Respond with strict JSON in exactly this shape (no prose, no markdown):
 {"intent": "pattern|dependency|structural|hybrid|unknown", "symbol": \
 "<name or null>"}"""
+
+
+# v2 (default) — splits verification/audit/gap-analysis OUT of PATTERN
+# and into HYBRID. The verification shape ("does X meet standard Y?")
+# needs BOTH the standard (RAG) and the implementation (graph); under v1
+# it classified as PATTERN and the graph was skipped — the exact case
+# the structural-retrieval moat is supposed to win. See ADR-024.
+_ROUTER_SYSTEM_PROMPT_V2 = """You classify a single user question into one of \
+five query intents so a downstream retrieval system knows which indexes to \
+search.
+
+Classify the user's question into one of these intents.
+
+PATTERN: a request to DEFINE, EXPLAIN, or SUMMARIZE a concept,
+  convention, architecture, standard, or ADR — answerable from
+  documentation alone, with no need to inspect the actual code.
+  Examples: "What are our Python standards?", "Explain how our
+  analytics platform works", "Summarize the auth ADR", "What ISO
+  controls apply to hybrid SAP?"
+
+DEPENDENCY: about packages, versions, vulnerabilities, manifests
+  Examples: "Which apps have fast-xml-parser installed?", "Is
+  CVE-2023-XXXX patched in our portfolio?", "What version of
+  react-router is in production?"
+
+STRUCTURAL: about code relationships - callers, references,
+  implementations, subpath imports of a specific symbol
+  Examples: "Who calls validate_input?", "What implements
+  IBookingClient?", "Which apps import @hyatt-hpe/hpe-utils/http2?"
+
+HYBRID: requires more than one of the above. In particular, any
+  question that VERIFIES, AUDITS, or GAP-ANALYZES an implementation
+  against a standard, ADR, or industry practice is HYBRID — answering
+  it requires reading BOTH the standard (documentation) AND the actual
+  implementation (code).
+  Examples: "Is the magic_link flow secure?", "Does our auth flow meet
+  OWASP ASVS L1?", "Are there gaps between our audit logging and SOC 2
+  CC7.2?", "Does the file-ingestion path enforce the PII redaction
+  ADR?", "Which functions access PII and need ISO 27018 controls?"
+
+UNKNOWN: ambiguous or doesn't fit cleanly
+
+Also extract the single symbol the question is about (a function name,
+class name, interface, package, subsystem, or subpath like
+"@hyatt-hpe/hpe-utils/http2"). Verification/audit questions usually name
+a subsystem ("magic_link", "auth_flow", "audit_logging") — extract it.
+If the question is not about a specific symbol, set "symbol" to null.
+
+Respond with strict JSON in exactly this shape (no prose, no markdown):
+{"intent": "pattern|dependency|structural|hybrid|unknown", "symbol": \
+"<name or null>"}"""
+
+
+def _router_system_prompt() -> str:
+    """Select the router prompt by ``CHAT_ROUTER_PROMPT_VERSION`` (default
+    v2). Read at call time, not import time, so an operator can flip the
+    flag (or a test can monkeypatch it) without a redeploy."""
+    version = os.environ.get("CHAT_ROUTER_PROMPT_VERSION", "v2").strip().lower()
+    return _ROUTER_SYSTEM_PROMPT_V1 if version == "v1" else _ROUTER_SYSTEM_PROMPT_V2
 
 
 # ---------------------------------------------------------------------------
@@ -313,7 +377,7 @@ def classify_intent(
     try:
         response = bedrock.converse(
             modelId=model_id,
-            system=[{"text": _ROUTER_SYSTEM_PROMPT}],
+            system=[{"text": _router_system_prompt()}],
             messages=[
                 {
                     "role": "user",
