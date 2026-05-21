@@ -673,14 +673,22 @@ def _augment_context_with_symbol_graph(
         # empty for pattern / dependency / unresolvable-symbol paths.
         "graph_sites": [],
         "graph_relation": None,
+        # Why the graph query did not fire, for the UI chip + audit row.
+        # None = the graph fired (or fired via backstop). Distinct reasons
+        # let an operator tell a routing-design skip ("intent_pattern")
+        # from a deploy bug ("no_table") without grep'ing CloudWatch.
+        "graph_skip_reason": None,
     }
 
     if not GRAPH_RETRIEVAL_ENABLED:
+        out["graph_skip_reason"] = "kill_switch"
         return out
     if not question or not question.strip():
+        out["graph_skip_reason"] = "no_question"
         return out
     # No workspace = no graph anchor (the reader requires workspace_id).
     if not workspace_ids:
+        out["graph_skip_reason"] = "no_workspace"
         return out
 
     # Lazy import - keeps the reader's boto3 top-level import out of
@@ -698,6 +706,7 @@ def _augment_context_with_symbol_graph(
             "[chat.augment] symbol_graph_reader import failed (%s); skipping",
             exc,
         )
+        out["graph_skip_reason"] = "import_failed"
         return out
 
     # 1. Classify the question.
@@ -726,6 +735,9 @@ def _augment_context_with_symbol_graph(
     intent = decision.intent
     fires_graph = intent in ("structural", "hybrid", "unknown")
     if not fires_graph:
+        out["graph_skip_reason"] = (
+            "intent_pattern" if intent == "pattern" else "intent_dependency"
+        )
         return out
 
     # Without a symbol candidate the graph queries have nothing to
@@ -736,6 +748,7 @@ def _augment_context_with_symbol_graph(
         # already going through fan-out and a "no symbol identified"
         # block would be noisy. For "structural" / "hybrid" we
         # render the resolved-candidate block per the plan.
+        out["graph_skip_reason"] = "no_symbol"
         if intent == "unknown":
             return out
         out["graph_block"] = build_symbol_definition_block(
@@ -756,6 +769,7 @@ def _augment_context_with_symbol_graph(
         logger.warning(
             "[chat.augment] SYMBOL_GRAPH_TABLE not set; skipping graph augmentation"
         )
+        out["graph_skip_reason"] = "no_table"
         return out
 
     try:
@@ -931,6 +945,7 @@ def _augment_context_with_symbol_graph(
             symbol,
             exc,
         )
+        out["graph_skip_reason"] = "query_error"
         out["graph_block"] = build_graph_unavailable_block(
             target_symbol_id=symbol
         )
@@ -939,6 +954,7 @@ def _augment_context_with_symbol_graph(
             "[chat.augment] unexpected error querying symbol graph for %s",
             symbol,
         )
+        out["graph_skip_reason"] = "query_error"
         out["graph_block"] = build_graph_unavailable_block(
             target_symbol_id=symbol
         )
@@ -2062,6 +2078,7 @@ def handle_chat_stream(event: Dict) -> Generator[str, None, None]:
                 "graph_staleness_seconds"
             ),
             graph_result_count=graph_augment.get("graph_result_count"),
+            graph_skip_reason=graph_augment.get("graph_skip_reason"),
             rag_chunk_count=len(search_results) if search_results else 0,
             source_ip=source_ip,
             user_agent=user_agent,
@@ -2115,6 +2132,9 @@ def handle_chat_stream(event: Dict) -> Generator[str, None, None]:
         "graph_result_count": graph_augment.get("graph_result_count"),
         "graph_sha": graph_augment.get("graph_sha"),
         "graph_staleness_seconds": graph_augment.get("graph_staleness_seconds"),
+        # Why the graph didn't fire (None when it did) so the UI chip can
+        # distinguish a routing-design skip from a deploy bug.
+        "graph_skip_reason": graph_augment.get("graph_skip_reason"),
     }
 
     # Get title

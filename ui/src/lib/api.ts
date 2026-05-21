@@ -29,6 +29,18 @@ export interface Routing {
   graph_result_count: number | null
   graph_sha: string | null
   graph_staleness_seconds: number | null
+  graph_skip_reason:
+    | 'intent_pattern'
+    | 'intent_dependency'
+    | 'no_symbol'
+    | 'kill_switch'
+    | 'no_workspace'
+    | 'no_question'
+    | 'no_table'
+    | 'import_failed'
+    | 'query_error'
+    | 'backstop_no_resolve'
+    | null
 }
 
 export interface StreamMetadata {

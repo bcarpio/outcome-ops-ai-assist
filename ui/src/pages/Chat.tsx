@@ -914,9 +914,34 @@ export default function Chat() {
                   : ''}
               </span>
             ) : (
-              <span className="px-2 py-0.5 bg-white border border-gray-200 text-gray-500 rounded">
-                Graph: skipped
-              </span>
+              (() => {
+                // Distinct skip-reason strings so an operator can tell a
+                // routing-design skip from a deploy bug at a glance.
+                // Deploy-bug / error states are loud (amber); expected
+                // skips are muted (gray).
+                const reasonMap: Record<string, { label: string; loud: boolean }> = {
+                  intent_pattern: { label: 'skipped (PATTERN intent)', loud: false },
+                  intent_dependency: { label: 'skipped (DEPENDENCY intent)', loud: false },
+                  no_symbol: { label: 'skipped (no symbol in question)', loud: false },
+                  kill_switch: { label: 'disabled by operator', loud: false },
+                  no_workspace: { label: 'skipped (no workspace selected)', loud: false },
+                  no_question: { label: 'skipped', loud: false },
+                  no_table: { label: 'deploy bug: table missing', loud: true },
+                  import_failed: { label: 'deploy bug: import failed', loud: true },
+                  query_error: { label: 'error (query failed)', loud: true },
+                  backstop_no_resolve: { label: 'skipped (symbol unresolved)', loud: false },
+                }
+                const r = routing.graph_skip_reason
+                const info = (r && reasonMap[r]) || { label: 'skipped', loud: false }
+                const cls = info.loud
+                  ? 'px-2 py-0.5 bg-amber-50 border border-amber-300 text-amber-800 rounded'
+                  : 'px-2 py-0.5 bg-white border border-gray-200 text-gray-500 rounded'
+                return (
+                  <span className={cls} title={r ?? 'skipped'}>
+                    Graph: {info.label}
+                  </span>
+                )
+              })()
             )}
             {routing.retrievals_fired.includes('rag') && (
               <span className="px-2 py-0.5 bg-white border border-gray-200 rounded">

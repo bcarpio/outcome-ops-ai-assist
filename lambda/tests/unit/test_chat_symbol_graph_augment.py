@@ -356,6 +356,28 @@ def test_augment_returns_nine_callers_for_report_repos_snapshot(_inject_clients)
         )
     # Definition anchor came through too.
     assert "Defined at: lambda/shared/outcomeops_license.py:142" in graph_block
+    # Graph fired — no skip reason.
+    assert out["graph_skip_reason"] is None
+
+
+def test_augment_structural_no_symbol_sets_no_symbol_reason(_inject_clients):
+    """STRUCTURAL intent but the router extracted no symbol: graph can't
+    anchor, so it's a skip with reason 'no_symbol' (and a '(none
+    extracted)' block is rendered so the model says so)."""
+    _create_symbol_graph_table()
+    _create_code_maps_table()
+
+    bedrock_stub = _inject_clients
+    bedrock_stub.converse.return_value = _bedrock_response("structural", None)
+
+    handler = _import_augment()
+    out = handler._augment_context_with_symbol_graph(
+        question="How is auth structured here?",
+        workspace_ids=[WORKSPACE_ID],
+        user_id="user@x.com",
+    )
+    assert out["decision"].intent == "structural"
+    assert out["graph_skip_reason"] == "no_symbol"
 
 
 # ===========================================================================
@@ -381,6 +403,7 @@ def test_augment_pattern_intent_skips_graph_query(_inject_clients):
     )
     assert out["decision"].intent == "pattern"
     assert out["graph_block"] == ""
+    assert out["graph_skip_reason"] == "intent_pattern"
 
 
 def test_augment_no_workspace_skips_router_and_graph(_inject_clients):
@@ -396,6 +419,7 @@ def test_augment_no_workspace_skips_router_and_graph(_inject_clients):
     )
     assert out["decision"] is None
     assert out["graph_block"] == ""
+    assert out["graph_skip_reason"] == "no_workspace"
     bedrock_stub.converse.assert_not_called()
 
 
@@ -413,6 +437,7 @@ def test_augment_kill_switch_disables_augmentation(monkeypatch, _inject_clients)
     )
     assert out["decision"] is None
     assert out["graph_block"] == ""
+    assert out["graph_skip_reason"] == "kill_switch"
 
 
 def test_augment_kill_switch_legacy_var_still_honored(
@@ -434,6 +459,7 @@ def test_augment_kill_switch_legacy_var_still_honored(
     )
     assert out["decision"] is None
     assert out["graph_block"] == ""
+    assert out["graph_skip_reason"] == "kill_switch"
     bedrock_stub.converse.assert_not_called()
 
 
@@ -457,6 +483,8 @@ def test_augment_structural_with_zero_callers_renders_empty_block(_inject_client
     )
     assert out["decision"].intent == "structural"
     assert "Direct callers in this workspace: 0" in out["graph_block"]
+    # Graph fired (returned 0) — that's an empty result, not a skip.
+    assert out["graph_skip_reason"] is None
 
 
 def test_augment_multi_canonical_runs_callers_per_canonical_and_merges(

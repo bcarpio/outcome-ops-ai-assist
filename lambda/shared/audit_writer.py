@@ -501,6 +501,7 @@ def log_routing_decision(
     graph_sha: Optional[str] = None,
     graph_staleness_seconds: Optional[int] = None,
     graph_result_count: Optional[int] = None,
+    graph_skip_reason: Optional[str] = None,
     rag_chunk_count: Optional[int] = None,
     manifest_hit_count: Optional[int] = None,
     source_ip: str = "",
@@ -565,6 +566,8 @@ def log_routing_decision(
         details["graph_staleness_seconds"] = int(graph_staleness_seconds)
     if graph_result_count is not None:
         details["graph_result_count"] = int(graph_result_count)
+    if graph_skip_reason is not None:
+        details["graph_skip_reason"] = graph_skip_reason
     if rag_chunk_count is not None:
         details["rag_chunk_count"] = int(rag_chunk_count)
     if manifest_hit_count is not None:
