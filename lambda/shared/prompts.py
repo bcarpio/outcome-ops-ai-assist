@@ -61,7 +61,9 @@ You MAY state structural facts — these are language-agnostic and are independe
 - outcome categories (success path vs failure / error path) — without exact codes or messages
 - control flow and how units relate to one another
 
-If an exact value matters to the reader, write "(see source)" — never invent a plausible-sounding constant, name, or key to fill a gap. Omit it."""
+Do NOT emit a placeholder, example, or templated form of an exact identifier either — e.g. do not write `SOMEPREFIX#{id}` or `table_name` to "illustrate" a key, table, or path. A guessed shape is still a wrong literal, even with a caveat. Describe it in words by its role and parts instead (e.g. "keyed by the JTI").
+
+If an exact value matters to the reader, write "(see source)" — never invent or approximate a constant, name, key, or path to fill a gap. Omit it."""
 
 
 # RFC 2119 requirement strength guidance

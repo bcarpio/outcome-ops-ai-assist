@@ -566,3 +566,10 @@ class TestCodeMapLiteralDiscipline:
         assert "function / method / procedure / module names" in d
         assert "(see source)" in d
         assert "never invent" in d
+
+    def test_discipline_forbids_placeholder_identifiers(self):
+        # A caveated placeholder key (e.g. JTI#{jti}) is still a wrong
+        # literal — the regenerated auth code-map showed it leaking.
+        d = CODE_MAP_LITERAL_DISCIPLINE
+        assert "placeholder, example, or templated form" in d
+        assert "A guessed shape is still a wrong literal" in d

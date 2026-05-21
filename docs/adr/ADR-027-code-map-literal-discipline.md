@@ -122,9 +122,25 @@ to every code-map generation prompt, and lower generation temperature.
 - `lambda/tests/unit/test_shared_prompts.py`,
   `lambda/tests/unit/test_process_batch_summary.py`
 
+## Post-regen observation (2026-05-21)
+
+Regenerating app.retrieveit.ai with v1.0 + graph-first (ADR-028) fixed the
+worst cases: the `token_urlsafe(32)` size literal is gone (jti now "a
+unique token ID (random)"), file:line is accurate (514/531/487), and the
+wrong-call attribution is fixed. One residual: the model emitted a
+**caveated placeholder** key `JTI#{jti}` (real is `MAGIC_TOKEN#`) with a
+"(see source)" note — confidently-wrong became caveated-but-still-wrong.
+Tightened the discipline (v1.1) to forbid placeholder/templated/example
+identifiers entirely ("a guessed shape is still a wrong literal"). The
+durable fix for the exact value remains the read-from-source adjudicator
+(next phases).
+
 Version History:
 
 - v1.0 (2026-05-21): Initial decision — omit literals/identifiers from
   code-map summaries (stack-agnostic), lower generation temperature.
+- v1.1 (2026-05-21): Forbid placeholder/templated/example identifiers
+  (not just exact values) after a regen showed a caveated placeholder key
+  leaking. Describe by role + "(see source)".
 
 <!-- Confluence sync -->
