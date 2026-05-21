@@ -46,6 +46,7 @@ if GENERATE_CODE_MAPS_DIR not in sys.path:
     sys.path.insert(0, GENERATE_CODE_MAPS_DIR)
 
 from shared import dual_write
+from shared.prompts import CODE_MAP_LITERAL_DISCIPLINE
 from shared.audit import COMPREHEND_MODEL_ID, log_audit_entry
 from shared.audit_writer import (
     ACTION_DOCUMENT_INGESTED,
@@ -485,7 +486,9 @@ Provide a structured summary covering:
 6. **Dependencies**: What are the key external dependencies?
 7. **Testing Strategy**: What testing approach is evident from the file structure?
 
-Keep the summary concise but detailed enough for developers to understand the system quickly."""
+Keep the summary concise but detailed enough for developers to understand the system quickly.
+
+{CODE_MAP_LITERAL_DISCIPLINE}"""
 
     def call_claude():
         payload = {
@@ -498,7 +501,8 @@ Keep the summary concise but detailed enough for developers to understand the sy
             ],
             "inferenceConfig": {
                 "maxTokens": 1024,
-                "temperature": 0.3,
+                # Low temperature for grounded code-map generation (ADR-027).
+                "temperature": 0.1,
             },
         }
 

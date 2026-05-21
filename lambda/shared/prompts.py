@@ -38,6 +38,32 @@ FORMATTING_RULES = """FORMATTING:
 - Use code blocks only for actual code
 - NEVER use emojis, icons, or special unicode symbols"""
 
+# Code-map generation discipline (ADR-027): a code-map is an LLM
+# NARRATIVE+STRUCTURE summary, not an extractor — it must not transcribe
+# specific literal values or exact string constants, because it gets them
+# wrong (observed: a jti summarized as token_urlsafe(32) when the source
+# is (16); a key invented as USED_TOKEN# when the source is MAGIC_TOKEN#).
+# Stack-agnostic by design: the categories below apply to Python, Java,
+# TypeScript, ABAP/SAP, SQL/PL-SQL, Go, C#, etc. Exact values are read
+# from source on demand via the symbol-graph-located read path.
+CODE_MAP_LITERAL_DISCIPLINE = """CRITICAL — DO NOT TRANSCRIBE SPECIFIC LITERAL VALUES OR EXACT STRING CONSTANTS. This overrides any instruction above that asks you to state an exact format, name, key, or value.
+
+This summary is a NARRATIVE + STRUCTURE artifact, not a source of truth for exact values — regardless of language, framework, or platform. A downstream tool reads the actual source for any exact value when it is needed. A wrong literal frozen into this summary is far worse than an omitted one: you will be wrong if you transcribe from paraphrase or memory, so do not try.
+
+DESCRIBE the role and structure; DO NOT state the exact value of:
+- Numeric literals: sizes, lengths, byte/char counts, timeouts, limits, thresholds, ports, retry/backoff counts, version numbers, or any magic number. Name the function/operation that uses the value — never its argument.
+- Exact string constants and identifiers: datastore object names (tables, columns, collections, keys, indexes, partitions), config / parameter-store / secret paths, file paths, URLs and endpoints, queue / topic / channel names, regexes and format strings, hardcoded config values and defaults, transaction / program / module codes.
+
+You MAY state structural facts — these are language-agnostic and are independently corroborated by the symbol graph:
+- function / method / procedure / module names and their parameter names and types
+- class / interface / struct / type names and their relationships (extends, implements, calls, imports)
+- THAT a unit reads or writes a datastore, calls an external system, or emits an event — without quoting the exact object name or address
+- outcome categories (success path vs failure / error path) — without exact codes or messages
+- control flow and how units relate to one another
+
+If an exact value matters to the reader, write "(see source)" — never invent a plausible-sounding constant, name, or key to fill a gap. Omit it."""
+
+
 # RFC 2119 requirement strength guidance
 REQUIREMENT_STRENGTH_RULES = """When summarizing ADRs and standards, preserve the strength of requirements:
 - MUST/SHALL/REQUIRED = mandatory, not optional or suggested

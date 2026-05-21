@@ -34,6 +34,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared.audit import COMPREHEND_MODEL_ID, log_audit_entry
 from shared.audit_writer import ACTION_DOCUMENT_INGESTED, log_admin_action
 from shared.pii import MODE_STRICT, read_workspace_mode, redact
+from shared.prompts import CODE_MAP_LITERAL_DISCIPLINE
 
 # Symbol-graph extractor. The extractor emits typed Facts only —
 # storage and the SQS hand-off are handled downstream.
@@ -715,10 +716,13 @@ For each test file:
         "docs": f"Summarize the documentation for {repo}. Describe what topics are covered and how the documentation is organized.\n\n{files_section}",
     }
 
-    return prompt_templates.get(
+    base_prompt = prompt_templates.get(
         batch_type,
         f"Summarize these {group_name} files for {repo}.\n\n{files_section}"
     )
+    # Append the literal-omission discipline (ADR-027) so no batch type
+    # freezes a specific value or exact string constant into the code-map.
+    return f"{base_prompt}\n\n{CODE_MAP_LITERAL_DISCIPLINE}"
 
 
 def _call_bedrock_and_audit(prompt: str, group_name: str) -> str:
@@ -734,7 +738,11 @@ def _call_bedrock_and_audit(prompt: str, group_name: str) -> str:
             ],
             "inferenceConfig": {
                 "maxTokens": 8192,
-                "temperature": 0.3,
+                # Low temperature for code-map generation: reduces the
+                # value/identifier hallucination that froze wrong literals
+                # into the artifact (ADR-027). Pairs with the
+                # literal-omission discipline appended to the prompt.
+                "temperature": 0.1,
             },
         }
 

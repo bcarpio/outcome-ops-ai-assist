@@ -711,3 +711,18 @@ class TestHandler:
         # Act & Assert
         with pytest.raises(Exception, match="Failed to process 1 out of 2 batches"):
             handler_module.handler(event, context)
+
+
+def test_build_batch_prompt_appends_literal_discipline():
+    """ADR-027 — every code-map batch prompt carries the literal-omission
+    discipline so no generated summary freezes a wrong value/identifier."""
+    prompt = handler_module._build_batch_prompt(
+        "handler-group", "owner/repo", "auth", "<<files>>"
+    )
+    assert "DO NOT TRANSCRIBE SPECIFIC LITERAL VALUES" in prompt
+    assert "(see source)" in prompt
+    # Also applied to the generic fallback (unknown batch type).
+    fallback = handler_module._build_batch_prompt(
+        "totally-unknown-type", "owner/repo", "grp", "<<files>>"
+    )
+    assert "DO NOT TRANSCRIBE SPECIFIC LITERAL VALUES" in fallback

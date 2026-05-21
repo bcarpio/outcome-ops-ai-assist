@@ -36,6 +36,7 @@ prompts_module = _load_prompts_module()
 CONTEXT_TYPES = prompts_module.CONTEXT_TYPES
 FORMATTING_RULES = prompts_module.FORMATTING_RULES
 REQUIREMENT_STRENGTH_RULES = prompts_module.REQUIREMENT_STRENGTH_RULES
+CODE_MAP_LITERAL_DISCIPLINE = prompts_module.CODE_MAP_LITERAL_DISCIPLINE
 build_rag_system_prompt = prompts_module.build_rag_system_prompt
 build_chat_system_prompt = prompts_module.build_chat_system_prompt
 
@@ -536,3 +537,32 @@ class TestSynthesisGuardrails:
         prompt = build_chat_system_prompt()
         assert "FORMATTING:" in prompt
         assert "RULES:" in prompt
+
+
+class TestCodeMapLiteralDiscipline:
+    """ADR-027 — code-map generation must omit literals/identifiers,
+    stack-agnostically (it's appended to every code-map prompt)."""
+
+    def test_discipline_omits_numeric_and_string_literals(self):
+        d = CODE_MAP_LITERAL_DISCIPLINE
+        assert "DO NOT TRANSCRIBE SPECIFIC LITERAL VALUES" in d
+        assert "Numeric literals" in d
+        assert "Exact string constants and identifiers" in d
+        # The two observed failure classes are covered by category.
+        assert "datastore object names" in d  # USED_TOKEN# class
+        assert "magic number" in d            # token_urlsafe(32) class
+
+    def test_discipline_is_stack_agnostic(self):
+        d = CODE_MAP_LITERAL_DISCIPLINE
+        # Not biased to one stack: no AWS-specific nouns; covers SAP-ish
+        # and SQL-ish identifiers generically.
+        assert "regardless of language, framework, or platform" in d
+        assert "transaction / program / module codes" in d
+        for aws_noun in ("DynamoDB", "SSM", "token_urlsafe", "PK/SK"):
+            assert aws_noun not in d
+
+    def test_discipline_keeps_structural_facts(self):
+        d = CODE_MAP_LITERAL_DISCIPLINE
+        assert "function / method / procedure / module names" in d
+        assert "(see source)" in d
+        assert "never invent" in d
