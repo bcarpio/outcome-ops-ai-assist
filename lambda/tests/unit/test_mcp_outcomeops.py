@@ -414,12 +414,40 @@ class TestFormatResults:
         assert result == "No relevant documents found."
 
     def test_format_results_with_content(self):
-        """Test formatting with results."""
+        """Test formatting with results (snippet + match-score format)."""
         results = [
-            {"repo": "my-repo", "type": "adr", "content": "Some content here"},
-            {"repo": "other-repo", "type": "readme", "content": "Other content"},
+            {"repo": "my-repo", "type": "adr", "text": "Some content here", "rerank_score": 0.91},
+            {"repo": "other-repo", "type": "readme", "text": "Other content", "score": 0.5},
         ]
-        text = mcp_module.format_results(results)
-        assert "[1] Source: my-repo (adr)" in text
+        text = mcp_module.format_results(results, query="content")
+        assert "[1] my-repo (adr)" in text
+        assert "match 0.91" in text
         assert "Some content here" in text
-        assert "[2] Source: other-repo (readme)" in text
+        assert "[2] other-repo (readme)" in text
+        assert "Other content" in text
+
+    def test_format_results_caps_total_response_size(self):
+        """The 60KB-for-one-question regression: 10 large chunks must be
+        bounded by max_tokens, dropping lower-ranked results with an
+        explicit omission notice — never dumping everything verbatim."""
+        # 10 chunks of ~6KB each = ~60KB if dumped verbatim.
+        big = "Widgets and gizmos. " * 300  # ~6KB
+        results = [
+            {"repo": f"repo{i}", "type": "doc", "text": big, "rerank_score": 1.0 - i * 0.05}
+            for i in range(10)
+        ]
+        text = mcp_module.format_results(results, query="widgets", max_tokens=4000)
+        # ~4 chars/token => 4000 tokens ~= 16KB. Allow slack for the
+        # omission notice + separators, but it must be a fraction of 60KB.
+        assert len(text) < 20000
+        assert "omitted" in text
+        # The top-ranked result survives intact (snippet, not dropped).
+        assert "[1] repo0 (doc)" in text
+
+    def test_format_results_per_result_snippet_windowing(self):
+        """A single oversized chunk is windowed to a snippet, not dumped
+        in full — bounded by the per-result snippet ceiling."""
+        big = "Widgets everywhere. " * 1000  # ~20KB single chunk
+        results = [{"repo": "r", "type": "doc", "text": big, "rerank_score": 0.8}]
+        text = mcp_module.format_results(results, query="widgets", max_tokens=16000)
+        assert len(text) < len(big)

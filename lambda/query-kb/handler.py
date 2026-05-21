@@ -35,6 +35,7 @@ from botocore.exceptions import ClientError
 # Add shared module to path for Lambda deployment
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared.audit import log_audit_entry
+from shared import retrieval as shared_retrieval
 
 # Bedrock model configuration
 EMBEDDING_MODEL_ID = os.environ.get(
@@ -207,74 +208,45 @@ def query_s3_vectors(
     Returns:
         List of documents with scores and metadata
     """
+    if repo_filter:
+        logger.info(f"[query-kb] Filtering by repo: {repo_filter}")
+    if doc_types:
+        logger.info(f"[query-kb] Will filter doc_types client-side: {doc_types}")
+
+    # Retrieval mechanics (S3 Vectors query + normalization) live in the
+    # shared module so chat and the MCP server cannot drift. query-kb
+    # keeps its own filter shape ({"repo": {"equals": ...}}) and projects
+    # the normalized result onto its long-standing 6-key output, applying
+    # format_source from the passed-through metadata.
     try:
-        query_params = {
-            "vectorBucketName": VECTOR_BUCKET,
-            "indexName": VECTOR_INDEX,
-            "queryVector": {"float32": query_embedding},
-            "topK": top_k,
-            "returnMetadata": True,
-            "returnDistance": True,
-        }
-
-        # Build filter expression
-        # S3 Vectors uses a structured filter format
-        if repo_filter:
-            query_params["filter"] = {"repo": {"equals": repo_filter}}
-            logger.info(f"[query-kb] Filtering by repo: {repo_filter}")
-
-        # Note: doc_types filter would need multiple OR conditions
-        # For now, we filter client-side if doc_types is specified
-        if doc_types:
-            logger.info(f"[query-kb] Will filter doc_types client-side: {doc_types}")
-
-        response = s3vectors_client.query_vectors(**query_params)
-
-        results = []
-        for vector in response.get("vectors", []):
-            metadata = vector.get("metadata", {})
-
-            # Client-side doc_types filtering
-            if doc_types and metadata.get("type") not in doc_types:
-                continue
-
-            # Convert distance to similarity score (cosine distance -> similarity)
-            distance = vector.get("distance", 0)
-            similarity = 1 - distance  # For cosine, similarity = 1 - distance
-
-            # Extract repo: prefer explicit field, fall back to source-specific logic
-            repo = metadata.get("repo", "")
-            if not repo:
-                source_type = metadata.get("source", "")
-                folder_path = metadata.get("folder_path", "")
-                if source_type == "github":
-                    repo = folder_path.split("/")[0] if folder_path else ""
-                elif source_type and folder_path:
-                    space = folder_path.split("/")[-1] if "/" in folder_path else folder_path
-                    repo = f"{source_type.capitalize()}/{space}"
-                elif source_type:
-                    repo = source_type.capitalize()
-
-            result = {
-                "score": round(similarity, 4),
-                "text": metadata.get("content", "")[:20000],
-                "source": format_source(metadata),
-                "type": metadata.get("type", ""),
-                "repo": repo,
-                "file_path": metadata.get("file_path", ""),
-            }
-            results.append(result)
-
-        # Re-sort after client-side filtering and limit to top_k
-        results.sort(key=lambda x: x["score"], reverse=True)
-        results = results[:top_k]
-
-        logger.info(f"[query-kb] Found {len(results)} results from S3 Vectors")
-        return results
-
+        docs = shared_retrieval.query_vectors(
+            s3vectors_client=s3vectors_client,
+            vector_bucket=VECTOR_BUCKET,
+            vector_index=VECTOR_INDEX,
+            query_embedding=query_embedding,
+            top_k=top_k,
+            filter_dict={"repo": {"equals": repo_filter}} if repo_filter else None,
+            doc_types=doc_types,
+            text_truncate=20000,
+        )
     except ClientError as e:
         logger.error(f"[query-kb] Failed to query S3 Vectors: {e}")
         raise
+
+    results = [
+        {
+            "score": d["score"],
+            "text": d["text"],
+            "source": format_source(d["metadata"]),
+            "type": d["type"],
+            "repo": d["repo"],
+            "file_path": d["file_path"],
+        }
+        for d in docs
+    ]
+
+    logger.info(f"[query-kb] Found {len(results)} results from S3 Vectors")
+    return results
 
 
 def rerank_results(
@@ -296,70 +268,18 @@ def rerank_results(
     Returns:
         Reranked list of documents
     """
-    if not documents:
-        return documents
-
-    try:
-        sources = []
-        for doc in documents:
-            sources.append({
-                "type": "INLINE",
-                "inlineDocumentSource": {
-                    "type": "TEXT",
-                    "textDocument": {
-                        "text": doc.get("text", "")[:4096]
-                    }
-                }
-            })
-
-        rerank_start = time.time()
-
-        rerank_params = {
-            "queries": [{"type": "TEXT", "textQuery": {"text": query}}],
-            "sources": sources,
-            "rerankingConfiguration": {
-                "type": "BEDROCK_RERANKING_MODEL",
-                "bedrockRerankingConfiguration": {
-                    "modelConfiguration": {
-                        "modelArn": f"arn:aws:bedrock:{bedrock_agent_runtime_client.meta.region_name}::foundation-model/{RERANK_MODEL_ID}"
-                    }
-                }
-            }
-        }
-
-        if top_n is not None:
-            rerank_params["rerankingConfiguration"]["bedrockRerankingConfiguration"]["numberOfResults"] = top_n
-
-        response = bedrock_agent_runtime_client.rerank(**rerank_params)
-
-        rerank_duration_ms = int((time.time() - rerank_start) * 1000)
-        logger.info(f"[query-kb] Reranked {len(documents)} documents in {rerank_duration_ms}ms")
-
-        reranked = []
-        for result in response.get("results", []):
-            idx = result.get("index", 0)
-            if idx < len(documents):
-                doc = documents[idx].copy()
-                doc["rerank_score"] = result.get("relevanceScore", 0)
-                reranked.append(doc)
-
-        log_audit_entry(
-            audit_table_name=os.environ.get("AUDIT_TABLE", ""),
-            lambda_name="query-kb",
-            model_id=RERANK_MODEL_ID,
-            input_text=f"rerank:{query}",
-            output_text=f"reranked {len(reranked)} of {len(documents)} docs",
-            duration_ms=rerank_duration_ms,
-        )
-
-        return reranked
-
-    except ClientError as e:
-        logger.warning(f"[query-kb] Reranking failed, falling back to cosine order: {e}")
-        return documents[:top_n] if top_n else documents
-    except Exception as e:
-        logger.warning(f"[query-kb] Unexpected rerank error, falling back: {e}")
-        return documents[:top_n] if top_n else documents
+    # Rerank mechanics live in the shared module (same Cohere call, same
+    # graceful cosine-order fallback) so chat and the MCP server share one
+    # reranker. lambda_name="query-kb" preserves the audit + log shape.
+    return shared_retrieval.rerank(
+        bedrock_agent_runtime_client=bedrock_agent_runtime_client,
+        rerank_model_id=RERANK_MODEL_ID,
+        query=query,
+        documents=documents,
+        top_n=top_n,
+        lambda_name="query-kb",
+        audit_table_name=os.environ.get("AUDIT_TABLE", ""),
+    )
 
 
 def invoke_lambda(function_arn: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:

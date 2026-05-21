@@ -317,12 +317,41 @@ terraform plan -var-file=prd.tfvars -out=terraform.prd.out
 terraform apply terraform.prd.out
 ```
 
-### Subsequent Image Updates
+### Subsequent Image Updates (code changes)
+
+The MCP server is a **Fargate service**, not a Lambda — a code change is
+not picked up by editing a function; the container image must be rebuilt
+and the service redeployed, and connected clients must reconnect to pick
+up any tool-schema change. The full dance:
 
 ```bash
+# 1. (Only if IAM / env / task-def changed) apply terraform first.
+#    e.g. the retrieval consolidation added bedrock:Rerank to the task
+#    role and rerank env vars — those need an apply before the new image
+#    will have permission to call the reranker.
+cd terraform && terraform apply -var-file=prd.tfvars   # CI/CD in customer accounts
+
+# 2. Rebuild + push the image (multi-region aware: also pushes to the
+#    secondary ECR when secondary_region is set in the tfvars).
 ENVIRONMENT=prd make build-mcp-server-image
-# Then force a new ECS deployment if needed
+
+# 3. Force a new ECS deployment so tasks pull the new :latest image.
+#    Service + cluster names follow {env}-{app}-mcp-outcomeops.
+aws ecs update-service \
+  --cluster prd-outcome-ops-ai-assist-ui \
+  --service prd-outcome-ops-ai-assist-mcp-outcomeops \
+  --force-new-deployment --region us-west-2
+# Repeat for the secondary region if HA is enabled.
+
+# 4. Reconnect MCP clients. Claude Code (and other clients) cache the
+#    tool list at handshake time, so a schema change (new params like
+#    top_k / max_tokens / min_score) is invisible until the client
+#    reconnects. Restart the client / re-add the server.
 ```
+
+Verify the retrieval contract after deploy: a broad `query_knowledge_base`
+question should return a bounded response (≤ ~8KB at default settings),
+not the pre-fix 60KB. See ADR-023 for the contract.
 
 ## Infrastructure Details
 

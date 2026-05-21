@@ -28,6 +28,7 @@ from botocore.exceptions import ClientError
 # shared/ is COPYed alongside this file at /app/shared/.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from shared import dual_write  # type: ignore  # noqa: E402
+from shared import retrieval as shared_retrieval  # type: ignore  # noqa: E402
 try:
     from shared.audit_writer import (  # type: ignore
         ACTION_API_KEY_USED,
@@ -58,6 +59,22 @@ EMBEDDING_MODEL_ID = os.environ.get(
     "BEDROCK_EMBEDDING_MODEL_ID", "amazon.titan-embed-text-v2:0"
 )
 
+# Retrieval bounds. Defaults match chat's query-kb so the two surfaces
+# behave the same; callers can override per-request via the tool schema.
+# The MCP server historically returned top_k=10 chunks verbatim with no
+# rerank and no cap — the 60KB-for-one-question failure. See the
+# retrieval-contract ADR.
+RERANK_MODEL_ID = os.environ.get("BEDROCK_RERANK_MODEL_ID", "cohere.rerank-v3-5:0")
+RERANK_ENABLED = os.environ.get("RERANK_ENABLED", "true").lower() == "true"
+RERANK_MAX_FETCH = int(os.environ.get("RERANK_MAX_FETCH", "50"))
+DEFAULT_TOP_K = int(os.environ.get("MCP_RETRIEVAL_TOP_K", "5"))
+MAX_TOP_K = 20
+DEFAULT_MAX_TOKENS = int(os.environ.get("MCP_RETRIEVAL_MAX_TOKENS", "4000"))
+MAX_MAX_TOKENS = 16000
+DEFAULT_MIN_SCORE = float(os.environ.get("MCP_RETRIEVAL_MIN_SCORE", "0"))
+# Per-result snippet ceiling so one large chunk can't dominate the budget.
+SNIPPET_MAX_TOKENS = int(os.environ.get("MCP_RETRIEVAL_SNIPPET_TOKENS", "500"))
+
 # Session storage (in-memory, single instance)
 _sessions = {}  # session_id -> {"email": str, "last_active": float, "tool_routing": dict}
 SESSION_TIMEOUT = 3600  # 1 hour
@@ -72,6 +89,7 @@ MCP_SESSION_TTL = 1800  # 30 minutes
 _dynamodb = None
 _s3vectors_client = None
 _bedrock_client = None
+_bedrock_agent_runtime_client = None
 _ssm_client = None
 
 
@@ -96,11 +114,38 @@ def _get_bedrock_client():
     return _bedrock_client
 
 
+def _get_bedrock_agent_runtime_client():
+    global _bedrock_agent_runtime_client
+    if _bedrock_agent_runtime_client is None:
+        _bedrock_agent_runtime_client = boto3.client(
+            "bedrock-agent-runtime", region_name=AWS_REGION
+        )
+    return _bedrock_agent_runtime_client
+
+
 def _get_ssm_client():
     global _ssm_client
     if _ssm_client is None:
         _ssm_client = boto3.client("ssm", region_name=AWS_REGION)
     return _ssm_client
+
+
+def _bounded_int(value, default, lo, hi):
+    """Coerce an external tool-arg to a clamped int (JSON args may arrive
+    as strings, floats, None, or out of range)."""
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(lo, min(n, hi))
+
+
+def _bounded_float(value, default, lo, hi):
+    try:
+        n = float(value)
+    except (TypeError, ValueError):
+        return default
+    return max(lo, min(n, hi))
 
 
 # ============================================================================
@@ -131,6 +176,28 @@ MCP_TOOLS = [
                     "description": (
                         "Optional workspace ID to scope the search. "
                         "If omitted, searches all workspaces the user has access to."
+                    ),
+                },
+                "top_k": {
+                    "type": "integer",
+                    "description": (
+                        "Number of results to return after reranking "
+                        "(default 5, max 20). Lower = fewer, more precise hits."
+                    ),
+                },
+                "max_tokens": {
+                    "type": "integer",
+                    "description": (
+                        "Approximate ceiling on total response size in tokens "
+                        "(default 4000, max 16000). Lower-ranked results are "
+                        "dropped to stay under the cap."
+                    ),
+                },
+                "min_score": {
+                    "type": "number",
+                    "description": (
+                        "Minimum rerank relevance score (0.0-1.0, default 0.0) "
+                        "to include a result. Raise to filter weak matches."
                     ),
                 },
             },
@@ -186,6 +253,25 @@ MCP_TOOLS = [
                 "workspace_id": {
                     "type": "string",
                     "description": "Optional workspace ID to scope the search",
+                },
+                "top_k": {
+                    "type": "integer",
+                    "description": (
+                        "Number of results after reranking (default 5, max 20)."
+                    ),
+                },
+                "max_tokens": {
+                    "type": "integer",
+                    "description": (
+                        "Approximate total response size cap in tokens "
+                        "(default 4000, max 16000)."
+                    ),
+                },
+                "min_score": {
+                    "type": "number",
+                    "description": (
+                        "Minimum rerank relevance score (0.0-1.0, default 0.0)."
+                    ),
                 },
             },
             "required": ["topic"],
@@ -494,74 +580,103 @@ def generate_embedding(text):
     return response_body.get("embedding", [])
 
 
-def search_knowledge_base(query, workspace_ids=None, top_k=10):
-    """Search KB documents using S3 Vectors."""
-    s3vectors = _get_s3vectors_client()
+def search_knowledge_base(
+    query, workspace_ids=None, top_k=DEFAULT_TOP_K, min_score=DEFAULT_MIN_SCORE
+):
+    """Search KB documents using the shared oversample + rerank pipeline.
 
+    Mirrors chat's query-kb path via ``shared.retrieval``: oversample 4x,
+    rerank with Cohere (graceful cosine fallback where Rerank is
+    unavailable, e.g. us-east-2), cull to ``top_k``, and drop hits below
+    ``min_score``. Returns normalized result dicts (``text``, ``score``,
+    ``rerank_score``, ``repo``, ``type``, ``file_path`` …). Snippet
+    windowing + the response cap happen in ``format_results``.
+    """
     embedding = generate_embedding(query)
     if not embedding:
         return []
 
-    query_params = {
-        "vectorBucketName": S3_VECTORS_BUCKET,
-        "indexName": S3_VECTORS_INDEX,
-        "queryVector": {"float32": embedding},
-        "topK": top_k,
-        "returnMetadata": True,
-        "returnDistance": True,
-    }
+    top_k = max(1, min(int(top_k), MAX_TOP_K))
 
+    filter_dict = None
     if workspace_ids:
         if len(workspace_ids) == 1:
-            query_params["filter"] = {"workspace_id": {"$eq": workspace_ids[0]}}
+            filter_dict = {"workspace_id": {"$eq": workspace_ids[0]}}
         else:
-            query_params["filter"] = {"workspace_id": {"$in": workspace_ids}}
+            filter_dict = {"workspace_id": {"$in": workspace_ids}}
+
+    fetch_k = min(top_k * 4, RERANK_MAX_FETCH) if RERANK_ENABLED else top_k
 
     try:
-        response = s3vectors.query_vectors(**query_params)
-
-        results = []
-        for vector in response.get("vectors", []):
-            metadata = vector.get("metadata", {})
-            repo = metadata.get("repo", "")
-            if not repo:
-                source_type = metadata.get("source", "")
-                folder_path = metadata.get("folder_path", "")
-                if source_type == "github":
-                    repo = folder_path.split("/")[0] if folder_path else ""
-                elif source_type and folder_path:
-                    space = folder_path.split("/")[-1] if "/" in folder_path else folder_path
-                    repo = f"{source_type.capitalize()}/{space}"
-                elif source_type:
-                    repo = source_type.capitalize()
-
-            results.append({
-                "key": vector.get("key", ""),
-                "score": vector.get("distance", 0),
-                "content": metadata.get("content", ""),
-                "repo": repo,
-                "type": metadata.get("type", ""),
-                "file_path": metadata.get("file_path", ""),
-                "workspace_id": metadata.get("workspace_id", ""),
-            })
-
-        return results
+        docs = shared_retrieval.query_vectors(
+            s3vectors_client=_get_s3vectors_client(),
+            vector_bucket=S3_VECTORS_BUCKET,
+            vector_index=S3_VECTORS_INDEX,
+            query_embedding=embedding,
+            top_k=fetch_k,
+            filter_dict=filter_dict,
+            text_truncate=0,  # snippet windowing happens in format_results
+        )
     except ClientError as e:
         logger.error(f"Error searching vectors: {e}")
         return []
 
+    if RERANK_ENABLED and len(docs) > 1:
+        docs = shared_retrieval.rerank(
+            bedrock_agent_runtime_client=_get_bedrock_agent_runtime_client(),
+            rerank_model_id=RERANK_MODEL_ID,
+            query=query,
+            documents=docs,
+            top_n=top_k,
+            lambda_name="mcp-server",
+            audit_table_name=os.environ.get("AUDIT_TABLE", ""),
+        )
+        if min_score > 0:
+            docs = [d for d in docs if d.get("rerank_score", 0) >= min_score]
+    else:
+        docs = docs[:top_k]
 
-def format_results(results):
-    """Format search results as text for MCP response."""
+    return docs
+
+
+def format_results(results, query="", max_tokens=DEFAULT_MAX_TOKENS):
+    """Format results as bounded text for the MCP response.
+
+    Each result is windowed to a query-relevant snippet (so a 6KB chunk
+    doesn't dump in full) and annotated with its match score. The total
+    response is hard-capped at ``max_tokens`` by dropping whole results
+    from the bottom of the (rerank-ordered) list — the top matches stay
+    intact. This is the defense that keeps a broad question from
+    returning 60KB.
+    """
     if not results:
         return "No relevant documents found."
 
+    max_tokens = max(1, min(int(max_tokens), MAX_MAX_TOKENS))
     parts = []
+    used_tokens = 0
     for i, r in enumerate(results, 1):
         source = r.get("repo", "unknown")
         doc_type = r.get("type", "document")
-        content = r.get("content", "")
-        parts.append(f"[{i}] Source: {source} ({doc_type})\n{content}")
+        file_path = r.get("file_path", "")
+        score = r.get("rerank_score", r.get("score", 0))
+        snippet = shared_retrieval.make_snippet(
+            r.get("text", ""), query, max_tokens=SNIPPET_MAX_TOKENS
+        )
+        loc = f" {file_path}" if file_path else ""
+        header = f"[{i}] {source} ({doc_type}){loc} — match {score:.2f}"
+        block = f"{header}\n{snippet}"
+        block_tokens = shared_retrieval.estimate_tokens(block) + 4  # +separator
+        if parts and used_tokens + block_tokens > max_tokens:
+            omitted = len(results) - (i - 1)
+            parts.append(
+                f"… {omitted} lower-ranked result(s) omitted to stay within the "
+                f"{max_tokens}-token response cap. Narrow the query or pass a "
+                f"higher max_tokens to see more."
+            )
+            break
+        parts.append(block)
+        used_tokens += block_tokens
 
     return "\n\n---\n\n".join(parts)
 
@@ -929,8 +1044,16 @@ def handle_query_knowledge_base(params, email):
     else:
         workspace_ids = get_user_workspace_ids(email)
 
-    results = search_knowledge_base(query, workspace_ids=workspace_ids)
-    return {"text": format_results(results)}
+    top_k = _bounded_int(params.get("top_k"), DEFAULT_TOP_K, 1, MAX_TOP_K)
+    max_tokens = _bounded_int(
+        params.get("max_tokens"), DEFAULT_MAX_TOKENS, 1, MAX_MAX_TOKENS
+    )
+    min_score = _bounded_float(params.get("min_score"), DEFAULT_MIN_SCORE, 0.0, 1.0)
+
+    results = search_knowledge_base(
+        query, workspace_ids=workspace_ids, top_k=top_k, min_score=min_score
+    )
+    return {"text": format_results(results, query=query, max_tokens=max_tokens)}
 
 
 def handle_list_workspaces(params, email):
@@ -1055,8 +1178,16 @@ def handle_get_coding_standards(params, email):
     else:
         workspace_ids = get_user_workspace_ids(email)
 
-    results = search_knowledge_base(query, workspace_ids=workspace_ids)
-    return {"text": format_results(results)}
+    top_k = _bounded_int(params.get("top_k"), DEFAULT_TOP_K, 1, MAX_TOP_K)
+    max_tokens = _bounded_int(
+        params.get("max_tokens"), DEFAULT_MAX_TOKENS, 1, MAX_MAX_TOKENS
+    )
+    min_score = _bounded_float(params.get("min_score"), DEFAULT_MIN_SCORE, 0.0, 1.0)
+
+    results = search_knowledge_base(
+        query, workspace_ids=workspace_ids, top_k=top_k, min_score=min_score
+    )
+    return {"text": format_results(results, query=query, max_tokens=max_tokens)}
 
 
 # ============================================================================

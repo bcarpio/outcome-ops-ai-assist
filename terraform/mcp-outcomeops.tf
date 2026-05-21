@@ -66,6 +66,13 @@ module "mcp_outcomeops" {
     # staleness reporting.
     SYMBOL_GRAPH_TABLE = module.symbol_graph_table.dynamodb_table_id
     CODE_MAPS_TABLE    = module.code_maps_table.dynamodb_table_id
+    # Retrieval bounds (shared with chat's query-kb path). The MCP server
+    # historically returned top_k=10 verbatim with no rerank and no cap
+    # (the 60KB-for-one-question failure); these wire the consolidated
+    # oversample+rerank+cap pipeline. Defaults in code match these.
+    BEDROCK_RERANK_MODEL_ID = var.bedrock_rerank_model_id
+    RERANK_ENABLED          = tostring(var.bedrock_rerank_enabled)
+    RERANK_MAX_FETCH        = tostring(var.rerank_max_fetch)
     },
     # HA dual-write: the MCP server routes its api-key last_used_at
     # write through shared.dual_write; these env vars make it emit a
@@ -161,6 +168,19 @@ resource "aws_iam_role_policy" "mcp_outcomeops" {
         Resource = [
           "arn:aws:bedrock:*::foundation-model/*"
         ]
+      },
+      {
+        # Post-retrieval reranking (Cohere Rerank via the Bedrock Rerank
+        # API), consolidated with chat's query-kb path. Resource must be
+        # "*" — same grant query-kb uses (terraform/lambda-query.tf). The
+        # reranker degrades to cosine order where unavailable (us-east-2),
+        # so this is a quality grant, not a hard dependency.
+        Sid    = "BedrockRerank"
+        Effect = "Allow"
+        Action = [
+          "bedrock:Rerank"
+        ]
+        Resource = ["*"]
       },
       {
         Sid    = "SSMReadMcpTokens"
