@@ -10,7 +10,7 @@ Triggered by SQS DELETE_QUEUE messages.
 
 Message Format:
 {
-    "action": "delete_document" | "delete_prefix" | "delete_orphans" | "delete_orphan_code_maps",
+    "action": "delete_document" | "delete_prefix" | "delete_orphans" | "delete_orphan_code_maps" | "delete_symbol_graph",
     "workspace_id": "ws_xxx",
     "source": "confluence",
     "connection_id": "conn_xxx",      # For connection-scoped operations
@@ -19,6 +19,7 @@ Message Format:
     "current_ids": ["id1", "id2"],    # For orphan detection (docs)
     "repo": "owner/repo",             # For code-map orphan detection
     "expected_keys": ["k1", "k2"],    # For code-map orphan detection
+    "repo_bare": "repo",              # For delete_symbol_graph (bare repo name)
 }
 """
 
@@ -30,6 +31,7 @@ from typing import Any, Dict, List, Set
 from urllib.parse import unquote_plus
 
 import boto3
+from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 
 # Configure logging
@@ -40,12 +42,15 @@ logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 ENV = os.environ.get("ENV", "dev")
 APP_NAME = os.environ.get("APP_NAME", "outcome-ops-ai-assist")
 KB_BUCKET = os.environ.get("KB_BUCKET")
+SYMBOL_GRAPH_TABLE = os.environ.get("SYMBOL_GRAPH_TABLE")
+CODE_MAPS_TABLE = os.environ.get("CODE_MAPS_TABLE")
 
 # AWS clients
 s3_client = boto3.client("s3")
 ssm_client = boto3.client("ssm")
 s3vectors_client = boto3.client("s3vectors")
 sts_client = boto3.client("sts")
+dynamodb = boto3.resource("dynamodb")
 
 # Cached account ID
 _account_id = None
@@ -694,6 +699,74 @@ def handle_delete_orphans(message: Dict) -> Dict[str, Any]:
 # ============================================================================
 
 
+def handle_delete_symbol_graph(message: Dict) -> Dict[str, Any]:
+    """Delete all symbol-graph facts for a removed repo, plus its
+    code-maps pointer row.
+
+    The symbol-graph table is keyed ``PK = {workspace_id}#{repo}`` using
+    the BARE repo name (no owner prefix) — unlike KB keys. Repo removal
+    must clean these or the facts persist forever (polluting structural
+    queries and any re-add). The code-maps pointer
+    (``SYMBOL_GRAPH#{ws}#{repo}`` / ``POINTER``) is the SHA-truth anchor
+    for the same (workspace, repo) and is removed too.
+
+    Idempotent: a repo with no facts / no pointer is a clean no-op.
+    """
+    workspace_id = message.get("workspace_id", "")
+    repo = message.get("repo_bare", "") or message.get("repo", "")
+    if not workspace_id or not repo:
+        return {"status": "error", "reason": "workspace_id and repo required"}
+    if not SYMBOL_GRAPH_TABLE:
+        logger.warning("[delete_symbol_graph] SYMBOL_GRAPH_TABLE not configured; skipping")
+        return {"status": "skipped", "reason": "SYMBOL_GRAPH_TABLE not configured"}
+
+    pk = f"{workspace_id}#{repo}"
+    table = dynamodb.Table(SYMBOL_GRAPH_TABLE)
+
+    # Collect every SK under the partition (project keys only).
+    keys: List[Dict[str, str]] = []
+    query_kwargs = {
+        "KeyConditionExpression": Key("PK").eq(pk),
+        "ProjectionExpression": "PK, SK",
+    }
+    while True:
+        resp = table.query(**query_kwargs)
+        keys.extend({"PK": i["PK"], "SK": i["SK"]} for i in resp.get("Items", []))
+        lek = resp.get("LastEvaluatedKey")
+        if not lek:
+            break
+        query_kwargs["ExclusiveStartKey"] = lek
+
+    facts_deleted = 0
+    with table.batch_writer() as bw:
+        for key in keys:
+            bw.delete_item(Key=key)
+            facts_deleted += 1
+
+    pointer_deleted = 0
+    if CODE_MAPS_TABLE:
+        try:
+            dynamodb.Table(CODE_MAPS_TABLE).delete_item(
+                Key={"PK": f"SYMBOL_GRAPH#{workspace_id}#{repo}", "SK": "POINTER"}
+            )
+            pointer_deleted = 1
+        except ClientError as e:
+            logger.warning(
+                f"[delete_symbol_graph] pointer delete failed for {pk}: {e}"
+            )
+
+    logger.info(
+        f"[delete_symbol_graph] {pk}: deleted {facts_deleted} facts, "
+        f"{pointer_deleted} pointer row(s)"
+    )
+    return {
+        "status": "success",
+        "action": "delete_symbol_graph",
+        "facts_deleted": facts_deleted,
+        "pointer_deleted": pointer_deleted,
+    }
+
+
 def lambda_handler(event: Dict, context: Any) -> Dict:
     """
     SQS-triggered handler for delete operations.
@@ -723,6 +796,8 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
                 result = handle_delete_orphans(message)
             elif action == "delete_orphan_code_maps":
                 result = handle_delete_orphan_code_maps(message)
+            elif action == "delete_symbol_graph":
+                result = handle_delete_symbol_graph(message)
             else:
                 logger.warning(f"Unknown action: {action}")
                 result = {"status": "skipped", "reason": f"Unknown action: {action}"}

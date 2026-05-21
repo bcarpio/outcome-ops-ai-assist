@@ -1212,7 +1212,18 @@ class TestRemoveRepoWithQueue:
         result = remove_repo("admin@example.com", "ws1", "org/repo")
 
         assert result["statusCode"] == 200
-        mock_sqs_client.send_message.assert_called_once()
+        # Repo removal now queues a FULL cleanup: KB owner-prefix +
+        # legacy bare-name prefix + symbol-graph (delete-bug 01/03).
+        import json as _json
+        bodies = [
+            _json.loads(c.kwargs["MessageBody"])
+            for c in mock_sqs_client.send_message.call_args_list
+        ]
+        assert len(bodies) == 3
+        prefixes = {b["prefix"] for b in bodies if b["action"] == "delete_prefix"}
+        assert prefixes == {"org/repo/", "repo/"}  # owner + bare
+        sg = [b for b in bodies if b["action"] == "delete_symbol_graph"]
+        assert len(sg) == 1 and sg[0]["repo_bare"] == "repo"
 
 
 class TestSearchAccess:

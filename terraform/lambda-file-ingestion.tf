@@ -550,6 +550,9 @@ module "delete_worker_lambda" {
       ENV       = var.environment
       APP_NAME  = var.app_name
       KB_BUCKET = module.knowledge_base_bucket.s3_bucket_id
+      # delete_symbol_graph action cleans a removed repo's facts + pointer.
+      SYMBOL_GRAPH_TABLE = module.symbol_graph_table.dynamodb_table_id
+      CODE_MAPS_TABLE    = module.code_maps_table.dynamodb_table_id
     },
     local.ha_writer_env,
   )
@@ -557,6 +560,19 @@ module "delete_worker_lambda" {
   # IAM permissions
   attach_policy_statements = true
   policy_statements = merge({
+    # Symbol-graph + code-maps cleanup on repo removal (delete_symbol_graph).
+    dynamodb_symbol_graph = {
+      effect = "Allow"
+      actions = [
+        "dynamodb:Query",
+        "dynamodb:DeleteItem",
+      ]
+      resources = [
+        module.symbol_graph_table.dynamodb_table_arn,
+        module.code_maps_table.dynamodb_table_arn,
+      ]
+    }
+
     # S3 for listing and deleting documents
     s3_kb = {
       effect = "Allow"

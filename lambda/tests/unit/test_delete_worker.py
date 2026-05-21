@@ -1659,3 +1659,89 @@ class TestHandleDeleteOrphanCodeMaps:
         body = json.loads(result["body"])
         assert body["results"][0]["action"] == "delete_orphan_code_maps"
         assert body["results"][0]["status"] == "success"
+
+
+# ---------------------------------------------------------------------------
+# delete_symbol_graph (delete-bug chunk 01)
+# ---------------------------------------------------------------------------
+
+
+def _make_sg_tables(region="us-west-2"):
+    import boto3
+    ddb = boto3.resource("dynamodb", region_name=region)
+    sg = ddb.create_table(
+        TableName="sg-test",
+        AttributeDefinitions=[
+            {"AttributeName": "PK", "AttributeType": "S"},
+            {"AttributeName": "SK", "AttributeType": "S"},
+        ],
+        KeySchema=[
+            {"AttributeName": "PK", "KeyType": "HASH"},
+            {"AttributeName": "SK", "KeyType": "RANGE"},
+        ],
+        BillingMode="PAY_PER_REQUEST",
+    )
+    cm = ddb.create_table(
+        TableName="cm-test",
+        AttributeDefinitions=[
+            {"AttributeName": "PK", "AttributeType": "S"},
+            {"AttributeName": "SK", "AttributeType": "S"},
+        ],
+        KeySchema=[
+            {"AttributeName": "PK", "KeyType": "HASH"},
+            {"AttributeName": "SK", "KeyType": "RANGE"},
+        ],
+        BillingMode="PAY_PER_REQUEST",
+    )
+    return ddb, sg, cm
+
+
+def test_handle_delete_symbol_graph_clears_facts_and_pointer():
+    from moto import mock_aws
+    with mock_aws():
+        ddb, sg, cm = _make_sg_tables()
+        # 3 facts for the target repo + 1 fact for a DIFFERENT repo (must survive).
+        for i in range(3):
+            sg.put_item(Item={"PK": "ws#repo", "SK": f"calls#{i}", "x": 1})
+        sg.put_item(Item={"PK": "ws#other", "SK": "calls#0", "x": 1})
+        cm.put_item(Item={"PK": "SYMBOL_GRAPH#ws#repo", "SK": "POINTER", "sha": "abc"})
+
+        handler_module.dynamodb = ddb
+        handler_module.SYMBOL_GRAPH_TABLE = "sg-test"
+        handler_module.CODE_MAPS_TABLE = "cm-test"
+
+        res = handler_module.handle_delete_symbol_graph(
+            {"workspace_id": "ws", "repo_bare": "repo"}
+        )
+        assert res["status"] == "success"
+        assert res["facts_deleted"] == 3
+        assert res["pointer_deleted"] == 1
+        # Target repo's facts gone; other repo untouched; pointer gone.
+        assert sg.query(
+            KeyConditionExpression=__import__("boto3").dynamodb.conditions.Key("PK").eq("ws#repo")
+        )["Count"] == 0
+        assert sg.query(
+            KeyConditionExpression=__import__("boto3").dynamodb.conditions.Key("PK").eq("ws#other")
+        )["Count"] == 1
+        assert "Item" not in cm.get_item(
+            Key={"PK": "SYMBOL_GRAPH#ws#repo", "SK": "POINTER"}
+        )
+
+
+def test_handle_delete_symbol_graph_idempotent_no_facts():
+    from moto import mock_aws
+    with mock_aws():
+        ddb, sg, cm = _make_sg_tables()
+        handler_module.dynamodb = ddb
+        handler_module.SYMBOL_GRAPH_TABLE = "sg-test"
+        handler_module.CODE_MAPS_TABLE = "cm-test"
+        res = handler_module.handle_delete_symbol_graph(
+            {"workspace_id": "ws", "repo_bare": "nonexistent"}
+        )
+        assert res["status"] == "success"
+        assert res["facts_deleted"] == 0
+
+
+def test_handle_delete_symbol_graph_requires_repo():
+    res = handler_module.handle_delete_symbol_graph({"workspace_id": "ws"})
+    assert res["status"] == "error"

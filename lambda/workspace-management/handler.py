@@ -1201,20 +1201,46 @@ def remove_repo(
             {"PK": f"WS#{workspace_id}", "SK": f"GITHUB_REPO#{repo_name}"},
         )
 
-        # Queue cleanup of S3 documents and vector embeddings for this repo
+        # Queue cleanup of all of this repo's data. repo_name is
+        # owner-prefixed ("owner/repo"); the bare name ("repo") is what
+        # the symbol-graph table and some legacy KB keys use.
+        repo_bare = repo_name.split("/", 1)[1] if "/" in repo_name else repo_name
         queue_url = _get_delete_queue_url()
         if queue_url:
             sqs_client = _get_sqs_client()
-            sqs_client.send_message(
-                QueueUrl=queue_url,
-                MessageBody=json.dumps({
+
+            def _queue_delete(body):
+                sqs_client.send_message(
+                    QueueUrl=queue_url, MessageBody=json.dumps(body)
+                )
+
+            # KB docs + vectors under the owner-prefixed prefix.
+            _queue_delete({
+                "action": "delete_prefix",
+                "workspace_id": workspace_id,
+                "source": "github",
+                "prefix": repo_name + "/",
+            })
+            # Legacy bare-name KB keys (e.g. architectural-summary.txt is
+            # written under github/{repo}/ with no owner). Skip when there
+            # is no owner prefix (same prefix).
+            if repo_bare != repo_name:
+                _queue_delete({
                     "action": "delete_prefix",
                     "workspace_id": workspace_id,
                     "source": "github",
-                    "prefix": repo_name + "/",
-                }),
+                    "prefix": repo_bare + "/",
+                })
+            # Symbol-graph facts + code-maps pointer (keyed by bare name).
+            _queue_delete({
+                "action": "delete_symbol_graph",
+                "workspace_id": workspace_id,
+                "repo_bare": repo_bare,
+            })
+            logger.info(
+                f"Queued full cleanup for {workspace_id}/github/{repo_name} "
+                f"(KB owner+bare prefixes + symbol graph)"
             )
-            logger.info(f"Queued cleanup for {workspace_id}/github/{repo_name}/")
 
         ctx = audit_ctx or {}
         log_admin_action(
