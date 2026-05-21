@@ -496,3 +496,30 @@ class TestWorkspacePromptMerging:
         base = build_rag_system_prompt()
         with_empty = build_rag_system_prompt(workspace_prompt="")
         assert base == with_empty
+
+
+class TestSynthesisGuardrails:
+    """Chunk 03+04 — code-over-docs + SAST-scope discipline rules are
+    present in the chat synthesis prompt (ADR-025)."""
+
+    def test_chat_prompt_includes_code_over_docs_rule(self):
+        prompt = build_chat_system_prompt()
+        assert "DOCUMENTATION DRIFT" in prompt
+        # Scoped to specific-value disagreements so it doesn't over-flag
+        # stylistic differences.
+        assert "SPECIFIC VALUE" in prompt
+        assert "Code is the source of truth" in prompt
+
+    def test_chat_prompt_includes_sast_scope_rule(self):
+        prompt = build_chat_system_prompt()
+        assert "SAST does NOT cover design-level security" in prompt
+        assert "rate limiting" in prompt
+        # SAST is one row, never the verdict / exoneration.
+        assert "never as the overall verdict" in prompt
+        assert "exoneration" in prompt
+
+    def test_chat_prompt_still_carries_base_rules(self):
+        # Regression: adding the guardrails must not drop existing rules.
+        prompt = build_chat_system_prompt()
+        assert "FORMATTING:" in prompt
+        assert "RULES:" in prompt

@@ -46,6 +46,21 @@ REQUIREMENT_STRENGTH_RULES = """When summarizing ADRs and standards, preserve th
 - MUST NOT/SHALL NOT = prohibited
 - Preserve specific values (versions, names, paths) exactly as stated - do not generalize them into examples"""
 
+# Conflict resolution: code is authoritative for what the system DOES;
+# docs are authoritative for what it's SUPPOSED to do. See ADR-025.
+CODE_OVER_DOCS_RULES = """When code and prose disagree about a SPECIFIC VALUE (an expiry, limit, threshold, hash algorithm, version, schema field):
+- Cite the CODE construct as authoritative, with its file path and line. Code is the source of truth for what the system actually does.
+- Surface the prose claim explicitly as a DOCUMENTATION DRIFT finding: name the doc, quote what it says, and note that it disagrees with the code.
+- Do NOT average, hedge ("around 15-60 minutes"), or pick whichever reads more authoritatively. The gap between code and doc IS the finding.
+This applies only to disagreements about a specific value — not stylistic or wording differences."""
+
+# Scope SAST/SonarQube signals to what they actually cover. See ADR-025.
+SAST_SCOPE_RULES = """When SonarQube or other SAST output appears in your context:
+- SAST covers syntactic code-smell rules and known-CVE dependency versions. A passing SAST grade means the code avoids the patterns the configured ruleset checks for — nothing more.
+- SAST does NOT cover design-level security: rate limiting, refresh-token rotation, replay protection, authorization-model correctness, session management depth, or business-logic auth gaps. Their absence from SAST output is not evidence either way.
+- Treat SAST as ONE input to ONE row of a security audit — never as the overall verdict. Never cite "SAST grade A" or "0 open hotspots" as exoneration for a property SAST cannot detect.
+- Still surface genuine SAST findings (e.g., an unsalted hash) when they are present."""
+
 
 def build_rag_system_prompt(workspace_prompt: str = None) -> str:
     """
@@ -102,6 +117,10 @@ The knowledge base may include:
 You also have access to conversation memory - summaries of earlier parts of long conversations that may contain relevant context for the current question.
 
 {FORMATTING_RULES}
+
+{CODE_OVER_DOCS_RULES}
+
+{SAST_SCOPE_RULES}
 
 RULES:
 - Answer definitively based on the provided knowledge base context and conversation memory
