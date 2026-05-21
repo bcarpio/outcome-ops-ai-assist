@@ -54,10 +54,12 @@ from shared.region_guard import (
 # continues to see deterministic symbol exposure.
 from context_builder import (
     GRAPH_GROUNDING_INSTRUCTION,
+    build_audit_coverage_checklist_block,
     build_graph_unavailable_block,
     build_multi_canonical_facts_block,
     build_symbol_definition_block,
     build_symbol_facts_block,
+    is_audit_shaped,
 )
 from router import RouterDecision, classify_intent
 
@@ -2017,6 +2019,19 @@ def handle_chat_stream(event: Dict) -> Generator[str, None, None]:
     graph_block = graph_augment.get("graph_block", "")
     if graph_block:
         context = f"{context}\n\n---\n\n{graph_block}"
+
+    # Audit-shaped HYBRID questions get a stable coverage checklist so
+    # the finding set is reproducible run-to-run (ADR-026). The router
+    # gates retrieval (HYBRID fans out); this gates output structure.
+    _aug_decision = graph_augment.get("decision")
+    if (
+        _aug_decision is not None
+        and getattr(_aug_decision, "intent", None) == "hybrid"
+        and is_audit_shaped(request.message)
+    ):
+        context = (
+            f"{context}\n\n---\n\n{build_audit_coverage_checklist_block()}"
+        )
 
     # Emit one CHAT_ROUTING_DECISION audit row per chat turn. Cost
     # of the Haiku classifier itself is logged separately via

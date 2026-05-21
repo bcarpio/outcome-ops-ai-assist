@@ -28,11 +28,14 @@ for _p in (str(_LAMBDA_ROOT), str(_CHAT_DIR)):
 
 
 from context_builder import (  # noqa: E402  -- path bootstrap above
+    AUDIT_COVERAGE_ROWS,
     GRAPH_GROUNDING_INSTRUCTION,
     SYMBOL_FACTS_HEADER,
+    build_audit_coverage_checklist_block,
     build_graph_unavailable_block,
     build_symbol_definition_block,
     build_symbol_facts_block,
+    is_audit_shaped,
 )
 from shared.symbol_graph_reader import CallSite, QueryResult  # noqa: E402
 
@@ -314,3 +317,50 @@ def test_grounding_instruction_includes_empty_set_clause():
     unlock per the plan."""
     assert "do not fabricate" in GRAPH_GROUNDING_INSTRUCTION.lower()
     assert "Symbol facts" in GRAPH_GROUNDING_INSTRUCTION
+
+
+class TestAuditCoverageChecklist:
+    """Chunk 05 / ADR-026 — audit-shape detection + stable coverage table."""
+
+    @pytest.mark.parametrize(
+        "question",
+        [
+            "Is the magic_link system secure?",
+            "Does our auth flow meet OWASP ASVS L1?",
+            "Are there gaps between our audit logging and SOC 2 CC7.2?",
+            "Audit the file-ingestion path",
+            "How secure is our session handling?",
+            "What controls protect the admin API?",
+        ],
+    )
+    def test_is_audit_shaped_positive(self, question):
+        assert is_audit_shaped(question) is True
+
+    @pytest.mark.parametrize(
+        "question",
+        [
+            "How does our auth flow work?",
+            "What are our Python standards?",
+            "Explain how analytics aggregation works",
+            "Who calls report_repos_snapshot?",
+            "",
+        ],
+    )
+    def test_is_audit_shaped_negative(self, question):
+        assert is_audit_shaped(question) is False
+
+    def test_checklist_row_set_is_stable_and_complete(self):
+        # Determinism: identical across calls; every configured control
+        # appears as a row.
+        first = build_audit_coverage_checklist_block()
+        second = build_audit_coverage_checklist_block()
+        assert first == second
+        for row in AUDIT_COVERAGE_ROWS:
+            assert f"| {row} |" in first
+        assert "REQUIRED OUTPUT FORMAT" in first
+
+    def test_checklist_forbids_invented_evidence(self):
+        block = build_audit_coverage_checklist_block()
+        assert "NEVER invent evidence" in block
+        assert "not in retrieved context" in block
+        assert "not verified" in block

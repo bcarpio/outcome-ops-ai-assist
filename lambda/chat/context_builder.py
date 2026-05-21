@@ -29,6 +29,7 @@ final system prompt + user-prompt context.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Iterable, List, Optional, Tuple
 
 from shared.symbol_graph_reader import CallSite, QueryResult
@@ -344,11 +345,104 @@ def build_graph_unavailable_block(*, target_symbol_id: Optional[str] = None) -> 
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------------------
+# Audit-shaped coverage checklist (chunk 05 / ADR-026)
+#
+# Security/audit/compliance questions were answered via free-form
+# synthesis, so the same question produced a different finding set each
+# run (whatever chunks rose to the top drove coverage). Auditors need
+# reproducible output. When the router says HYBRID *and* the question is
+# audit-shaped, we inject a fixed coverage checklist the model fills in
+# row-by-row — the row set is stable across runs; only cell contents
+# vary. An empty cell + "not verified" is itself a finding (no evidence),
+# which stops the model from silently dropping a control like "rate
+# limiting" as happened in the live Run 1 vs Run 2 divergence.
+# ---------------------------------------------------------------------------
+
+# Default control rows. Configurable here so we can extend per-vertical
+# (SOC 2 / HIPAA / PCI row sets) without a code change later.
+AUDIT_COVERAGE_ROWS: Tuple[str, ...] = (
+    "Token / credential expiry",
+    "Single-use enforcement",
+    "Replay protection",
+    "Rate limiting",
+    "Refresh / rotation",
+    "Password / secret hashing",
+    "Transport security",
+    "Audit logging",
+    "Secret storage",
+    "Session management",
+)
+
+# Verification framing — an explicit "is this secure / does this meet /
+# audit / gaps in" shape, NOT a plain "how does X work" explanation.
+# Conservative on purpose (see chunk-05 false-positive risk).
+_AUDIT_SHAPE_PATTERNS = (
+    r"\bis\b.{0,40}\bsecure\b",
+    r"\bhow secure\b",
+    r"\baudit\b",
+    r"\bgap(s)?\b.{0,30}\b(in|between|analysis)\b",
+    r"\bcompliance\b",
+    r"\bcompliant\b",
+    r"\bmeet(s)?\b.{0,40}\b(standard|standards|control|controls|owasp|soc ?2|hipaa|pci|iso ?\d+|asvs)\b",
+    r"\bvulnerab",
+    r"\bthreat model\b",
+    r"\bwhat controls\b",
+)
+_AUDIT_SHAPE_RE = re.compile("|".join(_AUDIT_SHAPE_PATTERNS), re.IGNORECASE)
+
+
+def is_audit_shaped(question: str) -> bool:
+    """True when the question has an explicit verification/audit/
+    compliance framing (not a plain explanatory question)."""
+    if not question:
+        return False
+    return bool(_AUDIT_SHAPE_RE.search(question))
+
+
+def build_audit_coverage_checklist_block(
+    rows: Tuple[str, ...] = AUDIT_COVERAGE_ROWS,
+) -> str:
+    """Render the REQUIRED OUTPUT FORMAT section that pins audit output
+    to a stable coverage table. The model fills the cells; the row set
+    does not change run-to-run."""
+    lines = [
+        "## REQUIRED OUTPUT FORMAT (security/audit question)",
+        "",
+        "Answer as a coverage table with EXACTLY these rows, in this "
+        "order. Fill each cell from the retrieved context only.",
+        "",
+        "| Control | Implementation found | Expected standard | Status | Source |",
+        "|---|---|---|---|---|",
+    ]
+    for row in rows:
+        lines.append(f"| {row} |  |  |  |  |")
+    lines.extend(
+        [
+            "",
+            "Rules for the table:",
+            "- Status is one of: pass | fail | gap | not verified.",
+            "- If the retrieved context shows no evidence for a row, write "
+            "\"(not in retrieved context)\" in Implementation found and mark "
+            "the row \"not verified\" — an empty cell is itself a finding. "
+            "NEVER invent evidence to fill a row.",
+            "- Cite file:line for code evidence and the doc name for "
+            "standard/expectation evidence.",
+            "- After the table, give a short verdict that follows from the "
+            "rows — never from a SAST grade alone.",
+        ]
+    )
+    return "\n".join(lines)
+
+
 __all__ = (
+    "AUDIT_COVERAGE_ROWS",
     "GRAPH_GROUNDING_INSTRUCTION",
     "RELATION_LABELS",
     "SYMBOL_FACTS_HEADER",
+    "build_audit_coverage_checklist_block",
     "build_graph_unavailable_block",
     "build_symbol_definition_block",
     "build_symbol_facts_block",
+    "is_audit_shaped",
 )
