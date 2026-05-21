@@ -67,6 +67,15 @@ def load_handler_module():
 repo_summary_handler = load_handler_module()
 
 
+@pytest.fixture(autouse=True)
+def _set_kb_bucket(monkeypatch):
+    """The arch-summary upload now routes through
+    shared.dual_write.s3_put_object, which validates a non-None bucket
+    (the old direct s3_client.put_object mock tolerated None). Give the
+    handler a bucket name so the upload path runs, mirroring deployed env."""
+    monkeypatch.setattr(repo_summary_handler, "KB_BUCKET", "test-kb-bucket", raising=False)
+
+
 class TestComputeContentHash:
     """Test content hash computation."""
 

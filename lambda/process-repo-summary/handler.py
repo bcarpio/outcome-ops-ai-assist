@@ -45,6 +45,7 @@ GENERATE_CODE_MAPS_DIR = os.path.join(_PARENT_DIR, "generate-code-maps")
 if GENERATE_CODE_MAPS_DIR not in sys.path:
     sys.path.insert(0, GENERATE_CODE_MAPS_DIR)
 
+from shared import dual_write
 from shared.audit import COMPREHEND_MODEL_ID, log_audit_entry
 from shared.audit_writer import (
     ACTION_DOCUMENT_INGESTED,
@@ -1191,10 +1192,14 @@ def handler(event, context):
             # bare repo name ("app.retrieveit.ai") instead of the org-
             # prefixed identifier ("bcarpio/app.retrieveit.ai") that every
             # other ingest path uses.
-            s3_client.put_object(
-                Bucket=KB_BUCKET,
-                Key=s3_key,
-                Body=arch_summary.encode("utf-8"),
+            # Route through dual_write so the architectural-summary KB doc
+            # replicates to the HA secondary (direct s3.put_object would
+            # land only in the active region's KB — same standards-repo
+            # replication gap fixed in github-sync).
+            dual_write.s3_put_object(
+                bucket=KB_BUCKET,
+                key=s3_key,
+                body=arch_summary.encode("utf-8"),
                 ExpectedBucketOwner=_get_account_id(),
                 Metadata={
                     "source": "github",

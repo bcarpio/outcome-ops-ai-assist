@@ -739,10 +739,19 @@ def upload_file_to_s3(
         metadata["github_commit_timestamp"] = str(commit_timestamp)
 
     try:
-        _get_s3().put_object(
-            Bucket=KB_BUCKET,
-            Key=s3_key,
-            Body=content.encode("utf-8"),
+        # Must go through dual_write: standards-repo docs are uploaded to
+        # the KB bucket directly here (not via file-ingestion). A direct
+        # s3.put_object bypasses the EventBridge replication emit, so
+        # standards-repo doc changes never reach the HA secondary — the
+        # passive region only ever has what ha-bootstrap snapshot-copied
+        # at bringup. dual_write.s3_put_object emits a replication event;
+        # the applier does a cross-region GetObject to materialize the
+        # object in the other region. (No-op emit in single-region or
+        # passive-region per shared.dual_write.)
+        dual_write.s3_put_object(
+            bucket=KB_BUCKET,
+            key=s3_key,
+            body=content.encode("utf-8"),
             ContentType=content_type,
             Metadata=metadata,
         )

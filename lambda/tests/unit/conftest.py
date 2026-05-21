@@ -113,10 +113,12 @@ def _route_dual_write_through_handler(monkeypatch):
         if dual_write._s3 is not None:
             return dual_write._s3
 
-        # 2. Stack-walk for an `s3_client` (file-ingestion's pattern).
+        # 2. Stack-walk for the handler's S3 client. Two shapes:
+        #     - `_get_s3()` accessor (github-sync).
+        #     - `s3_client` module global (file-ingestion, process-repo-summary).
         resolved = _walk_stack_for(
             dual_write,
-            accessors=(),
+            accessors=("_get_s3",),
             resources=("s3_client",),
         )
         if resolved is not None:

@@ -423,6 +423,12 @@ class TestHandlerExtended:
         monkeypatch.setattr(
             rsh, "track_code_map_updated", MagicMock(return_value=True),
         )
+        # The arch-summary KB upload now goes through
+        # shared.dual_write.s3_put_object, which validates that bucket is
+        # set (the old direct s3_client.put_object mock tolerated a None
+        # bucket). Give the handler a real bucket name so the upload path
+        # exercises cleanly, mirroring the deployed env.
+        monkeypatch.setattr(rsh, "KB_BUCKET", "test-kb-bucket")
 
     @patch.object(rsh, 'load_config')
     @patch.object(rsh, 'generate_architectural_summary')
