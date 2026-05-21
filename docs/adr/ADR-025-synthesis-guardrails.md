@@ -72,13 +72,62 @@ that's where audit-shaped questions land.
   "one input not the verdict") and unit coverage; live behavior is a
   post-deploy eval.
 
+## Amendment v1.1 (2026-05-21) — value grounding + constrained drift + temperature
+
+Live dogfooding exposed a way the v1.0 code-over-docs rule **backfired**.
+Asked twice (identical two-question runs) whether the `magic_link`
+system is secure, OutcomeOps once reported a "Documentation Drift
+Finding": that the jti uses `secrets.token_urlsafe(32)` while the doc
+says `(16)`, "code is authoritative." The code actually uses `(16)` and
+the doc is correct — there was no drift. The `CHAT_ROUTING_DECISION`
+telemetry showed both runs routed identically (`pattern`, RAG-only,
+`rag=20`), so this was **synthesis-sampling variance at temperature 0.3**,
+not routing, retrieval, or a stale code-map.
+
+Root cause: the retrieved context lists several similar constructs with
+different sizes — `token_urlsafe(8/12/16/32)` for sync_id / user_id /
+jti+connection_id / OAuth tokens respectively. The correct `(16)` for
+the jti is quotable (in `SECURITY_OVERVIEW.md`), but at non-zero
+temperature the model sometimes attached a *neighbor's* value to the
+jti. The v1.0 rule then made it worse: the correct value lived in a
+**doc**, no code chunk in context carried a competing value, and
+"code is authoritative over docs" taught the model to distrust the
+correct doc, reach for an unquotable "code" value, grab `32` from the
+OAuth neighborhood, and label the doc "drift." The model cannot cite a
+real `file:line` here — line numbers live only in the symbol graph,
+which a `pattern` route never queries.
+
+The fix (v1.1):
+
+- **Value grounding (`VALUE_GROUNDING_RULES`)** — any specific value for a
+  named construct must be backed by a verbatim quote of the retrieved
+  text that binds *that value* to *that construct*, naming the source. A
+  value shown for a similar-but-different construct is not evidence;
+  if nothing binds the value to the construct, say "(not in retrieved
+  context)". File/line only when the retrieved text actually contains
+  one — never invented. This is what makes the binding deterministic:
+  no chunk binds the jti to `32`, so the model can't quote its way there.
+- **Constrained drift (`CODE_OVER_DOCS_RULES` rewritten)** — a drift
+  finding requires BOTH a code/code-map source AND a doc source for the
+  same construct, both quotable and differing. A single quotable source
+  is used as stated; an unquotable "the code says otherwise" is a
+  fabrication, not a finding.
+- **Temperature** — chat synthesis lowered 0.3 → 0.1 (`handler.py`) to
+  cut the sampling variance that fed the flip, while keeping
+  conversational phrasing. Blast radius: applies to all chat synthesis,
+  not just audit questions; 0.1 is still well above greedy decoding, so
+  normal answers stay fluent. If fluency regresses, scope the lower
+  temperature to audit-shaped turns instead.
+
 ## Implementation
 
 ### Starting today
 
-1. `CODE_OVER_DOCS_RULES` + `SAST_SCOPE_RULES` constants injected into
-   `build_chat_system_prompt`.
-2. Unit tests assert the chat prompt carries both rules and still
+1. `VALUE_GROUNDING_RULES` + `CODE_OVER_DOCS_RULES` (constrained) +
+   `SAST_SCOPE_RULES` constants injected into `build_chat_system_prompt`.
+2. Chat synthesis temperature lowered to 0.1.
+3. Unit tests assert the chat prompt carries all three rules (incl. the
+   value-grounding + both-sides-quotable drift constraints) and still
    carries the base FORMATTING/RULES sections.
 
 ### Next phases
@@ -106,5 +155,10 @@ Version History:
 
 - v1.0 (2026-05-21): Initial decision — code-over-docs drift rule + SAST
   scope rule in the chat synthesis prompt.
+- v1.1 (2026-05-21): Added value-grounding rule (verbatim quote tied to
+  the named construct; never invent file/line); constrained the drift
+  rule to require both sides quotable (the v1.0 rule had sanctioned a
+  fabricated `token_urlsafe(32)` "drift" finding); lowered synthesis
+  temperature 0.3 → 0.1.
 
 <!-- Confluence sync -->

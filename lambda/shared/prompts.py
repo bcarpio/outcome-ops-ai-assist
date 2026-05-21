@@ -46,13 +46,24 @@ REQUIREMENT_STRENGTH_RULES = """When summarizing ADRs and standards, preserve th
 - MUST NOT/SHALL NOT = prohibited
 - Preserve specific values (versions, names, paths) exactly as stated - do not generalize them into examples"""
 
-# Conflict resolution: code is authoritative for what the system DOES;
-# docs are authoritative for what it's SUPPOSED to do. See ADR-025.
-CODE_OVER_DOCS_RULES = """When code and prose disagree about a SPECIFIC VALUE (an expiry, limit, threshold, hash algorithm, version, schema field):
-- Cite the CODE construct as authoritative, with its file path and line. Code is the source of truth for what the system actually does.
-- Surface the prose claim explicitly as a DOCUMENTATION DRIFT finding: name the doc, quote what it says, and note that it disagrees with the code.
-- Do NOT average, hedge ("around 15-60 minutes"), or pick whichever reads more authoritatively. The gap between code and doc IS the finding.
-This applies only to disagreements about a specific value — not stylistic or wording differences."""
+# Specific values must be grounded in a verbatim quote tied to the NAMED
+# construct — not inferred from a similar neighbor. The retrieved context
+# routinely lists several similar constructs with different values
+# (token_urlsafe(8/12/16/32) for different identifiers); at non-zero
+# temperature the model can otherwise attach a neighbor's value to the
+# construct in question. See ADR-025.
+VALUE_GROUNDING_RULES = """When you state a SPECIFIC VALUE (an expiry, size, limit, threshold, hash algorithm, version, count, schema field) about a NAMED construct (a function, constant, token, endpoint, field):
+- Quote the exact retrieved text that states THAT value for THAT construct, and name the source it came from (the doc, file, or code-map). Include a file/line only if the retrieved text actually contains one — NEVER invent a file path or line number.
+- A value shown for a SIMILAR but different construct is NOT evidence for this one. The context often lists several similar constructs with different values (e.g. token_urlsafe(8), (16), (32) for different identifiers); do not attach a neighbor's value to the construct in question.
+- If no retrieved text binds the value to this specific construct, write "(not in retrieved context)" — do not infer it from a neighbor or from memory."""
+
+# Conflict resolution: a drift finding requires BOTH sides quotable.
+# Code is authoritative for what the system DOES; docs for what it's
+# SUPPOSED to do — but only when you can actually quote both. See ADR-025.
+CODE_OVER_DOCS_RULES = """When code and documentation genuinely disagree about a specific value for the SAME construct:
+- Raise this as a DOCUMENTATION DRIFT finding ONLY if you can quote BOTH a code/code-map source AND a documentation source for that same construct and they actually differ. Quote both, name both sources, and treat the code value as authoritative (code is the source of truth for what the system does).
+- If you can quote only ONE source for the value (only a doc, or only the code), that single source IS your evidence — use it as stated. Do NOT infer an unquoted "the code says otherwise" value in order to flag the doc as wrong. A drift finding whose code side you cannot quote is a fabrication, not a finding.
+- Do NOT average or hedge. This applies to specific-value disagreements only, not stylistic or wording differences."""
 
 # Scope SAST/SonarQube signals to what they actually cover. See ADR-025.
 SAST_SCOPE_RULES = """When SonarQube or other SAST output appears in your context:
@@ -117,6 +128,8 @@ The knowledge base may include:
 You also have access to conversation memory - summaries of earlier parts of long conversations that may contain relevant context for the current question.
 
 {FORMATTING_RULES}
+
+{VALUE_GROUNDING_RULES}
 
 {CODE_OVER_DOCS_RULES}
 

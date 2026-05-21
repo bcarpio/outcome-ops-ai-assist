@@ -499,16 +499,29 @@ class TestWorkspacePromptMerging:
 
 
 class TestSynthesisGuardrails:
-    """Chunk 03+04 — code-over-docs + SAST-scope discipline rules are
-    present in the chat synthesis prompt (ADR-025)."""
+    """Synthesis discipline rules present in the chat prompt (ADR-025):
+    value-grounding (verbatim quote tied to the construct), the
+    constrained code-vs-doc drift rule, and SAST scope."""
 
-    def test_chat_prompt_includes_code_over_docs_rule(self):
+    def test_chat_prompt_includes_value_grounding_rule(self):
+        prompt = build_chat_system_prompt()
+        # Must quote the verbatim text tied to the named construct...
+        assert "Quote the exact retrieved text" in prompt
+        # ...not attach a neighbor's value (the token_urlsafe scatter)...
+        assert "SIMILAR but different construct is NOT evidence" in prompt
+        assert "token_urlsafe(8), (16), (32)" in prompt
+        # ...and never invent a file/line.
+        assert "NEVER invent a file path or line number" in prompt
+        assert "(not in retrieved context)" in prompt
+
+    def test_chat_prompt_drift_rule_requires_both_sides_quotable(self):
         prompt = build_chat_system_prompt()
         assert "DOCUMENTATION DRIFT" in prompt
-        # Scoped to specific-value disagreements so it doesn't over-flag
-        # stylistic differences.
-        assert "SPECIFIC VALUE" in prompt
-        assert "Code is the source of truth" in prompt
+        # A drift finding requires BOTH a code AND a doc source quotable.
+        assert "quote BOTH a code/code-map source AND a documentation source" in prompt
+        # Single-source values must be used as stated, not "overridden"
+        # by an inferred code value — the failure mode that fabricated 32.
+        assert "is a fabrication, not a finding" in prompt
 
     def test_chat_prompt_includes_sast_scope_rule(self):
         prompt = build_chat_system_prompt()

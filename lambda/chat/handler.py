@@ -1655,7 +1655,13 @@ When the user's question builds on something you said earlier in this conversati
                 "system": [{"text": system_prompt}],
                 "inferenceConfig": {
                     "maxTokens": 8192,
-                    "temperature": 0.3,
+                    # Low temperature for grounded, reproducible synthesis.
+                    # At 0.3 the same KB-grounded question could bind a
+                    # different specific value across runs (the
+                    # token_urlsafe(16) vs (32) conflation; ADR-025). 0.1
+                    # cuts that sampling variance while keeping enough
+                    # room for conversational phrasing.
+                    "temperature": 0.1,
                 },
             }
             if tool_config:
