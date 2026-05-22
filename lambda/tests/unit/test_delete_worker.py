@@ -928,9 +928,14 @@ class TestHandleDeletePrefix:
     @patch.object(handler_module, 'list_s3_keys_with_prefix')
     def test_delete_prefix_success(self, mock_list, mock_del_vec, mock_del_vec_prefix, mock_del_s3):
         """Test successful prefix deletion."""
-        mock_list.return_value = [
-            "workspaces/ws_123/confluence/space/p1.html",
-            "workspaces/ws_123/confluence/space/p2.html",
+        # First call lists the docs to delete; the post-delete verify
+        # re-list (delete-bug 04) returns empty.
+        mock_list.side_effect = [
+            [
+                "workspaces/ws_123/confluence/space/p1.html",
+                "workspaces/ws_123/confluence/space/p2.html",
+            ],
+            [],
         ]
         mock_del_vec.return_value = 100
         mock_del_vec_prefix.return_value = 50
@@ -947,13 +952,15 @@ class TestHandleDeletePrefix:
         assert result["prefix"] == "workspaces/ws_123/confluence/space/"
         assert result["documents_deleted"] == 2
         assert result["vectors_deleted"] == 250  # 2 * 100 + 50
+        assert result["verified_clean"] is True
 
     @patch.object(handler_module, 'delete_s3_objects_batch')
     @patch.object(handler_module, 'delete_vectors_for_s3_key')
     @patch.object(handler_module, 'list_s3_keys_with_prefix')
     def test_delete_prefix_empty_prefix(self, mock_list, mock_del_vec, mock_del_s3):
         """Test deletion with empty prefix (deletes all for source)."""
-        mock_list.return_value = ["workspaces/ws_123/confluence/page.html"]
+        # Delete lists one doc; the verify re-list (delete-bug 04) is empty.
+        mock_list.side_effect = [["workspaces/ws_123/confluence/page.html"], []]
         mock_del_vec.return_value = 100
         mock_del_s3.return_value = 1
 
@@ -963,7 +970,11 @@ class TestHandleDeletePrefix:
         })
 
         assert result["status"] == "success"
-        mock_list.assert_called_once_with("workspaces/ws_123/confluence/")
+        assert result["verified_clean"] is True
+        # First call (delete listing) targets the source prefix; second is
+        # the verify re-list.
+        assert mock_list.call_args_list[0].args == ("workspaces/ws_123/confluence/",)
+        assert mock_list.call_count == 2
 
     def test_delete_prefix_missing_workspace_id(self):
         """Test error when workspace_id is missing."""
@@ -1716,6 +1727,7 @@ def test_handle_delete_symbol_graph_clears_facts_and_pointer():
         assert res["status"] == "success"
         assert res["facts_deleted"] == 3
         assert res["pointer_deleted"] == 1
+        assert res["verified_clean"] is True
         # Target repo's facts gone; other repo untouched; pointer gone.
         assert sg.query(
             KeyConditionExpression=__import__("boto3").dynamodb.conditions.Key("PK").eq("ws#repo")
@@ -1745,3 +1757,26 @@ def test_handle_delete_symbol_graph_idempotent_no_facts():
 def test_handle_delete_symbol_graph_requires_repo():
     res = handler_module.handle_delete_symbol_graph({"workspace_id": "ws"})
     assert res["status"] == "error"
+
+
+class TestDeletePrefixVerify:
+    """delete-bug 04 — handle_delete_prefix self-verification."""
+
+    @patch.object(handler_module, 'delete_s3_objects_batch')
+    @patch.object(handler_module, 'delete_vectors_by_key_prefix')
+    @patch.object(handler_module, 'delete_vectors_for_s3_key')
+    @patch.object(handler_module, 'list_s3_keys_with_prefix')
+    def test_delete_prefix_verify_fails_when_objects_remain(
+        self, mock_list, mock_del_vec, mock_del_vec_prefix, mock_del_s3
+    ):
+        # Both the delete listing AND the verify re-list see objects ->
+        # a delete regression -> verified_clean False.
+        mock_list.return_value = ["workspaces/ws_1/confluence/space/x.md"]
+        mock_del_vec.return_value = 0
+        mock_del_vec_prefix.return_value = 0
+        mock_del_s3.return_value = 1
+        result = handler_module.handle_delete_prefix({
+            "workspace_id": "ws_1", "source": "confluence", "prefix": "space/",
+        })
+        assert result["verified_clean"] is False
+        assert result["remaining_objects"] == 1

@@ -500,12 +500,26 @@ def handle_delete_prefix(message: Dict) -> Dict[str, Any]:
     # Delete S3 objects
     s3_deleted = delete_s3_objects_batch(s3_keys)
 
+    # Post-delete self-verification (delete-bug 04): the prefix should now
+    # be empty. A non-zero remainder means a delete regression.
+    remaining = len(list_s3_keys_with_prefix(s3_prefix))
+    verified_clean = remaining == 0
+    if verified_clean:
+        logger.info(f"[delete_prefix] VERIFY clean: {s3_prefix}")
+    else:
+        logger.warning(
+            f"[delete_prefix] VERIFY FAILED: {s3_prefix} still has "
+            f"{remaining} object(s)"
+        )
+
     return {
         "status": "success",
         "action": "delete_prefix",
         "prefix": s3_prefix,
         "documents_deleted": s3_deleted,
         "vectors_deleted": vectors_deleted,
+        "verified_clean": verified_clean,
+        "remaining_objects": remaining,
     }
 
 
@@ -755,15 +769,37 @@ def handle_delete_symbol_graph(message: Dict) -> Dict[str, Any]:
                 f"[delete_symbol_graph] pointer delete failed for {pk}: {e}"
             )
 
+    # Post-delete self-verification (delete-bug 04): the partition + pointer
+    # we just deleted must now be empty. A non-zero remainder means a delete
+    # regression — surface it loudly so it can't ship silently.
+    remaining = table.query(
+        KeyConditionExpression=Key("PK").eq(pk), Select="COUNT"
+    ).get("Count", 0)
+    pointer_left = False
+    if CODE_MAPS_TABLE:
+        pointer_left = "Item" in dynamodb.Table(CODE_MAPS_TABLE).get_item(
+            Key={"PK": f"SYMBOL_GRAPH#{workspace_id}#{repo}", "SK": "POINTER"}
+        )
+    verified_clean = remaining == 0 and not pointer_left
+
     logger.info(
         f"[delete_symbol_graph] {pk}: deleted {facts_deleted} facts, "
         f"{pointer_deleted} pointer row(s)"
     )
+    if verified_clean:
+        logger.info(f"[delete_symbol_graph] VERIFY clean: {pk}")
+    else:
+        logger.warning(
+            f"[delete_symbol_graph] VERIFY FAILED: {pk} still has "
+            f"{remaining} facts, pointer_present={pointer_left}"
+        )
     return {
         "status": "success",
         "action": "delete_symbol_graph",
         "facts_deleted": facts_deleted,
         "pointer_deleted": pointer_deleted,
+        "verified_clean": verified_clean,
+        "remaining_facts": remaining,
     }
 
 
