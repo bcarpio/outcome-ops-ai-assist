@@ -322,7 +322,7 @@ module "delete_worker_lambda_secondary" {
     {
       dynamodb_symbol_graph = {
         effect  = "Allow"
-        actions = ["dynamodb:Query", "dynamodb:DeleteItem"]
+        actions = ["dynamodb:Query", "dynamodb:GetItem", "dynamodb:DeleteItem", "dynamodb:BatchWriteItem"]
         resources = [
           module.symbol_graph_table_secondary[0].dynamodb_table_arn,
           module.code_maps_table_secondary[0].dynamodb_table_arn,

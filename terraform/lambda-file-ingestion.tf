@@ -565,7 +565,9 @@ module "delete_worker_lambda" {
       effect = "Allow"
       actions = [
         "dynamodb:Query",
+        "dynamodb:GetItem",
         "dynamodb:DeleteItem",
+        "dynamodb:BatchWriteItem",
       ]
       resources = [
         module.symbol_graph_table.dynamodb_table_arn,
