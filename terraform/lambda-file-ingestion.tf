@@ -645,6 +645,10 @@ resource "aws_lambda_event_source_mapping" "delete_worker" {
   batch_size                         = 10 # Process multiple deletes concurrently
   maximum_batching_window_in_seconds = 5  # Wait up to 5s to batch
 
+  # Per-record partial-batch failures so a failed delete retries / DLQs
+  # instead of being silently dropped (delete-bug 4b).
+  function_response_types = ["ReportBatchItemFailures"]
+
   scaling_config {
     maximum_concurrency = 5 # Limit concurrent invocations
   }

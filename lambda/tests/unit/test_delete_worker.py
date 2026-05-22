@@ -1496,6 +1496,67 @@ class TestLambdaHandler:
         assert isinstance(body["results"], list)
 
 
+class TestBatchItemFailures:
+    """delete-bug 4b — failed records reported to SQS for retry/DLQ."""
+
+    @patch.object(handler_module, 'handle_delete_document')
+    def test_success_reports_no_failures(self, mock_handle):
+        mock_handle.return_value = {"status": "success"}
+        event = {"Records": [
+            {"messageId": "m1", "body": json.dumps(
+                {"action": "delete_document", "s3_key": "k"})},
+        ]}
+        result = lambda_handler(event, None)
+        assert result["batchItemFailures"] == []
+
+    @patch.object(handler_module, 'handle_delete_symbol_graph')
+    def test_exception_reports_failure(self, mock_handle):
+        mock_handle.side_effect = Exception("AccessDenied")
+        event = {"Records": [
+            {"messageId": "m1", "body": json.dumps(
+                {"action": "delete_symbol_graph", "workspace_id": "ws", "repo_bare": "r"})},
+        ]}
+        result = lambda_handler(event, None)
+        assert result["batchItemFailures"] == [{"itemIdentifier": "m1"}]
+
+    @patch.object(handler_module, 'handle_delete_document')
+    def test_error_status_reports_failure(self, mock_handle):
+        mock_handle.return_value = {"status": "error", "error": "boom"}
+        event = {"Records": [
+            {"messageId": "m1", "body": json.dumps(
+                {"action": "delete_document", "s3_key": "k"})},
+        ]}
+        result = lambda_handler(event, None)
+        assert result["batchItemFailures"] == [{"itemIdentifier": "m1"}]
+
+    def test_invalid_json_reports_failure(self):
+        event = {"Records": [{"messageId": "m1", "body": "not json"}]}
+        result = lambda_handler(event, None)
+        assert result["batchItemFailures"] == [{"itemIdentifier": "m1"}]
+
+    def test_skipped_is_not_a_failure(self):
+        event = {"Records": [
+            {"messageId": "m1", "body": json.dumps({"action": "unknown"})},
+        ]}
+        result = lambda_handler(event, None)
+        assert result["batchItemFailures"] == []
+
+    @patch.object(handler_module, 'handle_delete_document')
+    def test_only_failed_record_in_mixed_batch(self, mock_handle):
+        mock_handle.side_effect = [
+            {"status": "success"},
+            {"status": "error", "error": "boom"},
+        ]
+        event = {"Records": [
+            {"messageId": "ok", "body": json.dumps(
+                {"action": "delete_document", "s3_key": "k1"})},
+            {"messageId": "bad", "body": json.dumps(
+                {"action": "delete_document", "s3_key": "k2"})},
+        ]}
+        result = lambda_handler(event, None)
+        assert result["batchItemFailures"] == [{"itemIdentifier": "bad"}]
+
+
 # ============================================================================
 # _is_code_map_key
 # ============================================================================

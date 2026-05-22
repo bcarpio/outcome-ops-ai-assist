@@ -816,8 +816,14 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         return {"statusCode": 400, "body": "Invalid event"}
 
     results = []
+    # Records that didn't cleanly delete are reported back to SQS via
+    # ReportBatchItemFailures so they retry and eventually hit the DLQ.
+    # Without this a swallowed error silently drops the message, leaving a
+    # region dirty with nothing left to retry (see delete-bug 4b).
+    failed_ids: List[str] = []
 
     for record in event["Records"]:
+        message_id = record.get("messageId", "")
         try:
             message = json.loads(record["body"])
             action = message.get("action")
@@ -839,21 +845,31 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
                 result = {"status": "skipped", "reason": f"Unknown action: {action}"}
 
             results.append(result)
+            if result.get("status") not in ("success", "skipped"):
+                failed_ids.append(message_id)
 
         except json.JSONDecodeError as e:
             logger.error(f"Invalid JSON in SQS message: {e}")
             results.append({"status": "error", "error": "Invalid JSON"})
+            failed_ids.append(message_id)
         except Exception as e:
             logger.error(f"Error processing message: {e}")
             results.append({"status": "error", "error": str(e)})
+            failed_ids.append(message_id)
 
     successful = sum(1 for r in results if r.get("status") == "success")
-    logger.info(f"Delete worker completed: {successful}/{len(results)} successful")
+    logger.info(
+        f"Delete worker completed: {successful}/{len(results)} successful, "
+        f"{len(failed_ids)} failed (will retry)"
+    )
 
+    # ReportBatchItemFailures contract: SQS only reads batchItemFailures and
+    # redrives those message IDs; the rest of the payload is for logs/debug.
     return {
         "statusCode": 200,
         "body": json.dumps({
             "message": "Delete processing completed",
             "results": results,
         }),
+        "batchItemFailures": [{"itemIdentifier": mid} for mid in failed_ids if mid],
     }

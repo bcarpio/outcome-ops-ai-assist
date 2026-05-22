@@ -366,6 +366,10 @@ resource "aws_lambda_event_source_mapping" "delete_worker_secondary" {
   event_source_arn = aws_sqs_queue.delete_queue_secondary[0].arn
   function_name    = module.delete_worker_lambda_secondary[0].lambda_function_name
   batch_size       = 10
+
+  # Per-record partial-batch failures so a failed delete retries / DLQs
+  # instead of being silently dropped (delete-bug 4b).
+  function_response_types = ["ReportBatchItemFailures"]
 }
 
 # ----------------------------------------------------------------------------
