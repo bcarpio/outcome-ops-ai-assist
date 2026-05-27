@@ -44,6 +44,8 @@ from typing import Optional, Tuple
 import boto3
 from botocore.exceptions import ClientError
 
+from shared import dual_write
+
 logger = logging.getLogger(__name__)
 
 
@@ -309,13 +311,14 @@ def commit_swap(
     if not workspace_id or not repo or not new_sha:
         raise ValueError("workspace_id, repo, and new_sha are all required")
 
-    table = _resource().Table(_table_name(code_maps_table_name))
+    name = _table_name(code_maps_table_name)
+    table = _resource().Table(name)
     try:
         # graph_sha_committed_at is set here (not in begin_swap) because
         # "when did this slice become the committed slice" semantically
         # refers to the commit step. Chunk-04 readers use it for
         # staleness_seconds.
-        table.update_item(
+        resp = table.update_item(
             Key=_pointer_key(workspace_id, repo),
             UpdateExpression=(
                 "SET graph_sha = :new_sha, "
@@ -328,7 +331,16 @@ def commit_swap(
                 ":new_sha": new_sha,
                 ":now": int(time.time()),
             },
+            ReturnValues="ALL_NEW",
         )
+        # Replicate the committed pointer to the passive region. The local
+        # write above is a conditional update_item that dual_write can't
+        # express, so we emit the resulting item as an unconditional put;
+        # without this the SHA-truth pointer never reaches the passive
+        # region and goes stale/missing on the next regen (ADR-022/029).
+        # Only the true first-committer reaches here (parallel batches hit
+        # the idempotent fallback below), so exactly one emit per regen.
+        dual_write.replicate_put_item(name, resp.get("Attributes", {}))
         return True
     except ClientError as exc:
         code = exc.response.get("Error", {}).get("Code", "")

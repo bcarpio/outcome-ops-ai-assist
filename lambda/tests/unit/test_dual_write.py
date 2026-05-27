@@ -78,6 +78,22 @@ def test_ddb_put_item_local_write_and_emit(_ha_module):
     assert detail["source_region"] == THIS_REGION
 
 
+def test_replicate_put_item_emits_without_local_write(_ha_module):
+    resource, table = _stub_ddb_with_table()
+    events = MagicMock()
+    _ha_module._set_clients_for_tests(dynamodb=resource, events=events)
+
+    _ha_module.replicate_put_item("widgets", {"PK": "X", "graph_sha": "abc"})
+
+    # Emit-only: no local put/update, but a ddb_put_item event is sent.
+    table.put_item.assert_not_called()
+    table.update_item.assert_not_called()
+    detail = _captured_event_detail(events)
+    assert detail["operation"] == "ddb_put_item"
+    assert detail["table"] == "widgets"
+    assert detail["args"]["Item"] == {"PK": "X", "graph_sha": "abc"}
+
+
 def test_ddb_update_item_local_write_and_emit(_ha_module):
     resource, table = _stub_ddb_with_table()
     table.update_item.return_value = {"Attributes": {"x": 1}}

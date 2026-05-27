@@ -230,6 +230,42 @@ def test_commit_swap_advances_graph_sha_and_clears_pending(code_maps_table):
     assert state.graph_pending_sha is None
 
 
+def test_commit_swap_replicates_committed_pointer(code_maps_table):
+    """The true first-committer replicates the converged item to the
+    passive region (ADR-029 dual-write contract for the SHA-truth
+    pointer)."""
+    import shared.symbol_graph_pointer as sgp  # type: ignore
+    from shared.symbol_graph_pointer import begin_swap, commit_swap
+
+    begin_swap(WORKSPACE_ID, REPO, SHA_A, code_maps_table_name=CODE_MAPS_TABLE)
+    with patch.object(sgp.dual_write, "replicate_put_item") as repl:
+        ok = commit_swap(
+            WORKSPACE_ID, REPO, SHA_A, code_maps_table_name=CODE_MAPS_TABLE
+        )
+    assert ok is True
+    repl.assert_called_once()
+    table_name, item = repl.call_args.args
+    assert table_name == CODE_MAPS_TABLE
+    assert item["graph_sha"] == SHA_A
+    assert "graph_pending_sha" not in item
+
+
+def test_commit_swap_idempotent_fallback_does_not_replicate(code_maps_table):
+    """A late parallel batch hits the idempotent fallback (graph_sha
+    already committed) and must NOT emit a second replication event."""
+    import shared.symbol_graph_pointer as sgp  # type: ignore
+    from shared.symbol_graph_pointer import begin_swap, commit_swap
+
+    begin_swap(WORKSPACE_ID, REPO, SHA_A, code_maps_table_name=CODE_MAPS_TABLE)
+    commit_swap(WORKSPACE_ID, REPO, SHA_A, code_maps_table_name=CODE_MAPS_TABLE)
+    with patch.object(sgp.dual_write, "replicate_put_item") as repl:
+        second = commit_swap(
+            WORKSPACE_ID, REPO, SHA_A, code_maps_table_name=CODE_MAPS_TABLE
+        )
+    assert second is True
+    repl.assert_not_called()
+
+
 def test_commit_swap_only_succeeds_when_pending_matches(code_maps_table):
     """commit_swap is conditional on graph_pending_sha == new_sha.
     Calling with a different sha than what was claimed must fail."""

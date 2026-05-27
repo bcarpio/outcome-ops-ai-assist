@@ -234,6 +234,18 @@ def ddb_put_item(table_name: str, item: dict, **kwargs) -> None:
     _emit("ddb_put_item", table=table_name, args={"Item": item, **kwargs})
 
 
+def replicate_put_item(table_name: str, item: dict) -> None:
+    """Replicate an already-written item WITHOUT a second local write.
+
+    For callers whose authoritative local write happens through a path
+    dual_write can't express as a simple put — e.g. a conditional
+    ``update_item``. The passive region applies this as an unconditional
+    put, converging its copy to ``item``. Emits only (the local write
+    already happened); no-op outside the active region / HA.
+    """
+    _emit("ddb_put_item", table=table_name, args={"Item": item})
+
+
 def ddb_batch_put_items(table_name: str, items: list) -> int:
     """Batch-put items via DDB BatchWriteItem and emit one event per item.
 
