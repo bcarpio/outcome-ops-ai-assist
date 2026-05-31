@@ -72,6 +72,7 @@ def test_ddb_put_item_applied_locally(_applier):
                 "version": 1,
                 "operation": "ddb_put_item",
                 "source_region": OTHER_REGION,
+                "emitted_at": 1700000000,
                 "table": "widgets",
                 "args": {"Item": {"PK": "X", "name": "y"}},
             }
@@ -79,8 +80,91 @@ def test_ddb_put_item_applied_locally(_applier):
         None,
     )
 
-    table.put_item.assert_called_once_with(Item={"PK": "X", "name": "y"})
+    table.put_item.assert_called_once()
+    kwargs = table.put_item.call_args.kwargs
+    assert kwargs["Item"] == {"PK": "X", "name": "y", "_repl_emitted_at": 1700000000}
+    assert "ConditionExpression" in kwargs
+    assert kwargs["ExpressionAttributeValues"][":__repl_ts__"] == 1700000000
+    assert kwargs["ExpressionAttributeNames"]["#__repl_ts__"] == "_repl_emitted_at"
     assert result == {"status": "applied", "operation": "ddb_put_item"}
+
+
+def test_ddb_put_item_out_of_order_rejected_as_already_applied(_applier):
+    """A late-arriving older event hits ConditionalCheckFailed -> the
+    existing already_applied branch handles it cleanly. Demonstrates the
+    ordering guard rejects stale replays."""
+    resource = MagicMock()
+    table = MagicMock()
+    table.put_item.side_effect = ClientError(
+        {"Error": {"Code": "ConditionalCheckFailedException", "Message": "x"}},
+        "PutItem",
+    )
+    resource.Table.return_value = table
+    _applier._set_clients_for_tests(dynamodb=resource)
+
+    result = _applier.lambda_handler(
+        _event(
+            {
+                "version": 1,
+                "operation": "ddb_put_item",
+                "source_region": OTHER_REGION,
+                "emitted_at": 1700000000,
+                "table": "widgets",
+                "args": {"Item": {"PK": "X", "name": "stale"}},
+            }
+        ),
+        None,
+    )
+    assert result["status"] == "already_applied"
+
+
+def test_ddb_update_item_splices_marker_into_set_clause(_applier):
+    """Source UpdateExpression ``SET ... REMOVE ...`` is preserved, and
+    the applier's _repl_emitted_at SET action is spliced in front of the
+    REMOVE clause without disturbing the source update."""
+    resource = MagicMock()
+    table = MagicMock()
+    resource.Table.return_value = table
+    _applier._set_clients_for_tests(dynamodb=resource)
+
+    _applier.lambda_handler(
+        _event(
+            {
+                "version": 1,
+                "operation": "ddb_update_item",
+                "source_region": OTHER_REGION,
+                "emitted_at": 1700000123,
+                "table": "widgets",
+                "key": {"PK": "X", "SK": "Y"},
+                "args": {
+                    "UpdateExpression": "SET a = :a, b = :b REMOVE c",
+                    "ExpressionAttributeValues": {":a": 1, ":b": 2},
+                },
+            }
+        ),
+        None,
+    )
+    kwargs = table.update_item.call_args.kwargs
+    assert kwargs["UpdateExpression"] == "SET a = :a, b = :b, #__repl_ts__ = :__repl_ts__ REMOVE c"
+    assert kwargs["ConditionExpression"] == (
+        "attribute_not_exists(#__repl_ts__) OR #__repl_ts__ < :__repl_ts__"
+    )
+    assert kwargs["ExpressionAttributeValues"][":a"] == 1
+    assert kwargs["ExpressionAttributeValues"][":__repl_ts__"] == 1700000123
+
+
+def test_splice_set_action_no_existing_set(_applier):
+    out = _applier._splice_set_action("REMOVE foo", "#r = :r")
+    assert out == "SET #r = :r REMOVE foo"
+
+
+def test_splice_set_action_empty(_applier):
+    assert _applier._splice_set_action("", "#r = :r") == "SET #r = :r"
+
+
+def test_splice_set_action_set_only(_applier):
+    out = _applier._splice_set_action("SET a = :a", "#r = :r")
+    assert out == "SET a = :a, #r = :r"
 
 
 def test_ddb_update_item_with_conditional_already_applied_logs_and_returns(_applier):

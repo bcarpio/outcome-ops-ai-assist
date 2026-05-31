@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from typing import Any, Callable, Dict
 
 import boto3
@@ -34,6 +35,68 @@ from botocore.exceptions import ClientError
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
+
+
+# ---------------------------------------------------------------------------
+# Replication ordering guard
+#
+# EventBridge delivery is at-least-once and NOT ordered: two writes that
+# fire close together in the source region can land here out of order,
+# and an unconditional put/update lets the OLDER event win, overwriting
+# the newer state. Each apply now stamps the row with the source's
+# ``emitted_at`` and conditions itself on "no prior stamp OR existing
+# stamp older than ours", so a late-arriving older event is rejected as
+# ConditionalCheckFailed and handled by the existing ``already_applied``
+# branch.
+#
+# Active-region local writes don't carry this marker; the first
+# replicated event after such a write installs it. After failover, the
+# new-active's writes also start without the marker; the new-passive's
+# applier re-installs it on the next event. Wall-clock skew across
+# regions is sub-second in practice and well below typical write
+# spacing on the same row.
+# ---------------------------------------------------------------------------
+_REPL_TS_ATTR = "_repl_emitted_at"
+_REPL_NAME_KEY = "#__repl_ts__"
+_REPL_VALUE_KEY = ":__repl_ts__"
+_REPL_COND_EXPR = (
+    f"attribute_not_exists({_REPL_NAME_KEY}) OR "
+    f"{_REPL_NAME_KEY} < {_REPL_VALUE_KEY}"
+)
+_REPL_SET_ACTION = f"{_REPL_NAME_KEY} = {_REPL_VALUE_KEY}"
+_UPDATE_KEYWORDS_RE = re.compile(r"\b(SET|REMOVE|ADD|DELETE)\b")
+
+
+def _splice_set_action(expr: str, action: str) -> str:
+    """Insert ``action`` into a DDB ``UpdateExpression``'s SET clause.
+
+    DDB expressions chain at most one of each (SET / REMOVE / ADD /
+    DELETE) clause, so we splice into the existing SET if present and
+    otherwise prepend a fresh SET. Used by the applier to add its own
+    ``_repl_emitted_at`` marker without disturbing the source update.
+    """
+
+    if not expr or not expr.strip():
+        return f"SET {action}"
+    m = re.search(r"\bSET\b", expr)
+    if not m:
+        return f"SET {action} {expr}".strip()
+    end_of_set = len(expr)
+    for m2 in _UPDATE_KEYWORDS_RE.finditer(expr, m.end()):
+        if m2.group() != "SET":
+            end_of_set = m2.start()
+            break
+    before = expr[:end_of_set].rstrip()
+    after = expr[end_of_set:].lstrip()
+    suffix = f" {after}" if after else ""
+    return f"{before}, {action}{suffix}"
+
+
+def _emitted_at(detail: dict) -> int:
+    try:
+        return int(detail.get("emitted_at") or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 THIS_REGION = os.environ.get(
@@ -146,6 +209,20 @@ def _apply_ddb_put_item(detail: dict) -> None:
     args = dict(detail.get("args") or {})
     if "Item" not in args:
         raise ValueError("ddb_put_item event missing Item")
+    ts = _emitted_at(detail)
+    item = dict(args["Item"])
+    item[_REPL_TS_ATTR] = ts
+    args["Item"] = item
+    # The applier owns ordering; replace any source-side condition.
+    args["ConditionExpression"] = _REPL_COND_EXPR
+    args["ExpressionAttributeNames"] = {
+        **(args.get("ExpressionAttributeNames") or {}),
+        _REPL_NAME_KEY: _REPL_TS_ATTR,
+    }
+    args["ExpressionAttributeValues"] = {
+        **(args.get("ExpressionAttributeValues") or {}),
+        _REPL_VALUE_KEY: ts,
+    }
     _ddb().Table(table_name).put_item(**args)
 
 
@@ -153,6 +230,19 @@ def _apply_ddb_update_item(detail: dict) -> None:
     table_name = detail["table"]
     key = detail["key"]
     args = dict(detail.get("args") or {})
+    ts = _emitted_at(detail)
+    args["UpdateExpression"] = _splice_set_action(
+        args.get("UpdateExpression", ""), _REPL_SET_ACTION
+    )
+    args["ConditionExpression"] = _REPL_COND_EXPR
+    args["ExpressionAttributeNames"] = {
+        **(args.get("ExpressionAttributeNames") or {}),
+        _REPL_NAME_KEY: _REPL_TS_ATTR,
+    }
+    args["ExpressionAttributeValues"] = {
+        **(args.get("ExpressionAttributeValues") or {}),
+        _REPL_VALUE_KEY: ts,
+    }
     _ddb().Table(table_name).update_item(Key=key, **args)
 
 
@@ -160,6 +250,16 @@ def _apply_ddb_delete_item(detail: dict) -> None:
     table_name = detail["table"]
     key = detail["key"]
     args = dict(detail.get("args") or {})
+    ts = _emitted_at(detail)
+    args["ConditionExpression"] = _REPL_COND_EXPR
+    args["ExpressionAttributeNames"] = {
+        **(args.get("ExpressionAttributeNames") or {}),
+        _REPL_NAME_KEY: _REPL_TS_ATTR,
+    }
+    args["ExpressionAttributeValues"] = {
+        **(args.get("ExpressionAttributeValues") or {}),
+        _REPL_VALUE_KEY: ts,
+    }
     _ddb().Table(table_name).delete_item(Key=key, **args)
 
 
