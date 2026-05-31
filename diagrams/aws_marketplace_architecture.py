@@ -33,10 +33,7 @@ from diagrams.aws.ml import Sagemaker, Comprehend
 from diagrams.aws.security import KMS
 from diagrams.aws.management import SSM, Cloudwatch
 from diagrams.aws.business import AlexaForBusiness  # AWS Marketplace icon proxy
-from diagrams.saas.identity import Auth0
-from diagrams.onprem.client import Users
-from diagrams.onprem.vcs import Github
-from diagrams.onprem.client import Client
+from diagrams.generic.blank import Blank
 
 graph_attr = {
     "fontsize": "20",
@@ -62,10 +59,10 @@ cluster_application_plane = {
     "style": "rounded",
 }
 
-cluster_external = {
-    "bgcolor": "#F5F5F5",
-    "pencolor": "#525252",
-    "fontsize": "16",
+cluster_note = {
+    "bgcolor": "#FFFBEB",
+    "pencolor": "#92400E",
+    "fontsize": "12",
     "style": "rounded,dashed",
 }
 
@@ -93,17 +90,15 @@ with Diagram(
 ):
 
     # =========================================================================
-    # External actors
+    # Note: customer integrations are data sources, not runtime dependencies
     # =========================================================================
-    with Cluster("External", graph_attr=cluster_external):
-        buyer_users = Users("Buyer Users")
-        # Corporate IdPs are explicitly exempt from the "must run on AWS" rule
-        azure_ad = Auth0("Customer\nAzure AD\n(OIDC)")
-        # Source-of-data systems - buyer-controlled, not part of the SaaS data plane
-        github = Github("GitHub\n(buyer's repos)")
-        atlassian = Client("Atlassian\n(Confluence/Jira)")
-        m365 = Client("Microsoft 365\n(SharePoint/Outlook/Teams)")
-        marketplace_buyer = Users("Marketplace\nBuyer Onboarding")
+    with Cluster(
+        "Optional customer integrations (GitHub, Atlassian, Microsoft 365) connect to the\n"
+        "application plane via standard OAuth/webhook patterns from customer-owned\n"
+        "third-party systems. These are data sources, not runtime dependencies.",
+        graph_attr=cluster_note,
+    ):
+        Blank("")
 
     # =========================================================================
     # SELLER's AWS Account - Control Plane
@@ -195,7 +190,6 @@ with Diagram(
     # =========================================================================
 
     # --- Buyer onboarding via AWS Marketplace ---
-    marketplace_buyer >> Edge(label="Subscribe", color="darkorange") >> marketplace_api
     marketplace_api >> Edge(label="Subscription event", color="darkorange") >> marketplace_lambda
     marketplace_lambda >> license_db
     marketplace_lambda >> Edge(label="Issue JWT", color="darkorange") >> license_api
@@ -221,9 +215,7 @@ with Diagram(
                                color="darkorange") >> marketplace_api
 
     # --- Buyer user flow (application plane internal) ---
-    buyer_users >> Edge(label="HTTPS") >> dns >> alb
-    alb >> Edge(label="OIDC", style="dashed") >> azure_ad
-    alb >> ui
+    dns >> alb >> ui
     ui >> Edge(label="SigV4 IAM auth") >> chat_svc
     ui >> ws_svc
 
@@ -235,16 +227,12 @@ with Diagram(
     query_svc >> s3_vec
 
     # --- Code Generation ---
-    github >> Edge(label="webhook") >> api_gw >> codegen_svc
+    api_gw >> codegen_svc
     codegen_svc >> bedrock
     codegen_svc >> queues
     codegen_svc >> eventbus
-    codegen_svc >> Edge(label="Open PR", style="dashed") >> github
 
     # --- Knowledge Base Ingestion ---
-    github >> Edge(label="App pull") >> ingest_svc
-    atlassian >> Edge(label="OAuth pull") >> ingest_svc
-    m365 >> Edge(label="Graph API") >> ingest_svc
     ingest_svc >> queues
     queues >> process_svc
     process_svc >> comprehend
