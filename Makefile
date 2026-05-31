@@ -479,7 +479,7 @@ build-all-images:
 # engineer's prior 5-7 separate make invocations -- see
 # docs/getting-started.md. CI keeps its per-image steps for parallelism +
 # per-step logs; pre-deploy is the human-driven shortcut.
-pre-deploy: build-all-layers build-all-images build-platform-layer
+pre-deploy: build-all-layers build-all-images
 	@echo ""
 	@echo "All pre-terraform builds complete. Next: terraform apply."
 

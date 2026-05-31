@@ -19,12 +19,20 @@ echo "--- Building Runtime Layer ---"
 "$SCRIPT_DIR/build-runtime-layer.sh"
 echo ""
 
+# Build platform-CA trust layer (certifi + customer CA bundles via SSM).
+# Required by lambda-platform-ca-layer.tf — terraform plan fails without
+# build/platform-ca-layer/layer.zip.
+echo "--- Building Platform-CA Layer ---"
+"$SCRIPT_DIR/build-platform-ca-layer.sh"
+echo ""
+
 echo "========================================"
 echo "All layers built successfully!"
 echo "========================================"
 echo ""
 echo "Layer sizes:"
 du -sh lambda/runtime-layer 2>/dev/null || true
+du -sh build/platform-ca-layer 2>/dev/null || true
 echo ""
 echo "Note: the database integration ships as Lambda container images,"
 echo "not a Lambda layer. To build those, run:"
