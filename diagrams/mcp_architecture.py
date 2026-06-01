@@ -69,10 +69,13 @@ with Diagram(
         cloudmap = CloudMap("Cloud Map\n{env}-mcp.local\n(DNS discovery)")
 
         # --- Data Stores ---
-        with Cluster("DynamoDB (Workspaces Table)"):
-            ddb_keys = Dynamodb("API Keys\nUSER#{email}\nAPI_KEY#{hash}")
-            ddb_mcp = Dynamodb("MCP Servers\nMCP#{id}\nMETADATA / TOOLS")
-            ddb_ws_mcp = Dynamodb("WS Assignments\nWS#{id}\nMCP_SERVER#{id}")
+        with Cluster("DynamoDB Tables"):
+            with Cluster("Workspaces Table"):
+                ddb_keys = Dynamodb("API Keys\nUSER#{email}\nAPI_KEY#{hash}")
+                ddb_mcp = Dynamodb("MCP Servers\nMCP#{id}\nMETADATA / TOOLS")
+                ddb_ws_mcp = Dynamodb("WS Assignments\nWS#{id}\nMCP_SERVER#{id}")
+
+            ddb_symbol_graph = Dynamodb("Symbol Graph Table\n(separate;\nstructural facts)")
 
         with Cluster("Knowledge Base"):
             s3_vectors = S3("S3 Vectors\n(1024-dim)")
@@ -113,6 +116,13 @@ with Diagram(
     # Native tools: KB search
     mcp_outcomeops >> Edge(label="KB search") >> s3_vectors
     mcp_outcomeops >> Edge(label="Embeddings") >> bedrock
+
+    # Native tools: structural retrieval (symbol-graph)
+    mcp_outcomeops >> Edge(
+        label="find_callers / find_importers /\n"
+              "find_implementers / find_definitions /\n"
+              "find_symbol_by_name"
+    ) >> ddb_symbol_graph
 
     # Credentials for downstream servers
     mcp_sonarqube >> Edge(style="dotted") >> ssm

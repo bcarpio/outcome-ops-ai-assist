@@ -28,7 +28,7 @@ from diagrams.aws.compute import Lambda, Fargate
 from diagrams.aws.network import ALB, Route53, APIGateway
 from diagrams.aws.database import Dynamodb
 from diagrams.aws.storage import S3
-from diagrams.aws.integration import SQS, Eventbridge
+from diagrams.aws.integration import SQS, Eventbridge, SNS
 from diagrams.aws.ml import Sagemaker, Comprehend
 from diagrams.aws.security import KMS
 from diagrams.aws.management import SSM, Cloudwatch
@@ -152,7 +152,9 @@ with Diagram(
                 codegen_svc = Lambda("Code Generation\n(generate-code,\nhandle-command,\nrun-tests, analyze-pr)")
 
             with Cluster("Knowledge Base Ingestion"):
-                ingest_svc = Lambda("Source Sync\n(github, confluence,\njira, sharepoint,\noutlook, teams)")
+                ingest_svc = Lambda("Source Sync\n(github, confluence, jira,\n"
+                                    "sharepoint, outlook, teams,\n"
+                                    "databases (MSSQL/MySQL/Postgres))")
                 process_svc = Lambda("Document &\nCode-Map Processing\n(file-ingestion,\nprocess-documents,\nprocess-repo-summary,\nprocess-batch-summary)")
 
             with Cluster("Workspace & Admin"):
@@ -168,6 +170,7 @@ with Diagram(
                 s3_kb = S3("Knowledge Base\nS3 Bucket")
                 s3_vec = S3("S3 Vectors\n(1024-dim embeddings)")
                 ddb_state = Dynamodb("Workspaces, Chat,\nCode-Maps, Audit Logs\n(DynamoDB)")
+                ddb_symbol_graph = Dynamodb("Symbol Graph\n(structural retrieval)")
 
             # AWS managed services - consumed FROM the buyer's account
             with Cluster("AWS Managed Services (in buyer's account)"):
@@ -179,6 +182,7 @@ with Diagram(
                 kms = KMS("KMS")
                 ssm = SSM("SSM Parameter Store\n(license JWT,\nintegration secrets)")
                 cw = Cloudwatch("CloudWatch\nLogs & Metrics")
+                sns_db_drift = SNS("SNS\ndatabase-drift")
 
             # The license validator layer ATTACHES to gated Lambdas - it's
             # published from the seller account but RUNS in the buyer's
@@ -240,6 +244,15 @@ with Diagram(
     process_svc >> s3_kb
     process_svc >> s3_vec
     process_svc >> ddb_state
+
+    # --- Symbol-graph (structural retrieval) ---
+    process_svc >> Edge(label="Symbol facts") >> ddb_symbol_graph
+    chat_svc >> Edge(label="Structural\naugment", style="dashed") >> ddb_symbol_graph
+    query_svc >> Edge(label="find_* tools", style="dashed") >> ddb_symbol_graph
+
+    # --- Database source: drift notifications ---
+    ingest_svc >> Edge(label="DB schema drift", style="dashed") >> sns_db_drift
+    ssm >> Edge(style="dotted", label="DB creds +\nCA bundle") >> ingest_svc
 
     # --- Workspace / Audit ---
     ws_svc >> ddb_state

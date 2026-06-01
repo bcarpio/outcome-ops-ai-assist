@@ -10,7 +10,7 @@ from diagrams.aws.compute import Lambda, Fargate, ECR
 from diagrams.aws.network import ALB, Route53, APIGateway
 from diagrams.aws.database import Dynamodb
 from diagrams.aws.storage import S3
-from diagrams.aws.integration import SQS, Eventbridge
+from diagrams.aws.integration import SQS, Eventbridge, SNS
 from diagrams.aws.ml import Sagemaker, Comprehend
 from diagrams.aws.security import KMS, ACM
 from diagrams.aws.management import SSM, Cloudwatch
@@ -79,6 +79,9 @@ with Diagram(
             teams = Lambda("teams-sync")
             sharepoint = Lambda("sharepoint-sync")
             outlook = Lambda("outlook-sync")
+            database = Lambda("database-sync\n(MSSQL/MySQL/Postgres)")
+            onedrive = Lambda("onedrive-sync")
+            onenote = Lambda("onenote-sync")
 
         with Cluster("Workspace Lambdas"):
             workspace_mgmt = Lambda("workspace-mgmt\n(256MB)")
@@ -108,6 +111,7 @@ with Diagram(
             ddb_codemaps = Dynamodb("code-maps")
             ddb_audit = Dynamodb("audit-logs")
             ddb_workspaces = Dynamodb("workspaces")
+            ddb_symbol_graph = Dynamodb("symbol-graph")
 
         # --- AI/ML ---
         with Cluster("Amazon Bedrock"):
@@ -188,6 +192,13 @@ with Diagram(
     sharepoint >> s3_kb
     outlook >> s3_kb
     file_ingestion >> s3_kb
+    database >> s3_kb
+    onedrive >> s3_kb
+    onenote >> s3_kb
+
+    # Database drift notifications
+    sns_db_drift = SNS("SNS\ndatabase-drift")
+    database >> Edge(label="Schema drift\nnotifications", style="dashed") >> sns_db_drift
 
     # Audit
     ddb_audit >> Edge(label="Streams") >> audit_alert
@@ -195,7 +206,10 @@ with Diagram(
     # Storage & state
     process_repo >> ddb_codemaps
     workspace_mgmt >> ddb_workspaces
+    process_batch >> Edge(label="Symbol facts\n(tree-sitter)") >> ddb_symbol_graph
+    chat >> Edge(label="Structural augment\n(router-gated)", style="dashed") >> ddb_symbol_graph
 
     # Security
     ssm >> Edge(style="dotted") >> chat
+    ssm >> Edge(style="dotted", label="DB creds +\nCA bundle") >> database
     kms >> Edge(style="dotted") >> cw
