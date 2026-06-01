@@ -389,7 +389,7 @@ module "process_batch_summary_lambda_secondary" {
   function_name = "${var.environment}-${var.app_name}-process-batch-summary"
   role_name     = "${var.environment}-${var.app_name}-process-batch-summary-secondary"
   description   = "Per-batch architectural summary + symbol-graph regen (secondary region)"
-  handler       = "handler.lambda_handler"
+  handler       = "handler.handler"
   runtime       = "python3.12"
   timeout       = 900
   memory_size   = 2048
@@ -531,7 +531,7 @@ module "process_repo_summary_lambda_secondary" {
   function_name = "${var.environment}-${var.app_name}-process-repo-summary"
   role_name     = "${var.environment}-${var.app_name}-process-repo-summary-secondary"
   description   = "Per-repo architectural summary + code-unit fan-out (secondary region)"
-  handler       = "handler.lambda_handler"
+  handler       = "handler.handler"
   runtime       = "python3.12"
   timeout       = 600
   memory_size   = 2048
