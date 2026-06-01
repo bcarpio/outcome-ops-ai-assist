@@ -103,3 +103,63 @@ class TestNameCollisions:
         a_helpers = [i for i in ids if "A::helper" in i]
         b_helpers = [i for i in ids if "B::helper" in i]
         assert a_helpers and b_helpers
+
+
+class TestSignatures:
+    """signatures.ts -- TS function/method/arrow signatures."""
+
+    @pytest.fixture
+    def defines(self):
+        facts = list(extract_facts(os.path.join(FIXTURE_DIR, "signatures.ts"), "typescript"))
+        return {f.target_symbol_id: f for f in facts if f.kind == "defines"}
+
+    def _find(self, defines, suffix):
+        return next((f for s, f in defines.items() if s.endswith(suffix)), None)
+
+    def test_bare_function(self, defines):
+        f = self._find(defines, "::bare")
+        assert f is not None and f.signature is not None
+        names = [p.name for p in f.signature.params]
+        assert names == ["a", "b"]
+        assert all(p.type is None for p in f.signature.params)
+        assert f.signature.returns is None
+
+    def test_typed_function(self, defines):
+        f = self._find(defines, "::typed")
+        assert f is not None and f.signature is not None
+        assert [(p.name, p.type) for p in f.signature.params] == [
+            ("a", "number"),
+            ("b", "string"),
+        ]
+        assert f.signature.returns == "boolean"
+
+    def test_default_keeps_type_drops_default(self, defines):
+        f = self._find(defines, "::defaulted")
+        assert f is not None and f.signature is not None
+        assert [(p.name, p.type) for p in f.signature.params] == [
+            ("a", "number"),
+            ("b", "string"),
+        ]
+        assert f.signature.returns == "number | undefined"
+
+    def test_method_with_optional(self, defines):
+        f = self._find(defines, "Greeter::greet")
+        assert f is not None and f.signature is not None
+        names = [p.name for p in f.signature.params]
+        # loud is marked optional and surfaces with the `?` suffix.
+        assert names == ["name", "loud?"]
+        assert f.signature.returns == "string"
+
+    def test_arrow_function_signature(self, defines):
+        f = self._find(defines, "::arrow")
+        assert f is not None and f.signature is not None
+        assert [(p.name, p.type) for p in f.signature.params] == [
+            ("name", "string"),
+            ("loud", "boolean"),
+        ]
+        assert f.signature.returns == "string"
+
+    def test_class_define_has_no_signature(self, defines):
+        f = self._find(defines, "::Greeter")
+        assert f is not None
+        assert f.signature is None

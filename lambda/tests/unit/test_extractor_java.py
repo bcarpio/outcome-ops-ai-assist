@@ -75,3 +75,45 @@ class TestNameCollisions:
         calls = _by_kind(facts, "calls")
         assert any(f.target_symbol_id.endswith("::helper") for f in defines)
         assert any(f.target_symbol_id.endswith("::helper") for f in calls)
+
+
+class TestSignatures:
+    """Signatures.java -- Java method signatures via tree-sitter."""
+
+    @pytest.fixture
+    def defines(self):
+        facts = list(extract_facts(os.path.join(FIXTURE_DIR, "Signatures.java"), "java"))
+        return {f.target_symbol_id: f for f in facts if f.kind == "defines"}
+
+    def _find(self, defines, suffix):
+        return next((f for s, f in defines.items() if s.endswith(suffix)), None)
+
+    def test_typed_method_with_return(self, defines):
+        f = self._find(defines, "Signatures::greet")
+        assert f is not None and f.signature is not None
+        assert [(p.name, p.type) for p in f.signature.params] == [
+            ("name", "String"),
+            ("loud", "boolean"),
+        ]
+        assert f.signature.returns == "String"
+
+    def test_void_method_returns_void(self, defines):
+        f = self._find(defines, "Signatures::noReturn")
+        assert f is not None and f.signature is not None
+        assert [(p.name, p.type) for p in f.signature.params] == [("a", "int")]
+        assert f.signature.returns == "void"
+
+    def test_varargs_method(self, defines):
+        f = self._find(defines, "Signatures::withVarargs")
+        assert f is not None and f.signature is not None
+        names = [p.name for p in f.signature.params]
+        # tree-sitter Java marks `String... rest` as a spread_parameter --
+        # the extractor surfaces it as `...rest`.
+        assert names[0] == "prefix"
+        assert "rest" in names[1] and names[1].startswith("...")
+        assert f.signature.returns == "int"
+
+    def test_class_define_has_no_signature(self, defines):
+        f = self._find(defines, "::Signatures")
+        assert f is not None
+        assert f.signature is None

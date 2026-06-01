@@ -776,3 +776,69 @@ def test_build_batch_prompt_no_grounding_unchanged_shape():
     )
     assert "VERIFIED SYMBOLS" not in prompt
     assert "DO NOT TRANSCRIBE" in prompt
+
+
+def _fact_with_sig(kind, src, tgt, fp, line, signature):
+    return handler_module.Fact(
+        kind=kind, source_symbol_id=src, target_symbol_id=tgt,
+        file_path=fp, line=line, language="python", signature=signature,
+    )
+
+
+def test_render_signature_helper_basic():
+    """The signature renderer produces a parenthesized parameter list with
+    an optional `-> return_type` tail. Empty signature renders as ``""``."""
+    from extractor.base import Param, Signature
+
+    assert handler_module._render_signature(None) == ""
+    assert handler_module._render_signature(Signature()) == ""
+    sig = Signature(
+        params=(Param("a", "int"), Param("b")),
+        returns="bool",
+    )
+    assert handler_module._render_signature(sig) == "(a: int, b) -> bool"
+
+
+def test_render_graph_grounding_includes_signatures_when_present():
+    """When defines facts carry a Signature, the rendered grounding line
+    appends the parenthesized signature next to the symbol id. The
+    use-only-these instruction is extended to cover signatures."""
+    from extractor.base import Param, Signature
+
+    sig = Signature(
+        params=(Param("name", "str"), Param("loud", "bool")),
+        returns="str",
+    )
+    facts = [
+        _fact_with_sig(
+            "defines",
+            "python:m::<module>",
+            "python:m::greet",
+            "lambda/auth/handler.py",
+            10,
+            sig,
+        ),
+    ]
+    block = handler_module._render_graph_grounding(facts)
+    assert (
+        "python:m::greet(name: str, loud: bool) -> str  (lambda/auth/handler.py:10)"
+        in block
+    )
+    # The summarizer instruction must call out signatures specifically.
+    assert "EXACT signature" in block
+
+
+def test_render_graph_grounding_omits_signature_addendum_when_no_signatures():
+    """A purely-pre-signature fact set must NOT carry the signature
+    instruction tail -- pre-existing prompts stay byte-identical."""
+    fact = handler_module.Fact(
+        kind="defines",
+        source_symbol_id="python:m::<module>",
+        target_symbol_id="python:m::foo",
+        file_path="f.py",
+        line=3,
+        language="python",
+    )
+    block = handler_module._render_graph_grounding([fact])
+    assert "VERIFIED SYMBOLS" in block
+    assert "EXACT signature" not in block

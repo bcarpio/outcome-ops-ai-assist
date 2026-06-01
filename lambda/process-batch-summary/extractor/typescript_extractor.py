@@ -28,7 +28,7 @@ from typing import Iterator, List, Optional
 import tree_sitter_typescript as tsts
 from tree_sitter import Language, Node, Parser
 
-from .base import Fact, make_symbol_id, register_language
+from .base import Fact, Param, Signature, make_symbol_id, register_language
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +55,76 @@ def _node_text(node: Node, source: bytes) -> str:
 
 def _child_by_field(node: Node, field: str) -> Optional[Node]:
     return node.child_by_field_name(field)
+
+
+def _ts_type_annotation_text(node: Node, source: bytes) -> Optional[str]:
+    """Strip a leading ``: `` from a tree-sitter `type_annotation` node so
+    the captured type reads like a declaration (``int`` not ``: int``).
+    """
+
+    if node is None or node.type not in ("type_annotation", "return_type"):
+        return None
+    text = _node_text(node, source).lstrip()
+    if text.startswith(":"):
+        text = text[1:].lstrip()
+    return text or None
+
+
+def _extract_signature_ts(fn_node: Node, source: bytes) -> Signature:
+    """Build a Signature from a tree-sitter TypeScript function-shape node.
+
+    Handles ``function_declaration`` / ``method_definition`` /
+    ``arrow_function`` / ``function_expression``. Captures parameter
+    names + type annotations (when present) and the return-type
+    annotation. Defaults are intentionally NOT captured per ADR-027 --
+    literals stay out. ``...rest`` parameters surface under their
+    spelling so the signature reads as-written.
+    """
+
+    params: List[Param] = []
+    parameters_node = _child_by_field(fn_node, "parameters")
+    if parameters_node is None:
+        # Single-parameter arrow like `x => x` -- the param is a direct child.
+        single = _child_by_field(fn_node, "parameter")
+        if single is not None and single.type == "identifier":
+            params.append(Param(name=_node_text(single, source)))
+    else:
+        for child in parameters_node.children:
+            t = child.type
+            if t in ("required_parameter", "optional_parameter"):
+                pattern = _child_by_field(child, "pattern")
+                if pattern is None:
+                    pattern = next(
+                        (c for c in child.children if c.type == "identifier"),
+                        None,
+                    )
+                if pattern is None:
+                    continue
+                type_node = _child_by_field(child, "type")
+                if type_node is None:
+                    type_node = next(
+                        (c for c in child.children if c.type == "type_annotation"),
+                        None,
+                    )
+                type_text = (
+                    _ts_type_annotation_text(type_node, source) if type_node else None
+                )
+                name = _node_text(pattern, source)
+                if t == "optional_parameter" and not name.endswith("?"):
+                    name = name + "?"
+                params.append(Param(name=name, type=type_text))
+            elif t == "rest_pattern":
+                params.append(Param(name=_node_text(child, source)))
+            elif t == "identifier":
+                params.append(Param(name=_node_text(child, source)))
+
+    return_type_node = _child_by_field(fn_node, "return_type")
+    returns = (
+        _ts_type_annotation_text(return_type_node, source)
+        if return_type_node is not None
+        else None
+    )
+    return Signature(params=tuple(params), returns=returns)
 
 
 def _string_literal_value(node: Node, source: bytes) -> Optional[str]:
@@ -225,6 +295,7 @@ def _emit_class(
             file_path=file_path,
             line=member.start_point[0] + 1,
             language="typescript",
+            signature=_extract_signature_ts(member, source),
         )
         m_body = _child_by_field(member, "body")
         if m_body is None:
@@ -259,6 +330,7 @@ def _emit_function(
         file_path=file_path,
         line=fn_node.start_point[0] + 1,
         language="typescript",
+        signature=_extract_signature_ts(fn_node, source),
     )
     body = _child_by_field(fn_node, "body")
     if body is None:
@@ -303,6 +375,7 @@ def _emit_const_arrow(
             file_path=file_path,
             line=child.start_point[0] + 1,
             language="typescript",
+            signature=_extract_signature_ts(value_node, source),
         )
         body = _child_by_field(value_node, "body")
         if body is None:

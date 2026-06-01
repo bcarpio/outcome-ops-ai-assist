@@ -30,7 +30,51 @@ import logging
 import re
 from typing import Iterator, List, Optional
 
-from .base import Fact, make_symbol_id, register_language
+from .base import Fact, Param, Signature, make_symbol_id, register_language
+
+
+_ABAP_PARAM_HEADERS = ("USING", "CHANGING", "RETURNING", "EXPORTING", "IMPORTING")
+# `pname TYPE typestr` or `VALUE(pname) TYPE typestr` or bare `pname`.
+_ABAP_PARAM_RE = re.compile(
+    r"(?:VALUE\s*\(\s*)?(?P<name>[A-Z_][A-Z0-9_]*)\s*\)?"
+    r"(?:\s+TYPE\s+(?P<type>[A-Z_][A-Z0-9_=>:\->\s]*?))?(?=\s|$)",
+    re.IGNORECASE,
+)
+
+
+def _extract_signature_abap_form(params_text: str) -> Signature:
+    """Best-effort signature capture for an ABAP FORM declaration.
+
+    The params text is everything between the FORM name and the
+    terminating period. ABAP groups parameters under section headers
+    (``USING`` / ``CHANGING`` / ``RETURNING`` / etc.); we surface the
+    individual parameter names + types, ignoring the section grouping
+    (consumers see the full callable shape without needing ABAP-specific
+    handling). The section keywords themselves are not captured.
+
+    Methods + Functions are intentionally NOT signature-captured here --
+    their parameter declarations live in CLASS DEFINITION / function-pool
+    blocks separate from the IMPLEMENTATION statement, which a regex
+    extractor cannot reliably resolve. Follow-up if needed.
+    """
+
+    if not params_text:
+        return Signature()
+
+    # Strip section headers so the param regex doesn't match them.
+    body = params_text
+    for header in _ABAP_PARAM_HEADERS:
+        body = re.sub(rf"\b{header}\b", " ", body, flags=re.IGNORECASE)
+
+    params: List[Param] = []
+    for m in _ABAP_PARAM_RE.finditer(body):
+        name = m.group("name")
+        if name.upper() in _ABAP_PARAM_HEADERS:
+            continue
+        type_str = m.group("type")
+        type_str = type_str.strip() if type_str else None
+        params.append(Param(name=name.lower(), type=type_str))
+    return Signature(params=tuple(params))
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +97,7 @@ _METHOD_DEF_RE = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 _FORM_RE = re.compile(
-    r"^\s*FORM\s+(?P<name>[A-Z_/][A-Z0-9_/]*)\s*(?:\.|\s)",
+    r"^\s*FORM\s+(?P<name>[A-Z_/][A-Z0-9_/]*)(?P<params>[^.]*?)\.",
     re.IGNORECASE | re.MULTILINE,
 )
 _FUNCTION_RE = re.compile(
@@ -171,6 +215,7 @@ def _extract_via_regex(file_path: str, source: bytes) -> Iterator[Fact]:
             file_path=file_path,
             line=_line_for_offset(text, fm.start("name")),
             language="abap",
+            signature=_extract_signature_abap_form(fm.group("params")),
         )
 
     for fnm in _FUNCTION_RE.finditer(text):

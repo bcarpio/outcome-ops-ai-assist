@@ -79,3 +79,44 @@ class TestNameCollisions:
         b_helpers = [i for i in ids if "B::Helper" in i]
         assert a_helpers
         assert b_helpers
+
+
+class TestSignatures:
+    """Signatures.cs -- C# regex-based best-effort signature capture."""
+
+    @pytest.fixture
+    def defines(self):
+        facts = list(extract_facts(os.path.join(FIXTURE_DIR, "Signatures.cs"), "csharp"))
+        return {f.target_symbol_id: f for f in facts if f.kind == "defines"}
+
+    def _find(self, defines, suffix):
+        return next((f for s, f in defines.items() if s.endswith(suffix)), None)
+
+    def test_typed_method_with_return(self, defines):
+        f = self._find(defines, "Signatures::Greet")
+        assert f is not None and f.signature is not None
+        assert [(p.name, p.type) for p in f.signature.params] == [
+            ("name", "string"),
+            ("loud", "bool"),
+        ]
+        assert f.signature.returns == "string"
+
+    def test_void_return_captured(self, defines):
+        f = self._find(defines, "Signatures::NoReturn")
+        assert f is not None and f.signature is not None
+        assert [(p.name, p.type) for p in f.signature.params] == [("a", "int")]
+        assert f.signature.returns == "void"
+
+    def test_generic_param_type_preserved(self, defines):
+        """The top-level-comma splitter must not split inside `<...>`."""
+        f = self._find(defines, "Signatures::WithGenerics")
+        assert f is not None and f.signature is not None
+        names = [p.name for p in f.signature.params]
+        assert names == ["map", "fallback"]
+        assert "Dictionary<string, int>" in (f.signature.params[0].type or "")
+        assert f.signature.returns == "int"
+
+    def test_class_define_has_no_signature(self, defines):
+        f = self._find(defines, "::Signatures")
+        assert f is not None
+        assert f.signature is None

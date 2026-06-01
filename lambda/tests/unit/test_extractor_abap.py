@@ -262,3 +262,42 @@ class TestTreeSitterTopLevel:
         facts = list(_extract_via_tree_sitter("x.abap", src))
         imports = [f for f in facts if f.kind == "imports"]
         assert any("Z_TOP" in f.target_symbol_id for f in imports)
+
+
+class TestSignatures:
+    """signatures.abap -- ABAP FORM parameter capture (best-effort, regex)."""
+
+    @pytest.fixture
+    def defines(self):
+        facts = list(extract_facts(os.path.join(FIXTURE_DIR, "signatures.abap"), "abap"))
+        return {f.target_symbol_id: f for f in facts if f.kind == "defines"}
+
+    def _find(self, defines, suffix):
+        return next((f for s, f in defines.items() if s.endswith(suffix.upper())), None)
+
+    def test_single_line_form_captures_using_params(self, defines):
+        f = self._find(defines, "::SINGLE_LINE_FORM")
+        assert f is not None and f.signature is not None
+        assert [(p.name, p.type) for p in f.signature.params] == [
+            ("p_a", "i"),
+            ("p_b", "string"),
+        ]
+        # FORM has no declared return type.
+        assert f.signature.returns is None
+
+    def test_multi_line_form_captures_using_and_changing(self, defines):
+        f = self._find(defines, "::MULTI_LINE_FORM")
+        assert f is not None and f.signature is not None
+        names = [p.name for p in f.signature.params]
+        assert names == ["p_a", "p_b", "p_c"]
+        types = {p.name: p.type for p in f.signature.params}
+        assert types["p_a"] == "i"
+        assert types["p_b"] == "string"
+        assert types["p_c"] == "i"
+
+    def test_no_params_form_has_empty_signature(self, defines):
+        f = self._find(defines, "::NO_PARAMS")
+        assert f is not None
+        assert f.signature is not None
+        assert f.signature.params == ()
+        assert f.signature.returns is None

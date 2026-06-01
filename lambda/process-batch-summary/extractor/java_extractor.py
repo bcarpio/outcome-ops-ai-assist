@@ -25,7 +25,7 @@ from typing import Iterator, List, Optional
 import tree_sitter_java as tsj
 from tree_sitter import Language, Node, Parser
 
-from .base import Fact, make_symbol_id, register_language
+from .base import Fact, Param, Signature, make_symbol_id, register_language
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +85,66 @@ def _emit_imports(
         line=line,
         language="java",
     )
+
+
+def _extract_signature_java(method_node: Node, source: bytes) -> Signature:
+    """Build a Signature from a tree-sitter Java method/constructor node.
+
+    Captures parameter names + declared types and the return type (for
+    method_declaration; constructors return None). Defaults are not a
+    Java concept at the parameter level, so no default-handling needed.
+    """
+
+    params: List[Param] = []
+    formal_params = _child_by_field(method_node, "parameters")
+    if formal_params is not None:
+        for child in formal_params.children:
+            if child.type == "formal_parameter":
+                name_node = _child_by_field(child, "name")
+                type_node = _child_by_field(child, "type")
+                if name_node is None:
+                    continue
+                params.append(
+                    Param(
+                        name=_node_text(name_node, source),
+                        type=_node_text(type_node, source) if type_node else None,
+                    )
+                )
+            elif child.type == "spread_parameter":
+                # spread_parameter children typically: type node + `...` +
+                # variable_declarator (whose name field is the param name).
+                # Field-based access is unreliable here across tree-sitter
+                # versions, so we walk children: first identifier-shaped
+                # child of a variable_declarator (or the spread_parameter
+                # itself) is the name; the first type-shaped child is the
+                # element type.
+                name = None
+                type_text = None
+                for c in child.children:
+                    if c.type == "variable_declarator":
+                        nn = _child_by_field(c, "name")
+                        if nn is not None:
+                            name = _node_text(nn, source)
+                        else:
+                            for cc in c.children:
+                                if cc.type == "identifier":
+                                    name = _node_text(cc, source)
+                                    break
+                    elif name is None and c.type == "identifier":
+                        name = _node_text(c, source)
+                    elif type_text is None and c.type.endswith("_type"):
+                        type_text = _node_text(c, source)
+                if name:
+                    params.append(
+                        Param(
+                            name="..." + name,
+                            type=type_text,
+                        )
+                    )
+
+    return_type_node = _child_by_field(method_node, "type")
+    returns = _node_text(return_type_node, source) if return_type_node else None
+    return Signature(params=tuple(params), returns=returns)
 
 
 def _walk_calls(node: Node, source: bytes) -> Iterator[tuple[str, int]]:
@@ -172,6 +232,7 @@ def _emit_class_like(
             file_path=file_path,
             line=member.start_point[0] + 1,
             language="java",
+            signature=_extract_signature_java(member, source),
         )
         m_body = _child_by_field(member, "body")
         if m_body is None:

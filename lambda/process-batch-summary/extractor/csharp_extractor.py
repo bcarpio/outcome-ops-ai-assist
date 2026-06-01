@@ -38,7 +38,69 @@ from __future__ import annotations
 import re
 from typing import Iterator, List, Optional
 
-from .base import Fact, make_symbol_id, register_language
+from .base import Fact, Param, Signature, make_symbol_id, register_language
+
+
+def _csharp_split_top_level(params_text: str) -> List[str]:
+    """Split a C# parameter list on top-level commas, ignoring those
+    inside generic angle brackets / arrays. Best-effort heuristic to
+    support signature capture without a proper parser (ADR-017)."""
+
+    parts: List[str] = []
+    depth = 0
+    current: List[str] = []
+    for ch in params_text:
+        if ch in "<[(":
+            depth += 1
+        elif ch in ">])":
+            depth = max(0, depth - 1)
+        if ch == "," and depth == 0:
+            parts.append("".join(current).strip())
+            current = []
+        else:
+            current.append(ch)
+    tail = "".join(current).strip()
+    if tail:
+        parts.append(tail)
+    return parts
+
+
+_CS_PARAM_MODS = {"ref", "out", "in", "params", "this"}
+
+
+def _csharp_param_from_piece(piece: str) -> Optional[Param]:
+    """Convert one C# parameter declaration like ``int x``, ``out string y``,
+    or ``params object[] args`` into a ``Param``. The name is the last
+    identifier-shaped token; everything before it (after stripping
+    modifiers and a default-value suffix) is the declared type. Default
+    values are dropped per ADR-027 -- literals stay out of the graph."""
+
+    head = piece.split("=", 1)[0].strip()
+    tokens = head.split()
+    while tokens and tokens[0] in _CS_PARAM_MODS:
+        tokens.pop(0)
+    if not tokens:
+        return None
+    if len(tokens) == 1:
+        return Param(name=tokens[0])
+    name = tokens[-1]
+    type_str = " ".join(tokens[:-1])
+    return Param(name=name, type=type_str or None)
+
+
+def _extract_signature_csharp(params_text: str, return_type: Optional[str]) -> Signature:
+    """Build a best-effort Signature from C# regex captures. Names + types
+    are extracted token-by-token; return type comes verbatim from the
+    method regex's `return_type` group (stripped). Constructors leave
+    return_type as None."""
+
+    params: List[Param] = []
+    for piece in _csharp_split_top_level(params_text):
+        p = _csharp_param_from_piece(piece)
+        if p is not None:
+            params.append(p)
+    rt = (return_type or "").strip() or None
+    return Signature(params=tuple(params), returns=rt)
 
 
 _NAMESPACE_RE = re.compile(
@@ -59,8 +121,8 @@ _TYPE_DECL_RE = re.compile(
 _METHOD_RE = re.compile(
     r"^\s*(?:public|internal|protected|private|static|virtual|override|"
     r"abstract|sealed|async|new|extern|\s)*"
-    r"(?:[A-Za-z_][A-Za-z0-9_<>?,\[\]\s\.]*?\s+)?"
-    r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\([^)]*\)\s*(?:where[^{;]+)?\s*[{=]",
+    r"(?P<return_type>[A-Za-z_][A-Za-z0-9_<>?,\[\]\s\.]*?\s+)?"
+    r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\((?P<params>[^)]*)\)\s*(?:where[^{;]+)?\s*[{=]",
     re.MULTILINE,
 )
 _CALL_RE = re.compile(
@@ -264,6 +326,9 @@ def extract(file_path: str, source: bytes) -> Iterator[Fact]:
             file_path=file_path,
             line=_line_for_offset(text, mm.start("name")),
             language="csharp",
+            signature=_extract_signature_csharp(
+                mm.group("params"), mm.group("return_type")
+            ),
         )
         body_range = _find_method_body(text, mm.end() - 1)
         if body_range is None:

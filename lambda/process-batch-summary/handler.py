@@ -332,6 +332,24 @@ _GROUNDING_REF_LABELS = {
 }
 
 
+def _render_signature(sig) -> str:
+    """Render a Signature as a parenthesized parameter list with an
+    optional ``-> return_type`` tail. Returns "" for an empty signature
+    so callers can skip the suffix entirely."""
+    if sig is None:
+        return ""
+    parts = []
+    for p in getattr(sig, "params", ()) or ():
+        name = getattr(p, "name", "")
+        type_str = getattr(p, "type", None)
+        parts.append(f"{name}: {type_str}" if type_str else name)
+    returns = getattr(sig, "returns", None)
+    suffix = f" -> {returns}" if returns else ""
+    if not parts and not returns:
+        return ""
+    return f"({', '.join(parts)}){suffix}"
+
+
 def _render_graph_grounding(facts: "list[Fact]") -> str:
     """Render parser-extracted facts as a verified-symbol skeleton for the
     code-map prompt (graph-first generation).
@@ -342,6 +360,13 @@ def _render_graph_grounding(facts: "list[Fact]") -> str:
     wrong call-site attribution. Bounded so it anchors without bloating
     the prompt. Returns "" when no facts (e.g. fact_sink not provided),
     leaving the prompt unchanged for legacy/test paths.
+
+    When a ``defines`` fact carries a ``signature`` (chunk 01 of
+    plan-signature-extraction), the rendered line includes the
+    parenthesized parameter list + return type. The summarizer is told
+    to use ONLY those verified signatures, closing the
+    wrong-param-order / wrong-type class of hallucination the same way
+    the symbol-name grounding closes invented-symbol hallucinations.
     """
     if not facts:
         return ""
@@ -349,18 +374,29 @@ def _render_graph_grounding(facts: "list[Fact]") -> str:
     defines: List = []
     seen = set()
     outbound: Dict[str, set] = {}
+    any_signed = False
     for f in facts:
         if f.kind == "defines":
             key = (f.target_symbol_id, f.file_path, f.line)
             if key not in seen:
                 seen.add(key)
-                defines.append(key)
+                sig = getattr(f, "signature", None)
+                if sig is not None:
+                    any_signed = True
+                defines.append((f.target_symbol_id, f.file_path, f.line, sig))
         elif f.kind in _GROUNDING_REF_LABELS:
             # Outbound references only — targets not defined in this group.
             if f.target_symbol_id not in defined_ids:
                 outbound.setdefault(f.kind, set()).add(f.target_symbol_id)
     if not defines and not outbound:
         return ""
+    header_extra = (
+        " For any function/method listed with a parenthesized signature, "
+        "use that EXACT signature — do not reorder parameters, infer "
+        "missing types, or invent a return type."
+        if any_signed
+        else ""
+    )
     lines = [
         "## VERIFIED SYMBOLS (parser-extracted ground truth — use these EXACTLY)",
         "",
@@ -368,13 +404,19 @@ def _render_graph_grounding(facts: "list[Fact]") -> str:
         "exact symbol names and file:line locations. Do NOT introduce a "
         "function, class, call, import, or cross-reference that is not listed "
         "here; if tempted to, omit it. This is the authoritative structure — "
-        "the source files below are for narrative and behavior only.",
+        "the source files below are for narrative and behavior only."
+        + header_extra,
     ]
     if defines:
         lines.append("")
         lines.append("Defined in this group:")
-        for sym, fp, ln in sorted(defines)[:_GROUNDING_MAX_DEFINES]:
-            lines.append(f"- {sym}  ({fp}:{ln})")
+        for sym, fp, ln, sig in sorted(defines, key=lambda x: x[:3])[
+            :_GROUNDING_MAX_DEFINES
+        ]:
+            sig_str = _render_signature(sig)
+            lines.append(
+                f"- {sym}{sig_str}  ({fp}:{ln})" if sig_str else f"- {sym}  ({fp}:{ln})"
+            )
     for kind in ("calls", "imports", "implements"):
         targets = sorted(outbound.get(kind, ()))[:_GROUNDING_MAX_REFS]
         if targets:
