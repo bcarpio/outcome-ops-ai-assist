@@ -87,6 +87,71 @@ table delete, KMS key destroy) before acting, but ordinary triage is in-scope.
 - Check existing patterns before adding new code
 - Verify module versions, outputs, and schemas from actual source
 
+### HA: Primary/Secondary Parity
+
+Under the active/passive multi-region topology (ADR-022), every primary-region resource
+has a secondary counterpart in `terraform/*-secondary.tf`. The two MUST stay in sync.
+Divergence is invisible in steady-state operation — the secondary only does real work
+during failover — and **only failover surfaces it**, which is the worst time to find a
+bug. Every primary-region change to any of the following must be mirrored on the
+secondary:
+
+- IAM grants (actions and resource ARNs — including grants that "feel" generic; a
+  whole-bucket grant on the primary must not become a `code-maps/*` prefix grant on the
+  secondary).
+- Lambda function configuration: `handler`, env vars (region-specific values mapped),
+  `function_response_types` on event source mappings, batch size, concurrency caps.
+- SSM SecureString parameters consumed at module-init by per-region writer Lambdas
+  (add to `scripts/ha-list-secrets` and `scripts/ha-sync-secrets` so a fresh bootstrap
+  surfaces missing values rather than letting the Lambda silently fail to import).
+- Any new resource that the failover runbook (`docs/HA.md`) mentions or relies on.
+
+Before opening a PR that adds or modifies a primary-region resource, do a
+`diff terraform/<file>.tf terraform/<file>-secondary.tf` (or the equivalent module-block
+diff) for the impacted modules. If anything intentional is left primary-only, document
+why in an ADR — don't leave a silent divergence.
+
+### Communicating Deploy Impact
+
+When proposing or asking for a deploy, **always state what is being deployed and which
+artifact rebuild it requires**. Never just say "needs terraform apply." A deploy
+recommendation should name:
+
+- **Artifact type:** Lambda zip code, Lambda layer, Fargate container image, IAM only,
+  SSM parameter, Route 53 record, terraform state only.
+- **Prerequisite rebuilds:** whether `make build-all-layers` / `make build-platform-layer`
+  / `make build-mcp-server-image` / `make build-database-images` is required before
+  `terraform apply`.
+- **Regions and functions affected:** primary, secondary, or both; which Lambda
+  function(s) or ECS service(s).
+- **Verify step:** the one-liner the operator can run after apply to confirm the change
+  landed (typically `aws lambda get-function-configuration --query CodeSha256`,
+  `aws lambda list-event-source-mappings`, or an `aws ecs describe-services` for
+  Fargate). The verify step matters because **a `terraform apply` from a working tree
+  that is behind `origin/main` will silently package stale code** — only the SHA check
+  catches that.
+
+When in doubt about whether something is a Lambda zip vs Fargate image, grep terraform
+for `aws_ecs_service` / `container_image`; anything that ships as an image runs on
+Fargate, not Lambda, and needs the image rebuild path.
+
+### Plans Drive Implementation; ADRs Capture Decisions
+
+Two distinct artifact families with no overlap:
+
+- **Plans** live under `plan/<name>/` with `overview.md`, `PROGRESS.md`, and numbered
+  chunk files (`01-…md`, `02-…md`). Plans are **gitignored** working artifacts. They
+  describe the work being done now, not decisions that need to outlive the work.
+- **ADRs** live under `docs/adr/`, are **committed and customer-visible**, and capture
+  decisions that need to outlive any specific implementation cycle. The pattern (not
+  the code), the contract (not the wiring), the reasoning (not the diff).
+
+When a plan ships, **delete the plan directory**. The durable record is the ADR plus
+the commit history. A plan dir lingering after the work shipped will rot.
+
+When a problem can be solved by improving an ADR rather than by code, prefer the ADR
+(per ADR-007). When a chunk of implementation work needs sequencing, use a plan.
+
 ### Never Reference Plan Directories in Code or Docs
 - **NEVER reference `plan/` or `plan-*/` directories** from any committed file — not in
   code comments, docstrings, terraform comments, requirements files, tests, ADRs, or
