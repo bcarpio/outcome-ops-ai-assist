@@ -17,6 +17,8 @@ import secrets
 import sys
 import threading
 import time
+import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -427,6 +429,93 @@ MCP_TOOLS = [
                 },
             },
             "required": ["bare_name", "workspace_id"],
+        },
+    },
+    # ------------------------------------------------------------------
+    # Read-source adjudicator (plan-read-source-adjudicator chunk 01).
+    # Bounded source-read for verifying exact code values that the
+    # code-map deliberately omits (literals, key prefixes, signature
+    # arguments per ADR-027) and that the symbol graph stores anchors
+    # for but not values. The graph tells you WHERE; this tool tells
+    # you WHAT'S ACTUALLY ON THAT LINE.
+    # ------------------------------------------------------------------
+    {
+        "name": "read_source",
+        "description": (
+            "Fetch a bounded window of source code from GitHub anchored "
+            "at file:line. Use this when an exact code value is being "
+            "claimed (a literal, a key prefix like 'MAGIC_TOKEN#', a "
+            "specific algorithm choice, a signature parameter) and the "
+            "code-map summary plus the symbol graph are not enough to "
+            "verify it. The code-map deliberately omits literals "
+            "(ADR-027) and the symbol graph stores anchors but not "
+            "values -- read_source supplies the actual line. Reads HEAD "
+            "of the default branch by default; pass `ref` to pin to a "
+            "specific SHA (recommended when the file:line came from the "
+            "symbol graph, since the graph's anchor is pinned to the "
+            "graph_sha and HEAD may have drifted)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "workspace_id": {
+                    "type": "string",
+                    "description": "Workspace ID scoping auth + GitHub-installation lookup.",
+                },
+                "repo": {
+                    "type": "string",
+                    "description": "Repository in 'owner/name' form (e.g. 'bcarpio/eShop').",
+                },
+                "file_path": {
+                    "type": "string",
+                    "description": "Repo-relative file path (e.g. 'src/eShop.ServiceDefaults/SignaturesDemo.cs').",
+                },
+                "line": {
+                    "type": "integer",
+                    "description": "1-indexed line number to anchor the read window on.",
+                },
+                "context_lines": {
+                    "type": "integer",
+                    "description": (
+                        "Lines of context above + below the anchor "
+                        "(default 20, max 200). The total window "
+                        "returned is up to 2*context_lines+1 lines."
+                    ),
+                },
+                "ref": {
+                    "type": "string",
+                    "description": (
+                        "Optional Git ref (commit SHA, branch, or tag). "
+                        "Default: the repository's default branch HEAD. "
+                        "Pass the graph_sha when reading a line resolved "
+                        "via the symbol graph to avoid SHA-skew."
+                    ),
+                },
+                "symbol": {
+                    "type": "string",
+                    "description": (
+                        "Optional canonical symbol id (e.g. "
+                        "'python:lambda.auth.handler::require_auth'). "
+                        "When supplied, the response includes "
+                        "`relocated_to_line` -- the actual line within "
+                        "the returned window where this symbol's bare "
+                        "name appears, so a stale anchor self-corrects. "
+                        "Required when `at_graph_sha` is true."
+                    ),
+                },
+                "at_graph_sha": {
+                    "type": "boolean",
+                    "description": (
+                        "When true, resolve `repo` + `file_path` + `line` "
+                        "from `symbol` via find_definitions and pin `ref` "
+                        "to the workspace's current graph_sha. Eliminates "
+                        "SHA-skew between the graph-pinned anchor and a "
+                        "HEAD read. The caller's `repo`/`file_path`/`line`"
+                        "/`ref` are overridden when this is set."
+                    ),
+                },
+            },
+            "required": ["workspace_id"],
         },
     },
 ]
@@ -1467,6 +1556,380 @@ def handle_find_symbol_by_name(params, email):
     return {"text": json.dumps({"canonicals": canonicals})}
 
 
+# ============================================================================
+# Read-source adjudicator (plan-read-source-adjudicator chunk 01)
+#
+# Bounded GitHub Contents API read for verifying exact code values that
+# the code-map deliberately omits (ADR-027) and that the symbol graph
+# stores anchors but not values for. The helpers below are intentionally
+# co-located here for chunk 01; a follow-up can lift them into
+# `shared/github_app.py` once a second consumer needs the same shape.
+# ============================================================================
+
+_READ_SOURCE_DEFAULT_CONTEXT = 20
+_READ_SOURCE_MAX_CONTEXT = 200
+_READ_SOURCE_MAX_FILE_BYTES = 1_048_576  # 1 MB whole-file fetch cap
+
+_github_app_config_cache = None
+
+
+def _read_source_github_app_config():
+    """Fetch GitHub App id + private key from SSM. Cached at module scope so
+    the JWT-signing key isn't re-fetched per request."""
+    global _github_app_config_cache
+    if _github_app_config_cache is not None:
+        return _github_app_config_cache
+    env = os.environ.get("ENVIRONMENT") or os.environ.get("ENV", "dev")
+    app_name = os.environ.get("APP_NAME", "outcome-ops-ai-assist")
+    ssm = boto3.client("ssm")
+    resp = ssm.get_parameters(
+        Names=[
+            f"/{env}/{app_name}/github/app-id",
+            f"/{env}/{app_name}/github/private-key",
+        ],
+        WithDecryption=True,
+    )
+    params = {p["Name"].rsplit("/", 1)[-1]: p["Value"] for p in resp.get("Parameters", [])}
+    cfg = {"app_id": params.get("app-id", ""), "private_key": params.get("private-key", "")}
+    if not cfg["app_id"] or not cfg["private_key"]:
+        raise RuntimeError("GitHub App id or private key not configured in SSM")
+    _github_app_config_cache = cfg
+    return cfg
+
+
+def _read_source_installation_token(installation_id):
+    """Exchange the App JWT for an installation access token."""
+    import jwt  # noqa: WPS433 -- defer import; only needed on read_source path
+    cfg = _read_source_github_app_config()
+    now = int(time.time())
+    payload = {"iat": now - 60, "exp": now + 600, "iss": cfg["app_id"]}
+    jwt_token = jwt.encode(payload, cfg["private_key"], algorithm="RS256")
+    url = f"https://api.github.com/app/installations/{installation_id}/access_tokens"
+    req = urllib.request.Request(
+        url,
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {jwt_token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "outcomeops-mcp/read_source",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return json.loads(resp.read().decode())["token"]
+
+
+def _read_source_resolve_installation_id(workspace_id):
+    """Find the GitHub App installation id linked to a workspace.
+
+    Workspaces table row: ``PK = WS#<id>``, ``SK begins_with
+    GITHUB_INSTALLATION#``. Returns the first row's installation_id or
+    None when no installation has been linked yet.
+    """
+    table = _get_dynamodb().Table(DYNAMODB_TABLE)
+    from boto3.dynamodb.conditions import Key  # noqa: WPS433
+    resp = table.query(
+        KeyConditionExpression=Key("PK").eq(f"WS#{workspace_id}")
+        & Key("SK").begins_with("GITHUB_INSTALLATION#"),
+        Limit=1,
+    )
+    items = resp.get("Items", [])
+    if not items:
+        return None
+    return items[0].get("installation_id")
+
+
+def _read_source_bare_name(symbol_id):
+    """Strip a canonical symbol id down to its bare tail.
+
+    Mirrors the tail logic in symbol_graph_writer._derive_bare_name so
+    relocation searches use the same name a user would type. Falls back
+    to the raw id if no separator matches (shouldn't happen on canonical
+    inputs, but defensive)."""
+    if not symbol_id:
+        return ""
+    s = symbol_id
+    # Strip the language prefix before the first single colon (after a
+    # double-colon we treat them as namespace separators).
+    if ":" in s and "::" not in s.split(":", 1)[0]:
+        s = s.split(":", 1)[1]
+    for sep in ("::", ".", "/"):
+        if sep in s:
+            s = s.rsplit(sep, 1)[-1]
+    return s
+
+
+def _read_source_relocate(window, bare_name):
+    """Search a read window for a bare symbol name. Returns the line
+    number of the first match or None when the symbol isn't in the
+    window. Word-boundary match so unrelated identifiers like
+    ``my_require_auth`` don't trigger on ``require_auth``."""
+    import re  # noqa: WPS433
+    if not bare_name:
+        return None
+    pat = re.compile(rf"\b{re.escape(bare_name)}\b")
+    for entry in window:
+        if pat.search(entry["text"]):
+            return entry["line"]
+    return None
+
+
+def _read_source_resolve_via_graph(workspace_id, symbol):
+    """Resolve a canonical symbol id to ``(repo, file_path, line, graph_sha)``
+    using the symbol graph + the code-maps SHA-truth pointer.
+
+    Returns one of:
+    - dict with the resolved coordinates on success.
+    - ``{"error": "missing"}`` when no definition is found.
+    - ``{"error": "ambiguous", "sites": [...]}`` when multiple definitions
+      exist (caller must disambiguate with explicit file_path/line).
+
+    Pinning ``ref`` to the pointer's ``graph_sha`` eliminates the
+    file:line skew that exists between the graph's pinned SHA and the
+    repo's HEAD."""
+    from boto3.dynamodb.conditions import Key  # noqa: WPS433
+    from shared import symbol_graph_reader  # type: ignore  # noqa: WPS433
+
+    try:
+        sites = symbol_graph_reader.definitions(
+            workspace_id,
+            symbol,
+            symbol_graph_table_name=os.environ.get("SYMBOL_GRAPH_TABLE") or None,
+            code_maps_table_name=os.environ.get("CODE_MAPS_TABLE") or None,
+        )
+    except symbol_graph_reader.SymbolGraphUnavailable:
+        return {"error": "graph_unavailable"}
+
+    if not sites:
+        return {"error": "missing"}
+    if len(sites) > 1:
+        return {
+            "error": "ambiguous",
+            "sites": [
+                {"repo": s.repo, "file_path": s.file_path, "line": s.line}
+                for s in sites
+            ],
+        }
+    site = sites[0]
+
+    # SHA-truth pointer lookup keyed on the BARE repo name (no owner).
+    code_maps_table = os.environ.get("CODE_MAPS_TABLE")
+    graph_sha = None
+    if code_maps_table:
+        try:
+            repo_bare = site.repo.split("/", 1)[-1]
+            table = _get_dynamodb().Table(code_maps_table)
+            resp = table.get_item(
+                Key={
+                    "PK": f"SYMBOL_GRAPH#{workspace_id}#{repo_bare}",
+                    "SK": "POINTER",
+                }
+            )
+            graph_sha = resp.get("Item", {}).get("graph_sha")
+        except ClientError as exc:
+            logger.warning("read_source graph_sha lookup failed: %s", exc)
+
+    return {
+        "repo": site.repo,
+        "file_path": site.file_path,
+        "line": site.line,
+        "graph_sha": graph_sha,
+    }
+
+
+def _read_source_fetch_file(repo, file_path, token, ref=None):
+    """Fetch the raw bytes of a file via the GitHub Contents API.
+
+    Caps the read at ``_READ_SOURCE_MAX_FILE_BYTES``; files exceeding the
+    cap raise ValueError so the caller can surface the limit rather than
+    return a silently-truncated window.
+    """
+    quoted = urllib.parse.quote(file_path, safe="/")
+    url = f"https://api.github.com/repos/{repo}/contents/{quoted}"
+    if ref:
+        url += f"?ref={urllib.parse.quote(ref, safe='')}"
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github.raw",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "outcomeops-mcp/read_source",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        raw = resp.read(_READ_SOURCE_MAX_FILE_BYTES + 1)
+    if len(raw) > _READ_SOURCE_MAX_FILE_BYTES:
+        raise ValueError(
+            f"file {file_path} exceeds {_READ_SOURCE_MAX_FILE_BYTES}-byte read-source cap"
+        )
+    return raw
+
+
+def handle_read_source(params, email):
+    """Bounded source-read for verifying exact values.
+
+    Workflow:
+    1. Validate inputs.
+    2. Check workspace access (same gate as the symbol-graph tools).
+    3. If ``at_graph_sha`` is set, resolve ``repo`` + ``file_path`` +
+       ``line`` from ``symbol`` via the symbol graph and pin ``ref`` to
+       the workspace's current graph_sha. This eliminates the
+       graph_sha-vs-HEAD skew (chunk 02). Otherwise read the
+       caller-specified file:line at the caller-specified ref (default
+       HEAD).
+    4. Resolve the workspace's GitHub App installation id.
+    5. Mint an installation token + fetch the file from GitHub Contents API.
+    6. Slice a window of size 2*context+1 around the anchor line.
+    7. If a ``symbol`` was supplied, search the window for its bare
+       name and report ``relocated_to_line`` so a stale anchor
+       self-corrects against the actual symbol position. The original
+       anchor is preserved as ``anchor_line``.
+    """
+    workspace_id = params.get("workspace_id", "")
+    repo = params.get("repo", "")
+    file_path = params.get("file_path", "")
+    line_raw = params.get("line")
+    ref = params.get("ref") or None
+    symbol = params.get("symbol", "")
+    at_graph_sha = bool(params.get("at_graph_sha"))
+
+    if not workspace_id:
+        return {"error": "workspace_id is required"}
+    if at_graph_sha and not symbol:
+        return {"error": "at_graph_sha requires a symbol to resolve"}
+
+    # In the explicit-anchor mode (no graph resolution), the caller must
+    # supply repo/file_path/line up front. In graph-resolution mode they
+    # are filled in below from the symbol-graph lookup.
+    if not at_graph_sha:
+        if not repo or not file_path or line_raw in (None, ""):
+            return {"error": "workspace_id, repo, file_path, and line are required"}
+        # Basic shape validation that doesn't depend on graph resolution.
+        try:
+            int(line_raw)
+        except (TypeError, ValueError):
+            return {"error": "line must be an integer"}
+        if int(line_raw) < 1:
+            return {"error": "line must be 1-indexed (>=1)"}
+        ctx_raw = params.get("context_lines", _READ_SOURCE_DEFAULT_CONTEXT)
+        try:
+            ctx = int(ctx_raw) if ctx_raw not in (None, "") else _READ_SOURCE_DEFAULT_CONTEXT
+        except (TypeError, ValueError):
+            return {"error": "context_lines must be an integer"}
+        if ctx < 0 or ctx > _READ_SOURCE_MAX_CONTEXT:
+            return {"error": f"context_lines must be 0-{_READ_SOURCE_MAX_CONTEXT}"}
+        if "/" not in repo:
+            return {"error": "repo must be in 'owner/name' form"}
+
+    deny = _check_symbol_graph_workspace_access(workspace_id, email)
+    if deny is not None:
+        return deny
+
+    resolved_graph_sha = None
+    if at_graph_sha:
+        resolved = _read_source_resolve_via_graph(workspace_id, symbol)
+        if resolved.get("error") == "missing":
+            return {"error": f"no definition found for {symbol!r} in workspace"}
+        if resolved.get("error") == "ambiguous":
+            return {
+                "error": (
+                    f"{symbol!r} has multiple definitions; pass explicit "
+                    "repo+file_path+line to disambiguate"
+                ),
+                "sites": resolved.get("sites", []),
+            }
+        if resolved.get("error") == "graph_unavailable":
+            return {"error": "symbol graph unavailable"}
+        repo = resolved["repo"]
+        file_path = resolved["file_path"]
+        line_raw = resolved["line"]
+        resolved_graph_sha = resolved.get("graph_sha")
+        # Pin ref to graph_sha when we have one. A workspace without a
+        # pointer still gets the resolved file:line but reads HEAD; the
+        # response's ``graph_sha`` field is None to signal that.
+        ref = resolved_graph_sha or ref
+
+    if not repo or not file_path or line_raw in (None, ""):
+        return {"error": "repo, file_path, and line are required"}
+    try:
+        line = int(line_raw)
+    except (TypeError, ValueError):
+        return {"error": "line must be an integer"}
+    if line < 1:
+        return {"error": "line must be 1-indexed (>=1)"}
+
+    ctx_raw = params.get("context_lines", _READ_SOURCE_DEFAULT_CONTEXT)
+    try:
+        context_lines = int(ctx_raw) if ctx_raw not in (None, "") else _READ_SOURCE_DEFAULT_CONTEXT
+    except (TypeError, ValueError):
+        return {"error": "context_lines must be an integer"}
+    if context_lines < 0 or context_lines > _READ_SOURCE_MAX_CONTEXT:
+        return {"error": f"context_lines must be 0-{_READ_SOURCE_MAX_CONTEXT}"}
+
+    if "/" not in repo:
+        return {"error": "repo must be in 'owner/name' form"}
+
+    installation_id = _read_source_resolve_installation_id(workspace_id)
+    if not installation_id:
+        return {
+            "error": (
+                f"no GitHub App installation linked to workspace {workspace_id}; "
+                "connect a repo via the UI to enable read_source"
+            )
+        }
+
+    try:
+        token = _read_source_installation_token(installation_id)
+        raw = _read_source_fetch_file(repo, file_path, token, ref=ref)
+    except urllib.error.HTTPError as exc:
+        return {"error": f"GitHub returned {exc.code} for {repo}:{file_path}"}
+    except urllib.error.URLError as exc:
+        return {"error": f"GitHub fetch failed for {repo}:{file_path}: {exc.reason}"}
+    except ValueError as exc:
+        return {"error": str(exc)}
+    except Exception as exc:  # noqa: BLE001
+        logger.error("read_source unexpected error: %s", exc, exc_info=True)
+        return {"error": "read_source failed (see logs)"}
+
+    text = raw.decode("utf-8", errors="replace")
+    lines = text.splitlines()
+    total = len(lines)
+    start = max(1, line - context_lines)
+    end = min(total, line + context_lines)
+    window = [{"line": i, "text": lines[i - 1]} for i in range(start, end + 1)]
+
+    # SHA-skew handling: when a symbol was supplied, find its actual
+    # position inside the window and report it. The original anchor
+    # stays in ``anchor_line`` so the caller can see the drift; a
+    # caller that only trusts the relocated position can read
+    # ``relocated_to_line`` and ignore the anchor.
+    relocated_to_line = None
+    if symbol:
+        relocated_to_line = _read_source_relocate(window, _read_source_bare_name(symbol))
+
+    return {
+        "text": json.dumps({
+            "repo": repo,
+            "file_path": file_path,
+            "ref": ref,
+            "anchor_line": line,
+            "lines": window,
+            "total_lines": total,
+            "window_start": start,
+            "window_end": end,
+            "clipped_to_file_bounds": start > (line - context_lines)
+                                       or end < (line + context_lines),
+            "symbol": symbol or None,
+            "relocated_to_line": relocated_to_line,
+            "relocated": (
+                relocated_to_line is not None and relocated_to_line != line
+            ),
+            "graph_sha": resolved_graph_sha,
+        })
+    }
+
+
 TOOL_HANDLERS = {
     "query_knowledge_base": handle_query_knowledge_base,
     "list_workspaces": handle_list_workspaces,
@@ -1478,6 +1941,9 @@ TOOL_HANDLERS = {
     "find_implementers": handle_find_implementers,
     "find_definitions": handle_find_definitions,
     "find_symbol_by_name": handle_find_symbol_by_name,
+    # Read-source adjudicator -- bounded source-read for verified-value
+    # claims (see docs/adr/ADR-???-read-source-adjudicator.md once chunk 04 lands).
+    "read_source": handle_read_source,
 }
 
 

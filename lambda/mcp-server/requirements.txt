@@ -1,2 +1,6 @@
 boto3>=1.35.0
 urllib3>=2.6.3
+# read_source mints GitHub App installation tokens via signed JWT
+# (plan-read-source-adjudicator chunk 01).
+PyJWT>=2.8.0
+cryptography>=42.0.0

@@ -186,10 +186,16 @@ resource "aws_iam_role_policy" "mcp_outcomeops" {
         Sid    = "SSMReadMcpTokens"
         Effect = "Allow"
         Action = [
-          "ssm:GetParameter"
+          "ssm:GetParameter",
+          "ssm:GetParameters"
         ]
         Resource = [
-          "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/mcp/*"
+          "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/mcp/*",
+          # read_source mints GitHub App installation tokens at request
+          # time; needs the app id + private key (SecureString -- KMS
+          # grant covered by the default-ssm-alias decrypt allowance).
+          "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/github/app-id",
+          "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/github/private-key"
         ]
       },
       {

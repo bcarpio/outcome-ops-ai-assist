@@ -187,9 +187,14 @@ resource "aws_iam_role_policy" "mcp_outcomeops_secondary" {
         Effect = "Allow"
         Action = [
           "ssm:GetParameter",
+          "ssm:GetParameters",
         ]
         Resource = [
           "arn:aws:ssm:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/mcp/*",
+          # read_source mints GitHub App installation tokens at request
+          # time (mirrors the primary grant per CLAUDE.md HA-parity).
+          "arn:aws:ssm:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/github/app-id",
+          "arn:aws:ssm:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/github/private-key",
         ]
       },
       {

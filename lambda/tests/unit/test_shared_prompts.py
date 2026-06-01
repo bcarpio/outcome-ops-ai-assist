@@ -573,3 +573,49 @@ class TestCodeMapLiteralDiscipline:
         d = CODE_MAP_LITERAL_DISCIPLINE
         assert "placeholder, example, or templated form" in d
         assert "A guessed shape is still a wrong literal" in d
+
+
+class TestReadSourceVerificationRules:
+    """plan-read-source-adjudicator chunk 03 -- the system prompt must
+    tell the LLM to verify exact code values against source via the
+    read_source MCP tool, not only when docs and code-map disagree."""
+
+    def test_constant_exists_and_names_the_tool(self):
+        from shared.prompts import READ_SOURCE_VERIFICATION_RULES
+
+        assert "read_source" in READ_SOURCE_VERIFICATION_RULES
+
+    def test_constant_triggers_on_every_value_claim_not_just_drift(self):
+        """Without this clause, a fabricated value with no contradicting
+        doc would never trip the verification gate and would ship
+        silently (the USED_TOKEN# class). Must be explicit."""
+        from shared.prompts import READ_SOURCE_VERIFICATION_RULES
+
+        assert "every specific value claim" in READ_SOURCE_VERIFICATION_RULES.lower() \
+            or "not only when documentation" in READ_SOURCE_VERIFICATION_RULES
+
+    def test_constant_promotes_at_graph_sha_for_sha_skew(self):
+        from shared.prompts import READ_SOURCE_VERIFICATION_RULES
+
+        assert "at_graph_sha" in READ_SOURCE_VERIFICATION_RULES
+        assert "SHA-skew" in READ_SOURCE_VERIFICATION_RULES or "graph SHA" in READ_SOURCE_VERIFICATION_RULES
+
+    def test_chat_prompt_includes_read_source_block(self):
+        """build_chat_system_prompt must compose in the verification
+        rules so the chat synthesis path actually receives them."""
+        from shared.prompts import build_chat_system_prompt, READ_SOURCE_VERIFICATION_RULES
+
+        prompt = build_chat_system_prompt()
+        assert READ_SOURCE_VERIFICATION_RULES in prompt
+
+    def test_chat_prompt_block_appears_after_value_grounding(self):
+        """Reading order matters: VALUE_GROUNDING_RULES tells the model
+        what an unsafe value claim looks like; READ_SOURCE then tells
+        it how to resolve safely. Block ordering must follow that arc."""
+        from shared.prompts import build_chat_system_prompt, VALUE_GROUNDING_RULES, READ_SOURCE_VERIFICATION_RULES
+
+        prompt = build_chat_system_prompt()
+        i_vg = prompt.find(VALUE_GROUNDING_RULES)
+        i_rs = prompt.find(READ_SOURCE_VERIFICATION_RULES)
+        assert i_vg != -1 and i_rs != -1
+        assert i_vg < i_rs

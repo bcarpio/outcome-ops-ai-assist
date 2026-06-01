@@ -93,6 +93,21 @@ CODE_OVER_DOCS_RULES = """When code and documentation genuinely disagree about a
 - If you can quote only ONE source for the value (only a doc, or only the code), that single source IS your evidence — use it as stated. Do NOT infer an unquoted "the code says otherwise" value in order to flag the doc as wrong. A drift finding whose code side you cannot quote is a fabrication, not a finding.
 - Do NOT average or hedge. This applies to specific-value disagreements only, not stylistic or wording differences."""
 
+# Verify exact values against source before asserting them. The code-map
+# deliberately omits literals (ADR-027) and the symbol graph stores
+# anchors but not values -- when an exact value matters, ask the
+# `read_source` MCP tool to fetch the real line. Triggered on EVERY
+# specific value claim, not only when docs and code-map disagree (per
+# plan-read-source-adjudicator: a fabrication with no contradicting doc
+# never trips a discrepancy gate and would ship silently).
+READ_SOURCE_VERIFICATION_RULES = """When you are about to state a SPECIFIC code value (a literal, a key prefix like 'MAGIC_TOKEN#', a numeric threshold, an algorithm choice, a function signature's parameter list, a return type) and the user's answer depends on it being correct:
+- Call the `read_source` MCP tool to fetch the actual source line BEFORE asserting the value. Do this for every specific value claim -- not only when documentation and code-map appear to disagree.
+- Prefer `at_graph_sha: true` + `symbol: "<canonical id>"` so the tool resolves the file:line via the symbol graph and pins the read to the workspace's current graph SHA. This eliminates SHA-skew between the graph anchor and the repo's HEAD.
+- When you don't have a canonical symbol id, pass `repo` + `file_path` + `line` directly. If you suspect the line may have shifted, also pass the symbol you're searching for so the tool returns `relocated_to_line` -- the actual position of that symbol within the read window.
+- Quote the returned line in your answer and cite it (e.g., "src/auth/handler.py:514 reads `token_urlsafe(16)`").
+- If `read_source` returns a value that disagrees with what the code-map summary suggested, treat the source line as authoritative (ADR-025 "code wins"). Surface the disagreement to the user.
+- If `read_source` is unavailable or returns an error, say so -- do not fall back to a guessed value."""
+
 # Scope SAST/SonarQube signals to what they actually cover. See ADR-025.
 SAST_SCOPE_RULES = """When SonarQube or other SAST output appears in your context:
 - SAST covers syntactic code-smell rules and known-CVE dependency versions. A passing SAST grade means the code avoids the patterns the configured ruleset checks for — nothing more.
@@ -158,6 +173,8 @@ You also have access to conversation memory - summaries of earlier parts of long
 {FORMATTING_RULES}
 
 {VALUE_GROUNDING_RULES}
+
+{READ_SOURCE_VERIFICATION_RULES}
 
 {CODE_OVER_DOCS_RULES}
 
