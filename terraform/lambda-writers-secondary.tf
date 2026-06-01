@@ -446,6 +446,18 @@ module "process_batch_summary_lambda_secondary" {
         actions   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"]
         resources = local.sha_truth_table_arns_secondary
       }
+      # Mirrors primary's workspaces_read. read_workspace_mode() in the
+      # PII path GetItems the workspace row to look up privacy_mode; this
+      # grant was missing on the secondary and surfaced as a noisy
+      # AccessDeniedException warning under failover (2026-06-01).
+      workspaces_read = {
+        effect  = "Allow"
+        actions = ["dynamodb:GetItem", "dynamodb:Query"]
+        resources = [
+          module.workspaces_table_secondary[0].dynamodb_table_arn,
+          "${module.workspaces_table_secondary[0].dynamodb_table_arn}/index/*",
+        ]
+      }
       workspaces_sha_advance = {
         effect    = "Allow"
         actions   = ["dynamodb:UpdateItem"]
@@ -616,8 +628,12 @@ module "process_repo_summary_lambda_secondary" {
       s3_kb = {
         effect  = "Allow"
         actions = ["s3:GetObject", "s3:PutObject"]
+        # Mirrors primary's whole-bucket scope. The previous code-maps/*
+        # narrow scope blocked writing architectural-summary.txt under
+        # workspaces/, which only surfaced once failover routed work to
+        # this region (2026-06-01).
         resources = [
-          "${module.knowledge_base_bucket_secondary.s3_bucket_arn}/code-maps/*",
+          "${module.knowledge_base_bucket_secondary.s3_bucket_arn}/*",
         ]
       }
       s3vectors = {
