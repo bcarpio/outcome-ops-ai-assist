@@ -227,22 +227,23 @@ def _apply_ddb_put_item(detail: dict) -> None:
 
 
 def _apply_ddb_update_item(detail: dict) -> None:
+    # update_item is partial and the row-level _repl_emitted_at marker
+    # introduced for put_item cannot be applied here: different events
+    # legitimately touch DIFFERENT attributes of the same row, so a
+    # newer event setting one attribute (and bumping the marker) would
+    # cause an older event updating a DIFFERENT attribute to be
+    # incorrectly rejected as already_applied. A live failback found
+    # this on the workspaces GITHUB_REPO# rows -- a later sync-status
+    # update advanced the marker, then earlier last_code_map_sha /
+    # last_docs_sha updates got persistently rejected.
+    #
+    # The original same-attribute 21 ms race that motivated the guard
+    # returns for update_item; that bug is self-healing (next write
+    # rolls it forward) where this introduced bug was not. The guard
+    # remains on put_item and delete_item, which are whole-row.
     table_name = detail["table"]
     key = detail["key"]
     args = dict(detail.get("args") or {})
-    ts = _emitted_at(detail)
-    args["UpdateExpression"] = _splice_set_action(
-        args.get("UpdateExpression", ""), _REPL_SET_ACTION
-    )
-    args["ConditionExpression"] = _REPL_COND_EXPR
-    args["ExpressionAttributeNames"] = {
-        **(args.get("ExpressionAttributeNames") or {}),
-        _REPL_NAME_KEY: _REPL_TS_ATTR,
-    }
-    args["ExpressionAttributeValues"] = {
-        **(args.get("ExpressionAttributeValues") or {}),
-        _REPL_VALUE_KEY: ts,
-    }
     _ddb().Table(table_name).update_item(Key=key, **args)
 
 

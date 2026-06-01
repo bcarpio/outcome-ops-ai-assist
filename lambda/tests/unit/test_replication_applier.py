@@ -118,10 +118,12 @@ def test_ddb_put_item_out_of_order_rejected_as_already_applied(_applier):
     assert result["status"] == "already_applied"
 
 
-def test_ddb_update_item_splices_marker_into_set_clause(_applier):
-    """Source UpdateExpression ``SET ... REMOVE ...`` is preserved, and
-    the applier's _repl_emitted_at SET action is spliced in front of the
-    REMOVE clause without disturbing the source update."""
+def test_ddb_update_item_applied_unchanged_no_marker(_applier):
+    """update_item is partial and must NOT carry the row-level ordering
+    marker -- a newer event touching one attribute would otherwise reject
+    older events touching DIFFERENT attributes on the same row. The
+    applier replays the source UpdateExpression / Condition / EAN / EAV
+    verbatim."""
     resource = MagicMock()
     table = MagicMock()
     resource.Table.return_value = table
@@ -145,12 +147,10 @@ def test_ddb_update_item_splices_marker_into_set_clause(_applier):
         None,
     )
     kwargs = table.update_item.call_args.kwargs
-    assert kwargs["UpdateExpression"] == "SET a = :a, b = :b, #__repl_ts__ = :__repl_ts__ REMOVE c"
-    assert kwargs["ConditionExpression"] == (
-        "attribute_not_exists(#__repl_ts__) OR #__repl_ts__ < :__repl_ts__"
-    )
-    assert kwargs["ExpressionAttributeValues"][":a"] == 1
-    assert kwargs["ExpressionAttributeValues"][":__repl_ts__"] == 1700000123
+    assert kwargs["UpdateExpression"] == "SET a = :a, b = :b REMOVE c"
+    assert "ConditionExpression" not in kwargs
+    assert kwargs["ExpressionAttributeValues"] == {":a": 1, ":b": 2}
+    assert ":__repl_ts__" not in kwargs.get("ExpressionAttributeValues", {})
 
 
 def test_splice_set_action_no_existing_set(_applier):
