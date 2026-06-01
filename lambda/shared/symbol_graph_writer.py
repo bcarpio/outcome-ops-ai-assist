@@ -269,6 +269,22 @@ def _build_item(
         "created_at": int(time.time()),
     }
 
+    # Optional signature payload on `defines` facts for callables. Stored
+    # as a nested DDB Map so the reader can deserialize back to a
+    # Signature without a separate query. Absent on old facts and on
+    # non-callable defines (classes, variables) -- omitted from the item
+    # entirely rather than written as None so DDB scans of pre-signature
+    # rows are unaffected.
+    signature = getattr(fact, "signature", None)
+    if signature is not None:
+        item["signature"] = {
+            "params": [
+                {"name": p.name, **({"type": p.type} if p.type else {})}
+                for p in signature.params
+            ],
+            **({"returns": signature.returns} if signature.returns else {}),
+        }
+
     split = _split_target_prefix(fact.target_symbol_id)
     if split is not None:
         item["GSI2PK"] = f"{workspace_id}#{split['prefix']}"

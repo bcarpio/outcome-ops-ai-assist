@@ -51,6 +51,13 @@ class CallSite:
     ``source_symbol_id`` is the caller's canonical ID — the "who called
     X" identity. ``file_path`` / ``line`` anchor the edge in source so
     consumers can deep-link.
+
+    ``signature`` is populated only for ``defines`` rows of callables
+    (functions / methods) where the extractor captured a parameter
+    annotation set. Other edges and pre-signature rows leave it ``None``.
+    Shape: ``{"params": [{"name", "type"?}], "returns"?}`` -- the same
+    JSON the writer persists, kept as a dict so the consumer doesn't
+    take a dependency on the extractor's ``Signature`` dataclass.
     """
 
     file_path: str
@@ -58,6 +65,7 @@ class CallSite:
     repo: str
     source_symbol_id: str
     language: str
+    signature: Optional[dict] = None
 
 
 @dataclass(frozen=True)
@@ -435,12 +443,27 @@ def _pointer_for_workspace(
 def _row_to_call_site(item: dict) -> CallSite:
     """Project a DynamoDB row onto a ``CallSite``."""
 
+    raw_sig = item.get("signature")
+    signature: Optional[dict] = None
+    if isinstance(raw_sig, dict):
+        # Preserve as-stored. Convert any DDB Decimal-shaped values would
+        # go here if signatures ever carried numbers, but today the
+        # payload is all strings + a string list.
+        signature = {
+            "params": [
+                {k: v for k, v in p.items()} for p in raw_sig.get("params", [])
+            ],
+        }
+        if "returns" in raw_sig:
+            signature["returns"] = raw_sig["returns"]
+
     return CallSite(
         file_path=str(item.get("file_path", "")),
         line=int(item.get("line", 0)),
         repo=str(item.get("repo", "")),
         source_symbol_id=str(item.get("source_symbol_id", "")),
         language=str(item.get("language", "")),
+        signature=signature,
     )
 
 

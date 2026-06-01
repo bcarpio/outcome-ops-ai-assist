@@ -16,6 +16,7 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 from unittest.mock import patch
 
 import boto3
@@ -880,3 +881,133 @@ def test_first_write_no_previous_pointer(tables):
     assert result.facts_deleted == 0
     assert result.facts_written == 1
     assert result.pointer_swapped is True
+
+
+# ---------------------------------------------------------------------------
+# Signature persistence (plan-signature-extraction chunk 01).
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _ParamShim:
+    name: str
+    type: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class _SigShim:
+    params: tuple
+    returns: Optional[str] = None
+
+
+def _defines_fact_with_sig(target: str, signature) -> object:
+    """A FactShim variant that carries an optional signature attribute."""
+
+    @dataclass(frozen=True)
+    class _DefinesShim:
+        kind: str
+        source_symbol_id: str
+        target_symbol_id: str
+        file_path: str
+        line: int
+        language: str
+        signature: object = None
+
+    return _DefinesShim(
+        kind="defines",
+        source_symbol_id="python:lambda.x.module::*",
+        target_symbol_id=target,
+        file_path="lambda/x/module.py",
+        line=10,
+        language="python",
+        signature=signature,
+    )
+
+
+def test_build_item_persists_signature_when_present(tables):
+    """A defines fact with a signature lands on the DDB item as a Map
+    with params + returns, ready for the reader to surface back."""
+    from shared.symbol_graph_writer import write_facts  # type: ignore
+
+    sig = _SigShim(
+        params=(
+            _ParamShim("a", "int"),
+            _ParamShim("b", "str"),
+            _ParamShim("c"),  # bare, no type
+        ),
+        returns="bool",
+    )
+    target = "python:lambda.x.module::greet"
+    fact = _defines_fact_with_sig(target, sig)
+
+    write_facts(
+        workspace_id=WORKSPACE_ID,
+        repo=REPO,
+        commit_sha=NEW_SHA,
+        facts=[fact],
+        symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
+        code_maps_table_name=CODE_MAPS_TABLE,
+    )
+
+    table = tables.Table(SYMBOL_GRAPH_TABLE)
+    response = table.query(
+        KeyConditionExpression=Key("PK").eq(f"{WORKSPACE_ID}#{REPO}")
+    )
+    assert response["Count"] == 1
+    item = response["Items"][0]
+    assert "signature" in item
+    persisted = item["signature"]
+    assert persisted["params"] == [
+        {"name": "a", "type": "int"},
+        {"name": "b", "type": "str"},
+        {"name": "c"},
+    ]
+    assert persisted["returns"] == "bool"
+
+
+def test_build_item_omits_signature_attr_when_fact_has_none(tables):
+    """A defines fact whose signature is None never produces a signature
+    attribute on the DDB item (back-compat with extractors and stored
+    rows that predate the field)."""
+    from shared.symbol_graph_writer import write_facts  # type: ignore
+
+    fact = _defines_fact_with_sig(
+        "python:lambda.x.module::SomeClass", signature=None
+    )
+    write_facts(
+        workspace_id=WORKSPACE_ID,
+        repo=REPO,
+        commit_sha=NEW_SHA,
+        facts=[fact],
+        symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
+        code_maps_table_name=CODE_MAPS_TABLE,
+    )
+
+    table = tables.Table(SYMBOL_GRAPH_TABLE)
+    response = table.query(
+        KeyConditionExpression=Key("PK").eq(f"{WORKSPACE_ID}#{REPO}")
+    )
+    assert "signature" not in response["Items"][0]
+
+
+def test_build_item_omits_signature_returns_when_unannotated(tables):
+    """A signature without a return annotation persists params only --
+    no `returns: None` is written, keeping the item minimal."""
+    from shared.symbol_graph_writer import write_facts  # type: ignore
+
+    sig = _SigShim(params=(_ParamShim("x"),), returns=None)
+    fact = _defines_fact_with_sig("python:lambda.x.module::noreturn", sig)
+    write_facts(
+        workspace_id=WORKSPACE_ID,
+        repo=REPO,
+        commit_sha=NEW_SHA,
+        facts=[fact],
+        symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
+        code_maps_table_name=CODE_MAPS_TABLE,
+    )
+
+    table = tables.Table(SYMBOL_GRAPH_TABLE)
+    persisted = table.query(
+        KeyConditionExpression=Key("PK").eq(f"{WORKSPACE_ID}#{REPO}")
+    )["Items"][0]["signature"]
+    assert persisted == {"params": [{"name": "x"}]}

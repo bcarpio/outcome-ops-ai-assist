@@ -1148,3 +1148,83 @@ def test_fuzzy_resolve_returns_empty_for_blank_args(tables):
     assert fuzzy_resolve_by_name("ws-1", "",
         symbol_graph_table_name=SYMBOL_GRAPH_TABLE) == []
 
+
+
+# ===========================================================================
+# Signature deserialization (plan-signature-extraction chunk 01)
+# ===========================================================================
+
+
+def test_definitions_surfaces_signature_when_present(tables):
+    """A defines row with a persisted signature is returned on the
+    CallSite as a dict the consumer can use directly."""
+    from shared.symbol_graph_reader import definitions  # type: ignore
+
+    sym = "python:lambda.x.module::greet"
+    table = tables.Table(SYMBOL_GRAPH_TABLE)
+    item = {
+        "PK": f"{WORKSPACE_ID}#{REPO}#{SHA}",
+        "SK": f"defines#python:lambda.x.module::*#{sym}#lambda/x/module.py#10",
+        "GSI1PK": f"{WORKSPACE_ID}#{sym}",
+        "GSI1SK": f"defines#{REPO}#lambda/x/module.py#10",
+        "workspace_id": WORKSPACE_ID,
+        "repo": REPO,
+        "commit_sha": SHA,
+        "kind": "defines",
+        "source_symbol_id": "python:lambda.x.module::*",
+        "target_symbol_id": sym,
+        "file_path": "lambda/x/module.py",
+        "line": 10,
+        "language": "python",
+        "signature": {
+            "params": [
+                {"name": "name", "type": "str"},
+                {"name": "loud", "type": "bool"},
+            ],
+            "returns": "str",
+        },
+    }
+    table.put_item(Item=item)
+
+    result = definitions(
+        WORKSPACE_ID,
+        sym,
+        symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
+        code_maps_table_name=CODE_MAPS_TABLE,
+    )
+    assert len(result) == 1
+    assert result[0].signature == {
+        "params": [
+            {"name": "name", "type": "str"},
+            {"name": "loud", "type": "bool"},
+        ],
+        "returns": "str",
+    }
+
+
+def test_definitions_back_compat_row_without_signature(tables):
+    """A defines row predating the signature field reads as
+    CallSite.signature == None (no crash, no fabrication)."""
+    from shared.symbol_graph_reader import definitions  # type: ignore
+
+    sym = "python:lambda.x.legacy::do_a_thing"
+    _put_fact(
+        tables.Table(SYMBOL_GRAPH_TABLE),
+        workspace_id=WORKSPACE_ID,
+        repo=REPO,
+        commit_sha=SHA,
+        kind="defines",
+        source_symbol_id="python:lambda.x.legacy",
+        target_symbol_id=sym,
+        file_path="lambda/x/legacy.py",
+        line=7,
+        language="python",
+    )
+    result = definitions(
+        WORKSPACE_ID,
+        sym,
+        symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
+        code_maps_table_name=CODE_MAPS_TABLE,
+    )
+    assert len(result) == 1
+    assert result[0].signature is None

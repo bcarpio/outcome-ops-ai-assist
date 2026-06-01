@@ -1238,13 +1238,17 @@ def _call_sites_to_dict(call_sites) -> dict:
     """
     sites = []
     for s in call_sites:
-        sites.append({
+        entry = {
             "file_path": s.file_path,
             "line": s.line,
             "repo": s.repo,
             "source_symbol_id": s.source_symbol_id,
             "language": s.language,
-        })
+        }
+        sig = getattr(s, "signature", None)
+        if sig:
+            entry["signature"] = sig
+        sites.append(entry)
     return {
         "sites": sites,
         "truncated": False,

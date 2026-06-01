@@ -148,3 +148,72 @@ class TestExtractorBehavior:
         from extractor import extract_facts_from_bytes
 
         assert list(extract_facts_from_bytes("x.py", "unknown", b"")) == []
+
+
+class TestSignatures:
+    """signatures.py: function/method signatures with varied annotations."""
+
+    @pytest.fixture
+    def defines_by_target(self):
+        facts = _load("signatures.py")
+        return {f.target_symbol_id: f for f in _by_kind(facts, "defines")}
+
+    def _find(self, defines_by_target, suffix):
+        return next(
+            (f for s, f in defines_by_target.items() if s.endswith(suffix)),
+            None,
+        )
+
+    def test_bare_params_no_types(self, defines_by_target):
+        fact = self._find(defines_by_target, "::bare")
+        assert fact is not None and fact.signature is not None
+        names = [p.name for p in fact.signature.params]
+        assert names == ["a", "b"]
+        assert all(p.type is None for p in fact.signature.params)
+        assert fact.signature.returns is None
+
+    def test_typed_params_and_return(self, defines_by_target):
+        fact = self._find(defines_by_target, "::typed")
+        assert fact is not None and fact.signature is not None
+        sig = fact.signature
+        assert [(p.name, p.type) for p in sig.params] == [
+            ("a", "int"),
+            ("b", "str"),
+        ]
+        assert sig.returns == "bool"
+
+    def test_typed_default_keeps_type_drops_default(self, defines_by_target):
+        # Defaults are intentionally NOT captured (ADR-027 -- literals
+        # stay out). Type annotation IS captured.
+        fact = self._find(defines_by_target, "::typed_with_defaults")
+        assert fact is not None and fact.signature is not None
+        assert [(p.name, p.type) for p in fact.signature.params] == [
+            ("a", "int"),
+            ("b", "str"),
+        ]
+        assert fact.signature.returns == "Optional[int]"
+
+    def test_varargs_and_kwargs_emit_spelling(self, defines_by_target):
+        fact = self._find(defines_by_target, "::varargs")
+        assert fact is not None and fact.signature is not None
+        names = [p.name for p in fact.signature.params]
+        assert names == ["*args", "**kwargs"]
+        assert fact.signature.returns == "List[int]"
+
+    def test_method_signature_includes_self(self, defines_by_target):
+        fact = self._find(defines_by_target, "Greeter::greet")
+        assert fact is not None and fact.signature is not None
+        names = [p.name for p in fact.signature.params]
+        assert names == ["self", "name", "loud"]
+        types = {p.name: p.type for p in fact.signature.params}
+        assert types["self"] is None
+        assert types["name"] == "str"
+        assert types["loud"] == "bool"
+        assert fact.signature.returns == "str"
+
+    def test_class_define_has_no_signature(self, defines_by_target):
+        # Class itself is a `defines` fact but is not a callable; the
+        # extractor should leave the signature field None.
+        fact = self._find(defines_by_target, "::Greeter")
+        assert fact is not None
+        assert fact.signature is None

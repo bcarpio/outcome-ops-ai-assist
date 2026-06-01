@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import fnmatch
 from dataclasses import dataclass, field
-from typing import Callable, Dict, Iterator, List, Optional, Set
+from typing import Callable, Dict, Iterator, List, Optional, Set, Tuple
 
 
 # ---------------------------------------------------------------------------
@@ -44,12 +44,45 @@ FACT_KINDS: Set[str] = {
 
 
 @dataclass(frozen=True)
+class Param:
+    """One parameter on a callable's signature.
+
+    ``type`` is the declared/annotated type when the language provides one
+    and the parser sees it (Python annotations, TS/Java/C# types, ABAP
+    form params) — otherwise ``None``. Never inferred. Consistent with
+    ADR-027: capture what the parser sees, never paraphrase.
+    """
+
+    name: str
+    type: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class Signature:
+    """Parameter list + optional return type for a callable.
+
+    Rides on the ``defines`` fact of the callable it documents.
+    ``params`` is a tuple (not list) so the enclosing Fact stays frozen-
+    hashable. Order is source order. ``returns`` is the declared return
+    type or ``None`` when absent / not annotated.
+    """
+
+    params: Tuple[Param, ...] = ()
+    returns: Optional[str] = None
+
+
+@dataclass(frozen=True)
 class Fact:
     """A single typed structural edge.
 
     Every extractor — whether Tree-sitter or regex — emits ``Fact``
     instances and nothing else. Downstream storage flattens these onto
     DynamoDB items; the query API reads them back.
+
+    ``signature`` is populated only on ``kind == "defines"`` facts for
+    callables (functions / methods). Other kinds and non-callable
+    defines (classes, variables) leave it ``None`` — back-compat with
+    extractors and stored facts that predate the signature field.
     """
 
     kind: str
@@ -58,6 +91,7 @@ class Fact:
     file_path: str  # repo-relative, forward-slash normalized
     line: int  # 1-indexed
     language: str
+    signature: Optional[Signature] = None
 
     def __post_init__(self) -> None:
         if self.kind not in FACT_KINDS:
@@ -67,6 +101,10 @@ class Fact:
         if self.line < 1:
             raise ValueError(
                 f"Fact.line must be 1-indexed (>=1), got {self.line}"
+            )
+        if self.signature is not None and self.kind != "defines":
+            raise ValueError(
+                f"Fact.signature is only valid on kind='defines', got {self.kind!r}"
             )
 
 

@@ -690,6 +690,75 @@ class TestFindDefinitions:
         )
         assert payload["sites"][0]["line"] == 42
 
+    def test_signature_surfaces_when_persisted(self, tables):
+        """A defines row with a stored signature comes back through the
+        MCP envelope as a ``signature`` key on the site -- consumers
+        (Claude Code, chat synthesis) read the verified shape directly
+        instead of recalling it from source."""
+        sym = "python:lambda.x.module::greet"
+        table = tables.Table(SYMBOL_GRAPH_TABLE)
+        table.put_item(Item={
+            "PK": f"{WORKSPACE_ID}#{REPO}#{SHA}",
+            "SK": f"defines#python:lambda.x.module::*#{sym}#lambda/x/module.py#10",
+            "GSI1PK": f"{WORKSPACE_ID}#{sym}",
+            "GSI1SK": f"defines#{REPO}#lambda/x/module.py#10",
+            "workspace_id": WORKSPACE_ID,
+            "repo": REPO,
+            "commit_sha": SHA,
+            "kind": "defines",
+            "source_symbol_id": "python:lambda.x.module::*",
+            "target_symbol_id": sym,
+            "file_path": "lambda/x/module.py",
+            "line": 10,
+            "language": "python",
+            "signature": {
+                "params": [
+                    {"name": "name", "type": "str"},
+                    {"name": "loud", "type": "bool"},
+                ],
+                "returns": "str",
+            },
+        })
+        with _patch_user_workspaces([WORKSPACE_ID]):
+            result = mcp_module.handle_find_definitions(
+                {"symbol": sym, "workspace_id": WORKSPACE_ID},
+                USER_EMAIL,
+            )
+        payload = json.loads(result["text"])
+        assert len(payload["sites"]) == 1
+        assert payload["sites"][0]["signature"] == {
+            "params": [
+                {"name": "name", "type": "str"},
+                {"name": "loud", "type": "bool"},
+            ],
+            "returns": "str",
+        }
+
+    def test_signature_absent_when_row_has_none(self, tables):
+        """A defines row predating signature extraction comes back with
+        no ``signature`` key on the site -- consumers see absence rather
+        than a fabricated empty value."""
+        sym = "python:lambda.x.legacy::do_a_thing"
+        _put_fact(
+            tables.Table(SYMBOL_GRAPH_TABLE),
+            workspace_id=WORKSPACE_ID,
+            repo=REPO,
+            commit_sha=SHA,
+            kind="defines",
+            source_symbol_id="python:lambda.x.legacy",
+            target_symbol_id=sym,
+            file_path="lambda/x/legacy.py",
+            line=7,
+            language="python",
+        )
+        with _patch_user_workspaces([WORKSPACE_ID]):
+            result = mcp_module.handle_find_definitions(
+                {"symbol": sym, "workspace_id": WORKSPACE_ID},
+                USER_EMAIL,
+            )
+        payload = json.loads(result["text"])
+        assert "signature" not in payload["sites"][0]
+
     def test_cross_repo_duplicates_surface(self, tables):
         """definitions(X) returns list[CallSite] so cross-repo duplicates
         all surface (chunk-04 open Q #2). The MCP tool MUST preserve

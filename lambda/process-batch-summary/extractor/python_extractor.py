@@ -25,7 +25,7 @@ from typing import Iterator, List, Optional
 import tree_sitter_python as tsp
 from tree_sitter import Language, Node, Parser
 
-from .base import Fact, make_symbol_id, register_language
+from .base import Fact, Param, Signature, make_symbol_id, register_language
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +50,73 @@ def _node_text(node: Node, source: bytes) -> str:
 
 def _child_by_field(node: Node, field: str) -> Optional[Node]:
     return node.child_by_field_name(field)
+
+
+def _extract_signature(func_node: Node, source: bytes) -> Signature:
+    """Build a ``Signature`` from a tree-sitter ``function_definition`` node.
+
+    Captures parameter names + their type annotations (if present) and the
+    return type annotation (if present). Defaults are intentionally NOT
+    captured per ADR-027 — literals stay out of the graph. ``*args``,
+    ``**kwargs``, and ``/`` / ``*`` separators are surfaced under their
+    spelling (``*args``, ``**kwargs``, ``*``, ``/``) so callers can see the
+    full positional/keyword shape without inferring it.
+    """
+
+    params: List[Param] = []
+    parameters_node = _child_by_field(func_node, "parameters")
+    if parameters_node is not None:
+        for child in parameters_node.children:
+            t = child.type
+            if t == "identifier":
+                params.append(Param(name=_node_text(child, source)))
+            elif t == "typed_parameter":
+                # tree-sitter-python's typed_parameter exposes a `type` field
+                # but the name is a positional identifier child, not a field.
+                name_node = next(
+                    (c for c in child.children if c.type == "identifier"),
+                    None,
+                )
+                type_node = _child_by_field(child, "type")
+                if name_node is not None:
+                    params.append(
+                        Param(
+                            name=_node_text(name_node, source),
+                            type=_node_text(type_node, source) if type_node else None,
+                        )
+                    )
+            elif t == "default_parameter":
+                name_node = _child_by_field(child, "name")
+                if name_node is not None:
+                    params.append(Param(name=_node_text(name_node, source)))
+            elif t == "typed_default_parameter":
+                name_node = _child_by_field(child, "name")
+                type_node = _child_by_field(child, "type")
+                if name_node is not None:
+                    params.append(
+                        Param(
+                            name=_node_text(name_node, source),
+                            type=_node_text(type_node, source) if type_node else None,
+                        )
+                    )
+            elif t == "list_splat_pattern":
+                # *args — emit the spelling, including the star.
+                params.append(Param(name=_node_text(child, source)))
+            elif t == "dictionary_splat_pattern":
+                # **kwargs — same.
+                params.append(Param(name=_node_text(child, source)))
+            elif t in ("*", "/"):
+                # Positional-only / keyword-only separator. Surface the
+                # spelling so the signature reads as-written.
+                params.append(Param(name=t))
+            # Other types ('(', ')', ',') are syntactic and skipped.
+
+    returns: Optional[str] = None
+    return_type_node = _child_by_field(func_node, "return_type")
+    if return_type_node is not None:
+        returns = _node_text(return_type_node, source)
+
+    return Signature(params=tuple(params), returns=returns)
 
 
 def _walk_calls(node: Node, source: bytes) -> Iterator[tuple[str, int]]:
@@ -215,6 +282,7 @@ def extract(file_path: str, source: bytes) -> Iterator[Fact]:
                 file_path=file_path,
                 line=child.start_point[0] + 1,
                 language="python",
+                signature=_extract_signature(child, source),
             )
             body = _child_by_field(child, "body")
             if body is not None:
@@ -264,6 +332,7 @@ def extract(file_path: str, source: bytes) -> Iterator[Fact]:
                     file_path=file_path,
                     line=member.start_point[0] + 1,
                     language="python",
+                    signature=_extract_signature(member, source),
                 )
                 m_body = _child_by_field(member, "body")
                 if m_body is None:

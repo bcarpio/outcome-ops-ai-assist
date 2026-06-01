@@ -234,3 +234,72 @@ class TestSymbolGraphFilter:
         assert f.exclude == []
         assert f.max_file_bytes == 524288
         assert f.languages is None
+
+
+class TestSignatureSchema:
+    """plan-signature-extraction chunk 01 -- schema additions."""
+
+    def test_param_defaults_type_to_none(self):
+        from extractor.base import Param
+
+        p = Param(name="x")
+        assert p.name == "x"
+        assert p.type is None
+
+    def test_signature_defaults_to_empty_params_no_return(self):
+        from extractor.base import Signature
+
+        s = Signature()
+        assert s.params == ()
+        assert s.returns is None
+
+    def test_signature_is_frozen_hashable(self):
+        # Frozen + tuple of frozen Param dataclasses -> hashable,
+        # so a Fact carrying a Signature stays hashable too.
+        from extractor.base import Param, Signature
+
+        s = Signature(params=(Param("a", "int"),), returns="bool")
+        assert hash(s) == hash(s)
+
+    def test_fact_accepts_signature_on_defines(self):
+        from extractor.base import Fact, Param, Signature
+
+        f = Fact(
+            kind="defines",
+            source_symbol_id="python:mod::*",
+            target_symbol_id="python:mod::foo",
+            file_path="mod.py",
+            line=1,
+            language="python",
+            signature=Signature(params=(Param("a"),)),
+        )
+        assert f.signature is not None
+        assert f.signature.params[0].name == "a"
+
+    def test_fact_rejects_signature_on_non_defines(self):
+        from extractor.base import Fact, Param, Signature
+
+        with pytest.raises(ValueError, match="kind='defines'"):
+            Fact(
+                kind="calls",
+                source_symbol_id="python:mod::foo",
+                target_symbol_id="python:mod::bar",
+                file_path="mod.py",
+                line=10,
+                language="python",
+                signature=Signature(params=(Param("a"),)),
+            )
+
+    def test_fact_signature_is_optional(self):
+        """Pre-existing Fact construction (no signature kwarg) still works."""
+        from extractor.base import Fact
+
+        f = Fact(
+            kind="calls",
+            source_symbol_id="python:mod::foo",
+            target_symbol_id="python:mod::bar",
+            file_path="mod.py",
+            line=10,
+            language="python",
+        )
+        assert f.signature is None
