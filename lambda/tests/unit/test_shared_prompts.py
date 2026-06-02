@@ -708,3 +708,82 @@ class TestLineCitationGroundingRules:
         i_lc = prompt.find(LINE_CITATION_GROUNDING_RULES)
         assert i_rs != -1 and i_lc != -1
         assert i_rs < i_lc
+
+
+class TestListCompletenessRules:
+    """Chat synthesis must honor `complete: false` on every list-returning
+    tool response: surface "showing N of K" or refuse the enumeration
+    rather than ship a confidently-incomplete answer (ADR-032).
+    """
+
+    def test_constant_exists_and_names_the_contract_fields(self):
+        from shared.prompts import LIST_COMPLETENESS_RULES
+
+        assert "complete" in LIST_COMPLETENESS_RULES
+        assert "total_known" in LIST_COMPLETENESS_RULES
+
+    def test_constant_names_the_three_required_responses(self):
+        """On complete:false the model has three legal moves:
+        re-call with higher limit, disclose 'showing N of K', or
+        refuse the enumeration. The rule must spell all three out."""
+        from shared.prompts import LIST_COMPLETENESS_RULES
+
+        body = LIST_COMPLETENESS_RULES.lower()
+        assert "higher" in body or "call the tool again" in body
+        assert "showing n of" in body or "showing" in body
+        assert "refuse" in body
+
+    def test_constant_forbids_quoting_len_items_when_truncated(self):
+        """The deterministic count is total_known; len(items) on a
+        partial result is the silent-aggregation trap."""
+        from shared.prompts import LIST_COMPLETENESS_RULES
+
+        assert "total_known" in LIST_COMPLETENESS_RULES
+        body = LIST_COMPLETENESS_RULES.lower()
+        assert "len(items)" in body or "never" in body
+
+    def test_constant_references_the_augment_note_pattern(self):
+        """When the chat router clips the canonical set it prepends a
+        NOTE to the symbol facts block. The prompt rule must treat
+        that NOTE as complete:false so the LLM doesn't strip it."""
+        from shared.prompts import LIST_COMPLETENESS_RULES
+
+        assert "NOTE" in LIST_COMPLETENESS_RULES
+        body = LIST_COMPLETENESS_RULES.lower()
+        assert "do not strip" in body or "treat as" in body or \
+            "do not" in body
+
+    def test_constant_carries_the_require_auth_failure_example(self):
+        """A concrete WRONG example pinned in the rule so future
+        prompt-tightening reviewers know what they're guarding against.
+        The 2026-06-02 require_auth eval claimed 65 sites; reality 51."""
+        from shared.prompts import LIST_COMPLETENESS_RULES
+
+        assert "require_auth" in LIST_COMPLETENESS_RULES
+        assert "WRONG" in LIST_COMPLETENESS_RULES or "wrong" in LIST_COMPLETENESS_RULES
+
+    def test_chat_prompt_includes_list_completeness_block(self):
+        from shared.prompts import (
+            build_chat_system_prompt,
+            LIST_COMPLETENESS_RULES,
+        )
+
+        prompt = build_chat_system_prompt()
+        assert LIST_COMPLETENESS_RULES in prompt
+
+    def test_list_completeness_appears_after_line_citation(self):
+        """Reading order: VALUE_GROUNDING -> READ_SOURCE -> LINE_CITATION
+        -> LIST_COMPLETENESS. Each rule layer builds on the previous:
+        value -> verify-value -> locate-symbol -> list-completeness.
+        """
+        from shared.prompts import (
+            build_chat_system_prompt,
+            LINE_CITATION_GROUNDING_RULES,
+            LIST_COMPLETENESS_RULES,
+        )
+
+        prompt = build_chat_system_prompt()
+        i_lc = prompt.find(LINE_CITATION_GROUNDING_RULES)
+        i_lcomplete = prompt.find(LIST_COMPLETENESS_RULES)
+        assert i_lc != -1 and i_lcomplete != -1
+        assert i_lc < i_lcomplete

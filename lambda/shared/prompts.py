@@ -130,6 +130,36 @@ LINE_CITATION_GROUNDING_RULES = """When you are about to cite a code location as
 5. This rule is additive to VALUE_GROUNDING and READ_SOURCE rules. Those verify what's AT a line; this verifies which SYMBOL contains the line.
 6. Never compute counts, totals, or aggregates ("N call sites", "M references", "approximately K", "X functions across Y files") in your own prose by summing or estimating from the items you enumerated. Tool responses carry deterministic counts (e.g., `len(rows)`); quote a tool's count verbatim or omit the count entirely. Do NOT write a headline number you computed from your own enumeration -- if a number didn't come from a tool field, don't write the number."""
 
+# List-completeness contract (ADR-032). Every list-returning tool emits
+# `complete: bool` + `total_known: int | null` on its response envelope.
+# This rule binds chat synthesis to honor those fields -- on
+# `complete: false` it must surface the truncation or refuse the
+# enumeration question, NEVER ship a confidently-incomplete answer.
+# The 2026-06-02 require_auth audit on the GA app.retrieveit.ai
+# workspace surfaced the silent-truncation half: 51 actual call sites,
+# 37 enumerated, "65" claimed; chat router was running on a clipped
+# canonical set and the answer reconciled with nothing. Tightens the
+# anti-aggregate sub-rule of LINE_CITATION_GROUNDING_RULES item 6.
+LIST_COMPLETENESS_RULES = """When you call any list-returning tool (find_callers, find_importers, find_implementers, find_definitions, find_symbol_by_name, list_workspace_documents, query_knowledge_base, or any tool that returns a list of items in its response):
+
+1. Read the `complete` field on the response. `complete: true` means the list contains every matching item known to the workspace at query time. `complete: false` means the list was clipped by a cap (the caller's `limit`, a reader default, a DDB pagination boundary).
+
+2. The `total_known` field, when non-null, is the DETERMINISTIC total count. When you quote a count in your answer, you MUST quote `total_known` -- NEVER `len(items)` from the list, NEVER a number you computed by counting what you enumerated. This is a tightening of the anti-aggregate rule in LINE_CITATION_GROUNDING_RULES item 6.
+
+3. When `complete: false`, you MUST do one of:
+   (a) Call the tool again with a higher `limit` to obtain the full set; OR
+   (b) DISCLOSE the truncation explicitly. Use the exact form "showing N of K" when `total_known` is known, or "showing N of at least K" (where K is `len(items)` and you noted the actual cap) when `total_known` is null. Recommend the user re-ask with "show all" or an equivalent escalation if they need the full set; OR
+   (c) REFUSE the enumeration question and explain the answer would be partial.
+
+4. Do NOT silently consume a clipped result. A confidently-incomplete enumeration is the worst failure mode for this product. Customers run enumeration questions against their own workspaces ("which Lambdas call X", "which services import Y") and depend on the answer being either whole or honestly labeled. A silent clip looks identical to a complete answer in the UI and gets cited verbatim downstream.
+
+5. The chat router's augment may prepend an explicit "NOTE: the bare-name lookup for X was clipped at N canonicals..." line to the symbol facts block. When you see such a NOTE, treat it as `complete: false` and apply rule 3 above -- surface the disclosure to the user or refuse the enumeration. Do NOT strip the NOTE or summarize past it.
+
+6. Examples of correct vs. incorrect responses to a `complete: false` callers query for "require_auth":
+   - CORRECT: "I found 16 lambdas calling require_auth, but this list is truncated -- there are at least 8 more in the workspace I have not enumerated. Re-ask with 'show all' or raise the limit to see the complete set."
+   - CORRECT: "The list of lambdas calling require_auth was clipped at the lookup cap. I cannot give you the complete answer without re-querying; want me to widen the search?"
+   - WRONG: "16 lambdas call require_auth: <enumeration> ... Total: 65 call sites." (silent clip + fabricated headline + no disclosure)."""
+
 # Scope SAST/SonarQube signals to what they actually cover. See ADR-025.
 SAST_SCOPE_RULES = """When SonarQube or other SAST output appears in your context:
 - SAST covers syntactic code-smell rules and known-CVE dependency versions. A passing SAST grade means the code avoids the patterns the configured ruleset checks for — nothing more.
@@ -199,6 +229,8 @@ You also have access to conversation memory - summaries of earlier parts of long
 {READ_SOURCE_VERIFICATION_RULES}
 
 {LINE_CITATION_GROUNDING_RULES}
+
+{LIST_COMPLETENESS_RULES}
 
 {CODE_OVER_DOCS_RULES}
 
