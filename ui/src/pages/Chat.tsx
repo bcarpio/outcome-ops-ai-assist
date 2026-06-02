@@ -843,7 +843,26 @@ export default function Chat() {
                       {msg.role === 'assistant' ? (
                         <div className="prose prose-sm max-w-none" data-message-id={msg.message_id || String(i)}>
                           {msg.content ? (
-                            <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+                            <ReactMarkdown
+                              remarkPlugins={[remarkGfm]}
+                              components={{
+                                // Wide GFM tables (security/audit
+                                // matrices, "controls vs status" lists)
+                                // render at their natural width inside
+                                // `prose max-w-none`; without this
+                                // wrapper they bleed past the message
+                                // bubble's right edge. The wrapper
+                                // gives the table its own horizontal
+                                // scroll region inside the bubble.
+                                table: ({ node, ...props }) => (
+                                  <div className="overflow-x-auto max-w-full">
+                                    <table {...props} />
+                                  </div>
+                                ),
+                              }}
+                            >
+                              {msg.content}
+                            </ReactMarkdown>
                           ) : msg.isStreaming ? (
                             <div className="flex items-center gap-2 text-gray-500">
                               <Loader2 size={16} className="animate-spin" />
