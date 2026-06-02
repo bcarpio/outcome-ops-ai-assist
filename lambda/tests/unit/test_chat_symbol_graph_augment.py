@@ -591,9 +591,22 @@ def test_augment_multi_canonical_runs_callers_per_canonical_and_merges(
     # owns which callers.
     assert auth_canonical in out["graph_block"]
     assert org_canonical in out["graph_block"]
-    # The "across all matches" summary line — total caller count
-    # across the two canonicals.
-    assert "Direct callers across all matches: 3" in out["graph_block"]
+    # Regression guard (2026-06-02 audit): the renderer must NOT emit
+    # an aggregate "across all matches" or "N distinct definitions"
+    # summary line. Those numbers (CANONICAL count mislabeled as
+    # definitions, retrieval total mislabeled as "call sites") were
+    # the renderer-authored prose the LLM parroted as wrong claims
+    # ("40 distinct definitions / 94 direct call sites total" against
+    # ground truth of 24 / 51). ADR-032: aggregates the LLM might
+    # quote MUST come from per-tool fields (total_known) or not
+    # appear at all.
+    assert "across all matches" not in out["graph_block"], (
+        f"Renderer regressed: aggregate summary line returned: "
+        f"{out['graph_block']!r}"
+    )
+    assert "distinct definitions" not in out["graph_block"], (
+        f"Renderer regressed: 'distinct definitions' aggregate returned"
+    )
 
     # Telemetry — now reports callers, not definitions.
     assert out["retrievals_fired"] == ["graph"]

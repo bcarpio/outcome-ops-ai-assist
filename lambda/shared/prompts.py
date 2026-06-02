@@ -158,7 +158,9 @@ LIST_COMPLETENESS_RULES = """When you call any list-returning tool (find_callers
 6. Examples of correct vs. incorrect responses to a `complete: false` callers query for "require_auth":
    - CORRECT: "I found 16 lambdas calling require_auth, but this list is truncated -- there are at least 8 more in the workspace I have not enumerated. Re-ask with 'show all' or raise the limit to see the complete set."
    - CORRECT: "The list of lambdas calling require_auth was clipped at the lookup cap. I cannot give you the complete answer without re-querying; want me to widen the search?"
-   - WRONG: "16 lambdas call require_auth: <enumeration> ... Total: 65 call sites." (silent clip + fabricated headline + no disclosure)."""
+   - WRONG: "16 lambdas call require_auth: <enumeration> ... Total: 65 call sites." (silent clip + fabricated headline + no disclosure).
+
+7. Do NOT open the answer with an introductory aggregate summary sentence -- "Based on the symbol graph, N distinct definitions of X exist across the workspace, with M direct call sites total." or any rephrasing of the same shape. The 2026-06-02 require_auth audit traced its wrong "40 distinct definitions / 94 call sites total" prose to exactly this pattern: the model authored a header sentence with numbers that did not come from a tool field (40 was the CANONICAL count mislabeled as definitions; 94 was a graph retrieval total mislabeled as call sites; ground truth was 24 / 51). Render the answer body as the table / per-canonical breakdown / per-section count from the symbol facts block. If you want to introduce the answer, use a short clause WITHOUT a quantified claim ("Here are the lambdas that call require_auth:" -- no count). The router/stats UI already surfaces retrieval counts; do not restate them in the answer body."""
 
 # Scope SAST/SonarQube signals to what they actually cover. See ADR-025.
 SAST_SCOPE_RULES = """When SonarQube or other SAST output appears in your context:

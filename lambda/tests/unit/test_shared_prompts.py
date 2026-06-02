@@ -787,3 +787,47 @@ class TestListCompletenessRules:
         i_lcomplete = prompt.find(LIST_COMPLETENESS_RULES)
         assert i_lc != -1 and i_lcomplete != -1
         assert i_lc < i_lcomplete
+
+
+class TestListCompletenessIntroAggregateBan:
+    """The 2026-06-02 require_auth audit: chat answer led with
+    'Based on the symbol graph, 40 distinct definitions ... 94 direct
+    call sites total.' against ground truth 24 / 51. The numbers
+    came from the renderer (CANONICAL count + retrieval total) but
+    were authored into prose by the model. Both halves are closed:
+    the renderer no longer emits the aggregate summary line; the
+    prompt rule explicitly forbids the model from inventing one.
+    """
+
+    def test_intro_aggregate_summary_explicitly_forbidden(self):
+        from shared.prompts import LIST_COMPLETENESS_RULES
+
+        body = LIST_COMPLETENESS_RULES.lower()
+        # Rule item 7 must name the failure pattern outright.
+        assert "introductory aggregate" in body or \
+            "introductory summary" in body or \
+            "do not open the answer" in body
+
+    def test_intro_aggregate_rule_pins_the_failure_case(self):
+        """The require_auth wrong numbers (40 / 94 vs ground truth
+        24 / 51) are documented in the rule so future prompt
+        reviewers see what they're guarding against."""
+        from shared.prompts import LIST_COMPLETENESS_RULES
+
+        # The failure case numbers appear verbatim so a reviewer
+        # editing the rule sees the audit story they would erase.
+        assert "40" in LIST_COMPLETENESS_RULES
+        assert "94" in LIST_COMPLETENESS_RULES
+        assert "24" in LIST_COMPLETENESS_RULES
+        assert "51" in LIST_COMPLETENESS_RULES
+
+    def test_intro_clause_without_count_is_explicitly_allowed(self):
+        """The rule must not over-correct into 'never introduce the
+        answer.' A short clause without a quantified claim is fine
+        ('Here are the lambdas that call require_auth:')."""
+        from shared.prompts import LIST_COMPLETENESS_RULES
+
+        body = LIST_COMPLETENESS_RULES.lower()
+        assert "without a quantified claim" in body or \
+            "no count" in body or \
+            "without a count" in body

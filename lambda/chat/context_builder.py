@@ -275,12 +275,21 @@ def build_multi_canonical_facts_block(
     lines: List[str] = [SYMBOL_FACTS_HEADER, ""]
     lines.append(f"Question target (resolved candidate): {symbol_candidate}")
     lines.append("")
-    total = sum(len(r.sites) for _, _, r in per_canonical)
-    lines.append(
-        f"`{symbol_candidate}` resolves to {len(per_canonical)} distinct "
-        f"definitions in {workspace_label}. {label} across all matches: "
-        f"{total}."
-    )
+    # No aggregate "N distinct definitions" / "N across all matches" summary
+    # here -- per ADR-032 those numbers must NOT be authored in the
+    # context for the model to parrot. The earlier shape ("`X` resolves
+    # to N distinct definitions in Y. <Relation> across all matches: M.")
+    # was a renderer-emitted aggregate the LLM faithfully repeated as
+    # prose:
+    #   * "N distinct definitions" mislabeled CANONICAL count as
+    #     definitions count (per-lambda vendoring + test-file pseudo-
+    #     defines produced 40 canonicals for a 24-definition function).
+    #   * "M across all matches" duplicated the graph-results count
+    #     already shown in the router-stats chip and was mis-worded as
+    #     "call sites" when it was a retrieval-set total.
+    # Per-canonical headers (### <canonical>) and per-section counts
+    # below give the model the structural breakdown without an
+    # authored aggregate line.
 
     # Stable sort by canonical id so the block is reproducible.
     for canonical, def_site, result in sorted(per_canonical, key=lambda t: t[0]):
