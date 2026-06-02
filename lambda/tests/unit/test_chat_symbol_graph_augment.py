@@ -741,3 +741,156 @@ def test_augment_fans_out_across_workspaces(_inject_clients):
     assert out["graph_skip_reason"] is None
     assert out["graph_result_count"] == 1
     assert "lambda/auth/handler.py:1325" in out["graph_block"]
+
+
+# ===========================================================================
+# ADR-032 — Canonical-set truncation surfacing.
+#
+# The 2026-06-02 require_auth audit failure: chat router called
+# fuzzy_resolve_by_name with no limit, default 25 clipped a 40-canonical
+# set, 8 lambdas silently dropped from the relation fan-out. After the
+# chunk-03 fix the router passes an explicit _FUZZY_RESOLVE_LIMIT (200)
+# AND, when the resolver itself still truncates (workspace exceeds 200),
+# the augment block must carry an explicit "NOTE: bare-name lookup was
+# clipped..." disclosure so the chat synthesis prompt rule (chunk 04)
+# can bind the LLM to surface the incompleteness rather than ship a
+# confidently-partial enumeration.
+# ===========================================================================
+
+
+def test_augment_fuzzy_resolver_uses_explicit_limit_not_default(
+    _inject_clients, monkeypatch
+):
+    """Regression guard: the chat fuzzy resolver MUST pass an explicit
+    limit to the symbol-graph reader. Falling through to the reader's
+    default (25) was the silent-truncation cause for require_auth."""
+    _create_symbol_graph_table()
+    _create_code_maps_table()
+
+    bedrock_stub = _inject_clients
+    bedrock_stub.converse.return_value = _bedrock_response(
+        "structural", "report_repos_snapshot"
+    )
+
+    canonical = (
+        "python:lambda.shared.outcomeops_license::report_repos_snapshot"
+    )
+    _put_fact(
+        workspace_id=WORKSPACE_ID,
+        repo=REPO,
+        commit_sha=SHA,
+        kind="defines",
+        source_symbol_id="python:lambda.shared.outcomeops_license::<module>",
+        target_symbol_id=canonical,
+        file_path="lambda/shared/outcomeops_license.py",
+        line=142,
+    )
+
+    handler = _import_augment()
+
+    # The chat handler imports fuzzy_resolve_by_name lazily inside the
+    # _fuzzy_resolve_symbol function, so the live symbol lives at
+    # shared.symbol_graph_reader.fuzzy_resolve_by_name. Patch there.
+    from shared import symbol_graph_reader  # type: ignore
+
+    captured = {}
+    real = symbol_graph_reader.fuzzy_resolve_by_name
+
+    def _spy(*args, **kwargs):
+        captured["limit"] = kwargs.get("limit")
+        captured["args"] = args
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(
+        symbol_graph_reader, "fuzzy_resolve_by_name", _spy
+    )
+
+    out = handler._augment_context_with_symbol_graph(
+        question="Which Lambdas call `report_repos_snapshot`?",
+        workspace_ids=[WORKSPACE_ID],
+        user_id="user@x.com",
+    )
+
+    # The resolver was invoked with an explicit limit (not None / not
+    # the reader default 25). The exact value is the constant the
+    # router exports so a future bump is visible.
+    assert captured.get("limit") == handler._FUZZY_RESOLVE_LIMIT
+    assert handler._FUZZY_RESOLVE_LIMIT >= 200
+    # And the augment recorded the structured signal on `out` so the
+    # downstream rendering can surface the cap if it's ever hit.
+    assert out["graph_canonicals_limit"] == handler._FUZZY_RESOLVE_LIMIT
+    assert out["graph_canonicals_truncated"] is False
+
+
+def test_augment_canonical_truncation_prepends_disclosure_note(
+    _inject_clients, monkeypatch
+):
+    """When fuzzy resolution itself was clipped, the augment block
+    must prepend an explicit NOTE so the chat synthesis prompt rule
+    (chunk 04) can bind on it. The note names the cap and tells the
+    LLM the answer must surface the incompleteness."""
+    _create_symbol_graph_table()
+    _create_code_maps_table()
+
+    bedrock_stub = _inject_clients
+    bedrock_stub.converse.return_value = _bedrock_response(
+        "structural", "require_auth"
+    )
+
+    # Seed one canonical + one calls fact so the augment has SOMETHING
+    # to render around the disclosure.
+    canonical = "python:lambda.auth.handler::require_auth"
+    _put_fact(
+        workspace_id=WORKSPACE_ID,
+        repo=REPO,
+        commit_sha=SHA,
+        kind="defines",
+        source_symbol_id="python:lambda.auth.handler::<module>",
+        target_symbol_id=canonical,
+        file_path="lambda/auth/handler.py",
+        line=588,
+    )
+    _put_fact(
+        workspace_id=WORKSPACE_ID,
+        repo=REPO,
+        commit_sha=SHA,
+        kind="calls",
+        source_symbol_id="python:lambda.auth.handler::handle_verify",
+        target_symbol_id=canonical,
+        file_path="lambda/auth/handler.py",
+        line=1325,
+    )
+
+    handler = _import_augment()
+
+    # Stub the fuzzy resolver to claim truncation -- can't easily seed
+    # 201+ canonicals in moto, and this isolates the rendering contract.
+    from shared.symbol_graph_reader import ResolutionResult  # type: ignore
+
+    def _stub_truncated(*args, **kwargs):
+        return ResolutionResult(
+            canonicals=[canonical],
+            truncated=True,
+            total_known=None,
+        )
+
+    from shared import symbol_graph_reader  # type: ignore
+
+    monkeypatch.setattr(
+        symbol_graph_reader, "fuzzy_resolve_by_name", _stub_truncated
+    )
+
+    out = handler._augment_context_with_symbol_graph(
+        question="Which Lambdas call `require_auth`?",
+        workspace_ids=[WORKSPACE_ID],
+        user_id="user@x.com",
+    )
+
+    assert out["graph_canonicals_truncated"] is True
+    block = out["graph_block"]
+    assert "NOTE: the bare-name lookup" in block
+    assert str(handler._FUZZY_RESOLVE_LIMIT) in block
+    assert "surface this incompleteness" in block
+    # The actual rendered facts still appear -- the disclosure is
+    # additive, not a replacement.
+    assert "lambda/auth/handler.py:1325" in block

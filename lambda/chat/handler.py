@@ -576,66 +576,90 @@ def _site_to_dict(site) -> Dict[str, Any]:
     }
 
 
+_FUZZY_RESOLVE_LIMIT = 200
+"""Enumeration-shaped consumer limit for fuzzy_resolve_by_name.
+
+The reader's default is 25, sized for general MCP disambiguation
+(LLM picking from a handful of canonicals). The chat router's
+semantics are enumeration: every canonical for a bare name must be
+walked so the downstream relation fan-out is complete. 200 covers
+any realistic workspace -- the 2026-06-02 require_auth eval had 40
+canonicals; the prior 25-cap silently lost 8 lambdas. ADR-032's
+completeness signal catches the regression if a workspace ever
+exceeds 200 (the chat synthesis prompt rule, ADR-032/chunk 04,
+binds the LLM to surface the truncation rather than ship a
+silently-incomplete enumeration)."""
+
+
 def _fuzzy_resolve_symbol(
     workspace_id: str,
     bare_name: str,
     symbol_graph_table_name: str,
-) -> List[str]:
+):
     """Resolve a user-typed bare symbol name to its canonical ID(s).
 
     The user types ``"require_auth"``; the graph stores the canonical
     ``"python:lambda.auth.handler::require_auth"``. Backed by the
     ``target-name-index`` GSI on the symbol-graph table, partitioned
-    by ``(workspace_id, bare_name)`` — a single Query, bounded by
-    actual matches, replaces the original full-table Scan that did
-    not scale past a single repo per workspace.
+    by ``(workspace_id, bare_name)`` -- a single Query, bounded by
+    actual matches.
 
-    Returns matching canonical symbol IDs (empty list when nothing
-    matched; multi-element list when the bare name is overloaded
-    across modules so the caller can disambiguate).
+    Returns the full ``ResolutionResult`` (canonicals + truncated +
+    total_known) so the augment caller can surface a canonical-set
+    truncation to the prompt context per ADR-032. An empty result is
+    a first-class answer (complete with zero canonicals).
     """
+    from shared.symbol_graph_reader import ResolutionResult  # type: ignore
 
     if not bare_name or not workspace_id or not symbol_graph_table_name:
-        return []
+        return ResolutionResult(
+            canonicals=[], truncated=False, total_known=0
+        )
 
     # If the user typed a canonical-looking ID (contains ``::``),
     # the exact-match path already handled it; don't re-resolve.
     if "::" in bare_name:
-        return []
+        return ResolutionResult(
+            canonicals=[], truncated=False, total_known=0
+        )
 
     try:
         from shared.symbol_graph_reader import fuzzy_resolve_by_name  # type: ignore
     except Exception as exc:  # pragma: no cover - import failure
         logger.warning("[chat.augment] reader import failed: %s", exc)
-        return []
+        return ResolutionResult(
+            canonicals=[], truncated=False, total_known=None
+        )
 
     try:
         resolution = fuzzy_resolve_by_name(
             workspace_id,
             bare_name,
+            limit=_FUZZY_RESOLVE_LIMIT,
             symbol_graph_table_name=symbol_graph_table_name,
         )
     except Exception as exc:
         logger.warning(
             "[chat.augment] fuzzy resolve failed for %r: %s", bare_name, exc
         )
-        return []
+        return ResolutionResult(
+            canonicals=[], truncated=False, total_known=None
+        )
 
     # Observability: the live diagnosis on 2026-05-15 showed we had
     # no way to tell from CloudWatch whether fuzzy returned 0, 1, or
-    # N canonicals -- fuzzy was failing silently against multi-repo
-    # workspaces. Log the count so the next time this regresses we
-    # can spot it without re-instrumenting. Now also log truncation
-    # so the require_auth-style silent-clip failure surfaces in
-    # CloudWatch (the underlying bug -- no explicit limit passed
-    # here -- is fixed in the chunk-03 router edit, not chunk 02).
+    # N canonicals. The 2026-06-02 require_auth eval surfaced the
+    # silent-truncation half: cap=25 clipped 40 canonicals to the
+    # alphabetical first 25; the failure was invisible until ground-
+    # truth verification. Log both count and truncated so a future
+    # regression surfaces in CloudWatch the moment it ships.
     logger.info(
         "[chat.augment] fuzzy resolve %r -> %d canonicals (truncated=%s)",
         bare_name,
         len(resolution.canonicals),
         resolution.truncated,
     )
-    return resolution.canonicals
+    return resolution
 
 
 def _augment_context_with_symbol_graph(
@@ -792,15 +816,20 @@ def _augment_context_with_symbol_graph(
     def _resolve_in(ws):
         # Exact match first (user typed a canonical-looking id); else
         # fuzzy-resolve the bare name to its canonical id(s) via the
-        # GSI3 bare-name index (a single-partition query, cheap).
+        # GSI3 bare-name index. Returns (canonicals, truncated) so the
+        # main flow can record a canonical-set clip into the prompt
+        # context per ADR-032.
         if definitions(
             ws,
             user_symbol,
             symbol_graph_table_name=symbol_graph_table,
             code_maps_table_name=code_maps_table,
         ).sites:
-            return [user_symbol]
-        return _fuzzy_resolve_symbol(ws, user_symbol, symbol_graph_table)
+            return [user_symbol], False
+        resolution = _fuzzy_resolve_symbol(
+            ws, user_symbol, symbol_graph_table
+        )
+        return resolution.canonicals, bool(resolution.truncated)
 
     try:
         # 3a. Fan out symbol resolution across ALL selected workspaces.
@@ -809,12 +838,23 @@ def _augment_context_with_symbol_graph(
         # workspace except the first. Subpath symbols (with "/") ARE
         # their own canonical id, so they're queried directly.
         targets: List[Tuple[str, str]] = []
+        canonicals_truncated_in_any_ws = False
         if is_subpath:
             targets = [(ws, user_symbol) for ws in workspace_ids]
         else:
             for ws in workspace_ids:
-                for canonical in _resolve_in(ws):
+                canonicals, was_truncated = _resolve_in(ws)
+                if was_truncated:
+                    canonicals_truncated_in_any_ws = True
+                for canonical in canonicals:
                     targets.append((ws, canonical))
+        # ADR-032: when the canonical resolution itself was clipped, the
+        # downstream relation fan-out is built on an incomplete set.
+        # Surface a structured signal the chat synthesis prompt rule
+        # (chunk 04) binds against -- the LLM must disclose or refuse
+        # the enumeration rather than ship the partial answer.
+        out["graph_canonicals_truncated"] = canonicals_truncated_in_any_ws
+        out["graph_canonicals_limit"] = _FUZZY_RESOLVE_LIMIT
 
         # 3b. Fire decision + backstop. The router may say skip
         # (PATTERN/DEPENDENCY), but if the extracted bare symbol actually
@@ -911,6 +951,22 @@ def _augment_context_with_symbol_graph(
             relation=relation,
             workspace_label=ws_label,
         )
+        # ADR-032 surface: when the canonical resolution was clipped,
+        # the relation fan-out above is built on a partial canonical
+        # set. Prepend the disclosure so the LLM (per
+        # LIST_COMPLETENESS_RULES) reports "showing N of at least
+        # canonicals" or refuses, instead of confidently enumerating
+        # the partial set.
+        if out.get("graph_canonicals_truncated"):
+            out["graph_block"] = (
+                f"NOTE: the bare-name lookup for {user_symbol!r} was "
+                f"clipped at {_FUZZY_RESOLVE_LIMIT} canonicals. The "
+                f"facts below are based on the first "
+                f"{_FUZZY_RESOLVE_LIMIT} matches; more canonicals "
+                f"exist in the workspace that were not enumerated. "
+                f"You MUST surface this incompleteness in your answer "
+                f"(per ADR-032).\n\n"
+            ) + out["graph_block"]
         if "graph" not in out["retrievals_fired"]:
             out["retrievals_fired"].insert(0, "graph")
         out["graph_relation"] = relation
