@@ -619,3 +619,92 @@ class TestReadSourceVerificationRules:
         i_rs = prompt.find(READ_SOURCE_VERIFICATION_RULES)
         assert i_vg != -1 and i_rs != -1
         assert i_vg < i_rs
+
+
+class TestLineCitationGroundingRules:
+    """Chat synthesis must use find_symbol_at_line for any
+    "<function_name> (file:line)" citation; the bound rule lives in
+    LINE_CITATION_GROUNDING_RULES (ADR-031). Also enforces the
+    anti-aggregate rule that closes the fabricated-headline-count
+    failure mode (2026-06-02 require_auth eval cited "65" while
+    enumeration summed to 37 and reality was 51).
+    """
+
+    def test_constant_exists_and_names_the_tool(self):
+        from shared.prompts import LINE_CITATION_GROUNDING_RULES
+
+        assert "find_symbol_at_line" in LINE_CITATION_GROUNDING_RULES
+
+    def test_constant_names_target_symbol_id_field(self):
+        """Synthesis must use the returned target_symbol_id as the
+        cited name, not invent one."""
+        from shared.prompts import LINE_CITATION_GROUNDING_RULES
+
+        assert "target_symbol_id" in LINE_CITATION_GROUNDING_RULES
+
+    def test_constant_handles_null_result_by_dropping_name_claim(self):
+        """When the tool returns null (line not enclosed by any
+        defines), synthesis must cite only file:line -- not invent a
+        function name."""
+        from shared.prompts import LINE_CITATION_GROUNDING_RULES
+
+        assert "null" in LINE_CITATION_GROUNDING_RULES
+        # Must explicitly forbid guessing
+        body = LINE_CITATION_GROUNDING_RULES.lower()
+        assert "not invent" in body or "do not invent" in body \
+            or "do not guess" in body or "not guess" in body
+
+    def test_constant_forbids_inference_from_surrounding_text(self):
+        """The class of error this rule closes is the model patching
+        the enclosing name from memory of the file. Must explicitly
+        forbid inference."""
+        from shared.prompts import LINE_CITATION_GROUNDING_RULES
+
+        body = LINE_CITATION_GROUNDING_RULES.lower()
+        assert "do not infer" in body or "trust the graph" in body
+
+    def test_anti_aggregate_subrule_forbids_llm_computed_counts(self):
+        """The anti-aggregate sub-rule (item 6) forbids LLM-computed
+        totals across enumerated items. Without it, the model can
+        invent a headline number divorced from the data it cited."""
+        from shared.prompts import LINE_CITATION_GROUNDING_RULES
+
+        body = LINE_CITATION_GROUNDING_RULES.lower()
+        # The rule must mention BOTH the prohibition (counts/aggregates)
+        # AND the alternative (tool-returned count / len(rows)).
+        assert (
+            "count" in body or "aggregate" in body or "total" in body
+        )
+        assert (
+            "len(rows)" in LINE_CITATION_GROUNDING_RULES
+            or "tool" in body
+        )
+
+    def test_chat_prompt_includes_line_citation_block(self):
+        """build_chat_system_prompt must compose in the line-citation
+        rules so the chat synthesis path actually receives them."""
+        from shared.prompts import (
+            build_chat_system_prompt,
+            LINE_CITATION_GROUNDING_RULES,
+        )
+
+        prompt = build_chat_system_prompt()
+        assert LINE_CITATION_GROUNDING_RULES in prompt
+
+    def test_line_citation_block_appears_after_read_source(self):
+        """Reading order: VALUE_GROUNDING tells the model what an
+        unsafe value claim looks like; READ_SOURCE tells it how to
+        verify the value; LINE_CITATION tells it how to ground the
+        enclosing symbol. The progression Value -> Read -> Locate is
+        intentional."""
+        from shared.prompts import (
+            build_chat_system_prompt,
+            READ_SOURCE_VERIFICATION_RULES,
+            LINE_CITATION_GROUNDING_RULES,
+        )
+
+        prompt = build_chat_system_prompt()
+        i_rs = prompt.find(READ_SOURCE_VERIFICATION_RULES)
+        i_lc = prompt.find(LINE_CITATION_GROUNDING_RULES)
+        assert i_rs != -1 and i_lc != -1
+        assert i_rs < i_lc

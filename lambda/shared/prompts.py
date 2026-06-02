@@ -108,6 +108,28 @@ READ_SOURCE_VERIFICATION_RULES = """When you are about to state a SPECIFIC code 
 - If `read_source` returns a value that disagrees with what the code-map summary suggested, treat the source line as authoritative (ADR-025 "code wins"). Surface the disagreement to the user.
 - If `read_source` is unavailable or returns an error, say so -- do not fall back to a guessed value."""
 
+# Verify which SYMBOL contains a cited line. Closes the wrong-enclosing-
+# symbol failure mode: chat answers that write "<name> (file:line)"
+# would otherwise patch the enclosing function from memory and mis-scope
+# it (the 2026-06-02 magic_link audit cited "handle_verify (line 544)"
+# when 544 actually lives in verify_magic_token). The find_symbol_at_line
+# MCP tool resolves line -> innermost defining symbol via the graph; this
+# rule binds synthesis to use it for every line citation. See ADR-031.
+#
+# Item 6 is the anti-aggregate rule: the same eval surfaced an answer
+# claiming "65 call sites" whose own enumeration summed to 37 (and
+# reality was 51). LLM-computed totals are forbidden -- only tool-
+# returned counts may be quoted. The structured count field that makes
+# this cheap to comply with is Q2 plan scope; the prompt rule is here
+# as a free add-on while we're already in this file.
+LINE_CITATION_GROUNDING_RULES = """When you are about to cite a code location as "<function_name> (file:line)" or "<function_name> at line N" or any equivalent that names an enclosing function/class/method together with a line number:
+1. The enclosing-name claim MUST be verified through `find_symbol_at_line` on the symbol graph. Pass the `repo` + `file_path` + `line` you intend to cite; use the returned `target_symbol_id` as the enclosing name in your prose.
+2. If `find_symbol_at_line` returns `symbol: null` (no defining symbol covers that line -- e.g., module-level code, a blank line, a line between two functions), do NOT invent or guess an enclosing function name. Cite only `file:line` and let the reader navigate without a name hint.
+3. Do NOT infer the enclosing symbol from your own reading of the file. The graph is the source of truth. If the graph says the line lives in `verify_magic_token` but you remember reading `handle_verify` near that line, trust the graph.
+4. Batch citations per file when possible: if you intend to cite three lines in the same file, call `find_symbol_at_line` three times (once per (file, line) pair) rather than mapping them all to the same function from memory.
+5. This rule is additive to VALUE_GROUNDING and READ_SOURCE rules. Those verify what's AT a line; this verifies which SYMBOL contains the line.
+6. Never compute counts, totals, or aggregates ("N call sites", "M references", "approximately K", "X functions across Y files") in your own prose by summing or estimating from the items you enumerated. Tool responses carry deterministic counts (e.g., `len(rows)`); quote a tool's count verbatim or omit the count entirely. Do NOT write a headline number you computed from your own enumeration -- if a number didn't come from a tool field, don't write the number."""
+
 # Scope SAST/SonarQube signals to what they actually cover. See ADR-025.
 SAST_SCOPE_RULES = """When SonarQube or other SAST output appears in your context:
 - SAST covers syntactic code-smell rules and known-CVE dependency versions. A passing SAST grade means the code avoids the patterns the configured ruleset checks for — nothing more.
@@ -175,6 +197,8 @@ You also have access to conversation memory - summaries of earlier parts of long
 {VALUE_GROUNDING_RULES}
 
 {READ_SOURCE_VERIFICATION_RULES}
+
+{LINE_CITATION_GROUNDING_RULES}
 
 {CODE_OVER_DOCS_RULES}
 
