@@ -139,30 +139,45 @@ Fargate, not Lambda, and needs the image rebuild path.
 
 Two distinct artifact families with no overlap:
 
-- **Plans** live under `plan/<name>/` with `overview.md`, `PROGRESS.md`, and numbered
-  chunk files (`01-…md`, `02-…md`). Plans are **gitignored** working artifacts. They
-  describe the work being done now, not decisions that need to outlive the work.
+- **Plans** live **directly under `plan/`** with `overview.md`, `PROGRESS.md`, and
+  numbered chunk files (`01-…md`, `02-…md`). `plan/` is **gitignored** and is
+  **always the active working plan** — one plan at a time, no `plan/<name>/`
+  nesting. Plans describe the work being done now, not decisions that need to
+  outlive the work.
+- **`plan-<name>/`** directories (sibling to `plan/`, also gitignored) are
+  **queue slots** that the user creates to scope NEW work while Claude is still
+  executing the current plan in `plan/`. Claude does not create these — only the
+  user does. When the active plan in `plan/` ships, the lifecycle is:
+  1. Clear out `plan/` (remove `overview.md`, `PROGRESS.md`, every `NN-…md`).
+  2. **Move** the next `plan-<name>/`'s contents into `plan/` (the named dir
+     disappears; `plan/` is repopulated with the queued plan's files).
+  3. Start executing the new `plan/`.
 - **ADRs** live under `docs/adr/`, are **committed and customer-visible**, and capture
   decisions that need to outlive any specific implementation cycle. The pattern (not
   the code), the contract (not the wiring), the reasoning (not the diff).
 
-When a plan ships, **delete the plan directory**. The durable record is the ADR plus
-the commit history. A plan dir lingering after the work shipped will rot.
+The durable record is the ADR plus the commit history. Files lingering in `plan/`
+after the work shipped (or `plan-<name>/` dirs that were never promoted) will rot
+and confuse the next plan.
 
 When a problem can be solved by improving an ADR rather than by code, prefer the ADR
 (per ADR-007). When a chunk of implementation work needs sequencing, use a plan.
 
-### Never Reference Plan Directories in Code or Docs
-- **NEVER reference `plan/` or `plan-*/` directories** from any committed file — not in
-  code comments, docstrings, terraform comments, requirements files, tests, ADRs, or
-  user-facing docs. Plan directories are working artifacts for in-flight implementation
-  and are routinely deleted once the work ships.
-- A comment that says "see plan-foo/02 for the contract" becomes a dangling pointer the
-  moment the plan dir is removed. The provenance belongs in the **ADR** (`docs/adr/`)
-  or the **commit message** — never in the code itself.
-- If you're about to write a comment referencing a plan dir, instead: either cite the
-  ADR that captured the decision, or write the rationale inline and let the commit
-  history carry the rest.
+### Never Reference Plan Directories or Files in Code or Docs
+- **NEVER reference `plan/` files OR `plan-*/` directories** from any committed file —
+  not in code comments, docstrings, terraform comments, requirements files, tests,
+  ADRs, or user-facing docs. `plan/` is the active in-flight working area (cleared
+  between plans); `plan-<name>/` directories are sometimes created by the user to
+  scope NEW work while Claude is mid-task in `plan/` (those also get cleared once the
+  parallel work moves into `plan/` or ships). Both are gitignored and routinely
+  deleted.
+- A comment that says "see plan/02-foo.md for the contract" or "see plan-gkg/03 for
+  the contract" becomes a dangling pointer the moment that file or directory is
+  cleared at ship time. The provenance belongs in the **ADR** (`docs/adr/`) or the
+  **commit message** — never in the code itself.
+- If you're about to write a comment referencing a plan file or `plan-*/` dir,
+  instead: either cite the ADR that captured the decision, or write the rationale
+  inline and let the commit history carry the rest.
 
 ### Temporary migration files do NOT belong in `docs/`
 - **`docs/` is customer-facing.** Anything that ships into the customer's deploy bundle
