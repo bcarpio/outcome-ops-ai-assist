@@ -371,13 +371,14 @@ class TestMcpTools:
     def test_all_tools_defined(self):
         """Test that the expected native tools are all defined.
 
-        Five symbol-graph query tools plus the read_source adjudicator
-        (plan-read-source-adjudicator chunk 01) sit alongside the
-        original four KB tools, so the surface is 10. See
+        Six symbol-graph query tools (the five directional/resolution
+        tools plus ``find_symbol_at_line`` for line-citation grounding
+        per ADR-031) plus the ``read_source`` adjudicator sit alongside
+        the original four KB tools, so the surface is 11. See
         docs/mcp-server.md.
         """
         tools = mcp_module.MCP_TOOLS
-        assert len(tools) == 10
+        assert len(tools) == 11
         names = {t["name"] for t in tools}
         assert names == {
             # KB tools
@@ -391,6 +392,7 @@ class TestMcpTools:
             "find_implementers",
             "find_definitions",
             "find_symbol_by_name",
+            "find_symbol_at_line",
             # Read-source adjudicator
             "read_source",
         }

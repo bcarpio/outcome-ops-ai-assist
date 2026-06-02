@@ -431,6 +431,52 @@ MCP_TOOLS = [
             "required": ["bare_name", "workspace_id"],
         },
     },
+    {
+        "name": "find_symbol_at_line",
+        "description": (
+            "Resolve a (file_path, line) to the innermost defining symbol so "
+            "a chat citation like 'called from foo (line 544)' can be "
+            "verified as graph-grounded before being emitted. Use this for "
+            "EVERY '(name, file, line)' citation: pass the file+line you "
+            "intend to cite, and use the returned target_symbol_id as the "
+            "name in your prose. If the result is null (no defining symbol "
+            "covers that line -- e.g. module-level code, blank line between "
+            "functions), do NOT invent or guess an enclosing function name; "
+            "cite only file:line. v1 uses start-line only and may "
+            "false-positive when the cited line falls between two defines; "
+            "the line-citation grounding rule in the chat prompt tells you "
+            "to drop the name claim rather than cite a function that almost "
+            "contains the line."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "workspace_id": {
+                    "type": "string",
+                    "description": "Workspace ID to scope the query to.",
+                },
+                "repo": {
+                    "type": "string",
+                    "description": (
+                        "Repository in 'owner/name' OR bare 'name' form. "
+                        "The handler normalizes to bare for the graph PK lookup."
+                    ),
+                },
+                "file_path": {
+                    "type": "string",
+                    "description": (
+                        "Repo-relative file path (e.g., "
+                        "'lambda/auth/handler.py')."
+                    ),
+                },
+                "line": {
+                    "type": "integer",
+                    "description": "1-indexed line number to resolve.",
+                },
+            },
+            "required": ["workspace_id", "repo", "file_path", "line"],
+        },
+    },
     # ------------------------------------------------------------------
     # Read-source adjudicator (plan-read-source-adjudicator chunk 01).
     # Bounded source-read for verifying exact code values that the
@@ -1556,6 +1602,88 @@ def handle_find_symbol_by_name(params, email):
     return {"text": json.dumps({"canonicals": canonicals})}
 
 
+def handle_find_symbol_at_line(params, email):
+    """Resolve a (file_path, line) to the innermost defining symbol.
+
+    Enforces the line-citation grounding contract (ADR-031): a chat
+    answer that writes "name (file:line)" MUST verify the enclosing
+    name via this tool rather than infer it from surrounding text.
+    """
+    workspace_id = params.get("workspace_id", "")
+    repo = params.get("repo", "")
+    file_path = params.get("file_path", "")
+    line = params.get("line")
+
+    if not workspace_id:
+        return {"error": "workspace_id is required"}
+    if not repo:
+        return {"error": "repo is required"}
+    if not file_path:
+        return {"error": "file_path is required"}
+    if line is None:
+        return {"error": "line is required"}
+    try:
+        line_int = int(line)
+    except (TypeError, ValueError):
+        return {"error": "line must be an integer"}
+
+    deny = _check_symbol_graph_workspace_access(workspace_id, email)
+    if deny is not None:
+        return deny
+
+    try:
+        from shared import symbol_graph_reader  # type: ignore
+    except Exception as exc:
+        logger.error(
+            f"Failed to import symbol_graph_reader: {exc}", exc_info=True
+        )
+        return {"error": "Symbol graph unavailable"}
+
+    try:
+        enclosing = symbol_graph_reader.symbol_at_line(
+            workspace_id,
+            repo,
+            file_path,
+            line_int,
+            symbol_graph_table_name=os.environ.get("SYMBOL_GRAPH_TABLE")
+            or None,
+        )
+    except symbol_graph_reader.SymbolGraphUnavailable as exc:
+        logger.warning(
+            f"Symbol graph unavailable for find_symbol_at_line: {exc}"
+        )
+        return {"error": "Symbol graph unavailable"}
+    except ValueError as exc:
+        return {"error": str(exc)}
+
+    if enclosing is None:
+        return {
+            "text": json.dumps(
+                {
+                    "symbol": None,
+                    "queried_file_path": file_path,
+                    "queried_line": line_int,
+                }
+            )
+        }
+
+    return {
+        "text": json.dumps(
+            {
+                "symbol": {
+                    "target_symbol_id": enclosing.target_symbol_id,
+                    "file_path": enclosing.file_path,
+                    "line": enclosing.line,
+                    "repo": enclosing.repo,
+                    "language": enclosing.language,
+                },
+                "queried_file_path": file_path,
+                "queried_line": line_int,
+            }
+        )
+    }
+
+
 # ============================================================================
 # Read-source adjudicator (plan-read-source-adjudicator chunk 01)
 #
@@ -1984,6 +2112,7 @@ TOOL_HANDLERS = {
     "find_implementers": handle_find_implementers,
     "find_definitions": handle_find_definitions,
     "find_symbol_by_name": handle_find_symbol_by_name,
+    "find_symbol_at_line": handle_find_symbol_at_line,
     # Read-source adjudicator -- bounded source-read for verified-value
     # claims (see docs/adr/ADR-???-read-source-adjudicator.md once chunk 04 lands).
     "read_source": handle_read_source,

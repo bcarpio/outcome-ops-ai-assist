@@ -1111,3 +1111,200 @@ class TestAuditEmission:
             else call.kwargs.get("tool_name")
         )
         assert observed_tool == tool_name
+
+
+# ===========================================================================
+# find_symbol_at_line: line citation grounding (ADR-031)
+# ===========================================================================
+
+
+def _put_defines_v2(
+    table,
+    *,
+    workspace_id: str,
+    bare_repo: str,
+    target_symbol_id: str,
+    file_path: str,
+    line: int,
+    language: str = "python",
+) -> None:
+    """Seed defines row using the LIVE v2 base-table PK
+    (workspace_id#bare_repo, no commit_sha). symbol_at_line walks
+    this partition directly -- the SHA-bearing PK in ``_put_fact``
+    above is for GSI-backed tools and would not reach this query."""
+    source = target_symbol_id.rsplit("::", 1)[0]
+    table.put_item(Item={
+        "PK": f"{workspace_id}#{bare_repo}",
+        "SK": f"defines#{source}#{target_symbol_id}#{file_path}#{line}",
+        "GSI1PK": f"{workspace_id}#{target_symbol_id}",
+        "GSI1SK": f"defines#{bare_repo}#{file_path}#{line}",
+        "workspace_id": workspace_id,
+        "repo": bare_repo,
+        "commit_sha": SHA,
+        "kind": "defines",
+        "source_symbol_id": source,
+        "target_symbol_id": target_symbol_id,
+        "file_path": file_path,
+        "line": int(line),
+        "language": language,
+    })
+
+
+class TestFindSymbolAtLine:
+
+    BARE = "auth-service"
+    FILE = "lambda/auth/handler.py"
+
+    def _seed_audit_case(self, table):
+        """Seed the magic_link audit shape: handle_verify at 1215,
+        verify_magic_token at 531, _claim_magic_token_jti at 487.
+        The 2026-06-02 failure cited handle_verify:544 when the real
+        enclosing symbol at 544 is verify_magic_token."""
+        for sym, ln in [
+            ("python:lambda.auth.handler::_claim_magic_token_jti", 487),
+            ("python:lambda.auth.handler::verify_magic_token", 531),
+            ("python:lambda.auth.handler::handle_verify", 1215),
+        ]:
+            _put_defines_v2(
+                table,
+                workspace_id=WORKSPACE_ID,
+                bare_repo=self.BARE,
+                target_symbol_id=sym,
+                file_path=self.FILE,
+                line=ln,
+            )
+
+    def test_happy_path_returns_innermost_enclosing_symbol(self, tables):
+        self._seed_audit_case(tables.Table(SYMBOL_GRAPH_TABLE))
+        with _patch_user_workspaces([WORKSPACE_ID]):
+            result = mcp_module.handle_find_symbol_at_line(
+                {
+                    "workspace_id": WORKSPACE_ID,
+                    "repo": self.BARE,
+                    "file_path": self.FILE,
+                    "line": 544,
+                },
+                USER_EMAIL,
+            )
+        payload = json.loads(result["text"])
+        assert payload["symbol"] is not None
+        # The audit fix: 544 -> verify_magic_token (NOT handle_verify).
+        assert payload["symbol"]["target_symbol_id"] == (
+            "python:lambda.auth.handler::verify_magic_token"
+        )
+        assert payload["symbol"]["line"] == 531
+        assert payload["symbol"]["file_path"] == self.FILE
+        assert payload["queried_line"] == 544
+        assert payload["queried_file_path"] == self.FILE
+
+    def test_owner_prefixed_repo_normalizes_to_bare(self, tables):
+        """Caller passes 'bcarpio/eShop'; graph stores 'eShop'. The
+        reader strips owner so the PK lookup hits."""
+        _put_defines_v2(
+            tables.Table(SYMBOL_GRAPH_TABLE),
+            workspace_id=WORKSPACE_ID,
+            bare_repo="eShop",
+            target_symbol_id="csharp:eShop.ServiceDefaults::SignaturesDemo::Greet",
+            file_path="src/eShop.ServiceDefaults/SignaturesDemo.cs",
+            line=10,
+            language="csharp",
+        )
+        with _patch_user_workspaces([WORKSPACE_ID]):
+            result = mcp_module.handle_find_symbol_at_line(
+                {
+                    "workspace_id": WORKSPACE_ID,
+                    "repo": "bcarpio/eShop",
+                    "file_path": "src/eShop.ServiceDefaults/SignaturesDemo.cs",
+                    "line": 12,
+                },
+                USER_EMAIL,
+            )
+        payload = json.loads(result["text"])
+        assert payload["symbol"]["target_symbol_id"] == (
+            "csharp:eShop.ServiceDefaults::SignaturesDemo::Greet"
+        )
+
+    def test_no_enclosing_symbol_returns_null_not_error(self, tables):
+        self._seed_audit_case(tables.Table(SYMBOL_GRAPH_TABLE))
+        with _patch_user_workspaces([WORKSPACE_ID]):
+            # Line 10 is BEFORE the earliest defines (line 487).
+            result = mcp_module.handle_find_symbol_at_line(
+                {
+                    "workspace_id": WORKSPACE_ID,
+                    "repo": self.BARE,
+                    "file_path": self.FILE,
+                    "line": 10,
+                },
+                USER_EMAIL,
+            )
+        assert "error" not in result
+        payload = json.loads(result["text"])
+        assert payload["symbol"] is None
+        assert payload["queried_line"] == 10
+
+    def test_access_denied_when_user_not_in_workspace(self, tables):
+        self._seed_audit_case(tables.Table(SYMBOL_GRAPH_TABLE))
+        # User has access only to a different workspace.
+        with _patch_user_workspaces([OTHER_WORKSPACE_ID]):
+            result = mcp_module.handle_find_symbol_at_line(
+                {
+                    "workspace_id": WORKSPACE_ID,
+                    "repo": self.BARE,
+                    "file_path": self.FILE,
+                    "line": 544,
+                },
+                USER_EMAIL,
+            )
+        assert "error" in result
+
+    def test_missing_required_params(self, tables):
+        with _patch_user_workspaces([WORKSPACE_ID]):
+            for missing in ("workspace_id", "repo", "file_path", "line"):
+                args = {
+                    "workspace_id": WORKSPACE_ID,
+                    "repo": self.BARE,
+                    "file_path": self.FILE,
+                    "line": 544,
+                }
+                del args[missing]
+                result = mcp_module.handle_find_symbol_at_line(
+                    args, USER_EMAIL
+                )
+                assert "error" in result, (
+                    f"Expected error when {missing} missing"
+                )
+
+    def test_non_integer_line_returns_error(self, tables):
+        with _patch_user_workspaces([WORKSPACE_ID]):
+            result = mcp_module.handle_find_symbol_at_line(
+                {
+                    "workspace_id": WORKSPACE_ID,
+                    "repo": self.BARE,
+                    "file_path": self.FILE,
+                    "line": "not-an-int",
+                },
+                USER_EMAIL,
+            )
+        assert result.get("error") == "line must be an integer"
+
+    def test_symbol_graph_unavailable(self, tables):
+        from shared import symbol_graph_reader  # type: ignore
+
+        with _patch_user_workspaces([WORKSPACE_ID]):
+            with patch.object(
+                symbol_graph_reader,
+                "symbol_at_line",
+                side_effect=symbol_graph_reader.SymbolGraphUnavailable(
+                    "ddb throttled"
+                ),
+            ):
+                result = mcp_module.handle_find_symbol_at_line(
+                    {
+                        "workspace_id": WORKSPACE_ID,
+                        "repo": self.BARE,
+                        "file_path": self.FILE,
+                        "line": 544,
+                    },
+                    USER_EMAIL,
+                )
+        assert result.get("error") == "Symbol graph unavailable"

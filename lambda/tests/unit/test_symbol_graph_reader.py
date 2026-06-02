@@ -1228,3 +1228,306 @@ def test_definitions_back_compat_row_without_signature(tables):
     )
     assert len(result) == 1
     assert result[0].signature is None
+
+
+# ===========================================================================
+# symbol_at_line: resolve (file, line) -> innermost defining symbol.
+# The PK shape these tests seed is the LIVE v2 format
+# (workspace_id#bare_repo, no commit_sha) because symbol_at_line
+# queries the base table partition directly -- unlike the GSI-backed
+# directional tools, where the seed's old PK shape (carrying a SHA)
+# is invisible.
+# ===========================================================================
+
+
+def _put_defines_v2(
+    table,
+    *,
+    workspace_id: str,
+    bare_repo: str,
+    target_symbol_id: str,
+    file_path: str,
+    line: int,
+    language: str = "python",
+    commit_sha: str = SHA,
+) -> None:
+    """Seed one defines row using the LIVE base-table PK
+    (workspace_id#bare_repo). The reader's symbol_at_line walks this
+    partition by SK begins_with('defines#'), filtering on file_path.
+    """
+    source = target_symbol_id.rsplit("::", 1)[0]
+    item = {
+        "PK": f"{workspace_id}#{bare_repo}",
+        "SK": (
+            f"defines#{source}#{target_symbol_id}#{file_path}#{line}"
+        ),
+        "GSI1PK": f"{workspace_id}#{target_symbol_id}",
+        "GSI1SK": f"defines#{bare_repo}#{file_path}#{line}",
+        "workspace_id": workspace_id,
+        "repo": bare_repo,
+        "commit_sha": commit_sha,
+        "kind": "defines",
+        "source_symbol_id": source,
+        "target_symbol_id": target_symbol_id,
+        "file_path": file_path,
+        "line": int(line),
+        "language": language,
+    }
+    table.put_item(Item=item)
+
+
+class TestSymbolAtLine:
+    """Resolve (file, line) -> innermost defining symbol.
+
+    v1 uses start-line only; the contract is "largest start_line <=
+    target". A line between two functions returns the previous
+    function -- a known v1 limitation that the chat prompt grounding
+    rule (ADR-031) tells synthesis to handle by dropping the
+    enclosing-name claim.
+    """
+
+    BARE = "auth-service"
+    FILE = "lambda/auth/handler.py"
+
+    def _seed_typical_file(self, table):
+        """A handler.py with three defines:
+        - line 487: _claim_magic_token_jti (function)
+        - line 531: verify_magic_token (function)
+        - line 1215: handle_verify (function)
+        All in the same file. Matches the magic_link audit shape
+        the plan was built around.
+        """
+        for sym, ln in [
+            ("python:lambda.auth.handler::_claim_magic_token_jti", 487),
+            ("python:lambda.auth.handler::verify_magic_token", 531),
+            ("python:lambda.auth.handler::handle_verify", 1215),
+        ]:
+            _put_defines_v2(
+                table,
+                workspace_id=WORKSPACE_ID,
+                bare_repo=self.BARE,
+                target_symbol_id=sym,
+                file_path=self.FILE,
+                line=ln,
+            )
+
+    def test_line_inside_a_function_returns_that_function(self, tables):
+        from shared.symbol_graph_reader import symbol_at_line  # type: ignore
+
+        self._seed_typical_file(tables.Table(SYMBOL_GRAPH_TABLE))
+        result = symbol_at_line(
+            WORKSPACE_ID,
+            self.BARE,
+            self.FILE,
+            544,
+            symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
+        )
+        assert result is not None
+        # The magic_link audit failure: 544 is INSIDE verify_magic_token
+        # (start 531), NOT handle_verify (start 1215). The reader must
+        # return verify_magic_token.
+        assert (
+            result.target_symbol_id
+            == "python:lambda.auth.handler::verify_magic_token"
+        )
+        assert result.file_path == self.FILE
+        assert result.line == 531
+
+    def test_line_equals_start_line_returns_the_function(self, tables):
+        from shared.symbol_graph_reader import symbol_at_line  # type: ignore
+
+        self._seed_typical_file(tables.Table(SYMBOL_GRAPH_TABLE))
+        result = symbol_at_line(
+            WORKSPACE_ID,
+            self.BARE,
+            self.FILE,
+            531,
+            symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
+        )
+        assert result is not None
+        assert (
+            result.target_symbol_id
+            == "python:lambda.auth.handler::verify_magic_token"
+        )
+
+    def test_line_above_any_defines_returns_none(self, tables):
+        from shared.symbol_graph_reader import symbol_at_line  # type: ignore
+
+        self._seed_typical_file(tables.Table(SYMBOL_GRAPH_TABLE))
+        # Line 100 is before the first defines at line 487. No
+        # enclosing symbol -> None.
+        result = symbol_at_line(
+            WORKSPACE_ID,
+            self.BARE,
+            self.FILE,
+            100,
+            symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
+        )
+        assert result is None
+
+    def test_v1_limitation_line_between_two_functions(self, tables):
+        """v1 only has start_line, so a line that falls AFTER one
+        function ends but BEFORE the next starts incorrectly returns
+        the previous function. ADR-031 tells synthesis to drop the
+        enclosing-name claim in this case; v2 will add end_line for
+        strict containment. This test pins the v1 behavior so a
+        future end_line addition will need to update it deliberately.
+        """
+        from shared.symbol_graph_reader import symbol_at_line  # type: ignore
+
+        # Two functions with a gap: 487 and 531 -- line 525 is module-
+        # level or blank between them.
+        for sym, ln in [
+            ("python:lambda.auth.handler::a_func", 487),
+            ("python:lambda.auth.handler::b_func", 531),
+        ]:
+            _put_defines_v2(
+                tables.Table(SYMBOL_GRAPH_TABLE),
+                workspace_id=WORKSPACE_ID,
+                bare_repo=self.BARE,
+                target_symbol_id=sym,
+                file_path=self.FILE,
+                line=ln,
+            )
+        result = symbol_at_line(
+            WORKSPACE_ID,
+            self.BARE,
+            self.FILE,
+            525,
+            symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
+        )
+        assert result is not None
+        # v1 limitation: returns the previous function. Documented.
+        assert (
+            result.target_symbol_id
+            == "python:lambda.auth.handler::a_func"
+        )
+
+    def test_nested_class_method_returns_innermost(self, tables):
+        """class C: at line 100; method m: at line 110. For target
+        line 115, both class and method qualify. Innermost = method
+        (highest start_line)."""
+        from shared.symbol_graph_reader import symbol_at_line  # type: ignore
+
+        for sym, ln in [
+            ("csharp:Acme::C", 100),
+            ("csharp:Acme::C::m", 110),
+        ]:
+            _put_defines_v2(
+                tables.Table(SYMBOL_GRAPH_TABLE),
+                workspace_id=WORKSPACE_ID,
+                bare_repo=self.BARE,
+                target_symbol_id=sym,
+                file_path="src/Acme/C.cs",
+                line=ln,
+                language="csharp",
+            )
+        result = symbol_at_line(
+            WORKSPACE_ID,
+            self.BARE,
+            "src/Acme/C.cs",
+            115,
+            symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
+        )
+        assert result is not None
+        assert result.target_symbol_id == "csharp:Acme::C::m"
+
+    def test_file_path_mismatch_returns_none(self, tables):
+        """Defines exist for a different file in the same repo.
+        Querying file_path with no defines must return None, not the
+        first defines in the partition."""
+        from shared.symbol_graph_reader import symbol_at_line  # type: ignore
+
+        _put_defines_v2(
+            tables.Table(SYMBOL_GRAPH_TABLE),
+            workspace_id=WORKSPACE_ID,
+            bare_repo=self.BARE,
+            target_symbol_id="python:lambda.auth.handler::verify_magic_token",
+            file_path=self.FILE,
+            line=531,
+        )
+        result = symbol_at_line(
+            WORKSPACE_ID,
+            self.BARE,
+            "lambda/other/handler.py",
+            10,
+            symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
+        )
+        assert result is None
+
+    def test_workspace_isolation(self, tables):
+        """Defines exist in another workspace -- this workspace gets
+        None, even though file_path + line match."""
+        from shared.symbol_graph_reader import symbol_at_line  # type: ignore
+
+        _put_defines_v2(
+            tables.Table(SYMBOL_GRAPH_TABLE),
+            workspace_id=OTHER_WORKSPACE_ID,
+            bare_repo=self.BARE,
+            target_symbol_id="python:lambda.auth.handler::verify_magic_token",
+            file_path=self.FILE,
+            line=531,
+        )
+        result = symbol_at_line(
+            WORKSPACE_ID,
+            self.BARE,
+            self.FILE,
+            544,
+            symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
+        )
+        assert result is None
+
+    def test_owner_prefixed_repo_normalizes_to_bare(self, tables):
+        """Caller passes 'bcarpio/eShop'; graph PK is 'workspace#eShop'.
+        The reader must strip the owner before the PK lookup."""
+        from shared.symbol_graph_reader import symbol_at_line  # type: ignore
+
+        _put_defines_v2(
+            tables.Table(SYMBOL_GRAPH_TABLE),
+            workspace_id=WORKSPACE_ID,
+            bare_repo="eShop",
+            target_symbol_id="csharp:eShop.ServiceDefaults::SignaturesDemo::Greet",
+            file_path="src/eShop.ServiceDefaults/SignaturesDemo.cs",
+            line=10,
+            language="csharp",
+        )
+        result = symbol_at_line(
+            WORKSPACE_ID,
+            "bcarpio/eShop",
+            "src/eShop.ServiceDefaults/SignaturesDemo.cs",
+            12,
+            symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
+        )
+        assert result is not None
+        assert (
+            result.target_symbol_id
+            == "csharp:eShop.ServiceDefaults::SignaturesDemo::Greet"
+        )
+
+    def test_missing_args_raises_value_error(self, tables):
+        from shared.symbol_graph_reader import symbol_at_line  # type: ignore
+
+        with pytest.raises(ValueError):
+            symbol_at_line(
+                "",
+                self.BARE,
+                self.FILE,
+                10,
+                symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
+            )
+        with pytest.raises(ValueError):
+            symbol_at_line(
+                WORKSPACE_ID,
+                "",
+                self.FILE,
+                10,
+                symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
+            )
+        with pytest.raises(ValueError):
+            symbol_at_line(
+                WORKSPACE_ID,
+                self.BARE,
+                "",
+                10,
+                symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
+            )

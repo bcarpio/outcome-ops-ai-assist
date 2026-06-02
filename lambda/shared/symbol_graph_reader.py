@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from typing import Iterable, List, Optional, Tuple
 
 import boto3
-from boto3.dynamodb.conditions import Key
+from boto3.dynamodb.conditions import Attr, Key
 from botocore.exceptions import ClientError
 
 from shared import symbol_graph_pointer
@@ -66,6 +66,25 @@ class CallSite:
     source_symbol_id: str
     language: str
     signature: Optional[dict] = None
+
+
+@dataclass(frozen=True)
+class EnclosingSymbol:
+    """The defining symbol that contains a given (file, line).
+
+    Returned by ``symbol_at_line``. ``target_symbol_id`` is the
+    canonical ID of the defined symbol (the function / method / class
+    whose body contains the queried line) -- NOT the parent scope.
+    Use this when grounding a chat citation of the form
+    "name (file:line)" so the cited name is graph-resolved rather
+    than inferred by the LLM from surrounding text.
+    """
+
+    target_symbol_id: str
+    file_path: str
+    line: int
+    repo: str
+    language: str
 
 
 @dataclass(frozen=True)
@@ -741,6 +760,90 @@ def definitions(
     return [_row_to_call_site(it) for it in items]
 
 
+def symbol_at_line(
+    workspace_id: str,
+    repo: str,
+    file_path: str,
+    line: int,
+    *,
+    symbol_graph_table_name: Optional[str] = None,
+) -> Optional[EnclosingSymbol]:
+    """Resolve a (file, line) to the innermost defining symbol.
+
+    Returns the symbol whose ``start_line`` is the largest value
+    ``<= line`` among defines rows in the same file. v1 uses
+    start-line only -- ``end_line`` is a v2 follow-up that requires
+    extractor changes across five languages. Until then, a query for
+    a line that falls BETWEEN two functions (module-level code, blank
+    lines after a function ends) will return the previous function;
+    the line-citation grounding contract (ADR-031) tells synthesis to
+    prefer dropping the enclosing-name claim in that case rather than
+    citing a function that almost contains the line.
+
+    When multiple defines share the same start_line (rare: a class
+    whose first member is on the same line, e.g. one-liner C# records),
+    prefer the longer ``target_symbol_id`` -- the inner member sorts
+    after the outer container by string length, which is a decent
+    "innermost" tiebreaker without a kind discriminator.
+
+    ``repo`` is normalized to the bare name for the PK lookup; callers
+    may pass either ``owner/name`` or bare. Returns None when no
+    defines row in the file has ``start_line <= line``.
+    """
+
+    if not workspace_id or not repo or not file_path or line is None:
+        raise ValueError(
+            "workspace_id, repo, file_path, and line are required"
+        )
+
+    bare_repo = repo.rsplit("/", 1)[-1] if "/" in repo else repo
+    pk = f"{workspace_id}#{bare_repo}"
+    table_name = _resolve_table_name(symbol_graph_table_name)
+    table = _resource().Table(table_name)
+
+    items: List[dict] = []
+    last_key: Optional[dict] = None
+    # Walk every defines page for the repo partition; filter to the
+    # requested file server-side. The partition is repo-scoped so this
+    # is bounded by defines-per-repo, not workspace-wide. For a chat
+    # answer citing N distinct files, the per-call cost is one
+    # partition walk per file -- the chat prompt batches citations to
+    # keep this bounded.
+    while True:
+        kwargs = {
+            "KeyConditionExpression": (
+                Key("PK").eq(pk) & Key("SK").begins_with("defines#")
+            ),
+            "FilterExpression": Attr("file_path").eq(file_path),
+        }
+        if last_key:
+            kwargs["ExclusiveStartKey"] = last_key
+        response = _query_with_retry(table, **kwargs)
+        items.extend(response.get("Items", []) or [])
+        last_key = response.get("LastEvaluatedKey")
+        if not last_key:
+            break
+
+    candidates = [it for it in items if int(it.get("line", 0)) <= int(line)]
+    if not candidates:
+        return None
+
+    # Innermost = largest start_line; tiebreak by longer target_symbol_id
+    # (inner member is the longer canonical when both share start line).
+    def _rank(it: dict) -> tuple:
+        return (int(it.get("line", 0)), len(str(it.get("target_symbol_id", ""))))
+
+    candidates.sort(key=_rank, reverse=True)
+    top = candidates[0]
+    return EnclosingSymbol(
+        target_symbol_id=str(top.get("target_symbol_id", "")),
+        file_path=str(top.get("file_path", "")),
+        line=int(top.get("line", 0)),
+        repo=str(top.get("repo", "")),
+        language=str(top.get("language", "")),
+    )
+
+
 def fuzzy_resolve_by_name(
     workspace_id: str,
     bare_name: str,
@@ -802,11 +905,13 @@ def fuzzy_resolve_by_name(
 
 __all__ = (
     "CallSite",
+    "EnclosingSymbol",
     "QueryResult",
     "SymbolGraphUnavailable",
     "callers",
     "importers",
     "implementers",
     "definitions",
+    "symbol_at_line",
     "fuzzy_resolve_by_name",
 )
