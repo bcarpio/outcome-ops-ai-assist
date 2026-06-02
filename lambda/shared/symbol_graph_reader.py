@@ -91,13 +91,24 @@ class EnclosingSymbol:
 class QueryResult:
     """Wrapped result of one query.
 
-    Empty results are first-class: ``QueryResult(sites=[],
-    truncated=False, graph_sha=..., staleness_seconds=...)``. Consumers
-    rely on this to honestly report "no callers in this workspace"
-    instead of fabricating a list.
+    Empty results are first-class: consumers rely on this to honestly
+    report "no callers in this workspace" instead of fabricating a list.
+
+    ``truncated`` (legacy) and ``complete`` (ADR-032) are inverses kept
+    in sync by the readers. ``complete`` is the canonical field name
+    for the list-completeness contract; ``truncated`` exists for back-
+    compat with consumers that already read it.
+
+    ``total_known`` is the deterministic total count when the reader
+    can compute it cheaply -- typically ``len(sites)`` when
+    ``complete=True``. When ``complete=False`` it is either the exact
+    total from a separate counting query or None if the reader cannot
+    compute it without paginating to completion. Chat synthesis must
+    quote ``total_known`` (when non-null) rather than ``len(sites)``;
+    LLM-computed aggregates are forbidden by ADR-031 item 6.
 
     ``graph_sha`` is the SHA the answer was anchored on (None for
-    workspace-wide queries that span multiple repos — workspace-wide
+    workspace-wide queries that span multiple repos -- workspace-wide
     queries deliberately do not pin a single SHA).
     ``staleness_seconds`` is "seconds since that SHA was committed";
     for workspace-wide queries it's the worst-case across repos in the
@@ -108,6 +119,35 @@ class QueryResult:
     truncated: bool
     graph_sha: Optional[str]
     staleness_seconds: Optional[int]
+    total_known: Optional[int] = None
+
+    @property
+    def complete(self) -> bool:
+        """ADR-032 alias for ``not truncated``. Synthesis prompts read
+        the canonical ``complete`` name; readers populate ``truncated``
+        and ``total_known``; the inverse is derived to keep the two
+        from drifting."""
+        return not self.truncated
+
+
+@dataclass(frozen=True)
+class ResolutionResult:
+    """Wrapped result of a name-resolution query (fuzzy_resolve_by_name).
+
+    Parallel to ``QueryResult`` but for ``List[str]`` of canonical
+    symbol IDs rather than ``List[CallSite]``. Same list-completeness
+    contract (ADR-032): ``complete`` is true iff every matching
+    canonical for ``bare_name`` was returned; ``total_known`` is the
+    deterministic count when known.
+    """
+
+    canonicals: List[str]
+    truncated: bool
+    total_known: Optional[int] = None
+
+    @property
+    def complete(self) -> bool:
+        return not self.truncated
 
 
 class SymbolGraphUnavailable(Exception):
@@ -605,6 +645,7 @@ def callers(
     return QueryResult(
         sites=sites,
         truncated=truncated,
+        total_known=len(sites) if not truncated else None,
         graph_sha=sha,
         staleness_seconds=staleness,
     )
@@ -673,6 +714,7 @@ def importers(
     return QueryResult(
         sites=sites,
         truncated=truncated,
+        total_known=len(sites) if not truncated else None,
         graph_sha=sha,
         staleness_seconds=staleness,
     )
@@ -716,6 +758,7 @@ def implementers(
     return QueryResult(
         sites=sites,
         truncated=truncated,
+        total_known=len(sites) if not truncated else None,
         graph_sha=sha,
         staleness_seconds=staleness,
     )
@@ -728,18 +771,22 @@ def definitions(
     limit: int = 50,
     symbol_graph_table_name: Optional[str] = None,
     code_maps_table_name: Optional[str] = None,
-) -> List[CallSite]:
+) -> QueryResult:
     """Return every definition of ``symbol_id`` in the workspace.
 
-    The signature is ``list[CallSite]`` rather than ``Optional[CallSite]``
-    so cross-repo duplicates (interface re-declarations, code
-    duplication) all surface. An empty list means "not found" — never
-    None.
+    Returns ``QueryResult`` (sites, truncated, complete, total_known,
+    graph_sha, staleness_seconds) so consumers can detect a clipped
+    result (ADR-032 list-completeness contract). An empty
+    ``sites`` list means "not found" -- callers must check
+    ``result.sites``, never ``None``.
+
+    ``sites`` carries cross-repo duplicates (interface re-declarations,
+    code duplication) so all definition occurrences surface in one
+    result.
 
     Uses ``target-kind-index`` (GSI1) with the sort-key prefix
     ``"defines#"``. Definitions are stored as edges with kind=defines
-    targeting the symbol they define (per the chunk-01 extractor's
-    Fact stream).
+    targeting the symbol they define.
     """
 
     if not workspace_id or not symbol_id:
@@ -751,13 +798,23 @@ def definitions(
         Key("GSI1PK").eq(f"{workspace_id}#{symbol_id}")
         & Key("GSI1SK").begins_with("defines#")
     )
-    items, _truncated = _query_gsi(
+    items, truncated = _query_gsi(
         table_name,
         index_name="target-kind-index",
         key_condition=key_condition,
         limit=limit,
     )
-    return [_row_to_call_site(it) for it in items]
+    sites = [_row_to_call_site(it) for it in items]
+    sha, staleness = _pointer_for_workspace(
+        workspace_id, (s.repo for s in sites), code_maps_table_name
+    )
+    return QueryResult(
+        sites=sites,
+        truncated=truncated,
+        total_known=len(sites) if not truncated else None,
+        graph_sha=sha,
+        staleness_seconds=staleness,
+    )
 
 
 def symbol_at_line(
@@ -850,7 +907,7 @@ def fuzzy_resolve_by_name(
     *,
     limit: int = 25,
     symbol_graph_table_name: Optional[str] = None,
-) -> List[str]:
+) -> ResolutionResult:
     """Return distinct canonical ``target_symbol_id`` values in the
     workspace whose tail matches ``bare_name``.
 
@@ -858,23 +915,40 @@ def fuzzy_resolve_by_name(
     bare name ("require_auth") back to the canonical IDs the graph
     actually stores ("python:lambda.auth.handler::require_auth"). The
     GSI is partitioned by ``(workspace_id, bare_name)`` so each call
-    is a single-partition Query — bounded by actual matches, not by
-    workspace size. Replaces the pre-GSI Scan-based fuzzy resolver
-    that did not scale past a single repo per workspace.
+    is a single-partition Query -- bounded by actual matches, not by
+    workspace size.
 
-    Empty list when nothing matches; raises ``SymbolGraphUnavailable``
-    on a non-retryable DynamoDB error so the chat augment path can
-    degrade to RAG-only the same way every other reader function in
-    this module does.
+    Returns ``ResolutionResult`` (canonicals, truncated, complete,
+    total_known) so consumers can detect a clipped result. Two
+    truncation sources are folded into one signal:
+    1. The GSI query itself was truncated server-side (more matching
+       rows exist beyond what we read at ``limit*4``).
+    2. The dedupe loop hit ``limit`` distinct canonicals before
+       exhausting the GSI page (more canonicals exist in items we
+       did read but did not surface).
+    Either yields ``complete=False`` with ``total_known=None``.
 
-    ``limit`` caps the number of distinct canonicals returned;
-    chat-side disambiguation only needs the first handful. Over-fetch
-    is applied internally to account for one canonical having many
-    edges pointing at it.
+    Empty result when nothing matches OR when args are missing;
+    raises ``SymbolGraphUnavailable`` on a non-retryable DynamoDB
+    error.
+
+    ``limit`` caps the number of distinct canonicals returned.
+    Pre-ADR-032 the default 25 was sized for chat-side disambiguation
+    of one or two canonicals -- the 2026-06-02 require_auth eval
+    surfaced that enumeration-shaped consumers (each lambda vendors
+    its own require_auth definition; 40 canonicals in one workspace)
+    silently lost the alphabetical tail. Consumers with enumeration
+    semantics must pass an explicit ``limit`` (chat handler does so
+    after the chunk-03 fix in this plan); the default remains 25 for
+    disambiguation callers.
     """
 
     if not workspace_id or not bare_name:
-        return []
+        return ResolutionResult(
+            canonicals=[],
+            truncated=False,
+            total_known=0,
+        )
     table_name = _resolve_table_name(symbol_graph_table_name)
 
     # Over-fetch by 4x so one heavily-edged canonical doesn't drown
@@ -883,7 +957,7 @@ def fuzzy_resolve_by_name(
     fetch = max(limit * 4, 100)
 
     key_condition = Key("GSI3PK").eq(f"{workspace_id}#{bare_name}")
-    items, _truncated = _query_gsi(
+    items, gsi_truncated = _query_gsi(
         table_name,
         index_name="target-name-index",
         key_condition=key_condition,
@@ -892,6 +966,7 @@ def fuzzy_resolve_by_name(
 
     seen: set = set()
     out: List[str] = []
+    dedupe_truncated = False
     for item in items:
         tsi = item.get("target_symbol_id")
         if not tsi or tsi in seen:
@@ -899,14 +974,31 @@ def fuzzy_resolve_by_name(
         seen.add(tsi)
         out.append(tsi)
         if len(out) >= limit:
+            # We hit the caller's limit; if there are MORE items
+            # left to process (potentially more distinct canonicals),
+            # the dedupe loop truncated the result.
+            remaining = items[items.index(item) + 1 :]
+            if any(
+                (it.get("target_symbol_id") not in seen)
+                and it.get("target_symbol_id")
+                for it in remaining
+            ):
+                dedupe_truncated = True
             break
-    return out
+
+    truncated = gsi_truncated or dedupe_truncated
+    return ResolutionResult(
+        canonicals=out,
+        truncated=truncated,
+        total_known=len(out) if not truncated else None,
+    )
 
 
 __all__ = (
     "CallSite",
     "EnclosingSymbol",
     "QueryResult",
+    "ResolutionResult",
     "SymbolGraphUnavailable",
     "callers",
     "importers",

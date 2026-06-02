@@ -1344,35 +1344,17 @@ def handle_get_coding_standards(params, email):
 
 def _query_result_to_dict(query_result) -> dict:
     """Project a ``QueryResult`` onto the JSON shape documented for the
-    MCP tools: ``sites`` + ``truncated`` + ``graph_sha`` +
-    ``staleness_seconds``.
+    MCP tools: ``sites`` + ``truncated`` + ``complete`` + ``total_known``
+    + ``graph_sha`` + ``staleness_seconds``.
+
+    ``complete`` and ``total_known`` (ADR-032 list-completeness
+    contract) are forwarded so chat synthesis can detect a clipped
+    list and either disclose or refuse rather than ship a confidently-
+    incomplete enumeration. ``truncated`` remains for back-compat
+    with consumers that already read it; ``complete = not truncated``.
     """
     sites = []
     for s in query_result.sites:
-        sites.append({
-            "file_path": s.file_path,
-            "line": s.line,
-            "repo": s.repo,
-            "source_symbol_id": s.source_symbol_id,
-            "language": s.language,
-        })
-    return {
-        "sites": sites,
-        "truncated": bool(query_result.truncated),
-        "graph_sha": query_result.graph_sha,
-        "staleness_seconds": query_result.staleness_seconds,
-    }
-
-
-def _call_sites_to_dict(call_sites) -> dict:
-    """Project a list[CallSite] (definitions()) onto the same JSON shape
-    as ``_query_result_to_dict``. ``definitions`` returns a bare list;
-    ``truncated`` / ``graph_sha`` / ``staleness_seconds`` are reported
-    as ``False`` / ``None`` / ``None`` so the MCP tool's response is
-    uniformly shaped across all four queries.
-    """
-    sites = []
-    for s in call_sites:
         entry = {
             "file_path": s.file_path,
             "line": s.line,
@@ -1386,9 +1368,24 @@ def _call_sites_to_dict(call_sites) -> dict:
         sites.append(entry)
     return {
         "sites": sites,
-        "truncated": False,
-        "graph_sha": None,
-        "staleness_seconds": None,
+        "truncated": bool(query_result.truncated),
+        "complete": bool(query_result.complete),
+        "total_known": query_result.total_known,
+        "graph_sha": query_result.graph_sha,
+        "staleness_seconds": query_result.staleness_seconds,
+    }
+
+
+def _resolution_result_to_dict(resolution_result) -> dict:
+    """Project a ``ResolutionResult`` (fuzzy_resolve_by_name) onto the
+    JSON shape for the find_symbol_by_name MCP tool. Carries the same
+    list-completeness fields as ``_query_result_to_dict`` (ADR-032).
+    """
+    return {
+        "canonicals": list(resolution_result.canonicals),
+        "truncated": bool(resolution_result.truncated),
+        "complete": bool(resolution_result.complete),
+        "total_known": resolution_result.total_known,
     }
 
 
@@ -1517,10 +1514,11 @@ def handle_find_implementers(params, email):
 def handle_find_definitions(params, email):
     """Handle find_definitions tool call.
 
-    ``definitions`` returns ``list[CallSite]`` (not a QueryResult) --
-    cross-repo duplicates surface as separate entries. We project that
-    onto the same JSON envelope as the other three queries so MCP
-    clients see a uniform shape.
+    ``definitions`` returns ``QueryResult`` -- cross-repo duplicates
+    surface inside ``result.sites``. The MCP envelope carries the
+    standard list-completeness fields (``truncated`` + ``complete`` +
+    ``total_known``) so a clipped result is detectable by chat
+    synthesis (ADR-032).
     """
     symbol = params.get("symbol", "")
     workspace_id = params.get("workspace_id", "")
@@ -1538,7 +1536,7 @@ def handle_find_definitions(params, email):
         return {"error": "Symbol graph unavailable"}
 
     try:
-        sites = symbol_graph_reader.definitions(
+        result = symbol_graph_reader.definitions(
             workspace_id,
             symbol,
             symbol_graph_table_name=os.environ.get("SYMBOL_GRAPH_TABLE") or None,
@@ -1550,7 +1548,7 @@ def handle_find_definitions(params, email):
     except ValueError as exc:
         return {"error": str(exc)}
 
-    return {"text": json.dumps(_call_sites_to_dict(sites))}
+    return {"text": json.dumps(_query_result_to_dict(result))}
 
 
 def handle_find_symbol_by_name(params, email):
@@ -1584,7 +1582,7 @@ def handle_find_symbol_by_name(params, email):
         return {"error": "Symbol graph unavailable"}
 
     try:
-        canonicals = symbol_graph_reader.fuzzy_resolve_by_name(
+        resolution = symbol_graph_reader.fuzzy_resolve_by_name(
             workspace_id,
             bare_name,
             limit=int(limit) if limit else 25,
@@ -1599,7 +1597,7 @@ def handle_find_symbol_by_name(params, email):
     except ValueError as exc:
         return {"error": str(exc)}
 
-    return {"text": json.dumps({"canonicals": canonicals})}
+    return {"text": json.dumps(_resolution_result_to_dict(resolution))}
 
 
 def handle_find_symbol_at_line(params, email):
@@ -1844,7 +1842,7 @@ def _read_source_resolve_via_graph(workspace_id, symbol):
     from shared import symbol_graph_reader  # type: ignore  # noqa: WPS433
 
     try:
-        sites = symbol_graph_reader.definitions(
+        result = symbol_graph_reader.definitions(
             workspace_id,
             symbol,
             symbol_graph_table_name=os.environ.get("SYMBOL_GRAPH_TABLE") or None,
@@ -1853,6 +1851,7 @@ def _read_source_resolve_via_graph(workspace_id, symbol):
     except symbol_graph_reader.SymbolGraphUnavailable:
         return {"error": "graph_unavailable"}
 
+    sites = result.sites
     if not sites:
         return {"error": "missing"}
     if len(sites) > 1:

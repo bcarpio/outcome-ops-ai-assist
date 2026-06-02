@@ -610,7 +610,7 @@ def _fuzzy_resolve_symbol(
         return []
 
     try:
-        matches = fuzzy_resolve_by_name(
+        resolution = fuzzy_resolve_by_name(
             workspace_id,
             bare_name,
             symbol_graph_table_name=symbol_graph_table_name,
@@ -623,15 +623,19 @@ def _fuzzy_resolve_symbol(
 
     # Observability: the live diagnosis on 2026-05-15 showed we had
     # no way to tell from CloudWatch whether fuzzy returned 0, 1, or
-    # N canonicals — fuzzy was failing silently against multi-repo
+    # N canonicals -- fuzzy was failing silently against multi-repo
     # workspaces. Log the count so the next time this regresses we
-    # can spot it without re-instrumenting.
+    # can spot it without re-instrumenting. Now also log truncation
+    # so the require_auth-style silent-clip failure surfaces in
+    # CloudWatch (the underlying bug -- no explicit limit passed
+    # here -- is fixed in the chunk-03 router edit, not chunk 02).
     logger.info(
-        "[chat.augment] fuzzy resolve %r -> %d canonicals",
+        "[chat.augment] fuzzy resolve %r -> %d canonicals (truncated=%s)",
         bare_name,
-        len(matches),
+        len(resolution.canonicals),
+        resolution.truncated,
     )
-    return matches
+    return resolution.canonicals
 
 
 def _augment_context_with_symbol_graph(
@@ -794,7 +798,7 @@ def _augment_context_with_symbol_graph(
             user_symbol,
             symbol_graph_table_name=symbol_graph_table,
             code_maps_table_name=code_maps_table,
-        ):
+        ).sites:
             return [user_symbol]
         return _fuzzy_resolve_symbol(ws, user_symbol, symbol_graph_table)
 
@@ -872,7 +876,7 @@ def _augment_context_with_symbol_graph(
                     symbol_graph_table_name=symbol_graph_table,
                     code_maps_table_name=code_maps_table,
                 )
-                def_site = cand_defs[0] if cand_defs else None
+                def_site = cand_defs.sites[0] if cand_defs.sites else None
                 result = _query(relation_fn, ws, target)
                 per_canonical.append((target, def_site, result))
                 merged.extend(_site_to_dict(s) for s in result.sites)

@@ -875,14 +875,19 @@ class TestRequiredArgs:
 class TestFindSymbolByName:
 
     def test_empty_workspace_returns_empty_canonicals(self, tables):
-        """No defines rows for the bare name -> empty list."""
+        """No defines rows for the bare name -> empty canonicals plus
+        complete=True (absence IS the answer; per ADR-032 the response
+        is completeness-honest)."""
         with _patch_user_workspaces([WORKSPACE_ID]):
             result = mcp_module.handle_find_symbol_by_name(
                 {"bare_name": "nothing_here", "workspace_id": WORKSPACE_ID},
                 USER_EMAIL,
             )
         payload = json.loads(result["text"])
-        assert payload == {"canonicals": []}
+        assert payload["canonicals"] == []
+        assert payload["complete"] is True
+        assert payload["truncated"] is False
+        assert payload["total_known"] == 0
 
     def test_overloaded_bare_name_returns_all_canonicals(self, tables):
         """Multiple Lambdas defining the same bare name -> every
@@ -1308,3 +1313,170 @@ class TestFindSymbolAtLine:
                     USER_EMAIL,
                 )
         assert result.get("error") == "Symbol graph unavailable"
+
+
+# ===========================================================================
+# MCP envelope completeness fields (ADR-032). Each list-returning tool's
+# JSON envelope forwards complete + total_known so chat synthesis (chunk 04
+# prompt rule) can detect a clipped result.
+# ===========================================================================
+
+
+class TestListCompletenessEnvelope:
+
+    def test_find_definitions_forwards_truncation_signal(self, tables):
+        """The pre-ADR-032 handler hardcoded truncated=False. After the
+        fix it must forward the real signal so a clipped result is
+        visible to the LLM."""
+        sym = "typescript:@org/types::IBookingClient"
+        table = tables.Table(SYMBOL_GRAPH_TABLE)
+        for i in range(6):
+            _put_fact(
+                table,
+                workspace_id=WORKSPACE_ID,
+                repo=f"repo-{i}",
+                commit_sha=SHA,
+                kind="defines",
+                source_symbol_id=f"ts:apps/app{i}/src/types",
+                target_symbol_id=sym,
+                file_path=f"apps/app{i}/src/types.ts",
+                line=10 + i,
+                language="typescript",
+            )
+
+        from shared import symbol_graph_reader  # type: ignore
+
+        # Force the truncation by mocking the reader call with a low limit
+        with patch.object(
+            symbol_graph_reader,
+            "definitions",
+            wraps=symbol_graph_reader.definitions,
+        ) as spy:
+            spy.side_effect = lambda *a, **kw: symbol_graph_reader.definitions.__wrapped__(
+                *a, **{**kw, "limit": 3}
+            ) if False else spy._mock_wraps(*a, **{**kw, "limit": 3})
+            # Easier: just call the handler and confirm completeness
+            # fields are present, then separately exercise the truncated
+            # path by faking a clipped QueryResult.
+            pass
+
+        # Direct exercise: stub the reader to return a known-truncated
+        # QueryResult and assert the envelope forwards it.
+        from shared.symbol_graph_reader import QueryResult, CallSite
+        fake_sites = [
+            CallSite(
+                file_path=f"apps/app{i}/src/types.ts",
+                line=10 + i,
+                repo=f"repo-{i}",
+                source_symbol_id=f"ts:apps/app{i}/src/types",
+                language="typescript",
+            )
+            for i in range(3)
+        ]
+        fake = QueryResult(
+            sites=fake_sites,
+            truncated=True,
+            graph_sha=None,
+            staleness_seconds=None,
+            total_known=None,
+        )
+        with _patch_user_workspaces([WORKSPACE_ID]):
+            with patch.object(
+                symbol_graph_reader, "definitions", return_value=fake
+            ):
+                result = mcp_module.handle_find_definitions(
+                    {"symbol": sym, "workspace_id": WORKSPACE_ID},
+                    USER_EMAIL,
+                )
+        payload = json.loads(result["text"])
+        assert payload["truncated"] is True
+        assert payload["complete"] is False
+        assert payload["total_known"] is None
+        assert len(payload["sites"]) == 3
+
+    def test_find_definitions_envelope_complete_path(self, tables):
+        """Happy path: a small result set ships complete=True with the
+        exact total_known so chat can quote it verbatim."""
+        sym = "python:lambda.shared.foo::bar"
+        table = tables.Table(SYMBOL_GRAPH_TABLE)
+        for i in range(2):
+            _put_fact(
+                table,
+                workspace_id=WORKSPACE_ID,
+                repo=f"repo-{i}",
+                commit_sha=SHA,
+                kind="defines",
+                source_symbol_id="python:lambda.shared.foo",
+                target_symbol_id=sym,
+                file_path=f"src/foo{i}.py",
+                line=10 + i,
+                language="python",
+            )
+        with _patch_user_workspaces([WORKSPACE_ID]):
+            result = mcp_module.handle_find_definitions(
+                {"symbol": sym, "workspace_id": WORKSPACE_ID},
+                USER_EMAIL,
+            )
+        payload = json.loads(result["text"])
+        assert payload["complete"] is True
+        assert payload["truncated"] is False
+        assert payload["total_known"] == 2
+
+    def test_find_symbol_by_name_envelope_complete(self, tables):
+        """Happy path on the find_symbol_by_name tool."""
+        bare = "report_repos_snapshot"
+        table = tables.Table(SYMBOL_GRAPH_TABLE)
+        for i in range(2):
+            canonical = (
+                f"python:lambda.shared{i}.outcomeops_license"
+                f"::report_repos_snapshot"
+            )
+            _put_fact(
+                table,
+                workspace_id=WORKSPACE_ID,
+                repo=REPO,
+                commit_sha=SHA,
+                kind="defines",
+                source_symbol_id=f"python:lambda.shared{i}.outcomeops_license",
+                target_symbol_id=canonical,
+                file_path=f"lambda/shared{i}/outcomeops_license.py",
+                line=42 + i,
+                language="python",
+            )
+        with _patch_user_workspaces([WORKSPACE_ID]):
+            result = mcp_module.handle_find_symbol_by_name(
+                {"bare_name": bare, "workspace_id": WORKSPACE_ID},
+                USER_EMAIL,
+            )
+        payload = json.loads(result["text"])
+        assert len(payload["canonicals"]) == 2
+        assert payload["complete"] is True
+        assert payload["truncated"] is False
+        assert payload["total_known"] == 2
+
+    def test_find_callers_envelope_carries_total_known(self, tables):
+        """The three already-truncated-aware tools get the new
+        total_known field via the QueryResult extension."""
+        target = "python:lambda.shared.foo::bar"
+        table = tables.Table(SYMBOL_GRAPH_TABLE)
+        for i in range(3):
+            _put_fact(
+                table,
+                workspace_id=WORKSPACE_ID,
+                repo=REPO,
+                commit_sha=SHA,
+                kind="calls",
+                source_symbol_id=f"python:caller{i}::fn",
+                target_symbol_id=target,
+                file_path=f"src/caller{i}.py",
+                line=100 + i,
+                language="python",
+            )
+        with _patch_user_workspaces([WORKSPACE_ID]):
+            result = mcp_module.handle_find_callers(
+                {"symbol_id": target, "workspace_id": WORKSPACE_ID},
+                USER_EMAIL,
+            )
+        payload = json.loads(result["text"])
+        assert payload["complete"] is True
+        assert payload["total_known"] == 3

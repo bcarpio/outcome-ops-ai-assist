@@ -277,8 +277,10 @@ def test_callers_empty_result_returns_query_result_not_none(tables):
     assert result.staleness_seconds is None
 
 
-def test_definitions_empty_result_returns_empty_list_not_none(tables):
-    """``definitions(X)`` returns ``[]`` for unknown symbols — never None."""
+def test_definitions_empty_result_returns_empty_sites_not_none(tables):
+    """``definitions(X)`` returns ``QueryResult(sites=[], complete=True,
+    total_known=0, ...)`` for unknown symbols -- never None, and
+    completeness-honest (the absence IS the answer)."""
     from shared.symbol_graph_reader import definitions  # type: ignore
 
     result = definitions(
@@ -287,7 +289,10 @@ def test_definitions_empty_result_returns_empty_list_not_none(tables):
         symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
         code_maps_table_name=CODE_MAPS_TABLE,
     )
-    assert result == []
+    assert result.sites == []
+    assert result.complete is True
+    assert result.truncated is False
+    assert result.total_known == 0
 
 
 # ===========================================================================
@@ -356,9 +361,11 @@ def test_definitions_single_repo_returns_single_element_list(tables):
         symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
         code_maps_table_name=CODE_MAPS_TABLE,
     )
-    assert len(result) == 1
-    assert result[0].file_path == "lambda/shared/outcomeops_license.py"
-    assert result[0].line == 42
+    assert len(result.sites) == 1
+    assert result.sites[0].file_path == "lambda/shared/outcomeops_license.py"
+    assert result.sites[0].line == 42
+    assert result.complete is True
+    assert result.total_known == 1
 
 
 def test_definitions_cross_repo_duplicate_returns_multi_element_list(tables):
@@ -387,9 +394,11 @@ def test_definitions_cross_repo_duplicate_returns_multi_element_list(tables):
         symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
         code_maps_table_name=CODE_MAPS_TABLE,
     )
-    assert len(result) == 2
-    repos = {site.repo for site in result}
+    assert len(result.sites) == 2
+    repos = {site.repo for site in result.sites}
     assert repos == {REPO, OTHER_REPO}
+    assert result.complete is True
+    assert result.total_known == 2
 
 
 # ===========================================================================
@@ -1046,12 +1055,14 @@ def test_fuzzy_resolve_returns_single_canonical_for_unique_bare_name(tables):
             language="python",
         )
 
-    matches = fuzzy_resolve_by_name(
+    result = fuzzy_resolve_by_name(
         WORKSPACE_ID,
         "report_repos_snapshot",
         symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
     )
-    assert matches == [canonical]
+    assert result.canonicals == [canonical]
+    assert result.complete is True
+    assert result.total_known == 1
 
 
 def test_fuzzy_resolve_returns_multiple_canonicals_for_overloaded_bare_name(tables):
@@ -1088,26 +1099,29 @@ def test_fuzzy_resolve_returns_multiple_canonicals_for_overloaded_bare_name(tabl
         language="python",
     )
 
-    matches = set(
-        fuzzy_resolve_by_name(
-            WORKSPACE_ID,
-            "handle_workspace_invite",
-            symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
-        )
+    result = fuzzy_resolve_by_name(
+        WORKSPACE_ID,
+        "handle_workspace_invite",
+        symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
     )
-    assert matches == {auth_canonical, org_canonical}
+    assert set(result.canonicals) == {auth_canonical, org_canonical}
+    assert result.complete is True
+    assert result.total_known == 2
 
 
 def test_fuzzy_resolve_returns_empty_when_workspace_has_no_match(tables):
-    """No row matches the bare name -> empty list."""
+    """No row matches the bare name -> empty canonicals + complete=True
+    (the absence IS the answer; completeness is honest)."""
     from shared.symbol_graph_reader import fuzzy_resolve_by_name  # type: ignore
 
-    matches = fuzzy_resolve_by_name(
+    result = fuzzy_resolve_by_name(
         WORKSPACE_ID,
         "no_such_function",
         symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
     )
-    assert matches == []
+    assert result.canonicals == []
+    assert result.complete is True
+    assert result.total_known == 0
 
 
 def test_fuzzy_resolve_scopes_to_workspace(tables):
@@ -1130,23 +1144,30 @@ def test_fuzzy_resolve_scopes_to_workspace(tables):
         language="python",
     )
 
-    matches = fuzzy_resolve_by_name(
+    result = fuzzy_resolve_by_name(
         "ws-beta",
         "require_auth",
         symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
     )
-    assert matches == []
+    assert result.canonicals == []
+    assert result.complete is True
 
 
 def test_fuzzy_resolve_returns_empty_for_blank_args(tables):
-    """Defensive: empty workspace_id or bare_name returns [] without
-    a DDB call."""
+    """Defensive: empty workspace_id or bare_name returns a complete
+    empty result without a DDB call."""
     from shared.symbol_graph_reader import fuzzy_resolve_by_name  # type: ignore
 
-    assert fuzzy_resolve_by_name("", "foo",
-        symbol_graph_table_name=SYMBOL_GRAPH_TABLE) == []
-    assert fuzzy_resolve_by_name("ws-1", "",
-        symbol_graph_table_name=SYMBOL_GRAPH_TABLE) == []
+    r1 = fuzzy_resolve_by_name(
+        "", "foo", symbol_graph_table_name=SYMBOL_GRAPH_TABLE
+    )
+    assert r1.canonicals == []
+    assert r1.complete is True
+    r2 = fuzzy_resolve_by_name(
+        "ws-1", "", symbol_graph_table_name=SYMBOL_GRAPH_TABLE
+    )
+    assert r2.canonicals == []
+    assert r2.complete is True
 
 
 
@@ -1192,8 +1213,8 @@ def test_definitions_surfaces_signature_when_present(tables):
         symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
         code_maps_table_name=CODE_MAPS_TABLE,
     )
-    assert len(result) == 1
-    assert result[0].signature == {
+    assert len(result.sites) == 1
+    assert result.sites[0].signature == {
         "params": [
             {"name": "name", "type": "str"},
             {"name": "loud", "type": "bool"},
@@ -1226,8 +1247,8 @@ def test_definitions_back_compat_row_without_signature(tables):
         symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
         code_maps_table_name=CODE_MAPS_TABLE,
     )
-    assert len(result) == 1
-    assert result[0].signature is None
+    assert len(result.sites) == 1
+    assert result.sites[0].signature is None
 
 
 # ===========================================================================
@@ -1531,3 +1552,191 @@ class TestSymbolAtLine:
                 10,
                 symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
             )
+
+
+# ===========================================================================
+# List-completeness contract (ADR-032) — definitions() + fuzzy_resolve_by_name()
+# expose truncated/complete/total_known on a wrapped result type so consumers
+# can detect a clipped list and either disclose or refuse.
+# ===========================================================================
+
+
+class TestListCompletenessContract:
+    """Each list-returning reader populates the truncation fields the
+    chat synthesis prompt rule (chunk 04) binds against."""
+
+    def test_definitions_truncates_when_limit_hit(self, tables):
+        """A symbol with more definitions than the limit returns
+        truncated=True, complete=False, total_known=None."""
+        from shared.symbol_graph_reader import definitions  # type: ignore
+
+        sym = "typescript:@org/types::IBookingClient"
+        table = tables.Table(SYMBOL_GRAPH_TABLE)
+        # Seed 6 cross-repo defines for the same symbol.
+        for i in range(6):
+            _put_fact(
+                table,
+                workspace_id=WORKSPACE_ID,
+                repo=f"repo-{i}",
+                commit_sha=SHA,
+                kind="defines",
+                source_symbol_id=f"typescript:apps/app{i}/src/types",
+                target_symbol_id=sym,
+                file_path=f"apps/app{i}/src/types.ts",
+                line=10 + i,
+                language="typescript",
+            )
+        # Cap at 3 -- forces truncation.
+        result = definitions(
+            WORKSPACE_ID,
+            sym,
+            limit=3,
+            symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
+            code_maps_table_name=CODE_MAPS_TABLE,
+        )
+        assert len(result.sites) == 3
+        assert result.truncated is True
+        assert result.complete is False
+        # ADR-032: when truncated and the reader can't compute total
+        # cheaply, total_known is None -- consumer must disclose or
+        # call again with higher limit; LLM must NOT estimate.
+        assert result.total_known is None
+
+    def test_definitions_complete_when_under_limit(self, tables):
+        """When the result fits under the limit, total_known is the
+        exact len(sites) -- chat synthesis quotes this verbatim
+        rather than computing the count."""
+        from shared.symbol_graph_reader import definitions  # type: ignore
+
+        sym = "python:lambda.shared.foo::bar"
+        table = tables.Table(SYMBOL_GRAPH_TABLE)
+        for i in range(3):
+            _put_fact(
+                table,
+                workspace_id=WORKSPACE_ID,
+                repo=f"repo-{i}",
+                commit_sha=SHA,
+                kind="defines",
+                source_symbol_id=f"python:lambda.shared.foo",
+                target_symbol_id=sym,
+                file_path=f"src/foo{i}.py",
+                line=10 + i,
+                language="python",
+            )
+        result = definitions(
+            WORKSPACE_ID,
+            sym,
+            limit=50,
+            symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
+            code_maps_table_name=CODE_MAPS_TABLE,
+        )
+        assert len(result.sites) == 3
+        assert result.truncated is False
+        assert result.complete is True
+        assert result.total_known == 3
+
+    def test_fuzzy_resolve_truncates_when_canonical_set_exceeds_limit(
+        self, tables
+    ):
+        """The audit-failure shape: a bare name with N>limit distinct
+        canonicals returns a clipped set AND a truncated=True signal
+        so the chat router (chunk 03) and prompt (chunk 04) can
+        recover instead of shipping silently wrong."""
+        from shared.symbol_graph_reader import fuzzy_resolve_by_name  # type: ignore
+
+        bare = "require_auth"
+        table = tables.Table(SYMBOL_GRAPH_TABLE)
+        # Seed 10 distinct canonicals (simulating per-lambda vendored
+        # require_auth) with require_auth as the bare name.
+        for i in range(10):
+            canonical = f"python:lambda.integration{i}.handler::require_auth"
+            _put_fact(
+                table,
+                workspace_id=WORKSPACE_ID,
+                repo=REPO,
+                commit_sha=SHA,
+                kind="defines",
+                source_symbol_id=f"python:lambda.integration{i}.handler::<module>",
+                target_symbol_id=canonical,
+                file_path=f"lambda/integration{i}/handler.py",
+                line=100 + i,
+                language="python",
+            )
+        # Cap at 5 -- forces dedupe-truncation.
+        result = fuzzy_resolve_by_name(
+            WORKSPACE_ID,
+            bare,
+            limit=5,
+            symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
+        )
+        assert len(result.canonicals) == 5
+        assert result.truncated is True
+        assert result.complete is False
+        assert result.total_known is None
+
+    def test_fuzzy_resolve_complete_when_all_canonicals_returned(
+        self, tables
+    ):
+        """When the limit covers the canonical set, complete=True and
+        total_known is the deterministic count."""
+        from shared.symbol_graph_reader import fuzzy_resolve_by_name  # type: ignore
+
+        bare = "report_repos_snapshot"
+        table = tables.Table(SYMBOL_GRAPH_TABLE)
+        for i in range(2):
+            canonical = (
+                f"python:lambda.shared{i}.outcomeops_license"
+                f"::report_repos_snapshot"
+            )
+            _put_fact(
+                table,
+                workspace_id=WORKSPACE_ID,
+                repo=REPO,
+                commit_sha=SHA,
+                kind="defines",
+                source_symbol_id=f"python:lambda.shared{i}.outcomeops_license",
+                target_symbol_id=canonical,
+                file_path=f"lambda/shared{i}/outcomeops_license.py",
+                line=42 + i,
+                language="python",
+            )
+        result = fuzzy_resolve_by_name(
+            WORKSPACE_ID,
+            bare,
+            limit=25,
+            symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
+        )
+        assert len(result.canonicals) == 2
+        assert result.complete is True
+        assert result.total_known == 2
+
+    def test_callers_carries_total_known_when_complete(self, tables):
+        """The three already-truncated-aware readers (callers,
+        importers, implementers) gain total_known via QueryResult so
+        the same prompt rule can apply uniformly."""
+        from shared.symbol_graph_reader import callers  # type: ignore
+
+        target = "python:lambda.shared.foo::bar"
+        table = tables.Table(SYMBOL_GRAPH_TABLE)
+        for i in range(4):
+            _put_fact(
+                table,
+                workspace_id=WORKSPACE_ID,
+                repo=REPO,
+                commit_sha=SHA,
+                kind="calls",
+                source_symbol_id=f"python:caller{i}::fn",
+                target_symbol_id=target,
+                file_path=f"src/caller{i}.py",
+                line=10 + i,
+                language="python",
+            )
+        result = callers(
+            WORKSPACE_ID,
+            target,
+            symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
+            code_maps_table_name=CODE_MAPS_TABLE,
+        )
+        assert len(result.sites) == 4
+        assert result.complete is True
+        assert result.total_known == 4
