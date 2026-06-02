@@ -1674,6 +1674,31 @@ def _read_source_relocate(window, bare_name):
     return None
 
 
+def _read_source_resolve_full_repo_name(workspace_id, bare_repo):
+    """Find the owner-prefixed repo name ('owner/<bare>') for a bare repo
+    name within a workspace.
+
+    The symbol graph stores ``repo`` as the bare name (no owner) so the
+    code-maps pointer key matches. The GitHub Contents API needs the
+    owner-prefixed form. Resolve by scanning the workspace's
+    ``GITHUB_REPO#`` rows for one whose tail equals the bare name.
+    Returns the owner/bare string, or None when no matching row exists
+    (e.g. the workspace never added the repo)."""
+    from boto3.dynamodb.conditions import Key  # noqa: WPS433
+    if not bare_repo or "/" in bare_repo:
+        return bare_repo or None
+    table = _get_dynamodb().Table(DYNAMODB_TABLE)
+    resp = table.query(
+        KeyConditionExpression=Key("PK").eq(f"WS#{workspace_id}")
+        & Key("SK").begins_with("GITHUB_REPO#"),
+    )
+    for item in resp.get("Items", []):
+        owner_repo = item.get("SK", "").split("GITHUB_REPO#", 1)[-1]
+        if "/" in owner_repo and owner_repo.rsplit("/", 1)[-1] == bare_repo:
+            return owner_repo
+    return None
+
+
 def _read_source_resolve_via_graph(workspace_id, symbol):
     """Resolve a canonical symbol id to ``(repo, file_path, line, graph_sha)``
     using the symbol graph + the code-maps SHA-truth pointer.
@@ -1712,12 +1737,28 @@ def _read_source_resolve_via_graph(workspace_id, symbol):
         }
     site = sites[0]
 
+    # The graph stores `repo` as the bare name (no owner) so the pointer
+    # key matches. GitHub's Contents API needs the owner-prefixed form,
+    # so resolve to the full 'owner/<bare>' via the workspaces table when
+    # the graph row was bare.
+    repo_full = site.repo
+    if "/" not in repo_full:
+        looked_up = _read_source_resolve_full_repo_name(workspace_id, site.repo)
+        if not looked_up:
+            return {
+                "error": (
+                    f"workspace has no GitHub repo row matching bare name "
+                    f"{site.repo!r}; cannot derive owner for the GitHub fetch"
+                )
+            }
+        repo_full = looked_up
+
     # SHA-truth pointer lookup keyed on the BARE repo name (no owner).
     code_maps_table = os.environ.get("CODE_MAPS_TABLE")
     graph_sha = None
     if code_maps_table:
         try:
-            repo_bare = site.repo.split("/", 1)[-1]
+            repo_bare = repo_full.rsplit("/", 1)[-1]
             table = _get_dynamodb().Table(code_maps_table)
             resp = table.get_item(
                 Key={
@@ -1730,7 +1771,7 @@ def _read_source_resolve_via_graph(workspace_id, symbol):
             logger.warning("read_source graph_sha lookup failed: %s", exc)
 
     return {
-        "repo": site.repo,
+        "repo": repo_full,
         "file_path": site.file_path,
         "line": site.line,
         "graph_sha": graph_sha,
@@ -1841,6 +1882,8 @@ def handle_read_source(params, email):
             }
         if resolved.get("error") == "graph_unavailable":
             return {"error": "symbol graph unavailable"}
+        if "error" in resolved:
+            return {"error": resolved["error"]}
         repo = resolved["repo"]
         file_path = resolved["file_path"]
         line_raw = resolved["line"]

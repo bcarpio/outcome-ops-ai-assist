@@ -682,3 +682,117 @@ class TestReadSourceVerifiedValueWinsScenario:
         # neighbor (no relocation drift).
         assert payload["symbol"] == sym
         assert payload["relocated"] is False
+
+
+# ===========================================================================
+# Bare-repo handling in at_graph_sha mode (post-chunk-04 fix surfaced by
+# live eShop smoke test on 2026-06-02). The symbol-graph stores `repo`
+# as the bare name; the GitHub Contents API needs 'owner/<bare>'.
+# ===========================================================================
+
+
+def _seed_workspace_repo_row(table, workspace_id, owner_repo):
+    """Seed a GITHUB_REPO# row matching what the UI creates on repo-add."""
+    table.put_item(Item={
+        "PK": f"WS#{workspace_id}",
+        "SK": f"GITHUB_REPO#{owner_repo}",
+        "added_at": "2026-06-02T00:00:00+00:00",
+    })
+
+
+def _seed_defines_bare_repo(resource, workspace_id, repo_bare, symbol,
+                             file_path, line, graph_sha):
+    """Seed a defines row whose `repo` field is the BARE name (matches
+    what the live graph rows actually carry)."""
+    sg = resource.Table(SYMBOL_GRAPH_TABLE)
+    sg.put_item(Item={
+        "PK": f"{workspace_id}#{repo_bare}#{graph_sha}",
+        "SK": f"defines#{symbol}#{symbol}#{file_path}#{line}",
+        "GSI1PK": f"{workspace_id}#{symbol}",
+        "GSI1SK": f"defines#{repo_bare}#{file_path}#{line}",
+        "workspace_id": workspace_id,
+        "repo": repo_bare,
+        "commit_sha": graph_sha,
+        "kind": "defines",
+        "source_symbol_id": symbol,
+        "target_symbol_id": symbol,
+        "file_path": file_path,
+        "line": int(line),
+        "language": "csharp",
+    })
+    cm = resource.Table(CODE_MAPS_TABLE)
+    cm.put_item(Item={
+        "PK": f"SYMBOL_GRAPH#{workspace_id}#{repo_bare}",
+        "SK": "POINTER",
+        "graph_sha": graph_sha,
+    })
+
+
+class TestBareRepoLookup:
+
+    def test_resolver_recovers_owner_from_workspace_repo_row(
+        self, workspaces_table, graph_tables,
+    ):
+        """Live eShop smoke test surfaced this: graph.repo == 'eShop'
+        (bare) but the GitHub fetch needs 'bcarpio/eShop'. The resolver
+        must scan the workspace's GITHUB_REPO# rows and recover the
+        owner-prefixed form."""
+        _seed_workspace_repo_row(workspaces_table, WORKSPACE_ID, "bcarpio/eShop")
+        graph_sha = "1234567890" * 4
+        sym = "csharp:eShop.ServiceDefaults::SignaturesDemo::Greet"
+        _seed_defines_bare_repo(
+            graph_tables, WORKSPACE_ID, "eShop", sym,
+            "src/eShop.ServiceDefaults/SignaturesDemo.cs", 10, graph_sha,
+        )
+        file_text = "\n".join(f"L{i}" for i in range(1, 25))
+        patches, call_log = _stub_github_success(file_text)
+        _enter(patches)
+        try:
+            with _patch_user_workspaces([WORKSPACE_ID]):
+                result = mcp_module.handle_read_source(
+                    {
+                        "workspace_id": WORKSPACE_ID,
+                        "symbol": sym,
+                        "at_graph_sha": True,
+                        "context_lines": 2,
+                    },
+                    USER_EMAIL,
+                )
+        finally:
+            _exit(patches)
+        payload = json.loads(result["text"])
+        # The owner was recovered from the workspaces row.
+        assert payload["repo"] == "bcarpio/eShop"
+        # The graph SHA was looked up and pinned on the read.
+        assert payload["graph_sha"] == graph_sha
+        assert payload["ref"] == graph_sha
+        # GitHub URL used the owner-prefixed name.
+        contents = [u for u in call_log if "/contents/" in u]
+        assert contents and "bcarpio/eShop" in contents[-1]
+
+    def test_resolver_errors_when_no_workspace_repo_row_matches_bare(
+        self, workspaces_table, graph_tables,
+    ):
+        """If the graph has a defines row whose bare repo doesn't match
+        any GITHUB_REPO# row in the workspace, we cannot derive an owner
+        and the resolver returns a clear error rather than passing the
+        bare name to the existing 'owner/name' validator."""
+        # No GITHUB_REPO# row seeded -- the lookup must fail explicitly.
+        graph_sha = "deadbeef" * 5
+        sym = "csharp:unknown::Foo::bar"
+        _seed_defines_bare_repo(
+            graph_tables, WORKSPACE_ID, "unknown", sym,
+            "src/Unknown/Foo.cs", 5, graph_sha,
+        )
+        with _patch_user_workspaces([WORKSPACE_ID]):
+            result = mcp_module.handle_read_source(
+                {
+                    "workspace_id": WORKSPACE_ID,
+                    "symbol": sym,
+                    "at_graph_sha": True,
+                },
+                USER_EMAIL,
+            )
+        assert "error" in result
+        assert "no GitHub repo row" in result["error"]
+        assert "unknown" in result["error"]
