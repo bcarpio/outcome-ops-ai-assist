@@ -981,6 +981,336 @@ class TestSearchKbDualChannel:
         )
 
 
+class TestPerLaneRerank:
+    """ADR-033 per-lane rerank: after dual-channel retrieval, each lane's
+    hits are reranked INDEPENDENTLY so neither lane's winners are crowded
+    out by the other lane's cross-rerank scores.
+
+    The 2026-06-03 re-run confirmed the auth code-map IS retrieved by
+    the code-maps lane (3rd hit, dist=0.7263) but combined-pool rerank
+    dropped it -- Cohere judged it less relevant than docs-lane
+    prose-shaped hits. Per-lane rerank guarantees each lane keeps its
+    own top-K-after-rerank, so the code-maps slot is protected from
+    doc-side competition.
+    """
+
+    def test_per_lane_rerank_called_twice_when_both_lanes_have_hits(
+        self, mock_table, sample_embedding
+    ):
+        from unittest.mock import patch
+
+        # Force rerank on for this test.
+        with patch.object(handler_module, "RERANK_ENABLED", True), \
+             patch.object(handler_module, "rerank_results") as mock_rerank:
+            mock_dynamodb_resource.Table.return_value = mock_table
+            mock_body = MagicMock()
+            mock_body.read.return_value = json.dumps(
+                {"embedding": sample_embedding}
+            ).encode()
+            mock_bedrock_client.invoke_model.return_value = {"body": mock_body}
+            # Both lanes return hits so per-lane branch fires.
+            mock_s3vectors_client.query_vectors.return_value = {
+                "vectors": [
+                    {
+                        "key": "doc-x",
+                        "distance": 0.5,
+                        "metadata": {
+                            "content": "content",
+                            "type": "markdown",
+                            "workspace_id": "ws_test",
+                            "source": "github",
+                            "folder_path": "owner/repo",
+                        },
+                    }
+                ]
+            }
+            # Rerank passes through; we only care about WHO calls it.
+            mock_rerank.side_effect = lambda query, docs, top_n=None, **kw: list(
+                docs
+            )[: top_n or len(docs)]
+            mock_bedrock_client.converse_stream.return_value = {
+                "stream": [
+                    {"contentBlockDelta": {"delta": {"text": "OK"}}},
+                    {
+                        "metadata": {
+                            "usage": {
+                                "inputTokens": 10,
+                                "outputTokens": 5,
+                            }
+                        }
+                    },
+                ]
+            }
+            mock_table.query.return_value = {"Items": []}
+
+            event = {
+                "body": json.dumps(
+                    {"message": "Hello", "workspace_ids": ["ws_test"]}
+                )
+            }
+            with patch.object(handler_module, "log_audit_entry"):
+                list(handle_chat_stream(event))
+
+            # rerank_results called EXACTLY TWICE -- once per lane.
+            # If only called once (combined pool), per-lane fix
+            # regressed.
+            assert mock_rerank.call_count == 2, (
+                f"Expected per-lane rerank (2 calls), got "
+                f"{mock_rerank.call_count}"
+            )
+
+    def test_per_lane_rerank_splits_top_n_budget_evenly(
+        self, mock_table, sample_embedding
+    ):
+        """request.top_k splits evenly across lanes (with docs taking the
+        odd remainder). Floor of 1 per lane so a tiny budget still keeps
+        both lanes represented."""
+        from unittest.mock import patch
+
+        with patch.object(handler_module, "RERANK_ENABLED", True), \
+             patch.object(handler_module, "rerank_results") as mock_rerank:
+            mock_dynamodb_resource.Table.return_value = mock_table
+            mock_body = MagicMock()
+            mock_body.read.return_value = json.dumps(
+                {"embedding": sample_embedding}
+            ).encode()
+            mock_bedrock_client.invoke_model.return_value = {"body": mock_body}
+            mock_s3vectors_client.query_vectors.return_value = {
+                "vectors": [
+                    {
+                        "key": "doc-x",
+                        "distance": 0.5,
+                        "metadata": {
+                            "content": "content",
+                            "type": "markdown",
+                            "workspace_id": "ws_test",
+                            "source": "github",
+                            "folder_path": "owner/repo",
+                        },
+                    }
+                ]
+            }
+            mock_rerank.side_effect = lambda query, docs, top_n=None, **kw: list(
+                docs
+            )[: top_n or len(docs)]
+            mock_bedrock_client.converse_stream.return_value = {
+                "stream": [
+                    {"contentBlockDelta": {"delta": {"text": "OK"}}},
+                    {
+                        "metadata": {
+                            "usage": {
+                                "inputTokens": 10,
+                                "outputTokens": 5,
+                            }
+                        }
+                    },
+                ]
+            }
+            mock_table.query.return_value = {"Items": []}
+
+            event = {
+                "body": json.dumps(
+                    {
+                        "message": "Hello",
+                        "workspace_ids": ["ws_test"],
+                        "top_k": 10,
+                    }
+                )
+            }
+            with patch.object(handler_module, "log_audit_entry"):
+                list(handle_chat_stream(event))
+
+            # Two calls. Their top_n must sum to <= request.top_k (10).
+            top_ns = sorted(c.kwargs["top_n"] for c in mock_rerank.call_args_list)
+            assert top_ns == [5, 5], (
+                f"Expected even 5/5 split of top_k=10, got {top_ns}"
+            )
+
+    def test_per_lane_rerank_isolates_code_map_lane_from_doc_lane(
+        self, mock_table, sample_embedding
+    ):
+        """Each rerank call sees ONLY its own lane's documents. A
+        code-map hit must never appear in the docs lane's rerank pool
+        and vice versa. This is the load-bearing isolation that
+        protects the code-maps lane from being out-scored by docs."""
+        from unittest.mock import patch
+
+        with patch.object(handler_module, "RERANK_ENABLED", True), \
+             patch.object(handler_module, "rerank_results") as mock_rerank:
+            mock_dynamodb_resource.Table.return_value = mock_table
+            mock_body = MagicMock()
+            mock_body.read.return_value = json.dumps(
+                {"embedding": sample_embedding}
+            ).encode()
+            mock_bedrock_client.invoke_model.return_value = {"body": mock_body}
+
+            # Different content per lane so we can verify isolation.
+            def fake_query(**kwargs):
+                f = kwargs.get("filter", {})
+                type_clause = None
+                if "$and" in f:
+                    for c in f["$and"]:
+                        if "type" in c:
+                            type_clause = c["type"]["$in"]
+                if type_clause and "handler-group-summary" in type_clause:
+                    return {
+                        "vectors": [
+                            {
+                                "key": "code-map-hit",
+                                "distance": 0.7,
+                                "metadata": {
+                                    "content": "code-map content",
+                                    "type": "handler-group-summary",
+                                    "workspace_id": "ws_test",
+                                    "source": "github",
+                                    "folder_path": "owner/repo",
+                                },
+                            }
+                        ]
+                    }
+                return {
+                    "vectors": [
+                        {
+                            "key": "doc-hit",
+                            "distance": 0.6,
+                            "metadata": {
+                                "content": "doc content",
+                                "type": "markdown",
+                                "workspace_id": "ws_test",
+                                "source": "github",
+                                "folder_path": "owner/repo",
+                            },
+                        }
+                    ]
+                }
+
+            mock_s3vectors_client.query_vectors.side_effect = fake_query
+            mock_rerank.side_effect = lambda query, docs, top_n=None, **kw: list(
+                docs
+            )[: top_n or len(docs)]
+            mock_bedrock_client.converse_stream.return_value = {
+                "stream": [
+                    {"contentBlockDelta": {"delta": {"text": "OK"}}},
+                    {
+                        "metadata": {
+                            "usage": {
+                                "inputTokens": 10,
+                                "outputTokens": 5,
+                            }
+                        }
+                    },
+                ]
+            }
+            mock_table.query.return_value = {"Items": []}
+
+            event = {
+                "body": json.dumps(
+                    {"message": "Hello", "workspace_ids": ["ws_test"]}
+                )
+            }
+            with patch.object(handler_module, "log_audit_entry"):
+                list(handle_chat_stream(event))
+
+            # Inspect each rerank call's documents arg. One call's
+            # documents are all code-map lane; the other call's are
+            # all docs lane. No cross-contamination.
+            by_lane = {}
+            for c in mock_rerank.call_args_list:
+                docs = c.args[1] if len(c.args) > 1 else c.kwargs.get("documents")
+                if not docs:
+                    continue
+                lanes_in_call = {d.get("lane") for d in docs}
+                assert len(lanes_in_call) == 1, (
+                    f"Rerank call mixed lanes: {lanes_in_call}"
+                )
+                by_lane[next(iter(lanes_in_call))] = docs
+            assert set(by_lane.keys()) == {"code_map", "docs"}, (
+                f"Expected both lanes to rerank, got: {list(by_lane.keys())}"
+            )
+            assert by_lane["code_map"][0]["key"] == "code-map-hit"
+            assert by_lane["docs"][0]["key"] == "doc-hit"
+
+    def test_per_lane_rerank_falls_back_to_combined_when_one_lane_empty(
+        self, mock_table, sample_embedding
+    ):
+        """Thin-ingest workspace (no code-maps) -> code-maps lane
+        returns empty. Per-lane rerank skipped (no fairness issue);
+        combined-pool rerank runs once over the docs lane only. No
+        crash, no partial-failure."""
+        from unittest.mock import patch
+
+        with patch.object(handler_module, "RERANK_ENABLED", True), \
+             patch.object(handler_module, "rerank_results") as mock_rerank:
+            mock_dynamodb_resource.Table.return_value = mock_table
+            mock_body = MagicMock()
+            mock_body.read.return_value = json.dumps(
+                {"embedding": sample_embedding}
+            ).encode()
+            mock_bedrock_client.invoke_model.return_value = {"body": mock_body}
+
+            def fake_query(**kwargs):
+                f = kwargs.get("filter", {})
+                type_clause = None
+                if "$and" in f:
+                    for c in f["$and"]:
+                        if "type" in c:
+                            type_clause = c["type"]["$in"]
+                if type_clause and "handler-group-summary" in type_clause:
+                    return {"vectors": []}  # thin-ingest: no code-maps
+                # Return >1 doc so the rerank guard
+                # (`len(search_results) > 1`) lets the call through.
+                return {
+                    "vectors": [
+                        {
+                            "key": f"doc-hit-{i}",
+                            "distance": 0.6 + i * 0.01,
+                            "metadata": {
+                                "content": f"doc content {i}",
+                                "type": "markdown",
+                                "workspace_id": "ws_test",
+                                "source": "github",
+                                "folder_path": "owner/repo",
+                            },
+                        }
+                        for i in range(3)
+                    ]
+                }
+
+            mock_s3vectors_client.query_vectors.side_effect = fake_query
+            mock_rerank.side_effect = lambda query, docs, top_n=None, **kw: list(
+                docs
+            )[: top_n or len(docs)]
+            mock_bedrock_client.converse_stream.return_value = {
+                "stream": [
+                    {"contentBlockDelta": {"delta": {"text": "OK"}}},
+                    {
+                        "metadata": {
+                            "usage": {
+                                "inputTokens": 10,
+                                "outputTokens": 5,
+                            }
+                        }
+                    },
+                ]
+            }
+            mock_table.query.return_value = {"Items": []}
+
+            event = {
+                "body": json.dumps(
+                    {"message": "Hello", "workspace_ids": ["ws_test"]}
+                )
+            }
+            with patch.object(handler_module, "log_audit_entry"):
+                list(handle_chat_stream(event))
+
+            # Only ONE rerank call (the combined-pool fallback) when
+            # one lane is empty.
+            assert mock_rerank.call_count == 1, (
+                f"Expected single combined-pool rerank fallback, got "
+                f"{mock_rerank.call_count}"
+            )
+
+
 class TestFormatContext:
     """Test formatting search results as prompt context."""
 

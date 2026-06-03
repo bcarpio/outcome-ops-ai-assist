@@ -2188,16 +2188,63 @@ def handle_chat_stream(event: Dict) -> Generator[str, None, None]:
         # rerank audit row is attributed to the workspace + user that
         # caused it - otherwise it lands on WS#SYSTEM and the analytics
         # aggregator skips it.
+        #
+        # ADR-033 dual-channel: rerank PER LANE, not on the combined
+        # pool. The 2026-06-03 magic_link audit re-run (verified live)
+        # confirmed the auth code-map IS retrieved by the code-maps
+        # lane (3rd hit, dist=0.7263) but combined-pool rerank judges
+        # it less relevant than the docs-lane prose hits and drops it
+        # before synthesis. Per-lane rerank guarantees each lane keeps
+        # its own top-K-after-rerank, so the code-maps slot is
+        # protected from doc-side competition.
         if RERANK_ENABLED and len(search_results) > 1:
-            search_results = rerank_results(
-                search_query,
-                search_results,
-                top_n=request.top_k,
-                user_email=user_id or "",
-                workspace_id=primary_workspace_id or "",
-                source_ip=source_ip,
-                user_agent=user_agent,
-            )
+            code_map_hits = [r for r in search_results if r.get("lane") == "code_map"]
+            doc_hits = [r for r in search_results if r.get("lane") == "docs"]
+            # Empty-lane case: one side returned nothing (thin-ingest
+            # workspace, or the lane filter found no matches). Fall
+            # back to the combined-pool rerank since there is no
+            # rerank-fairness issue to protect against.
+            if not code_map_hits or not doc_hits:
+                search_results = rerank_results(
+                    search_query,
+                    search_results,
+                    top_n=request.top_k,
+                    user_email=user_id or "",
+                    workspace_id=primary_workspace_id or "",
+                    source_ip=source_ip,
+                    user_agent=user_agent,
+                )
+            else:
+                # Split top_n budget per lane. Even split with floor at
+                # 1 each so a small top_k still keeps both lanes
+                # represented. Odd budget goes to docs (the larger pool
+                # in any non-thin-ingest workspace).
+                code_map_top_n = max(1, request.top_k // 2)
+                doc_top_n = max(1, request.top_k - code_map_top_n)
+                reranked_code_maps = rerank_results(
+                    search_query,
+                    code_map_hits,
+                    top_n=code_map_top_n,
+                    user_email=user_id or "",
+                    workspace_id=primary_workspace_id or "",
+                    source_ip=source_ip,
+                    user_agent=user_agent,
+                )
+                reranked_docs = rerank_results(
+                    search_query,
+                    doc_hits,
+                    top_n=doc_top_n,
+                    user_email=user_id or "",
+                    workspace_id=primary_workspace_id or "",
+                    source_ip=source_ip,
+                    user_agent=user_agent,
+                )
+                search_results = list(reranked_code_maps) + list(reranked_docs)
+                print(
+                    f"[RERANK] per-lane: code_maps={len(reranked_code_maps)}/{len(code_map_hits)} "
+                    f"docs={len(reranked_docs)}/{len(doc_hits)} "
+                    f"final={len(search_results)}"
+                )
             # Log score distribution for threshold tuning (print for LWA/CloudWatch visibility)
             has_rerank_scores = any("rerank_score" in r for r in search_results)
             if has_rerank_scores:
