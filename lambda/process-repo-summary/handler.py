@@ -1193,9 +1193,9 @@ def handler(event, context):
             # for ordinary repo files (lambda/github-sync/handler.py:543).
             # Without this, the process-documents re-ingest path falls back
             # to folder_path.split("/")[0] and stores the vector with the
-            # bare repo name ("app.retrieveit.ai") instead of the org-
-            # prefixed identifier ("bcarpio/app.retrieveit.ai") that every
-            # other ingest path uses.
+            # bare repo name ("<repo>") instead of the org-prefixed
+            # identifier ("<owner>/<repo>") that every other ingest path
+            # uses.
             # Route through dual_write so the architectural-summary KB doc
             # replicates to the HA secondary (direct s3.put_object would
             # land only in the active region's KB — same standards-repo

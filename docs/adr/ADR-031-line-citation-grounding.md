@@ -23,9 +23,9 @@ collapsed the call chain
 `handle_verify → verify_magic_token → _claim_magic_token_jti` and
 pinned the line onto the wrong scope.
 
-The 2026-06-02 live audit eval surfaced this in a question about the
-app.retrieveit.ai magic_link system. Every line number cited was
-correct; one of them was attributed to the wrong function. A reader
+The 2026-06-02 live audit eval surfaced this in a question about an
+authentication system in a customer workspace. Every line number cited
+was correct; one of them was attributed to the wrong function. A reader
 who clicks "go to `handle_verify` line 544" lands in the wrong
 function and concludes the answer is hallucinated.
 

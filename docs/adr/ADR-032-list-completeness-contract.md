@@ -17,16 +17,16 @@ anti-aggregate sub-rule forbidding LLM-computed counts.
 A failure mode they do not close: **silent list truncation.** A
 list-returning tool whose response carries no completeness signal
 can return a clipped set that the LLM consumes as if it were whole.
-The 2026-06-02 live eval against the GA app.retrieveit.ai workspace
-exposed this. Chat router called `fuzzy_resolve_by_name` without an
-explicit `limit`, the reader's default 25 clipped the canonical list
-at alphabetical position 25, and 8 of 24 lambdas with vendored
-`require_auth` definitions never reached `find_callers`. The
-user-facing answer: 16 lambdas, 37 enumerated sites, a fabricated
-headline of "65 call sites" — correct on every specific line cited,
-fully wrong on the aggregate. None of the existing ADRs caught this
-because the failure isn't about WHAT was cited; it's about what
-SHOULD have been cited but never made it into the LLM's context.
+The 2026-06-02 live eval against a customer workspace exposed this.
+Chat router called `fuzzy_resolve_by_name` without an explicit
+`limit`, the reader's default 25 clipped the canonical list at
+alphabetical position 25, and 8 of 24 lambdas with vendored
+`require_auth` definitions never reached `find_callers`. The user-
+facing answer: 16 lambdas, 37 enumerated sites, a fabricated headline
+of "65 call sites" — correct on every specific line cited, fully wrong
+on the aggregate. None of the existing ADRs caught this because the
+failure isn't about WHAT was cited; it's about what SHOULD have been
+cited but never made it into the LLM's context.
 
 The data was present in the graph (all 40 canonicals existed; the
 single caller at `org-management/handler.py:5830` in a 6,000-line

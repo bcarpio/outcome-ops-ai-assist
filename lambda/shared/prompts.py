@@ -137,11 +137,11 @@ LINE_CITATION_GROUNDING_RULES = """When you are about to cite a code location as
 # This rule binds chat synthesis to honor those fields -- on
 # `complete: false` it must surface the truncation or refuse the
 # enumeration question, NEVER ship a confidently-incomplete answer.
-# The 2026-06-02 require_auth audit on the GA app.retrieveit.ai
-# workspace surfaced the silent-truncation half: 51 actual call sites,
-# 37 enumerated, "65" claimed; chat router was running on a clipped
-# canonical set and the answer reconciled with nothing. Tightens the
-# anti-aggregate sub-rule of LINE_CITATION_GROUNDING_RULES item 6.
+# The 2026-06-02 enumeration-question audit surfaced the silent-
+# truncation half: actual production call sites N, enumerated M<N,
+# headline "K" claimed where K reconciled with neither the data nor
+# reality; chat router was running on a clipped canonical set. Tightens
+# the anti-aggregate sub-rule of LINE_CITATION_GROUNDING_RULES item 6.
 LIST_COMPLETENESS_RULES = """When you call any list-returning tool (find_callers, find_importers, find_implementers, find_definitions, find_symbol_by_name, list_workspace_documents, query_knowledge_base, or any tool that returns a list of items in its response):
 
 1. Read the `complete` field on the response. `complete: true` means the list contains every matching item known to the workspace at query time. `complete: false` means the list was clipped by a cap (the caller's `limit`, a reader default, a DDB pagination boundary).
