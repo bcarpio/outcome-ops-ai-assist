@@ -803,10 +803,14 @@ class TestListCompletenessIntroAggregateBan:
         from shared.prompts import LIST_COMPLETENESS_RULES
 
         body = LIST_COMPLETENESS_RULES.lower()
-        # Rule item 7 must name the failure pattern outright.
-        assert "introductory aggregate" in body or \
-            "introductory summary" in body or \
-            "do not open the answer" in body
+        # 2026-06-03 follow-up: widened from "intro only" to "anywhere
+        # in an answer containing a list/table". Intro is now one
+        # named position among several (header / footer / inline /
+        # table caption). The rule must name multiple positions so a
+        # future move (next whack-a-mole instance) is closed too.
+        assert "intro" in body or "header" in body or "footer" in body
+        assert "anywhere" in body or "twice" in body or \
+            "this rule has surfaced" in body
 
     def test_intro_aggregate_rule_pins_the_failure_case(self):
         """The require_auth wrong numbers (40 / 94 vs ground truth
@@ -831,3 +835,69 @@ class TestListCompletenessIntroAggregateBan:
         assert "without a quantified claim" in body or \
             "no count" in body or \
             "without a count" in body
+
+
+class TestAggregateFooterBanPostMortem:
+    """2026-06-03 re-run of the require_auth question put the wrong
+    aggregate in the FOOTER ("Total: 24 distinct Lambda functions
+    with 56 direct call sites") after we banned the header. Same
+    bug class, different location. The rule must forbid model-
+    authored aggregates ANYWHERE in an answer that contains a
+    list/table, not just at the intro position. The whack-a-mole
+    ends because:
+      - The renderer emits a labeled COMPUTED_AGGREGATES block
+        (sanctioned quote-verbatim source).
+      - The prompt rule explicitly bans counts everywhere else.
+    """
+
+    def test_rule_bans_aggregates_everywhere_not_just_intro(self):
+        from shared.prompts import LIST_COMPLETENESS_RULES
+
+        body = LIST_COMPLETENESS_RULES.lower()
+        # Must explicitly name the failure positions: footer, total,
+        # across-the-workspace clauses, table captions.
+        assert "footer" in body or '"total:' in body or "total:" in body
+        # Must name the whack-a-mole dynamic: same bug surfaced again.
+        assert "whack" in body or "same bug" in body or \
+            "surfaced as the same bug" in body or "twice" in body
+
+    def test_rule_pins_the_56_footer_failure_case(self):
+        """The 56 example is in the rule so a future prompt editor
+        sees what they would be erasing if they loosen the ban."""
+        from shared.prompts import LIST_COMPLETENESS_RULES
+
+        # 56 is the audit-failure footer number; pinned alongside the
+        # 40 / 94 / 65 numbers already in the rule from earlier
+        # passes.
+        assert "56" in LIST_COMPLETENESS_RULES
+
+    def test_rule_names_computed_aggregates_as_sanctioned_source(self):
+        """The renderer emits COMPUTED_AGGREGATES in the context; the
+        prompt rule must tell the model that block is one of the two
+        legal sources for a count (the other being total_known on
+        tool responses)."""
+        from shared.prompts import LIST_COMPLETENESS_RULES
+
+        assert "COMPUTED_AGGREGATES" in LIST_COMPLETENESS_RULES
+        assert "total_known" in LIST_COMPLETENESS_RULES
+
+    def test_rule_explicitly_bans_filtered_subset_counts(self):
+        """The 56 came from the model applying a heuristic filter
+        (production-only, excluding tests) and authoring its own
+        subset count. The rule must explicitly forbid this --
+        heuristic filters yield unverifiable numbers."""
+        from shared.prompts import LIST_COMPLETENESS_RULES
+
+        body = LIST_COMPLETENESS_RULES.lower()
+        assert "heuristic" in body
+        assert "filter" in body or "subset" in body or \
+            "prod-only" in body or "production-only" in body
+
+    def test_rule_offers_acceptable_intro_examples(self):
+        """The fix isn't 'never introduce the answer.' Non-quantified
+        clauses are explicitly allowed so the model doesn't
+        over-correct into terse / hostile output."""
+        from shared.prompts import LIST_COMPLETENESS_RULES
+
+        body = LIST_COMPLETENESS_RULES.lower()
+        assert "acceptable" in body or "without a count" in body

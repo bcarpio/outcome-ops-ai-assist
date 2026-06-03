@@ -160,7 +160,21 @@ LIST_COMPLETENESS_RULES = """When you call any list-returning tool (find_callers
    - CORRECT: "The list of lambdas calling require_auth was clipped at the lookup cap. I cannot give you the complete answer without re-querying; want me to widen the search?"
    - WRONG: "16 lambdas call require_auth: <enumeration> ... Total: 65 call sites." (silent clip + fabricated headline + no disclosure).
 
-7. Do NOT open the answer with an introductory aggregate summary sentence -- "Based on the symbol graph, N distinct definitions of X exist across the workspace, with M direct call sites total." or any rephrasing of the same shape. The 2026-06-02 require_auth audit traced its wrong "40 distinct definitions / 94 call sites total" prose to exactly this pattern: the model authored a header sentence with numbers that did not come from a tool field (40 was the CANONICAL count mislabeled as definitions; 94 was a graph retrieval total mislabeled as call sites; ground truth was 24 / 51). Render the answer body as the table / per-canonical breakdown / per-section count from the symbol facts block. If you want to introduce the answer, use a short clause WITHOUT a quantified claim ("Here are the lambdas that call require_auth:" -- no count). The router/stats UI already surfaces retrieval counts; do not restate them in the answer body."""
+7. AGGREGATE COUNTS ARE FORBIDDEN ANYWHERE IN AN ANSWER THAT RENDERS A LIST OR A TABLE -- this includes the intro sentence, any "Total:" footer, any "across the workspace" / "across all matches" / "in total" / "combined" clause, any inline aside, any table caption, any per-section summary that rolls up multiple sections. The model narrates; the router/renderer counts. The model does not author aggregates.
+
+   The ONLY counts you may state are:
+   (a) A `total_known` field value from a list-returning tool response, quoted with its exact integer.
+   (b) A COMPUTED_AGGREGATES line emitted by the renderer in your context (e.g., `CANONICALS_RESOLVED: N`, `TOTAL_SITES_ACROSS_CANONICALS: M`), quoted with both the precise label AND the exact integer.
+
+   If neither (a) nor (b) carries the count you want to state, OMIT the count. Do not write `len(rendered_table)`. Do not write `sum(per_section_counts)`. Do not estimate. Do not write "approximately." Do not write "around N." Do not write a count derived from any filter you applied yourself (production-only, excluding tests, only handler.py files, etc.) -- those filters are heuristic and any number you produce is unverifiable.
+
+   This rule has surfaced as the same bug twice (2026-06-02 / 2026-06-03):
+   - "Based on the symbol graph, 40 distinct definitions of X exist with 94 direct call sites total" (header position, fabricated labels + wrong numbers).
+   - "Total: 24 distinct Lambda functions with 56 direct call sites across the workspace" (footer position, freshly invented "56" matched nothing -- not the table's own column-sum of 51, not the raw total of 94, not anything).
+
+   The fix is the same in both positions: you do not produce the number. If the user wants a count after seeing the list, they will ask explicitly, and the answer to "how many" must come from a tool field or the COMPUTED_AGGREGATES block -- never from re-reading what you just wrote.
+
+   Acceptable intro / closing clauses without a count: "Here are the lambdas that call require_auth:", "The lambdas calling require_auth are listed below.", "Each row is one definition site." Unacceptable: anything ending in or containing "N call sites", "M total", "X distinct", "across the workspace" + integer."""
 
 # Scope SAST/SonarQube signals to what they actually cover. See ADR-025.
 SAST_SCOPE_RULES = """When SonarQube or other SAST output appears in your context:
