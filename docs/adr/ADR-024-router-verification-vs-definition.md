@@ -1,6 +1,15 @@
 # ADR-024: Router taxonomy — verification questions are HYBRID, not PATTERN
 
-## Status: Accepted
+## Status: Accepted (partially overlapping with ADR-033)
+
+> The router-intent taxonomy this ADR defines is still load-bearing
+> for symbol-graph augmentation routing (when to fire `find_callers`
+> / `find_definitions` vs. RAG-only). ADR-033 introduced dual-channel
+> retrieval that runs intent-agnostic on every turn -- two RAG lanes
+> (code-maps + docs) always fire regardless of intent classification.
+> The intent labels in this ADR still drive symbol-graph augmentation
+> decisions; they no longer gate which retrieval lane runs. New
+> work should consult both ADRs.
 
 ## Context
 

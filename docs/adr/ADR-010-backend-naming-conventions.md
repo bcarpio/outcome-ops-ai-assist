@@ -133,6 +133,6 @@ code_generation:
 ## Related ADRs
 
 - **ADR-009**: Code Unit Discovery Pattern - Defines how backends discover code units
-- **ADR-006**: Python Dependency Management - Example of framework-specific standards in user ADRs
+- **ADR-034**: Python Dependency Management - Example of framework-specific standards in user ADRs
 
 <!-- Confluence sync -->

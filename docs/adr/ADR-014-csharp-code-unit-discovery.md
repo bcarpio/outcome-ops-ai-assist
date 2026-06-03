@@ -1,6 +1,16 @@
 # ADR-014: C# Code Unit Discovery for Code Map Generation
 
-## Status: Accepted
+## Status: Superseded by ADR-017 (C# parser strategy) + ADR-028 (graph-first code-map generation)
+
+> The C# "code unit discovery" heuristic this ADR defined was the
+> pre-symbol-graph approach to finding boundaries in C# repos. The
+> current platform uses the C# tree-sitter extractor with
+> per-project / per-services / per-views structural summaries
+> driven by ADR-017's parser strategy and ADR-028's graph-first
+> generation. Retained for historical context; new C# work should
+> reference ADR-017 and ADR-028.
+
+## Original Status: Accepted
 
 ## Context
 

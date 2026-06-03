@@ -1,4 +1,7 @@
-# ADR-006: Python Dependency Management Standards
+# ADR-034: Python Dependency Management Standards
+
+> Renumbered from ADR-006 (2026-06-03) to resolve a numbering collision
+> with `ADR-006-python-testing-imports.md`. Content unchanged.
 
 ## Status: Accepted
 

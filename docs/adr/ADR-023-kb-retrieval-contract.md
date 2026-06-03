@@ -1,6 +1,18 @@
 # ADR-023: Knowledge-base retrieval contract (shared oversample + rerank + bounded response)
 
-## Status: Accepted
+## Status: Partially superseded by ADR-033 (dual-channel retrieval) for the chat-handler path
+
+> The oversample + rerank + bounded-response contract this ADR
+> defined still applies to the MCP gateway's `search_knowledge_base`
+> tool (`lambda/mcp-server`). The chat-streaming Lambda
+> (`lambda/chat`) was previously bound by this contract but has
+> since migrated to dual-channel retrieval per ADR-033 -- two
+> parallel queries (code-maps lane + docs lane), per-lane rerank,
+> combined for synthesis. New chat-side retrieval work should
+> reference ADR-033; the original ADR-023 contract is retained for
+> the MCP-server tool.
+
+## Original Status: Accepted
 
 ## Context
 

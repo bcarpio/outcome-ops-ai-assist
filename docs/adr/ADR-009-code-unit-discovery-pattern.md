@@ -1,6 +1,15 @@
 # ADR-009: Code Unit Discovery Pattern for Code Map Generation
 
-## Status: Accepted
+## Status: Superseded by ADR-021 (symbol-graph GSI naming) + ADR-028 (graph-first code-map generation)
+
+> The "code unit discovery" heuristic this ADR defined was the
+> pre-symbol-graph approach to finding logical boundaries for
+> code-map summarization. The current platform uses the symbol-graph
+> extractor (per language) + handler-group / source-module
+> classification to determine batch boundaries. Retained for
+> historical context; new work should reference ADR-021 and ADR-028.
+
+## Original Status: Accepted
 
 ## Context
 

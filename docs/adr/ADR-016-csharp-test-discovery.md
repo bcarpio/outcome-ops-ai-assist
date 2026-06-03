@@ -1,6 +1,15 @@
 # ADR-016: C# Test Project Discovery
 
-## Status: Accepted
+## Status: Superseded by ADR-017 (C# parser strategy) + ADR-028 (graph-first code-map generation)
+
+> The C# test-project discovery heuristic this ADR defined was the
+> pre-symbol-graph approach to identifying test boundaries in C#
+> repos. The current platform uses the C# tree-sitter extractor
+> + the tests-summary structural batch type to identify test
+> projects via graph facts. Retained for historical context; new
+> C# test work should reference ADR-017 and ADR-028.
+
+## Original Status: Accepted
 
 ## Context
 

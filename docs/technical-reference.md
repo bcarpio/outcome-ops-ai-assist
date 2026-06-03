@@ -213,7 +213,7 @@ code_generation:
 
   # Custom guidelines for this repository (included in every plan)
   custom_guidelines: |
-    Follow ADR-006 for Python dependency management (pin exact versions).
+    Follow ADR-034 for Python dependency management (pin exact versions).
     Use Pydantic for all request/response validation.
     All Lambda handlers must follow the pattern in existing handlers.
 

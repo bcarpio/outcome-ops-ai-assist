@@ -131,7 +131,7 @@ When generating tests for a Lambda handler:
 ## Related ADRs
 
 - ADR-004: Lambda Handler Standards (handler structure)
-- ADR-006: Python Dependency Management (requirements.txt per handler)
+- ADR-034: Python Dependency Management (requirements.txt per handler)
 
 ## References
 
