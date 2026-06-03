@@ -17,6 +17,7 @@ Security: Lambda is invoked via IAM-authenticated SDK calls from Fargate.
 No public endpoint - Fargate task role has invoke permission.
 """
 
+import concurrent.futures
 import json
 import logging
 import os
@@ -108,6 +109,55 @@ RERANK_MIN_SCORE = float(os.environ.get("RERANK_MIN_SCORE", "0"))
 # Conversation memory config
 MEMORY_CHUNK_SIZE = 10  # Number of messages before creating a memory chunk (5 pairs)
 MEMORY_TOP_K = 3  # Number of memory chunks to retrieve
+
+# ADR-033 dual-channel retrieval: vector type taxonomy. Taxonomy
+# audited 2026-06-03 across the prd knowledge-base index (1631
+# vectors, 31 types). See plan/01-findings.md for the full table.
+#
+# CODE_MAP_TYPES: platform-authored structural summaries -- the
+# graph-grounded truth half of the precedence rule (ADR-025). When a
+# question asks "how does X work" / "what calls Y" / "where is Z
+# defined", these are the authoritative sources.
+#
+# DOC_TYPES: human-authored prose -- ADRs, README, markdown, HTML
+# (Confluence), YAML configs, PDFs, presentations. Drift-prone; the
+# narrative half of the precedence rule.
+#
+# Other types (json, text, unknown, conversation_memory, no-type)
+# remain absent from the dual-channel filters. Those are raw build
+# data / lookup files; not retrieval-relevant for structural or
+# narrative answers.
+CODE_MAP_TYPES = (
+    "handler-group-summary",
+    "source-module-summary",
+    "csharp-project-summary",
+    "tests-summary",
+    "code-map",
+    "csharp-services-summary",
+    "docs-summary",
+    "frontend-tests-summary",
+    "frontend-components-summary",
+    "frontend-utils-summary",
+    "infrastructure-summary",
+    "frontend-pages-summary",
+    "csharp-models-summary",
+    "build-summary",
+    "csharp-views-summary",
+    "csharp-repositories-summary",
+    "kubernetes-summary",
+    "schemas-summary",
+    "shared-summary",
+)
+
+DOC_TYPES = (
+    "adr",
+    "markdown",
+    "html",
+    "pdf",
+    "yaml",
+    "pptx",
+    "docx",
+)
 
 
 def _get_dynamodb():
@@ -1205,6 +1255,8 @@ def search_kb(
     top_k: int = 10,
     workspace_id: str = None,
     workspace_ids: List[str] = None,
+    type_filter: Optional[Tuple[str, ...]] = None,
+    lane_label: str = "",
 ) -> List[Dict]:
     """Search KB documents in S3 Vectors.
 
@@ -1213,9 +1265,17 @@ def search_kb(
         top_k: Number of results to return
         workspace_id: Single workspace ID (deprecated, use workspace_ids)
         workspace_ids: List of workspace IDs for cross-workspace search
+        type_filter: Optional tuple of `type` values to filter on (ADR-033
+            dual-channel retrieval). When provided, only vectors whose
+            metadata `type` is in the tuple are returned. None = no
+            type filter (legacy single-channel behavior).
+        lane_label: Optional string identifying which lane this call is
+            for ("code_map" / "docs" / ""). Used for CloudWatch
+            attribution; otherwise no behavioral effect.
 
     When workspace filtering is provided, results are limited to documents
-    that belong to the specified workspace(s).
+    that belong to the specified workspace(s). When type filtering is
+    also provided, results are restricted to that lane's taxonomy.
     """
     s3vectors = _get_s3vectors_client()
     vector_bucket = _get_vector_bucket()
@@ -1241,17 +1301,29 @@ def search_kb(
             "returnDistance": True,
         }
 
-        # Add workspace filter if provided
-        # S3 Vectors uses $eq/$in operators (not equals/orAll)
+        # Compose the filter: workspace scope (always present when
+        # provided) AND optional type lane (ADR-033). S3 Vectors
+        # supports $eq / $in / $and operators on metadata fields.
+        clauses = []
         if ws_filter_ids:
             if len(ws_filter_ids) == 1:
-                # Single workspace - use $eq filter
-                query_params["filter"] = {"workspace_id": {"$eq": ws_filter_ids[0]}}
-                logger.info(f"Filtering KB search by workspace: {ws_filter_ids[0]}")
+                clauses.append({"workspace_id": {"$eq": ws_filter_ids[0]}})
             else:
-                # Multiple workspaces - use $in filter
-                query_params["filter"] = {"workspace_id": {"$in": ws_filter_ids}}
-                logger.info(f"Filtering KB search by {len(ws_filter_ids)} workspaces: {ws_filter_ids}")
+                clauses.append({"workspace_id": {"$in": ws_filter_ids}})
+        if type_filter:
+            clauses.append({"type": {"$in": list(type_filter)}})
+
+        if len(clauses) == 1:
+            query_params["filter"] = clauses[0]
+        elif len(clauses) > 1:
+            query_params["filter"] = {"$and": clauses}
+
+        if ws_filter_ids:
+            logger.info(
+                "Filtering KB search: workspaces=%d type_lane=%s",
+                len(ws_filter_ids),
+                lane_label or "(none)",
+            )
 
         response = s3vectors.query_vectors(**query_params)
 
@@ -1280,14 +1352,77 @@ def search_kb(
                 "type": metadata.get("type", ""),
                 "file_path": metadata.get("file_path", ""),
                 "workspace_id": metadata.get("workspace_id", ""),
+                "lane": lane_label,
             })
 
-        logger.info(f"Found {len(results)} KB results")
+        logger.info(
+            "Found %d KB results (lane=%s)",
+            len(results),
+            lane_label or "(none)",
+        )
         return results
 
     except ClientError as e:
-        logger.error(f"Error searching vectors: {e}")
+        logger.error(f"Error searching vectors (lane=%s): %s", lane_label, e)
         return []
+
+
+def search_kb_dual_channel(
+    query: str,
+    fetch_k: int,
+    workspace_ids: List[str] = None,
+) -> List[Dict]:
+    """Dual-channel retrieval per ADR-033.
+
+    Fires two parallel S3 Vectors queries: one filtered to the
+    CODE_MAP_TYPES lane, one filtered to the DOC_TYPES lane. Each lane
+    gets half the fetch_k budget. The combined result set feeds into
+    the existing rerank candidate pool.
+
+    Why: a single vector retrieval lets docs out-rank code-maps for
+    prose-shaped questions on doc-heavy repos, starving the synthesis
+    context of the structural truth ADR-025 needs to enforce code-over-
+    docs precedence. The 2026-06-03 magic_link audit (handle_verify
+    vs verify_magic_token attribution) traced to exactly that
+    starvation -- the auth code-map existed in the index but lost on
+    cosine similarity to a doc-heavy field of competitors.
+
+    Two lanes always fire, intent-agnostic. Rerank decides who keeps
+    their slot in the final context.
+    """
+    # Each lane gets half the candidate budget. Floor at 1 so even a
+    # very small fetch_k still queries both lanes.
+    code_map_k = max(1, fetch_k // 2)
+    doc_k = max(1, fetch_k - code_map_k)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        code_map_future = pool.submit(
+            search_kb,
+            query=query,
+            top_k=code_map_k,
+            workspace_ids=workspace_ids,
+            type_filter=CODE_MAP_TYPES,
+            lane_label="code_map",
+        )
+        doc_future = pool.submit(
+            search_kb,
+            query=query,
+            top_k=doc_k,
+            workspace_ids=workspace_ids,
+            type_filter=DOC_TYPES,
+            lane_label="docs",
+        )
+        code_map_hits = code_map_future.result()
+        doc_hits = doc_future.result()
+
+    combined = list(code_map_hits) + list(doc_hits)
+    logger.info(
+        "[chat.retrieval] code_map_lane=%d docs_lane=%d combined=%d",
+        len(code_map_hits),
+        len(doc_hits),
+        len(combined),
+    )
+    return combined
 
 
 def rerank_results(
@@ -2037,7 +2172,17 @@ def handle_chat_stream(event: Dict) -> Generator[str, None, None]:
         search_results = []
     else:
         fetch_k = min(request.top_k * 4, RERANK_MAX_FETCH) if RERANK_ENABLED else request.top_k
-        search_results = search_kb(search_query, top_k=fetch_k, workspace_ids=workspace_ids)
+        # ADR-033 dual-channel retrieval: code-maps lane + docs lane fire
+        # in parallel, each with half the candidate budget. Both lanes
+        # always run regardless of question intent so the synthesis
+        # context has both structural truth (code-maps) and authored
+        # narrative (docs) on every turn. ADR-025 (code wins over docs)
+        # then fires naturally because both sides are quotable.
+        search_results = search_kb_dual_channel(
+            search_query,
+            fetch_k=fetch_k,
+            workspace_ids=workspace_ids,
+        )
 
         # Rerank results if enabled. Thread the request context so the
         # rerank audit row is attributed to the workspace + user that

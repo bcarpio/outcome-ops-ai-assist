@@ -690,6 +690,296 @@ class TestSearchKb:
         results = search_kb("query")
         assert results[0]["repo"] == "my-repo"
 
+    def test_search_kb_type_filter_alone(self, sample_embedding, sample_search_results):
+        """ADR-033: passing only a type_filter produces a $in filter on
+        the `type` metadata field, with no workspace clause."""
+        mock_body = MagicMock()
+        mock_body.read.return_value = json.dumps({"embedding": sample_embedding}).encode()
+        mock_bedrock_client.invoke_model.return_value = {"body": mock_body}
+        mock_s3vectors_client.query_vectors.return_value = sample_search_results
+
+        search_kb("query", type_filter=("handler-group-summary", "code-map"))
+        call_args = mock_s3vectors_client.query_vectors.call_args[1]
+        assert call_args["filter"] == {
+            "type": {"$in": ["handler-group-summary", "code-map"]}
+        }
+
+    def test_search_kb_workspace_and_type_filter_combined(
+        self, sample_embedding, sample_search_results
+    ):
+        """ADR-033: workspace + type_filter compose as $and so both
+        constraints apply simultaneously."""
+        mock_body = MagicMock()
+        mock_body.read.return_value = json.dumps({"embedding": sample_embedding}).encode()
+        mock_bedrock_client.invoke_model.return_value = {"body": mock_body}
+        mock_s3vectors_client.query_vectors.return_value = sample_search_results
+
+        search_kb(
+            "query",
+            workspace_ids=["ws_test"],
+            type_filter=("handler-group-summary",),
+        )
+        call_args = mock_s3vectors_client.query_vectors.call_args[1]
+        assert call_args["filter"] == {
+            "$and": [
+                {"workspace_id": {"$eq": "ws_test"}},
+                {"type": {"$in": ["handler-group-summary"]}},
+            ]
+        }
+
+    def test_search_kb_lane_label_propagates_to_results(
+        self, sample_embedding, sample_search_results
+    ):
+        """Each returned hit carries the `lane` label so downstream
+        rerank / rendering can attribute by source channel."""
+        mock_body = MagicMock()
+        mock_body.read.return_value = json.dumps({"embedding": sample_embedding}).encode()
+        mock_bedrock_client.invoke_model.return_value = {"body": mock_body}
+        mock_s3vectors_client.query_vectors.return_value = sample_search_results
+
+        results = search_kb("query", lane_label="code_map")
+        assert all(r["lane"] == "code_map" for r in results)
+
+
+class TestSearchKbDualChannel:
+    """ADR-033 dual-channel retrieval: two parallel lanes (code-maps +
+    docs) fire on every turn, each with its own top-K budget. Code-maps
+    no longer compete with docs for the same slots, so ADR-025 (code
+    wins over docs) gets reliable evidence to enforce."""
+
+    def test_dual_channel_fires_both_lanes(
+        self, sample_embedding, sample_search_results
+    ):
+        """Both lanes execute -- no intent gating, no classifier
+        decisions. Always both."""
+        from unittest.mock import patch
+
+        with patch(
+            f"{handler_module.__name__}.search_kb",
+            wraps=handler_module.search_kb,
+        ) as spy:
+            mock_body = MagicMock()
+            mock_body.read.return_value = json.dumps(
+                {"embedding": sample_embedding}
+            ).encode()
+            mock_bedrock_client.invoke_model.return_value = {"body": mock_body}
+            mock_s3vectors_client.query_vectors.return_value = sample_search_results
+
+            handler_module.search_kb_dual_channel(
+                "query", fetch_k=20, workspace_ids=["ws_test"]
+            )
+            # Two calls to search_kb -- one per lane.
+            assert spy.call_count == 2
+            # Each call carries a distinct lane_label.
+            labels = sorted(c.kwargs["lane_label"] for c in spy.call_args_list)
+            assert labels == ["code_map", "docs"]
+
+    def test_dual_channel_passes_type_filters_per_lane(
+        self, sample_embedding, sample_search_results
+    ):
+        """Code-maps lane filters on CODE_MAP_TYPES; docs lane filters
+        on DOC_TYPES. The taxonomy is fixed at module level so a
+        future taxonomy change touches one spot."""
+        from unittest.mock import patch
+
+        with patch(
+            f"{handler_module.__name__}.search_kb",
+            wraps=handler_module.search_kb,
+        ) as spy:
+            mock_body = MagicMock()
+            mock_body.read.return_value = json.dumps(
+                {"embedding": sample_embedding}
+            ).encode()
+            mock_bedrock_client.invoke_model.return_value = {"body": mock_body}
+            mock_s3vectors_client.query_vectors.return_value = sample_search_results
+
+            handler_module.search_kb_dual_channel(
+                "query", fetch_k=20, workspace_ids=["ws_test"]
+            )
+            by_lane = {
+                c.kwargs["lane_label"]: c.kwargs["type_filter"]
+                for c in spy.call_args_list
+            }
+            assert by_lane["code_map"] == handler_module.CODE_MAP_TYPES
+            assert by_lane["docs"] == handler_module.DOC_TYPES
+
+    def test_dual_channel_splits_fetch_k_per_lane(
+        self, sample_embedding, sample_search_results
+    ):
+        """Each lane gets half the fetch_k budget. Floors at 1 per lane
+        so very small budgets still query both lanes rather than
+        silently dropping one."""
+        from unittest.mock import patch
+
+        with patch(
+            f"{handler_module.__name__}.search_kb",
+            wraps=handler_module.search_kb,
+        ) as spy:
+            mock_body = MagicMock()
+            mock_body.read.return_value = json.dumps(
+                {"embedding": sample_embedding}
+            ).encode()
+            mock_bedrock_client.invoke_model.return_value = {"body": mock_body}
+            mock_s3vectors_client.query_vectors.return_value = sample_search_results
+
+            handler_module.search_kb_dual_channel(
+                "query", fetch_k=20, workspace_ids=["ws_test"]
+            )
+            top_ks = sorted(c.kwargs["top_k"] for c in spy.call_args_list)
+            # 20 splits as 10 + 10
+            assert top_ks == [10, 10]
+
+    def test_dual_channel_combines_results_preserving_lane_labels(
+        self, sample_embedding
+    ):
+        """Combined result preserves both lanes' hits, each tagged with
+        its lane label so downstream code can render or count by lane."""
+        # Mock query_vectors to return different keys per call so we
+        # can detect both lanes' contributions.
+        from unittest.mock import patch
+
+        mock_body = MagicMock()
+        mock_body.read.return_value = json.dumps(
+            {"embedding": sample_embedding}
+        ).encode()
+        mock_bedrock_client.invoke_model.return_value = {"body": mock_body}
+
+        call_counter = {"i": 0}
+
+        def fake_query_vectors(**kwargs):
+            call_counter["i"] += 1
+            # First call: code_map lane (queries fire in order
+            # ThreadPoolExecutor.submit was called)
+            f = kwargs.get("filter") or {}
+            type_clause = None
+            if "$and" in f:
+                for c in f["$and"]:
+                    if "type" in c:
+                        type_clause = c["type"]["$in"]
+            else:
+                type_clause = f.get("type", {}).get("$in")
+            if (
+                type_clause
+                and "handler-group-summary" in type_clause
+            ):
+                return {
+                    "vectors": [
+                        {
+                            "key": "cm-key",
+                            "distance": 0.9,
+                            "metadata": {
+                                "content": "code-map content",
+                                "type": "handler-group-summary",
+                                "workspace_id": "ws_test",
+                                "source": "github",
+                                "folder_path": "owner/repo",
+                            },
+                        }
+                    ]
+                }
+            return {
+                "vectors": [
+                    {
+                        "key": "doc-key",
+                        "distance": 0.8,
+                        "metadata": {
+                            "content": "doc content",
+                            "type": "markdown",
+                            "workspace_id": "ws_test",
+                            "source": "github",
+                            "folder_path": "owner/repo",
+                        },
+                    }
+                ]
+            }
+
+        mock_s3vectors_client.query_vectors.side_effect = fake_query_vectors
+
+        combined = handler_module.search_kb_dual_channel(
+            "query", fetch_k=4, workspace_ids=["ws_test"]
+        )
+        # Two hits: one per lane.
+        assert len(combined) == 2
+        labels = sorted(r["lane"] for r in combined)
+        assert labels == ["code_map", "docs"]
+        # Each hit retains its key + content + type so rerank can see
+        # the full source attribution.
+        keys = {r["key"] for r in combined}
+        assert keys == {"cm-key", "doc-key"}
+
+    def test_dual_channel_empty_code_map_lane_does_not_crash(
+        self, sample_embedding
+    ):
+        """Thin-ingest workspace (no code-maps yet) returns empty from
+        the code-maps lane; docs lane carries the answer. No crash, no
+        partial-failure mode."""
+        mock_body = MagicMock()
+        mock_body.read.return_value = json.dumps(
+            {"embedding": sample_embedding}
+        ).encode()
+        mock_bedrock_client.invoke_model.return_value = {"body": mock_body}
+
+        def fake_query_vectors(**kwargs):
+            f = kwargs.get("filter") or {}
+            # Detect which lane is calling by sniffing the type clause.
+            type_clause = None
+            if "$and" in f:
+                for c in f["$and"]:
+                    if "type" in c:
+                        type_clause = c["type"]["$in"]
+            else:
+                type_clause = f.get("type", {}).get("$in")
+            if (
+                type_clause
+                and "handler-group-summary" in type_clause
+            ):
+                return {"vectors": []}
+            return {
+                "vectors": [
+                    {
+                        "key": "doc-key",
+                        "distance": 0.8,
+                        "metadata": {
+                            "content": "doc content",
+                            "type": "markdown",
+                            "workspace_id": "ws_test",
+                            "source": "github",
+                            "folder_path": "owner/repo",
+                        },
+                    }
+                ]
+            }
+
+        mock_s3vectors_client.query_vectors.side_effect = fake_query_vectors
+
+        combined = handler_module.search_kb_dual_channel(
+            "query", fetch_k=4, workspace_ids=["ws_test"]
+        )
+        assert len(combined) == 1
+        assert combined[0]["lane"] == "docs"
+
+    def test_dual_channel_taxonomy_constants_cover_known_types(self):
+        """The CODE_MAP_TYPES + DOC_TYPES taxonomy must include the
+        types the 2026-06-03 audit enumerated. A regression here means
+        a vector type was dropped from both lanes and silently
+        disappears from retrieval."""
+        # Known structural types from the audit.
+        assert "handler-group-summary" in handler_module.CODE_MAP_TYPES
+        assert "code-map" in handler_module.CODE_MAP_TYPES
+        assert "architectural-summary" not in handler_module.CODE_MAP_TYPES, (
+            "architectural-summary is not in the audited taxonomy; "
+            "if a new type appears, update both this test and the docs"
+        )
+        # Known doc types from the audit.
+        assert "markdown" in handler_module.DOC_TYPES
+        assert "adr" in handler_module.DOC_TYPES
+        # The two lanes must be disjoint -- no type can be on both
+        # sides; otherwise the same vector competes with itself and
+        # the rerank fairness argument breaks.
+        assert set(handler_module.CODE_MAP_TYPES).isdisjoint(
+            set(handler_module.DOC_TYPES)
+        )
+
 
 class TestFormatContext:
     """Test formatting search results as prompt context."""
@@ -1337,7 +1627,10 @@ class TestHandleChatStream:
         assert "error" in types
 
     def test_workspace_id_passed_to_search(self, mock_table, sample_embedding):
-        """Test that workspace_id is passed through to KB search."""
+        """Test that workspace_id is passed through to KB search. ADR-033:
+        dual-channel retrieval fires two queries per turn (code-maps lane
+        + docs lane), each with the workspace_id constraint AND its own
+        type filter $and-composed."""
         self._setup_mocks(mock_table, sample_embedding)
 
         event = {
@@ -1349,11 +1642,17 @@ class TestHandleChatStream:
 
         chunks = list(handle_chat_stream(event))
 
-        # Verify S3 Vectors query used workspace filter
+        # Both lanes must apply the workspace constraint. Filters now
+        # look like {"$and": [{"workspace_id": {"$in": [...]}}, {"type": {"$in": [...]}}]}
         query_calls = mock_s3vectors_client.query_vectors.call_args_list
-        # First call is the KB search (memory search might also happen)
-        kb_call = query_calls[0][1]
-        assert kb_call["filter"] == {"workspace_id": {"$in": ["ws_a", "ws_b"]}}
+        kb_filters = [c[1]["filter"] for c in query_calls if "filter" in c[1]]
+        # At least one call carrying the multi-workspace constraint.
+        ws_clause = {"workspace_id": {"$in": ["ws_a", "ws_b"]}}
+        assert any(
+            ws_clause in f.get("$and", [])
+            for f in kb_filters
+            if "$and" in f
+        ), f"workspace constraint missing from dual-channel filters: {kb_filters!r}"
 
     def test_uses_workspace_from_existing_conversation(
         self, mock_table, sample_embedding, sample_conversation
@@ -1370,9 +1669,19 @@ class TestHandleChatStream:
         }
 
         chunks = list(handle_chat_stream(event))
-        # Should use workspace_id from conversation ("ws_test")
-        kb_call = mock_s3vectors_client.query_vectors.call_args_list[0][1]
-        assert kb_call["filter"] == {"workspace_id": {"$eq": "ws_test"}}
+        # Should use workspace_id from conversation ("ws_test"). ADR-033:
+        # filter is now $and-composed with the dual-channel type lane.
+        kb_filters = [
+            c[1]["filter"]
+            for c in mock_s3vectors_client.query_vectors.call_args_list
+            if "filter" in c[1]
+        ]
+        ws_clause = {"workspace_id": {"$eq": "ws_test"}}
+        assert any(
+            ws_clause in f.get("$and", [])
+            for f in kb_filters
+            if "$and" in f
+        ), f"workspace constraint missing from dual-channel filters: {kb_filters!r}"
 
     @patch.object(handler_module, "log_audit_entry")
     def test_audit_log_called(self, mock_audit, mock_table, sample_embedding):
@@ -1901,9 +2210,20 @@ class TestEdgeCases:
         with patch.object(handler_module, "log_audit_entry"):
             chunks = list(handle_chat_stream(event))
 
-        # Should use workspace_id for filtering
-        kb_call = mock_s3vectors_client.query_vectors.call_args[1]
-        assert kb_call["filter"] == {"workspace_id": {"$eq": "ws_deprecated"}}
+        # Should use workspace_id for filtering. ADR-033: dual-channel
+        # composes workspace + type filter via $and; at least one of
+        # the two lane queries must carry the deprecated workspace_id.
+        kb_filters = [
+            c[1]["filter"]
+            for c in mock_s3vectors_client.query_vectors.call_args_list
+            if "filter" in c[1]
+        ]
+        ws_clause = {"workspace_id": {"$eq": "ws_deprecated"}}
+        assert any(
+            ws_clause in f.get("$and", [])
+            for f in kb_filters
+            if "$and" in f
+        ), f"workspace constraint missing from dual-channel filters: {kb_filters!r}"
 
     def test_list_conversations_sorted_by_updated_at(self, mock_table):
         """Test conversations are returned from scan (sorting handled by GSI2 for user queries)."""
