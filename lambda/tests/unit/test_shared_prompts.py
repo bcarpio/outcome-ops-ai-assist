@@ -901,3 +901,138 @@ class TestAggregateFooterBanPostMortem:
 
         body = LIST_COMPLETENESS_RULES.lower()
         assert "acceptable" in body or "without a count" in body
+
+
+class TestStructuralAttributionRules:
+    """ADR-033 structural-attribution rule: when stating WHO calls
+    WHOM at WHICH file:line, the claim must be grounded in a code-map
+    / handler-group-summary in context, NOT in a doc chunk alone.
+    Pinned against the 2026-06-03 magic_link audit failure.
+    """
+
+    def test_constant_exists_and_names_code_maps_as_authoritative(self):
+        from shared.prompts import STRUCTURAL_ATTRIBUTION_RULES
+
+        body = STRUCTURAL_ATTRIBUTION_RULES.lower()
+        assert "code-map" in body or "code map" in body
+        assert "authoritative" in body or "structural" in body
+
+    def test_constant_names_specific_code_map_types(self):
+        """The rule must name recognizable code-map source types so
+        the model can match them in its context (handler-group-summary
+        is the load-bearing one for handler-shaped questions)."""
+        from shared.prompts import STRUCTURAL_ATTRIBUTION_RULES
+
+        assert "handler-group-summary" in STRUCTURAL_ATTRIBUTION_RULES
+        # At least one other recognized code-map type so the rule
+        # generalizes beyond Lambda handlers.
+        body = STRUCTURAL_ATTRIBUTION_RULES
+        assert (
+            "architectural-summary" in body
+            or "source-module-summary" in body
+            or "csharp-project-summary" in body
+        )
+
+    def test_constant_pins_the_magic_link_failure_case(self):
+        """The 2026-06-03 audit failure (handle_verify vs
+        verify_magic_token attribution) is pinned in the rule so a
+        future prompt editor sees what they would be erasing."""
+        from shared.prompts import STRUCTURAL_ATTRIBUTION_RULES
+
+        assert "handle_verify" in STRUCTURAL_ATTRIBUTION_RULES
+        assert "verify_magic_token" in STRUCTURAL_ATTRIBUTION_RULES
+        assert "_claim_magic_token_jti" in STRUCTURAL_ATTRIBUTION_RULES
+        # Both the wrong line attribution (544) and the right
+        # def-line (531) appear so the contrast is unmistakable.
+        assert "544" in STRUCTURAL_ATTRIBUTION_RULES
+        assert "531" in STRUCTURAL_ATTRIBUTION_RULES
+
+    def test_constant_offers_three_legal_moves_on_doc_only(self):
+        """When only a doc carries the structural claim and no
+        code-map cross-asserts it, the model has three legal moves:
+        qualify with 'doc-derived; not code-map verified', drop the
+        attribution, or cite code-map alone. All three must be in
+        the rule so the model doesn't over-correct into terse
+        refusal."""
+        from shared.prompts import STRUCTURAL_ATTRIBUTION_RULES
+
+        body = STRUCTURAL_ATTRIBUTION_RULES.lower()
+        # Qualifier move
+        assert "doc-derived" in body or "doc derived" in body or \
+            "not code-map verified" in body
+        # Drop move
+        assert "drop the attribution" in body or "cite only the" in body
+        # Code-map-alone move is the third option; covered by 'ignore'
+        # or 'cite only the code-map'
+        assert "ignore the doc" in body or "code-map's view" in body or \
+            "cite only the code-map" in body
+
+    def test_constant_scope_excludes_conceptual_claims(self):
+        """Behavioral / policy / compliance claims are governed by
+        the doc lane (correctly, since docs author them). The rule
+        must explicitly scope to structural attribution only, or it
+        over-restricts conceptual answers."""
+        from shared.prompts import STRUCTURAL_ATTRIBUTION_RULES
+
+        body = STRUCTURAL_ATTRIBUTION_RULES.lower()
+        assert "behavioral" in body or "policy" in body or \
+            "compliance" in body or "conceptual" in body
+        # Must mention examples of non-structural claims that ARE
+        # OK for docs to source.
+        assert "bcrypt" in body or "encrypt at rest" in body or \
+            "magic link" in body.replace("_", " ").lower()
+
+    def test_constant_handles_thin_ingest_workspace(self):
+        """When the workspace genuinely has no code-map for the area
+        being asked about (thin-ingest customer), the model must
+        explicitly disclose rather than silently fall back to docs.
+        ADR-033 contract item 1 + this rule item 6."""
+        from shared.prompts import STRUCTURAL_ATTRIBUTION_RULES
+
+        body = STRUCTURAL_ATTRIBUTION_RULES.lower()
+        assert "thin-ingest" in body or "no code-map" in body or \
+            "cannot find a code-map" in body
+
+    def test_code_over_docs_rule_loosens_BOTH_quotable_gate(self):
+        """ADR-033 loosens the existing CODE_OVER_DOCS_RULES from
+        'ONLY if you can quote BOTH' to 'when you can quote BOTH'.
+        Dual-channel retrieval makes both sides reliably available;
+        the gate doesn't need to refuse drift findings when both
+        sides are present."""
+        from shared.prompts import CODE_OVER_DOCS_RULES
+
+        # The "ONLY IF BOTH" hard gate is loosened.
+        assert "ONLY if you can quote BOTH" not in CODE_OVER_DOCS_RULES
+        # But the rule still says "when you can quote BOTH" -- the
+        # drift-finding mechanism is preserved for normal cases.
+        assert "BOTH" in CODE_OVER_DOCS_RULES
+        # And it now cross-references STRUCTURAL_ATTRIBUTION_RULES so
+        # the structural exception is discoverable from the existing
+        # rule block.
+        assert "STRUCTURAL_ATTRIBUTION_RULES" in CODE_OVER_DOCS_RULES
+
+    def test_chat_prompt_includes_structural_attribution_block(self):
+        from shared.prompts import (
+            build_chat_system_prompt,
+            STRUCTURAL_ATTRIBUTION_RULES,
+        )
+
+        prompt = build_chat_system_prompt()
+        assert STRUCTURAL_ATTRIBUTION_RULES in prompt
+
+    def test_structural_attribution_appears_after_code_over_docs(self):
+        """Reading order: CODE_OVER_DOCS_RULES (precedence rule) then
+        STRUCTURAL_ATTRIBUTION_RULES (specific case where precedence
+        is binding). Order must be preserved so the model reads the
+        general principle before the specific application."""
+        from shared.prompts import (
+            build_chat_system_prompt,
+            CODE_OVER_DOCS_RULES,
+            STRUCTURAL_ATTRIBUTION_RULES,
+        )
+
+        prompt = build_chat_system_prompt()
+        i_code = prompt.find(CODE_OVER_DOCS_RULES)
+        i_struct = prompt.find(STRUCTURAL_ATTRIBUTION_RULES)
+        assert i_code != -1 and i_struct != -1
+        assert i_code < i_struct

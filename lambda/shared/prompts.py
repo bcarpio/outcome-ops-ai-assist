@@ -85,12 +85,14 @@ VALUE_GROUNDING_RULES = """When you state a SPECIFIC VALUE (an expiry, size, lim
 - A value shown for a SIMILAR but different construct is NOT evidence for this one. The context often lists several similar constructs with different values (e.g. token_urlsafe(8), (16), (32) for different identifiers); do not attach a neighbor's value to the construct in question.
 - If no retrieved text binds the value to this specific construct, write "(not in retrieved context)" — do not infer it from a neighbor or from memory."""
 
-# Conflict resolution: a drift finding requires BOTH sides quotable.
-# Code is authoritative for what the system DOES; docs for what it's
-# SUPPOSED to do — but only when you can actually quote both. See ADR-025.
+# Conflict resolution: code wins over docs on disagreement, and
+# structural attributions REQUIRE code-map evidence -- a doc-only
+# structural claim is never authoritative. See ADR-025 (precedence
+# rule) and ADR-033 (dual-channel retrieval that guarantees code-maps
+# reach context so the precedence rule can actually fire).
 CODE_OVER_DOCS_RULES = """When code and documentation genuinely disagree about a specific value for the SAME construct:
-- Raise this as a DOCUMENTATION DRIFT finding ONLY if you can quote BOTH a code/code-map source AND a documentation source for that same construct and they actually differ. Quote both, name both sources, and treat the code value as authoritative (code is the source of truth for what the system does).
-- If you can quote only ONE source for the value (only a doc, or only the code), that single source IS your evidence — use it as stated. Do NOT infer an unquoted "the code says otherwise" value in order to flag the doc as wrong. A drift finding whose code side you cannot quote is a fabrication, not a finding.
+- Raise this as a DOCUMENTATION DRIFT finding when you can quote BOTH a code/code-map source AND a documentation source for that same construct and they actually differ. Quote both, name both sources, and treat the code value as authoritative (code is the source of truth for what the system does).
+- If you can quote only ONE source for the value (only a doc, or only the code), that single source IS your evidence -- use it as stated. Do NOT infer an unquoted "the code says otherwise" value in order to flag the doc as wrong. A drift finding whose code side you cannot quote is a fabrication, not a finding. (Exception: STRUCTURAL ATTRIBUTION claims like "X is called from Y at line N" -- those are governed by STRUCTURAL_ATTRIBUTION_RULES below and require code-map evidence, not doc-only evidence, regardless of disagreement.)
 - Do NOT average or hedge. This applies to specific-value disagreements only, not stylistic or wording differences."""
 
 # Verify exact values against source before asserting them. The code-map
@@ -176,6 +178,34 @@ LIST_COMPLETENESS_RULES = """When you call any list-returning tool (find_callers
 
    Acceptable intro / closing clauses without a count: "Here are the lambdas that call require_auth:", "The lambdas calling require_auth are listed below.", "Each row is one definition site." Unacceptable: anything ending in or containing "N call sites", "M total", "X distinct", "across the workspace" + integer."""
 
+# Structural attribution requires code-map evidence (ADR-033). The
+# 2026-06-03 magic_link audit failure surfaced this: the chat answer
+# attributed "_claim_magic_token_jti called from handle_verify (line
+# 544)" -- a structural claim taken VERBATIM from docs/SECURITY_
+# OVERVIEW.md, which is stale (line 544 lives in verify_magic_token
+# at line 531, not handle_verify at 1215). The doc drifted; no code-
+# map cross-asserted the chain because the code-map for the auth
+# handler lost on cosine similarity to a doc-heavy field of
+# competitors. ADR-033 (dual-channel retrieval) puts code-maps
+# reliably in context; this rule binds the model to prefer them on
+# structural attribution.
+STRUCTURAL_ATTRIBUTION_RULES = """When you state a STRUCTURAL FACT -- "X is called from Y at line N", "X is defined at file:line", "X uses Y", "function Z's signature is ...", "the call chain A -> B -> C", "Y wraps Z" -- the claim MUST be grounded in a code-map / handler-group-summary / per-language summary present in your context, NOT in a doc chunk alone.
+
+1. The code-maps lane of your context is the authoritative source for structural attribution. Recognizable code-map sources include `handler-group-summary#<group>`, `architectural-summary`, `csharp-project-summary`, `source-module-summary`, `tests-summary`, `infrastructure-summary`, and similar platform-authored structural summaries. Quote them by name when stating a call chain or definition location: "the auth handler-group summary states `verify_magic_token` calls `_claim_magic_token_jti` at `lambda/auth/handler.py:544`...".
+
+2. If a doc chunk asserts a structural fact (e.g., "Implementation: lambda/auth/handler.py:_claim_magic_token_jti (line 487), called from handle_verify (line 544)") and NO code-map in your context cross-asserts the SAME chain, treat the doc claim as UNVERIFIED. You must either:
+   (a) qualify the attribution explicitly: "according to SECURITY_OVERVIEW.md (doc-derived; not code-map verified)...", OR
+   (b) drop the attribution and cite only the file:line without the enclosing-function name, OR
+   (c) cite only the code-map's view and ignore the doc's structural claim.
+
+3. When a code-map and a doc DISAGREE on a structural fact, the code-map wins per ADR-025 -- emphatically. Do not "balance" the two. Do not say "the docs claim X but the code says Y" as if they were equal evidence. Treat the doc as drifted. Surface the drift as a finding only when explicitly asked about doc accuracy.
+
+4. The 2026-06-03 audit case (the WRONG pattern this rule closes): SECURITY_OVERVIEW.md says `_claim_magic_token_jti` (line 487) is "called from handle_verify (line 544)". The auth handler-group summary carries the real chain: `handle_verify` (line 1215) -> `verify_magic_token` (line 531) -> `_claim_magic_token_jti` (line 487). Line 544 lives in `verify_magic_token`, NOT `handle_verify`. The CORRECT synthesis output cites the code-map's `verify_magic_token` attribution. The WRONG output reproduces the doc's `handle_verify` attribution verbatim. Do not be the WRONG output.
+
+5. This rule does NOT apply to behavioral / policy / compliance claims ("the system uses bcrypt", "we encrypt at rest", "users from consumer domains get their own org", "magic links expire after one hour"). Those are conceptual / narrative claims and docs are appropriate sources. STRUCTURAL ATTRIBUTION specifically covers WHO calls WHOM at WHICH file:line / WHERE-DEFINED / WHAT-WRAPS-WHAT -- claims that can be checked against the symbol graph or a structural code-map.
+
+6. If a structural question's relevant code-map is NOT in your context (you do not see a `handler-group-summary` or comparable structural summary for the area being asked about), say so explicitly: "I cannot find a code-map for <area> in my context; the structural details below come from documentation and may have drifted." Do not silently fall back to the doc as if it were authoritative. ADR-033 guarantees code-maps will reach context when they exist for the workspace; if you do not see one, either the area genuinely has no code-map (thin-ingest workspace) OR retrieval missed it -- either way, the disclosure protects the reader."""
+
 # Scope SAST/SonarQube signals to what they actually cover. See ADR-025.
 SAST_SCOPE_RULES = """When SonarQube or other SAST output appears in your context:
 - SAST covers syntactic code-smell rules and known-CVE dependency versions. A passing SAST grade means the code avoids the patterns the configured ruleset checks for — nothing more.
@@ -249,6 +279,8 @@ You also have access to conversation memory - summaries of earlier parts of long
 {LIST_COMPLETENESS_RULES}
 
 {CODE_OVER_DOCS_RULES}
+
+{STRUCTURAL_ATTRIBUTION_RULES}
 
 {SAST_SCOPE_RULES}
 
