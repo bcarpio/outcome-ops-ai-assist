@@ -290,7 +290,14 @@ export async function listWorkspaces(): Promise<Workspace[]> {
     throw new Error((data?.error as string) || `Failed to list workspaces: ${response.status}`)
   }
   const data = await safeJson(response)
-  return (data?.workspaces as Workspace[]) || []
+  const workspaces = (data?.workspaces as Workspace[]) || []
+  // Sort alphabetically by name (case-insensitive) so every consumer
+  // -- chat workspace selector, workspace management page, analytics
+  // dropdowns -- gets a consistent order without each having to
+  // remember to sort.
+  return workspaces.slice().sort((a, b) =>
+    (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' })
+  )
 }
 
 /**

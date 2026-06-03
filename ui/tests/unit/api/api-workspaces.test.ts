@@ -35,6 +35,22 @@ describe('listWorkspaces', () => {
     global.fetch = vi.fn().mockResolvedValue(createMockFetchResponse({ error: 'Unauthorized' }, false, 401))
     await expect(listWorkspaces()).rejects.toThrow('Unauthorized')
   })
+
+  it('returns workspaces sorted alphabetically by name (case-insensitive)', async () => {
+    // The API may return workspaces in any order (creation order is the
+    // common default). Sorting at the api.ts boundary keeps every UI
+    // consumer (chat selector, workspaces page, analytics dropdowns)
+    // in alphabetical order without each having to sort itself.
+    const out = mockWorkspace({ workspace_id: 'ws-out', name: 'outlook-ws' })
+    const acme = mockWorkspace({ workspace_id: 'ws-acme', name: 'Acme' })
+    const mid = mockWorkspace({ workspace_id: 'ws-mid', name: 'mid-tier' })
+    global.fetch = vi.fn().mockResolvedValue(
+      createMockFetchResponse({ workspaces: [out, mid, acme] })
+    )
+
+    const result = await listWorkspaces()
+    expect(result.map((w) => w.name)).toEqual(['Acme', 'mid-tier', 'outlook-ws'])
+  })
 })
 
 describe('createWorkspace', () => {
