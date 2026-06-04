@@ -106,52 +106,96 @@ The Converse-shaped input is the canonical form because the existing code-base
 already speaks it. The Responses backend translates inbound to OpenAI shape and
 outbound back to Converse shape. The Converse backend is a near pass-through.
 
-### 3. Translation surface (Converse ↔ Responses)
+### 3. Translation surface (Converse ↔ Responses API)
 
-The Responses backend must translate request and response field-by-field. The
-mapping is fixed and pinned by fixtures:
+GPT-5.5 / 5.4 / Codex are served by Bedrock Mantle's **Responses API** at
+`/openai/v1/responses` — NOT the Chat Completions API. The Responses API
+is OpenAI's newer agentic-workflow API; its request/response shape is
+fundamentally different from Chat Completions (typed input items, typed
+output items, named tool calls by `call_id`, separate `instructions`
+field instead of a `role:"system"` message).
 
-| Converse field | Responses field | Translation |
+The Mantle endpoint also exposes `/openai/v1/chat/completions` for some
+models, but **GPT-5.5's model card lists Chat Completions as NOT
+supported** — Responses API is the only path. Hand-rolling the Responses
+schema is non-trivial (the API is evolving as part of OpenAI's broader
+"Responses-and-tools" direction), so we delegate transport + schema to
+the **official `openai` Python SDK** pointed at the Mantle base URL via
+`OPENAI_BASE_URL`.
+
+The shared client's job is to translate between **our unified
+Converse-flavored shape** and the **OpenAI SDK's Responses-API arguments**:
+
+| Unified (Converse-flavored) | OpenAI SDK `client.responses.create(...)` | Translation note |
 |---|---|---|
-| top-level `system` | first `{role: "system"}` message | prepend |
-| `messages[].content[].text` | `messages[].content` (str if only text) | flatten or block |
-| `messages[].content[].image.source.bytes` | `content[{type:"image_url", image_url:{url:"data:..."}}]` | base64 → data URL |
-| `inferenceConfig.maxTokens` | `max_tokens` | rename |
-| `inferenceConfig.temperature` | `temperature` | direct |
-| `inferenceConfig.topP` | `top_p` | rename |
-| `inferenceConfig.stopSequences` | `stop` | rename |
-| `toolConfig.tools[].toolSpec.name` | `tools[].function.name` | restructure |
-| `toolConfig.tools[].toolSpec.description` | `tools[].function.description` | restructure |
-| `toolConfig.tools[].toolSpec.inputSchema.json` | `tools[].function.parameters` | restructure |
-| assistant `content[].toolUse` block | assistant `tool_calls[]` | restructure |
-| user `content[].toolResult` block | follow-up `{role:"tool",tool_call_id,content}` | restructure |
-| response `output.message.content[].text` | response `choices[0].message.content` | extract |
-| response `usage.inputTokens` | response `usage.prompt_tokens` | rename |
-| response `usage.outputTokens` | response `usage.completion_tokens` | rename |
-| response `stopReason: end_turn` | response `finish_reason: stop` | enum map |
-| response `stopReason: tool_use` | response `finish_reason: tool_calls` | enum map |
-| response `stopReason: max_tokens` | response `finish_reason: length` | enum map |
-| response `stopReason: stop_sequence` | response `finish_reason: stop` | enum map |
+| `Request.system` (str or list[str]) | `instructions=` (str; concat list with `\n\n`) | rename + flatten |
+| `Request.messages` (list of `{role, content:[{text}, {image}, ...]}`) | `input=` as a list of `{role, content}` items where content is a string or a list of typed items (`{type:"input_text",text}`, `{type:"input_image",image_url}`) | restructure |
+| `messages[].content[].image.source.bytes` | typed item `{type:"input_image", image_url:"data:image/<fmt>;base64,..."}` | base64 → data URL |
+| `Request.max_tokens` | `max_output_tokens=` | rename |
+| `Request.temperature` | `temperature=` | direct |
+| `Request.top_p` | `top_p=` | direct |
+| `Request.stop_sequences` | (no direct equivalent — Responses-API does not expose `stop`; emit deprecation warning if set, ignore) | drop |
+| `Request.tools` (`ToolSpec(name, description, input_schema)`) | `tools=[{type:"function", name, description, parameters:input_schema}]` | restructure (note: NOT nested under `.function.` like Chat Completions) |
+| assistant `content[].toolUse` block (in multi-turn history) | input item `{type:"function_call", call_id, name, arguments:json.dumps(input)}` | restructure |
+| user `content[].toolResult` block (in multi-turn history) | input item `{type:"function_call_output", call_id, output:str}` | restructure |
+| (response) `output.message.content[].text` | (response) walk `response.output[]` for items where `type=="message"`, then `item.content[]` for `{type:"output_text",text}` | extract |
+| (response) `usage.inputTokens` | (response) `usage.input_tokens` | rename |
+| (response) `usage.outputTokens` | (response) `usage.output_tokens` | rename |
+| (response) `stopReason: end_turn` | response `status: "completed"` AND no `function_call` items in output | enum map |
+| (response) `stopReason: tool_use` | response output contains `{type:"function_call"}` items | structural |
+| (response) `stopReason: max_tokens` | response `status: "incomplete"` AND `incomplete_details.reason == "max_output_tokens"` | enum map |
+| (response) `stopReason: stop_sequence` | (no equivalent — Responses-API doesn't emit stop_sequences) | not applicable |
 
-Each row in this table becomes a unit-test fixture pinning the translation
-behavior in both directions. Translation is the moat against silent semantic
-drift; fixtures are the only durable way to keep it honest.
+Each row becomes a unit-test fixture pinning the translation behavior in
+both directions. Translation is the moat against silent semantic drift;
+fixtures are the only durable way to keep it honest.
 
 ### 4. Auth + endpoint for the Responses backend
 
-`bedrock-mantle.{region}.api.aws` is an AWS-IAM-protected endpoint. boto3 does
-not (as of June 2026) ship a `bedrock-mantle` service client. Two paths exist:
+`bedrock-mantle.{region}.api.aws` supports BOTH SigV4 (IAM) and a
+long-lived **Bedrock API key** (bearer token) per AWS docs. boto3 does
+not (as of June 2026) ship a native `bedrock-mantle` service client.
+Two implementation paths:
 
-- **(a) SigV4-sign HTTPS directly** using `botocore.auth.SigV4Auth` with the
-  Lambda's existing AWS credentials, posting JSON to the Mantle endpoint and
-  parsing the JSON / SSE response. Zero new dependencies; full control.
-- **(b) OpenAI Python SDK with custom `base_url` + AWS-IAM-derived bearer
-  token** if AWS publishes a credential-broker that yields short-lived
-  OpenAI-compatible tokens. No such broker exists as of 2026-06-04.
+- **(a) Bedrock API key + OpenAI Python SDK.** AWS's published canonical
+  path: generate a long-term API key in the Bedrock console, set
+  `OPENAI_API_KEY` and `OPENAI_BASE_URL=https://bedrock-mantle.{region}.api.aws/openai/v1`,
+  use `client.responses.create(...)` from the `openai` Python SDK. The
+  SDK handles transport, SSE streaming, schema versioning, retries.
+- **(b) SigV4-sign HTTPS directly** using `botocore.auth.SigV4Auth`,
+  hand-rolling Responses-API JSON + SSE parser. Zero new dependencies,
+  zero new secrets, but we own the entire wire-format implementation
+  including forward-compatibility with Mantle's evolving Responses-API
+  surface.
 
-**Decision: path (a).** We sign HTTPS calls with SigV4. If boto3 later ships
-native Mantle support, swap the internals of the Responses backend; the unified
-shape doesn't change.
+**Decision: path (a).** The OpenAI SDK is the AWS-blessed integration
+path, hides the substantial complexity of the Responses-API schema
+(which is still evolving as OpenAI iterates), and lets us track
+upstream changes by bumping a pin rather than chasing schema drift.
+
+**Compliance callout (load-bearing for regulated customers):**
+
+The long-lived Bedrock API key is a design choice we inherit from AWS,
+and it conflicts with typical regulated-customer secret-rotation policy
+(30-90 day max lifetimes). We accept this trade-off because the
+engineering cost of SigV4 + hand-rolled Responses-API is materially
+higher than the friction of documenting the deviation for customer
+SecOps. Per `[[project_bedrock_mantle_api_key]]`, every Mantle-enabled
+deploy must:
+
+- Provision the API key as a per-env SSM SecureString
+  (`/<env>/outcome-ops-ai-assist/bedrock/mantle-api-key`) with terraform
+  `lifecycle { ignore_changes = [value] }` after first apply (same
+  pattern as the license key).
+- Ship a customer-visible runbook (`docs/runbooks/bedrock-mantle-api-key.md`)
+  covering generation, installation, rotation, and the
+  compliance-disclosure language for SecOps sign-off.
+- Allow regulated customers to opt OUT of Mantle entirely — leaving the
+  SSM placeholder unset means GPT-5.5 / 5.4 / Codex are unavailable, and
+  the deploy stays on Converse-only models (Claude, Llama, Nova,
+  gpt-oss). The shared client's dispatcher raises
+  `BackendConfigError` when a Responses model is requested but no API
+  key is provisioned — loud, not silent.
 
 ### 5. Streaming is part of the unified shape, not a follow-on
 
@@ -170,22 +214,23 @@ later.
 Concretely, streaming adds these unified events that BOTH backends must
 emit:
 
-| Event | Carries | Converse origin | Responses origin |
+| Event | Carries | Converse origin | Responses-API SDK origin |
 |---|---|---|---|
-| `TextDelta` | partial text | `contentBlockDelta.text` | `choices[0].delta.content` SSE |
-| `ToolUseStart` | tool id + name | `contentBlockStart.toolUse` | first `delta.tool_calls[].id/.function.name` SSE |
-| `ToolUseArgumentsDelta` | raw JSON fragment | `contentBlockDelta.toolUse.input` | `delta.tool_calls[].function.arguments` SSE |
-| `ToolUseStop` | parsed args dict | `contentBlockStop` | terminal `tool_calls` delta + accumulator close |
-| `Stop` | `StopReason` enum | `messageStop.stopReason` | `finish_reason` SSE |
-| `Metadata` | `Usage` | `metadata.usage` | final `usage` SSE (Responses-specific timing) |
+| `TextDelta` | partial text | `contentBlockDelta.text` | `ResponseTextDeltaEvent.delta` |
+| `ToolUseStart` | tool id + name | `contentBlockStart.toolUse` | `ResponseOutputItemAddedEvent` whose item is a `function_call` (carries `call_id` + `name`) |
+| `ToolUseArgumentsDelta` | raw JSON fragment | `contentBlockDelta.toolUse.input` | `ResponseFunctionCallArgumentsDeltaEvent.delta` |
+| `ToolUseStop` | parsed args dict | `contentBlockStop` | `ResponseFunctionCallArgumentsDoneEvent.arguments` (full JSON string) → json.loads |
+| `Stop` | `StopReason` enum | `messageStop.stopReason` | `ResponseCompletedEvent` + inspection of `response.status` / `incomplete_details` |
+| `Metadata` | `Usage` | `metadata.usage` | `ResponseCompletedEvent.response.usage` |
 
-Responses-side accumulators: the Responses backend MUST accumulate
-`tool_calls[index].function.arguments` partial strings until the
-corresponding tool emits its final delta, then JSON-parse the accumulated
-string into the `ToolUseStop.arguments` dict. Streaming tool-call
-translation is therefore strictly more state-bearing than non-streaming
-tool-call translation, but the unified event shape isolates that
-complexity to the backend module.
+The OpenAI SDK handles SSE byte parsing + reassembly internally; the
+shared client iterates SDK-emitted typed events and translates each into
+a unified `StreamEvent`. The Responses-API SDK already accumulates
+`function_call_arguments` deltas and emits a `Done` event with the full
+arguments string — we do NOT need to hand-roll a per-tool-call
+arguments accumulator; we just `json.loads` the SDK-provided
+arguments at the `Done` event and emit `ToolUseStop`. This is a
+significant simplification compared to the SigV4 path.
 
 ### 6. Pricing and telemetry stay where they are
 

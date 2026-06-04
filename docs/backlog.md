@@ -100,6 +100,57 @@ then.
 
 ---
 
+---
+
+### Customer-visible runbook: Bedrock API key provisioning + rotation
+
+**Filed:** 2026-06-04
+**Severity:** Medium (compliance gating for regulated customers)
+**Component:** docs/runbooks / customer-facing ops
+
+When a deploy enables GPT-5.5 / GPT-5.4 / Codex (i.e. any model on the
+`bedrock-mantle` endpoint), the platform must authenticate with a
+long-lived Bedrock API key, NOT IAM. This is AWS's design choice for the
+OpenAI-frontier models on Bedrock; SigV4 is technically supported but the
+OpenAI SDK + bearer token is the canonical path and the one we use.
+
+For regulated customers (healthcare, financial services, defense), this
+collides with secret-rotation policy. Typical SecOps requires 30-90 day
+max secret lifetimes; a Bedrock "long-term API key" is the opposite
+design.
+
+**What needs to ship:**
+
+1. `docs/runbooks/bedrock-mantle-api-key.md` (customer-visible, NOT
+   `plan/`) covering:
+   - Why the key exists (model availability matrix; GPT-5.5 is Mantle-only)
+   - How to generate one in the Bedrock console
+   - How to install it into the customer's deploy (`aws ssm put-parameter`
+     into `/<env>/outcome-ops-ai-assist/bedrock/mantle-api-key`)
+   - How to rotate (generate new key in console, put-parameter overwrites,
+     warm Lambdas pick up new value on cold start)
+   - Compliance-disclosure language for customer SecOps sign-off:
+     "Enabling Mantle models requires accepting a long-lived bearer token
+     per AWS's product design. This is a known deviation from typical
+     SecOps key-rotation cadence."
+2. The deploy checklist (`docs/deploy-checklist.md` if it exists, or new)
+   adds a "Mantle enablement" step that prompts the operator to either
+   provision the key (after SecOps sign-off) OR confirm the deploy is
+   Converse-only and skip Mantle models entirely.
+3. An automated rotation Lambda (cron-driven, talks to the Bedrock
+   control plane to mint a new key and update SSM). Separate, larger
+   effort; backlog this whole rotation-automation work as a follow-on.
+
+**Not blocking ADR-035 / chunk 03** — the platform code only needs to
+read the SSM SecureString. Provisioning is a deploy-time step. But the
+moment the openai workspace's deploy README is customer-facing, this
+runbook must exist.
+
+See memory `[[project_bedrock_mantle_api_key]]` for the underlying
+decision and context.
+
+---
+
 ## Closed (kept for historical context until pruned)
 
 _(none yet)_
