@@ -365,6 +365,33 @@ github_usernames_to_tag = "yourusername"
 audit_stream_export_enabled = true
 
 # ============================================================================
+# Azure DevOps integration (off by default; see docs/runbooks/azure-devops-setup.md)
+# ============================================================================
+
+# Master switch. When false, the azure-devops Lambdas deploy but UI / OAuth
+# endpoints return 404. Leave false until the four config values below are
+# populated AND verified end-to-end against your Entra ID app registration.
+# azure_devops_integration_enabled = false
+
+# Entra ID tenant ID hosting your Azure DevOps OAuth app registration.
+# azure_devops_tenant_id = ""
+
+# Entra ID app registration client ID (NOT the same app as
+# microsoft_oauth_client_id; ADO uses a dedicated app for cleaner
+# consent-screen scopes).
+# azure_devops_client_id = ""
+
+# SSM SecureString parameter name holding the Entra ID app client secret.
+# Terraform does NOT create or read this value; the operator puts it via
+# `aws ssm put-parameter --type SecureString` per the customer runbook.
+# azure_devops_client_secret_ssm_param = ""
+
+# OAuth callback URI registered on the Entra ID app. Must match
+# https://<your-deploy-fqdn>/api/azure-devops/callback exactly (no trailing
+# slash, no query string). Mismatch is the most common setup failure.
+# azure_devops_redirect_uri = ""
+
+# ============================================================================
 # Tags
 # ============================================================================
 

@@ -94,6 +94,50 @@ variable "microsoft_oauth_client_id" {
   default     = ""
 }
 
+# ============================================================================
+# Azure DevOps integration (source code parity with GitHub)
+#
+# Uses a SEPARATE Entra ID app registration from microsoft_oauth_client_id
+# above. The Outlook / M365 app grants Microsoft Graph scopes; ADO is a
+# distinct API surface (resource ID 499b84ac-1321-427f-aa17-267ca6975798)
+# and the consent-screen blast radius is cleaner with a dedicated app.
+#
+# All five variables default to empty so the integration is OFF by default;
+# customers without ADO pay no operational tax. The integration enables
+# itself only when all four config values are populated AND
+# azure_devops_integration_enabled is true.
+# ============================================================================
+
+variable "azure_devops_tenant_id" {
+  type        = string
+  description = "Entra ID tenant ID hosting the Azure DevOps OAuth app registration. Empty disables the integration."
+  default     = ""
+}
+
+variable "azure_devops_client_id" {
+  type        = string
+  description = "Entra ID app registration client ID for the Azure DevOps integration."
+  default     = ""
+}
+
+variable "azure_devops_client_secret_ssm_param" {
+  type        = string
+  description = "SSM SecureString parameter name holding the Entra ID app client secret (operator-managed; terraform does NOT create or read the value)."
+  default     = ""
+}
+
+variable "azure_devops_redirect_uri" {
+  type        = string
+  description = "OAuth callback URI registered with the Entra ID app. Must match the path /api/azure-devops/callback on the deploy's FQDN."
+  default     = ""
+}
+
+variable "azure_devops_integration_enabled" {
+  type        = bool
+  description = "Master switch. When false, the azure-devops Lambdas are still deployed but the UI tab and OAuth endpoints return 404. Customers without ADO leave this false."
+  default     = false
+}
+
 variable "github_app_slug" {
   type        = string
   description = "GitHub App URL slug (from the App settings page URL, e.g., 'my-company-ai-assist')"
