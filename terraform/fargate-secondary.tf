@@ -103,7 +103,7 @@ module "mcp_outcomeops_secondary" {
     local.ha_writer_env_secondary,
   )
 
-  ecs_cluster_arn    = module.ui_ecs_secondary.cluster_arn
+  ecs_cluster_arn    = try(module.ui_ecs_secondary[0].cluster_arn, "")
   vpc_id             = var.ui_vpc_id_secondary
   private_subnet_ids = var.ui_private_subnet_ids_secondary
   assign_public_ip   = var.ui_fargate_assign_public_ip
@@ -286,7 +286,7 @@ module "mcp_sonarqube_secondary" {
     SONARQUBE_TOKEN = "arn:aws:ssm:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:parameter${local.mcp_sonarqube_token_ssm_path}"
   }
 
-  ecs_cluster_arn    = module.ui_ecs_secondary.cluster_arn
+  ecs_cluster_arn    = try(module.ui_ecs_secondary[0].cluster_arn, "")
   vpc_id             = var.ui_vpc_id_secondary
   private_subnet_ids = var.ui_private_subnet_ids_secondary
   assign_public_ip   = var.ui_fargate_assign_public_ip

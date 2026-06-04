@@ -34,6 +34,21 @@ module "ui_ecs_secondary" {
   source  = "terraform-aws-modules/ecs/aws"
   version = "7.2.0"
 
+  # Gate the entire module on count rather than only the upstream
+  # module's `create = ...` flag. With `create = false` terraform
+  # still evaluates the module's input expressions (including the
+  # `aws_kms_key.cloudwatch_logs_secondary[0]` / `aws_lambda_function_url.*_secondary[0]`
+  # references in container_definitions below) and explodes with
+  # "Invalid index" when those count-gated resources are empty
+  # tuples -- which is what happens the instant `secondary_region = ""`.
+  # Adding `count` here skips the entire block at evaluation time so
+  # the secondary teardown plans cleanly. Consumers
+  # (`fargate-secondary.tf:106,289`) reference
+  # `module.ui_ecs_secondary.cluster_arn` from within modules already
+  # gated on `local.deploy_ui_secondary`, so they won't dereference
+  # the now-empty list either.
+  count = local.deploy_ui_secondary ? 1 : 0
+
   create = local.deploy_ui_secondary
 
   providers = {
