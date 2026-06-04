@@ -277,7 +277,8 @@ build-run-tests-image:
 		terraform apply -var-file=$$ENVIRONMENT.tfvars -target=aws_ecr_repository.run_tests -auto-approve
 	@echo ""
 	@echo "Building run-tests container image for environment: $$ENVIRONMENT"
-	./scripts/build-run-tests-image.sh --env $$ENVIRONMENT
+	@AR=$$(awk -F'"' '/^[[:space:]]*aws_region[[:space:]]*=/ {print $$2; exit}' terraform/$$ENVIRONMENT.tfvars 2>/dev/null); \
+	 AWS_REGION=$${AR:-$(AWS_REGION)} ./scripts/build-run-tests-image.sh --env $$ENVIRONMENT
 
 # Build chat UI container image (nginx + React)
 # Auto-detects secondary_region in ${ENVIRONMENT}.tfvars and, when set,
@@ -447,8 +448,9 @@ build-database-images:
 	     -auto-approve
 	@echo ""
 	@echo "Building database container images for environment: $$ENVIRONMENT"
-	@SR=$$(awk -F'"' '/^[[:space:]]*secondary_region[[:space:]]*=/ {print $$2; exit}' terraform/$$ENVIRONMENT.tfvars 2>/dev/null); \
-	 SECONDARY_REGION=$$SR ./scripts/build-database-images.sh --env $$ENVIRONMENT
+	@AR=$$(awk -F'"' '/^[[:space:]]*aws_region[[:space:]]*=/ {print $$2; exit}' terraform/$$ENVIRONMENT.tfvars 2>/dev/null); \
+	 SR=$$(awk -F'"' '/^[[:space:]]*secondary_region[[:space:]]*=/ {print $$2; exit}' terraform/$$ENVIRONMENT.tfvars 2>/dev/null); \
+	 AWS_REGION=$${AR:-$(AWS_REGION)} SECONDARY_REGION=$$SR ./scripts/build-database-images.sh --env $$ENVIRONMENT
 
 # Build the platform-CA Lambda Layer (Mozilla certifi + customer roots from
 # platform_ca_bundle_ssm_param_arns). The layer is attached to every platform
