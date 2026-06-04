@@ -1,0 +1,465 @@
+"""Unit tests for shared._responses_backend (chunk 03 skeleton).
+
+Mock the openai SDK; no real network. Mock boto3.ssm for the API key load.
+"""
+
+import json
+import os
+from contextlib import contextmanager
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from shared import _responses_backend
+from shared.model_client_types import (
+    BackendConfigError,
+    Metadata,
+    Request,
+    Stop,
+    StopReason,
+    TextDelta,
+    ToolUseArgumentsDelta,
+    ToolUseStart,
+    ToolUseStop,
+    TranslationError,
+)
+
+
+@pytest.fixture(autouse=True)
+def reset_module_state():
+    _responses_backend._client = None
+    yield
+    _responses_backend._client = None
+
+
+@pytest.fixture(autouse=True)
+def env(monkeypatch):
+    monkeypatch.setenv("AWS_REGION", "us-east-2")
+    monkeypatch.setenv(
+        "BEDROCK_MANTLE_API_KEY_PARAM",
+        "/test/outcome-ops-ai-assist/bedrock/mantle-api-key",
+    )
+    yield
+
+
+def _ssm_returns(value: str):
+    """Patch boto3.client('ssm').get_parameter to return `value`."""
+    ssm = MagicMock()
+    ssm.get_parameter.return_value = {"Parameter": {"Value": value}}
+    return patch("boto3.client", return_value=ssm)
+
+
+def _mock_openai(fake_client):
+    """Patch the OpenAI constructor to return `fake_client`."""
+    return patch("shared._responses_backend.OpenAI", return_value=fake_client)
+
+
+# ===== module-init / API key loading =====
+
+
+def test_module_init_raises_when_ssm_param_env_unset(monkeypatch):
+    monkeypatch.delenv("BEDROCK_MANTLE_API_KEY_PARAM", raising=False)
+    with pytest.raises(BackendConfigError):
+        _responses_backend._get_client()
+
+
+def test_module_init_raises_when_aws_region_unset(monkeypatch):
+    monkeypatch.delenv("AWS_REGION", raising=False)
+    monkeypatch.delenv("THIS_REGION", raising=False)
+    with _ssm_returns("real-key-value"):
+        with pytest.raises(BackendConfigError):
+            _responses_backend._get_client()
+
+
+def test_module_init_raises_on_placeholder_ssm_value():
+    with _ssm_returns("PLACEHOLDER_CONFIGURE_ME"):
+        with pytest.raises(BackendConfigError):
+            _responses_backend._get_client()
+
+
+def test_module_init_raises_on_empty_ssm_value():
+    with _ssm_returns(""):
+        with pytest.raises(BackendConfigError):
+            _responses_backend._get_client()
+
+
+def test_module_init_builds_client_with_correct_base_url():
+    fake_openai = MagicMock()
+    with _ssm_returns("sk-bedrock-real-value"):
+        with patch("shared._responses_backend.OpenAI", return_value=fake_openai) as ctor:
+            client = _responses_backend._get_client()
+    assert client is fake_openai
+    ctor.assert_called_once()
+    kwargs = ctor.call_args.kwargs
+    assert kwargs["api_key"] == "sk-bedrock-real-value"
+    assert kwargs["base_url"] == "https://bedrock-mantle.us-east-2.api.aws/openai/v1"
+
+
+# ===== invoke (non-streaming) =====
+
+
+def _fake_completed_text_response(text: str, in_t: int = 10, out_t: int = 5):
+    """Build a fake openai-SDK Response object for a text-only completion."""
+    return SimpleNamespace(
+        status="completed",
+        incomplete_details=None,
+        usage=SimpleNamespace(input_tokens=in_t, output_tokens=out_t),
+        output=[
+            SimpleNamespace(
+                type="message",
+                content=[SimpleNamespace(type="output_text", text=text)],
+            )
+        ],
+    )
+
+
+def test_invoke_text_only_passes_input_max_output_tokens_temperature():
+    fake_client = MagicMock()
+    fake_client.responses.create.return_value = _fake_completed_text_response("Paris")
+    with _ssm_returns("k"):
+        with _mock_openai(fake_client):
+            resp = _responses_backend.invoke(Request(
+                model_id="openai.gpt-5.5",
+                messages=[{"role": "user", "content": [{"text": "Capital of France?"}]}],
+                max_tokens=64,
+                temperature=0.0,
+            ))
+    kwargs = fake_client.responses.create.call_args.kwargs
+    assert kwargs["model"] == "openai.gpt-5.5"
+    assert kwargs["input"] == "Capital of France?"
+    assert kwargs["max_output_tokens"] == 64
+    assert kwargs["temperature"] == 0.0
+    assert resp.text == "Paris"
+    assert resp.stop_reason == StopReason.END_TURN
+    assert resp.usage.input_tokens == 10
+    assert resp.usage.output_tokens == 5
+
+
+def test_invoke_max_output_tokens_incomplete_maps_max_tokens_stop_reason():
+    fake_client = MagicMock()
+    fake_client.responses.create.return_value = SimpleNamespace(
+        status="incomplete",
+        incomplete_details=SimpleNamespace(reason="max_output_tokens"),
+        usage=SimpleNamespace(input_tokens=3, output_tokens=64),
+        output=[
+            SimpleNamespace(
+                type="message",
+                content=[SimpleNamespace(type="output_text", text="counting...")],
+            )
+        ],
+    )
+    with _ssm_returns("k"):
+        with _mock_openai(fake_client):
+            resp = _responses_backend.invoke(Request(
+                model_id="openai.gpt-5.5",
+                messages=[{"role": "user", "content": [{"text": "count to 1000"}]}],
+                max_tokens=64,
+            ))
+    assert resp.stop_reason == StopReason.MAX_TOKENS
+
+
+def test_invoke_unknown_status_raises_translation_error():
+    fake_client = MagicMock()
+    fake_client.responses.create.return_value = SimpleNamespace(
+        status="cancelled",
+        incomplete_details=None,
+        usage=SimpleNamespace(input_tokens=1, output_tokens=0),
+        output=[],
+    )
+    with _ssm_returns("k"):
+        with _mock_openai(fake_client):
+            with pytest.raises(TranslationError):
+                _responses_backend.invoke(Request(
+                    model_id="openai.gpt-5.5",
+                    messages=[{"role": "user", "content": [{"text": "x"}]}],
+                ))
+
+
+def test_invoke_unknown_output_item_type_raises_translation_error():
+    fake_client = MagicMock()
+    fake_client.responses.create.return_value = SimpleNamespace(
+        status="completed",
+        incomplete_details=None,
+        usage=SimpleNamespace(input_tokens=1, output_tokens=1),
+        output=[SimpleNamespace(type="alien_future_item", content=[])],
+    )
+    with _ssm_returns("k"):
+        with _mock_openai(fake_client):
+            with pytest.raises(TranslationError):
+                _responses_backend.invoke(Request(
+                    model_id="openai.gpt-5.5",
+                    messages=[{"role": "user", "content": [{"text": "x"}]}],
+                ))
+
+
+def test_invoke_reasoning_items_are_skipped_not_surfaced():
+    fake_client = MagicMock()
+    fake_client.responses.create.return_value = SimpleNamespace(
+        status="completed",
+        incomplete_details=None,
+        usage=SimpleNamespace(input_tokens=20, output_tokens=10),
+        output=[
+            SimpleNamespace(type="reasoning", content=[]),
+            SimpleNamespace(
+                type="message",
+                content=[SimpleNamespace(type="output_text", text="final answer")],
+            ),
+        ],
+    )
+    with _ssm_returns("k"):
+        with _mock_openai(fake_client):
+            resp = _responses_backend.invoke(Request(
+                model_id="openai.gpt-5.5",
+                messages=[{"role": "user", "content": [{"text": "x"}]}],
+            ))
+    assert resp.text == "final answer"
+
+
+def test_invoke_system_or_multi_turn_or_tools_raises_translation_error_in_skeleton():
+    with _ssm_returns("k"):
+        with _mock_openai(MagicMock()):
+            with pytest.raises(TranslationError):
+                _responses_backend.invoke(Request(
+                    model_id="openai.gpt-5.5",
+                    messages=[{"role": "user", "content": [{"text": "x"}]}],
+                    system="You are X",
+                ))
+            with pytest.raises(TranslationError):
+                _responses_backend.invoke(Request(
+                    model_id="openai.gpt-5.5",
+                    messages=[
+                        {"role": "user", "content": [{"text": "a"}]},
+                        {"role": "assistant", "content": [{"text": "b"}]},
+                        {"role": "user", "content": [{"text": "c"}]},
+                    ],
+                ))
+
+
+def test_invoke_function_call_output_item_raises_pending_chunk_06():
+    fake_client = MagicMock()
+    fake_client.responses.create.return_value = SimpleNamespace(
+        status="completed",
+        incomplete_details=None,
+        usage=SimpleNamespace(input_tokens=1, output_tokens=1),
+        output=[SimpleNamespace(
+            type="function_call",
+            call_id="call_xyz",
+            name="get_weather",
+            arguments='{"city": "SF"}',
+        )],
+    )
+    with _ssm_returns("k"):
+        with _mock_openai(fake_client):
+            with pytest.raises(TranslationError):
+                _responses_backend.invoke(Request(
+                    model_id="openai.gpt-5.5",
+                    messages=[{"role": "user", "content": [{"text": "weather?"}]}],
+                ))
+
+
+# ===== invoke_stream (streaming) =====
+
+
+class _FakeStreamCtx:
+    """Context manager that yields a fixed event list."""
+
+    def __init__(self, events):
+        self._events = events
+
+    def __enter__(self):
+        return iter(self._events)
+
+    def __exit__(self, *args):
+        return False
+
+
+def _mk_stream_events(*events):
+    return _FakeStreamCtx(list(events))
+
+
+def test_invoke_stream_text_delta_events_emit_unified_text_deltas():
+    events = [
+        SimpleNamespace(type="response.created"),
+        SimpleNamespace(type="response.output_text.delta", delta="Hello "),
+        SimpleNamespace(type="response.output_text.delta", delta="world"),
+        SimpleNamespace(type="response.completed", response=SimpleNamespace(
+            status="completed",
+            incomplete_details=None,
+            usage=SimpleNamespace(input_tokens=3, output_tokens=2),
+        )),
+    ]
+    fake_client = MagicMock()
+    fake_client.responses.stream.return_value = _FakeStreamCtx(events)
+    with _ssm_returns("k"):
+        with _mock_openai(fake_client):
+            emitted = list(_responses_backend.invoke_stream(Request(
+                model_id="openai.gpt-5.5",
+                messages=[{"role": "user", "content": [{"text": "say hi"}]}],
+            )))
+    text_deltas = [e for e in emitted if isinstance(e, TextDelta)]
+    assert [t.text for t in text_deltas] == ["Hello ", "world"]
+    stops = [e for e in emitted if isinstance(e, Stop)]
+    assert len(stops) == 1
+    assert stops[0].stop_reason == StopReason.END_TURN
+    meta = [e for e in emitted if isinstance(e, Metadata)]
+    assert len(meta) == 1
+    assert meta[0].usage.input_tokens == 3
+
+
+def test_invoke_stream_completed_incomplete_max_output_tokens_maps_stop():
+    events = [
+        SimpleNamespace(type="response.output_text.delta", delta="hi"),
+        SimpleNamespace(type="response.completed", response=SimpleNamespace(
+            status="incomplete",
+            incomplete_details=SimpleNamespace(reason="max_output_tokens"),
+            usage=SimpleNamespace(input_tokens=1, output_tokens=64),
+        )),
+    ]
+    fake_client = MagicMock()
+    fake_client.responses.stream.return_value = _FakeStreamCtx(events)
+    with _ssm_returns("k"):
+        with _mock_openai(fake_client):
+            emitted = list(_responses_backend.invoke_stream(Request(
+                model_id="openai.gpt-5.5",
+                messages=[{"role": "user", "content": [{"text": "count high"}]}],
+            )))
+    stops = [e for e in emitted if isinstance(e, Stop)]
+    assert stops[0].stop_reason == StopReason.MAX_TOKENS
+
+
+def test_invoke_stream_lifecycle_events_are_silently_skipped():
+    events = [
+        SimpleNamespace(type="response.created"),
+        SimpleNamespace(type="response.in_progress"),
+        SimpleNamespace(type="response.queued"),
+        SimpleNamespace(type="response.output_item.added", item=SimpleNamespace(type="message")),
+        SimpleNamespace(type="response.content_part.added"),
+        SimpleNamespace(type="response.output_text.delta", delta="x"),
+        SimpleNamespace(type="response.output_text.done"),
+        SimpleNamespace(type="response.content_part.done"),
+        SimpleNamespace(type="response.output_item.done"),
+        SimpleNamespace(type="response.completed", response=SimpleNamespace(
+            status="completed",
+            incomplete_details=None,
+            usage=SimpleNamespace(input_tokens=1, output_tokens=1),
+        )),
+    ]
+    fake_client = MagicMock()
+    fake_client.responses.stream.return_value = _FakeStreamCtx(events)
+    with _ssm_returns("k"):
+        with _mock_openai(fake_client):
+            emitted = list(_responses_backend.invoke_stream(Request(
+                model_id="openai.gpt-5.5",
+                messages=[{"role": "user", "content": [{"text": "hi"}]}],
+            )))
+    # Only the text_delta, stop, and metadata should surface — lifecycle events
+    # are dropped.
+    text = [e for e in emitted if isinstance(e, TextDelta)]
+    assert len(text) == 1
+    stops = [e for e in emitted if isinstance(e, Stop)]
+    assert len(stops) == 1
+    meta = [e for e in emitted if isinstance(e, Metadata)]
+    assert len(meta) == 1
+
+
+def test_invoke_stream_unknown_event_type_raises_translation_error():
+    events = [
+        SimpleNamespace(type="response.alien_future_event_type"),
+    ]
+    fake_client = MagicMock()
+    fake_client.responses.stream.return_value = _FakeStreamCtx(events)
+    with _ssm_returns("k"):
+        with _mock_openai(fake_client):
+            with pytest.raises(TranslationError):
+                list(_responses_backend.invoke_stream(Request(
+                    model_id="openai.gpt-5.5",
+                    messages=[{"role": "user", "content": [{"text": "x"}]}],
+                )))
+
+
+def test_invoke_stream_failed_event_raises():
+    events = [
+        SimpleNamespace(type="response.output_text.delta", delta="x"),
+        SimpleNamespace(type="response.failed", response=SimpleNamespace(error="server error")),
+    ]
+    fake_client = MagicMock()
+    fake_client.responses.stream.return_value = _FakeStreamCtx(events)
+    with _ssm_returns("k"):
+        with _mock_openai(fake_client):
+            with pytest.raises(TranslationError):
+                list(_responses_backend.invoke_stream(Request(
+                    model_id="openai.gpt-5.5",
+                    messages=[{"role": "user", "content": [{"text": "x"}]}],
+                )))
+
+
+def test_invoke_stream_function_call_emits_toolusestart_and_arg_events():
+    # Chunk 03 SHOULD emit the function-call events that the SDK provides
+    # natively. Full multi-turn tool-result handling is chunk 06; the
+    # streaming events themselves are basic and should work now.
+    events = [
+        SimpleNamespace(type="response.output_item.added", item=SimpleNamespace(
+            type="function_call",
+            id="fc_item_1",
+            call_id="call_abc",
+            name="get_weather",
+        )),
+        SimpleNamespace(type="response.function_call_arguments.delta",
+                        item_id="fc_item_1", delta='{"city":'),
+        SimpleNamespace(type="response.function_call_arguments.delta",
+                        item_id="fc_item_1", delta=' "SF"}'),
+        SimpleNamespace(type="response.function_call_arguments.done",
+                        item_id="fc_item_1", name="get_weather",
+                        arguments='{"city": "SF"}'),
+        SimpleNamespace(type="response.completed", response=SimpleNamespace(
+            status="completed",
+            incomplete_details=None,
+            usage=SimpleNamespace(input_tokens=5, output_tokens=8),
+        )),
+    ]
+    fake_client = MagicMock()
+    fake_client.responses.stream.return_value = _FakeStreamCtx(events)
+    with _ssm_returns("k"):
+        with _mock_openai(fake_client):
+            emitted = list(_responses_backend.invoke_stream(Request(
+                model_id="openai.gpt-5.5",
+                messages=[{"role": "user", "content": [{"text": "weather?"}]}],
+            )))
+    starts = [e for e in emitted if isinstance(e, ToolUseStart)]
+    assert len(starts) == 1
+    assert starts[0].tool_use_id == "call_abc"
+    assert starts[0].name == "get_weather"
+    deltas = [e for e in emitted if isinstance(e, ToolUseArgumentsDelta)]
+    assert "".join(d.arguments_partial for d in deltas) == '{"city": "SF"}'
+    assert all(d.tool_use_id == "call_abc" for d in deltas)
+    tool_stops = [e for e in emitted if isinstance(e, ToolUseStop)]
+    assert tool_stops[0].arguments == {"city": "SF"}
+    assert tool_stops[0].tool_use_id == "call_abc"
+    # Since a function_call was seen, the response.completed maps to TOOL_USE
+    # not END_TURN.
+    msg_stops = [e for e in emitted if isinstance(e, Stop)]
+    assert msg_stops[0].stop_reason == StopReason.TOOL_USE
+
+
+def test_invoke_stream_function_call_invalid_args_json_raises():
+    events = [
+        SimpleNamespace(type="response.output_item.added", item=SimpleNamespace(
+            type="function_call", id="i1", call_id="call_x", name="x",
+        )),
+        SimpleNamespace(type="response.function_call_arguments.done",
+                        item_id="i1", name="x", arguments="not-json"),
+        SimpleNamespace(type="response.completed", response=SimpleNamespace(
+            status="completed", incomplete_details=None,
+            usage=SimpleNamespace(input_tokens=1, output_tokens=1),
+        )),
+    ]
+    fake_client = MagicMock()
+    fake_client.responses.stream.return_value = _FakeStreamCtx(events)
+    with _ssm_returns("k"):
+        with _mock_openai(fake_client):
+            with pytest.raises(TranslationError):
+                list(_responses_backend.invoke_stream(Request(
+                    model_id="openai.gpt-5.5",
+                    messages=[{"role": "user", "content": [{"text": "x"}]}],
+                )))
