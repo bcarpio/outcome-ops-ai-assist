@@ -730,6 +730,21 @@ class TestHandleAuthorize:
         assert "install_url" in body
         assert "github.com/apps/outcome-ops-test/installations/new" in body["install_url"]
         assert "workspace_id" in body["install_url"]
+        # Regression guard 2026-06-04: when multiple GitHub App callback
+        # URLs are registered (one per environment / workspace stack),
+        # GitHub uses the FIRST one unless redirect_uri is explicit.
+        # The install URL must carry this env's callback_url so the
+        # post-install redirect lands back on the calling FQDN, not
+        # whichever env's URL happens to be registered first on the
+        # App.
+        import urllib.parse as _up
+        assert "redirect_uri=" in body["install_url"]
+        # Match the Lambda's encoding (quote default safe="/"): the
+        # callback URL appears in the install URL with `:` encoded as
+        # %3A but the slashes pass through.
+        assert _up.quote(
+            "https://app.example.com/api/github/callback"
+        ) in body["install_url"]
 
     def test_authorize_missing_user_email(self):
         """Test authorize returns 401 without user email."""

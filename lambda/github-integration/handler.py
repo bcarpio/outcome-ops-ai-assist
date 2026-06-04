@@ -524,7 +524,21 @@ def handle_authorize(event: Dict) -> Dict:
         "user_email": user_email,
     })
 
-    install_url = f"https://github.com/apps/{app_slug}/installations/new?state={urllib.parse.quote(state)}"
+    # Pin GitHub's post-install redirect to THIS environment's callback
+    # URL. When a single GitHub App is shared across multiple
+    # workspaces / environments (prd + openai, etc.), the App config
+    # carries multiple callback URLs. Without an explicit redirect_uri
+    # parameter, GitHub uses the FIRST callback URL registered on the
+    # App -- so every install from openai was falling back to prd's
+    # outcomeops.outcomeops.ai. Surfaced 2026-06-04 on the openai
+    # workspace's first GitHub connect attempt.
+    callback_url = config.get("callback_url", "")
+    install_url = (
+        f"https://github.com/apps/{app_slug}/installations/new"
+        f"?state={urllib.parse.quote(state)}"
+    )
+    if callback_url and callback_url != "PLACEHOLDER_CONFIGURE_ME":
+        install_url += f"&redirect_uri={urllib.parse.quote(callback_url)}"
 
     return _response(200, {"install_url": install_url})
 
