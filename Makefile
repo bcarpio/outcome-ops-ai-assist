@@ -306,8 +306,9 @@ build-ui-image:
 	   terraform apply -var-file=$$ENVIRONMENT.tfvars -target=aws_ecr_repository.chat_ui $$EXTRA -auto-approve
 	@echo ""
 	@echo "Building chat UI container image for environment: $$ENVIRONMENT"
-	@SR=$$(awk -F'"' '/^[[:space:]]*secondary_region[[:space:]]*=/ {print $$2; exit}' terraform/$$ENVIRONMENT.tfvars 2>/dev/null); \
-	 SECONDARY_REGION=$$SR ./scripts/build-ui-image.sh --env $$ENVIRONMENT
+	@AR=$$(awk -F'"' '/^[[:space:]]*aws_region[[:space:]]*=/ {print $$2; exit}' terraform/$$ENVIRONMENT.tfvars 2>/dev/null); \
+	 SR=$$(awk -F'"' '/^[[:space:]]*secondary_region[[:space:]]*=/ {print $$2; exit}' terraform/$$ENVIRONMENT.tfvars 2>/dev/null); \
+	 AWS_REGION=$${AR:-$(AWS_REGION)} SECONDARY_REGION=$$SR ./scripts/build-ui-image.sh --env $$ENVIRONMENT
 
 # Build OutcomeOps MCP server container image
 # Auto-detects secondary_region in ${ENVIRONMENT}.tfvars and, when set,
@@ -340,11 +341,13 @@ build-mcp-server-image:
 	$(eval ECR_REPO_SECONDARY := $(shell cd terraform && terraform output -raw mcp_server_ecr_url_secondary 2>/dev/null))
 	$(eval AWS_ACCOUNT := $(shell aws sts get-caller-identity --query Account --output text))
 	$(eval BUILD_SECONDARY_REGION := $(shell awk -F'"' '/^[[:space:]]*secondary_region[[:space:]]*=/ {print $$2; exit}' terraform/$(ENVIRONMENT).tfvars 2>/dev/null))
+	$(eval BUILD_AWS_REGION := $(shell awk -F'"' '/^[[:space:]]*aws_region[[:space:]]*=/ {print $$2; exit}' terraform/$(ENVIRONMENT).tfvars 2>/dev/null))
+	$(eval BUILD_AWS_REGION := $(or $(BUILD_AWS_REGION),$(AWS_REGION)))
 	@if [ -z "$(ECR_REPO)" ] || [ "$(ECR_REPO)" = "null" ]; then \
 	   echo "Skipping build-mcp-server-image — mcp_server_ecr_url output is empty (mcp_server_enabled=false?)."; \
 	   exit 0; \
 	 fi; \
-	 aws ecr get-login-password --region $(AWS_REGION) | docker login --username AWS --password-stdin $(AWS_ACCOUNT).dkr.ecr.$(AWS_REGION).amazonaws.com && \
+	 aws ecr get-login-password --region $(BUILD_AWS_REGION) | docker login --username AWS --password-stdin $(AWS_ACCOUNT).dkr.ecr.$(BUILD_AWS_REGION).amazonaws.com && \
 	 docker build -f lambda/mcp-server/Dockerfile -t $(ECR_REPO):latest lambda/ && \
 	 docker push $(ECR_REPO):latest
 	@if [ -n "$(BUILD_SECONDARY_REGION)" ] && [ -n "$(ECR_REPO_SECONDARY)" ] && [ "$(ECR_REPO_SECONDARY)" != "null" ]; then \
@@ -382,11 +385,13 @@ build-snyk-image:
 	 echo "Building Snyk MCP server container image for environment: $$ENVIRONMENT"
 	$(eval ECR_REPO := $(shell cd terraform && terraform output -raw mcp_snyk_ecr_url 2>/dev/null))
 	$(eval AWS_ACCOUNT := $(shell aws sts get-caller-identity --query Account --output text))
+	$(eval BUILD_AWS_REGION := $(shell awk -F'"' '/^[[:space:]]*aws_region[[:space:]]*=/ {print $$2; exit}' terraform/$(ENVIRONMENT).tfvars 2>/dev/null))
+	$(eval BUILD_AWS_REGION := $(or $(BUILD_AWS_REGION),$(AWS_REGION)))
 	@if [ -z "$(ECR_REPO)" ] || [ "$(ECR_REPO)" = "null" ]; then \
 	   echo "Skipping build-snyk-image — mcp_snyk_ecr_url output is empty (mcp_snyk_enabled=false?)."; \
 	   exit 0; \
 	 fi; \
-	 aws ecr get-login-password --region $(AWS_REGION) | docker login --username AWS --password-stdin $(AWS_ACCOUNT).dkr.ecr.$(AWS_REGION).amazonaws.com && \
+	 aws ecr get-login-password --region $(BUILD_AWS_REGION) | docker login --username AWS --password-stdin $(AWS_ACCOUNT).dkr.ecr.$(BUILD_AWS_REGION).amazonaws.com && \
 	 docker build -t $(ECR_REPO):latest containers/mcp-snyk/ && \
 	 docker push $(ECR_REPO):latest
 
