@@ -104,37 +104,35 @@ rsh = load_handler_module()
 class TestGenerateArchitecturalSummary:
     """Test architectural summary generation."""
 
-    @patch.object(rsh, 'bedrock_client')
+    @patch.object(rsh, 'invoke_model')
     @patch.object(rsh, 'log_audit_entry')
-    def test_generates_summary_from_file_list(self, mock_audit, mock_bedrock):
+    def test_generates_summary_from_file_list(self, mock_audit, mock_invoke):
         """Test summary generation with file list."""
-        mock_bedrock.converse.return_value = {
-            "output": {
-                "message": {
-                    "content": [{"text": "This is a Python serverless app"}]
-                }
-            },
-            "usage": {"inputTokens": 100, "outputTokens": 50}
-        }
+        from shared.model_client_types import Response, StopReason, Usage
+        mock_invoke.return_value = Response(
+            text="This is a Python serverless app",
+            content_blocks=[{"text": "This is a Python serverless app"}],
+            usage=Usage(input_tokens=100, output_tokens=50),
+            stop_reason=StopReason.END_TURN,
+        )
 
         result = rsh.generate_architectural_summary(
             "test-repo", "application", ["handler.py", "utils.py"]
         )
         assert result == "This is a Python serverless app"
-        mock_bedrock.converse.assert_called_once()
+        mock_invoke.assert_called_once()
 
-    @patch.object(rsh, 'bedrock_client')
+    @patch.object(rsh, 'invoke_model')
     @patch.object(rsh, 'log_audit_entry')
-    def test_handles_dict_file_format(self, mock_audit, mock_bedrock):
+    def test_handles_dict_file_format(self, mock_audit, mock_invoke):
         """Test summary generation with dict file format (legacy)."""
-        mock_bedrock.converse.return_value = {
-            "output": {
-                "message": {
-                    "content": [{"text": "Summary"}]
-                }
-            },
-            "usage": {"inputTokens": 50, "outputTokens": 25}
-        }
+        from shared.model_client_types import Response, StopReason, Usage
+        mock_invoke.return_value = Response(
+            text="Summary",
+            content_blocks=[{"text": "Summary"}],
+            usage=Usage(input_tokens=50, output_tokens=25),
+            stop_reason=StopReason.END_TURN,
+        )
 
         files = [
             {"path": "handler.py"},
@@ -143,38 +141,42 @@ class TestGenerateArchitecturalSummary:
         result = rsh.generate_architectural_summary("repo", "app", files)
         assert result == "Summary"
 
-    @patch.object(rsh, 'bedrock_client')
+    @patch.object(rsh, 'invoke_model')
     @patch.object(rsh, 'log_audit_entry')
-    def test_truncates_large_file_list(self, mock_audit, mock_bedrock):
+    def test_truncates_large_file_list(self, mock_audit, mock_invoke):
         """Test file list truncation over 500 files."""
-        mock_bedrock.converse.return_value = {
-            "output": {
-                "message": {
-                    "content": [{"text": "Summary of large repo"}]
-                }
-            },
-            "usage": {"inputTokens": 500, "outputTokens": 100}
-        }
+        from shared.model_client_types import Response, StopReason, Usage
+        mock_invoke.return_value = Response(
+            text="Summary of large repo",
+            content_blocks=[{"text": "Summary of large repo"}],
+            usage=Usage(input_tokens=500, output_tokens=100),
+            stop_reason=StopReason.END_TURN,
+        )
 
         files = [f"file_{i}.py" for i in range(600)]
         result = rsh.generate_architectural_summary("repo", "app", files)
         assert result == "Summary of large repo"
 
-    @patch.object(rsh, 'bedrock_client')
-    def test_raises_on_empty_response(self, mock_bedrock):
-        """Test error when Claude returns empty content."""
-        mock_bedrock.converse.return_value = {
-            "output": {"message": {"content": []}},
-            "usage": {}
-        }
+    @patch.object(rsh, 'invoke_model')
+    def test_raises_on_empty_response(self, mock_invoke):
+        """Test error when the model returns empty content."""
+        from shared.model_client_types import Response, StopReason, Usage
+        mock_invoke.return_value = Response(
+            text="",
+            content_blocks=[],
+            usage=Usage(input_tokens=10, output_tokens=0),
+            stop_reason=StopReason.END_TURN,
+        )
 
         with pytest.raises(Exception):
             rsh.generate_architectural_summary("repo", "app", ["f.py"])
 
-    @patch.object(rsh, 'bedrock_client')
-    def test_raises_on_client_error(self, mock_bedrock):
-        """Test ClientError is raised."""
-        mock_bedrock.converse.side_effect = _make_client_error(
+    @patch.object(rsh, 'invoke_model')
+    def test_raises_on_client_error(self, mock_invoke):
+        """ClientError from the underlying Bedrock call propagates through
+        shared.model_client.invoke; the Lambda must surface it so SQS
+        retries."""
+        mock_invoke.side_effect = _make_client_error(
             {"Error": {"Code": "AccessDeniedException", "Message": "denied"}},
             "Converse"
         )

@@ -48,6 +48,7 @@ if GENERATE_CODE_MAPS_DIR not in sys.path:
 from shared import dual_write
 from shared.prompts import CODE_MAP_LITERAL_DISCIPLINE
 from shared.audit import COMPREHEND_MODEL_ID, log_audit_entry
+from shared.model_client import invoke as invoke_model
 from shared.audit_writer import (
     ACTION_DOCUMENT_INGESTED,
     log_admin_action,
@@ -490,35 +491,28 @@ Keep the summary concise but detailed enough for developers to understand the sy
 
 {CODE_MAP_LITERAL_DISCIPLINE}"""
 
-    def call_claude():
-        payload = {
-            "modelId": ADVANCED_MODEL_ID,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [{"text": prompt}]
-                }
-            ],
-            "inferenceConfig": {
-                "maxTokens": 1024,
-                # Low temperature for grounded code-map generation (ADR-027).
-                "temperature": 0.1,
-            },
-        }
-
-        response = bedrock_client.converse(**payload)
-
-        output_message = response.get("output", {}).get("message", {})
-        content = output_message.get("content", [])
-
-        if not content or not content[0].get("text"):
-            raise ValueError("No content in Claude response")
-
-        return content[0]["text"], response.get("usage", {})
+    def call_model():
+        # Low temperature for grounded code-map generation (ADR-027).
+        # Routes via shared.model_client.invoke per ADR-035: Converse for
+        # anthropic/meta/nova/gpt-oss; Bedrock-Mantle Responses API for
+        # openai.gpt-5*/codex. The unified shape lets a tfvars swap of
+        # BEDROCK_ADVANCED_MODEL_ID flip backends without code change.
+        resp = invoke_model(
+            model_id=ADVANCED_MODEL_ID,
+            messages=[{"role": "user", "content": [{"text": prompt}]}],
+            max_tokens=1024,
+            temperature=0.1,
+        )
+        if not resp.text:
+            raise ValueError(
+                f"No text content in {ADVANCED_MODEL_ID} response "
+                f"(stop_reason={resp.stop_reason})"
+            )
+        return resp.text, resp.usage
 
     try:
         bedrock_start = time.time()
-        summary, usage = retry_bedrock_call(call_claude)
+        summary, usage = retry_bedrock_call(call_model)
         bedrock_duration_ms = int((time.time() - bedrock_start) * 1000)
         logger.info(f"Generated architectural summary for {repo} ({len(summary)} chars)")
 
@@ -528,8 +522,8 @@ Keep the summary concise but detailed enough for developers to understand the sy
             model_id=ADVANCED_MODEL_ID,
             input_text=prompt,
             output_text=summary,
-            input_tokens=usage.get("inputTokens", 0),
-            output_tokens=usage.get("outputTokens", 0),
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
             duration_ms=bedrock_duration_ms,
         )
 
