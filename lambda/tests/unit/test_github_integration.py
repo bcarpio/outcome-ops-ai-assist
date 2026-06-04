@@ -739,11 +739,14 @@ class TestHandleAuthorize:
         # App.
         import urllib.parse as _up
         assert "redirect_uri=" in body["install_url"]
-        # Match the Lambda's encoding (quote default safe="/"): the
-        # callback URL appears in the install URL with `:` encoded as
-        # %3A but the slashes pass through.
+        # The Lambda fully URL-encodes the redirect_uri via quote(..., safe='').
+        # GitHub's exact-match validation against registered Callback URLs
+        # requires this; partial encoding (the default safe='/') leaves
+        # `https%3A//host/...` which doesn't round-trip-match the
+        # registered `https://host/...` and triggers silent fallback to
+        # the FIRST registered URL.
         assert _up.quote(
-            "https://app.example.com/api/github/callback"
+            "https://app.example.com/api/github/callback", safe=""
         ) in body["install_url"]
 
     def test_authorize_missing_user_email(self):

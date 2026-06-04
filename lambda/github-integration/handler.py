@@ -535,10 +535,20 @@ def handle_authorize(event: Dict) -> Dict:
     callback_url = config.get("callback_url", "")
     install_url = (
         f"https://github.com/apps/{app_slug}/installations/new"
-        f"?state={urllib.parse.quote(state)}"
+        f"?state={urllib.parse.quote(state, safe='')}"
     )
     if callback_url and callback_url != "PLACEHOLDER_CONFIGURE_ME":
-        install_url += f"&redirect_uri={urllib.parse.quote(callback_url)}"
+        # GitHub validates redirect_uri by EXACT match against the
+        # registered Callback URLs on the App. urllib.parse.quote's
+        # default `safe='/'` leaves slashes raw, producing
+        # `https%3A//host/...` -- which GitHub's validator does not
+        # match against the registered `https://host/...`, silently
+        # falling back to the first registered URL. Fully URL-encode
+        # via `safe=''` so the colon AND slashes are %-escaped (the
+        # standard convention for redirect_uri values in OAuth flows).
+        # state is also fully encoded above for the same reason
+        # (defensive consistency; state is opaque to GitHub).
+        install_url += f"&redirect_uri={urllib.parse.quote(callback_url, safe='')}"
 
     return _response(200, {"install_url": install_url})
 
