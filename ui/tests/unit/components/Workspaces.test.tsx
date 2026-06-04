@@ -8,15 +8,46 @@ import { createWorkspace } from '../../helpers/mocks'
 vi.mock('../../../src/lib/api', () => ({
   listWorkspaces: vi.fn(),
   createWorkspace: vi.fn(),
+  listOrgMembers: vi.fn(),
+  getCurrentUser: vi.fn(),
 }))
 
-import { listWorkspaces, createWorkspace as createWorkspaceApi } from '../../../src/lib/api'
+import {
+  listWorkspaces,
+  createWorkspace as createWorkspaceApi,
+  listOrgMembers,
+  getCurrentUser,
+} from '../../../src/lib/api'
 
 const mockListWorkspaces = vi.mocked(listWorkspaces)
 const mockCreateWorkspace = vi.mocked(createWorkspaceApi)
+const mockListOrgMembers = vi.mocked(listOrgMembers)
+const mockGetCurrentUser = vi.mocked(getCurrentUser)
+
+/** Mark the test user as an org admin via the new isOrgAdmin source
+ * of truth (listOrgMembers + getCurrentUser matching by email). */
+function asOrgAdmin(email = 'admin@example.com') {
+  mockGetCurrentUser.mockResolvedValue({ email })
+  mockListOrgMembers.mockResolvedValue([
+    {
+      user_email: email,
+      org_role: 'org_admin',
+      joined_at: '2026-06-03T00:00:00Z',
+    },
+  ])
+}
+
+/** Mark the test user as a non-admin: listOrgMembers 403s (the
+ * server-side guard), simulated as a rejected promise. */
+function asNonAdmin(email = 'member@example.com') {
+  mockGetCurrentUser.mockResolvedValue({ email })
+  mockListOrgMembers.mockRejectedValue(new Error('403'))
+}
 
 beforeEach(() => {
   vi.clearAllMocks()
+  // Default: non-admin. Individual tests override via asOrgAdmin().
+  asNonAdmin()
 })
 
 describe('Workspaces', () => {
@@ -38,6 +69,7 @@ describe('Workspaces', () => {
   })
 
   it('shows empty state when no workspaces (non-admin)', async () => {
+    asNonAdmin()
     mockListWorkspaces.mockResolvedValue([])
 
     renderWithRouter(<Workspaces />)
@@ -47,6 +79,29 @@ describe('Workspaces', () => {
     })
     expect(screen.getByText('Ask an org admin to add you to a workspace')).toBeInTheDocument()
     expect(screen.queryByText('Create Your First Workspace')).not.toBeInTheDocument()
+  })
+
+  it('shows create CTA when org_admin has zero workspaces (regression: 2026-06-04)', async () => {
+    // Org admin on a freshly-bootstrapped deployment has zero
+    // workspaces yet. The empty state used to derive isOrgAdmin from
+    // `workspaces.some(w => w.role === 'org_admin')` -- empty array
+    // ->  false -> the empty state routed the org admin into the
+    // "Ask an org admin to add you to a workspace" copy (telling
+    // them to ask themselves). Surfaced on the openai workspace's
+    // first login. Fix: isOrgAdmin now derives from listOrgMembers +
+    // getCurrentUser, independent of the workspace list.
+    asOrgAdmin('admin@example.com')
+    mockListWorkspaces.mockResolvedValue([])
+
+    renderWithRouter(<Workspaces />)
+
+    await waitFor(() => {
+      expect(screen.getByText('No workspaces yet')).toBeInTheDocument()
+    })
+    expect(screen.getByText('Create Your First Workspace')).toBeInTheDocument()
+    expect(
+      screen.queryByText('Ask an org admin to add you to a workspace')
+    ).not.toBeInTheDocument()
   })
 
   it('shows loading state', () => {
@@ -68,8 +123,9 @@ describe('Workspaces', () => {
   })
 
   it('opens create modal', async () => {
+    asOrgAdmin()
     mockListWorkspaces.mockResolvedValue([
-      createWorkspace({ role: 'org_admin' }),
+      createWorkspace({ role: 'member' }),
     ])
 
     renderWithRouter(<Workspaces />)
@@ -83,8 +139,9 @@ describe('Workspaces', () => {
   })
 
   it('creates a workspace through the modal', async () => {
+    asOrgAdmin()
     mockListWorkspaces.mockResolvedValue([
-      createWorkspace({ role: 'org_admin' }),
+      createWorkspace({ role: 'member' }),
     ])
     const newWs = createWorkspace({ workspace_id: 'ws-new', name: 'My WS' })
     mockCreateWorkspace.mockResolvedValue(newWs)
@@ -108,8 +165,9 @@ describe('Workspaces', () => {
   })
 
   it('closes create modal on cancel', async () => {
+    asOrgAdmin()
     mockListWorkspaces.mockResolvedValue([
-      createWorkspace({ role: 'org_admin' }),
+      createWorkspace({ role: 'member' }),
     ])
 
     renderWithRouter(<Workspaces />)
@@ -135,8 +193,9 @@ describe('Workspaces', () => {
   })
 
   it('shows create error', async () => {
+    asOrgAdmin()
     mockListWorkspaces.mockResolvedValue([
-      createWorkspace({ role: 'org_admin' }),
+      createWorkspace({ role: 'member' }),
     ])
     mockCreateWorkspace.mockRejectedValue(new Error('Duplicate name'))
 

@@ -9,6 +9,8 @@ import {
 import {
   listWorkspaces,
   createWorkspace,
+  listOrgMembers,
+  getCurrentUser,
   type Workspace,
 } from '../lib/api'
 import AdminNav from '../components/AdminNav'
@@ -32,9 +34,31 @@ export default function Workspaces() {
   async function loadWorkspaces() {
     setLoading(true)
     try {
-      const data = await listWorkspaces()
+      // Resolve workspaces + org-admin status in parallel. isOrgAdmin
+      // used to be derived from `data.some(w => w.role === 'org_admin')`,
+      // which silently returned false when the workspace list was
+      // empty -- including the legitimate case of an org admin viewing
+      // a fresh workspace they haven't populated yet. The empty-state
+      // then mis-routed the org admin into the "ask an org admin" copy
+      // (telling them to ask themselves). Surfaced 2026-06-04 on the
+      // openai workspace's first login.
+      //
+      // listOrgMembers requires org_admin server-side, so the catch
+      // doubles as the "not an org admin" signal; the email match
+      // protects against the (current) endpoint widening that
+      // permission later.
+      const [data, members, me] = await Promise.all([
+        listWorkspaces(),
+        listOrgMembers().catch(() => [] as Awaited<ReturnType<typeof listOrgMembers>>),
+        getCurrentUser().catch(() => ({ email: '' })),
+      ])
       setWorkspaces(data)
-      setIsOrgAdmin(data.some(w => w.role === 'org_admin'))
+      const myEmail = (me.email || '').toLowerCase()
+      setIsOrgAdmin(
+        members.some(
+          (m) => m.user_email.toLowerCase() === myEmail && m.org_role === 'org_admin'
+        )
+      )
     } catch (err) {
       console.error('Failed to load workspaces:', err)
     } finally {
