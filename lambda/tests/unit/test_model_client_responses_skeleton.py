@@ -216,46 +216,10 @@ def test_invoke_reasoning_items_are_skipped_not_surfaced():
     assert resp.text == "final answer"
 
 
-def test_invoke_system_or_multi_turn_or_tools_raises_translation_error_in_skeleton():
-    with _ssm_returns("k"):
-        with _mock_openai(MagicMock()):
-            with pytest.raises(TranslationError):
-                _responses_backend.invoke(Request(
-                    model_id="openai.gpt-5.5",
-                    messages=[{"role": "user", "content": [{"text": "x"}]}],
-                    system="You are X",
-                ))
-            with pytest.raises(TranslationError):
-                _responses_backend.invoke(Request(
-                    model_id="openai.gpt-5.5",
-                    messages=[
-                        {"role": "user", "content": [{"text": "a"}]},
-                        {"role": "assistant", "content": [{"text": "b"}]},
-                        {"role": "user", "content": [{"text": "c"}]},
-                    ],
-                ))
-
-
-def test_invoke_function_call_output_item_raises_pending_chunk_06():
-    fake_client = MagicMock()
-    fake_client.responses.create.return_value = SimpleNamespace(
-        status="completed",
-        incomplete_details=None,
-        usage=SimpleNamespace(input_tokens=1, output_tokens=1),
-        output=[SimpleNamespace(
-            type="function_call",
-            call_id="call_xyz",
-            name="get_weather",
-            arguments='{"city": "SF"}',
-        )],
-    )
-    with _ssm_returns("k"):
-        with _mock_openai(fake_client):
-            with pytest.raises(TranslationError):
-                _responses_backend.invoke(Request(
-                    model_id="openai.gpt-5.5",
-                    messages=[{"role": "user", "content": [{"text": "weather?"}]}],
-                ))
+# NOTE: the chunks 04-06 implementation removes the skeleton's
+# "raise on system/multi-turn/tools" guards. Tests for the new
+# translation paths live in
+# test_model_client_responses_translation.py.
 
 
 # ===== invoke_stream (streaming) =====

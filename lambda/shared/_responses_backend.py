@@ -4,15 +4,44 @@ Uses the official `openai` Python SDK pointed at the Bedrock Mantle
 endpoint via base_url override. Auth is a long-lived Bedrock API key
 loaded from SSM at module init (per ADR-035 §4).
 
-Chunk 03 (skeleton) handles text-only requests + text-only streaming
-events + the basic stop_reason map. Chunks 04/05/06 land the full
-translation surface (system prompt, multi-turn, images, tools).
+Translation table per ADR-035 §3:
+
+  Unified (Converse-flavored)      OpenAI SDK Responses-API args
+  ---------------------------      -----------------------------
+  Request.system                   instructions=<str>
+  Request.messages (single user
+    text)                          input=<str>
+  Request.messages (multi-turn or
+    non-text content)              input=[<typed items>...]
+  Request.max_tokens               max_output_tokens=<int>
+  Request.temperature              temperature=<float>
+  Request.top_p                    top_p=<float>
+  Request.stop_sequences           (dropped; not supported on Responses)
+  Request.tools                    tools=[{type:"function", name,
+                                          description, parameters}]
+  toolUse content block            input item {type:"function_call",
+                                              call_id, name, arguments}
+  toolResult content block         input item {type:"function_call_output",
+                                              call_id, output}
+  image content block              input item {type:"input_image",
+                                              image_url:"data:..."}
+
+Response translation walks raw.output[] and pulls type=="message"
+content into text + content_blocks, type=="function_call" into
+tool_calls + Converse-shaped toolUse blocks. status="completed" with
+any function_call output -> StopReason.TOOL_USE; otherwise END_TURN.
+status="incomplete" + reason="max_output_tokens" -> MAX_TOKENS.
+
+Streaming consumes the SDK's typed events. Tool-call argument
+accumulation is handled by the SDK (it emits a Done event with the
+full arguments string); we just json.loads at the Done event.
 """
 
+import base64
 import json
 import logging
 import os
-from typing import Iterator
+from typing import Any, Iterator
 
 import boto3
 from openai import OpenAI
@@ -27,6 +56,7 @@ from .model_client_types import (
     StreamEvent,
     TextDelta,
     ToolCall,
+    ToolSpec,
     ToolUseArgumentsDelta,
     ToolUseStart,
     ToolUseStop,
@@ -37,6 +67,11 @@ from .model_client_types import (
 logger = logging.getLogger(__name__)
 
 _client: OpenAI | None = None
+
+
+# ============================================================================
+# Module init / API key loading
+# ============================================================================
 
 
 def _get_client() -> OpenAI:
@@ -65,10 +100,6 @@ def _load_api_key() -> str:
             "model or provision the key per "
             "docs/runbooks/bedrock-mantle-api-key.md."
         )
-    # The SSM param lives in the same region as the Mantle endpoint (each
-    # env writes its own params; we don't replicate the bedrock key
-    # cross-region). Construct the SSM client explicitly so boto3's
-    # default-region resolution doesn't accidentally point at us-east-1.
     region = os.environ.get("AWS_REGION") or os.environ.get("THIS_REGION")
     ssm = boto3.client("ssm", region_name=region) if region else boto3.client("ssm")
     resp = ssm.get_parameter(Name=param_name, WithDecryption=True)
@@ -83,28 +114,248 @@ def _load_api_key() -> str:
     return value
 
 
-def _flatten_user_text(message: dict) -> str:
-    """Convert a Converse-shaped user message to a plain text string.
+# ============================================================================
+# Request translation (chunk 04)
+# ============================================================================
 
-    Chunk 03 skeleton: only single-turn user text is supported. Chunks
-    04/06 land the richer input shapes (multi-turn, images, tool history).
+
+_IMAGE_FORMAT_MIME = {
+    "png": "image/png",
+    "jpeg": "image/jpeg",
+    "jpg": "image/jpeg",
+    "gif": "image/gif",
+    "webp": "image/webp",
+}
+
+
+def _normalize_system_to_instructions(system) -> str | None:
+    if system is None:
+        return None
+    if isinstance(system, str):
+        return system
+    if isinstance(system, list):
+        # Concat with a blank line between blocks, mirroring how Converse
+        # surfaces a multi-block system to the model.
+        return "\n\n".join(s for s in system if s)
+    raise TranslationError(
+        f"Request.system must be str or list[str]; got {type(system).__name__}"
+    )
+
+
+def _image_data_url(image_block: dict) -> str:
+    """Convert a Converse image block to an OpenAI input_image data URL."""
+    img = image_block["image"]
+    fmt = img.get("format", "").lower()
+    mime = _IMAGE_FORMAT_MIME.get(fmt)
+    if not mime:
+        raise TranslationError(
+            f"Converse image block has unsupported format={fmt!r}; "
+            f"expected one of {list(_IMAGE_FORMAT_MIME)}."
+        )
+    source = img.get("source", {})
+    raw_bytes = source.get("bytes")
+    if raw_bytes is None:
+        raise TranslationError(
+            "Converse image block missing source.bytes (no other source "
+            "type supported)."
+        )
+    if isinstance(raw_bytes, bytes):
+        b64 = base64.b64encode(raw_bytes).decode("ascii")
+    else:
+        # already base64-string-encoded (the form Converse usually carries
+        # when the bytes were assembled by a previous step).
+        b64 = raw_bytes
+    return f"data:{mime};base64,{b64}"
+
+
+def _translate_content_block_for_user(block: dict) -> dict:
+    if "text" in block:
+        return {"type": "input_text", "text": block["text"]}
+    if "image" in block:
+        return {"type": "input_image", "image_url": _image_data_url(block)}
+    if "toolResult" in block:
+        # toolResult blocks are handled at the message level (they split
+        # the user message into role:"tool" items). If we see one here, the
+        # caller mixed toolResult with non-toolResult content in the same
+        # message, which the translator does not support — flag it loudly.
+        raise TranslationError(
+            "toolResult content blocks must be the only blocks in their "
+            "message; mixing toolResult with other content in one user "
+            "message is not supported. Split into separate messages."
+        )
+    raise TranslationError(
+        f"Unsupported user content block keys={list(block.keys())}"
+    )
+
+
+def _translate_content_block_for_assistant(block: dict) -> dict | None:
+    if "text" in block:
+        return {"type": "output_text", "text": block["text"]}
+    if "toolUse" in block:
+        # toolUse blocks become separate function_call items at the
+        # message level. The caller of _translate_messages_to_input
+        # handles splitting; we don't return a content sub-item here.
+        return None
+    raise TranslationError(
+        f"Unsupported assistant content block keys={list(block.keys())}"
+    )
+
+
+def _translate_messages_to_input(messages: list[dict]) -> str | list[dict]:
+    """Translate Converse-shaped messages into the SDK's input= argument.
+
+    Single-turn user text -> bare string (the SDK's string shorthand).
+    Anything else -> list of typed items.
+
+    Tool-use translation:
+      - assistant content {"toolUse": ...} -> separate
+        {"type":"function_call", call_id, name, arguments} input item
+      - user content {"toolResult": ...} -> separate
+        {"type":"function_call_output", call_id, output} input item
+        (one per toolResult block in the source message)
     """
-    content = message.get("content", [])
-    parts: list[str] = []
-    for block in content:
-        if "text" in block:
-            parts.append(block["text"])
-        else:
+    if not messages:
+        raise TranslationError("Request.messages is empty.")
+
+    # Fast path: single user message containing only text blocks.
+    if (
+        len(messages) == 1
+        and messages[0].get("role") == "user"
+        and all("text" in b for b in messages[0].get("content", []))
+    ):
+        content = messages[0]["content"]
+        return "\n\n".join(b["text"] for b in content)
+
+    items: list[dict] = []
+    for msg in messages:
+        role = msg.get("role")
+        content = msg.get("content", [])
+        if role == "system":
             raise TranslationError(
-                "Responses backend chunk 03 skeleton handles text-only "
-                f"content blocks; got block keys={list(block.keys())}. "
-                "Richer translation lands in chunks 04 (images) and 06 (tools)."
+                "system-role messages are not supported inside "
+                "Request.messages on the Responses backend. Pass system "
+                "via Request.system; the translator routes it to "
+                "instructions=."
             )
-    return "\n\n".join(parts)
+
+        if role == "user":
+            # toolResult blocks become separate function_call_output items.
+            tool_result_blocks = [b for b in content if "toolResult" in b]
+            non_tool_blocks = [b for b in content if "toolResult" not in b]
+            if tool_result_blocks and non_tool_blocks:
+                raise TranslationError(
+                    "User message mixes toolResult with other content; "
+                    "split into separate messages."
+                )
+            if tool_result_blocks:
+                for tr_block in tool_result_blocks:
+                    tr = tr_block["toolResult"]
+                    call_id = tr.get("toolUseId", "")
+                    # toolResult.content is typically a list of {text:...}
+                    # blocks. Flatten to a single string for OpenAI.
+                    result_content = tr.get("content", [])
+                    output_str = "\n\n".join(
+                        b.get("text", "") for b in result_content
+                        if isinstance(b, dict) and "text" in b
+                    )
+                    if tr.get("status") == "error":
+                        output_str = f"[error] {output_str}"
+                    items.append({
+                        "type": "function_call_output",
+                        "call_id": call_id,
+                        "output": output_str,
+                    })
+                continue
+            # Plain user content (text / images).
+            user_content_items = [
+                _translate_content_block_for_user(b) for b in non_tool_blocks
+            ]
+            items.append({"role": "user", "content": user_content_items})
+            continue
+
+        if role == "assistant":
+            # toolUse blocks become separate function_call items.
+            tool_use_blocks = [b for b in content if "toolUse" in b]
+            text_blocks = [b for b in content if "text" in b]
+            other_blocks = [
+                b for b in content
+                if "toolUse" not in b and "text" not in b
+            ]
+            if other_blocks:
+                raise TranslationError(
+                    f"Assistant message has unsupported content blocks: "
+                    f"{[list(b.keys()) for b in other_blocks]}"
+                )
+
+            if text_blocks:
+                assistant_content_items = [
+                    _translate_content_block_for_assistant(b)
+                    for b in text_blocks
+                ]
+                items.append({
+                    "role": "assistant",
+                    "content": assistant_content_items,
+                })
+
+            for tu_block in tool_use_blocks:
+                tu = tu_block["toolUse"]
+                items.append({
+                    "type": "function_call",
+                    "call_id": tu.get("toolUseId", ""),
+                    "name": tu.get("name", ""),
+                    "arguments": json.dumps(tu.get("input", {})),
+                })
+            continue
+
+        raise TranslationError(f"Unsupported message role={role!r}")
+
+    return items
+
+
+def _translate_tools(tools: list[ToolSpec] | None) -> list[dict] | None:
+    if not tools:
+        return None
+    return [
+        {
+            "type": "function",
+            "name": t.name,
+            "description": t.description,
+            "parameters": t.input_schema,
+        }
+        for t in tools
+    ]
+
+
+def _build_responses_kwargs(req: Request) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {
+        "model": req.model_id,
+        "input": _translate_messages_to_input(req.messages),
+        "max_output_tokens": req.max_tokens,
+        "temperature": req.temperature,
+    }
+    instructions = _normalize_system_to_instructions(req.system)
+    if instructions is not None:
+        kwargs["instructions"] = instructions
+    if req.top_p is not None:
+        kwargs["top_p"] = req.top_p
+    if req.stop_sequences:
+        logger.warning(
+            "Responses API does not support stop_sequences; dropping %r. "
+            "(Caller will not see the configured stop sequences honored.)",
+            req.stop_sequences,
+        )
+    tools = _translate_tools(req.tools)
+    if tools:
+        kwargs["tools"] = tools
+    return kwargs
+
+
+# ============================================================================
+# Response translation (chunk 05)
+# ============================================================================
 
 
 def _translate_response_to_unified(raw) -> Response:
-    """Convert an openai-SDK Response object into our unified Response."""
     text = ""
     content_blocks: list[dict] = []
     tool_calls: list[ToolCall] = []
@@ -119,7 +370,6 @@ def _translate_response_to_unified(raw) -> Response:
                     if not text:
                         text = sub.text
                 elif sub_type == "refusal":
-                    # Safety refusal — surface as text so audit captures it.
                     refusal_text = getattr(sub, "refusal", "") or ""
                     content_blocks.append({"text": refusal_text})
                     if not text:
@@ -130,13 +380,30 @@ def _translate_response_to_unified(raw) -> Response:
                         f"sub-item type={sub_type!r}"
                     )
         elif item_type == "function_call":
-            # Chunk 06 will populate tool_calls + Converse-shaped toolUse
-            # blocks here. Skeleton: raise so the boundary is loud.
-            raise TranslationError(
-                "function_call output items land in chunk 06."
-            )
+            call_id = getattr(item, "call_id", "")
+            name = getattr(item, "name", "")
+            arguments_str = getattr(item, "arguments", "") or "{}"
+            try:
+                args = json.loads(arguments_str)
+            except json.JSONDecodeError as e:
+                raise TranslationError(
+                    f"Responses function_call arguments for call_id="
+                    f"{call_id!r} name={name!r} did not parse as JSON: {e}"
+                ) from e
+            tool_calls.append(ToolCall(
+                tool_use_id=call_id,
+                name=name,
+                input=args,
+            ))
+            content_blocks.append({
+                "toolUse": {
+                    "toolUseId": call_id,
+                    "name": name,
+                    "input": args,
+                }
+            })
         elif item_type == "reasoning":
-            # Internal model thinking on o-series. Don't surface to caller.
+            # Internal model thinking on o-series. Don't surface.
             continue
         else:
             raise TranslationError(
@@ -178,73 +445,22 @@ def _translate_response_to_unified(raw) -> Response:
     )
 
 
+# ============================================================================
+# Public entry points
+# ============================================================================
+
+
 def invoke(req: Request) -> Response:
-    if req.system or req.tools or len(req.messages) > 1:
-        raise TranslationError(
-            "Responses backend chunk 03 skeleton handles single-turn user "
-            "text only. Multi-turn / system / tools land in chunks 04+06."
-        )
-
     client = _get_client()
-    last = req.messages[-1]
-    if last.get("role") != "user":
-        raise TranslationError(
-            f"Skeleton expects a single user-role message; got role="
-            f"{last.get('role')!r}."
-        )
-
-    text = _flatten_user_text(last)
-
-    kwargs: dict = {
-        "model": req.model_id,
-        "input": text,
-        "max_output_tokens": req.max_tokens,
-        "temperature": req.temperature,
-    }
-    if req.top_p is not None:
-        kwargs["top_p"] = req.top_p
-    if req.stop_sequences:
-        logger.warning(
-            "Responses API does not support stop_sequences; dropping %r. "
-            "(Caller will not see the configured stop sequences honored.)",
-            req.stop_sequences,
-        )
-
+    kwargs = _build_responses_kwargs(req)
     raw = client.responses.create(**kwargs)
     return _translate_response_to_unified(raw)
 
 
 def invoke_stream(req: Request) -> Iterator[StreamEvent]:
-    if req.system or req.tools or len(req.messages) > 1:
-        raise TranslationError(
-            "Responses backend chunk 03 skeleton streaming handles "
-            "single-turn user text only. Multi-turn / system / tools land "
-            "in chunks 04+06."
-        )
-
     client = _get_client()
-    last = req.messages[-1]
-    if last.get("role") != "user":
-        raise TranslationError(
-            f"Skeleton expects a single user-role message; got role="
-            f"{last.get('role')!r}."
-        )
+    kwargs = _build_responses_kwargs(req)
 
-    text = _flatten_user_text(last)
-
-    kwargs: dict = {
-        "model": req.model_id,
-        "input": text,
-        "max_output_tokens": req.max_tokens,
-        "temperature": req.temperature,
-    }
-    if req.top_p is not None:
-        kwargs["top_p"] = req.top_p
-
-    # Maps SDK item_id -> caller-facing call_id; populated when a
-    # function_call OutputItemAddedEvent arrives. Chunk 06 wires this fully;
-    # chunk 03 skeleton uses it only to detect that a tool was streamed and
-    # therefore emit Stop(TOOL_USE) at completion.
     call_id_by_item_id: dict[str, str] = {}
     seen_function_call = False
 
@@ -261,7 +477,7 @@ def invoke_stream(req: Request) -> Iterator[StreamEvent]:
                 item_type = getattr(item, "type", None)
                 if item_type == "function_call":
                     seen_function_call = True
-                    call_id = getattr(item, "call_id", "")
+                    call_id = getattr(item, "call_id", "") or ""
                     item_id = getattr(item, "id", "") or ""
                     if item_id:
                         call_id_by_item_id[item_id] = call_id
@@ -269,8 +485,6 @@ def invoke_stream(req: Request) -> Iterator[StreamEvent]:
                         tool_use_id=call_id,
                         name=getattr(item, "name", "") or "",
                     )
-                    continue
-                # message items, reasoning items, etc. — nothing to emit yet
                 continue
 
             if event_type == "response.function_call_arguments.delta":
@@ -338,8 +552,6 @@ def invoke_stream(req: Request) -> Iterator[StreamEvent]:
                 "response.output_text.done",
                 "response.output_text.annotation.added",
             ):
-                # Lifecycle / metadata events with no unified equivalent.
-                # Silent skip is correct — they carry no per-token payload.
                 continue
 
             if event_type in ("response.failed", "error"):
@@ -349,12 +561,8 @@ def invoke_stream(req: Request) -> Iterator[StreamEvent]:
                     f"{err!r}"
                 )
 
-            # Unknown event type: raise (loud failure per ADR-035 §7). If a
-            # new SDK event type appears that we want to silently skip
-            # (e.g., reasoning-text deltas), add it to the skip list above
-            # rather than swallowing here.
             raise TranslationError(
                 f"Responses stream emitted unknown event type={event_type!r}. "
                 f"Either add it to the silent-skip list or wire its "
-                f"translation in chunk 04/05/06."
+                f"translation."
             )

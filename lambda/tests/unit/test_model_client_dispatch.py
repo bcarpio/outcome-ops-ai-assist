@@ -109,16 +109,6 @@ def test_invoke_routes_to_responses_backend_stub():
     assert resp.text == "ok"
 
 
-def test_invoke_propagates_not_implemented_from_stub():
-    # With no patching, the stubs raise NotImplementedError. invoke()
-    # must propagate that, not swallow it.
-    with pytest.raises(NotImplementedError):
-        model_client.invoke(
-            model_id="anthropic.claude-opus-4-7-20260514-v1:0",
-            messages=[{"role": "user", "content": [{"text": "hi"}]}],
-        )
-
-
 def test_invoke_unknown_model_id_raises_unsupported_before_backend_call():
     with pytest.raises(UnsupportedModelError):
         model_client.invoke(
