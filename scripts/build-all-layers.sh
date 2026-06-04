@@ -26,6 +26,18 @@ echo "--- Building Platform-CA Layer ---"
 "$SCRIPT_DIR/build-platform-ca-layer.sh"
 echo ""
 
+# Build terraform-tools layer (terraform CLI binary, used by
+# generate-code Lambda for fmt/validate). terraform/lambda-layers.tf
+# also carries a null_resource that rebuilds this on apply if the
+# build script's md5 changes -- building here gives the operator
+# faster failure feedback (docker / network failures surface at
+# pre-deploy time instead of during terraform apply) AND the null_resource
+# sees the layer already built and skips its rebuild on apply.
+# Idempotent either way.
+echo "--- Building Terraform-Tools Layer ---"
+"$SCRIPT_DIR/build-terraform-layer.sh"
+echo ""
+
 echo "========================================"
 echo "All layers built successfully!"
 echo "========================================"
@@ -33,6 +45,7 @@ echo ""
 echo "Layer sizes:"
 du -sh lambda/runtime-layer 2>/dev/null || true
 du -sh build/platform-ca-layer 2>/dev/null || true
+du -sh lambda/terraform-layer 2>/dev/null || true
 echo ""
 echo "Note: the database integration ships as Lambda container images,"
 echo "not a Lambda layer. To build those, run:"
