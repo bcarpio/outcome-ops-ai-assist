@@ -101,9 +101,14 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Validate environment
-if [[ ! "$ENVIRONMENT" =~ ^(dev|prd)$ ]]; then
-  echo "Error: Environment must be 'dev' or 'prd'" >&2
+# Validate environment. Originally a closed allowlist (dev|prd) when
+# those were the only two terraform workspaces; relaxed 2026-06-04 to
+# accept any shell-safe identifier so multi-model workspaces (openai,
+# etc.) Just Work. The Makefile target already requires ENVIRONMENT
+# to be set before invoking this script; this regex is a basic
+# sanity-check on the value, not a deployment-mode gate.
+if [[ -z "$ENVIRONMENT" || ! "$ENVIRONMENT" =~ ^[a-z][a-z0-9-]*$ ]]; then
+  echo "Error: Environment must be a lowercase identifier matching ^[a-z][a-z0-9-]*$ (got: '$ENVIRONMENT')" >&2
   exit 1
 fi
 
