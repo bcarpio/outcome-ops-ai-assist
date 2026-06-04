@@ -1,0 +1,218 @@
+environment = "openai"
+
+# OpenAI frontier models (GPT-5.5 / GPT-5.4) on Amazon Bedrock are GA as
+# of 2026-06-03. GPT-5.5 is currently available in US East (Ohio) only.
+# GPT-5.4 is available in US East (Ohio) and US West (Oregon). To use
+# the frontier GPT-5.5 model as the "advanced" tier, the workspace's
+# primary region MUST be us-east-2.
+#
+# This tfvars is for compliance customers who have asked us to retire
+# Anthropic Claude entirely from their deployment (no Claude models on
+# the inference path; embedding and rerank stay on Titan + Cohere
+# which are not Anthropic). For Claude-based workspaces, use prd.tfvars
+# / dev.tfvars instead.
+aws_region  = "us-east-2"
+
+# Optional HA: set secondary_region to enable active/passive replication
+# across two AWS regions. Frontier GPT-5.5 is us-east-2 only at the time
+# of this template; if you enable HA for an openai workspace, the
+# secondary region must EITHER also have GPT-5.5 (check the Bedrock
+# regional availability page) OR downgrade the `bedrock_advanced_model_id`
+# on the secondary to GPT-5.4 (available in us-east-2 + us-west-2).
+# Failing to verify model availability before applying will fail loudly
+# during the secondary-region apply (Bedrock throws on first use of an
+# unavailable model). See docs/HA.md for the full failover runbook.
+# secondary_region = "us-west-2"
+
+# GitHub usernames to tag when tests fail
+# Single user: "yourusername"
+# Team: "user1,user2,user3"
+github_usernames_to_tag = "yourusername"
+
+# ============================================================================
+# Initial Admin
+# ============================================================================
+
+# Email of the initial org admin (manages all workspaces, can add other org
+# admins). Required when enable_workspaces is true. No default - must be set.
+# initial_org_admin_email = "admin@example.com"
+
+# ============================================================================
+# Workspaces Feature
+# ============================================================================
+
+# Enable workspaces (team/project groupings with OAuth integrations:
+# Confluence, Jira, Outlook, Teams, SharePoint). Default: false.
+# enable_workspaces = false
+
+# ============================================================================
+# Integration Toggles
+# ============================================================================
+
+# Same as prd.tfvars.example -- see that file for the full set of
+# integration toggles (GitHub, Jira, Atlassian OAuth, Microsoft OAuth,
+# OIDC, etc.). They behave identically on the openai workspace.
+
+# ============================================================================
+# Bedrock Models (OpenAI frontier; Anthropic explicitly absent)
+# ============================================================================
+
+# Frontier-tier (chat synthesis, RAG answers, code generation, summary
+# pipelines). GPT-5.5 is the most capable OpenAI model on Bedrock at GA.
+# us-east-2 only at the time of this template -- verify regional
+# availability before changing aws_region above.
+#
+# IMPORTANT: At the time this template was written, the exact Bedrock
+# model ID strings for OpenAI GPT-5.5 / GPT-5.4 had not yet appeared in
+# `aws bedrock list-foundation-models --by-provider openai`. Verify the
+# current model IDs with:
+#   aws bedrock list-foundation-models --region us-east-2 \
+#     --by-provider openai \
+#     --query 'modelSummaries[].{id:modelId,name:modelName}' \
+#     --output table
+# and update the values below. The strings shown here are educated
+# guesses based on the AWS naming convention (us.openai.<model>:0 for
+# cross-region inference profiles); they MAY not be the exact GA IDs.
+bedrock_advanced_model_id  = "us.openai.gpt-5-5:0"           # VERIFY: GPT-5.5 frontier
+bedrock_basic_model_id     = "us.openai.gpt-5-4:0"           # VERIFY: GPT-5.4 cheaper tier
+
+# Embedding model: Titan stays. There is no OpenAI embedding model on
+# Bedrock at the time of this template, and Titan is AWS-native (not
+# Anthropic), so it satisfies a "no Anthropic" compliance posture.
+# Note per project_model_swappability: changing the embedding model is
+# architectural, not just a tfvars swap -- existing vectors are indexed
+# with this model's embeddings and cannot be re-ranked by a different
+# model without re-ingesting every document. Leave this as Titan unless
+# you are bootstrapping a brand-new workspace with zero ingested data.
+bedrock_embedding_model_id = "amazon.titan-embed-text-v2:0"
+
+# Cooldown between Bedrock API calls to avoid throttling on small accounts.
+# Default: true. Disable for enterprise accounts with high quotas.
+# enable_bedrock_cooldown = true
+
+# ============================================================================
+# Bedrock Reranking
+# ============================================================================
+
+# Cohere Rerank stays. Cohere is not Anthropic -- it satisfies a "no
+# Anthropic" compliance posture. Verify Cohere Rerank availability in
+# your chosen region:
+#   aws bedrock list-foundation-models --region us-east-2 \
+#     --by-provider cohere --query 'modelSummaries[?contains(modelId, `rerank`)].modelId'
+bedrock_rerank_enabled       = true
+bedrock_rerank_model_id      = "cohere.rerank-v3-5:0"
+bedrock_rerank_price_per_1k  = 2.00  # USD per 1,000 search queries
+rerank_max_fetch             = 90
+rerank_min_score             = 0.15
+
+# ============================================================================
+# Bedrock Model Pricing (USD per million tokens)
+# ============================================================================
+# Source: https://aws.amazon.com/bedrock/pricing/ (OpenAI section).
+# Update these if AWS adjusts pricing or you switch models.
+
+# GPT-5.5: input $5.50/1M, cached input $0.55/1M, output $33.00/1M.
+bedrock_advanced_input_price  = 5.50
+bedrock_advanced_output_price = 33.00
+
+# GPT-5.4: input $2.75/1M, cached input $0.275/1M, output $16.50/1M.
+bedrock_basic_input_price     = 2.75
+bedrock_basic_output_price    = 16.50
+
+# Max characters per document in RAG context.
+# rag_max_doc_chars = 3000
+
+# ============================================================================
+# Audit & Compliance
+# ============================================================================
+
+# Email address for AI refusal alert notifications.
+# audit_alert_email = "your-team@example.com"
+
+# ============================================================================
+# Analytics Cost Alerts
+# ============================================================================
+
+# Cost alerts default disabled; set thresholds to enable.
+# cost_alert_enabled               = false
+# cost_alert_email                 = "finops@example.com"
+# cost_alert_org_monthly_usd       = 0
+# cost_alert_workspace_monthly_usd = 0
+
+# ============================================================================
+# Chat UI Deployment
+# ============================================================================
+
+# deploy_ui             = false
+# ui_vpc_id             = "vpc-xxxxxxxx"
+# ui_private_subnet_ids = ["subnet-xxxxxxxx", "subnet-yyyyyyyy"]
+# ui_container_image    = "<account>.dkr.ecr.us-east-2.amazonaws.com/openai-outcome-ops-ai-assist-ui:latest"
+
+# ============================================================================
+# OIDC Authentication (Azure AD)
+# ============================================================================
+
+# domain = "example.com"
+# ui_subdomain = "outcomeops"  # default
+
+# ============================================================================
+# OutcomeOps License (mandatory for paid tiers)
+# ============================================================================
+
+# License layer ARN for the active region. The license validator Lambda
+# layer must be published in the same region as aws_region above.
+# outcomeops_license_layer_arn = "arn:aws:lambda:us-east-2:123456789012:layer:openai-outcomeops-license-validator-v2-0-0:1"
+
+# License layer ARN for the secondary region (HA only). Mirrors the
+# region constraint above.
+# outcomeops_license_layer_arn_secondary = "arn:aws:lambda:us-west-2:123456789012:layer:openai-outcomeops-license-validator-v2-0-0:1"
+
+# License server URL (override only for air-gapped enterprise deployments).
+# outcomeops_license_server_url = "https://license.example.com"
+
+# SSM parameter holding the customer's license key.
+# outcomeops_license_ssm_param = "/openai/outcome-ops-ai-assist/license/key"
+
+# ============================================================================
+# Tags
+# ============================================================================
+
+# tags = {
+#   "owner"       = "team-name"
+#   "environment" = "openai"
+#   "cost-center" = "engineering"
+# }
+
+# ============================================================================
+# Deploy notes for the openai workspace
+# ============================================================================
+#
+# 1. Bootstrap the terraform workspace:
+#      cd terraform
+#      terraform workspace new openai
+#      terraform workspace select openai
+#
+# 2. Verify OpenAI model access in your AWS account (Bedrock console >
+#    Model access > Request access for OpenAI GPT-5.5 and GPT-5.4).
+#    Without model access, every Bedrock call returns AccessDeniedException
+#    and the platform fails closed.
+#
+# 3. Build images for this environment (the env-suffixed ECR repos are
+#    created lazily by the build targets):
+#      ENVIRONMENT=openai make build-mcp-server-image
+#      ENVIRONMENT=openai make build-ui-image
+#      ENVIRONMENT=openai make build-all-layers
+#
+# 4. Apply:
+#      cp openai.tfvars.example openai.tfvars
+#      # Fill in customer-specific values: github_app_id, domain,
+#      # initial_org_admin_email, license_layer_arn, etc.
+#      terraform apply -var-file=openai.tfvars
+#
+# 5. Post-deploy:
+#      - Populate SSM SecureStrings (github private key, webhook secret,
+#        OAuth client secrets, license key) per the prd template's
+#        per-section instructions.
+#      - Verify chat answers via the live magic_link / ADR / require_auth
+#        gates from docs/HA.md and the audit-coverage gates from
+#        docs/audit-coverage.md.
