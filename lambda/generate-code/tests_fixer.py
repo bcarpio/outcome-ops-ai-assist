@@ -36,13 +36,9 @@ logger.setLevel(logging.INFO)
 ENV = os.environ.get("ENV", "dev")
 APP_NAME = os.environ.get("APP_NAME", "outcome-ops-ai-assist")
 
-# Bedrock client for Claude
-bedrock_config = Config(
-    connect_timeout=60,
-    read_timeout=300,
-    retries={'max_attempts': 2}
-)
-bedrock_client = boto3.client("bedrock-runtime", config=bedrock_config)
+# Shared model client (dispatches Converse / Mantle Responses per ADR-035).
+from shared.model_client import invoke as invoke_model
+
 lambda_client = boto3.client("lambda")
 
 CLAUDE_MODEL_ID = os.environ.get(
@@ -444,19 +440,19 @@ CRITICAL: Output the COMPLETE file content. Do NOT truncate, summarize, or use p
 Preserve ALL existing code and only modify what's needed to fix the failures."""
 
     try:
-        response = bedrock_client.converse(
-            modelId=CLAUDE_MODEL_ID,
+        resp = invoke_model(
+            model_id=CLAUDE_MODEL_ID,
             messages=[{"role": "user", "content": [{"text": prompt}]}],
-            system=[{"text": system_prompt}],
-            inferenceConfig={"temperature": 0.2, "maxTokens": 16000}
+            system=system_prompt,
+            temperature=0.2,
+            max_tokens=16000,
         )
 
-        usage = response.get("usage", {})
-        input_tokens = usage.get("inputTokens", 0)
-        output_tokens = usage.get("outputTokens", 0)
-        logger.info(f"[tests-fix] Claude tokens: {input_tokens} in, {output_tokens} out")
+        input_tokens = resp.usage.input_tokens
+        output_tokens = resp.usage.output_tokens
+        logger.info(f"[tests-fix] tokens: {input_tokens} in, {output_tokens} out")
 
-        response_text = response.get("output", {}).get("message", {}).get("content", [{}])[0].get("text", "")
+        response_text = resp.text
 
         if not response_text:
             logger.warning("[tests-fix] Claude returned empty response")

@@ -1,3 +1,27 @@
+
+# === Legacy dict -> unified Response adapter ===
+# Tests written before chunk 09 mocked the boto3 Converse-shaped dict
+# response. The fixer code now consumes unified Response objects from
+# shared.model_client.invoke. Wrap legacy dicts so they expose the new
+# attribute surface (resp.text, resp.usage.input_tokens, etc.) without
+# rewriting every fixture.
+from types import SimpleNamespace
+from shared.model_client_types import StopReason
+
+class _LegacyDictResponse:
+    def __init__(self, d):
+        content = d.get("output", {}).get("message", {}).get("content", [])
+        self.text = content[0].get("text", "") if content else ""
+        self.content_blocks = [{"text": self.text}] if self.text else []
+        usage = d.get("usage", {})
+        self.usage = SimpleNamespace(
+            input_tokens=usage.get("inputTokens", 0),
+            output_tokens=usage.get("outputTokens", 0),
+        )
+        self.stop_reason = StopReason.END_TURN
+        self.tool_calls = None
+        self.raw = d
+
 """
 Unit tests for adr_fixer module.
 
@@ -297,10 +321,10 @@ class TestAnalyzeAndGenerateAdr:
         defaults.update(overrides)
         return defaults
 
-    @patch.object(adr_fixer, 'bedrock_client')
-    def test_generate_adr_success(self, mock_bedrock):
+    @patch.object(adr_fixer, 'invoke_model')
+    def test_generate_adr_success(self, mock_invoke):
         """Test: Successfully generate ADR."""
-        mock_bedrock.converse.return_value = {
+        mock_invoke.return_value = _LegacyDictResponse({
             "output": {
                 "message": {
                     "content": [{"text": json.dumps({
@@ -311,7 +335,7 @@ class TestAnalyzeAndGenerateAdr:
                 }
             },
             "usage": {"inputTokens": 100, "outputTokens": 200}
-        }
+        })
 
         categories = self._make_full_categories(new_lambdas=["process-events"])
         result = analyze_and_generate_adr(
@@ -327,10 +351,10 @@ class TestAnalyzeAndGenerateAdr:
         assert result["filename"] == "ADR-014-new-lambda-pattern.md"
         assert "ADR-014" in result["content"]
 
-    @patch.object(adr_fixer, 'bedrock_client')
-    def test_generate_adr_not_needed(self, mock_bedrock):
+    @patch.object(adr_fixer, 'invoke_model')
+    def test_generate_adr_not_needed(self, mock_invoke):
         """Test: Claude determines no ADR needed."""
-        mock_bedrock.converse.return_value = {
+        mock_invoke.return_value = _LegacyDictResponse({
             "output": {
                 "message": {
                     "content": [{"text": json.dumps({
@@ -340,7 +364,7 @@ class TestAnalyzeAndGenerateAdr:
                 }
             },
             "usage": {"inputTokens": 100, "outputTokens": 50}
-        }
+        })
 
         categories = self._make_full_categories(modified_lambdas=["hello"])
         result = analyze_and_generate_adr(
@@ -354,8 +378,8 @@ class TestAnalyzeAndGenerateAdr:
 
         assert result is None
 
-    @patch.object(adr_fixer, 'bedrock_client')
-    def test_generate_adr_no_changes(self, mock_bedrock):
+    @patch.object(adr_fixer, 'invoke_model')
+    def test_generate_adr_no_changes(self, mock_invoke):
         """Test: No architectural changes returns None without calling Claude."""
         categories = {
             "new_lambdas": [],
@@ -379,12 +403,12 @@ class TestAnalyzeAndGenerateAdr:
         )
 
         assert result is None
-        mock_bedrock.converse.assert_not_called()
+        mock_invoke.assert_not_called()
 
-    @patch.object(adr_fixer, 'bedrock_client')
-    def test_generate_adr_handles_error(self, mock_bedrock):
+    @patch.object(adr_fixer, 'invoke_model')
+    def test_generate_adr_handles_error(self, mock_invoke):
         """Test: Handle Claude API error."""
-        mock_bedrock.converse.side_effect = Exception("API error")
+        mock_invoke.side_effect = Exception("API error")
 
         categories = self._make_full_categories(new_lambdas=["test"])
         result = analyze_and_generate_adr(

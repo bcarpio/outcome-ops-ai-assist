@@ -1,7 +1,13 @@
 """
-Bedrock client for Claude API invocations.
+generate-code-local facade over shared.model_client.
 
-Handles communication with Claude via AWS Bedrock.
+Historically constructed its own bedrock-runtime client and called
+converse directly. Now routes through shared.model_client.invoke so a
+tfvars swap of BEDROCK_ADVANCED_MODEL_ID picks up Converse or Mantle
+Responses-API per ADR-035 without per-Lambda code changes. The
+ClaudeResponse return type and the retry semantics are preserved so
+adr_fixer / tests_fixer / readme_fixer / step-execution callers don't
+need to change.
 """
 
 import json
@@ -11,8 +17,6 @@ import sys
 import time
 from typing import Dict, Any
 
-import boto3
-from botocore.config import Config
 from botocore.exceptions import ClientError
 
 from models import ClaudeResponse, BedrockUsage
@@ -20,31 +24,22 @@ from models import ClaudeResponse, BedrockUsage
 # Add shared module to path for Lambda deployment
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared.audit import log_audit_entry
+from shared.model_client import invoke as invoke_model
 
 logger = logging.getLogger()
 
-# Configure client with longer timeouts for code generation
-# Code generation can take 60-120 seconds, sometimes MUCH longer (10+ min) for complex steps
-# Lambda timeout is 900s (15 min), set read timeout to 850s to allow maximum time
-bedrock_config = Config(
-    connect_timeout=60,      # 60 seconds to establish connection
-    read_timeout=850,        # ~14 minutes for response (Claude can be very slow, allow near-max time)
-    retries={'max_attempts': 0}  # We handle retries ourselves
-)
-
-# Initialize Bedrock client (once per container)
-bedrock_client = boto3.client("bedrock-runtime", config=bedrock_config)
-
-# Claude model configuration
+# Model selection (configurable via env var; tfvars-managed)
 CLAUDE_MODEL_ID = os.environ.get(
     "BEDROCK_ADVANCED_MODEL_ID", "us.anthropic.claude-sonnet-4-6"
-)  # Cross-region inference profile (required by Bedrock)
+)
 MAX_RETRIES = 6  # Increased for Bedrock throttling
 BASE_BACKOFF_SECONDS = 5  # Aggressive retry window per project guidance
 
 
 # ============================================================================
-# Claude Invocation
+# Model invocation (Claude name retained for compatibility; the actual
+# backend is whichever shared.model_client dispatches to based on the
+# configured model ID).
 # ============================================================================
 
 
@@ -55,75 +50,57 @@ def invoke_claude(
     system_prompt: str = None
 ) -> ClaudeResponse:
     """
-    Invoke Claude via Bedrock Converse API.
+    Invoke the configured model via shared.model_client with retry logic.
+
+    Despite the name, this dispatches to whichever backend matches
+    CLAUDE_MODEL_ID (BEDROCK_ADVANCED_MODEL_ID env): Converse for
+    anthropic/meta/nova/gpt-oss; Mantle Responses for openai.gpt-5*/codex
+    per ADR-035.
 
     Args:
-        prompt: User prompt to send to Claude
-        temperature: Sampling temperature (0.0-1.0, default 0.3 for factual responses)
+        prompt: User prompt to send to the model
+        temperature: Sampling temperature (0.0-1.0, default 0.3 for
+            factual responses)
         max_tokens: Maximum tokens to generate (default 4000)
         system_prompt: Optional system prompt
 
     Returns:
-        ClaudeResponse: Claude's response with usage stats
+        ClaudeResponse: response with usage stats (legacy type name; the
+        content is the actual model's response, not necessarily Claude's)
 
     Raises:
-        Exception: If Claude invocation fails after retries
+        Exception: If invocation fails after retries
     """
-    logger.info(f"[bedrock] Invoking Claude with {len(prompt)} chars")
+    logger.info(f"[bedrock] Invoking {CLAUDE_MODEL_ID} with {len(prompt)} chars")
 
-    messages = [
-        {
-            "role": "user",
-            "content": [{"text": prompt}]
-        }
-    ]
-
-    inference_config = {
-        "temperature": temperature,
-        "maxTokens": max_tokens,
-    }
-
-    # Build request
-    request_params = {
-        "modelId": CLAUDE_MODEL_ID,
-        "messages": messages,
-        "inferenceConfig": inference_config,
-    }
-
-    if system_prompt:
-        request_params["system"] = [{"text": system_prompt}]
-
-    # Retry logic with exponential backoff
     for attempt in range(MAX_RETRIES):
         try:
             bedrock_start = time.time()
-            response = bedrock_client.converse(**request_params)
+            resp = invoke_model(
+                model_id=CLAUDE_MODEL_ID,
+                messages=[{"role": "user", "content": [{"text": prompt}]}],
+                system=system_prompt if system_prompt else None,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
             bedrock_duration_ms = int((time.time() - bedrock_start) * 1000)
 
-            # Extract response text
-            output_message = response.get("output", {}).get("message", {})
-            content_blocks = output_message.get("content", [])
+            if not resp.text:
+                raise Exception(
+                    f"No text in {CLAUDE_MODEL_ID} response "
+                    f"(stop_reason={resp.stop_reason})"
+                )
 
-            if not content_blocks:
-                raise Exception("No content in Claude response")
-
-            response_text = content_blocks[0].get("text", "")
-
-            # Extract usage stats
-            usage = response.get("usage", {})
             bedrock_usage = BedrockUsage(
-                inputTokens=usage.get("inputTokens", 0),
-                outputTokens=usage.get("outputTokens", 0)
+                inputTokens=resp.usage.input_tokens,
+                outputTokens=resp.usage.output_tokens,
             )
 
-            # Extract stop reason
-            stop_reason = response.get("stopReason", "end_turn")
-
             logger.info(
-                f"[bedrock] Claude response: {len(response_text)} chars, "
+                f"[bedrock] Response: {len(resp.text)} chars, "
                 f"{bedrock_usage.inputTokens} input tokens, "
                 f"{bedrock_usage.outputTokens} output tokens, "
-                f"stop_reason={stop_reason}"
+                f"stop_reason={resp.stop_reason.value}"
             )
 
             log_audit_entry(
@@ -131,16 +108,16 @@ def invoke_claude(
                 lambda_name="generate-code",
                 model_id=CLAUDE_MODEL_ID,
                 input_text=prompt,
-                output_text=response_text,
+                output_text=resp.text,
                 input_tokens=bedrock_usage.inputTokens,
                 output_tokens=bedrock_usage.outputTokens,
                 duration_ms=bedrock_duration_ms,
             )
 
             return ClaudeResponse(
-                text=response_text,
+                text=resp.text,
                 usage=bedrock_usage,
-                stop_reason=stop_reason
+                stop_reason=resp.stop_reason.value,
             )
 
         except ClientError as e:
@@ -159,10 +136,10 @@ def invoke_claude(
                 raise
 
         except Exception as e:
-            logger.error(f"[bedrock] Unexpected error invoking Claude: {e}")
+            logger.error(f"[bedrock] Unexpected error invoking model: {e}")
             raise
 
-    raise Exception(f"Failed to invoke Claude after {MAX_RETRIES} retries")
+    raise Exception(f"Failed to invoke {CLAUDE_MODEL_ID} after {MAX_RETRIES} retries")
 
 
 # ============================================================================

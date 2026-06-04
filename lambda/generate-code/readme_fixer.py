@@ -36,13 +36,9 @@ logger.setLevel(logging.INFO)
 ENV = os.environ.get("ENV", "dev")
 APP_NAME = os.environ.get("APP_NAME", "outcome-ops-ai-assist")
 
-# Bedrock client for Claude
-bedrock_config = Config(
-    connect_timeout=60,
-    read_timeout=300,
-    retries={'max_attempts': 2}
-)
-bedrock_client = boto3.client("bedrock-runtime", config=bedrock_config)
+# Shared model client (dispatches Converse / Mantle Responses per ADR-035).
+from shared.model_client import invoke as invoke_model
+
 lambda_client = boto3.client("lambda")
 
 CLAUDE_MODEL_ID = os.environ.get(
@@ -221,19 +217,19 @@ Rules:
 - Output raw markdown, no code fences around the entire output"""
 
     try:
-        response = bedrock_client.converse(
-            modelId=CLAUDE_MODEL_ID,
+        resp = invoke_model(
+            model_id=CLAUDE_MODEL_ID,
             messages=[{"role": "user", "content": [{"text": prompt}]}],
-            system=[{"text": system_prompt}],
-            inferenceConfig={"temperature": 0.2, "maxTokens": 8000}
+            system=system_prompt,
+            temperature=0.2,
+            max_tokens=8000,
         )
 
-        usage = response.get("usage", {})
-        input_tokens = usage.get("inputTokens", 0)
-        output_tokens = usage.get("outputTokens", 0)
-        logger.info(f"[readme-fix] Claude tokens: {input_tokens} in, {output_tokens} out")
+        input_tokens = resp.usage.input_tokens
+        output_tokens = resp.usage.output_tokens
+        logger.info(f"[readme-fix] tokens: {input_tokens} in, {output_tokens} out")
 
-        updated_readme = response.get("output", {}).get("message", {}).get("content", [{}])[0].get("text", "")
+        updated_readme = resp.text
 
         if not updated_readme or len(updated_readme) < 50:
             logger.warning("[readme-fix] Claude returned empty or very short content")

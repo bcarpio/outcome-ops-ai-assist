@@ -1,3 +1,27 @@
+
+# === Legacy dict -> unified Response adapter ===
+# Tests written before chunk 09 mocked the boto3 Converse-shaped dict
+# response. The fixer code now consumes unified Response objects from
+# shared.model_client.invoke. Wrap legacy dicts so they expose the new
+# attribute surface (resp.text, resp.usage.input_tokens, etc.) without
+# rewriting every fixture.
+from types import SimpleNamespace
+from shared.model_client_types import StopReason
+
+class _LegacyDictResponse:
+    def __init__(self, d):
+        content = d.get("output", {}).get("message", {}).get("content", [])
+        self.text = content[0].get("text", "") if content else ""
+        self.content_blocks = [{"text": self.text}] if self.text else []
+        usage = d.get("usage", {})
+        self.usage = SimpleNamespace(
+            input_tokens=usage.get("inputTokens", 0),
+            output_tokens=usage.get("outputTokens", 0),
+        )
+        self.stop_reason = StopReason.END_TURN
+        self.tool_calls = None
+        self.raw = d
+
 """
 Unit tests for readme_fixer module.
 
@@ -280,17 +304,17 @@ class TestQueryKbForReadmePatterns:
 class TestGenerateReadmeUpdate:
     """Test README update generation with Claude."""
 
-    @patch.object(readme_fixer, 'bedrock_client')
-    def test_generate_readme_success(self, mock_bedrock):
+    @patch.object(readme_fixer, 'invoke_model')
+    def test_generate_readme_success(self, mock_invoke):
         """Test: Successfully generate README update."""
-        mock_bedrock.converse.return_value = {
+        mock_invoke.return_value = _LegacyDictResponse({
             "output": {
                 "message": {
                     "content": [{"text": "# Updated README\n\n## Lambda Functions\n- hello: Handler function"}]
                 }
             },
             "usage": {"inputTokens": 100, "outputTokens": 200}
-        }
+        })
 
         result = generate_readme_update(
             current_readme="# README\n\nOld content",
@@ -302,20 +326,20 @@ class TestGenerateReadmeUpdate:
 
         assert result is not None
         assert "Updated README" in result
-        mock_bedrock.converse.assert_called_once()
+        mock_invoke.assert_called_once()
 
-    @patch.object(readme_fixer, 'bedrock_client')
-    def test_generate_readme_strips_code_fences(self, mock_bedrock):
+    @patch.object(readme_fixer, 'invoke_model')
+    def test_generate_readme_strips_code_fences(self, mock_invoke):
         """Test: Strips markdown code fences from response."""
         # Content must be > 50 chars after stripping
-        mock_bedrock.converse.return_value = {
+        mock_invoke.return_value = _LegacyDictResponse({
             "output": {
                 "message": {
                     "content": [{"text": "```markdown\n# README\n\nThis is a longer content section that will pass the length check.\n\n## Lambda Functions\n- hello: Handler function\n```"}]
                 }
             },
             "usage": {"inputTokens": 100, "outputTokens": 50}
-        }
+        })
 
         result = generate_readme_update(
             current_readme="# Old",
@@ -329,17 +353,17 @@ class TestGenerateReadmeUpdate:
         assert "```markdown" not in result
         assert not result.endswith("```")
 
-    @patch.object(readme_fixer, 'bedrock_client')
-    def test_generate_readme_handles_empty_response(self, mock_bedrock):
+    @patch.object(readme_fixer, 'invoke_model')
+    def test_generate_readme_handles_empty_response(self, mock_invoke):
         """Test: Handle empty Claude response."""
-        mock_bedrock.converse.return_value = {
+        mock_invoke.return_value = _LegacyDictResponse({
             "output": {
                 "message": {
                     "content": [{"text": ""}]
                 }
             },
             "usage": {"inputTokens": 100, "outputTokens": 0}
-        }
+        })
 
         result = generate_readme_update(
             current_readme="# README",
@@ -351,10 +375,10 @@ class TestGenerateReadmeUpdate:
 
         assert result is None
 
-    @patch.object(readme_fixer, 'bedrock_client')
-    def test_generate_readme_handles_error(self, mock_bedrock):
+    @patch.object(readme_fixer, 'invoke_model')
+    def test_generate_readme_handles_error(self, mock_invoke):
         """Test: Handle Claude API error."""
-        mock_bedrock.converse.side_effect = Exception("API error")
+        mock_invoke.side_effect = Exception("API error")
 
         result = generate_readme_update(
             current_readme="# README",

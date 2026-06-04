@@ -1,3 +1,27 @@
+
+# === Legacy dict -> unified Response adapter ===
+# Tests written before chunk 09 mocked the boto3 Converse-shaped dict
+# response. The fixer code now consumes unified Response objects from
+# shared.model_client.invoke. Wrap legacy dicts so they expose the new
+# attribute surface (resp.text, resp.usage.input_tokens, etc.) without
+# rewriting every fixture.
+from types import SimpleNamespace
+from shared.model_client_types import StopReason
+
+class _LegacyDictResponse:
+    def __init__(self, d):
+        content = d.get("output", {}).get("message", {}).get("content", [])
+        self.text = content[0].get("text", "") if content else ""
+        self.content_blocks = [{"text": self.text}] if self.text else []
+        usage = d.get("usage", {})
+        self.usage = SimpleNamespace(
+            input_tokens=usage.get("inputTokens", 0),
+            output_tokens=usage.get("outputTokens", 0),
+        )
+        self.stop_reason = StopReason.END_TURN
+        self.tool_calls = None
+        self.raw = d
+
 """
 Unit tests for the tests_fixer module.
 """
@@ -465,10 +489,10 @@ class TestQueryKbForTestPatterns:
 class TestGenerateTestFixes:
     """Tests for generate_test_fixes function."""
 
-    @patch.object(tests_fixer_module, "bedrock_client")
-    def test_generates_fixes_successfully(self, mock_bedrock):
+    @patch.object(tests_fixer_module, "invoke_model")
+    def test_generates_fixes_successfully(self, mock_invoke):
         """Successfully generate test fixes."""
-        mock_bedrock.converse.return_value = {
+        mock_invoke.return_value = _LegacyDictResponse({
             "output": {
                 "message": {
                     "content": [{
@@ -480,7 +504,7 @@ def test_fixed():
                 }
             },
             "usage": {"inputTokens": 100, "outputTokens": 50}
-        }
+        })
 
         result = tests_fixer_module.generate_test_fixes(
             test_analysis="Test is failing",
@@ -492,17 +516,17 @@ def test_fixed():
         assert "lambda/tests/unit/test_example.py" in result
         assert "def test_fixed():" in result["lambda/tests/unit/test_example.py"]
 
-    @patch.object(tests_fixer_module, "bedrock_client")
-    def test_handles_empty_response(self, mock_bedrock):
+    @patch.object(tests_fixer_module, "invoke_model")
+    def test_handles_empty_response(self, mock_invoke):
         """Handle empty Claude response."""
-        mock_bedrock.converse.return_value = {
+        mock_invoke.return_value = _LegacyDictResponse({
             "output": {
                 "message": {
                     "content": [{"text": ""}]
                 }
             },
             "usage": {"inputTokens": 100, "outputTokens": 0}
-        }
+        })
 
         result = tests_fixer_module.generate_test_fixes(
             test_analysis="Test is failing",
@@ -512,10 +536,10 @@ def test_fixed():
 
         assert result is None
 
-    @patch.object(tests_fixer_module, "bedrock_client")
-    def test_handles_bedrock_error(self, mock_bedrock):
+    @patch.object(tests_fixer_module, "invoke_model")
+    def test_handles_bedrock_error(self, mock_invoke):
         """Handle Bedrock invocation error."""
-        mock_bedrock.converse.side_effect = Exception("Bedrock error")
+        mock_invoke.side_effect = Exception("Bedrock error")
 
         result = tests_fixer_module.generate_test_fixes(
             test_analysis="Test is failing",
@@ -525,10 +549,10 @@ def test_fixed():
 
         assert result is None
 
-    @patch.object(tests_fixer_module, "bedrock_client")
-    def test_includes_user_guidance(self, mock_bedrock):
+    @patch.object(tests_fixer_module, "invoke_model")
+    def test_includes_user_guidance(self, mock_invoke):
         """Include user guidance in prompt."""
-        mock_bedrock.converse.return_value = {
+        mock_invoke.return_value = _LegacyDictResponse({
             "output": {
                 "message": {
                     "content": [{
@@ -539,7 +563,7 @@ fixed
                 }
             },
             "usage": {"inputTokens": 100, "outputTokens": 50}
-        }
+        })
 
         result = tests_fixer_module.generate_test_fixes(
             test_analysis="Analysis",
@@ -549,7 +573,7 @@ fixed
         )
 
         # Verify guidance was passed (check the call args)
-        call_args = mock_bedrock.converse.call_args
+        call_args = mock_invoke.call_args
         prompt = call_args.kwargs["messages"][0]["content"][0]["text"]
         assert "User Instructions" in prompt
         assert "Decimal" in prompt
@@ -1079,10 +1103,10 @@ Analysis without separator.
 class TestGenerateTestFixesWithContext:
     """Tests for generate_test_fixes with various contexts."""
 
-    @patch.object(tests_fixer_module, "bedrock_client")
-    def test_includes_kb_patterns_in_prompt(self, mock_bedrock):
+    @patch.object(tests_fixer_module, "invoke_model")
+    def test_includes_kb_patterns_in_prompt(self, mock_invoke):
         """Include KB patterns in prompt."""
-        mock_bedrock.converse.return_value = {
+        mock_invoke.return_value = _LegacyDictResponse({
             "output": {
                 "message": {
                     "content": [{
@@ -1093,7 +1117,7 @@ fixed
                 }
             },
             "usage": {"inputTokens": 100, "outputTokens": 50}
-        }
+        })
 
         tests_fixer_module.generate_test_fixes(
             test_analysis="Analysis",
@@ -1101,15 +1125,15 @@ fixed
             kb_patterns="Use pytest fixtures for mocking"
         )
 
-        call_args = mock_bedrock.converse.call_args
+        call_args = mock_invoke.call_args
         prompt = call_args.kwargs["messages"][0]["content"][0]["text"]
         assert "Testing Standards" in prompt
         assert "pytest fixtures" in prompt
 
-    @patch.object(tests_fixer_module, "bedrock_client")
-    def test_handles_multiple_files(self, mock_bedrock):
+    @patch.object(tests_fixer_module, "invoke_model")
+    def test_handles_multiple_files(self, mock_invoke):
         """Handle generating fixes for multiple files."""
-        mock_bedrock.converse.return_value = {
+        mock_invoke.return_value = _LegacyDictResponse({
             "output": {
                 "message": {
                     "content": [{
@@ -1122,7 +1146,7 @@ def test_two(): pass
                 }
             },
             "usage": {"inputTokens": 100, "outputTokens": 50}
-        }
+        })
 
         result = tests_fixer_module.generate_test_fixes(
             test_analysis="Analysis",
