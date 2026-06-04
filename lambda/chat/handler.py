@@ -192,6 +192,9 @@ def _get_s3vectors_client():
 
 
 def _get_bedrock_client():
+    """ADR-035 chunk 12: this client is embeddings-only (Titan via
+    invoke_model at ~line 1219). LLM-completion streaming was migrated
+    to shared.model_client.invoke_stream in chunk 11."""
     global _bedrock_client
     if _bedrock_client is None:
         _bedrock_client = boto3.client("bedrock-runtime", config=bedrock_config)
@@ -1825,7 +1828,13 @@ def generate_answer_stream(
     Empty string when no graph block is present (pattern / dependency
     questions, or when the router skipped the augmentation path).
     """
-    bedrock = _get_bedrock_client()
+    # NOTE (ADR-035 chunk 12): the legacy `bedrock = _get_bedrock_client()`
+    # construction was removed here. The streaming loop below routes
+    # through shared.model_client.invoke_stream (aliased as
+    # model_invoke_stream at the module top); the only remaining
+    # bedrock-runtime client in this Lambda is the lazy one in
+    # _get_bedrock_client() which is still consumed by the Titan
+    # embedding call at line ~1219.
 
     # Build message history
     messages = []

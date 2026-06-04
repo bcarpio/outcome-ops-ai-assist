@@ -72,6 +72,13 @@ bedrock_config = Config(
 
 dynamodb_client = boto3.client("dynamodb")
 dynamodb_resource = boto3.resource("dynamodb")
+# ADR-035 chunk 12: bedrock_client is now EMBEDDINGS-ONLY (Titan via
+# invoke_model). LLM completions go through shared.model_client.invoke
+# (imported above). The 300s read timeout on bedrock_config is no
+# longer load-bearing -- it was sized for Claude's 2-3 minute summary
+# responses, which now route through shared.model_client's own client.
+# Titan embeddings return in <1s. Kept for now; can tighten in a
+# follow-up if cold-start matters.
 bedrock_client = boto3.client("bedrock-runtime", config=bedrock_config)
 ssm_client = boto3.client("ssm")
 s3vectors_client = boto3.client("s3vectors")

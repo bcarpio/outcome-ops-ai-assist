@@ -64,6 +64,9 @@ KB_BUCKET = os.environ.get("KB_BUCKET")
 # AWS clients
 s3_client = boto3.client("s3")
 ssm_client = boto3.client("ssm")
+# ADR-035: bedrock_client is embeddings-only here (Titan via
+# invoke_model at line ~538). process-documents has no LLM-completion
+# path; if one is added, use shared.model_client.invoke per ADR-035.
 bedrock_client = boto3.client("bedrock-runtime")
 s3vectors_client = boto3.client("s3vectors")
 sts_client = boto3.client("sts")

@@ -110,6 +110,10 @@ def _get_s3vectors_client():
 
 
 def _get_bedrock_client():
+    """ADR-035: this client is embeddings-only on Titan (invoke_model
+    at line ~708). The mcp-server doesn't make LLM-completion calls
+    itself; downstream consumers (chat synthesis, codegen, etc.) route
+    through shared.model_client per ADR-035."""
     global _bedrock_client
     if _bedrock_client is None:
         _bedrock_client = boto3.client("bedrock-runtime", region_name=AWS_REGION)

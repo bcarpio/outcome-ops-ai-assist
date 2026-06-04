@@ -214,46 +214,13 @@ def _router_model_id() -> str:
     )
 
 
-# Bedrock client cache + injection hooks. Same pattern as
-# shared.symbol_graph_reader: lazy creation, test injection bypasses the
-# cross-suite sys.modules contamination.
-_bedrock_client = None
-_test_bedrock_override = None
-
-
-def _bedrock():
-    global _bedrock_client
-    if _test_bedrock_override is not None:
-        return _test_bedrock_override
-    if _bedrock_client is None:
-        # Match the chat handler's bedrock config (300s read for
-        # streaming use) so cold-start path doesn't allocate a second
-        # config object. Router calls themselves are tiny (~<1s) but
-        # the client is shared with the chat handler at runtime.
-        _bedrock_client = boto3.client(
-            "bedrock-runtime",
-            config=Config(
-                read_timeout=30,
-                connect_timeout=5,
-                retries={"max_attempts": 3},
-            ),
-        )
-    return _bedrock_client
-
-
-def _set_bedrock_client_for_tests(client) -> None:
-    """Test hook — inject a stub Bedrock client."""
-
-    global _test_bedrock_override
-    _test_bedrock_override = client
-
-
-def _reset_clients_for_tests() -> None:
-    """Test hook — clear cached client + override."""
-
-    global _bedrock_client, _test_bedrock_override
-    _bedrock_client = None
-    _test_bedrock_override = None
+# NOTE (ADR-035 chunk 12): the legacy boto3 bedrock-runtime client
+# construction + test-injection hooks (_bedrock / _bedrock_client /
+# _test_bedrock_override / _set_bedrock_client_for_tests /
+# _reset_clients_for_tests) were removed here. The router now calls
+# shared.model_client.invoke (aliased as the module-level `invoke_model`
+# above) which has its own backend dispatch and its own test patch
+# surface (tests do `patch.object(chat.router, "invoke_model", ...)`).
 
 
 # ---------------------------------------------------------------------------

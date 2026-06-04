@@ -92,6 +92,10 @@ bedrock_config = Config(
 
 dynamodb_client = boto3.client("dynamodb")
 dynamodb_resource = boto3.resource("dynamodb")
+# ADR-035 chunk 12: bedrock_client is EMBEDDINGS-ONLY (Titan via
+# invoke_model). The architectural-summary generation routes through
+# shared.model_client.invoke (imported above). The legacy 300s read
+# timeout on bedrock_config is no longer load-bearing here.
 bedrock_client = boto3.client("bedrock-runtime", config=bedrock_config)
 s3_client = boto3.client("s3")
 sqs_client = boto3.client("sqs")

@@ -60,6 +60,11 @@ lambda_config = Config(
 lambda_client = boto3.client("lambda", config=lambda_config)
 ssm_client = boto3.client("ssm")
 s3vectors_client = boto3.client("s3vectors")
+# ADR-035: bedrock_client is embeddings-only here (Titan via
+# invoke_model at line ~114). LLM-completion synthesis is delegated to
+# the ask-claude Lambda (which routes through shared.model_client per
+# chunk 08). bedrock_agent_runtime_client is for Bedrock Knowledge
+# Bases -- separate API, separate concern, also out-of-scope per ADR-035.
 bedrock_client = boto3.client("bedrock-runtime")
 bedrock_agent_runtime_client = boto3.client("bedrock-agent-runtime")
 
