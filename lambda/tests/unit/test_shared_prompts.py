@@ -843,11 +843,12 @@ class TestAggregateFooterBanPostMortem:
     with 56 direct call sites") after we banned the header. Same
     bug class, different location. The rule must forbid model-
     authored aggregates ANYWHERE in an answer that contains a
-    list/table, not just at the intro position. The whack-a-mole
-    ends because:
-      - The renderer emits a labeled COMPUTED_AGGREGATES block
-        (sanctioned quote-verbatim source).
-      - The prompt rule explicitly bans counts everywhere else.
+    list/table, not just at the intro position.
+
+    2026-06-04 follow-up: the labeled-aggregate scheme
+    (COMPUTED_AGGREGATES + qualifier) was removed because Haiku
+    stripped the qualifier even when present. The only sanctioned
+    count source now is `total_known` on a tool response.
     """
 
     def test_rule_bans_aggregates_everywhere_not_just_intro(self):
@@ -859,7 +860,8 @@ class TestAggregateFooterBanPostMortem:
         assert "footer" in body or '"total:' in body or "total:" in body
         # Must name the whack-a-mole dynamic: same bug surfaced again.
         assert "whack" in body or "same bug" in body or \
-            "surfaced as the same bug" in body or "twice" in body
+            "surfaced as the same bug" in body or "twice" in body or \
+            "three times" in body
 
     def test_rule_pins_the_56_footer_failure_case(self):
         """The 56 example is in the rule so a future prompt editor
@@ -871,15 +873,28 @@ class TestAggregateFooterBanPostMortem:
         # passes.
         assert "56" in LIST_COMPLETENESS_RULES
 
-    def test_rule_names_computed_aggregates_as_sanctioned_source(self):
-        """The renderer emits COMPUTED_AGGREGATES in the context; the
-        prompt rule must tell the model that block is one of the two
-        legal sources for a count (the other being total_known on
-        tool responses)."""
+    def test_rule_does_not_name_computed_aggregates_as_sanctioned_source(self):
+        """2026-06-04 follow-up: COMPUTED_AGGREGATES was removed from
+        the renderer because Haiku stripped the qualifier. The prompt
+        rule must no longer list it as a sanctioned source; total_known
+        on a tool response is the only remaining legal count source.
+        """
         from shared.prompts import LIST_COMPLETENESS_RULES
 
-        assert "COMPUTED_AGGREGATES" in LIST_COMPLETENESS_RULES
+        # total_known still load-bearing; this is the only sanctioned
+        # count source.
         assert "total_known" in LIST_COMPLETENESS_RULES
+        # COMPUTED_AGGREGATES must NOT appear as a sanctioned source.
+        # The rule may MENTION the prior approach in its history (the
+        # 2026-06-04 follow-up bullet), but must not present it as a
+        # legal quoteable.
+        body_lower = LIST_COMPLETENESS_RULES.lower()
+        # The "ONLY count you may state is total_known" wording is the
+        # contract.
+        assert (
+            "only count you may state is" in body_lower
+            or "only count you may state" in body_lower
+        ), "Rule must explicitly narrow sanctioned sources to total_known"
 
     def test_rule_explicitly_bans_filtered_subset_counts(self):
         """The 56 came from the model applying a heuristic filter

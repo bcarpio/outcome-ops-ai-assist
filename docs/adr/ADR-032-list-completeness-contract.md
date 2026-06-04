@@ -85,6 +85,88 @@ canonicals...` line so the LLM context carries the disclosure
 literally — the prompt rule binds it to honor that note rather than
 strip it.
 
+## 2026-06-04 follow-up: COMPUTED_AGGREGATES removed; the model never quotes aggregates
+
+The 2026-06-03 principled fix (`fb31a24`) added a labeled
+`COMPUTED_AGGREGATES` block to the renderer's `Symbol facts` output —
+two precise integers (`CANONICALS_RESOLVED`, `TOTAL_SITES_ACROSS_CANONICALS`)
+with a mandatory `"(raw graph counts; include test files)"` qualifier.
+The intent: give the model a sanctioned aggregate to quote verbatim
+with its label, so its only legal moves were "quote with label" or
+"omit." Heuristic prod-only subsets were forbidden because the
+renderer has no truth for them.
+
+That worked for ~24 hours.
+
+2026-06-04 prd runs against `app.retrieveit.ai` (40 canonicals, 94
+sites — 24 prod handlers + 16 test handlers) returned consistently:
+
+> "Based on the symbol graph, `require_auth` is defined in 40 distinct
+> Lambda handler modules and called at 94 direct call sites across the
+> workspace."
+
+Haiku at temp=0.1 quoted the integers (40, 94) but stripped the
+mandatory `"(includes test files)"` qualifier. That's a **half-violation**
+the rule was supposed to forbid but couldn't enforce from the model's
+side at this temperature. Two consecutive runs reproduced the bug
+near-identically; not sampling variance.
+
+### Decision (additive to the original 2026-06-02 decision)
+
+The renderer no longer emits `COMPUTED_AGGREGATES`. The
+`build_multi_canonical_facts_block` output ends with the rendered
+table of canonicals and sites, plus the staleness suffix. No aggregate
+number appears in the model's context at all.
+
+The prompt rule `LIST_COMPLETENESS_RULES` item 7 is tightened: **the
+only sanctioned count source is `total_known` on a tool response**.
+COMPUTED_AGGREGATES is removed as a sanctioned source. If the answer
+needs a headline number that doesn't come from `total_known`, the
+model omits the count entirely. A UI surface (stats tab, table caption
+rendered post-synthesis) can show the headline number — the model
+never authors it.
+
+This follows the same doctrine `fb31a24`'s commit message articulated
+("the model narrates; the renderer counts") more strictly: not just
+no model-authored aggregates, but no model-quotable aggregates either.
+The table — 24 rows for app.retrieveit.ai, each with a deterministic
+call-site count — conveys everything. A reader sums the column if
+they need a total.
+
+### Trade-off
+
+The labeled-aggregate scheme was a real attempt to give the model a
+correct answer to "how many." Removing it means the model can no
+longer state a workspace-wide count even when the renderer could
+compute one truthfully. The user has to either look at the table and
+sum, or ask a follow-up question that resolves to a tool call whose
+response carries `total_known`.
+
+The trade is acceptable because:
+
+1. The bug class (model strips qualifier, ships a number that looks
+   right but isn't fully grounded) is structurally closed, not
+   "narrowed."
+2. The information loss is small. Every row in the rendered table
+   already has its own call-site count. A user reading the table can
+   sum the column trivially. A downstream UI surface can compute the
+   headline number from the same per-canonical data without going
+   through the model.
+3. Three consecutive failed attempts (2026-06-02, 2026-06-03,
+   2026-06-04) to enforce qualifier-preservation at the prompt level
+   established that the model-side enforcement bound isn't tight
+   enough to clear it. The bug class outlasted three rounds of rule
+   tightening; the structural fix (don't expose the quotable number)
+   removes the failure mode entirely.
+
+### Pre-existing alternatives now closed
+
+The "Alternatives Considered" section below mentions a
+fully-doc-generated count. That option is now adopted (in degenerate
+form: zero docs, just the model's silence on counts). The original
+"emit a labeled aggregate the model can quote" alternative is
+ruled out by the three-round whack-a-mole.
+
 ## Consequences
 
 - Every list-returning tool's response envelope grows two additive

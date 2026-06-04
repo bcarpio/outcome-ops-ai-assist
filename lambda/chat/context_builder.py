@@ -311,42 +311,27 @@ def build_multi_canonical_facts_block(
             tag = f"  ({site.repo})" if site.repo else ""
             lines.append(f"- {anchor}{tag}")
 
-    # Deterministic labeled aggregates the model MAY quote verbatim
-    # (per ADR-032 + LIST_COMPLETENESS_RULES). These are the ONLY
-    # aggregate numbers the model is sanctioned to state for this
-    # answer. The labels are precise on purpose: the raw counts
-    # include test-file canonicals/sites, so the model can either
-    # quote them with the "(includes test files)" label verbatim
-    # OR omit the count entirely. The model is NOT allowed to
-    # author a prod-filtered subset count (e.g., "24 lambdas / 51
-    # call sites") because those filters are heuristic and the
-    # router has no truth for them.
+    # ADR-032 follow-on (2026-06-04): the "labeled aggregates the model
+    # may quote verbatim" approach (CANONICALS_RESOLVED + TOTAL_SITES_
+    # ACROSS_CANONICALS, with a precise "(includes test files)" label
+    # to quote alongside) was REMOVED here. Two consecutive prd Haiku
+    # runs on the same require_auth query confirmed the model strips
+    # the qualifier even when present -- quoting the raw integer ("40
+    # distinct Lambda handler modules", "94 direct call sites") without
+    # "(includes test files)". That's a half-violation the rule was
+    # supposed to forbid; the rule isn't enforceable from the model's
+    # side at temp=0.1.
     #
-    # This block exists to end a recurring whack-a-mole: the model
-    # kept inventing summary totals ("40 distinct definitions",
-    # "94 call sites", "56 direct call sites") because the only
-    # countable signal in its context was the rendered list. With
-    # labeled aggregates present, the prompt rule binds the model
-    # to quote-verbatim or omit -- no third option.
-    canonicals_count = len(per_canonical)
-    sites_total_raw = sum(len(r.sites) for _, _, r in per_canonical)
-    lines.append("")
-    lines.append(
-        "COMPUTED_AGGREGATES (raw graph counts; include test files):"
-    )
-    lines.append(
-        f"- CANONICALS_RESOLVED: {canonicals_count}"
-    )
-    lines.append(
-        f"- TOTAL_SITES_ACROSS_CANONICALS: {sites_total_raw}"
-    )
-    lines.append(
-        "These are the ONLY aggregate counts you may state in your "
-        "answer; quote one verbatim WITH its precise label or omit "
-        "the count entirely. Do NOT author your own prod-only or "
-        "filtered subset total -- those filters are heuristic and "
-        "any number you compute is unverifiable."
-    )
+    # The fix is structural per fb31a24's own doctrine ("the model
+    # narrates; the router/renderer counts"): do NOT inject any
+    # aggregate number into the model's context that it could quote.
+    # The table conveys everything -- N rows with deterministic call
+    # sites per row. The reader can sum the column. If a UI surface
+    # needs a headline number, the UI renders it from the same per_
+    # canonical / per-row data the table came from, AFTER model
+    # synthesis is complete.
+    #
+    # See ADR-032 §"2026-06-04 follow-up" for the trade-off discussion.
 
     # Use the worst-case staleness across canonicals so the model
     # surfaces the freshest-credible bound.

@@ -634,22 +634,23 @@ def test_augment_multi_canonical_runs_callers_per_canonical_and_merges(
     assert "distinct definitions" not in out["graph_block"], (
         f"Renderer regressed: 'distinct definitions' aggregate returned"
     )
-    # Deterministic labeled aggregates ARE emitted (the sanctioned
-    # quotable counts). Without these, the model has no honest way
-    # to state a count and reinvents one (the 2026-06-03 "56" footer
-    # whack-a-mole). With them, the prompt rule binds quote-verbatim
-    # or omit.
-    assert "COMPUTED_AGGREGATES" in out["graph_block"], (
-        "Renderer must emit COMPUTED_AGGREGATES block so the model "
-        "has sanctioned counts to quote verbatim (per ADR-032)."
+    # ADR-032 2026-06-04 follow-up: the labeled aggregates the model
+    # was previously allowed to quote (CANONICALS_RESOLVED, TOTAL_
+    # SITES_ACROSS_CANONICALS) were REMOVED from the renderer because
+    # prd Haiku consistently quoted the numbers but dropped the
+    # "(includes test files)" qualifier — a half-violation the rule
+    # couldn't enforce at temp=0.1. The new contract: no aggregate
+    # number reaches the model's context at all. The table conveys
+    # everything; the reader sums the column or a UI surface renders
+    # the headline number post-synthesis.
+    assert "COMPUTED_AGGREGATES" not in out["graph_block"], (
+        "Renderer must NOT emit COMPUTED_AGGREGATES per ADR-032 "
+        "2026-06-04 follow-up. The labeled-aggregate scheme was "
+        "removed after Haiku stripped the mandatory qualifier."
     )
-    # 2 canonicals seeded (auth + org-management) -> CANONICALS_RESOLVED=2
-    assert "CANONICALS_RESOLVED: 2" in out["graph_block"]
-    # 3 total sites across both canonicals -> TOTAL_SITES_ACROSS_CANONICALS=3
-    assert "TOTAL_SITES_ACROSS_CANONICALS: 3" in out["graph_block"]
-    # The block must label the counts as "raw graph counts; include
-    # test files" so the model can't drop the precision when quoting.
-    assert "include test files" in out["graph_block"]
+    assert "CANONICALS_RESOLVED" not in out["graph_block"]
+    assert "TOTAL_SITES_ACROSS_CANONICALS" not in out["graph_block"]
+    assert "include test files" not in out["graph_block"]
 
     # Telemetry — now reports callers, not definitions.
     assert out["retrievals_fired"] == ["graph"]

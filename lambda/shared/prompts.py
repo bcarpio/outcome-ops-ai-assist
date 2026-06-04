@@ -137,11 +137,19 @@ LINE_CITATION_GROUNDING_RULES = """When you are about to cite a code location as
 # This rule binds chat synthesis to honor those fields -- on
 # `complete: false` it must surface the truncation or refuse the
 # enumeration question, NEVER ship a confidently-incomplete answer.
-# The 2026-06-02 enumeration-question audit surfaced the silent-
-# truncation half: actual production call sites N, enumerated M<N,
-# headline "K" claimed where K reconciled with neither the data nor
-# reality; chat router was running on a clipped canonical set. Tightens
-# the anti-aggregate sub-rule of LINE_CITATION_GROUNDING_RULES item 6.
+#
+# 2026-06-04 follow-up: the "labeled COMPUTED_AGGREGATES block the
+# model may quote verbatim with its precise qualifier" approach was
+# REMOVED from the renderer. Live prd Haiku runs confirmed the model
+# strips the qualifier even when present, producing half-quotes like
+# "40 distinct Lambda handler modules" (drops the "includes test
+# files" label) -- a violation the rule was supposed to forbid but
+# couldn't enforce at temp=0.1. The structural fix per fb31a24's
+# own doctrine ("model narrates; renderer counts") is: do not inject
+# any aggregate number into the model's context. Only `total_known`
+# from a tool response remains as a sanctioned count source, because
+# tool-response fields are model-context-external and the rule binds
+# the model to quote them verbatim. See ADR-032 §"2026-06-04 follow-up".
 LIST_COMPLETENESS_RULES = """When you call any list-returning tool (find_callers, find_importers, find_implementers, find_definitions, find_symbol_by_name, list_workspace_documents, query_knowledge_base, or any tool that returns a list of items in its response):
 
 1. Read the `complete` field on the response. `complete: true` means the list contains every matching item known to the workspace at query time. `complete: false` means the list was clipped by a cap (the caller's `limit`, a reader default, a DDB pagination boundary).
@@ -162,19 +170,19 @@ LIST_COMPLETENESS_RULES = """When you call any list-returning tool (find_callers
    - CORRECT: "The list of lambdas calling require_auth was clipped at the lookup cap. I cannot give you the complete answer without re-querying; want me to widen the search?"
    - WRONG: "16 lambdas call require_auth: <enumeration> ... Total: 65 call sites." (silent clip + fabricated headline + no disclosure).
 
-7. AGGREGATE COUNTS ARE FORBIDDEN ANYWHERE IN AN ANSWER THAT RENDERS A LIST OR A TABLE -- this includes the intro sentence, any "Total:" footer, any "across the workspace" / "across all matches" / "in total" / "combined" clause, any inline aside, any table caption, any per-section summary that rolls up multiple sections. The model narrates; the router/renderer counts. The model does not author aggregates.
+7. AGGREGATE COUNTS ARE FORBIDDEN ANYWHERE IN AN ANSWER THAT RENDERS A LIST OR A TABLE -- this includes the intro sentence, any "Total:" footer, any "across the workspace" / "across all matches" / "in total" / "combined" clause, any inline aside, any table caption, any per-section summary that rolls up multiple sections. The model narrates; the renderer counts. The model does not author aggregates.
 
-   The ONLY counts you may state are:
-   (a) A `total_known` field value from a list-returning tool response, quoted with its exact integer.
-   (b) A COMPUTED_AGGREGATES line emitted by the renderer in your context (e.g., `CANONICALS_RESOLVED: N`, `TOTAL_SITES_ACROSS_CANONICALS: M`), quoted with both the precise label AND the exact integer.
+   The ONLY count you may state is:
+   - A `total_known` field value from a list-returning tool response, quoted with its exact integer.
 
-   If neither (a) nor (b) carries the count you want to state, OMIT the count. Do not write `len(rendered_table)`. Do not write `sum(per_section_counts)`. Do not estimate. Do not write "approximately." Do not write "around N." Do not write a count derived from any filter you applied yourself (production-only, excluding tests, only handler.py files, etc.) -- those filters are heuristic and any number you produce is unverifiable.
+   If `total_known` does not carry the count you want to state, OMIT the count. Do not write `len(rendered_table)`. Do not write `sum(per_section_counts)`. Do not estimate. Do not write "approximately." Do not write "around N." Do not write a count derived from any filter you applied yourself (production-only, excluding tests, only handler.py files, etc.) -- those filters are heuristic and any number you produce is unverifiable.
 
-   This rule has surfaced as the same bug twice (2026-06-02 / 2026-06-03):
+   This rule has surfaced as the same bug three times (2026-06-02 / 2026-06-03 / 2026-06-04):
    - "Based on the symbol graph, 40 distinct definitions of X exist with 94 direct call sites total" (header position, fabricated labels + wrong numbers).
    - "Total: 24 distinct Lambda functions with 56 direct call sites across the workspace" (footer position, freshly invented "56" matched nothing -- not the table's own column-sum of 51, not the raw total of 94, not anything).
+   - "Based on the symbol graph, require_auth is defined in 40 distinct Lambda handler modules and called at 94 direct call sites across the workspace." (2026-06-04: model HALF-quoted the labeled-aggregate block -- numbers yes, "(includes test files)" qualifier no. Confirmed the labeled-aggregate scheme was not enforceable at the model side, so it was removed from the renderer entirely; this rule was tightened in that same change.)
 
-   The fix is the same in both positions: you do not produce the number. If the user wants a count after seeing the list, they will ask explicitly, and the answer to "how many" must come from a tool field or the COMPUTED_AGGREGATES block -- never from re-reading what you just wrote.
+   The fix is the same in all three positions: you do not produce the number. If the user wants a count after seeing the list, they will ask explicitly, and the answer to "how many" must come from `total_known` on a tool response -- never from re-reading what you just wrote.
 
    Acceptable intro / closing clauses without a count: "Here are the lambdas that call require_auth:", "The lambdas calling require_auth are listed below.", "Each row is one definition site." Unacceptable: anything ending in or containing "N call sites", "M total", "X distinct", "across the workspace" + integer."""
 
