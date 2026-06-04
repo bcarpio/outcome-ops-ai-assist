@@ -79,6 +79,8 @@ bedrock_basic_model_id     = "us.openai.gpt-5-4:0"           # VERIFY: GPT-5.4 c
 # Embedding model: Titan stays. There is no OpenAI embedding model on
 # Bedrock at the time of this template, and Titan is AWS-native (not
 # Anthropic), so it satisfies a "no Anthropic" compliance posture.
+# Verified available in us-east-2 (`aws bedrock list-foundation-models
+# --region us-east-2 --by-provider amazon` returns titan-embed-text-v2).
 # Note per project_model_swappability: changing the embedding model is
 # architectural, not just a tfvars swap -- existing vectors are indexed
 # with this model's embeddings and cannot be re-ranked by a different
@@ -94,16 +96,39 @@ bedrock_embedding_model_id = "amazon.titan-embed-text-v2:0"
 # Bedrock Reranking
 # ============================================================================
 
-# Cohere Rerank stays. Cohere is not Anthropic -- it satisfies a "no
-# Anthropic" compliance posture. Verify Cohere Rerank availability in
-# your chosen region:
-#   aws bedrock list-foundation-models --region us-east-2 \
-#     --by-provider cohere --query 'modelSummaries[?contains(modelId, `rerank`)].modelId'
-bedrock_rerank_enabled       = true
-bedrock_rerank_model_id      = "cohere.rerank-v3-5:0"
-bedrock_rerank_price_per_1k  = 2.00  # USD per 1,000 search queries
-rerank_max_fetch             = 90
-rerank_min_score             = 0.15
+# Rerank is OFF for this workspace. Two reasons:
+#
+# 1. Cohere Rerank v3.5 is not available in us-east-2 -- verified
+#    2026-06-03 via `aws bedrock list-foundation-models --region
+#    us-east-2 --by-provider cohere` (returns empty for rerank
+#    models). The model IS available in us-west-2 if a future
+#    redeploy moves there, but as long as the workspace is pinned to
+#    us-east-2 for GPT-5.5 access, rerank must stay off.
+#
+# 2. With rerank disabled, the chat handler still receives both
+#    dual-channel lanes (CODE_MAP_TYPES + DOC_TYPES) with their own
+#    top-K budgets per ADR-033. The final context just skips the
+#    cross-lane balancing step; the raw cosine-similarity order from
+#    each lane is preserved. This is slightly noisier than reranked
+#    output but still gives the LLM both lanes -- the dual-channel
+#    fairness guarantee comes from per-lane retrieval budgets, not
+#    from rerank. Operationally fine for demos and for production at
+#    moderate query volume; revisit if hallucination rates rise.
+#
+# This setting also enables a deliberate side-by-side demo: the same
+# question against outcomeops.outcomeops.ai (Claude + Cohere rerank)
+# vs openai.outcomeops.ai (GPT-5 + raw similarity) shows how the
+# platform behaves on different model stacks without per-model code
+# changes.
+bedrock_rerank_enabled       = false
+
+# These are unused when rerank_enabled = false but kept commented
+# for documentation. Uncomment if a future workspace move puts
+# Cohere Rerank in reach.
+# bedrock_rerank_model_id      = "cohere.rerank-v3-5:0"
+# bedrock_rerank_price_per_1k  = 2.00
+# rerank_max_fetch             = 90
+# rerank_min_score             = 0.15
 
 # ============================================================================
 # Bedrock Model Pricing (USD per million tokens)
@@ -149,11 +174,30 @@ bedrock_basic_output_price    = 16.50
 # ui_container_image    = "<account>.dkr.ecr.us-east-2.amazonaws.com/openai-outcome-ops-ai-assist-ui:latest"
 
 # ============================================================================
-# OIDC Authentication (Azure AD)
+# DNS + OIDC (Azure AD)
 # ============================================================================
 
-# domain = "example.com"
-# ui_subdomain = "outcomeops"  # default
+# Domain + subdomain combine into the chat-UI FQDN:
+#   FQDN = "{ui_subdomain}.{domain}"
+#
+# For the OpenAI workspace, set ui_subdomain = "openai" so the UI lands
+# at openai.outcomeops.ai. The Claude-stack workspace at
+# outcomeops.outcomeops.ai (prd) and the GPT-5-stack workspace at
+# openai.outcomeops.ai (this workspace) make a powerful side-by-side
+# demo: the same question against the same RAG corpus across two model
+# vendors, no code differences, only model swap. Boeing PoC + any
+# regulated buyer evaluating "can the platform run on our model
+# choice" benefits from seeing this directly.
+#
+# Requires a Route53 hosted zone for `domain` in your account. Both
+# subdomains can share one parent hosted zone (outcomeops.ai) -- this
+# workspace just adds an `openai.outcomeops.ai` record alongside the
+# existing `outcomeops.outcomeops.ai` record from the prd workspace.
+domain       = "outcomeops.ai"
+ui_subdomain = "openai"
+# oidc_enabled = true
+# oidc_client_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+# oidc_tenant_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
 
 # ============================================================================
 # OutcomeOps License (mandatory for paid tiers)
