@@ -2,8 +2,17 @@ locals {
   workspace_is_dev = terraform.workspace == "dev"
   workspace_is_prd = terraform.workspace == "prd"
 
-  # FQDN for UI: outcomeops.domain.com (prd) or outcomeops-dev.domain.com (dev)
-  fqdn = var.domain != "" ? (var.environment == "prd" ? "${var.ui_subdomain}.${var.domain}" : "${var.ui_subdomain}-${var.environment}.${var.domain}") : ""
+  # FQDN for UI: {ui_subdomain}.{domain} when append_environment_to_fqdn=false
+  # (production-style: outcomeops.outcomeops.ai, openai.outcomeops.ai),
+  # otherwise {ui_subdomain}-{environment}.{domain} (dev-style:
+  # outcomeops-dev.outcomeops.ai). Default true so dev/test envs auto-
+  # disambiguate; prd.tfvars and openai.tfvars opt out so they sit on
+  # first-class subdomains.
+  fqdn = var.domain != "" ? (
+    var.append_environment_to_fqdn
+      ? "${var.ui_subdomain}-${var.environment}.${var.domain}"
+      : "${var.ui_subdomain}.${var.domain}"
+  ) : ""
 
   # ADR-019: shared license layer attach values for every gated Lambda.
   outcomeops_license_env = {

@@ -193,8 +193,16 @@ bedrock_basic_output_price    = 16.50
 # subdomains can share one parent hosted zone (outcomeops.ai) -- this
 # workspace just adds an `openai.outcomeops.ai` record alongside the
 # existing `outcomeops.outcomeops.ai` record from the prd workspace.
-domain       = "outcomeops.ai"
-ui_subdomain = "openai"
+domain                     = "outcomeops.ai"
+ui_subdomain               = "openai"
+# First-class subdomain (openai.outcomeops.ai), no -openai env suffix.
+# locals.tf composes FQDN as {ui_subdomain}-{environment}.{domain} when
+# this flag is true (dev/test default) and {ui_subdomain}.{domain}
+# when false (production-style). With ui_subdomain="openai" + this
+# flag false, FQDN = openai.outcomeops.ai. With the flag true the
+# FQDN would be openai-openai.outcomeops.ai -- ugly and not what the
+# side-by-side demo URL needs.
+append_environment_to_fqdn = false
 # oidc_enabled = true
 # oidc_client_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
 # oidc_tenant_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"

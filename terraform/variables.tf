@@ -407,9 +407,15 @@ variable "cors_allowed_origins" {
 }
 
 variable "ui_subdomain" {
-  description = "Subdomain for the chat UI (e.g., 'outcomeops' creates outcomeops.domain.com for prd, outcomeops-dev.domain.com for dev)"
+  description = "Subdomain for the chat UI (e.g., 'outcomeops' creates outcomeops.domain.com for prd, outcomeops-dev.domain.com for dev). Pair with append_environment_to_fqdn to control whether the environment is suffixed."
   type        = string
   default     = "outcomeops"
+}
+
+variable "append_environment_to_fqdn" {
+  description = "When true, the chat-UI FQDN is {ui_subdomain}-{environment}.{domain} (dev/test style). When false, it's {ui_subdomain}.{domain} (production-style, first-class subdomain). prd.tfvars and openai.tfvars set this to false."
+  type        = bool
+  default     = true
 }
 
 variable "oidc_enabled" {

@@ -220,10 +220,13 @@ github_usernames_to_tag = "yourusername"
 # ============================================================================
 
 # Domain for HTTPS + OIDC (required when oidc_enabled = true).
-# FQDN: {ui_subdomain}.{domain} (prd) or {ui_subdomain}-dev.{domain} (dev).
+# FQDN: {ui_subdomain}.{domain} when append_environment_to_fqdn=false
+# (production-style, first-class subdomain), or
+# {ui_subdomain}-{environment}.{domain} when true (dev/test style).
 # Requires a Route53 hosted zone for this domain in your account.
 # domain = "example.com"
 # ui_subdomain = "outcomeops"  # default
+# append_environment_to_fqdn = false  # prd: first-class subdomain
 
 # ============================================================================
 # DNS Sovereignty + TLS Certificate Sourcing
