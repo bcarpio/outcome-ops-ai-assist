@@ -44,6 +44,62 @@ discoverability + ergonomics, not correctness.
 
 ---
 
+### Rename `ask-claude` Lambda to be model-agnostic
+
+**Filed:** 2026-06-04
+**Severity:** Low (cosmetic; functional behavior is correct)
+**Component:** Lambda naming / SSM / terraform / cross-Lambda imports
+
+Surfaced during the openai-workspace deploy when the terraform log
+showed `module.ask_claude_lambda.aws_lambda_function.this[0]: Still
+creating...` -- a perfectly normal deploy line that just happens to
+name "claude" while building an OpenAI workspace. The Lambda is
+correctly using whatever `bedrock_advanced_model_id` resolves to
+(GPT-5.5 in this case); only the IDENTIFIER is misleading.
+
+**Rename surface (audited 2026-06-04):**
+
+- `terraform/lambda-query.tf` -- `module "ask_claude_lambda"` declaration,
+  function_name (`${var.environment}-${var.app_name}-ask-claude`),
+  ARN + name outputs
+- `terraform/lambda-code-generation.tf` -- consumers reference
+  `module.ask_claude_lambda.lambda_function_arn`
+- SSM parameter: `/<env>/<app>/lambda/ask-claude-arn`
+- Code directory: `lambda/ask-claude/` (and its `handler.py`)
+- 4 sibling Lambdas that invoke it:
+  - `lambda/generate-code/knowledge_base.py`
+  - `lambda/query-kb/handler.py`
+  - `lambda/process-pr-check/check_handlers/test_coverage.py`
+  - `lambda/run-tests/auto_fix.py`
+- Tests: `lambda/tests/unit/test_ask_claude.py` + Makefile + README
+
+**Suggested new name:** `synthesize` (describes the action -- synthesize a
+grounded answer from RAG context + the symbol graph), or `ask-model`
+(generic and obvious). I'd lean `synthesize` because it's a noun the
+audit narrative can use (`SYNTHESIZE_QUERY` audit actions read cleanly).
+
+**Why this is more than a sed -i:**
+
+- Lambda function name change drops the old function + creates a new
+  one. Any cached ARN in SSM, CloudWatch alarms, EventBridge rules,
+  or downstream Lambda IAM policies needs updating in the same apply.
+- Audit log table has `lambda_function_name = "ask-claude"` rows back
+  to ingest; renaming creates a discontinuity unless we either
+  back-fill the audit table or accept the boundary.
+- Cross-Lambda invokes (the 4 above) call by name; the renamed
+  function won't be found until those imports update.
+- The terraform `module.ask_claude_lambda` name change requires a
+  `terraform state mv` in each workspace's state OR a destroy/create
+  cycle (the second is brutal -- it'd take the chat-synthesis Lambda
+  offline for a few minutes).
+
+**Not blocking the Boeing PoC** -- the name is a cosmetic embarrassment
+during demos but doesn't affect platform behavior. Worth doing before
+a public marketing push of the model-agnostic story; deferred until
+then.
+
+---
+
 ## Closed (kept for historical context until pruned)
 
 _(none yet)_
