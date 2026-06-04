@@ -37,6 +37,7 @@ from pydantic import BaseModel, Field, field_validator
 # Add shared module to path for Lambda deployment
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared.audit import log_audit_entry
+from shared.model_client import invoke as invoke_model
 
 # Setup logging
 logger = logging.getLogger()
@@ -45,7 +46,9 @@ logger.setLevel(logging.INFO)
 # AWS clients (initialized once per container)
 ssm_client = boto3.client("ssm")
 sqs_client = boto3.client("sqs")
-bedrock_client = boto3.client("bedrock-runtime")
+# Bedrock LLM completions route via shared.model_client (ADR-035 chunk 11).
+# The per-handler bedrock-runtime client was only used for the legacy
+# InvokeModel call below and is no longer constructed here.
 
 # Load environment variables
 ENVIRONMENT = os.environ.get("ENV", "dev")
@@ -262,23 +265,14 @@ Format your response as markdown with clear headers for each failure type. Be co
 
     try:
         bedrock_start = time.time()
-        response = bedrock_client.invoke_model(
-            modelId=BASIC_MODEL_ID,
-            contentType="application/json",
-            accept="application/json",
-            body=json.dumps({
-                "anthropic_version": "bedrock-2023-05-31",
-                "max_tokens": 2000,
-                "messages": [
-                    {"role": "user", "content": prompt}
-                ]
-            })
+        resp = invoke_model(
+            model_id=BASIC_MODEL_ID,
+            messages=[{"role": "user", "content": [{"text": prompt}]}],
+            max_tokens=2000,
         )
         bedrock_duration_ms = int((time.time() - bedrock_start) * 1000)
 
-        response_body = json.loads(response["body"].read())
-        analysis = response_body["content"][0]["text"]
-        usage = response_body.get("usage", {})
+        analysis = resp.text
 
         log_audit_entry(
             audit_table_name=os.environ.get("AUDIT_TABLE", ""),
@@ -286,8 +280,8 @@ Format your response as markdown with clear headers for each failure type. Be co
             model_id=BASIC_MODEL_ID,
             input_text=prompt,
             output_text=analysis,
-            input_tokens=usage.get("input_tokens", 0),
-            output_tokens=usage.get("output_tokens", 0),
+            input_tokens=resp.usage.input_tokens,
+            output_tokens=resp.usage.output_tokens,
             duration_ms=bedrock_duration_ms,
         )
 

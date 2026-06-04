@@ -1,3 +1,17 @@
+
+# === Legacy dict -> unified Response adapter (ADR-035 chunk 11 fallout) ===
+from types import SimpleNamespace
+from shared.model_client_types import StopReason
+class _LegacyDictResponse:
+    def __init__(self, d):
+        content = d.get("output", {}).get("message", {}).get("content", [])
+        self.text = content[0].get("text", "") if content else ""
+        self.content_blocks = [{"text": self.text}] if self.text else []
+        usage = d.get("usage", {})
+        self.usage = SimpleNamespace(input_tokens=usage.get("inputTokens", 0), output_tokens=usage.get("outputTokens", 0))
+        self.stop_reason = StopReason.END_TURN
+        self.tool_calls = None
+        self.raw = d
 """
 Unit tests for adr_compliance check handler.
 
@@ -276,11 +290,11 @@ class TestQueryKnowledgeBase:
 class TestAnalyzeCodeWithClaude:
     """Test Claude analysis of code compliance"""
 
-    @patch.object(bedrock_module, 'bedrock_client')
-    def test_analyze_code_with_claude_compliant(self, mock_bedrock):
+    @patch.object(bedrock_module, 'invoke_model')
+    def test_analyze_code_with_claude_compliant(self, mock_invoke):
         """Test: Claude determines code is compliant"""
         # Arrange
-        mock_bedrock.converse.return_value = {
+        mock_invoke.return_value = _LegacyDictResponse({
             "output": {
                 "message": {
                     "content": [{
@@ -289,7 +303,7 @@ class TestAnalyzeCodeWithClaude:
                 }
             },
             "usage": {"inputTokens": 100, "outputTokens": 50}
-        }
+        })
         usage_tracker = bedrock_module.UsageTracker()
 
         # Act
@@ -307,11 +321,11 @@ class TestAnalyzeCodeWithClaude:
         assert result["suggestions"] == []
         assert usage_tracker.total_tokens > 0
 
-    @patch.object(bedrock_module, 'bedrock_client')
-    def test_analyze_code_with_claude_non_compliant(self, mock_bedrock):
+    @patch.object(bedrock_module, 'invoke_model')
+    def test_analyze_code_with_claude_non_compliant(self, mock_invoke):
         """Test: Claude finds compliance issues"""
         # Arrange
-        mock_bedrock.converse.return_value = {
+        mock_invoke.return_value = _LegacyDictResponse({
             "output": {
                 "message": {
                     "content": [{
@@ -320,7 +334,7 @@ class TestAnalyzeCodeWithClaude:
                 }
             },
             "usage": {"inputTokens": 100, "outputTokens": 50}
-        }
+        })
         usage_tracker = bedrock_module.UsageTracker()
 
         # Act
@@ -338,11 +352,11 @@ class TestAnalyzeCodeWithClaude:
         assert len(result["suggestions"]) == 2
         assert "Add Pydantic model" in result["suggestions"]
 
-    @patch.object(bedrock_module, 'bedrock_client')
-    def test_analyze_code_with_claude_bedrock_error(self, mock_bedrock):
+    @patch.object(bedrock_module, 'invoke_model')
+    def test_analyze_code_with_claude_bedrock_error(self, mock_invoke):
         """Test: Bedrock API error"""
         # Arrange
-        mock_bedrock.converse.side_effect = ClientError(
+        mock_invoke.side_effect = ClientError(
             {"Error": {"Code": "ThrottlingException", "Message": "Rate exceeded"}},
             "converse"
         )
@@ -352,11 +366,11 @@ class TestAnalyzeCodeWithClaude:
         with pytest.raises(ClientError):
             analyze_code_with_claude("file.py", "+code", "standards", "lambda", usage_tracker)
 
-    @patch.object(bedrock_module, 'bedrock_client')
-    def test_analyze_code_with_claude_invalid_json_response(self, mock_bedrock):
+    @patch.object(bedrock_module, 'invoke_model')
+    def test_analyze_code_with_claude_invalid_json_response(self, mock_invoke):
         """Test: Claude returns invalid JSON (fallback to text parsing)"""
         # Arrange
-        mock_bedrock.converse.return_value = {
+        mock_invoke.return_value = _LegacyDictResponse({
             "output": {
                 "message": {
                     "content": [{
@@ -365,7 +379,7 @@ class TestAnalyzeCodeWithClaude:
                 }
             },
             "usage": {"inputTokens": 100, "outputTokens": 50}
-        }
+        })
         usage_tracker = bedrock_module.UsageTracker()
 
         # Act

@@ -101,18 +101,45 @@ def _inject_clients():
     symbol_graph_pointer._reset_clients_for_tests()
     symbol_graph_pointer._set_resource_for_tests(real_resource)
 
-    # Router uses a stubbed Bedrock client -- it shouldn't talk to
-    # Bedrock in unit tests. The default response classifies as
-    # "structural" with the symbol pulled out of the question.
-    bedrock_stub = MagicMock()
-    router._reset_clients_for_tests()
-    router._set_bedrock_client_for_tests(bedrock_stub)
+    # Router uses shared.model_client.invoke (ADR-035 chunk 11). To
+    # avoid talking to Bedrock in unit tests, we patch
+    # chat.router.invoke_model and route through a MagicMock that
+    # preserves the legacy .converse() surface so existing call_args /
+    # call_count assertions still work.
+    from shared.model_client_types import Response, StopReason, Usage
+    from unittest.mock import patch
 
-    yield bedrock_stub
+    bedrock_stub = MagicMock()
+
+    def _invoke_shim(**kwargs):
+        converse_kwargs = {
+            "modelId": kwargs.get("model_id"),
+            "system": ([{"text": s} for s in (kwargs["system"] if isinstance(kwargs.get("system"), list) else [kwargs["system"]] if kwargs.get("system") else [])]),
+            "messages": kwargs.get("messages"),
+            "inferenceConfig": {
+                "maxTokens": kwargs.get("max_tokens"),
+                "temperature": kwargs.get("temperature"),
+            },
+        }
+        raw = bedrock_stub.converse(**converse_kwargs)
+        content = raw.get("output", {}).get("message", {}).get("content", [])
+        text = content[0].get("text", "") if content else ""
+        usage = raw.get("usage", {})
+        return Response(
+            text=text,
+            content_blocks=content,
+            usage=Usage(
+                input_tokens=usage.get("inputTokens", 0),
+                output_tokens=usage.get("outputTokens", 0),
+            ),
+            stop_reason=StopReason.END_TURN,
+        )
+
+    with patch.object(router, "invoke_model", side_effect=_invoke_shim):
+        yield bedrock_stub
 
     symbol_graph_reader._reset_clients_for_tests()
     symbol_graph_pointer._reset_clients_for_tests()
-    router._reset_clients_for_tests()
 
 
 # ---------------------------------------------------------------------------

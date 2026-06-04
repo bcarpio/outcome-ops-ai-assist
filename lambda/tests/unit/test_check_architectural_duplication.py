@@ -1,3 +1,17 @@
+
+# === Legacy dict -> unified Response adapter (ADR-035 chunk 11 fallout) ===
+from types import SimpleNamespace
+from shared.model_client_types import StopReason
+class _LegacyDictResponse:
+    def __init__(self, d):
+        content = d.get("output", {}).get("message", {}).get("content", [])
+        self.text = content[0].get("text", "") if content else ""
+        self.content_blocks = [{"text": self.text}] if self.text else []
+        usage = d.get("usage", {})
+        self.usage = SimpleNamespace(input_tokens=usage.get("inputTokens", 0), output_tokens=usage.get("outputTokens", 0))
+        self.stop_reason = StopReason.END_TURN
+        self.tool_calls = None
+        self.raw = d
 """
 Unit tests for architectural_duplication check handler.
 
@@ -186,11 +200,11 @@ class TestQueryKnowledgeBase:
 class TestSummarizePrWithClaude:
     """Test Claude PR summarization"""
 
-    @patch.object(bedrock_module, 'bedrock_client')
-    def test_summarize_pr_with_claude_success(self, mock_bedrock):
+    @patch.object(bedrock_module, 'invoke_model')
+    def test_summarize_pr_with_claude_success(self, mock_invoke):
         """Test: Claude successfully summarizes PR"""
         # Arrange
-        mock_bedrock.converse.return_value = {
+        mock_invoke.return_value = _LegacyDictResponse({
             "output": {
                 "message": {
                     "content": [{
@@ -199,7 +213,7 @@ class TestSummarizePrWithClaude:
                 }
             },
             "usage": {"inputTokens": 100, "outputTokens": 50}
-        }
+        })
 
         file_diffs = {
             "lambda/hello/handler.py": "+def handler(event, context): pass"
@@ -219,11 +233,11 @@ class TestSummarizePrWithClaude:
         assert "GitHub webhook" in result
         assert usage_tracker.total_tokens > 0
 
-    @patch.object(bedrock_module, 'bedrock_client')
-    def test_summarize_pr_with_claude_bedrock_error(self, mock_bedrock):
+    @patch.object(bedrock_module, 'invoke_model')
+    def test_summarize_pr_with_claude_bedrock_error(self, mock_invoke):
         """Test: Bedrock API error"""
         # Arrange
-        mock_bedrock.converse.side_effect = ClientError(
+        mock_invoke.side_effect = ClientError(
             {"Error": {"Code": "ThrottlingException", "Message": "Rate exceeded"}},
             "converse"
         )
@@ -237,11 +251,11 @@ class TestSummarizePrWithClaude:
 class TestExtractFunctionalKeywords:
     """Test functional keyword extraction for multi-query KB search"""
 
-    @patch.object(bedrock_module, 'bedrock_client')
-    def test_extract_functional_keywords_success(self, mock_bedrock):
+    @patch.object(bedrock_module, 'invoke_model')
+    def test_extract_functional_keywords_success(self, mock_invoke):
         """Test: Claude successfully extracts search queries"""
         # Arrange
-        mock_bedrock.converse.return_value = {
+        mock_invoke.return_value = _LegacyDictResponse({
             "output": {
                 "message": {
                     "content": [{
@@ -250,7 +264,7 @@ class TestExtractFunctionalKeywords:
                 }
             },
             "usage": {"inputTokens": 100, "outputTokens": 50}
-        }
+        })
 
         file_diffs = {
             "lambda/list-docs/handler.py": "+def handler(event, context): pass"
@@ -270,11 +284,11 @@ class TestExtractFunctionalKeywords:
         assert "list documents handler" in result
         assert usage_tracker.total_tokens > 0
 
-    @patch.object(bedrock_module, 'bedrock_client')
-    def test_extract_functional_keywords_invalid_json_fallback(self, mock_bedrock):
+    @patch.object(bedrock_module, 'invoke_model')
+    def test_extract_functional_keywords_invalid_json_fallback(self, mock_invoke):
         """Test: Falls back to summary when JSON parsing fails"""
         # Arrange
-        mock_bedrock.converse.return_value = {
+        mock_invoke.return_value = _LegacyDictResponse({
             "output": {
                 "message": {
                     "content": [{
@@ -283,7 +297,7 @@ class TestExtractFunctionalKeywords:
                 }
             },
             "usage": {"inputTokens": 100, "outputTokens": 50}
-        }
+        })
         usage_tracker = bedrock_module.UsageTracker()
 
         # Act
@@ -296,11 +310,11 @@ class TestExtractFunctionalKeywords:
         # Assert
         assert result == ["Lists recently ingested documents"]
 
-    @patch.object(bedrock_module, 'bedrock_client')
-    def test_extract_functional_keywords_limits_to_five(self, mock_bedrock):
+    @patch.object(bedrock_module, 'invoke_model')
+    def test_extract_functional_keywords_limits_to_five(self, mock_invoke):
         """Test: Limits results to 5 queries max"""
         # Arrange
-        mock_bedrock.converse.return_value = {
+        mock_invoke.return_value = _LegacyDictResponse({
             "output": {
                 "message": {
                     "content": [{
@@ -309,7 +323,7 @@ class TestExtractFunctionalKeywords:
                 }
             },
             "usage": {"inputTokens": 100, "outputTokens": 50}
-        }
+        })
         usage_tracker = bedrock_module.UsageTracker()
 
         # Act
@@ -322,11 +336,11 @@ class TestExtractFunctionalKeywords:
 class TestAnalyzeSimilarityWithClaude:
     """Test Claude similarity analysis"""
 
-    @patch.object(bedrock_module, 'bedrock_client')
-    def test_analyze_similarity_has_similar(self, mock_bedrock):
+    @patch.object(bedrock_module, 'invoke_model')
+    def test_analyze_similarity_has_similar(self, mock_invoke):
         """Test: Claude finds similar functionality"""
         # Arrange
-        mock_bedrock.converse.return_value = {
+        mock_invoke.return_value = _LegacyDictResponse({
             "output": {
                 "message": {
                     "content": [{
@@ -335,7 +349,7 @@ class TestAnalyzeSimilarityWithClaude:
                 }
             },
             "usage": {"inputTokens": 100, "outputTokens": 50}
-        }
+        })
         usage_tracker = bedrock_module.UsageTracker()
 
         # Act
@@ -352,11 +366,11 @@ class TestAnalyzeSimilarityWithClaude:
         assert "webhook" in result["findings"][0]
         assert usage_tracker.total_tokens > 0
 
-    @patch.object(bedrock_module, 'bedrock_client')
-    def test_analyze_similarity_no_similar(self, mock_bedrock):
+    @patch.object(bedrock_module, 'invoke_model')
+    def test_analyze_similarity_no_similar(self, mock_invoke):
         """Test: Claude finds no similar functionality"""
         # Arrange
-        mock_bedrock.converse.return_value = {
+        mock_invoke.return_value = _LegacyDictResponse({
             "output": {
                 "message": {
                     "content": [{
@@ -365,7 +379,7 @@ class TestAnalyzeSimilarityWithClaude:
                 }
             },
             "usage": {"inputTokens": 100, "outputTokens": 50}
-        }
+        })
         usage_tracker = bedrock_module.UsageTracker()
 
         # Act
@@ -380,11 +394,11 @@ class TestAnalyzeSimilarityWithClaude:
         assert result["hasSimilar"] is False
         assert result["findings"] == []
 
-    @patch.object(bedrock_module, 'bedrock_client')
-    def test_analyze_similarity_invalid_json(self, mock_bedrock):
+    @patch.object(bedrock_module, 'invoke_model')
+    def test_analyze_similarity_invalid_json(self, mock_invoke):
         """Test: Handle invalid JSON response (fallback parsing)"""
         # Arrange
-        mock_bedrock.converse.return_value = {
+        mock_invoke.return_value = _LegacyDictResponse({
             "output": {
                 "message": {
                     "content": [{
@@ -393,7 +407,7 @@ class TestAnalyzeSimilarityWithClaude:
                 }
             },
             "usage": {"inputTokens": 100, "outputTokens": 50}
-        }
+        })
         usage_tracker = bedrock_module.UsageTracker()
 
         # Act

@@ -90,19 +90,57 @@ def _isolate_env(monkeypatch):
 
 @pytest.fixture
 def stub_bedrock():
-    """Inject a MagicMock Bedrock client into the router and yield it
-    for per-test programming. Mirrors symbol_graph_reader's resource
-    injection pattern.
+    """Patch chat.router.invoke_model (the shared.model_client alias) and
+    yield a MagicMock that pretends to be the legacy boto3 bedrock client.
+    The mock exposes a .converse(...) attribute whose .return_value is a
+    Converse-shape dict; the shim below translates that dict into the
+    unified Response that the new router code consumes.
+
+    Test sites that used `_set_bedrock_client_for_tests` API didn't need
+    the actual boto3 surface -- they just needed something to assert
+    call_count / call_args on. The shim preserves that surface while
+    routing the real call through shared.model_client.
     """
     import router  # type: ignore
+    from shared.model_client_types import Response, StopReason, Usage
 
     client = MagicMock()
-    router._reset_clients_for_tests()
-    router._set_bedrock_client_for_tests(client)
-    try:
-        yield client
-    finally:
-        router._reset_clients_for_tests()
+    client.converse.return_value = _bedrock_converse_response("structural: require_auth")
+
+    def _invoke_shim(**kwargs):
+        # Record the legacy-shape call against the .converse mock so
+        # existing assertions (call_count, call_args, assert_called_once)
+        # keep working.
+        converse_kwargs = {
+            "modelId": kwargs.get("model_id"),
+            "system": ([{"text": s} for s in (kwargs["system"] if isinstance(kwargs.get("system"), list) else [kwargs["system"]] if kwargs.get("system") else [])]),
+            "messages": kwargs.get("messages"),
+            "inferenceConfig": {
+                "maxTokens": kwargs.get("max_tokens"),
+                "temperature": kwargs.get("temperature"),
+            },
+        }
+        raw = client.converse(**converse_kwargs)
+        # raw is the dict the test set via .return_value; translate to
+        # the unified Response the router consumes.
+        content = raw.get("output", {}).get("message", {}).get("content", [])
+        text = content[0].get("text", "") if content else ""
+        usage = raw.get("usage", {})
+        return Response(
+            text=text,
+            content_blocks=content,
+            usage=Usage(
+                input_tokens=usage.get("inputTokens", 0),
+                output_tokens=usage.get("outputTokens", 0),
+            ),
+            stop_reason=StopReason.END_TURN,
+        )
+
+    with patch.object(router, "invoke_model", side_effect=_invoke_shim):
+        try:
+            yield client
+        finally:
+            client.reset_mock()
 
 
 # ---------------------------------------------------------------------------

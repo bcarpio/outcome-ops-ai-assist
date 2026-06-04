@@ -1,3 +1,17 @@
+
+# === Legacy dict -> unified Response adapter (ADR-035 chunk 11 fallout) ===
+from types import SimpleNamespace
+from shared.model_client_types import StopReason
+class _LegacyDictResponse:
+    def __init__(self, d):
+        content = d.get("output", {}).get("message", {}).get("content", [])
+        self.text = content[0].get("text", "") if content else ""
+        self.content_blocks = [{"text": self.text}] if self.text else []
+        usage = d.get("usage", {})
+        self.usage = SimpleNamespace(input_tokens=usage.get("inputTokens", 0), output_tokens=usage.get("outputTokens", 0))
+        self.stop_reason = StopReason.END_TURN
+        self.tool_calls = None
+        self.raw = d
 """
 Unit tests for readme_freshness check handler.
 
@@ -297,11 +311,11 @@ class TestExtractInfrastructureNames:
 class TestAnalyzeReadmeWithClaude:
     """Test Claude analysis of README adequacy"""
 
-    @patch.object(bedrock_module, 'bedrock_client')
-    def test_analyze_readme_adequate(self, mock_bedrock):
+    @patch.object(bedrock_module, 'invoke_model')
+    def test_analyze_readme_adequate(self, mock_invoke):
         """Test: Claude determines README is adequate"""
         # Arrange
-        mock_bedrock.converse.return_value = {
+        mock_invoke.return_value = _LegacyDictResponse({
             "output": {
                 "message": {
                     "content": [{
@@ -310,7 +324,7 @@ class TestAnalyzeReadmeWithClaude:
                 }
             },
             "usage": {"inputTokens": 100, "outputTokens": 50}
-        }
+        })
         usage_tracker = bedrock_module.UsageTracker()
 
         # Act
@@ -326,11 +340,11 @@ class TestAnalyzeReadmeWithClaude:
         assert "hello" in result["explanation"]
         assert usage_tracker.total_tokens > 0
 
-    @patch.object(bedrock_module, 'bedrock_client')
-    def test_analyze_readme_inadequate(self, mock_bedrock):
+    @patch.object(bedrock_module, 'invoke_model')
+    def test_analyze_readme_inadequate(self, mock_invoke):
         """Test: Claude finds README inadequate"""
         # Arrange
-        mock_bedrock.converse.return_value = {
+        mock_invoke.return_value = _LegacyDictResponse({
             "output": {
                 "message": {
                     "content": [{
@@ -339,7 +353,7 @@ class TestAnalyzeReadmeWithClaude:
                 }
             },
             "usage": {"inputTokens": 100, "outputTokens": 50}
-        }
+        })
         usage_tracker = bedrock_module.UsageTracker()
 
         # Act
@@ -354,11 +368,11 @@ class TestAnalyzeReadmeWithClaude:
         assert result["adequate"] is False
         assert "does not mention" in result["explanation"]
 
-    @patch.object(bedrock_module, 'bedrock_client')
-    def test_analyze_readme_invalid_json_response(self, mock_bedrock):
+    @patch.object(bedrock_module, 'invoke_model')
+    def test_analyze_readme_invalid_json_response(self, mock_invoke):
         """Test: Handle invalid JSON response from Claude (fallback parsing)"""
         # Arrange
-        mock_bedrock.converse.return_value = {
+        mock_invoke.return_value = _LegacyDictResponse({
             "output": {
                 "message": {
                     "content": [{
@@ -367,7 +381,7 @@ class TestAnalyzeReadmeWithClaude:
                 }
             },
             "usage": {"inputTokens": 100, "outputTokens": 50}
-        }
+        })
         usage_tracker = bedrock_module.UsageTracker()
 
         # Act
@@ -383,11 +397,11 @@ class TestAnalyzeReadmeWithClaude:
         assert "explanation" in result
         assert result["explanation"] == "Could not parse analysis response"
 
-    @patch.object(bedrock_module, 'bedrock_client')
-    def test_analyze_readme_bedrock_error(self, mock_bedrock):
+    @patch.object(bedrock_module, 'invoke_model')
+    def test_analyze_readme_bedrock_error(self, mock_invoke):
         """Test: Bedrock API error"""
         # Arrange
-        mock_bedrock.converse.side_effect = ClientError(
+        mock_invoke.side_effect = ClientError(
             {"Error": {"Code": "ThrottlingException", "Message": "Rate exceeded"}},
             "converse"
         )

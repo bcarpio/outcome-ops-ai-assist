@@ -1,3 +1,22 @@
+
+# === Legacy dict -> unified Response adapter (ADR-035 chunk 11 fallout) ===
+from types import SimpleNamespace
+from shared.model_client_types import StopReason
+
+class _LegacyDictResponse:
+    def __init__(self, d):
+        content = d.get("output", {}).get("message", {}).get("content", [])
+        self.text = content[0].get("text", "") if content else ""
+        self.content_blocks = [{"text": self.text}] if self.text else []
+        usage = d.get("usage", {})
+        self.usage = SimpleNamespace(
+            input_tokens=usage.get("inputTokens", 0),
+            output_tokens=usage.get("outputTokens", 0),
+        )
+        self.stop_reason = StopReason.END_TURN
+        self.tool_calls = None
+        self.raw = d
+
 """Unit tests for generate-code support modules.
 
 Tests cover:
@@ -1541,10 +1560,10 @@ class TestInvokeClaude:
         yield
 
     @patch("bedrock_client.log_audit_entry")
-    @patch("bedrock_client.bedrock_client")
-    def test_invoke_claude_success(self, mock_bedrock, mock_audit):
+    @patch("bedrock_client.invoke_model")
+    def test_invoke_claude_success(self, mock_invoke, mock_audit):
         """Test successful Claude invocation."""
-        mock_bedrock.converse.return_value = {
+        mock_invoke.return_value = _LegacyDictResponse({
             "output": {
                 "message": {
                     "content": [{"text": "Hello from Claude"}]
@@ -1552,7 +1571,7 @@ class TestInvokeClaude:
             },
             "usage": {"inputTokens": 100, "outputTokens": 50},
             "stopReason": "end_turn",
-        }
+        })
 
         result = invoke_claude("Tell me about Python")
 
@@ -1563,85 +1582,92 @@ class TestInvokeClaude:
         assert result.stop_reason == "end_turn"
 
     @patch("bedrock_client.log_audit_entry")
-    @patch("bedrock_client.bedrock_client")
-    def test_invoke_claude_with_system_prompt(self, mock_bedrock, mock_audit):
+    @patch("bedrock_client.invoke_model")
+    def test_invoke_claude_with_system_prompt(self, mock_invoke, mock_audit):
         """Test invocation with system prompt."""
-        mock_bedrock.converse.return_value = {
+        mock_invoke.return_value = _LegacyDictResponse({
             "output": {"message": {"content": [{"text": "response"}]}},
             "usage": {"inputTokens": 50, "outputTokens": 25},
             "stopReason": "end_turn",
-        }
+        })
 
         invoke_claude("prompt", system_prompt="You are a helpful assistant")
 
-        call_kwargs = mock_bedrock.converse.call_args[1]
-        assert "system" in call_kwargs
-        assert call_kwargs["system"] == [{"text": "You are a helpful assistant"}]
+        # Shared client receives system as a plain string (NOT the
+        # Converse-shaped [{"text": ...}] block list). The Converse
+        # backend's translator wraps it into blocks; consumers don't
+        # need to.
+        call_kwargs = mock_invoke.call_args[1]
+        assert call_kwargs["system"] == "You are a helpful assistant"
 
     @patch("bedrock_client.log_audit_entry")
-    @patch("bedrock_client.bedrock_client")
-    def test_invoke_claude_without_system_prompt(self, mock_bedrock, mock_audit):
+    @patch("bedrock_client.invoke_model")
+    def test_invoke_claude_without_system_prompt(self, mock_invoke, mock_audit):
         """Test invocation without system prompt omits system key."""
-        mock_bedrock.converse.return_value = {
+        mock_invoke.return_value = _LegacyDictResponse({
             "output": {"message": {"content": [{"text": "response"}]}},
             "usage": {"inputTokens": 10, "outputTokens": 5},
             "stopReason": "end_turn",
-        }
+        })
 
         invoke_claude("prompt")
 
-        call_kwargs = mock_bedrock.converse.call_args[1]
-        assert "system" not in call_kwargs
+        # bedrock_client passes system=None when no system_prompt is set.
+        # The shared client's translator drops None at the boundary.
+        call_kwargs = mock_invoke.call_args[1]
+        assert call_kwargs.get("system") is None
 
     @patch("bedrock_client.log_audit_entry")
-    @patch("bedrock_client.bedrock_client")
-    def test_invoke_claude_custom_temperature_and_tokens(self, mock_bedrock, mock_audit):
+    @patch("bedrock_client.invoke_model")
+    def test_invoke_claude_custom_temperature_and_tokens(self, mock_invoke, mock_audit):
         """Test custom temperature and max_tokens are passed."""
-        mock_bedrock.converse.return_value = {
+        mock_invoke.return_value = _LegacyDictResponse({
             "output": {"message": {"content": [{"text": "creative"}]}},
             "usage": {"inputTokens": 10, "outputTokens": 5},
             "stopReason": "end_turn",
-        }
+        })
 
         invoke_claude("be creative", temperature=0.9, max_tokens=8000)
 
-        call_kwargs = mock_bedrock.converse.call_args[1]
-        assert call_kwargs["inferenceConfig"]["temperature"] == 0.9
-        assert call_kwargs["inferenceConfig"]["maxTokens"] == 8000
+        # Shared client receives temperature / max_tokens as top-level
+        # kwargs (NOT Converse's nested inferenceConfig).
+        call_kwargs = mock_invoke.call_args[1]
+        assert call_kwargs["temperature"] == 0.9
+        assert call_kwargs["max_tokens"] == 8000
 
     @pytest.mark.skipif(
         _CLIENT_ERROR_IS_MOCKED,
         reason="When ClientError=Exception, except ClientError catches internal exceptions"
     )
     @patch("bedrock_client.log_audit_entry")
-    @patch("bedrock_client.bedrock_client")
-    def test_invoke_claude_empty_content_raises(self, mock_bedrock, mock_audit):
+    @patch("bedrock_client.invoke_model")
+    def test_invoke_claude_empty_content_raises(self, mock_invoke, mock_audit):
         """Test empty content blocks raise exception."""
-        mock_bedrock.converse.return_value = {
+        mock_invoke.return_value = _LegacyDictResponse({
             "output": {"message": {"content": []}},
             "usage": {"inputTokens": 10, "outputTokens": 0},
             "stopReason": "end_turn",
-        }
+        })
 
-        with pytest.raises(Exception, match="No content in Claude response"):
+        with pytest.raises(Exception, match="No text in"):
             invoke_claude("prompt")
 
     @patch("bedrock_client.time.sleep")
     @patch("bedrock_client.log_audit_entry")
-    @patch("bedrock_client.bedrock_client")
-    def test_invoke_claude_throttle_retry_success(self, mock_bedrock, mock_audit, mock_sleep):
+    @patch("bedrock_client.invoke_model")
+    def test_invoke_claude_throttle_retry_success(self, mock_invoke, mock_audit, mock_sleep):
         """Test throttling triggers retry and eventually succeeds."""
         throttle_error = _make_client_error(
             {"Error": {"Code": "ThrottlingException", "Message": "Rate exceeded"}},
             "Converse",
         )
-        success_response = {
+        success_response = _LegacyDictResponse({
             "output": {"message": {"content": [{"text": "success after retry"}]}},
             "usage": {"inputTokens": 10, "outputTokens": 5},
             "stopReason": "end_turn",
-        }
+        })
 
-        mock_bedrock.converse.side_effect = [throttle_error, success_response]
+        mock_invoke.side_effect = [throttle_error, success_response]
 
         result = invoke_claude("prompt")
         assert result.text == "success after retry"
@@ -1651,43 +1677,43 @@ class TestInvokeClaude:
 
     @patch("bedrock_client.time.sleep")
     @patch("bedrock_client.log_audit_entry")
-    @patch("bedrock_client.bedrock_client")
-    def test_invoke_claude_throttle_all_retries_exhausted(self, mock_bedrock, mock_audit, mock_sleep):
+    @patch("bedrock_client.invoke_model")
+    def test_invoke_claude_throttle_all_retries_exhausted(self, mock_invoke, mock_audit, mock_sleep):
         """Test all retries exhausted raises exception."""
         throttle_error = _make_client_error(
             {"Error": {"Code": "ThrottlingException", "Message": "Rate exceeded"}},
             "Converse",
         )
-        mock_bedrock.converse.side_effect = [throttle_error] * 8
+        mock_invoke.side_effect = [throttle_error] * 8
 
-        with pytest.raises(Exception, match="Failed to invoke Claude after"):
+        with pytest.raises(Exception, match=r"Failed to invoke .* after"):
             invoke_claude("prompt")
 
     @patch("bedrock_client.log_audit_entry")
-    @patch("bedrock_client.bedrock_client")
-    def test_invoke_claude_non_throttle_error_raises_immediately(self, mock_bedrock, mock_audit):
+    @patch("bedrock_client.invoke_model")
+    def test_invoke_claude_non_throttle_error_raises_immediately(self, mock_invoke, mock_audit):
         """Test non-throttle ClientError raises immediately without retry."""
         error = _make_client_error(
             {"Error": {"Code": "ValidationException", "Message": "bad request"}},
             "Converse",
         )
-        mock_bedrock.converse.side_effect = error
+        mock_invoke.side_effect = error
 
         with pytest.raises(Exception):
             invoke_claude("prompt")
 
         # Should NOT retry for non-throttle errors
-        assert mock_bedrock.converse.call_count == 1
+        assert mock_invoke.call_count == 1
 
     @pytest.mark.skipif(
         _CLIENT_ERROR_IS_MOCKED,
         reason="When ClientError=Exception, except ClientError catches all exceptions"
     )
     @patch("bedrock_client.log_audit_entry")
-    @patch("bedrock_client.bedrock_client")
-    def test_invoke_claude_unexpected_error_raises(self, mock_bedrock, mock_audit):
+    @patch("bedrock_client.invoke_model")
+    def test_invoke_claude_unexpected_error_raises(self, mock_invoke, mock_audit):
         """Test unexpected exception raises immediately."""
-        mock_bedrock.converse.side_effect = RuntimeError("unexpected")
+        mock_invoke.side_effect = RuntimeError("unexpected")
 
         with pytest.raises(RuntimeError, match="unexpected"):
             invoke_claude("prompt")

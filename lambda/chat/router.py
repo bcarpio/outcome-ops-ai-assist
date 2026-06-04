@@ -53,6 +53,9 @@ import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
+# Module-level alias so tests can patch chat.router.invoke_model.
+from shared.model_client import invoke as invoke_model
+
 logger = logging.getLogger(__name__)
 
 
@@ -372,23 +375,19 @@ def classify_intent(
             duration_ms=0,
         )
 
-    bedrock = _bedrock()
     started = time.time()
     try:
-        response = bedrock.converse(
-            modelId=model_id,
-            system=[{"text": _router_system_prompt()}],
-            messages=[
-                {
-                    "role": "user",
-                    "content": [{"text": question.strip()}],
-                }
-            ],
-            inferenceConfig={
-                # Tight cap — the router output is < 60 tokens.
-                "maxTokens": 128,
-                "temperature": 0.0,
-            },
+        # Route via the module-level invoke_model alias so tests can
+        # patch chat.router.invoke_model without needing the legacy
+        # boto3-client injection hook (which is now retained only as a
+        # no-op for backward compatibility with other suites).
+        response = invoke_model(
+            model_id=model_id,
+            system=_router_system_prompt(),
+            messages=[{"role": "user", "content": [{"text": question.strip()}]}],
+            # Tight cap -- the router output is < 60 tokens.
+            max_tokens=128,
+            temperature=0.0,
         )
     except ClientError as exc:
         duration_ms = int((time.time() - started) * 1000)
@@ -423,19 +422,12 @@ def classify_intent(
         )
     duration_ms = int((time.time() - started) * 1000)
 
-    # Pull the assistant text out of converse() output.
-    text = ""
-    try:
-        for block in response["output"]["message"]["content"]:
-            if "text" in block:
-                text += block["text"]
-    except (KeyError, TypeError):
-        text = ""
+    # Pull the assistant text from the unified Response.
+    text = response.text or ""
 
     intent, symbol = _parse_router_output(text)
-    usage = response.get("usage", {}) if isinstance(response, dict) else {}
-    input_tokens = int(usage.get("inputTokens", 0) or 0)
-    output_tokens = int(usage.get("outputTokens", 0) or 0)
+    input_tokens = int(response.usage.input_tokens or 0)
+    output_tokens = int(response.usage.output_tokens or 0)
 
     # Audit the spend. Question text never leaves this function —
     # only its SHA256 hash for correlation with the routing-decision

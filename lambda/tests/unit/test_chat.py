@@ -102,6 +102,113 @@ _stream_error = handler_module._stream_error
 # Fixtures
 # ============================================================================
 
+def _legacy_converse_stream_to_unified(events):
+    """Translate Converse-shape stream events (the dict shape that
+    test_chat fixtures program via mock_bedrock_client.converse_stream.
+    return_value) into the unified StreamEvent sequence that the new
+    chat handler consumes after the ADR-035 chunk 11 migration.
+    """
+    import json as _json
+    from shared.model_client_types import (
+        Metadata, Stop, StopReason, TextDelta, ToolUseArgumentsDelta,
+        ToolUseStart, ToolUseStop, Usage,
+    )
+
+    current_tool_id = None
+    args_buf = ""
+    for ev in events:
+        if "messageStart" in ev:
+            continue
+        if "contentBlockStart" in ev:
+            start = ev["contentBlockStart"].get("start", {})
+            tu = start.get("toolUse")
+            if tu:
+                current_tool_id = tu.get("toolUseId", "")
+                args_buf = ""
+                yield ToolUseStart(tool_use_id=current_tool_id, name=tu.get("name", ""))
+            continue
+        if "contentBlockDelta" in ev:
+            delta = ev["contentBlockDelta"].get("delta", {})
+            if "text" in delta:
+                yield TextDelta(text=delta["text"])
+            elif "toolUse" in delta and current_tool_id:
+                partial = delta["toolUse"].get("input", "")
+                args_buf += partial
+                yield ToolUseArgumentsDelta(
+                    tool_use_id=current_tool_id, arguments_partial=partial
+                )
+            continue
+        if "contentBlockStop" in ev:
+            if current_tool_id is not None:
+                try:
+                    args = _json.loads(args_buf or "{}")
+                except _json.JSONDecodeError:
+                    args = {}
+                yield ToolUseStop(tool_use_id=current_tool_id, arguments=args)
+                current_tool_id = None
+                args_buf = ""
+            continue
+        if "messageStop" in ev:
+            stop_raw = ev["messageStop"].get("stopReason", "end_turn")
+            try:
+                yield Stop(stop_reason=StopReason(stop_raw))
+            except ValueError:
+                yield Stop(stop_reason=StopReason.END_TURN)
+            continue
+        if "metadata" in ev:
+            usage = ev["metadata"].get("usage", {})
+            yield Metadata(
+                usage=Usage(
+                    input_tokens=usage.get("inputTokens", 0),
+                    output_tokens=usage.get("outputTokens", 0),
+                )
+            )
+
+
+def _patched_model_invoke_stream(**kwargs):
+    """Bridge: read mock_bedrock_client.converse_stream.return_value
+    (set by individual tests in the legacy Converse-shape) and yield
+    the equivalent unified StreamEvents."""
+    raw = mock_bedrock_client.converse_stream.return_value or {}
+    if isinstance(raw, Exception):
+        raise raw
+    stream = raw.get("stream", []) if isinstance(raw, dict) else []
+    # Also propagate side_effect for tests that raise.
+    side_effect = mock_bedrock_client.converse_stream.side_effect
+    if side_effect is not None:
+        if isinstance(side_effect, Exception):
+            raise side_effect
+    # Translate unified kwargs back to Converse-shape so existing
+    # tests that assert call_args["modelId"] / ["messages"] / etc. on
+    # mock_bedrock_client.converse_stream keep working.
+    converse_kwargs = {
+        "modelId": kwargs.get("model_id"),
+        "messages": kwargs.get("messages"),
+        "inferenceConfig": {
+            "maxTokens": kwargs.get("max_tokens"),
+            "temperature": kwargs.get("temperature"),
+        },
+    }
+    sys_val = kwargs.get("system")
+    if sys_val is not None:
+        sys_list = sys_val if isinstance(sys_val, list) else [sys_val]
+        converse_kwargs["system"] = [{"text": s} for s in sys_list]
+    tools = kwargs.get("tools")
+    if tools:
+        converse_kwargs["toolConfig"] = {
+            "tools": [
+                {"toolSpec": {
+                    "name": t.name,
+                    "description": t.description,
+                    "inputSchema": {"json": t.input_schema},
+                }}
+                for t in tools
+            ]
+        }
+    mock_bedrock_client.converse_stream(**converse_kwargs)
+    yield from _legacy_converse_stream_to_unified(stream)
+
+
 @pytest.fixture(autouse=True)
 def reset_mocks():
     """Reset all mocks between tests and clear side_effect."""
@@ -124,7 +231,15 @@ def reset_mocks():
     handler_module._vector_bucket = "test-vector-bucket"
     handler_module._vector_index = "test-vector-index"
     handler_module._workspaces_table = "test-workspaces-table"
-    yield
+
+    # Patch the shared client alias used by the migrated chat handler
+    # so existing tests that program mock_bedrock_client.converse_stream
+    # keep working without rewriting every fixture.
+    with patch.object(
+        handler_module, "model_invoke_stream",
+        side_effect=_patched_model_invoke_stream,
+    ):
+        yield
 
 
 @pytest.fixture(autouse=True)

@@ -1,3 +1,39 @@
+
+# === Legacy dict -> unified Response adapter (ADR-035 chunk 11) ===
+from types import SimpleNamespace
+from shared.model_client_types import StopReason
+
+class _LegacyDictResponse:
+    def __init__(self, d):
+        # Handle two legacy shapes: Converse (output.message.content) and
+        # InvokeModel-Anthropic-native (content list at top level).
+        content = d.get("output", {}).get("message", {}).get("content", [])
+        if not content:
+            content = d.get("content", [])
+        # InvokeModel/Anthropic-native body had {"body": <streaming bytes>}.
+        if "body" in d and not content:
+            import json as _json
+            body_raw = d["body"]
+            body_bytes = body_raw.read() if hasattr(body_raw, "read") else body_raw
+            try:
+                body = _json.loads(body_bytes) if body_bytes else {}
+            except Exception:
+                body = {}
+            content = body.get("content", [])
+            usage = body.get("usage", {})
+        else:
+            usage = d.get("usage", {})
+        self.text = content[0].get("text", "") if content else ""
+        self.content_blocks = [{"text": self.text}] if self.text else []
+        # Tolerate both Converse (inputTokens/outputTokens) and Anthropic
+        # (input_tokens/output_tokens) keys.
+        in_t = usage.get("inputTokens", usage.get("input_tokens", 0))
+        out_t = usage.get("outputTokens", usage.get("output_tokens", 0))
+        self.usage = SimpleNamespace(input_tokens=in_t, output_tokens=out_t)
+        self.stop_reason = StopReason.END_TURN
+        self.tool_calls = None
+        self.raw = d
+
 """
 Unit tests for handle-command Lambda function.
 
@@ -722,23 +758,23 @@ FAILED test_foo.py::test_bar - AssertionError
 class TestAnalyzeTestFailures:
     """Test Claude analysis of test failures."""
 
-    @patch.object(handler_module, 'bedrock_client')
-    def test_analyze_success(self, mock_bedrock):
+    @patch.object(handler_module, 'invoke_model')
+    def test_analyze_success(self, mock_invoke):
         """Test successful analysis."""
-        mock_bedrock.invoke_model.return_value = {
+        mock_invoke.return_value = _LegacyDictResponse({
             "body": MagicMock(read=MagicMock(return_value=json.dumps({
                 "content": [{"text": "Analysis: The test failed due to assertion error"}]
             }).encode()))
-        }
+        })
 
         result = handler_module.analyze_test_failures("FAILED test_foo.py")
 
         assert "Analysis" in result
 
-    @patch.object(handler_module, 'bedrock_client')
-    def test_analyze_error(self, mock_bedrock):
+    @patch.object(handler_module, 'invoke_model')
+    def test_analyze_error(self, mock_invoke):
         """Test analysis error handling."""
-        mock_bedrock.invoke_model.side_effect = Exception("Bedrock error")
+        mock_invoke.side_effect = Exception("Bedrock error")
 
         result = handler_module.analyze_test_failures("test output")
 

@@ -36,6 +36,16 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared import dual_write
 from shared.audit import log_audit_entry
+from shared.model_client import invoke_stream as model_invoke_stream
+from shared.model_client_types import (
+    Metadata as _ModelMetadata,
+    Stop as _ModelStop,
+    TextDelta as _ModelTextDelta,
+    ToolSpec as _ModelToolSpec,
+    ToolUseArgumentsDelta as _ModelToolUseArgsDelta,
+    ToolUseStart as _ModelToolUseStart,
+    ToolUseStop as _ModelToolUseStop,
+)
 from shared.audit_writer import (
     ACTION_CONVERSATION_DELETED,
     _hash_question,
@@ -409,6 +419,22 @@ def _build_bedrock_tool_config(mcp_configs: List[Dict]):
 
     tool_config = {"tools": tools} if tools else None
     return tool_config, tool_mapping
+
+
+def _tool_config_to_specs(tool_config) -> Optional[List[_ModelToolSpec]]:
+    """Convert a Converse-shaped toolConfig dict into the shared client's
+    ToolSpec list. Returns None when the caller passed no tools."""
+    if not tool_config or not tool_config.get("tools"):
+        return None
+    specs: list[_ModelToolSpec] = []
+    for entry in tool_config["tools"]:
+        spec = entry.get("toolSpec", {})
+        specs.append(_ModelToolSpec(
+            name=spec.get("name", ""),
+            description=spec.get("description", ""),
+            input_schema=spec.get("inputSchema", {}).get("json", {}),
+        ))
+    return specs
 
 
 def _mcp_request(url: str, headers: Dict[str, str], method: str, params: Optional[Dict] = None,
@@ -1842,74 +1868,79 @@ When the user's question builds on something you said earlier in this conversati
         # pattern/dependency turns (the bulk of chat traffic).
         system_prompt = f"{system_prompt}\n\n{graph_grounding}"
 
+    # Translate Converse-shaped toolConfig (built upstream by
+    # _build_bedrock_tool_config) into the shared client's ToolSpec list.
+    # Done once outside the agent loop because tools don't change between
+    # iterations.
+    tool_specs = _tool_config_to_specs(tool_config)
+
     try:
         for iteration in range(max_iterations):
-            params = {
-                "modelId": model_id,
-                "messages": messages,
-                "system": [{"text": system_prompt}],
-                "inferenceConfig": {
-                    "maxTokens": 8192,
-                    # Low temperature for grounded, reproducible synthesis.
-                    # At 0.3 the same KB-grounded question could bind a
-                    # different specific value across runs (the
-                    # token_urlsafe(16) vs (32) conflation; ADR-025). 0.1
-                    # cuts that sampling variance while keeping enough
-                    # room for conversational phrasing.
-                    "temperature": 0.1,
-                },
-            }
-            if tool_config:
-                params["toolConfig"] = tool_config
+            # Route via shared.model_client.invoke_stream (ADR-035 chunk 11).
+            # Converse for anthropic/meta/nova/gpt-oss; Mantle Responses
+            # for openai.gpt-5*. The chat UI's SSE wire format to the
+            # frontend is unchanged -- we yield the same text deltas and
+            # the same {"type":"tool_use",...} progress payloads regardless
+            # of backend.
+            stream = model_invoke_stream(
+                model_id=model_id,
+                messages=messages,
+                system=system_prompt,
+                # Low temperature for grounded, reproducible synthesis.
+                # At 0.3 the same KB-grounded question could bind a
+                # different specific value across runs (the
+                # token_urlsafe(16) vs (32) conflation; ADR-025). 0.1
+                # cuts that sampling variance while keeping enough
+                # room for conversational phrasing.
+                temperature=0.1,
+                max_tokens=8192,
+                tools=tool_specs,
+            )
 
-            response = bedrock.converse_stream(**params)
+            # Process unified stream events. The shared client's
+            # ToolUseStop carries already-parsed arguments, so we don't
+            # need a per-stream fragment accumulator here -- one less
+            # place for the JSON-split-mid-escape bug class to live.
+            assistant_text_parts: List[str] = []
+            tool_use_blocks: List[Dict[str, Any]] = []
+            # ToolUseStop carries tool_use_id + arguments but not the
+            # tool name (name arrived on the matching ToolUseStart).
+            # Track name per id to backfill when we see the Stop.
+            name_by_tool_use_id: Dict[str, str] = {}
 
-            # Process stream
-            assistant_text_parts = []
-            current_tool_use = None
-            tool_use_blocks = []
+            for event in stream:
+                if isinstance(event, _ModelTextDelta):
+                    yield event.text
+                    assistant_text_parts.append(event.text)
 
-            for event in response.get("stream", []):
-                if "contentBlockStart" in event:
-                    start = event["contentBlockStart"].get("start", {})
-                    if "toolUse" in start:
-                        current_tool_use = {
-                            "toolUseId": start["toolUse"]["toolUseId"],
-                            "name": start["toolUse"]["name"],
-                            "input_parts": [],
-                        }
-                        # Yield progress event
-                        if tool_mapping and start["toolUse"]["name"] in tool_mapping:
-                            original_name = tool_mapping[start["toolUse"]["name"]]["original_tool_name"]
-                            yield {"type": "tool_use", "tool": original_name, "status": "calling"}
+                elif isinstance(event, _ModelToolUseStart):
+                    name_by_tool_use_id[event.tool_use_id] = event.name
+                    if tool_mapping and event.name in tool_mapping:
+                        original_name = tool_mapping[event.name]["original_tool_name"]
+                        yield {"type": "tool_use", "tool": original_name, "status": "calling"}
 
-                elif "contentBlockDelta" in event:
-                    delta = event["contentBlockDelta"].get("delta", {})
-                    if "text" in delta:
-                        yield delta["text"]
-                        assistant_text_parts.append(delta["text"])
-                    elif "toolUse" in delta:
-                        if current_tool_use:
-                            current_tool_use["input_parts"].append(delta["toolUse"]["input"])
+                elif isinstance(event, _ModelToolUseArgsDelta):
+                    # Per-fragment delta -- the chat UI doesn't render
+                    # tool args incrementally, so we just wait for the
+                    # ToolUseStop to assemble the parsed dict.
+                    pass
 
-                elif "contentBlockStop" in event:
-                    if current_tool_use:
-                        full_input = "".join(current_tool_use["input_parts"])
-                        try:
-                            tool_input = json.loads(full_input) if full_input else {}
-                        except json.JSONDecodeError:
-                            tool_input = {}
-                        tool_use_blocks.append({
-                            "toolUseId": current_tool_use["toolUseId"],
-                            "name": current_tool_use["name"],
-                            "input": tool_input,
-                        })
-                        current_tool_use = None
+                elif isinstance(event, _ModelToolUseStop):
+                    tool_use_blocks.append({
+                        "toolUseId": event.tool_use_id,
+                        "name": name_by_tool_use_id.get(event.tool_use_id, ""),
+                        "input": event.arguments,
+                    })
 
-                elif "metadata" in event:
-                    usage_data = event["metadata"].get("usage", {})
-                    total_input_tokens += usage_data.get("inputTokens", 0)
-                    total_output_tokens += usage_data.get("outputTokens", 0)
+                elif isinstance(event, _ModelStop):
+                    # End of model turn. The agent loop below decides
+                    # whether to iterate (if tool_use_blocks emitted) or
+                    # break.
+                    pass
+
+                elif isinstance(event, _ModelMetadata):
+                    total_input_tokens += event.usage.input_tokens
+                    total_output_tokens += event.usage.output_tokens
 
             # If no tool uses, we're done
             if not tool_use_blocks:

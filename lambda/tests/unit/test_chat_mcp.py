@@ -275,6 +275,99 @@ class TestChatMessageRequestMcp:
         assert req.mcp_server_ids == ["mcp1"]
 
 
+def _legacy_converse_stream_to_unified(events):
+    """Same bridge as test_chat.py — translate legacy Converse-shape
+    stream events into unified StreamEvents that the migrated chat
+    handler consumes."""
+    import json as _json
+    from shared.model_client_types import (
+        Metadata, Stop, StopReason, TextDelta, ToolUseArgumentsDelta,
+        ToolUseStart, ToolUseStop, Usage,
+    )
+    current_tool_id = None
+    args_buf = ""
+    for ev in events:
+        if "messageStart" in ev:
+            continue
+        if "contentBlockStart" in ev:
+            tu = ev["contentBlockStart"].get("start", {}).get("toolUse")
+            if tu:
+                current_tool_id = tu.get("toolUseId", "")
+                args_buf = ""
+                yield ToolUseStart(tool_use_id=current_tool_id, name=tu.get("name", ""))
+            continue
+        if "contentBlockDelta" in ev:
+            delta = ev["contentBlockDelta"].get("delta", {})
+            if "text" in delta:
+                yield TextDelta(text=delta["text"])
+            elif "toolUse" in delta and current_tool_id:
+                partial = delta["toolUse"].get("input", "")
+                args_buf += partial
+                yield ToolUseArgumentsDelta(tool_use_id=current_tool_id, arguments_partial=partial)
+            continue
+        if "contentBlockStop" in ev:
+            if current_tool_id is not None:
+                try:
+                    args = _json.loads(args_buf or "{}")
+                except _json.JSONDecodeError:
+                    args = {}
+                yield ToolUseStop(tool_use_id=current_tool_id, arguments=args)
+                current_tool_id = None
+                args_buf = ""
+            continue
+        if "messageStop" in ev:
+            yield Stop(stop_reason=StopReason.END_TURN)
+            continue
+        if "metadata" in ev:
+            usage = ev["metadata"].get("usage", {})
+            yield Metadata(usage=Usage(
+                input_tokens=usage.get("inputTokens", 0),
+                output_tokens=usage.get("outputTokens", 0),
+            ))
+
+
+@pytest.fixture(autouse=True)
+def patch_model_invoke_stream():
+    """Bridge mock_bedrock_client.converse_stream programming into the
+    new shared.model_client.invoke_stream path."""
+    def _shim(**kwargs):
+        raw = mock_bedrock_client.converse_stream.return_value or {}
+        if isinstance(raw, Exception):
+            raise raw
+        stream = raw.get("stream", []) if isinstance(raw, dict) else []
+        # Translate kwargs back to Converse-shape so tests that assert
+        # on call_args["modelId"] / ["toolConfig"] keep working.
+        converse_kwargs = {
+            "modelId": kwargs.get("model_id"),
+            "messages": kwargs.get("messages"),
+            "inferenceConfig": {
+                "maxTokens": kwargs.get("max_tokens"),
+                "temperature": kwargs.get("temperature"),
+            },
+        }
+        sys_val = kwargs.get("system")
+        if sys_val is not None:
+            sys_list = sys_val if isinstance(sys_val, list) else [sys_val]
+            converse_kwargs["system"] = [{"text": s} for s in sys_list]
+        tools = kwargs.get("tools")
+        if tools:
+            converse_kwargs["toolConfig"] = {
+                "tools": [
+                    {"toolSpec": {
+                        "name": t.name,
+                        "description": t.description,
+                        "inputSchema": {"json": t.input_schema},
+                    }}
+                    for t in tools
+                ]
+            }
+        mock_bedrock_client.converse_stream(**converse_kwargs)
+        yield from _legacy_converse_stream_to_unified(stream)
+
+    with patch.object(handler_module, "model_invoke_stream", side_effect=_shim):
+        yield
+
+
 class TestGenerateAnswerStreamWithTools:
     """Test generate_answer_stream with tool use."""
 

@@ -1,3 +1,39 @@
+
+# === Legacy dict -> unified Response adapter (ADR-035 chunk 11) ===
+from types import SimpleNamespace
+from shared.model_client_types import StopReason
+
+class _LegacyDictResponse:
+    def __init__(self, d):
+        # Handle two legacy shapes: Converse (output.message.content) and
+        # InvokeModel-Anthropic-native (content list at top level).
+        content = d.get("output", {}).get("message", {}).get("content", [])
+        if not content:
+            content = d.get("content", [])
+        # InvokeModel/Anthropic-native body had {"body": <streaming bytes>}.
+        if "body" in d and not content:
+            import json as _json
+            body_raw = d["body"]
+            body_bytes = body_raw.read() if hasattr(body_raw, "read") else body_raw
+            try:
+                body = _json.loads(body_bytes) if body_bytes else {}
+            except Exception:
+                body = {}
+            content = body.get("content", [])
+            usage = body.get("usage", {})
+        else:
+            usage = d.get("usage", {})
+        self.text = content[0].get("text", "") if content else ""
+        self.content_blocks = [{"text": self.text}] if self.text else []
+        # Tolerate both Converse (inputTokens/outputTokens) and Anthropic
+        # (input_tokens/output_tokens) keys.
+        in_t = usage.get("inputTokens", usage.get("input_tokens", 0))
+        out_t = usage.get("outputTokens", usage.get("output_tokens", 0))
+        self.usage = SimpleNamespace(input_tokens=in_t, output_tokens=out_t)
+        self.stop_reason = StopReason.END_TURN
+        self.tool_calls = None
+        self.raw = d
+
 """Unit tests for process-batch-summary Lambda handler."""
 
 import hashlib
@@ -144,8 +180,8 @@ class TestGenerateBatchSummary:
     """Test batch summary generation."""
 
     @patch("process_batch_summary_handler.fetch_file_content")
-    @patch("process_batch_summary_handler.bedrock_client")
-    def test_generate_batch_summary_infrastructure(self, mock_bedrock, mock_fetch):
+    @patch("process_batch_summary_handler.invoke_model")
+    def test_generate_batch_summary_infrastructure(self, mock_invoke, mock_fetch):
         """Test generating summary for infrastructure batch."""
         # Arrange
         batch = {
@@ -158,13 +194,13 @@ class TestGenerateBatchSummary:
 
         mock_fetch.return_value = "terraform content here"
         mock_summary = "This infrastructure creates Lambda functions and DynamoDB tables..."
-        mock_bedrock.converse.return_value = {
+        mock_invoke.return_value = _LegacyDictResponse({
             "output": {
                 "message": {
                     "content": [{"text": mock_summary}]
                 }
             }
-        }
+        })
 
         # Act
         result = generate_batch_summary(batch)
@@ -172,11 +208,11 @@ class TestGenerateBatchSummary:
         # Assert
         assert result == mock_summary
         assert mock_fetch.call_count == 2
-        mock_bedrock.converse.assert_called_once()
+        mock_invoke.assert_called_once()
 
     @patch("process_batch_summary_handler.fetch_file_content")
-    @patch("process_batch_summary_handler.bedrock_client")
-    def test_generate_batch_summary_handler_group(self, mock_bedrock, mock_fetch):
+    @patch("process_batch_summary_handler.invoke_model")
+    def test_generate_batch_summary_handler_group(self, mock_invoke, mock_fetch):
         """Test generating summary for handler group batch."""
         # Arrange
         batch = {
@@ -189,24 +225,24 @@ class TestGenerateBatchSummary:
 
         mock_fetch.return_value = "def handler(event, context): ..."
         mock_summary = "This handler ingests documents from GitHub..."
-        mock_bedrock.converse.return_value = {
+        mock_invoke.return_value = _LegacyDictResponse({
             "output": {
                 "message": {
                     "content": [{"text": mock_summary}]
                 }
             }
-        }
+        })
 
         # Act
         result = generate_batch_summary(batch)
 
         # Assert
         assert result == mock_summary
-        mock_bedrock.converse.assert_called_once()
+        mock_invoke.assert_called_once()
 
     @patch("process_batch_summary_handler.fetch_file_content")
-    @patch("process_batch_summary_handler.bedrock_client")
-    def test_generate_batch_summary_chunks_large_files(self, mock_bedrock, mock_fetch):
+    @patch("process_batch_summary_handler.invoke_model")
+    def test_generate_batch_summary_chunks_large_files(self, mock_invoke, mock_fetch):
         """Test that large files are chunked instead of skipped."""
         # Arrange
         batch = {
@@ -219,22 +255,22 @@ class TestGenerateBatchSummary:
 
         mock_fetch.return_value = "x" * 60000  # 60KB file - will be chunked
         mock_summary = "Summary of chunked large file..."
-        mock_bedrock.converse.return_value = {
+        mock_invoke.return_value = _LegacyDictResponse({
             "output": {
                 "message": {
                     "content": [{"text": mock_summary}]
                 }
             }
-        }
+        })
 
         # Act
         result = generate_batch_summary(batch)
 
         # Assert - should get a summary, not "No files available"
         assert result == mock_summary
-        mock_bedrock.converse.assert_called_once()
+        mock_invoke.assert_called_once()
         # Verify the prompt includes chunk information
-        call_args = mock_bedrock.converse.call_args
+        call_args = mock_invoke.call_args
         messages = call_args[1]["messages"]
         prompt_content = messages[0]["content"][0]["text"]
         assert "[Chunk" in prompt_content  # Large file should be chunked
@@ -254,7 +290,7 @@ class TestGenerateBatchSummary:
         mock_fetch.side_effect = [Exception("API Error"), "valid content"]
 
         # Act - should not raise
-        # Note: This would need mock_bedrock too for full test
+        # Note: This would need mock_invoke too for full test
         # For now just testing error handling doesn't crash
 
 
@@ -263,7 +299,9 @@ class TestGenerateEmbedding:
 
     @patch("process_batch_summary_handler.bedrock_client")
     def test_generate_embedding_success(self, mock_bedrock):
-        """Test successful embedding generation."""
+        """Test successful embedding generation. Embedding uses Titan
+        via bedrock_client.invoke_model (NOT shared.model_client) per
+        ADR-035 §Out of scope."""
         # Arrange
         text = "Test text for embedding"
         mock_embedding = [0.1] * 1024

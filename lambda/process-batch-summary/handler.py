@@ -33,6 +33,7 @@ from botocore.exceptions import ClientError
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared.audit import COMPREHEND_MODEL_ID, log_audit_entry
 from shared.audit_writer import ACTION_DOCUMENT_INGESTED, log_admin_action
+from shared.model_client import invoke as invoke_model
 from shared.pii import MODE_STRICT, read_workspace_mode, redact
 from shared.prompts import CODE_MAP_LITERAL_DISCIPLINE
 
@@ -841,38 +842,31 @@ For each test file:
 
 
 def _call_bedrock_and_audit(prompt: str, group_name: str) -> str:
-    """Call Bedrock with the given prompt and log audit entry. Returns summary text."""
-    def call_claude():
-        payload = {
-            "modelId": ADVANCED_MODEL_ID,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [{"text": prompt}]
-                }
-            ],
-            "inferenceConfig": {
-                "maxTokens": 8192,
-                # Low temperature for code-map generation: reduces the
-                # value/identifier hallucination that froze wrong literals
-                # into the artifact (ADR-027). Pairs with the
-                # literal-omission discipline appended to the prompt.
-                "temperature": 0.1,
-            },
-        }
+    """Call the configured model and log audit entry. Returns summary text.
 
-        response = bedrock_client.converse(**payload)
-
-        output_message = response.get("output", {}).get("message", {})
-        content = output_message.get("content", [])
-
-        if not content or not content[0].get("text"):
-            raise ValueError("No content in Claude response")
-
-        return content[0]["text"], response.get("usage", {})
+    Routes via shared.model_client.invoke (ADR-035) -- Converse for
+    anthropic/meta/nova/gpt-oss; Mantle Responses for openai.gpt-5*/codex.
+    Low temperature for code-map generation (ADR-027 literal-omission
+    discipline pairs with this; sampling noise was a root cause of the
+    value/identifier hallucination that froze wrong literals into the
+    artifact).
+    """
+    def call_model():
+        resp = invoke_model(
+            model_id=ADVANCED_MODEL_ID,
+            messages=[{"role": "user", "content": [{"text": prompt}]}],
+            max_tokens=8192,
+            temperature=0.1,
+        )
+        if not resp.text:
+            raise ValueError(
+                f"No text in {ADVANCED_MODEL_ID} response "
+                f"(stop_reason={resp.stop_reason})"
+            )
+        return resp.text, resp.usage
 
     bedrock_start = time.time()
-    summary, usage = retry_bedrock_call(call_claude)
+    summary, usage = retry_bedrock_call(call_model)
     bedrock_duration_ms = int((time.time() - bedrock_start) * 1000)
     logger.info(f"Generated batch summary for {group_name} ({len(summary)} chars)")
 
@@ -882,8 +876,8 @@ def _call_bedrock_and_audit(prompt: str, group_name: str) -> str:
         model_id=ADVANCED_MODEL_ID,
         input_text=prompt,
         output_text=summary,
-        input_tokens=usage.get("inputTokens", 0),
-        output_tokens=usage.get("outputTokens", 0),
+        input_tokens=usage.input_tokens,
+        output_tokens=usage.output_tokens,
         duration_ms=bedrock_duration_ms,
     )
 
