@@ -25,13 +25,12 @@ from botocore.exceptions import ClientError
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared.audit import log_audit_entry
 from shared.prompts import build_rag_system_prompt
+from shared.model_client import invoke as invoke_model
+from shared.model_client_types import Response as _UnifiedResponse
 
 # Setup logging
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
-
-# AWS clients (initialized once per container)
-bedrock_client = boto3.client("bedrock-runtime")
 
 # Load environment variables
 ENVIRONMENT = os.environ.get("ENV", "dev")
@@ -133,44 +132,42 @@ ANSWER:"""
     return prompt
 
 
-def invoke_claude_with_retry(prompt: str, model: str = "haiku", max_retries: int = 3) -> Dict[str, Any]:
+def invoke_claude_with_retry(prompt: str, model: str = "haiku", max_retries: int = 3) -> _UnifiedResponse:
     """
-    Invoke Claude via Bedrock Converse API with retry logic.
+    Invoke the configured model via shared.model_client with retry logic.
+
+    Despite the legacy name, this routes through shared.model_client.invoke
+    -- Converse for anthropic/meta/nova/gpt-oss, Bedrock-Mantle Responses
+    for openai.gpt-5*/codex per ADR-035. The Lambda rename is tracked in
+    docs/backlog.md.
 
     Args:
-        prompt: The prompt to send to Claude
-        model: Model to use - "haiku" (default) or "sonnet" (advanced)
+        prompt: The prompt to send to the model
+        model: Tier -- "haiku" (basic) or "sonnet" (advanced)
         max_retries: Maximum number of retry attempts
 
     Returns:
-        Response from Claude
+        Unified Response from the shared model client.
 
     Raises:
-        ClientError: If all retries fail
+        ClientError: If the Converse backend retries are exhausted.
+        Other shared.model_client errors propagate.
     """
     model_id = ADVANCED_MODEL_ID if model == "sonnet" else BASIC_MODEL_ID
     max_tokens = 4000 if model == "sonnet" else 2000  # More tokens for complex reasoning
 
-    logger.info(f"[ask-claude] Using model: {model} ({model_id})")
+    logger.info(f"[ask-claude] Using model tier={model} id={model_id}")
 
     for attempt in range(max_retries):
         try:
-            response = bedrock_client.converse(
-                modelId=model_id,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [{"text": prompt}]
-                    }
-                ],
-                inferenceConfig={
-                    "temperature": 0.3,  # Low temperature for factual, grounded responses
-                    "maxTokens": max_tokens,
-                },
+            resp = invoke_model(
+                model_id=model_id,
+                messages=[{"role": "user", "content": [{"text": prompt}]}],
+                temperature=0.3,  # Low temperature for factual, grounded responses
+                max_tokens=max_tokens,
             )
-
-            logger.info(f"[ask-claude] Successfully invoked Claude on attempt {attempt + 1}")
-            return response
+            logger.info(f"[ask-claude] Successfully invoked on attempt {attempt + 1}")
+            return resp
 
         except ClientError as e:
             error_code = e.response.get("Error", {}).get("Code", "")
@@ -199,7 +196,7 @@ def invoke_claude_with_retry(prompt: str, model: str = "haiku", max_retries: int
 
     raise ClientError(
         {"Error": {"Code": "MaxRetriesExceeded", "Message": "Failed after maximum retries"}},
-        "converse"
+        "invoke",
     )
 
 
@@ -294,27 +291,25 @@ def handler(event, context):
         response = invoke_claude_with_retry(prompt, model=model)
         bedrock_duration_ms = int((time.time() - bedrock_start) * 1000)
 
-        # Extract answer from response
-        output = response.get("output", {})
-        message = output.get("message", {})
-        content = message.get("content", [])
-
-        if not content or not content[0].get("text"):
-            logger.error("[ask-claude] No text in Claude response")
+        # Extract answer from unified Response
+        if not response.text:
+            logger.error(
+                f"[ask-claude] No text in model response "
+                f"(stop_reason={response.stop_reason})"
+            )
             return {
                 "statusCode": 500,
                 "body": json.dumps({"error": "Failed to generate answer"}),
             }
 
-        answer = content[0]["text"]
+        answer = response.text
 
         # Extract sources from context
         sources = extract_sources_from_context(context_docs)
 
         # Calculate token usage and cost based on model
-        usage = response.get("usage", {})
-        input_tokens = usage.get("inputTokens", 0)
-        output_tokens = usage.get("outputTokens", 0)
+        input_tokens = response.usage.input_tokens
+        output_tokens = response.usage.output_tokens
         cost_usd = calculate_cost(input_tokens, output_tokens, model=model)
 
         logger.info(

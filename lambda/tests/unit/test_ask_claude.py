@@ -26,6 +26,17 @@ from handler import (
     invoke_claude_with_retry,
     extract_sources_from_context
 )
+from shared.model_client_types import Response, StopReason, Usage
+
+
+def _mk_response(text: str, in_tokens: int = 100, out_tokens: int = 50) -> Response:
+    """Build a unified Response object for tests."""
+    return Response(
+        text=text,
+        content_blocks=[{"text": text}],
+        usage=Usage(input_tokens=in_tokens, output_tokens=out_tokens),
+        stop_reason=StopReason.END_TURN,
+    )
 
 
 class TestBuildPrompt:
@@ -84,69 +95,62 @@ class TestBuildPrompt:
 class TestInvokeClaudeWithRetry:
     """Test Claude API invocation with retry logic."""
 
-    @patch('handler.bedrock_client')
-    def test_invoke_claude_success_first_try(self, mock_bedrock):
+    @patch('handler.invoke_model')
+    def test_invoke_claude_success_first_try(self, mock_invoke):
         # Arrange
         prompt = "Test prompt"
-        mock_bedrock.converse.return_value = {
-            "output": {
-                "message": {
-                    "content": [{"text": "Test response"}]
-                }
-            },
-            "usage": {"inputTokens": 100, "outputTokens": 50}
-        }
+        mock_invoke.return_value = _mk_response("Test response")
 
         # Act
         result = invoke_claude_with_retry(prompt)
 
         # Assert
-        assert result["output"]["message"]["content"][0]["text"] == "Test response"
-        assert mock_bedrock.converse.call_count == 1
+        assert result.text == "Test response"
+        assert mock_invoke.call_count == 1
 
-    @patch('handler.bedrock_client')
+    @patch('handler.invoke_model')
     @patch('time.sleep')  # Mock sleep to speed up tests
-    def test_invoke_claude_retry_on_throttling(self, mock_sleep, mock_bedrock):
+    def test_invoke_claude_retry_on_throttling(self, mock_sleep, mock_invoke):
         # Arrange
         prompt = "Test prompt"
-        mock_bedrock.converse.side_effect = [
+        mock_invoke.side_effect = [
             ClientError({"Error": {"Code": "ThrottlingException"}}, "converse"),
-            {"output": {"message": {"content": [{"text": "Success"}]}}, "usage": {"inputTokens": 100, "outputTokens": 50}}
+            _mk_response("Success"),
         ]
 
         # Act
         result = invoke_claude_with_retry(prompt, max_retries=3)
 
         # Assert
-        assert result["output"]["message"]["content"][0]["text"] == "Success"
-        assert mock_bedrock.converse.call_count == 2
+        assert result.text == "Success"
+        assert mock_invoke.call_count == 2
         assert mock_sleep.call_count == 1  # Slept once before retry
 
-    @patch('handler.bedrock_client')
+    @patch('handler.invoke_model')
     @patch('time.sleep')
-    def test_invoke_claude_exponential_backoff(self, mock_sleep, mock_bedrock):
+    def test_invoke_claude_exponential_backoff(self, mock_sleep, mock_invoke):
         # Arrange
         prompt = "Test prompt"
-        mock_bedrock.converse.side_effect = [
+        mock_invoke.side_effect = [
             ClientError({"Error": {"Code": "ThrottlingException"}}, "converse"),
             ClientError({"Error": {"Code": "ThrottlingException"}}, "converse"),
-            {"output": {"message": {"content": [{"text": "Success"}]}}, "usage": {"inputTokens": 100, "outputTokens": 50}}
+            _mk_response("Success"),
         ]
 
         # Act
         result = invoke_claude_with_retry(prompt, max_retries=3)
 
         # Assert
-        assert mock_bedrock.converse.call_count == 3
+        assert mock_invoke.call_count == 3
         # Verify exponential backoff: 1s, 2s
         sleep_calls = [call[0][0] for call in mock_sleep.call_args_list]
         assert sleep_calls == [1, 2]
 
-    @patch('handler.bedrock_client')
-    def test_invoke_claude_no_retry_on_validation_error(self, mock_bedrock):
+    @patch('handler.invoke_model')
+    def test_invoke_claude_no_retry_on_validation_error(self, mock_invoke):
         # Arrange
         prompt = "Test prompt"
-        mock_bedrock.converse.side_effect = ClientError(
+        mock_invoke.side_effect = ClientError(
             {"Error": {"Code": "ValidationException"}}, "converse"
         )
 
@@ -155,14 +159,14 @@ class TestInvokeClaudeWithRetry:
             invoke_claude_with_retry(prompt)
 
         assert exc_info.value.response["Error"]["Code"] == "ValidationException"
-        assert mock_bedrock.converse.call_count == 1  # No retry
+        assert mock_invoke.call_count == 1  # No retry
 
-    @patch('handler.bedrock_client')
+    @patch('handler.invoke_model')
     @patch('time.sleep')
-    def test_invoke_claude_max_retries_exceeded(self, mock_sleep, mock_bedrock):
+    def test_invoke_claude_max_retries_exceeded(self, mock_sleep, mock_invoke):
         # Arrange
         prompt = "Test prompt"
-        mock_bedrock.converse.side_effect = ClientError(
+        mock_invoke.side_effect = ClientError(
             {"Error": {"Code": "ThrottlingException"}}, "converse"
         )
 
@@ -170,7 +174,7 @@ class TestInvokeClaudeWithRetry:
         with pytest.raises(ClientError):
             invoke_claude_with_retry(prompt, max_retries=2)
 
-        assert mock_bedrock.converse.call_count == 2
+        assert mock_invoke.call_count == 2
 
 
 class TestExtractSourcesFromContext:
@@ -244,14 +248,10 @@ class TestHandler:
                 {"score": 0.95, "text": "Lambda handlers should...", "source": "ADR: ADR-004"}
             ]
         }
-        mock_invoke.return_value = {
-            "output": {
-                "message": {
-                    "content": [{"text": "According to ADR-004, Lambda handlers should follow a standardized structure."}]
-                }
-            },
-            "usage": {"inputTokens": 1500, "outputTokens": 200}
-        }
+        mock_invoke.return_value = _mk_response(
+            "According to ADR-004, Lambda handlers should follow a standardized structure.",
+            in_tokens=1500, out_tokens=200,
+        )
 
         # Act
         response = handler(event, None)
@@ -300,10 +300,9 @@ class TestHandler:
             "query": "test query",
             "context": [{"score": 0.95, "text": "content", "source": "source"}]
         }
-        mock_invoke.return_value = {
-            "output": {"message": {"content": []}},
-            "usage": {"inputTokens": 100, "outputTokens": 0}
-        }
+        # Empty-text response: stop_reason END_TURN but text="" triggers
+        # the "no answer" 500 path.
+        mock_invoke.return_value = _mk_response("", in_tokens=100, out_tokens=0)
 
         # Act
         response = handler(event, None)
@@ -337,10 +336,7 @@ class TestHandler:
             "query": "test query",
             "context": [{"score": 0.95, "text": "content", "source": "source"}]
         }
-        mock_invoke.return_value = {
-            "output": {"message": {"content": [{"text": "answer"}]}},
-            "usage": {"inputTokens": 2000, "outputTokens": 300}
-        }
+        mock_invoke.return_value = _mk_response("answer", in_tokens=2000, out_tokens=300)
 
         # Act
         response = handler(event, None)
