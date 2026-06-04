@@ -35,13 +35,9 @@ logger = logging.getLogger(__name__)
 ENV = os.environ.get("ENV", "dev")
 APP_NAME = os.environ.get("APP_NAME", "outcome-ops-ai-assist")
 
-# Bedrock client for Claude API (auto-fix)
-bedrock_config = Config(
-    connect_timeout=60,
-    read_timeout=300,  # 5 minutes for auto-fix generation
-    retries={'max_attempts': 2}
-)
-bedrock_client = boto3.client("bedrock-runtime", config=bedrock_config)
+# Shared model client (dispatches Converse / Mantle Responses per ADR-035).
+from shared.model_client import invoke as invoke_model
+
 lambda_client = boto3.client("lambda")
 
 CLAUDE_MODEL_ID = os.environ.get(
@@ -325,22 +321,21 @@ Be concise and specific about what to change."""
 Provide a concise fix for this error."""
 
     try:
-        response = bedrock_client.converse(
-            modelId=CLAUDE_MODEL_ID,
+        resp = invoke_model(
+            model_id=CLAUDE_MODEL_ID,
             messages=[{"role": "user", "content": [{"text": prompt}]}],
-            system=[{"text": system_prompt}],
-            inferenceConfig={"temperature": 0.3, "maxTokens": 500}
+            system=system_prompt,
+            temperature=0.3,
+            max_tokens=500,
         )
 
-        # Track token usage and cost
-        usage = response.get("usage", {})
-        input_tokens = usage.get("inputTokens", 0)
-        output_tokens = usage.get("outputTokens", 0)
+        input_tokens = resp.usage.input_tokens
+        output_tokens = resp.usage.output_tokens
         _accumulate_autofix_cost(input_tokens, output_tokens)
         logger.info(f"[auto-fix] Token usage: {input_tokens} in, {output_tokens} out")
 
-        fix_suggestion = response.get("output", {}).get("message", {}).get("content", [{}])[0].get("text", "")
-        logger.info(f"[auto-fix] Claude suggestion: {fix_suggestion[:200]}")
+        fix_suggestion = resp.text
+        logger.info(f"[auto-fix] suggestion: {fix_suggestion[:200]}")
 
         if log_audit_entry:
             log_audit_entry(
@@ -448,21 +443,20 @@ For syntax errors: Fix the syntax while preserving the file structure.
 Output the COMPLETE corrected file using the organizational patterns.
 Output ONLY valid {language} code - no markdown, no explanations."""
 
-        response = bedrock_client.converse(
-            modelId=CLAUDE_MODEL_ID,
+        resp = invoke_model(
+            model_id=CLAUDE_MODEL_ID,
             messages=[{"role": "user", "content": [{"text": prompt}]}],
-            system=[{"text": system_prompt}],
-            inferenceConfig={"temperature": 0.2, "maxTokens": 8000}
+            system=system_prompt,
+            temperature=0.2,
+            max_tokens=8000,
         )
 
-        # Track token usage and cost
-        usage = response.get("usage", {})
-        input_tokens = usage.get("inputTokens", 0)
-        output_tokens = usage.get("outputTokens", 0)
+        input_tokens = resp.usage.input_tokens
+        output_tokens = resp.usage.output_tokens
         _accumulate_autofix_cost(input_tokens, output_tokens)
         logger.info(f"[auto-fix] Token usage for file fix: {input_tokens} in, {output_tokens} out")
 
-        fixed_content = response.get("output", {}).get("message", {}).get("content", [{}])[0].get("text", "")
+        fixed_content = resp.text
 
         if log_audit_entry:
             log_audit_entry(

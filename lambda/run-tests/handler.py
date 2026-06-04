@@ -106,13 +106,10 @@ def _get_account_id() -> str:
         _account_id = sts_client.get_caller_identity()["Account"]
     return _account_id
 
-# Bedrock client for Claude API (auto-fix) - used by handler's direct auto-fix functions
-bedrock_config = Config(
-    connect_timeout=60,
-    read_timeout=300,  # 5 minutes for auto-fix generation
-    retries={'max_attempts': 2}
-)
-bedrock_client = boto3.client("bedrock-runtime", config=bedrock_config)
+# NOTE: the per-handler bedrock-runtime client construction was removed
+# in ADR-035 chunk 10. auto_fix.py routes through shared.model_client.invoke.
+# The CLAUDE_MODEL_ID + MAX_FIX_ATTEMPTS constants stay since other parts
+# of the handler still reference them for logging / orchestration.
 CLAUDE_MODEL_ID = os.environ.get(
     "BEDROCK_ADVANCED_MODEL_ID", "us.anthropic.claude-sonnet-4-6"
 )

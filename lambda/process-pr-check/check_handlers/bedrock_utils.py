@@ -12,26 +12,13 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-import boto3
-from botocore.config import Config
-
 # Add shared module to path for Lambda deployment
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from shared.audit import log_audit_entry
+from shared.model_client import invoke as invoke_model
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
-
-# Configure retry strategy for Bedrock to handle throttling
-bedrock_config = Config(
-    retries={
-        'max_attempts': 10,
-        'mode': 'adaptive'
-    }
-)
-
-# Bedrock client (initialized once per container)
-bedrock_client = boto3.client("bedrock-runtime", config=bedrock_config)
 
 # Model IDs (configurable via environment variables)
 SONNET_MODEL_ID = os.environ.get(
@@ -186,36 +173,25 @@ def call_bedrock(
     logger.info(f"Calling Bedrock model {model_id}...")
 
     bedrock_start = time.time()
-    response = bedrock_client.converse(
-        modelId=model_id,
-        messages=[
-            {
-                "role": "user",
-                "content": [{"text": prompt}]
-            }
-        ],
-        inferenceConfig={
-            "maxTokens": max_tokens,
-            "temperature": temperature
-        }
+    resp = invoke_model(
+        model_id=model_id,
+        messages=[{"role": "user", "content": [{"text": prompt}]}],
+        max_tokens=max_tokens,
+        temperature=temperature,
     )
     bedrock_duration_ms = int((time.time() - bedrock_start) * 1000)
 
-    # Extract response text
-    output_message = response.get("output", {}).get("message", {})
-    content = output_message.get("content", [])
+    if not resp.text:
+        raise Exception(
+            f"No text in {model_id} response (stop_reason={resp.stop_reason})"
+        )
 
-    if not content or not content[0].get("text"):
-        raise Exception("No content in Bedrock response")
+    response_text = resp.text.strip()
 
-    response_text = content[0]["text"].strip()
-
-    # Extract usage
-    usage_data = response.get("usage", {})
     usage = BedrockUsage(
         model_id=model_id,
-        input_tokens=usage_data.get("inputTokens", 0),
-        output_tokens=usage_data.get("outputTokens", 0)
+        input_tokens=resp.usage.input_tokens,
+        output_tokens=resp.usage.output_tokens,
     )
 
     logger.info(

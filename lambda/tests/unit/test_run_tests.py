@@ -1,3 +1,22 @@
+
+# === Legacy dict -> unified Response adapter (ADR-035 chunk 10) ===
+from types import SimpleNamespace
+from shared.model_client_types import StopReason
+
+class _LegacyDictResponse:
+    def __init__(self, d):
+        content = d.get("output", {}).get("message", {}).get("content", [])
+        self.text = content[0].get("text", "") if content else ""
+        self.content_blocks = [{"text": self.text}] if self.text else []
+        usage = d.get("usage", {})
+        self.usage = SimpleNamespace(
+            input_tokens=usage.get("inputTokens", 0),
+            output_tokens=usage.get("outputTokens", 0),
+        )
+        self.stop_reason = StopReason.END_TURN
+        self.tool_calls = None
+        self.raw = d
+
 """
 Unit tests for the run-tests Lambda handler.
 """
@@ -372,21 +391,21 @@ def test_get_github_usernames_to_tag_missing_param(mock_ssm):
     assert result == ""
 
 
-@patch.object(auto_fix_module, "bedrock_client")
-def test_apply_fix_to_file_success(mock_bedrock, tmp_path):
+@patch.object(auto_fix_module, "invoke_model")
+def test_apply_fix_to_file_success(mock_invoke, tmp_path):
     """Successfully apply a fix to a file."""
     # Arrange
     test_file = tmp_path / "test.py"
     test_file.write_text("def foo():\n  pass\n")
 
-    mock_bedrock.converse.return_value = {
+    mock_invoke.return_value = _LegacyDictResponse({
         "output": {
             "message": {
                 "content": [{"text": "def foo():\n    import os\n    pass\n"}]
             }
         },
         "usage": {"inputTokens": 165, "outputTokens": 17}
-    }
+    })
     error_output = "ModuleNotFoundError: No module named 'os'"
 
     # Act
@@ -400,24 +419,24 @@ def test_apply_fix_to_file_success(mock_bedrock, tmp_path):
     assert result is True
     fixed_content = test_file.read_text()
     assert "import os" in fixed_content
-    mock_bedrock.converse.assert_called_once()
+    mock_invoke.assert_called_once()
 
 
-@patch.object(auto_fix_module, "bedrock_client")
-def test_apply_fix_to_file_removes_markdown_fences(mock_bedrock, tmp_path):
+@patch.object(auto_fix_module, "invoke_model")
+def test_apply_fix_to_file_removes_markdown_fences(mock_invoke, tmp_path):
     """Remove markdown code fences from Claude's response."""
     # Arrange
     test_file = tmp_path / "test.py"
     test_file.write_text("def foo():\n  pass\n")
 
-    mock_bedrock.converse.return_value = {
+    mock_invoke.return_value = _LegacyDictResponse({
         "output": {
             "message": {
                 "content": [{"text": "```python\ndef foo():\n    import os\n    pass\n```"}]
             }
         },
         "usage": {"inputTokens": 150, "outputTokens": 20}
-    }
+    })
 
     # Act
     result = auto_fix_module.apply_fix_to_file(
@@ -433,21 +452,21 @@ def test_apply_fix_to_file_removes_markdown_fences(mock_bedrock, tmp_path):
     assert "```" not in fixed_content
 
 
-@patch.object(auto_fix_module, "bedrock_client")
-def test_apply_fix_to_file_empty_response(mock_bedrock, tmp_path):
+@patch.object(auto_fix_module, "invoke_model")
+def test_apply_fix_to_file_empty_response(mock_invoke, tmp_path):
     """Handle empty Claude response."""
     # Arrange
     test_file = tmp_path / "test.py"
     test_file.write_text("original content")
 
-    mock_bedrock.converse.return_value = {
+    mock_invoke.return_value = _LegacyDictResponse({
         "output": {
             "message": {
                 "content": [{"text": ""}]
             }
         },
         "usage": {"inputTokens": 151, "outputTokens": 10}
-    }
+    })
 
     # Act
     result = auto_fix_module.apply_fix_to_file(

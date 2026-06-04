@@ -1,3 +1,22 @@
+
+# === Legacy dict -> unified Response adapter (ADR-035 chunk 10) ===
+from types import SimpleNamespace
+from shared.model_client_types import StopReason
+
+class _LegacyDictResponse:
+    def __init__(self, d):
+        content = d.get("output", {}).get("message", {}).get("content", [])
+        self.text = content[0].get("text", "") if content else ""
+        self.content_blocks = [{"text": self.text}] if self.text else []
+        usage = d.get("usage", {})
+        self.usage = SimpleNamespace(
+            input_tokens=usage.get("inputTokens", 0),
+            output_tokens=usage.get("outputTokens", 0),
+        )
+        self.stop_reason = StopReason.END_TURN
+        self.tool_calls = None
+        self.raw = d
+
 """
 Unit tests for bedrock_utils module.
 
@@ -364,11 +383,11 @@ class TestUsageTracker:
 class TestCallBedrock:
     """Test call_bedrock function"""
 
-    @patch('bedrock_utils.bedrock_client')
-    def test_call_bedrock_success(self, mock_bedrock):
+    @patch('bedrock_utils.invoke_model')
+    def test_call_bedrock_success(self, mock_invoke):
         """Test: Successfully call Bedrock and get response with usage"""
         # Arrange
-        mock_bedrock.converse.return_value = {
+        mock_invoke.return_value = _LegacyDictResponse({
             "output": {
                 "message": {
                     "content": [{"text": "Test response from Claude"}]
@@ -378,7 +397,7 @@ class TestCallBedrock:
                 "inputTokens": 100,
                 "outputTokens": 50
             }
-        }
+        })
 
         # Act
         response_text, usage = call_bedrock("Test prompt")
@@ -388,13 +407,13 @@ class TestCallBedrock:
         assert usage.input_tokens == 100
         assert usage.output_tokens == 50
         assert usage.model_id == SONNET_MODEL_ID
-        mock_bedrock.converse.assert_called_once()
+        mock_invoke.assert_called_once()
 
-    @patch('bedrock_utils.bedrock_client')
-    def test_call_bedrock_with_haiku_model(self, mock_bedrock):
+    @patch('bedrock_utils.invoke_model')
+    def test_call_bedrock_with_haiku_model(self, mock_invoke):
         """Test: Call Bedrock with Haiku model"""
         # Arrange
-        mock_bedrock.converse.return_value = {
+        mock_invoke.return_value = _LegacyDictResponse({
             "output": {
                 "message": {
                     "content": [{"text": "Haiku response"}]
@@ -404,7 +423,7 @@ class TestCallBedrock:
                 "inputTokens": 200,
                 "outputTokens": 100
             }
-        }
+        })
 
         # Act
         response_text, usage = call_bedrock("Test prompt", model_id=HAIKU_MODEL_ID)
@@ -413,32 +432,33 @@ class TestCallBedrock:
         assert response_text == "Haiku response"
         assert usage.model_id == HAIKU_MODEL_ID
 
-    @patch('bedrock_utils.bedrock_client')
-    def test_call_bedrock_with_custom_params(self, mock_bedrock):
+    @patch('bedrock_utils.invoke_model')
+    def test_call_bedrock_with_custom_params(self, mock_invoke):
         """Test: Call Bedrock with custom max_tokens and temperature"""
         # Arrange
-        mock_bedrock.converse.return_value = {
+        mock_invoke.return_value = _LegacyDictResponse({
             "output": {
                 "message": {
                     "content": [{"text": "Response"}]
                 }
             },
             "usage": {"inputTokens": 50, "outputTokens": 25}
-        }
+        })
 
         # Act
         call_bedrock("Prompt", max_tokens=2000, temperature=0.5)
 
-        # Assert
-        call_args = mock_bedrock.converse.call_args
-        assert call_args[1]["inferenceConfig"]["maxTokens"] == 2000
-        assert call_args[1]["inferenceConfig"]["temperature"] == 0.5
+        # Assert: the shared client receives max_tokens / temperature as
+        # top-level kwargs (not Converse's nested inferenceConfig).
+        call_args = mock_invoke.call_args
+        assert call_args[1]["max_tokens"] == 2000
+        assert call_args[1]["temperature"] == 0.5
 
-    @patch('bedrock_utils.bedrock_client')
-    def test_call_bedrock_api_error(self, mock_bedrock):
+    @patch('bedrock_utils.invoke_model')
+    def test_call_bedrock_api_error(self, mock_invoke):
         """Test: Bedrock API error raises exception"""
         # Arrange
-        mock_bedrock.converse.side_effect = ClientError(
+        mock_invoke.side_effect = ClientError(
             {"Error": {"Code": "ThrottlingException", "Message": "Rate exceeded"}},
             "converse"
         )
@@ -447,50 +467,50 @@ class TestCallBedrock:
         with pytest.raises(ClientError):
             call_bedrock("Test prompt")
 
-    @patch('bedrock_utils.bedrock_client')
-    def test_call_bedrock_empty_response(self, mock_bedrock):
+    @patch('bedrock_utils.invoke_model')
+    def test_call_bedrock_empty_response(self, mock_invoke):
         """Test: Empty response from Bedrock raises exception"""
         # Arrange
-        mock_bedrock.converse.return_value = {
+        mock_invoke.return_value = _LegacyDictResponse({
             "output": {
                 "message": {
                     "content": []  # Empty content
                 }
             }
-        }
+        })
 
         # Act & Assert
-        with pytest.raises(Exception, match="No content"):
+        with pytest.raises(Exception, match="No text"):
             call_bedrock("Test prompt")
 
-    @patch('bedrock_utils.bedrock_client')
-    def test_call_bedrock_missing_text(self, mock_bedrock):
+    @patch('bedrock_utils.invoke_model')
+    def test_call_bedrock_missing_text(self, mock_invoke):
         """Test: Response without text field raises exception"""
         # Arrange
-        mock_bedrock.converse.return_value = {
+        mock_invoke.return_value = _LegacyDictResponse({
             "output": {
                 "message": {
                     "content": [{"image": "base64data"}]  # No text field
                 }
             }
-        }
+        })
 
         # Act & Assert
-        with pytest.raises(Exception, match="No content"):
+        with pytest.raises(Exception, match="No text"):
             call_bedrock("Test prompt")
 
-    @patch('bedrock_utils.bedrock_client')
-    def test_call_bedrock_strips_response(self, mock_bedrock):
+    @patch('bedrock_utils.invoke_model')
+    def test_call_bedrock_strips_response(self, mock_invoke):
         """Test: Response text is stripped of whitespace"""
         # Arrange
-        mock_bedrock.converse.return_value = {
+        mock_invoke.return_value = _LegacyDictResponse({
             "output": {
                 "message": {
                     "content": [{"text": "  Response with spaces  \n"}]
                 }
             },
             "usage": {"inputTokens": 10, "outputTokens": 5}
-        }
+        })
 
         # Act
         response_text, _ = call_bedrock("Prompt")
@@ -498,18 +518,18 @@ class TestCallBedrock:
         # Assert
         assert response_text == "Response with spaces"
 
-    @patch('bedrock_utils.bedrock_client')
-    def test_call_bedrock_missing_usage(self, mock_bedrock):
+    @patch('bedrock_utils.invoke_model')
+    def test_call_bedrock_missing_usage(self, mock_invoke):
         """Test: Missing usage data defaults to zero"""
         # Arrange
-        mock_bedrock.converse.return_value = {
+        mock_invoke.return_value = _LegacyDictResponse({
             "output": {
                 "message": {
                     "content": [{"text": "Response"}]
                 }
             }
             # No usage field
-        }
+        })
 
         # Act
         _, usage = call_bedrock("Prompt")
