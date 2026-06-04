@@ -73,8 +73,24 @@ github_usernames_to_tag = "yourusername"
 # and update the values below. The strings shown here are educated
 # guesses based on the AWS naming convention (us.openai.<model>:0 for
 # cross-region inference profiles); they MAY not be the exact GA IDs.
-bedrock_advanced_model_id  = "us.openai.gpt-5-5:0"           # VERIFY: GPT-5.5 frontier
-bedrock_basic_model_id     = "us.openai.gpt-5-4:0"           # VERIFY: GPT-5.4 cheaper tier
+# Both tiers point at GPT-5.5 until a "mini" / cheaper OpenAI variant
+# lands in us-east-2. This is intentional and strategic, not a
+# workaround:
+#   - The platform's tiered-model design (separate _advanced_ and
+#     _basic_ vars) is the SAME parameterization that lets us swap
+#     Anthropic out for OpenAI on this workspace. When gpt-5-mini
+#     (or equivalent cheaper-tier OpenAI model) reaches Bedrock in
+#     us-east-2, slot it into `bedrock_basic_model_id` here. The
+#     change is a single tfvars edit + a terraform apply. No code
+#     touched, no synthesis behavior touched. ADR-031/032/033 prompt
+#     rules continue binding the new model the moment it's live.
+#   - For now, basic and advanced both serve at frontier rates. This
+#     is the customer's deliberate trade-off (no Anthropic on the
+#     inference path) -- not a platform limitation. The platform
+#     surfaces the constraint cleanly; the customer absorbs the cost
+#     until OpenAI's tier-2 model lands.
+bedrock_advanced_model_id  = "us.openai.gpt-5-5:0"           # VERIFY exact ID via list-foundation-models
+bedrock_basic_model_id     = "us.openai.gpt-5-5:0"           # placeholder for gpt-5-mini once it lands in us-east-2
 
 # Embedding model: Titan stays. There is no OpenAI embedding model on
 # Bedrock at the time of this template, and Titan is AWS-native (not
@@ -136,13 +152,22 @@ bedrock_rerank_enabled       = false
 # Source: https://aws.amazon.com/bedrock/pricing/ (OpenAI section).
 # Update these if AWS adjusts pricing or you switch models.
 
+# Pricing mirrors the bedrock_*_model_id setting above. Both tiers at
+# GPT-5.5 frontier rates until gpt-5-mini (or equivalent) ships in
+# us-east-2 -- at which point swap basic_model_id above AND drop
+# basic_*_price here in the same tfvars edit.
+#
 # GPT-5.5: input $5.50/1M, cached input $0.55/1M, output $33.00/1M.
 bedrock_advanced_input_price  = 5.50
 bedrock_advanced_output_price = 33.00
+bedrock_basic_input_price     = 5.50    # match advanced until tier-2 model lands
+bedrock_basic_output_price    = 33.00   # match advanced until tier-2 model lands
 
-# GPT-5.4: input $2.75/1M, cached input $0.275/1M, output $16.50/1M.
-bedrock_basic_input_price     = 2.75
-bedrock_basic_output_price    = 16.50
+# When gpt-5-mini lands (assumed pricing roughly $0.50/1M input,
+# $4.00/1M output based on OpenAI's direct API pattern; VERIFY against
+# the AWS Bedrock pricing page when the model is announced):
+# bedrock_basic_input_price     = 0.50
+# bedrock_basic_output_price    = 4.00
 
 # Max characters per document in RAG context.
 # rag_max_doc_chars = 3000
