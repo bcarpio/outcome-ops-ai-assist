@@ -10,8 +10,8 @@ locals {
   # first-class subdomains.
   fqdn = var.domain != "" ? (
     var.append_environment_to_fqdn
-      ? "${var.ui_subdomain}-${var.environment}.${var.domain}"
-      : "${var.ui_subdomain}.${var.domain}"
+    ? "${var.ui_subdomain}-${var.environment}.${var.domain}"
+    : "${var.ui_subdomain}.${var.domain}"
   ) : ""
 
   # ADR-019: shared license layer attach values for every gated Lambda.

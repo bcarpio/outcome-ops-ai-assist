@@ -59,6 +59,7 @@ module "process_batch_summary_lambda" {
     AUDIT_TABLE                       = module.audit_logs_table.dynamodb_table_id
     WORKSPACES_TABLE                  = module.workspaces_table[0].dynamodb_table_id
     BEDROCK_ADVANCED_MODEL_ID         = var.bedrock_advanced_model_id
+    BEDROCK_MANTLE_API_KEY_PARAM      = "/${var.environment}/${var.app_name}/bedrock/mantle-api-key"
     BEDROCK_EMBEDDING_MODEL_ID        = var.bedrock_embedding_model_id
     BEDROCK_ADVANCED_INPUT_PRICE      = tostring(var.bedrock_advanced_input_price)
     BEDROCK_ADVANCED_OUTPUT_PRICE     = tostring(var.bedrock_advanced_output_price)
@@ -316,6 +317,7 @@ module "process_repo_summary_lambda" {
       WORKSPACES_TABLE                  = module.workspaces_table[0].dynamodb_table_id
       DELETE_QUEUE                      = aws_sqs_queue.delete_queue[0].url
       BEDROCK_ADVANCED_MODEL_ID         = var.bedrock_advanced_model_id
+      BEDROCK_MANTLE_API_KEY_PARAM      = "/${var.environment}/${var.app_name}/bedrock/mantle-api-key"
       BEDROCK_EMBEDDING_MODEL_ID        = var.bedrock_embedding_model_id
       BEDROCK_ADVANCED_INPUT_PRICE      = tostring(var.bedrock_advanced_input_price)
       BEDROCK_ADVANCED_OUTPUT_PRICE     = tostring(var.bedrock_advanced_output_price)
