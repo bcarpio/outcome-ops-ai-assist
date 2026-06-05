@@ -657,15 +657,26 @@ def _get_workspace_repo(workspace_id: str, slug: str) -> Optional[Dict]:
 
 
 def _queue_sync_job(workspace_id: str, slug: str, connection_id: str) -> None:
+    """Enqueue a sync job. The message shape must match what the
+    azure-devops-sync worker reads from message["org"|"project"|"repo"]
+    (KeyError otherwise). Mirror the chunk-06 scheduler's body shape."""
     if not AZURE_DEVOPS_SYNC_QUEUE:
         logger.warning("AZURE_DEVOPS_SYNC_QUEUE not configured")
         return
+    parts = _slug_to_parts(slug)
+    if not parts:
+        logger.warning("Malformed slug %s -- not enqueuing sync", slug)
+        return
+    org, project, repo = parts
     _get_sqs().send_message(
         QueueUrl=AZURE_DEVOPS_SYNC_QUEUE,
         MessageBody=json.dumps({
             "workspace_id": workspace_id,
-            "slug": slug,
             "connection_id": connection_id,
+            "slug": slug,
+            "org": org,
+            "project": project,
+            "repo": repo,
             "triggered_by": "manual",
         }),
     )

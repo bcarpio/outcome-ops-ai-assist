@@ -610,6 +610,37 @@ class TestTriggerSync:
         assert msg["slug"] == "a/b/c1"
 
     @patch.object(handler, "_get_sqs")
+    def test_message_body_carries_org_project_repo(self, mock_sqs_fn, mock_table):
+        """Regression guard for the 2026-06-05 prd bug: the integration
+        Lambda's _queue_sync_job was enqueuing only {workspace_id, slug,
+        connection_id, triggered_by} but azure-devops-sync's
+        process_sync_message reads message['org'|'project'|'repo']
+        directly and KeyError'd on the first real sync. Pin the contract."""
+        _member_user(mock_table)
+        mock_sqs = MagicMock()
+        mock_sqs_fn.return_value = mock_sqs
+        mock_table.query.return_value = {
+            "Items": [{
+                "SK": "AZDO_REPO#example-org/example-project/example-repo",
+                "slug": "example-org/example-project/example-repo",
+                "connection_id": "x",
+                "enabled": True,
+                "include_code_maps": True,
+            }],
+        }
+        event = _make_event("POST", "/workspaces/w1/azure-devops/sync", body={})
+        handler.lambda_handler(event, None)
+        body = json.loads(mock_sqs.send_message.call_args.kwargs["MessageBody"])
+        # The sync worker requires these three. Without them it
+        # KeyErrors on the first message and the repo stays "pending"
+        # forever.
+        assert body["org"] == "example-org"
+        assert body["project"] == "example-project"
+        assert body["repo"] == "example-repo"
+        assert body["slug"] == "example-org/example-project/example-repo"
+        assert body["connection_id"] == "x"
+
+    @patch.object(handler, "_get_sqs")
     def test_single_repo_path(self, mock_sqs_fn, mock_table):
         mock_sqs = MagicMock()
         mock_sqs_fn.return_value = mock_sqs
