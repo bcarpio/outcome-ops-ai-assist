@@ -1145,12 +1145,16 @@ def store_batch_summary(
         content_hash = compute_content_hash(summary)
         doc_type = f"{batch['batch_type']}-summary"
         workspace_id = batch.get("workspace_id")
+        # chunk-08a: provider is threaded through from process-repo-
+        # summary's send_code_units_to_sqs. Default "github" preserves
+        # all existing vector keys + metadata.
+        provider = batch.get("provider", "github")
 
         # Construct vector key
-        # Workspace repos: {workspace_id}#github#{repo}#{doc_type}#{group_name}
+        # Workspace repos: {workspace_id}#{provider}#{repo}#{doc_type}#{group_name}
         # Legacy repos: {repo}#{doc_type}#{group_name}
         if workspace_id:
-            vector_key = f"{workspace_id}#github#{batch['repo']}#{doc_type}#{batch['group_name']}"
+            vector_key = f"{workspace_id}#{provider}#{batch['repo']}#{doc_type}#{batch['group_name']}"
         else:
             vector_key = f"{batch['repo']}#{doc_type}#{batch['group_name']}"
 
@@ -1166,7 +1170,7 @@ def store_batch_summary(
         }
         if workspace_id:
             metadata["workspace_id"] = workspace_id
-            metadata["source"] = "github"
+            metadata["source"] = provider
 
         s3vectors_client.put_vectors(
             vectorBucketName=VECTOR_BUCKET,

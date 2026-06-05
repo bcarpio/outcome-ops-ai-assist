@@ -369,7 +369,15 @@ def discover_code_units(
         repo_config = fetch_repo_config(token, repo_project)
     else:
         repo_config = {}
-    backend = get_backend_for_repo(repo_config, token or "")
+    # Non-github providers don't carry a github_token but every backend's
+    # validate_config rejects an empty token (it's required for the
+    # change-detection methods). The ADO branch skips change-detection
+    # entirely, so we pass a sentinel string that makes validation
+    # happy without misleading a future reader. If anything tries to
+    # USE this string as a real token, the resulting 401 makes it
+    # obvious in the logs.
+    effective_token = token or "_no_token_non_github_provider_"
+    backend = get_backend_for_repo(repo_config, effective_token)
 
     if not backend:
         logger.warning(f"No backend available for {repo_project}, returning empty code units")
@@ -596,7 +604,9 @@ def store_code_map_embedding(
     repo: str,
     doc_type: str,
     path: str,
-    workspace_id: Optional[str] = None
+    workspace_id: Optional[str] = None,
+    *,
+    provider: str = "github",
 ):
     """
     Store code map with embedding in S3 Vectors.
@@ -613,10 +623,10 @@ def store_code_map_embedding(
     """
     try:
         # Construct vector key
-        # Workspace repos: {workspace_id}#github#{repo}#{doc_type}#{identifier}
+        # Workspace repos: {workspace_id}#{provider}#{repo}#{doc_type}#{identifier}
         # Legacy repos: {repo}#{doc_type}#{identifier}
         if workspace_id:
-            vector_key = f"{workspace_id}#github#{repo}#{doc_type}#{doc_id.replace(':', '-')}"
+            vector_key = f"{workspace_id}#{provider}#{repo}#{doc_type}#{doc_id.replace(':', '-')}"
         else:
             vector_key = f"{repo}#{doc_type}#{doc_id.replace(':', '-')}"
 
@@ -630,7 +640,7 @@ def store_code_map_embedding(
         }
         if workspace_id:
             metadata["workspace_id"] = workspace_id
-            metadata["source"] = "github"
+            metadata["source"] = provider
 
         s3vectors_client.put_vectors(
             vectorBucketName=VECTOR_BUCKET,
@@ -652,6 +662,8 @@ def _expected_code_map_vector_keys(
     code_units: List[Dict[str, Any]],
     repo: str,
     workspace_id: Optional[str],
+    *,
+    provider: str = "github",
 ) -> List[str]:
     """Compute the deterministic vector keys process-batch-summary will write
     for the given code units. Mirrors process-batch-summary/handler.py:929-938
@@ -686,7 +698,7 @@ def _expected_code_map_vector_keys(
         doc_type = f"{unit['batch_type']}-summary"
         if workspace_id:
             keys.append(
-                f"{workspace_id}#github#{repo}#{doc_type}#{unit['group_name']}"
+                f"{workspace_id}#{provider}#{repo}#{doc_type}#{unit['group_name']}"
             )
         else:
             keys.append(f"{repo}#{doc_type}#{unit['group_name']}")
@@ -1237,14 +1249,15 @@ def handler(event, context):
                 repo=repo_project,
                 doc_type="code-map",
                 path="code-map",
-                workspace_id=workspace_id
+                workspace_id=workspace_id,
+                provider=provider,
             )
 
             # Upload architectural summary to S3
-            # Workspace repos: workspaces/{workspace_id}/github/{repo}/architectural-summary.txt
+            # Workspace repos: workspaces/{workspace_id}/{provider}/{repo}/architectural-summary.txt
             # Legacy repos: code-maps/{repo}/architectural-summary.txt
             if workspace_id:
-                s3_key = f"workspaces/{workspace_id}/github/{repo}/architectural-summary.txt"
+                s3_key = f"workspaces/{workspace_id}/{provider}/{repo}/architectural-summary.txt"
             else:
                 s3_key = f"code-maps/{repo}/architectural-summary.txt"
 
@@ -1342,7 +1355,7 @@ def handler(event, context):
             # if discover_code_units fell over.
             if full_code_units:
                 expected_keys = _expected_code_map_vector_keys(
-                    full_code_units, repo, workspace_id
+                    full_code_units, repo, workspace_id, provider=provider,
                 )
                 _queue_orphan_code_map_cleanup(repo, expected_keys, workspace_id)
 
