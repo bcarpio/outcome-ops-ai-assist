@@ -48,19 +48,27 @@ def _load_module(mod_name, filename, directory, also_register_as=None):
     return module
 
 
-# Pre-set env vars that the handler reads at module load.
-os.environ["AZURE_DEVOPS_TENANT_ID"] = "contoso-tenant-uuid"
-os.environ["AZURE_DEVOPS_CLIENT_ID"] = "client-uuid"
-os.environ["AZURE_DEVOPS_CLIENT_SECRET_SSM_PARAM"] = "/dev/oo/azure-devops/client-secret"
-os.environ["AZURE_DEVOPS_REDIRECT_URI"] = "https://example.com/api/azure-devops/callback"
-os.environ["AZURE_DEVOPS_INTEGRATION_ENABLED"] = "true"
-os.environ["WORKSPACES_TABLE"] = "test-workspaces"
-os.environ["AZURE_DEVOPS_SYNC_QUEUE"] = (
-    "https://sqs.us-west-2.amazonaws.com/123/azure-devops-sync"
-)
-os.environ["DELETE_QUEUE"] = "https://sqs.us-west-2.amazonaws.com/123/delete"
-os.environ["AUDIT_TABLE"] = "test-audit"
-
+# Set env vars JUST for the handler's module-load (it reads them at
+# import time + caches them). Save originals first and restore after
+# the import so we don't leak into other test modules' handlers --
+# pytest collects test_azure_devops_* before test_workspace_management,
+# and that handler reads ``AUDIT_TABLE`` at its own module load. Leaking
+# a non-empty value flips ``log_admin_action`` from a no-op to a real
+# DDB call; the tests don't mock that path, and the moto-backed table
+# doesn't exist, so they fail. Burned 2026-06-05.
+_HANDLER_LOAD_ENV = {
+    "AZURE_DEVOPS_TENANT_ID": "contoso-tenant-uuid",
+    "AZURE_DEVOPS_CLIENT_ID": "client-uuid",
+    "AZURE_DEVOPS_CLIENT_SECRET_SSM_PARAM": "/dev/oo/azure-devops/client-secret",
+    "AZURE_DEVOPS_REDIRECT_URI": "https://example.com/api/azure-devops/callback",
+    "AZURE_DEVOPS_INTEGRATION_ENABLED": "true",
+    "WORKSPACES_TABLE": "test-workspaces",
+    "AZURE_DEVOPS_SYNC_QUEUE": "https://sqs.us-west-2.amazonaws.com/123/azure-devops-sync",
+    "DELETE_QUEUE": "https://sqs.us-west-2.amazonaws.com/123/delete",
+    "AUDIT_TABLE": "test-audit",
+}
+_orig_env = {k: os.environ.get(k) for k in _HANDLER_LOAD_ENV}
+os.environ.update(_HANDLER_LOAD_ENV)
 
 # Load token_manager + azure_devops_api so the handler's imports resolve.
 token_module = _load_module(
@@ -80,6 +88,17 @@ handler = _load_module(
     "handler.py",
     "../../azure-devops-integration",
 )
+
+# Restore env to whatever it was before the handler loaded. The handler
+# already cached the values into module-level constants
+# (handler.AZURE_DEVOPS_TENANT_ID etc.); tests that need to flip them
+# use ``patch.object(handler, "...")`` rather than mutating os.environ
+# again.
+for _k, _v in _orig_env.items():
+    if _v is None:
+        os.environ.pop(_k, None)
+    else:
+        os.environ[_k] = _v
 
 
 # ---------------------------------------------------------------------------
