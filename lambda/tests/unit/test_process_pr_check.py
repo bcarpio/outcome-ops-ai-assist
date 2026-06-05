@@ -1304,3 +1304,205 @@ class TestHandler:
         # Assert
         assert result["batchItemFailures"] == []
         assert mock_process.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# chunk 07: Azure DevOps PR-comment posting
+# ---------------------------------------------------------------------------
+
+
+class TestCheckJobAdoFields:
+    """The CheckJob model gains optional ADO fields. Default
+    ``provider="github"`` so existing messages still validate."""
+
+    def test_default_provider_is_github(self):
+        job = CheckJob(
+            checkType="ADR_COMPLIANCE",
+            pr_number=123,
+            repository="owner/repo",
+            changedFiles=["a.py"],
+        )
+        assert job.provider == "github"
+        assert job.connection_id is None
+        assert job.azure_devops_slug is None
+
+    def test_azure_devops_job_validates_with_ado_fields(self):
+        job = CheckJob(
+            checkType="ADR_COMPLIANCE",
+            pr_number=42,
+            repository="example-org/example-project/example-repo",
+            changedFiles=["src/main.py"],
+            provider="azure_devops",
+            connection_id="conn-xyz",
+            slug="example-org/example-project/example-repo",
+            org="example-org",
+            project="example-project",
+            repo="example-repo",
+        )
+        assert job.provider == "azure_devops"
+        assert job.connection_id == "conn-xyz"
+        assert job.azure_devops_slug == "example-org/example-project/example-repo"
+        assert job.azure_devops_org == "example-org"
+        assert job.azure_devops_project == "example-project"
+        assert job.azure_devops_repo == "example-repo"
+
+    def test_invalid_provider_rejected(self):
+        with pytest.raises(ValidationError):
+            CheckJob(
+                checkType="ADR_COMPLIANCE",
+                pr_number=1,
+                repository="x/y",
+                changedFiles=[],
+                provider="bitbucket",  # Not in the Literal set
+            )
+
+
+class TestProcessCheckJobAdoBranch:
+    """process_check_job dispatches the comment-post step on
+    job.provider. For ADO, run_check is short-circuited (the
+    check_handlers/ subpackage is GitHub-only) and a stub PASS
+    result is returned. The comment then posts via the ADO
+    thread API."""
+
+    @patch.object(handler_module, "store_check_result")
+    @patch.object(handler_module, "_post_azure_devops_thread")
+    @patch.object(handler_module, "run_check")
+    def test_ado_job_skips_run_check_and_posts_via_ado_path(
+        self, mock_run_check, mock_post_ado, mock_store,
+    ):
+        # If run_check were called for an ADO job, the check_handlers
+        # would attempt to fetch source from the GitHub API + 404.
+        # Pin that the dispatch DOESN'T enter run_check for ADO.
+        mock_post_ado.return_value = {"id": 99}
+        job = CheckJob(
+            checkType="ADR_COMPLIANCE",
+            pr_number=42,
+            repository="example-org/example-project/example-repo",
+            changedFiles=[],
+            provider="azure_devops",
+            connection_id="conn-xyz",
+            org="example-org",
+            project="example-project",
+            repo="example-repo",
+        )
+        result = process_check_job(job)
+        assert not mock_run_check.called
+        # Comment posted via ADO; not via the GitHub path.
+        mock_post_ado.assert_called_once()
+        kwargs = mock_post_ado.call_args.kwargs
+        assert kwargs["org"] == "example-org"
+        assert kwargs["project"] == "example-project"
+        assert kwargs["repo"] == "example-repo"
+        assert kwargs["pull_request_id"] == 42
+        assert kwargs["connection_id"] == "conn-xyz"
+        # ADO stub result returns PASS so the customer's pipeline
+        # gets a successful round-trip + a transparent comment.
+        assert result.status == CheckStatus.PASS
+
+    @patch.object(handler_module, "store_check_result")
+    @patch.object(handler_module, "_post_azure_devops_thread")
+    @patch.object(handler_module, "run_check")
+    def test_ado_job_comment_url_points_at_dev_azure_thread(
+        self, mock_run_check, mock_post_ado, mock_store,
+    ):
+        mock_post_ado.return_value = {"id": 77}
+        job = CheckJob(
+            checkType="ADR_COMPLIANCE",
+            pr_number=42,
+            repository="example-org/example-project/example-repo",
+            changedFiles=[],
+            provider="azure_devops",
+            connection_id="conn-xyz",
+            org="example-org",
+            project="example-project",
+            repo="example-repo",
+        )
+        result = process_check_job(job)
+        assert "dev.azure.com/example-org/example-project" in result.comment_url
+        assert "discussionId=77" in result.comment_url
+        assert "pullrequest/42" in result.comment_url
+
+    @patch.object(handler_module, "post_pr_comment", return_value={"html_url": "http://example/c"})
+    @patch.object(handler_module, "get_github_token", return_value="ghp_xxx")
+    @patch.object(handler_module, "store_check_result")
+    @patch.object(handler_module, "run_check")
+    def test_github_job_unchanged_by_ado_addition(
+        self, mock_run_check, mock_store, mock_token, mock_post_github,
+    ):
+        # Regression guard: the existing GitHub flow is untouched by
+        # the chunk-07 additive changes.
+        mock_run_check.return_value = {
+            "status": "PASS", "message": "all good", "details": [], "usage": None,
+        }
+        job = CheckJob(
+            checkType="ADR_COMPLIANCE",
+            pr_number=123,
+            repository="owner/repo",
+            changedFiles=["a.py"],
+        )
+        result = process_check_job(job)
+        # GitHub path: run_check runs, GitHub PAT pulled, github comment posted.
+        assert mock_run_check.called
+        assert mock_token.called
+        assert mock_post_github.called
+        assert result.comment_url == "http://example/c"
+
+
+class TestPostAzureDevOpsThread:
+
+    @patch.object(handler_module, "post_pull_request_thread")
+    @patch.object(handler_module, "_ado_refresh_access_token", return_value="ado-access-tok")
+    @patch.object(handler_module, "_get_ado_client_secret", return_value="ado-secret")
+    @patch.object(handler_module, "AZURE_DEVOPS_TENANT_ID", "contoso-tenant")
+    @patch.object(handler_module, "AZURE_DEVOPS_CLIENT_ID", "client-uuid")
+    @patch.object(handler_module, "_ADO_AVAILABLE", True)
+    def test_posts_via_token_refresh_then_ado_api(
+        self, mock_secret, mock_refresh, mock_post,
+    ):
+        mock_post.return_value = {"id": 99}
+        result = handler_module._post_azure_devops_thread(
+            org="example-org",
+            project="example-project",
+            repo="example-repo",
+            pull_request_id=42,
+            body="hello from check",
+            connection_id="conn-xyz",
+        )
+        assert result == {"id": 99}
+        # Token refresh used the per-customer tenant_id (NOT "common").
+        refresh_kwargs = mock_refresh.call_args.kwargs
+        assert refresh_kwargs["tenant_id"] == "contoso-tenant"
+        assert refresh_kwargs["tenant_id"] != "common"
+        assert refresh_kwargs["connection_id"] == "conn-xyz"
+        # The ADO API was called with the fresh access token + the
+        # right body.
+        post_kwargs = mock_post.call_args.kwargs
+        assert post_kwargs["access_token"] == "ado-access-tok"
+        assert post_kwargs["org"] == "example-org"
+        assert post_kwargs["pull_request_id"] == 42
+        assert post_kwargs["comment_markdown"] == "hello from check"
+
+    @patch.object(handler_module, "_ADO_AVAILABLE", True)
+    def test_missing_connection_id_raises(self):
+        with pytest.raises(ValueError):
+            handler_module._post_azure_devops_thread(
+                org="o", project="p", repo="r",
+                pull_request_id=1, body="x", connection_id="",
+            )
+
+    @patch.object(handler_module, "_ado_refresh_access_token", return_value=None)
+    @patch.object(handler_module, "_get_ado_client_secret", return_value="s")
+    @patch.object(handler_module, "AZURE_DEVOPS_TENANT_ID", "contoso-tenant")
+    @patch.object(handler_module, "AZURE_DEVOPS_CLIENT_ID", "client-uuid")
+    @patch.object(handler_module, "_ADO_AVAILABLE", True)
+    def test_failed_token_refresh_raises_with_reconnect_required(
+        self, mock_secret, mock_refresh_none,
+    ):
+        with pytest.raises(RuntimeError) as ctx:
+            handler_module._post_azure_devops_thread(
+                org="o", project="p", repo="r",
+                pull_request_id=1, body="x", connection_id="conn",
+            )
+        # The UI uses "reconnect_required" as a sentinel to surface
+        # the reconnect-Azure-DevOps banner -- pin the wording.
+        assert "reconnect_required" in str(ctx.value)

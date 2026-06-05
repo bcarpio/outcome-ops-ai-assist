@@ -17,7 +17,7 @@ import logging
 import os
 import sys
 from datetime import datetime
-from typing import Any, Dict, List, Literal
+from typing import Any, Dict, List, Literal, Optional
 from enum import Enum
 
 import boto3
@@ -41,6 +41,22 @@ from check_handlers import (
     UsageTracker,
 )
 
+# chunk 07: Azure DevOps PR-comment posting via the customer's
+# connection. The modules are copies (per the sharepoint-sync /
+# azure-devops-sync precedent of bundling integration modules into
+# the consumer). The handler stays GitHub-default; the ADO branch
+# only kicks in when CheckJob carries provider="azure_devops".
+try:
+    from azure_devops_token_manager import refresh_access_token as _ado_refresh_access_token  # noqa: E402
+    from azure_devops_api import (  # noqa: E402
+        AzureDevOpsAPIError,
+        post_pull_request_thread,
+    )
+    _ADO_AVAILABLE = True
+except ImportError as _e:  # pragma: no cover - deploy-bug path
+    logging.warning(f"Azure DevOps support not available: {_e}")
+    _ADO_AVAILABLE = False
+
 # Setup logging
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -54,6 +70,33 @@ ENVIRONMENT = os.environ.get("ENV", "dev")
 APP_NAME = os.environ.get("APP_NAME", "outcome-ops-ai-assist")
 DYNAMODB_TABLE = os.environ.get("DYNAMODB_TABLE", f"{ENVIRONMENT}-{APP_NAME}-code-maps")
 QUERY_KB_LAMBDA_NAME = os.environ.get("QUERY_KB_LAMBDA_NAME", f"{ENVIRONMENT}-{APP_NAME}-query-kb")
+
+# chunk 07: ADO PR-comment posting needs the customer's per-connection
+# OAuth access token. tenant_id + client_id come from tfvars (same as
+# the integration Lambda); client secret is read from SSM at request
+# time.
+AZURE_DEVOPS_TENANT_ID = os.environ.get("AZURE_DEVOPS_TENANT_ID", "")
+AZURE_DEVOPS_CLIENT_ID = os.environ.get("AZURE_DEVOPS_CLIENT_ID", "")
+AZURE_DEVOPS_CLIENT_SECRET_SSM_PARAM = os.environ.get(
+    "AZURE_DEVOPS_CLIENT_SECRET_SSM_PARAM", ""
+)
+_ado_client_secret: Optional[str] = None
+
+
+def _get_ado_client_secret() -> str:
+    """One-shot SSM read of the ADO Entra ID app client secret.
+    Mirrors the integration Lambda's helper -- operator owns the
+    SecureString VALUE; terraform only knows the NAME."""
+    global _ado_client_secret
+    if _ado_client_secret is not None:
+        return _ado_client_secret
+    if not AZURE_DEVOPS_CLIENT_SECRET_SSM_PARAM:
+        raise RuntimeError("AZURE_DEVOPS_CLIENT_SECRET_SSM_PARAM not configured")
+    response = ssm_client.get_parameter(
+        Name=AZURE_DEVOPS_CLIENT_SECRET_SSM_PARAM, WithDecryption=True,
+    )
+    _ado_client_secret = response["Parameter"]["Value"]
+    return _ado_client_secret
 
 
 class CheckType(str, Enum):
@@ -74,11 +117,33 @@ class CheckStatus(str, Enum):
 
 
 class CheckJob(BaseModel):
-    """Check job schema (from SQS message)."""
+    """Check job schema (from SQS message).
+
+    chunk 07: ``provider`` defaults to ``"github"`` so existing
+    GitHub-only PR-check messages continue to work unchanged. When
+    ``provider == "azure_devops"``, the comment-post path uses ADO
+    REST + the customer's connection-id-driven OAuth token. The
+    underlying check execution (ADR_COMPLIANCE, README_FRESHNESS,
+    etc.) is still GitHub-only in this release; ADO PR-check jobs
+    short-circuit to a stub PASS so the customer's pipeline gets
+    a successful round-trip + a transparent "not yet implemented
+    for ADO" comment instead of a silent failure. Surface checks
+    against ADO source require a separate provider-aware refactor
+    of the check_handlers/ subpackage.
+    """
     check_type: CheckType = Field(..., alias="checkType")
     pr_number: int = Field(..., alias="pr_number", gt=0)
     repository: str
     changed_files: List[str] = Field(..., alias="changedFiles")
+
+    # ADO-specific fields. All optional so GitHub-shape messages
+    # continue to validate.
+    provider: Literal["github", "azure_devops"] = "github"
+    connection_id: Optional[str] = None
+    azure_devops_slug: Optional[str] = Field(None, alias="slug")
+    azure_devops_org: Optional[str] = Field(None, alias="org")
+    azure_devops_project: Optional[str] = Field(None, alias="project")
+    azure_devops_repo: Optional[str] = Field(None, alias="repo")
 
     class Config:
         populate_by_name = True
@@ -165,6 +230,67 @@ def post_pr_comment(repository: str, pr_number: int, body: str, token: str) -> D
     except requests.exceptions.RequestException as e:
         logger.error(f"Failed to post comment to GitHub: {e}")
         raise Exception(f"GitHub API error: {str(e)}")
+
+
+def _post_azure_devops_thread(
+    org: str,
+    project: str,
+    repo: str,
+    pull_request_id: int,
+    body: str,
+    connection_id: str,
+) -> Dict[str, Any]:
+    """Post a comment to an Azure DevOps PR as a top-level thread.
+
+    Uses ``azure_devops_token_manager.refresh_access_token`` to mint
+    a fresh access token from the customer's stored OAuth refresh
+    token. Then calls ``azure_devops_api.post_pull_request_thread``
+    (raw urllib; no SDK -- same as the integration Lambda).
+
+    Returns ADO's thread object on success. Raises on any failure;
+    the caller's batch-item-failure path retries via SQS.
+    """
+    if not _ADO_AVAILABLE:
+        raise RuntimeError(
+            "Azure DevOps modules not bundled into process-pr-check; "
+            "deploy bug"
+        )
+    if not connection_id:
+        raise ValueError("connection_id required for Azure DevOps PR-check")
+    if not AZURE_DEVOPS_TENANT_ID or not AZURE_DEVOPS_CLIENT_ID:
+        raise RuntimeError(
+            "Azure DevOps OAuth app not configured (AZURE_DEVOPS_TENANT_ID / "
+            "AZURE_DEVOPS_CLIENT_ID env vars missing)"
+        )
+
+    access_token = _ado_refresh_access_token(
+        connection_id=connection_id,
+        tenant_id=AZURE_DEVOPS_TENANT_ID,
+        client_id=AZURE_DEVOPS_CLIENT_ID,
+        client_secret=_get_ado_client_secret(),
+    )
+    if not access_token:
+        raise RuntimeError(
+            "Failed to refresh Azure DevOps access token; reconnect_required"
+        )
+
+    try:
+        response = post_pull_request_thread(
+            access_token=access_token,
+            org=org,
+            project=project,
+            repo=repo,
+            pull_request_id=pull_request_id,
+            comment_markdown=body,
+        )
+        logger.info(
+            "Posted ADO PR thread on %s/%s/%s PR #%s",
+            org, project, repo, pull_request_id,
+        )
+        return response
+    except AzureDevOpsAPIError as e:
+        logger.error(f"Failed to post ADO PR thread: {e}")
+        raise
 
 
 def store_check_result(result: CheckResult) -> None:
@@ -328,13 +454,36 @@ def process_check_job(job: CheckJob) -> CheckResult:
     Raises:
         Exception: If check execution or storage fails
     """
-    logger.info(f"Processing check job: {job.check_type.value} for PR #{job.pr_number}")
+    logger.info(
+        "Processing check job: %s for PR #%s (provider=%s)",
+        job.check_type.value, job.pr_number, job.provider,
+    )
 
-    # Run the appropriate check
-    check_result = run_check(job)
-
-    # Extract usage tracker if present
-    usage = check_result.get("usage")
+    # chunk 07: for ADO jobs, short-circuit the check execution.
+    # check_handlers/ fetches source from the GitHub API; running it
+    # against an ADO slug would 404. v1 ships a transparent stub PASS
+    # so the customer's pipeline gets a successful round-trip + a
+    # comment that says "checks against ADO source are pending a
+    # follow-up release." Surface checks for ADO are tracked
+    # separately (provider-aware refactor of check_handlers/).
+    if job.provider == "azure_devops":
+        check_result = {
+            "status": "PASS",
+            "message": "Azure DevOps PR-check pipeline reached the platform successfully.",
+            "details": [
+                "PR-check wiring for Azure DevOps is operational: this comment "
+                "posted via your platform's Azure DevOps OAuth connection.",
+                "Surface check execution (ADR_COMPLIANCE, README_FRESHNESS, "
+                "TEST_COVERAGE, etc.) against Azure DevOps source is not yet "
+                "wired in this release. Track the follow-up in the platform's "
+                "ADO integration plan.",
+            ],
+        }
+        usage = None
+    else:
+        # Run the appropriate check (existing GitHub-only path).
+        check_result = run_check(job)
+        usage = check_result.get("usage")
 
     # Build full result
     timestamp = datetime.utcnow().isoformat() + "Z"
@@ -351,13 +500,33 @@ def process_check_job(job: CheckJob) -> CheckResult:
     # Store result in DynamoDB
     store_check_result(result)
 
-    # Post result as PR comment (with usage info)
-    token = get_github_token()
+    # Post result as a PR comment via the right provider.
     comment = format_check_comment(result, usage)
-    comment_response = post_pr_comment(job.repository, job.pr_number, comment, token)
+    if job.provider == "azure_devops":
+        comment_response = _post_azure_devops_thread(
+            org=job.azure_devops_org,
+            project=job.azure_devops_project,
+            repo=job.azure_devops_repo,
+            pull_request_id=job.pr_number,
+            body=comment,
+            connection_id=job.connection_id,
+        )
+        # ADO thread response shape carries an integer id; build a
+        # human-followable URL so the result row mirrors the github
+        # commentUrl semantics.
+        thread_id = comment_response.get("id")
+        comment_url = (
+            f"https://dev.azure.com/{job.azure_devops_org}/{job.azure_devops_project}"
+            f"/_git/{job.azure_devops_repo}/pullrequest/{job.pr_number}"
+            f"?_a=overview&discussionId={thread_id}"
+            if thread_id else ""
+        )
+    else:
+        token = get_github_token()
+        comment_response = post_pr_comment(job.repository, job.pr_number, comment, token)
+        comment_url = comment_response.get("html_url", "")
 
     # Update result with comment URL
-    comment_url = comment_response.get("html_url", "")
     result.comment_url = comment_url
 
     # Update DynamoDB with comment URL

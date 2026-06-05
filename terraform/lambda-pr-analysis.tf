@@ -163,6 +163,19 @@ module "process_pr_check_lambda" {
     BEDROCK_ADVANCED_OUTPUT_PRICE = tostring(var.bedrock_advanced_output_price)
     BEDROCK_BASIC_INPUT_PRICE     = tostring(var.bedrock_basic_input_price)
     BEDROCK_BASIC_OUTPUT_PRICE    = tostring(var.bedrock_basic_output_price)
+
+    # chunk 07: ADO PR-comment posting reads the customer's OAuth
+    # refresh token from WORKSPACES_TABLE (AZDO_TOKEN# rows),
+    # decrypts via the OAuth tokens KMS key, and refreshes against
+    # the customer's Entra ID tenant. tenant_id + client_id come
+    # from tfvars; the client secret comes from SSM at request
+    # time. All four default to "" so the build runs in deploys
+    # that haven't enabled the ADO integration.
+    WORKSPACES_TABLE                     = var.enable_workspaces ? module.workspaces_table[0].dynamodb_table_id : ""
+    OAUTH_KMS_KEY_ARN                    = var.enable_workspaces ? aws_kms_key.oauth_tokens[0].arn : ""
+    AZURE_DEVOPS_TENANT_ID               = var.azure_devops_tenant_id
+    AZURE_DEVOPS_CLIENT_ID               = var.azure_devops_client_id
+    AZURE_DEVOPS_CLIENT_SECRET_SSM_PARAM = var.azure_devops_client_secret_ssm_param
     },
     # HA dual-write: emit replication events for the check-result row.
     local.ha_writer_env,
@@ -264,6 +277,28 @@ module "process_pr_check_lambda" {
       ]
     }
     },
+    # chunk 07: ADO PR-comment posting needs DDB read on AZDO_TOKEN#
+    # rows + KMS decrypt on the OAuth tokens key. Gated on
+    # enable_workspaces because the workspaces table + oauth_tokens
+    # key only exist in that mode.
+    var.enable_workspaces ? {
+      dynamodb_workspaces_read = {
+        effect = "Allow"
+        actions = [
+          "dynamodb:GetItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:Query",
+        ]
+        resources = [
+          module.workspaces_table[0].dynamodb_table_arn,
+        ]
+      }
+      kms_oauth = {
+        effect    = "Allow"
+        actions   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
+        resources = [aws_kms_key.oauth_tokens[0].arn]
+      }
+    } : {},
     # HA dual-write: events:PutEvents on the local replication bus.
     local.ha_writer_events_iam,
   )
