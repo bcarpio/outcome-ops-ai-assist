@@ -529,7 +529,18 @@ def process_sync_message(message: Dict[str, Any]) -> Dict[str, Any]:
         # Standards repos skip code-map; their content is already in
         # S3 for chat KB search via process-documents.
         if repo_type == "application" and uploaded > 0:
-            indexable_paths = [item["path"] for item in indexable]
+            # ADO returns paths leading-slashed ("/lambda/foo/handler.py").
+            # The downstream backends in process-repo-summary's python
+            # backend filter on prefix-match ("lambda/"...) which the
+            # leading slash silently breaks -- the result is the
+            # discover_lambda_handlers / discover_frontend_* etc. paths
+            # match 0 files and every code unit collapses into the
+            # catch-all "shared" / "tests/other" buckets. The S3 mirror
+            # already normalizes the slash off (chunk 05a's
+            # _upload_blob_to_s3), so the enqueued list needs to use
+            # the same normalized form. Burned 2026-06-05 on the first
+            # marketplace-events query.
+            indexable_paths = [item["path"].lstrip("/") for item in indexable]
             _enqueue_repo_summaries_job(
                 workspace_id=workspace_id,
                 slug=slug,
