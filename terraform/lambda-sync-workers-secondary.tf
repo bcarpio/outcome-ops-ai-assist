@@ -961,3 +961,118 @@ resource "aws_lambda_event_source_mapping" "database_sync_secondary" {
     maximum_concurrency = 5
   }
 }
+
+# ----------------------------------------------------------------------------
+# Azure DevOps sync (secondary) -- chunk 09 finalization
+#
+# Mirrors module.sharepoint_sync_lambda_secondary. The primary's azure-
+# devops-sync worker was added in commit d6e9574 (chunk 05); this is the
+# secondary-region copy that completes chunk 09.
+# ----------------------------------------------------------------------------
+
+module "azure_devops_sync_lambda_secondary" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "8.1.2"
+
+  count     = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  providers = { aws = aws.secondary }
+
+  function_name = "${var.environment}-${var.app_name}-azure-devops-sync"
+  role_name     = "${var.environment}-${var.app_name}-azure-devops-sync-secondary"
+  description   = "Azure DevOps sync (secondary region)"
+  handler       = "handler.lambda_handler"
+  runtime       = "python3.12"
+  timeout       = 900
+  memory_size   = 1024
+
+  source_path = [
+    { path = "${path.module}/../lambda/azure-devops-sync", pip_requirements = true, patterns = ["!tests/.*", "!__pycache__/.*", "!\\.venv/.*", "!.*\\.pyc"] },
+    { path = "${path.module}/../lambda/shared", prefix_in_zip = "shared" },
+  ]
+
+  cloudwatch_logs_retention_in_days = 7
+  cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs_secondary[0].arn
+  quiet_archive_local_exec          = true
+
+  layers = [var.outcomeops_license_layer_arn_secondary]
+
+  environment_variables = merge(
+    {
+      ENV               = var.environment
+      APP_NAME          = var.app_name
+      WORKSPACES_TABLE  = module.workspaces_table_secondary[0].dynamodb_table_id
+      OAUTH_KMS_KEY_ARN = aws_kms_replica_key.oauth_tokens_secondary[0].arn
+
+      AZURE_DEVOPS_TENANT_ID               = var.azure_devops_tenant_id
+      AZURE_DEVOPS_CLIENT_ID               = var.azure_devops_client_id
+      AZURE_DEVOPS_CLIENT_SECRET_SSM_PARAM = var.azure_devops_client_secret_ssm_param
+
+      FILE_INGESTION_QUEUE    = aws_sqs_queue.file_ingestion_secondary[0].url
+      REPO_SUMMARIES_QUEUE    = module.repo_summaries_queue_secondary.queue_url
+      AZURE_DEVOPS_SYNC_QUEUE = aws_sqs_queue.azure_devops_sync_secondary[0].url
+      AUDIT_TABLE             = module.audit_logs_table_secondary[0].dynamodb_table_id
+    },
+    local.outcomeops_license_env,
+    local.ha_writer_env_secondary,
+  )
+
+  attach_policy_statements = true
+  policy_statements = merge(
+    {
+      dynamodb = {
+        effect  = "Allow"
+        actions = ["dynamodb:GetItem", "dynamodb:UpdateItem", "dynamodb:Query"]
+        resources = [
+          module.workspaces_table_secondary[0].dynamodb_table_arn,
+          "${module.workspaces_table_secondary[0].dynamodb_table_arn}/index/*",
+        ]
+      }
+      ssm_secret = {
+        effect    = "Allow"
+        actions   = ["ssm:GetParameter"]
+        resources = ["arn:aws:ssm:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:parameter${var.azure_devops_client_secret_ssm_param}"]
+      }
+      kms_oauth = {
+        effect    = "Allow"
+        actions   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
+        resources = [aws_kms_replica_key.oauth_tokens_secondary[0].arn]
+      }
+      kms_ssm = {
+        effect    = "Allow"
+        actions   = ["kms:Decrypt"]
+        resources = ["arn:aws:kms:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:alias/aws/ssm"]
+      }
+      sqs_receive = {
+        effect    = "Allow"
+        actions   = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"]
+        resources = [aws_sqs_queue.azure_devops_sync_secondary[0].arn]
+      }
+      sqs_send = {
+        effect    = "Allow"
+        actions   = ["sqs:SendMessage"]
+        resources = [aws_sqs_queue.file_ingestion_secondary[0].arn, module.repo_summaries_queue_secondary.queue_arn, aws_sqs_queue.azure_devops_sync_secondary[0].arn]
+      }
+      dynamodb_audit = {
+        effect    = "Allow"
+        actions   = ["dynamodb:PutItem"]
+        resources = [module.audit_logs_table_secondary[0].dynamodb_table_arn]
+      }
+    },
+    local.outcomeops_license_iam,
+    local.ha_writer_events_iam_secondary,
+  )
+
+  tags = { Purpose = "azure-devops-sync" }
+}
+
+resource "aws_lambda_event_source_mapping" "azure_devops_sync_secondary" {
+  count                   = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  provider                = aws.secondary
+  event_source_arn        = aws_sqs_queue.azure_devops_sync_secondary[0].arn
+  function_name           = module.azure_devops_sync_lambda_secondary[0].lambda_function_name
+  batch_size              = 1
+  function_response_types = ["ReportBatchItemFailures"]
+  scaling_config {
+    maximum_concurrency = 5
+  }
+}

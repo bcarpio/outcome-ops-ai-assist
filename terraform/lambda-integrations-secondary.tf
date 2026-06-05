@@ -1202,12 +1202,11 @@ module "azure_devops_integration_lambda_secondary" {
   # - WORKSPACES_TABLE points at the secondary-region table
   # - AZURE_DEVOPS_SYNC_QUEUE points at the secondary-region queue
   # - DELETE_QUEUE points at the secondary delete queue
-  # - OAUTH_KMS_KEY_ARN -- per the chunk-09 risk note, OAuth tokens KMS
-  #   is currently primary-only until plan/13-multi-region-kms ships;
-  #   the secondary Lambda references the same key ARN as the primary,
-  #   which is valid as long as the key policy allows secondary-region
-  #   crypto ops. If chunk 13 has shipped by the time this applies,
-  #   swap to aws_kms_key.oauth_tokens_secondary[0].arn.
+  # - OAUTH_KMS_KEY_ARN points at the secondary-region KMS replica key
+  #   (aws_kms_replica_key.oauth_tokens_secondary in
+  #   terraform/kms-oauth.tf). Same key material as the primary via
+  #   the multi-region replica, but the ARN is regional so crypto ops
+  #   stay in-region under failover.
   # - AZURE_DEVOPS_TENANT_ID / _CLIENT_ID / _REDIRECT_URI / secret SSM
   #   param are SAME in both regions (one Entra ID app registration
   #   per customer).
@@ -1217,7 +1216,7 @@ module "azure_devops_integration_lambda_secondary" {
       APP_NAME         = var.app_name
       WORKSPACES_TABLE = module.workspaces_table_secondary[0].dynamodb_table_id
 
-      OAUTH_KMS_KEY_ARN = aws_kms_key.oauth_tokens[0].arn
+      OAUTH_KMS_KEY_ARN = aws_kms_replica_key.oauth_tokens_secondary[0].arn
 
       AZURE_DEVOPS_TENANT_ID               = var.azure_devops_tenant_id
       AZURE_DEVOPS_CLIENT_ID               = var.azure_devops_client_id
@@ -1260,7 +1259,7 @@ module "azure_devops_integration_lambda_secondary" {
       kms_oauth = {
         effect    = "Allow"
         actions   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
-        resources = [aws_kms_key.oauth_tokens[0].arn]
+        resources = [aws_kms_replica_key.oauth_tokens_secondary[0].arn]
       }
       kms_ssm = {
         effect    = "Allow"
