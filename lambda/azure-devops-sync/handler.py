@@ -89,6 +89,13 @@ ENV = os.environ.get("ENV", "dev")
 APP_NAME = os.environ.get("APP_NAME", "outcome-ops-ai-assist")
 WORKSPACES_TABLE = os.environ.get("WORKSPACES_TABLE")
 KB_BUCKET = os.environ.get("KB_BUCKET")
+# Chunk-08a: after the S3 upload completes we enqueue a single
+# message to repo-summaries so the same code-map + symbol-graph
+# pipeline that runs for github (process-repo-summary +
+# process-batch-summary) also runs for ADO. The downstream workers
+# read provider="azure_devops" + slug + workspace_id from the
+# message and route the file-content fetch to the S3 mirror.
+REPO_SUMMARIES_QUEUE = os.environ.get("REPO_SUMMARIES_QUEUE")
 AZURE_DEVOPS_TENANT_ID = os.environ.get("AZURE_DEVOPS_TENANT_ID", "")
 AZURE_DEVOPS_CLIENT_ID = os.environ.get("AZURE_DEVOPS_CLIENT_ID", "")
 AZURE_DEVOPS_CLIENT_SECRET_SSM_PARAM = os.environ.get(
@@ -118,7 +125,15 @@ MAX_FILE_SIZE = 1024 * 1024
 
 _dynamodb = None
 _ssm = None
+_sqs = None
 _client_secret: Optional[str] = None
+
+
+def _get_sqs():
+    global _sqs
+    if _sqs is None:
+        _sqs = boto3.client("sqs")
+    return _sqs
 
 
 def _get_dynamodb():
@@ -268,6 +283,70 @@ _CONTENT_TYPES = {
     ".csv": "text/csv",
     ".xml": "application/xml",
 }
+
+
+def _enqueue_repo_summaries_job(
+    *,
+    workspace_id: str,
+    slug: str,
+    repo_type: str,
+    connection_id: str,
+    all_files: List[str],
+    last_commit_sha: Optional[str],
+    current_commit_sha: str,
+) -> None:
+    """Fan into the existing code-map + symbol-graph pipeline.
+
+    Mirrors github-sync's queue_repo_for_code_maps message shape, with
+    these ADO-specific deltas:
+    - ``provider="azure_devops"`` routes process-batch-summary's file
+      fetch to the S3 mirror (lambda/shared/source_fetch.py).
+    - ``slug`` is the org/project/repo string used to construct the
+      S3 key shape.
+    - ``connection_id`` replaces ``installation_id`` for consistency
+      with the AZDO_CONNECTION# row, though process-repo-summary's
+      ADO branch doesn't need it at the upstream layer (the sync
+      worker already wrote the source).
+
+    Repo-summaries queue is FIFO; MessageGroupId orders messages
+    per repo. We use ``slug`` (the natural per-repo identifier);
+    the dedup id includes the commit SHA so re-syncs at the same
+    SHA don't fan out twice.
+    """
+    if not REPO_SUMMARIES_QUEUE:
+        logger.warning("REPO_SUMMARIES_QUEUE not configured -- skipping code-map fan-out")
+        return
+    repo_name = slug.rsplit("/", 1)[-1]
+    body: Dict[str, Any] = {
+        "repo": repo_name,
+        "repo_project": slug,
+        "repo_type": repo_type,
+        "workspace_id": workspace_id,
+        "provider": "azure_devops",
+        "slug": slug,
+        "connection_id": connection_id,
+        "all_files": all_files,
+        "discover_code_units": True,
+        "current_commit_sha": current_commit_sha,
+    }
+    if last_commit_sha:
+        body["last_commit_sha"] = last_commit_sha
+    try:
+        _get_sqs().send_message(
+            QueueUrl=REPO_SUMMARIES_QUEUE,
+            MessageBody=json.dumps(body),
+            MessageGroupId=slug,
+            MessageDeduplicationId=f"{workspace_id}-{slug}-{current_commit_sha}",
+        )
+        logger.info(
+            "Queued repo-summaries fan-out for %s/%s @ %s (%d files)",
+            workspace_id, slug, current_commit_sha, len(all_files),
+        )
+    except ClientError as e:
+        logger.warning(
+            "Failed to enqueue repo-summaries for %s/%s: %s",
+            workspace_id, slug, e,
+        )
 
 
 def _upload_blob_to_s3(
@@ -444,6 +523,23 @@ def process_sync_message(message: Dict[str, Any]) -> Dict[str, Any]:
             commit_sha=latest_sha,
             file_count=uploaded,
         )
+
+        # chunk-08a: fan into the code-map + symbol-graph pipeline
+        # only for application repos (matches github-sync's behavior).
+        # Standards repos skip code-map; their content is already in
+        # S3 for chat KB search via process-documents.
+        if repo_type == "application" and uploaded > 0:
+            indexable_paths = [item["path"] for item in indexable]
+            _enqueue_repo_summaries_job(
+                workspace_id=workspace_id,
+                slug=slug,
+                repo_type=repo_type,
+                connection_id=connection_id,
+                all_files=indexable_paths,
+                last_commit_sha=stored_sha,
+                current_commit_sha=latest_sha,
+            )
+
         logger.info(
             "ADO sync success: %s/%s -> %d uploaded (%d errors)",
             workspace_id, slug, uploaded, upload_errors,

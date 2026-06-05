@@ -137,39 +137,41 @@ class TestComputeContentHash:
 
 
 class TestFetchFileContent:
-    """Test file content fetching from GitHub."""
+    """Test file content fetching from GitHub.
+
+    chunk-08a moved the urlopen call from process_batch_summary's
+    fetch_file_content into shared.source_fetch -- the mock target
+    moved with it. The shared module also validates that
+    github_token is non-empty at the dispatch layer, so the tests
+    explicitly set the module-level GITHUB_TOKEN (load_config()
+    runs at Lambda startup in prod; not in unit tests).
+    """
 
     @patch("process_batch_summary_handler.get_default_branch")
-    @patch("process_batch_summary_handler.urlopen")
+    @patch("shared.source_fetch.urlopen")
     def test_fetch_file_content_success(self, mock_urlopen, mock_get_branch):
-        """Test successful file content fetch."""
-        # Arrange
         mock_get_branch.return_value = "main"
         mock_response = MagicMock()
         mock_response.read.return_value = b"file content here"
         mock_urlopen.return_value.__enter__.return_value = mock_response
 
-        # Act
-        result = fetch_file_content("owner/repo", "path/to/file.py")
+        with patch.object(handler_module, "GITHUB_TOKEN", "ghp_test"):
+            result = fetch_file_content("owner/repo", "path/to/file.py")
 
-        # Assert
         assert result == "file content here"
         mock_urlopen.assert_called_once()
 
     @patch("process_batch_summary_handler.get_default_branch")
-    @patch("process_batch_summary_handler.urlopen")
+    @patch("shared.source_fetch.urlopen")
     def test_fetch_file_content_url_format(self, mock_urlopen, mock_get_branch):
-        """Test file content fetch uses correct URL format."""
-        # Arrange
         mock_get_branch.return_value = "main"
         mock_response = MagicMock()
         mock_response.read.return_value = b"content"
         mock_urlopen.return_value.__enter__.return_value = mock_response
 
-        # Act
-        fetch_file_content("bcarpio/outcome-ops-ai-assist", "lambda/handler.py")
+        with patch.object(handler_module, "GITHUB_TOKEN", "ghp_test"):
+            fetch_file_content("bcarpio/outcome-ops-ai-assist", "lambda/handler.py")
 
-        # Assert
         call_args = mock_urlopen.call_args
         request_obj = call_args[0][0]
         assert "raw.githubusercontent.com" in request_obj.full_url

@@ -442,7 +442,14 @@ module "azure_devops_sync_lambda" {
       # the uploaded files automatically.
       KB_BUCKET               = module.knowledge_base_bucket.s3_bucket_id
       AZURE_DEVOPS_SYNC_QUEUE = aws_sqs_queue.azure_devops_sync[0].url
-      AUDIT_TABLE             = module.audit_logs_table.dynamodb_table_id
+      # chunk 08a: after the per-file S3 upload finishes the sync
+      # worker enqueues ONE repo-summaries message so the existing
+      # code-map + symbol-graph pipeline (process-repo-summary +
+      # process-batch-summary) runs for ADO too. Downstream consumers
+      # route the file-content fetch to the S3 mirror via
+      # shared.source_fetch.
+      REPO_SUMMARIES_QUEUE = module.repo_summaries_queue.queue_url
+      AUDIT_TABLE          = module.audit_logs_table.dynamodb_table_id
     },
     local.outcomeops_license_env,
     local.ha_writer_env,
@@ -499,6 +506,15 @@ module "azure_devops_sync_lambda" {
         effect    = "Allow"
         actions   = ["s3:PutObject", "s3:PutObjectAcl"]
         resources = ["${module.knowledge_base_bucket.s3_bucket_arn}/*"]
+      }
+
+      # chunk 08a: enqueue one repo-summaries job per sync so the
+      # code-map + symbol-graph pipeline fans into the same queue
+      # github-sync uses.
+      sqs_send_repo_summaries = {
+        effect    = "Allow"
+        actions   = ["sqs:SendMessage"]
+        resources = [module.repo_summaries_queue.queue_arn]
       }
 
       dynamodb_audit = {

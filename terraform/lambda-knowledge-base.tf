@@ -78,6 +78,12 @@ module "process_batch_summary_lambda" {
     # not yet imported; chunk 02 lights it up.
     PENDING_WORK_TABLE = module.code_map_pending_work_table.dynamodb_table_id
     FAILED_FILES_TABLE = module.code_map_failed_files_table.dynamodb_table_id
+    # chunk 08a: when fetch_file_content is called with
+    # provider=azure_devops it reads from the S3 mirror at
+    # workspaces/{ws}/azure_devops/{slug}/{path} that
+    # azure-devops-sync wrote (chunk 05a). KB_BUCKET is the same
+    # bucket azure-devops-sync writes to.
+    KB_BUCKET = module.knowledge_base_bucket.s3_bucket_id
     },
     local.ha_writer_env,
   )
@@ -205,6 +211,20 @@ module "process_batch_summary_lambda" {
       resources = [
         module.audit_logs_table.dynamodb_table_arn
       ]
+    }
+
+    # chunk 08a: read the S3 mirror written by azure-devops-sync so
+    # the provider=azure_devops branch of fetch_file_content can
+    # serve content without a live ADO API call. Scoped to
+    # workspaces/* because that prefix is the only legitimate read
+    # target. Both process-batch-summary and process-repo-summary
+    # get this grant — process-batch-summary uses it today;
+    # process-repo-summary will use it when .outcomeops.yaml lookup
+    # learns to read from the S3 mirror for non-github providers.
+    s3_kb_read = {
+      effect    = "Allow"
+      actions   = ["s3:GetObject"]
+      resources = ["${module.knowledge_base_bucket.s3_bucket_arn}/workspaces/*"]
     }
 
     # Read workspace METADATA rows for privacy_mode lookups (PII redaction)
@@ -485,6 +505,20 @@ module "process_repo_summary_lambda" {
       resources = [
         module.audit_logs_table.dynamodb_table_arn
       ]
+    }
+
+    # chunk 08a: read the S3 mirror written by azure-devops-sync so
+    # the provider=azure_devops branch of fetch_file_content can
+    # serve content without a live ADO API call. Scoped to
+    # workspaces/* because that prefix is the only legitimate read
+    # target. Both process-batch-summary and process-repo-summary
+    # get this grant — process-batch-summary uses it today;
+    # process-repo-summary will use it when .outcomeops.yaml lookup
+    # learns to read from the S3 mirror for non-github providers.
+    s3_kb_read = {
+      effect    = "Allow"
+      actions   = ["s3:GetObject"]
+      resources = ["${module.knowledge_base_bucket.s3_bucket_arn}/workspaces/*"]
     }
 
     # Read workspace METADATA rows for privacy_mode lookups (PII redaction)

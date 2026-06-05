@@ -347,7 +347,7 @@ def get_backend_for_repo(repo_config: Dict, token: str):
 
 
 def discover_code_units(
-    token: str,
+    token: Optional[str],
     repo_project: str,
     repo: str,
     all_files: List[str],
@@ -355,11 +355,21 @@ def discover_code_units(
     """
     Discover code units from file list using backend abstraction.
 
+    ``token`` may be None for non-github providers (chunk-08a). In
+    that case we skip the GitHub .outcomeops.yaml fetch and use an
+    empty repo config -- the backend defaults to python with no
+    custom handler patterns, which works against any file tree at
+    the path-analysis level. Backends that need authenticated change
+    detection later won't be exercised because non-github providers
+    skip the change-detection path (full-regen on every sync).
+
     Returns list of code unit dicts with batch_type, group_name, file_paths, storage_key.
     """
-    # Fetch repo config for backend selection
-    repo_config = fetch_repo_config(token, repo_project)
-    backend = get_backend_for_repo(repo_config, token)
+    if token:
+        repo_config = fetch_repo_config(token, repo_project)
+    else:
+        repo_config = {}
+    backend = get_backend_for_repo(repo_config, token or "")
 
     if not backend:
         logger.warning(f"No backend available for {repo_project}, returning empty code units")
@@ -877,6 +887,9 @@ def send_code_units_to_sqs(
     workspace_id: Optional[str] = None,
     commit_sha: Optional[str] = None,
     commit_timestamp: Optional[int] = None,
+    *,
+    provider: str = "github",
+    slug: Optional[str] = None,
 ) -> int:
     """
     Send code units to SQS for detailed batch processing.
@@ -935,6 +948,16 @@ def send_code_units_to_sqs(
                 # plan-git-truth chunk 02b: monotonic-advance anchor
                 # for the per-unit ledger increments downstream.
                 message["commit_timestamp"] = commit_timestamp
+            # chunk-08a: process-batch-summary's fetch_file_content
+            # dispatches on `provider`. For azure_devops it reads from
+            # the S3 mirror at workspaces/{ws}/azure_devops/{slug}/.
+            # GitHub default "github" keeps the existing
+            # raw.githubusercontent.com path; no message-shape change
+            # for existing GitHub flows.
+            if provider != "github":
+                message["provider"] = provider
+            if slug:
+                message["slug"] = slug
 
             message_body = json.dumps(message)
 
@@ -1044,6 +1067,14 @@ def handler(event, context):
             workspace_id = message_body.get("workspace_id")
             installation_id = message_body.get("installation_id")
             should_discover = message_body.get("discover_code_units", False)
+            # chunk-08a provider routing: github (default) uses the
+            # existing installation_token + GitHub API path. ADO uses
+            # the S3 mirror; no token needed at this layer (sync
+            # worker already authenticated against the customer's
+            # tenant during the file upload).
+            provider = message_body.get("provider", "github")
+            slug = message_body.get("slug")
+            connection_id = message_body.get("connection_id")
 
             # Read commit SHAs for incremental processing
             last_commit_sha = message_body.get("last_commit_sha")
@@ -1078,7 +1109,37 @@ def handler(event, context):
             # delete vectors for unchanged handlers.
             full_code_units: List[Dict[str, Any]] = []
 
-            if should_discover and installation_id:
+            if should_discover and provider == "azure_devops":
+                # chunk-08a ADO branch. No installation token needed;
+                # the sync worker already wrote files to S3 and
+                # downstream process-batch-summary reads them via
+                # shared.source_fetch using provider+workspace_id+slug.
+                # Backend selection still runs to figure out which
+                # code-units the file paths belong to, but with a
+                # token=None signal. Change detection is skipped
+                # (treat every ADO sync as full-regen for v1 -- the
+                # azure-devops-sync skip-unchanged check at the SHA
+                # level upstream already gates the work).
+                logger.info(
+                    f"Workspace ADO repo {repo_project}: discovering code units",
+                )
+                try:
+                    code_units = discover_code_units(
+                        token=None, repo_project=repo_project,
+                        repo=repo, all_files=all_files,
+                    )
+                    logger.info(
+                        f"Discovered {len(code_units)} code units for {repo_project}",
+                    )
+                    full_code_units = list(code_units)
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to discover code units for ADO repo "
+                        f"{repo_project}: {e}",
+                    )
+                    code_units = []
+                    full_code_units = []
+            elif should_discover and installation_id:
                 # Workspace repo: Get installation token and discover code units
                 logger.info(f"Workspace repo {repo_project}: discovering code units")
                 try:
@@ -1246,6 +1307,11 @@ def handler(event, context):
                         if current_commit_timestamp is not None
                         else None
                     ),
+                    # chunk-08a: thread provider+slug so the downstream
+                    # process-batch-summary's fetch_file_content can
+                    # dispatch to the S3 mirror for non-github providers.
+                    provider=provider,
+                    slug=slug,
                 )
                 logger.info(f"Queued {len(code_units)} code units for {repo}")
 

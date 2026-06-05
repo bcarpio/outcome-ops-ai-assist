@@ -100,6 +100,7 @@ CODE_MAPS_TABLE = None
 GITHUB_TOKEN = None
 VECTOR_BUCKET = None
 VECTOR_INDEX = None
+KB_BUCKET = os.environ.get("KB_BUCKET")
 
 GITHUB_API_URL = "https://api.github.com"
 
@@ -169,33 +170,54 @@ def get_default_branch(repo: str) -> str:
         return "main"
 
 
-def fetch_file_content(repo: str, file_path: str) -> str:
-    """
-    Fetch raw file content from GitHub.
+def fetch_file_content(
+    repo: str,
+    file_path: str,
+    *,
+    provider: str = "github",
+    workspace_id: str = None,
+    slug: str = None,
+) -> str:
+    """Fetch raw file content for the code-map / symbol-graph prompt.
 
-    Args:
-        repo: Repository in format "owner/repo"
-        file_path: Path to file in repository
+    Dispatches on ``provider``:
+    - "github" (default for back-compat): live raw.githubusercontent.com
+      with the platform's PAT.
+    - "azure_devops": reads the S3 mirror that azure-devops-sync
+      wrote during ingestion. Caller must pass workspace_id + slug
+      (org/project/repo) for the key shape
+      ``workspaces/{ws}/azure_devops/{slug}/{path}``.
 
-    Returns:
-        Raw file content as string
+    GitLab (future) follows the azure_devops pattern.
+
+    See lambda/shared/source_fetch.py for the dispatch contract.
     """
-    default_branch = get_default_branch(repo)
-    # URL-encode the file path to handle special characters like # in ABAP filenames
-    # (e.g., #dmo#cl_flight.clas.abap -> %23dmo%23cl_flight.clas.abap)
-    encoded_path = quote(file_path, safe='/')
-    url = f"https://raw.githubusercontent.com/{repo}/{default_branch}/{encoded_path}"
-    headers = {
-        "Authorization": f"Bearer {GITHUB_TOKEN}",
-        "User-Agent": "outcome-ops-process-batch-summary",
-    }
+    from shared.source_fetch import fetch_repo_file, SourceFetchError
 
     try:
-        request = Request(url, headers=headers)
-        with urlopen(request) as response:
-            return response.read().decode("utf-8")
-    except URLError as e:
-        logger.error(f"Failed to fetch {file_path} from GitHub: {e}")
+        if provider == "azure_devops":
+            return fetch_repo_file(
+                "azure_devops",
+                file_path,
+                workspace_id=workspace_id,
+                slug=slug,
+                kb_bucket=KB_BUCKET,
+            )
+        # github path -- keep the existing get_default_branch + PAT
+        # behavior. fetch_repo_file's github branch only needs the
+        # already-resolved default branch + token.
+        default_branch = get_default_branch(repo)
+        return fetch_repo_file(
+            "github",
+            file_path,
+            repo_project=repo,
+            default_branch=default_branch,
+            github_token=GITHUB_TOKEN,
+        )
+    except SourceFetchError as e:
+        # Map to the previous logger + raise behavior so the rest of
+        # the pipeline (per-file try/except + retry) is unchanged.
+        logger.error(f"Failed to fetch {file_path}: {e}")
         raise
 
 
@@ -924,6 +946,16 @@ def generate_batch_summary(
     group_name = batch["group_name"]
     file_paths = batch["file_paths"]
 
+    # chunk-08a provider-aware fetch: process-repo-summary threads
+    # `provider` + `workspace_id` + `slug` through to the code-units
+    # message. For azure_devops these route fetch_file_content to the
+    # S3 mirror written by azure-devops-sync (chunk 05a). For github
+    # (legacy / absent provider) the existing raw.githubusercontent.com
+    # path runs unchanged.
+    fetch_provider = batch.get("provider", "github")
+    fetch_workspace_id = batch.get("workspace_id")
+    fetch_slug = batch.get("slug")
+
     # Fetch all file contents
     file_contents = []
     # This batch's extracted facts, accumulated for graph-first grounding
@@ -933,7 +965,13 @@ def generate_batch_summary(
 
     for file_path in file_paths:
         try:
-            content = fetch_file_content(repo_project, file_path)
+            content = fetch_file_content(
+                repo_project,
+                file_path,
+                provider=fetch_provider,
+                workspace_id=fetch_workspace_id,
+                slug=fetch_slug,
+            )
 
             # Symbol-graph extractor pass. Run on the FULL raw content,
             # not the chunked / truncated copy — truncation would drop
