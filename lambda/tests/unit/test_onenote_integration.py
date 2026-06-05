@@ -41,6 +41,13 @@ token_module = _load_module(
     "on_int_token_manager", "token_manager.py", "../../onenote-integration",
     also_register_as="token_manager",
 )
+
+# Shared Entra ID OAuth helper (ADR-035 chunk 01a):
+# token_manager.py is now a thin wrapper. Tests patch internals
+# (urllib, _get_dynamodb, _get_kms, _encrypt_token, _decrypt_token,
+# save_tokens, get_refresh_token, module-level cache globals) on
+# the SHARED module, not the wrapper.
+import shared.entra_id_oauth as shared_oauth  # noqa: E402
 api_module = _load_module(
     "on_int_onenote_api", "onenote_api.py", "../../onenote-integration",
     also_register_as="onenote_api",
@@ -75,28 +82,28 @@ class TestONTokenManager:
 
     @pytest.fixture(autouse=True)
     def reset_globals(self):
-        token_module._dynamodb = None
-        token_module._kms = None
+        shared_oauth._dynamodb = None
+        shared_oauth._kms = None
         yield
 
-    @patch.object(token_module, "_get_kms")
+    @patch.object(shared_oauth, "_get_kms")
     def test_encrypt_token(self, mock_kms_fn):
         mock_kms = MagicMock()
         mock_kms.encrypt.return_value = {"CiphertextBlob": b"encrypted"}
         mock_kms_fn.return_value = mock_kms
-        result = token_module._encrypt_token("token")
+        result = shared_oauth._encrypt_token("token", "test-kms-key")
         assert base64.b64decode(result) == b"encrypted"
 
-    @patch.object(token_module, "_get_kms")
+    @patch.object(shared_oauth, "_get_kms")
     def test_decrypt_token(self, mock_kms_fn):
         mock_kms = MagicMock()
         mock_kms.decrypt.return_value = {"Plaintext": b"decrypted"}
         mock_kms_fn.return_value = mock_kms
-        result = token_module._decrypt_token(base64.b64encode(b"cipher").decode())
+        result = shared_oauth._decrypt_token(base64.b64encode(b"cipher").decode())
         assert result == "decrypted"
 
-    @patch.object(token_module, "_encrypt_token")
-    @patch.object(token_module, "_get_dynamodb")
+    @patch.object(shared_oauth, "_encrypt_token")
+    @patch.object(shared_oauth, "_get_dynamodb")
     def test_save_tokens_success(self, mock_db_fn, mock_encrypt):
         mock_table = MagicMock()
         mock_db = MagicMock()
@@ -108,7 +115,7 @@ class TestONTokenManager:
         # Stored under ONENOTE_TOKEN# prefix (separate from ONEDRIVE_TOKEN#/SHAREPOINT_TOKEN#)
         assert mock_table.put_item.call_args[1]["Item"]["PK"] == "ONENOTE_TOKEN#conn1"
 
-    @patch.object(token_module, "_get_dynamodb")
+    @patch.object(shared_oauth, "_get_dynamodb")
     def test_save_tokens_error(self, mock_db_fn):
         mock_table = MagicMock()
         mock_table.put_item.side_effect = ClientError(
@@ -117,11 +124,11 @@ class TestONTokenManager:
         mock_db = MagicMock()
         mock_db.Table.return_value = mock_table
         mock_db_fn.return_value = mock_db
-        with patch.object(token_module, "_encrypt_token", return_value="x"):
+        with patch.object(shared_oauth, "_encrypt_token", return_value="x"):
             assert token_module.save_tokens("c", "a", "r", 60) is False
 
-    @patch.object(token_module, "_decrypt_token")
-    @patch.object(token_module, "_get_dynamodb")
+    @patch.object(shared_oauth, "_decrypt_token")
+    @patch.object(shared_oauth, "_get_dynamodb")
     def test_get_refresh_token_success(self, mock_db_fn, mock_decrypt):
         mock_table = MagicMock()
         mock_table.get_item.return_value = {
@@ -134,7 +141,7 @@ class TestONTokenManager:
         result = token_module.get_refresh_token("c1")
         assert result == "decrypted"
 
-    @patch.object(token_module, "_get_dynamodb")
+    @patch.object(shared_oauth, "_get_dynamodb")
     def test_get_refresh_token_missing(self, mock_db_fn):
         mock_table = MagicMock()
         mock_table.get_item.return_value = {}
@@ -143,7 +150,7 @@ class TestONTokenManager:
         mock_db_fn.return_value = mock_db
         assert token_module.get_refresh_token("c1") is None
 
-    @patch.object(token_module, "_get_dynamodb")
+    @patch.object(shared_oauth, "_get_dynamodb")
     def test_delete_tokens(self, mock_db_fn):
         mock_table = MagicMock()
         mock_db = MagicMock()
@@ -180,8 +187,8 @@ class TestONTokenManager:
         assert access is None and refresh is None and expires is None
 
     @patch("urllib.request.urlopen")
-    @patch.object(token_module, "save_tokens")
-    @patch.object(token_module, "get_refresh_token", return_value="stored_refresh")
+    @patch.object(shared_oauth, "save_tokens")
+    @patch.object(shared_oauth, "get_refresh_token", return_value="stored_refresh")
     def test_refresh_access_token_success(self, _gtr, mock_save, mock_urlopen):
         mock_urlopen.return_value = _make_urlopen_response({
             "access_token": "new_access",
@@ -190,9 +197,14 @@ class TestONTokenManager:
         })
         result = token_module.refresh_access_token("c1", "client", "secret")
         assert result == "new_access"
-        mock_save.assert_called_once_with("c1", "new_access", "new_refresh", 3600)
+        mock_save.assert_called_once()
+        _kw = mock_save.call_args.kwargs
+        assert _kw["connection_id"] == "c1"
+        assert _kw["access_token"] == "new_access"
+        assert _kw["refresh_token"] == "new_refresh"
+        assert _kw["expires_in"] == 3600
 
-    @patch.object(token_module, "get_refresh_token", return_value=None)
+    @patch.object(shared_oauth, "get_refresh_token", return_value=None)
     def test_refresh_access_token_no_stored_refresh(self, _gtr):
         assert token_module.refresh_access_token("c1", "client", "secret") is None
 

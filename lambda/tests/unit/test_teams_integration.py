@@ -41,6 +41,12 @@ token_module = _load_module(
     "teams_int_token_manager", "token_manager.py", "../../teams-integration",
     also_register_as="token_manager",
 )
+
+# Shared Entra ID OAuth helper (ADR-035 chunk 01a):
+# token_manager.py is now a thin wrapper. Tests patch internals
+# (urllib, _get_dynamodb, _get_kms, module-level cache globals)
+# on the SHARED module, not the wrapper.
+import shared.entra_id_oauth as shared_oauth  # noqa: E402
 api_module = _load_module(
     "teams_int_teams_api", "teams_api.py", "../../teams-integration",
     also_register_as="teams_api",
@@ -92,28 +98,28 @@ class TestTeamsTokenManagerEncryptDecrypt:
 
     @pytest.fixture(autouse=True)
     def reset_globals(self):
-        token_module._dynamodb = None
-        token_module._kms = None
+        shared_oauth._dynamodb = None
+        shared_oauth._kms = None
         yield
 
-    @patch.object(token_module, "_get_kms")
+    @patch.object(shared_oauth, "_get_kms")
     def test_encrypt_token(self, mock_kms_fn):
         mock_kms = MagicMock()
         mock_kms.encrypt.return_value = {"CiphertextBlob": b"encrypted"}
         mock_kms_fn.return_value = mock_kms
 
-        result = token_module._encrypt_token("my_token")
+        result = shared_oauth._encrypt_token("my_token", "test-kms-key")
         assert isinstance(result, str)
         assert base64.b64decode(result) == b"encrypted"
 
-    @patch.object(token_module, "_get_kms")
+    @patch.object(shared_oauth, "_get_kms")
     def test_decrypt_token(self, mock_kms_fn):
         mock_kms = MagicMock()
         mock_kms.decrypt.return_value = {"Plaintext": b"decrypted"}
         mock_kms_fn.return_value = mock_kms
 
         encrypted = base64.b64encode(b"cipher").decode("utf-8")
-        result = token_module._decrypt_token(encrypted)
+        result = shared_oauth._decrypt_token(encrypted)
         assert result == "decrypted"
 
 
@@ -121,12 +127,12 @@ class TestTeamsTokenManagerSaveTokens:
 
     @pytest.fixture(autouse=True)
     def reset_globals(self):
-        token_module._dynamodb = None
-        token_module._kms = None
+        shared_oauth._dynamodb = None
+        shared_oauth._kms = None
         yield
 
-    @patch.object(token_module, "_encrypt_token")
-    @patch.object(token_module, "_get_dynamodb")
+    @patch.object(shared_oauth, "_encrypt_token")
+    @patch.object(shared_oauth, "_get_dynamodb")
     def test_save_tokens_success(self, mock_db_fn, mock_encrypt):
         mock_table = MagicMock()
         mock_db = MagicMock()
@@ -141,8 +147,8 @@ class TestTeamsTokenManagerSaveTokens:
         assert item["SK"] == "CREDENTIALS"
         assert item["encrypted_refresh_token"] == "encrypted_refresh"
 
-    @patch.object(token_module, "_encrypt_token")
-    @patch.object(token_module, "_get_dynamodb")
+    @patch.object(shared_oauth, "_encrypt_token")
+    @patch.object(shared_oauth, "_get_dynamodb")
     def test_save_tokens_error(self, mock_db_fn, mock_encrypt):
         mock_table = MagicMock()
         mock_db = MagicMock()
@@ -160,12 +166,12 @@ class TestTeamsTokenManagerGetRefreshToken:
 
     @pytest.fixture(autouse=True)
     def reset_globals(self):
-        token_module._dynamodb = None
-        token_module._kms = None
+        shared_oauth._dynamodb = None
+        shared_oauth._kms = None
         yield
 
-    @patch.object(token_module, "_decrypt_token")
-    @patch.object(token_module, "_get_dynamodb")
+    @patch.object(shared_oauth, "_decrypt_token")
+    @patch.object(shared_oauth, "_get_dynamodb")
     def test_get_refresh_token_success(self, mock_db_fn, mock_decrypt):
         mock_table = MagicMock()
         mock_db = MagicMock()
@@ -179,7 +185,7 @@ class TestTeamsTokenManagerGetRefreshToken:
         result = token_module.get_refresh_token("conn1")
         assert result == "plain_token"
 
-    @patch.object(token_module, "_get_dynamodb")
+    @patch.object(shared_oauth, "_get_dynamodb")
     def test_get_refresh_token_not_found(self, mock_db_fn):
         mock_table = MagicMock()
         mock_db = MagicMock()
@@ -190,7 +196,7 @@ class TestTeamsTokenManagerGetRefreshToken:
         result = token_module.get_refresh_token("conn1")
         assert result is None
 
-    @patch.object(token_module, "_get_dynamodb")
+    @patch.object(shared_oauth, "_get_dynamodb")
     def test_get_refresh_token_no_encrypted_field(self, mock_db_fn):
         mock_table = MagicMock()
         mock_db = MagicMock()
@@ -201,7 +207,7 @@ class TestTeamsTokenManagerGetRefreshToken:
         result = token_module.get_refresh_token("conn1")
         assert result is None
 
-    @patch.object(token_module, "_get_dynamodb")
+    @patch.object(shared_oauth, "_get_dynamodb")
     def test_get_refresh_token_dynamodb_error(self, mock_db_fn):
         mock_table = MagicMock()
         mock_db = MagicMock()
@@ -218,13 +224,13 @@ class TestTeamsTokenManagerRefreshAccessToken:
 
     @pytest.fixture(autouse=True)
     def reset_globals(self):
-        token_module._dynamodb = None
-        token_module._kms = None
+        shared_oauth._dynamodb = None
+        shared_oauth._kms = None
         yield
 
-    @patch.object(token_module, "save_tokens")
-    @patch("teams_int_token_manager.urllib.request.urlopen")
-    @patch.object(token_module, "get_refresh_token")
+    @patch.object(shared_oauth, "save_tokens")
+    @patch("shared.entra_id_oauth.urllib.request.urlopen")
+    @patch.object(shared_oauth, "get_refresh_token")
     def test_refresh_success(self, mock_get_refresh, mock_urlopen, mock_save):
         mock_get_refresh.return_value = "old_refresh"
         mock_urlopen.return_value = _make_urlopen_response({
@@ -236,14 +242,14 @@ class TestTeamsTokenManagerRefreshAccessToken:
         assert result == "new_access"
         mock_save.assert_called_once()
 
-    @patch.object(token_module, "get_refresh_token")
+    @patch.object(shared_oauth, "get_refresh_token")
     def test_refresh_no_stored_token(self, mock_get_refresh):
         mock_get_refresh.return_value = None
         result = token_module.refresh_access_token("conn1", "cid", "csecret")
         assert result is None
 
-    @patch("teams_int_token_manager.urllib.request.urlopen")
-    @patch.object(token_module, "get_refresh_token")
+    @patch("shared.entra_id_oauth.urllib.request.urlopen")
+    @patch.object(shared_oauth, "get_refresh_token")
     def test_refresh_http_error(self, mock_get_refresh, mock_urlopen):
         mock_get_refresh.return_value = "refresh"
         mock_urlopen.side_effect = urllib.error.HTTPError(
@@ -253,16 +259,16 @@ class TestTeamsTokenManagerRefreshAccessToken:
         result = token_module.refresh_access_token("conn1", "cid", "csecret")
         assert result is None
 
-    @patch("teams_int_token_manager.urllib.request.urlopen")
-    @patch.object(token_module, "get_refresh_token")
+    @patch("shared.entra_id_oauth.urllib.request.urlopen")
+    @patch.object(shared_oauth, "get_refresh_token")
     def test_refresh_url_error(self, mock_get_refresh, mock_urlopen):
         mock_get_refresh.return_value = "refresh"
         mock_urlopen.side_effect = urllib.error.URLError("Connection refused")
         result = token_module.refresh_access_token("conn1", "cid", "csecret")
         assert result is None
 
-    @patch("teams_int_token_manager.urllib.request.urlopen")
-    @patch.object(token_module, "get_refresh_token")
+    @patch("shared.entra_id_oauth.urllib.request.urlopen")
+    @patch.object(shared_oauth, "get_refresh_token")
     def test_refresh_no_access_in_response(self, mock_get_refresh, mock_urlopen):
         mock_get_refresh.return_value = "refresh"
         mock_urlopen.return_value = _make_urlopen_response({"error": "something"})
@@ -274,11 +280,11 @@ class TestTeamsTokenManagerDeleteTokens:
 
     @pytest.fixture(autouse=True)
     def reset_globals(self):
-        token_module._dynamodb = None
-        token_module._kms = None
+        shared_oauth._dynamodb = None
+        shared_oauth._kms = None
         yield
 
-    @patch.object(token_module, "_get_dynamodb")
+    @patch.object(shared_oauth, "_get_dynamodb")
     def test_delete_success(self, mock_db_fn):
         mock_table = MagicMock()
         mock_db = MagicMock()
@@ -291,7 +297,7 @@ class TestTeamsTokenManagerDeleteTokens:
             Key={"PK": "TEAMS_TOKEN#conn1", "SK": "CREDENTIALS"}
         )
 
-    @patch.object(token_module, "_get_dynamodb")
+    @patch.object(shared_oauth, "_get_dynamodb")
     def test_delete_error(self, mock_db_fn):
         mock_table = MagicMock()
         mock_db = MagicMock()
@@ -308,11 +314,11 @@ class TestTeamsTokenManagerExchangeCode:
 
     @pytest.fixture(autouse=True)
     def reset_globals(self):
-        token_module._dynamodb = None
-        token_module._kms = None
+        shared_oauth._dynamodb = None
+        shared_oauth._kms = None
         yield
 
-    @patch("teams_int_token_manager.urllib.request.urlopen")
+    @patch("shared.entra_id_oauth.urllib.request.urlopen")
     def test_exchange_success(self, mock_urlopen):
         mock_urlopen.return_value = _make_urlopen_response({
             "access_token": "at", "refresh_token": "rt", "expires_in": 3600,
@@ -324,7 +330,7 @@ class TestTeamsTokenManagerExchangeCode:
         assert refresh == "rt"
         assert expires == 3600
 
-    @patch("teams_int_token_manager.urllib.request.urlopen")
+    @patch("shared.entra_id_oauth.urllib.request.urlopen")
     def test_exchange_http_error(self, mock_urlopen):
         mock_urlopen.side_effect = urllib.error.HTTPError(
             url="https://example.com", code=400, msg="Bad",
@@ -337,7 +343,7 @@ class TestTeamsTokenManagerExchangeCode:
         assert refresh is None
         assert expires is None
 
-    @patch("teams_int_token_manager.urllib.request.urlopen")
+    @patch("shared.entra_id_oauth.urllib.request.urlopen")
     def test_exchange_url_error(self, mock_urlopen):
         mock_urlopen.side_effect = urllib.error.URLError("Connection refused")
         access, refresh, expires = token_module.exchange_code_for_tokens(

@@ -39,6 +39,9 @@ outlook_sync_tm = _load_module(
     "outlook_sync_token_mgr", "token_manager.py", "../../outlook-sync"
 )
 
+# Shared Entra ID OAuth helper (ADR-035 chunk 01a):
+import shared.entra_id_oauth as shared_oauth  # noqa: E402
+
 
 # ============================================================================
 # Helpers
@@ -72,30 +75,30 @@ def tm(request):
 class TestOutlookTokenManagerEncryptDecrypt:
 
     def test_encrypt_token(self, tm):
-        with patch.object(tm, "_get_kms") as mock_kms_fn:
+        with patch.object(shared_oauth, "_get_kms") as mock_kms_fn:
             mock_kms = MagicMock()
             mock_kms.encrypt.return_value = {"CiphertextBlob": b"encrypted"}
             mock_kms_fn.return_value = mock_kms
 
-            result = tm._encrypt_token("my_token")
+            result = shared_oauth._encrypt_token("my_token", "arn:aws:kms:us-east-1:123456:key/test-key")
             assert base64.b64decode(result) == b"encrypted"
 
     def test_decrypt_token(self, tm):
-        with patch.object(tm, "_get_kms") as mock_kms_fn:
+        with patch.object(shared_oauth, "_get_kms") as mock_kms_fn:
             mock_kms = MagicMock()
             mock_kms.decrypt.return_value = {"Plaintext": b"decrypted"}
             mock_kms_fn.return_value = mock_kms
 
             encrypted = base64.b64encode(b"cipher").decode()
-            result = tm._decrypt_token(encrypted)
+            result = shared_oauth._decrypt_token(encrypted)
             assert result == "decrypted"
 
 
 class TestOutlookTokenManagerSaveTokens:
 
     def test_save_tokens_success(self, tm):
-        with patch.object(tm, "_encrypt_token") as mock_enc, \
-             patch.object(tm, "_get_dynamodb") as mock_db_fn:
+        with patch.object(shared_oauth, "_encrypt_token") as mock_enc, \
+             patch.object(shared_oauth, "_get_dynamodb") as mock_db_fn:
             mock_table = MagicMock()
             mock_db = MagicMock()
             mock_db.Table.return_value = mock_table
@@ -109,8 +112,8 @@ class TestOutlookTokenManagerSaveTokens:
             assert item["SK"] == "CREDENTIALS"
 
     def test_save_tokens_error(self, tm):
-        with patch.object(tm, "_encrypt_token") as mock_enc, \
-             patch.object(tm, "_get_dynamodb") as mock_db_fn:
+        with patch.object(shared_oauth, "_encrypt_token") as mock_enc, \
+             patch.object(shared_oauth, "_get_dynamodb") as mock_db_fn:
             mock_table = MagicMock()
             mock_db = MagicMock()
             mock_db.Table.return_value = mock_table
@@ -125,8 +128,8 @@ class TestOutlookTokenManagerSaveTokens:
 class TestOutlookTokenManagerGetRefreshToken:
 
     def test_get_refresh_token_success(self, tm):
-        with patch.object(tm, "_decrypt_token") as mock_dec, \
-             patch.object(tm, "_get_dynamodb") as mock_db_fn:
+        with patch.object(shared_oauth, "_decrypt_token") as mock_dec, \
+             patch.object(shared_oauth, "_get_dynamodb") as mock_db_fn:
             mock_table = MagicMock()
             mock_db = MagicMock()
             mock_db.Table.return_value = mock_table
@@ -136,7 +139,7 @@ class TestOutlookTokenManagerGetRefreshToken:
             assert tm.get_refresh_token("conn1") == "plain"
 
     def test_get_refresh_token_not_found(self, tm):
-        with patch.object(tm, "_get_dynamodb") as mock_db_fn:
+        with patch.object(shared_oauth, "_get_dynamodb") as mock_db_fn:
             mock_table = MagicMock()
             mock_db = MagicMock()
             mock_db.Table.return_value = mock_table
@@ -145,7 +148,7 @@ class TestOutlookTokenManagerGetRefreshToken:
             assert tm.get_refresh_token("conn1") is None
 
     def test_get_refresh_token_no_field(self, tm):
-        with patch.object(tm, "_get_dynamodb") as mock_db_fn:
+        with patch.object(shared_oauth, "_get_dynamodb") as mock_db_fn:
             mock_table = MagicMock()
             mock_db = MagicMock()
             mock_db.Table.return_value = mock_table
@@ -154,7 +157,7 @@ class TestOutlookTokenManagerGetRefreshToken:
             assert tm.get_refresh_token("conn1") is None
 
     def test_get_refresh_token_empty_field(self, tm):
-        with patch.object(tm, "_get_dynamodb") as mock_db_fn:
+        with patch.object(shared_oauth, "_get_dynamodb") as mock_db_fn:
             mock_table = MagicMock()
             mock_db = MagicMock()
             mock_db.Table.return_value = mock_table
@@ -163,7 +166,7 @@ class TestOutlookTokenManagerGetRefreshToken:
             assert tm.get_refresh_token("conn1") is None
 
     def test_get_refresh_token_error(self, tm):
-        with patch.object(tm, "_get_dynamodb") as mock_db_fn:
+        with patch.object(shared_oauth, "_get_dynamodb") as mock_db_fn:
             mock_table = MagicMock()
             mock_db = MagicMock()
             mock_db.Table.return_value = mock_table
@@ -178,9 +181,9 @@ class TestOutlookTokenManagerRefreshAccessToken:
 
     def test_refresh_success(self, tm):
         mod_name = tm.__name__
-        with patch.object(tm, "save_tokens") as mock_save, \
-             patch(f"{mod_name}.urllib.request.urlopen") as mock_urlopen, \
-             patch.object(tm, "get_refresh_token") as mock_get:
+        with patch.object(shared_oauth, "save_tokens") as mock_save, \
+             patch("shared.entra_id_oauth.urllib.request.urlopen") as mock_urlopen, \
+             patch.object(shared_oauth, "get_refresh_token") as mock_get:
             mock_get.return_value = "old_refresh"
             mock_urlopen.return_value = _make_urlopen_response({
                 "access_token": "new_at", "refresh_token": "new_rt", "expires_in": 3600,
@@ -190,22 +193,22 @@ class TestOutlookTokenManagerRefreshAccessToken:
             mock_save.assert_called_once()
 
     def test_refresh_no_stored_token(self, tm):
-        with patch.object(tm, "get_refresh_token") as mock_get:
+        with patch.object(shared_oauth, "get_refresh_token") as mock_get:
             mock_get.return_value = None
             assert tm.refresh_access_token("conn1", "cid", "csec") is None
 
     def test_refresh_no_access_in_response(self, tm):
         mod_name = tm.__name__
-        with patch(f"{mod_name}.urllib.request.urlopen") as mock_urlopen, \
-             patch.object(tm, "get_refresh_token") as mock_get:
+        with patch("shared.entra_id_oauth.urllib.request.urlopen") as mock_urlopen, \
+             patch.object(shared_oauth, "get_refresh_token") as mock_get:
             mock_get.return_value = "refresh"
             mock_urlopen.return_value = _make_urlopen_response({"error": "bad"})
             assert tm.refresh_access_token("conn1", "cid", "csec") is None
 
     def test_refresh_http_error(self, tm):
         mod_name = tm.__name__
-        with patch(f"{mod_name}.urllib.request.urlopen") as mock_urlopen, \
-             patch.object(tm, "get_refresh_token") as mock_get:
+        with patch("shared.entra_id_oauth.urllib.request.urlopen") as mock_urlopen, \
+             patch.object(shared_oauth, "get_refresh_token") as mock_get:
             mock_get.return_value = "refresh"
             mock_urlopen.side_effect = urllib.error.HTTPError(
                 url="https://example.com", code=400, msg="Bad",
@@ -215,8 +218,8 @@ class TestOutlookTokenManagerRefreshAccessToken:
 
     def test_refresh_url_error(self, tm):
         mod_name = tm.__name__
-        with patch(f"{mod_name}.urllib.request.urlopen") as mock_urlopen, \
-             patch.object(tm, "get_refresh_token") as mock_get:
+        with patch("shared.entra_id_oauth.urllib.request.urlopen") as mock_urlopen, \
+             patch.object(shared_oauth, "get_refresh_token") as mock_get:
             mock_get.return_value = "refresh"
             mock_urlopen.side_effect = urllib.error.URLError("Connection refused")
             assert tm.refresh_access_token("conn1", "cid", "csec") is None
@@ -225,7 +228,7 @@ class TestOutlookTokenManagerRefreshAccessToken:
 class TestOutlookTokenManagerDeleteTokens:
 
     def test_delete_success(self, tm):
-        with patch.object(tm, "_get_dynamodb") as mock_db_fn:
+        with patch.object(shared_oauth, "_get_dynamodb") as mock_db_fn:
             mock_table = MagicMock()
             mock_db = MagicMock()
             mock_db.Table.return_value = mock_table
@@ -236,7 +239,7 @@ class TestOutlookTokenManagerDeleteTokens:
             )
 
     def test_delete_error(self, tm):
-        with patch.object(tm, "_get_dynamodb") as mock_db_fn:
+        with patch.object(shared_oauth, "_get_dynamodb") as mock_db_fn:
             mock_table = MagicMock()
             mock_db = MagicMock()
             mock_db.Table.return_value = mock_table
@@ -251,7 +254,7 @@ class TestOutlookTokenManagerExchangeCode:
 
     def test_exchange_success(self, tm):
         mod_name = tm.__name__
-        with patch(f"{mod_name}.urllib.request.urlopen") as mock_urlopen:
+        with patch("shared.entra_id_oauth.urllib.request.urlopen") as mock_urlopen:
             mock_urlopen.return_value = _make_urlopen_response({
                 "access_token": "at", "refresh_token": "rt", "expires_in": 3600,
             })
@@ -262,7 +265,7 @@ class TestOutlookTokenManagerExchangeCode:
 
     def test_exchange_http_error(self, tm):
         mod_name = tm.__name__
-        with patch(f"{mod_name}.urllib.request.urlopen") as mock_urlopen:
+        with patch("shared.entra_id_oauth.urllib.request.urlopen") as mock_urlopen:
             mock_urlopen.side_effect = urllib.error.HTTPError(
                 url="https://example.com", code=400, msg="Bad",
                 hdrs={}, fp=MagicMock(read=MagicMock(return_value=b'err')),
@@ -272,14 +275,14 @@ class TestOutlookTokenManagerExchangeCode:
 
     def test_exchange_url_error(self, tm):
         mod_name = tm.__name__
-        with patch(f"{mod_name}.urllib.request.urlopen") as mock_urlopen:
+        with patch("shared.entra_id_oauth.urllib.request.urlopen") as mock_urlopen:
             mock_urlopen.side_effect = urllib.error.URLError("Connection refused")
             a, r, e = tm.exchange_code_for_tokens("code", "cid", "csec", "https://cb")
             assert a is None
 
     def test_exchange_default_expires(self, tm):
         mod_name = tm.__name__
-        with patch(f"{mod_name}.urllib.request.urlopen") as mock_urlopen:
+        with patch("shared.entra_id_oauth.urllib.request.urlopen") as mock_urlopen:
             mock_urlopen.return_value = _make_urlopen_response({
                 "access_token": "at", "refresh_token": "rt",
             })
@@ -290,17 +293,19 @@ class TestOutlookTokenManagerExchangeCode:
 class TestOutlookTokenManagerClientCaching:
 
     def test_dynamodb_caches(self, tm):
-        with patch.object(tm, "boto3") as mock_boto3:
+        shared_oauth._dynamodb = None
+        with patch.object(shared_oauth, "boto3") as mock_boto3:
             mock_boto3.resource.return_value = MagicMock()
-            first = tm._get_dynamodb()
-            second = tm._get_dynamodb()
+            first = shared_oauth._get_dynamodb()
+            second = shared_oauth._get_dynamodb()
             assert first is second
             mock_boto3.resource.assert_called_once()
 
     def test_kms_caches(self, tm):
-        with patch.object(tm, "boto3") as mock_boto3:
+        shared_oauth._kms = None
+        with patch.object(shared_oauth, "boto3") as mock_boto3:
             mock_boto3.client.return_value = MagicMock()
-            first = tm._get_kms()
-            second = tm._get_kms()
+            first = shared_oauth._get_kms()
+            second = shared_oauth._get_kms()
             assert first is second
             mock_boto3.client.assert_called_once()

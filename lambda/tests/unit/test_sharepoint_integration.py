@@ -40,6 +40,13 @@ token_module = _load_module(
     "sp_int_token_manager", "token_manager.py", "../../sharepoint-integration",
     also_register_as="token_manager",
 )
+
+# Shared Entra ID OAuth helper (ADR-035 chunk 01a):
+# token_manager.py is now a thin wrapper. Tests patch internals
+# (urllib, _get_dynamodb, _get_kms, _encrypt_token, _decrypt_token,
+# save_tokens, get_refresh_token, module-level cache globals) on
+# the SHARED module, not the wrapper.
+import shared.entra_id_oauth as shared_oauth  # noqa: E402
 api_module = _load_module(
     "sp_int_sharepoint_api", "sharepoint_api.py", "../../sharepoint-integration",
     also_register_as="sharepoint_api",
@@ -91,28 +98,28 @@ class TestSPTokenManager:
 
     @pytest.fixture(autouse=True)
     def reset_globals(self):
-        token_module._dynamodb = None
-        token_module._kms = None
+        shared_oauth._dynamodb = None
+        shared_oauth._kms = None
         yield
 
-    @patch.object(token_module, "_get_kms")
+    @patch.object(shared_oauth, "_get_kms")
     def test_encrypt_token(self, mock_kms_fn):
         mock_kms = MagicMock()
         mock_kms.encrypt.return_value = {"CiphertextBlob": b"encrypted"}
         mock_kms_fn.return_value = mock_kms
-        result = token_module._encrypt_token("token")
+        result = shared_oauth._encrypt_token("token", "test-kms-key")
         assert base64.b64decode(result) == b"encrypted"
 
-    @patch.object(token_module, "_get_kms")
+    @patch.object(shared_oauth, "_get_kms")
     def test_decrypt_token(self, mock_kms_fn):
         mock_kms = MagicMock()
         mock_kms.decrypt.return_value = {"Plaintext": b"decrypted"}
         mock_kms_fn.return_value = mock_kms
-        result = token_module._decrypt_token(base64.b64encode(b"cipher").decode())
+        result = shared_oauth._decrypt_token(base64.b64encode(b"cipher").decode())
         assert result == "decrypted"
 
-    @patch.object(token_module, "_encrypt_token")
-    @patch.object(token_module, "_get_dynamodb")
+    @patch.object(shared_oauth, "_encrypt_token")
+    @patch.object(shared_oauth, "_get_dynamodb")
     def test_save_tokens_success(self, mock_db_fn, mock_encrypt):
         mock_table = MagicMock()
         mock_db = MagicMock()
@@ -124,8 +131,8 @@ class TestSPTokenManager:
         item = mock_table.put_item.call_args[1]["Item"]
         assert item["PK"] == "SHAREPOINT_TOKEN#conn1"
 
-    @patch.object(token_module, "_encrypt_token")
-    @patch.object(token_module, "_get_dynamodb")
+    @patch.object(shared_oauth, "_encrypt_token")
+    @patch.object(shared_oauth, "_get_dynamodb")
     def test_save_tokens_error(self, mock_db_fn, mock_encrypt):
         mock_table = MagicMock()
         mock_db = MagicMock()
@@ -137,8 +144,8 @@ class TestSPTokenManager:
         )
         assert token_module.save_tokens("conn1", "a", "r") is False
 
-    @patch.object(token_module, "_decrypt_token")
-    @patch.object(token_module, "_get_dynamodb")
+    @patch.object(shared_oauth, "_decrypt_token")
+    @patch.object(shared_oauth, "_get_dynamodb")
     def test_get_refresh_token_success(self, mock_db_fn, mock_decrypt):
         mock_table = MagicMock()
         mock_db = MagicMock()
@@ -148,7 +155,7 @@ class TestSPTokenManager:
         mock_decrypt.return_value = "plain"
         assert token_module.get_refresh_token("conn1") == "plain"
 
-    @patch.object(token_module, "_get_dynamodb")
+    @patch.object(shared_oauth, "_get_dynamodb")
     def test_get_refresh_token_not_found(self, mock_db_fn):
         mock_table = MagicMock()
         mock_db = MagicMock()
@@ -157,7 +164,7 @@ class TestSPTokenManager:
         mock_table.get_item.return_value = {}
         assert token_module.get_refresh_token("conn1") is None
 
-    @patch.object(token_module, "_get_dynamodb")
+    @patch.object(shared_oauth, "_get_dynamodb")
     def test_get_refresh_token_error(self, mock_db_fn):
         mock_table = MagicMock()
         mock_db = MagicMock()
@@ -168,9 +175,9 @@ class TestSPTokenManager:
         )
         assert token_module.get_refresh_token("conn1") is None
 
-    @patch.object(token_module, "save_tokens")
-    @patch("sp_int_token_manager.urllib.request.urlopen")
-    @patch.object(token_module, "get_refresh_token")
+    @patch.object(shared_oauth, "save_tokens")
+    @patch("shared.entra_id_oauth.urllib.request.urlopen")
+    @patch.object(shared_oauth, "get_refresh_token")
     def test_refresh_success(self, mock_get, mock_urlopen, mock_save):
         mock_get.return_value = "old_refresh"
         mock_urlopen.return_value = _make_urlopen_response({
@@ -180,13 +187,13 @@ class TestSPTokenManager:
         assert result == "new_at"
         mock_save.assert_called_once()
 
-    @patch.object(token_module, "get_refresh_token")
+    @patch.object(shared_oauth, "get_refresh_token")
     def test_refresh_no_token(self, mock_get):
         mock_get.return_value = None
         assert token_module.refresh_access_token("conn1", "cid", "csec") is None
 
-    @patch("sp_int_token_manager.urllib.request.urlopen")
-    @patch.object(token_module, "get_refresh_token")
+    @patch("shared.entra_id_oauth.urllib.request.urlopen")
+    @patch.object(shared_oauth, "get_refresh_token")
     def test_refresh_http_error(self, mock_get, mock_urlopen):
         mock_get.return_value = "refresh"
         mock_urlopen.side_effect = urllib.error.HTTPError(
@@ -195,7 +202,7 @@ class TestSPTokenManager:
         )
         assert token_module.refresh_access_token("conn1", "cid", "csec") is None
 
-    @patch.object(token_module, "_get_dynamodb")
+    @patch.object(shared_oauth, "_get_dynamodb")
     def test_delete_tokens_success(self, mock_db_fn):
         mock_table = MagicMock()
         mock_db = MagicMock()
@@ -206,7 +213,7 @@ class TestSPTokenManager:
             Key={"PK": "SHAREPOINT_TOKEN#conn1", "SK": "CREDENTIALS"}
         )
 
-    @patch.object(token_module, "_get_dynamodb")
+    @patch.object(shared_oauth, "_get_dynamodb")
     def test_delete_tokens_error(self, mock_db_fn):
         mock_table = MagicMock()
         mock_db = MagicMock()
@@ -217,7 +224,7 @@ class TestSPTokenManager:
         )
         assert token_module.delete_tokens("conn1") is False
 
-    @patch("sp_int_token_manager.urllib.request.urlopen")
+    @patch("shared.entra_id_oauth.urllib.request.urlopen")
     def test_exchange_success(self, mock_urlopen):
         mock_urlopen.return_value = _make_urlopen_response({
             "access_token": "at", "refresh_token": "rt", "expires_in": 3600,
@@ -227,7 +234,7 @@ class TestSPTokenManager:
         assert r == "rt"
         assert e == 3600
 
-    @patch("sp_int_token_manager.urllib.request.urlopen")
+    @patch("shared.entra_id_oauth.urllib.request.urlopen")
     def test_exchange_error(self, mock_urlopen):
         mock_urlopen.side_effect = urllib.error.HTTPError(
             url="https://example.com", code=400, msg="Bad",

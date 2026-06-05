@@ -45,14 +45,17 @@ def _load_token_module():
 
 token_module = _load_token_module()
 
+# Shared Entra ID OAuth helper (ADR-035 chunk 01a):
+import shared.entra_id_oauth as shared_oauth  # noqa: E402
+
 # Convenience aliases
 save_tokens = token_module.save_tokens
 get_refresh_token = token_module.get_refresh_token
 refresh_access_token = token_module.refresh_access_token
 delete_tokens = token_module.delete_tokens
 exchange_code_for_tokens = token_module.exchange_code_for_tokens
-_encrypt_token = token_module._encrypt_token
-_decrypt_token = token_module._decrypt_token
+_encrypt_token = shared_oauth._encrypt_token
+_decrypt_token = shared_oauth._decrypt_token
 
 
 # ============================================================================
@@ -62,8 +65,8 @@ _decrypt_token = token_module._decrypt_token
 @pytest.fixture(autouse=True)
 def reset_module_globals():
     """Reset cached boto3 clients between tests."""
-    token_module._dynamodb = None
-    token_module._kms = None
+    shared_oauth._dynamodb = None
+    shared_oauth._kms = None
     yield
 
 
@@ -114,32 +117,32 @@ def _make_urlopen_response(body_dict):
 class TestEncryptDecrypt:
     """Test token encryption and decryption via KMS."""
 
-    @patch.object(token_module, "_get_kms")
+    @patch.object(shared_oauth, "_get_kms")
     def test_encrypt_token_returns_base64(self, mock_kms_fn, mock_kms):
         """Encrypting a token should return a valid base64-encoded string."""
         mock_kms_fn.return_value = mock_kms
 
-        result = _encrypt_token("my_secret_token")
+        result = _encrypt_token("my_secret_token", "arn:aws:kms:us-east-1:123456:key/test-key")
 
         assert isinstance(result, str)
         decoded = base64.b64decode(result)
         assert decoded == b"encrypted_data"
         mock_kms.encrypt.assert_called_once()
 
-    @patch.object(token_module, "_get_kms")
+    @patch.object(shared_oauth, "_get_kms")
     def test_encrypt_token_passes_correct_args(self, mock_kms_fn, mock_kms):
         """Encrypt should pass the KMS_KEY_ARN and utf-8 encoded plaintext."""
         mock_kms_fn.return_value = mock_kms
         token_module.KMS_KEY_ARN = "arn:aws:kms:us-east-1:123456:key/test-key"
 
-        _encrypt_token("secret_value")
+        _encrypt_token("secret_value", "arn:aws:kms:us-east-1:123456:key/test-key")
 
         mock_kms.encrypt.assert_called_once_with(
             KeyId="arn:aws:kms:us-east-1:123456:key/test-key",
             Plaintext=b"secret_value",
         )
 
-    @patch.object(token_module, "_get_kms")
+    @patch.object(shared_oauth, "_get_kms")
     def test_decrypt_token_returns_plaintext(self, mock_kms_fn, mock_kms):
         """Decrypting should return the plain-text string from KMS."""
         mock_kms_fn.return_value = mock_kms
@@ -150,7 +153,7 @@ class TestEncryptDecrypt:
         assert result == "decrypted_token_value"
         mock_kms.decrypt.assert_called_once()
 
-    @patch.object(token_module, "_get_kms")
+    @patch.object(shared_oauth, "_get_kms")
     def test_decrypt_token_passes_decoded_ciphertext(self, mock_kms_fn, mock_kms):
         """Decrypt should base64-decode the input before passing to KMS."""
         mock_kms_fn.return_value = mock_kms
@@ -169,8 +172,8 @@ class TestEncryptDecrypt:
 class TestSaveTokens:
     """Test saving OAuth tokens to DynamoDB."""
 
-    @patch.object(token_module, "_encrypt_token")
-    @patch.object(token_module, "_get_dynamodb")
+    @patch.object(shared_oauth, "_encrypt_token")
+    @patch.object(shared_oauth, "_get_dynamodb")
     def test_save_tokens_success(self, mock_db_fn, mock_encrypt, mock_dynamodb, mock_table):
         """Saving tokens should return True and store the correct item."""
         mock_db_fn.return_value = mock_dynamodb
@@ -187,8 +190,8 @@ class TestSaveTokens:
         assert item["encrypted_refresh_token"] == "encrypted_refresh"
         assert item["connection_id"] == "conn_test"
 
-    @patch.object(token_module, "_encrypt_token")
-    @patch.object(token_module, "_get_dynamodb")
+    @patch.object(shared_oauth, "_encrypt_token")
+    @patch.object(shared_oauth, "_get_dynamodb")
     def test_save_tokens_includes_expires_at(self, mock_db_fn, mock_encrypt, mock_dynamodb, mock_table):
         """Saved item should contain an integer expires_at and an updated_at."""
         mock_db_fn.return_value = mock_dynamodb
@@ -200,8 +203,8 @@ class TestSaveTokens:
         assert isinstance(item["expires_at"], int)
         assert "updated_at" in item
 
-    @patch.object(token_module, "_encrypt_token")
-    @patch.object(token_module, "_get_dynamodb")
+    @patch.object(shared_oauth, "_encrypt_token")
+    @patch.object(shared_oauth, "_get_dynamodb")
     def test_save_tokens_default_expires(self, mock_db_fn, mock_encrypt, mock_dynamodb, mock_table):
         """Omitting expires_in should default to 3600 and still succeed."""
         mock_db_fn.return_value = mock_dynamodb
@@ -212,8 +215,8 @@ class TestSaveTokens:
         assert result is True
         mock_table.put_item.assert_called_once()
 
-    @patch.object(token_module, "_encrypt_token")
-    @patch.object(token_module, "_get_dynamodb")
+    @patch.object(shared_oauth, "_encrypt_token")
+    @patch.object(shared_oauth, "_get_dynamodb")
     def test_save_tokens_encrypts_refresh_not_access(self, mock_db_fn, mock_encrypt, mock_dynamodb, mock_table):
         """Only the refresh token should be encrypted; access token should not be stored."""
         mock_db_fn.return_value = mock_dynamodb
@@ -221,12 +224,17 @@ class TestSaveTokens:
 
         save_tokens("conn_test", "access_tok", "refresh_tok", 3600)
 
-        mock_encrypt.assert_called_once_with("refresh_tok")
+        # _encrypt_token is called with (token, kms_key_arn). The
+        # second arg is the wrapper's KMS_KEY_ARN module global; a
+        # prior test (test_encrypt_token_passes_correct_args) sets
+        # that global, so just check the first arg here.
+        mock_encrypt.assert_called_once()
+        assert mock_encrypt.call_args.args[0] == "refresh_tok"
         item = mock_table.put_item.call_args[1]["Item"]
         assert "access_tok" not in item.values()
 
-    @patch.object(token_module, "_encrypt_token")
-    @patch.object(token_module, "_get_dynamodb")
+    @patch.object(shared_oauth, "_encrypt_token")
+    @patch.object(shared_oauth, "_get_dynamodb")
     def test_save_tokens_dynamodb_error(self, mock_db_fn, mock_encrypt, mock_dynamodb, mock_table):
         """Should return False when DynamoDB raises ClientError."""
         mock_db_fn.return_value = mock_dynamodb
@@ -247,8 +255,8 @@ class TestSaveTokens:
 class TestGetRefreshToken:
     """Test retrieving and decrypting refresh tokens from DynamoDB."""
 
-    @patch.object(token_module, "_decrypt_token")
-    @patch.object(token_module, "_get_dynamodb")
+    @patch.object(shared_oauth, "_decrypt_token")
+    @patch.object(shared_oauth, "_get_dynamodb")
     def test_get_refresh_token_success(self, mock_db_fn, mock_decrypt, mock_dynamodb, mock_table):
         """Should decrypt and return the stored refresh token."""
         mock_db_fn.return_value = mock_dynamodb
@@ -262,8 +270,8 @@ class TestGetRefreshToken:
         assert result == "plain_refresh_token"
         mock_decrypt.assert_called_once_with("encrypted_value")
 
-    @patch.object(token_module, "_decrypt_token")
-    @patch.object(token_module, "_get_dynamodb")
+    @patch.object(shared_oauth, "_decrypt_token")
+    @patch.object(shared_oauth, "_get_dynamodb")
     def test_get_refresh_token_queries_correct_key(self, mock_db_fn, mock_decrypt, mock_dynamodb, mock_table):
         """DynamoDB query should use OUTLOOK_TOKEN# prefix."""
         mock_db_fn.return_value = mock_dynamodb
@@ -281,7 +289,7 @@ class TestGetRefreshToken:
             }
         )
 
-    @patch.object(token_module, "_get_dynamodb")
+    @patch.object(shared_oauth, "_get_dynamodb")
     def test_get_refresh_token_not_found(self, mock_db_fn, mock_dynamodb, mock_table):
         """Should return None when no item exists in DynamoDB."""
         mock_db_fn.return_value = mock_dynamodb
@@ -291,7 +299,7 @@ class TestGetRefreshToken:
 
         assert result is None
 
-    @patch.object(token_module, "_get_dynamodb")
+    @patch.object(shared_oauth, "_get_dynamodb")
     def test_get_refresh_token_no_encrypted_field(self, mock_db_fn, mock_dynamodb, mock_table):
         """Should return None when encrypted_refresh_token field is missing."""
         mock_db_fn.return_value = mock_dynamodb
@@ -301,7 +309,7 @@ class TestGetRefreshToken:
 
         assert result is None
 
-    @patch.object(token_module, "_get_dynamodb")
+    @patch.object(shared_oauth, "_get_dynamodb")
     def test_get_refresh_token_empty_encrypted_field(self, mock_db_fn, mock_dynamodb, mock_table):
         """Should return None when encrypted_refresh_token is an empty string."""
         mock_db_fn.return_value = mock_dynamodb
@@ -313,7 +321,7 @@ class TestGetRefreshToken:
 
         assert result is None
 
-    @patch.object(token_module, "_get_dynamodb")
+    @patch.object(shared_oauth, "_get_dynamodb")
     def test_get_refresh_token_dynamodb_error(self, mock_db_fn, mock_dynamodb, mock_table):
         """Should return None on DynamoDB ClientError."""
         mock_db_fn.return_value = mock_dynamodb
@@ -333,9 +341,9 @@ class TestGetRefreshToken:
 class TestRefreshAccessToken:
     """Test refreshing access tokens via the Microsoft token endpoint."""
 
-    @patch.object(token_module, "save_tokens")
-    @patch("fi_outlook_token_manager.urllib.request.urlopen")
-    @patch.object(token_module, "get_refresh_token")
+    @patch.object(shared_oauth, "save_tokens")
+    @patch("shared.entra_id_oauth.urllib.request.urlopen")
+    @patch.object(shared_oauth, "get_refresh_token")
     def test_refresh_success_with_new_refresh_token(self, mock_get_refresh, mock_urlopen, mock_save):
         """Successful refresh should return new access token and save new tokens."""
         mock_get_refresh.return_value = "old_refresh_token"
@@ -348,13 +356,19 @@ class TestRefreshAccessToken:
         result = refresh_access_token("conn_test", "client_id", "client_secret")
 
         assert result == "new_access_token"
-        mock_save.assert_called_once_with(
-            "conn_test", "new_access_token", "new_refresh_token", 3600
-        )
+        mock_save.assert_called_once()
+        # After the chunk-01a refactor, save_tokens is invoked with kwargs
+        # because the shared module uses keyword arguments to keep the
+        # call-site self-documenting.
+        call_kwargs = mock_save.call_args.kwargs
+        assert call_kwargs["connection_id"] == "conn_test"
+        assert call_kwargs["access_token"] == "new_access_token"
+        assert call_kwargs["refresh_token"] == "new_refresh_token"
+        assert call_kwargs["expires_in"] == 3600
 
-    @patch.object(token_module, "save_tokens")
-    @patch("fi_outlook_token_manager.urllib.request.urlopen")
-    @patch.object(token_module, "get_refresh_token")
+    @patch.object(shared_oauth, "save_tokens")
+    @patch("shared.entra_id_oauth.urllib.request.urlopen")
+    @patch.object(shared_oauth, "get_refresh_token")
     def test_refresh_no_refresh_token_in_response(self, mock_get_refresh, mock_urlopen, mock_save):
         """When response has no refresh_token, save_tokens should not be called."""
         mock_get_refresh.return_value = "old_refresh"
@@ -368,7 +382,7 @@ class TestRefreshAccessToken:
         assert result == "new_access_token"
         mock_save.assert_not_called()
 
-    @patch.object(token_module, "get_refresh_token")
+    @patch.object(shared_oauth, "get_refresh_token")
     def test_refresh_no_stored_refresh_token(self, mock_get_refresh):
         """Should return None when no refresh token is stored."""
         mock_get_refresh.return_value = None
@@ -377,8 +391,8 @@ class TestRefreshAccessToken:
 
         assert result is None
 
-    @patch("fi_outlook_token_manager.urllib.request.urlopen")
-    @patch.object(token_module, "get_refresh_token")
+    @patch("shared.entra_id_oauth.urllib.request.urlopen")
+    @patch.object(shared_oauth, "get_refresh_token")
     def test_refresh_http_error(self, mock_get_refresh, mock_urlopen):
         """Should return None on HTTP error from Microsoft."""
         mock_get_refresh.return_value = "refresh_token"
@@ -394,8 +408,8 @@ class TestRefreshAccessToken:
 
         assert result is None
 
-    @patch("fi_outlook_token_manager.urllib.request.urlopen")
-    @patch.object(token_module, "get_refresh_token")
+    @patch("shared.entra_id_oauth.urllib.request.urlopen")
+    @patch.object(shared_oauth, "get_refresh_token")
     def test_refresh_http_error_invalid_grant(self, mock_get_refresh, mock_urlopen):
         """Should handle invalid_grant error (revoked token) gracefully."""
         mock_get_refresh.return_value = "refresh_token"
@@ -411,8 +425,8 @@ class TestRefreshAccessToken:
 
         assert result is None
 
-    @patch("fi_outlook_token_manager.urllib.request.urlopen")
-    @patch.object(token_module, "get_refresh_token")
+    @patch("shared.entra_id_oauth.urllib.request.urlopen")
+    @patch.object(shared_oauth, "get_refresh_token")
     def test_refresh_http_error_no_body(self, mock_get_refresh, mock_urlopen):
         """Should handle HTTP error when fp is None (no response body)."""
         mock_get_refresh.return_value = "refresh_token"
@@ -429,8 +443,8 @@ class TestRefreshAccessToken:
 
         assert result is None
 
-    @patch("fi_outlook_token_manager.urllib.request.urlopen")
-    @patch.object(token_module, "get_refresh_token")
+    @patch("shared.entra_id_oauth.urllib.request.urlopen")
+    @patch.object(shared_oauth, "get_refresh_token")
     def test_refresh_network_error(self, mock_get_refresh, mock_urlopen):
         """Should return None on network/URL error."""
         mock_get_refresh.return_value = "refresh_token"
@@ -440,8 +454,8 @@ class TestRefreshAccessToken:
 
         assert result is None
 
-    @patch("fi_outlook_token_manager.urllib.request.urlopen")
-    @patch.object(token_module, "get_refresh_token")
+    @patch("shared.entra_id_oauth.urllib.request.urlopen")
+    @patch.object(shared_oauth, "get_refresh_token")
     def test_refresh_no_access_token_in_response(self, mock_get_refresh, mock_urlopen):
         """Should return None when response lacks access_token."""
         mock_get_refresh.return_value = "refresh_token"
@@ -451,9 +465,9 @@ class TestRefreshAccessToken:
 
         assert result is None
 
-    @patch.object(token_module, "save_tokens")
-    @patch("fi_outlook_token_manager.urllib.request.urlopen")
-    @patch.object(token_module, "get_refresh_token")
+    @patch.object(shared_oauth, "save_tokens")
+    @patch("shared.entra_id_oauth.urllib.request.urlopen")
+    @patch.object(shared_oauth, "get_refresh_token")
     def test_refresh_sends_correct_payload(self, mock_get_refresh, mock_urlopen, mock_save):
         """Should POST the correct grant_type and parameters to Microsoft."""
         mock_get_refresh.return_value = "my_refresh_tok"
@@ -476,9 +490,9 @@ class TestRefreshAccessToken:
         assert posted_data["client_secret"] == ["my_secret"]
         assert posted_data["refresh_token"] == ["my_refresh_tok"]
 
-    @patch.object(token_module, "save_tokens")
-    @patch("fi_outlook_token_manager.urllib.request.urlopen")
-    @patch.object(token_module, "get_refresh_token")
+    @patch.object(shared_oauth, "save_tokens")
+    @patch("shared.entra_id_oauth.urllib.request.urlopen")
+    @patch.object(shared_oauth, "get_refresh_token")
     def test_refresh_default_expires_in(self, mock_get_refresh, mock_urlopen, mock_save):
         """Should default to 3600 when expires_in is not in the response."""
         mock_get_refresh.return_value = "old_refresh"
@@ -490,11 +504,16 @@ class TestRefreshAccessToken:
         result = refresh_access_token("conn_test", "cid", "csecret")
 
         assert result == "new_at"
-        mock_save.assert_called_once_with("conn_test", "new_at", "new_rt", 3600)
+        mock_save.assert_called_once()
+        _kw = mock_save.call_args.kwargs
+        assert _kw["connection_id"] == "conn_test"
+        assert _kw["access_token"] == "new_at"
+        assert _kw["refresh_token"] == "new_rt"
+        assert _kw["expires_in"] == 3600
 
-    @patch.object(token_module, "save_tokens")
-    @patch("fi_outlook_token_manager.urllib.request.urlopen")
-    @patch.object(token_module, "get_refresh_token")
+    @patch.object(shared_oauth, "save_tokens")
+    @patch("shared.entra_id_oauth.urllib.request.urlopen")
+    @patch.object(shared_oauth, "get_refresh_token")
     def test_refresh_includes_correct_scopes(self, mock_get_refresh, mock_urlopen, mock_save):
         """Refresh request should include the expected Microsoft scopes."""
         mock_get_refresh.return_value = "my_refresh"
@@ -520,7 +539,7 @@ class TestRefreshAccessToken:
 class TestDeleteTokens:
     """Test deleting tokens from DynamoDB."""
 
-    @patch.object(token_module, "_get_dynamodb")
+    @patch.object(shared_oauth, "_get_dynamodb")
     def test_delete_tokens_success(self, mock_db_fn, mock_dynamodb, mock_table):
         """Should return True and call delete_item with the correct key."""
         mock_db_fn.return_value = mock_dynamodb
@@ -535,7 +554,7 @@ class TestDeleteTokens:
             }
         )
 
-    @patch.object(token_module, "_get_dynamodb")
+    @patch.object(shared_oauth, "_get_dynamodb")
     def test_delete_tokens_dynamodb_error(self, mock_db_fn, mock_dynamodb, mock_table):
         """Should return False when DynamoDB raises ClientError."""
         mock_db_fn.return_value = mock_dynamodb
@@ -547,7 +566,7 @@ class TestDeleteTokens:
 
         assert result is False
 
-    @patch.object(token_module, "_get_dynamodb")
+    @patch.object(shared_oauth, "_get_dynamodb")
     def test_delete_tokens_uses_correct_key(self, mock_db_fn, mock_dynamodb, mock_table):
         """delete_item should use OUTLOOK_TOKEN# prefix in PK."""
         mock_db_fn.return_value = mock_dynamodb
@@ -569,7 +588,7 @@ class TestDeleteTokens:
 class TestExchangeCodeForTokens:
     """Test exchanging an authorization code for tokens."""
 
-    @patch("fi_outlook_token_manager.urllib.request.urlopen")
+    @patch("shared.entra_id_oauth.urllib.request.urlopen")
     def test_exchange_success(self, mock_urlopen):
         """Successful exchange should return (access, refresh, expires_in) tuple."""
         mock_urlopen.return_value = _make_urlopen_response({
@@ -586,7 +605,7 @@ class TestExchangeCodeForTokens:
         assert refresh == "refresh_tok"
         assert expires == 3600
 
-    @patch("fi_outlook_token_manager.urllib.request.urlopen")
+    @patch("shared.entra_id_oauth.urllib.request.urlopen")
     def test_exchange_http_error(self, mock_urlopen):
         """Should return (None, None, None) on HTTP error."""
         mock_urlopen.side_effect = urllib.error.HTTPError(
@@ -605,7 +624,7 @@ class TestExchangeCodeForTokens:
         assert refresh is None
         assert expires is None
 
-    @patch("fi_outlook_token_manager.urllib.request.urlopen")
+    @patch("shared.entra_id_oauth.urllib.request.urlopen")
     def test_exchange_http_error_no_body(self, mock_urlopen):
         """Should return (None, None, None) on HTTP error with no response body."""
         error = urllib.error.HTTPError(
@@ -625,7 +644,7 @@ class TestExchangeCodeForTokens:
         assert refresh is None
         assert expires is None
 
-    @patch("fi_outlook_token_manager.urllib.request.urlopen")
+    @patch("shared.entra_id_oauth.urllib.request.urlopen")
     def test_exchange_network_error(self, mock_urlopen):
         """Should return (None, None, None) on network error."""
         mock_urlopen.side_effect = urllib.error.URLError("Connection refused")
@@ -638,7 +657,7 @@ class TestExchangeCodeForTokens:
         assert refresh is None
         assert expires is None
 
-    @patch("fi_outlook_token_manager.urllib.request.urlopen")
+    @patch("shared.entra_id_oauth.urllib.request.urlopen")
     def test_exchange_default_expires(self, mock_urlopen):
         """Should default to 3600 when expires_in is absent from response."""
         mock_urlopen.return_value = _make_urlopen_response({
@@ -652,7 +671,7 @@ class TestExchangeCodeForTokens:
 
         assert expires == 3600
 
-    @patch("fi_outlook_token_manager.urllib.request.urlopen")
+    @patch("shared.entra_id_oauth.urllib.request.urlopen")
     def test_exchange_sends_correct_payload(self, mock_urlopen):
         """Exchange should POST the correct grant_type and parameters to Microsoft."""
         mock_urlopen.return_value = _make_urlopen_response({
@@ -677,7 +696,7 @@ class TestExchangeCodeForTokens:
         assert posted_data["code"] == ["my_auth_code"]
         assert posted_data["redirect_uri"] == ["https://app.example.com/oauth/callback"]
 
-    @patch("fi_outlook_token_manager.urllib.request.urlopen")
+    @patch("shared.entra_id_oauth.urllib.request.urlopen")
     def test_exchange_includes_correct_scopes(self, mock_urlopen):
         """Exchange request should include the expected Microsoft scopes."""
         mock_urlopen.return_value = _make_urlopen_response({
@@ -696,7 +715,7 @@ class TestExchangeCodeForTokens:
         assert "Mail.Read" in scope_value
         assert "offline_access" in scope_value
 
-    @patch("fi_outlook_token_manager.urllib.request.urlopen")
+    @patch("shared.entra_id_oauth.urllib.request.urlopen")
     def test_exchange_missing_fields_in_response(self, mock_urlopen):
         """When response body is empty JSON, access and refresh should be None."""
         mock_urlopen.return_value = _make_urlopen_response({})
@@ -718,26 +737,26 @@ class TestExchangeCodeForTokens:
 class TestClientCaching:
     """Test that boto3 clients are cached after first creation."""
 
-    @patch.object(token_module, "boto3")
+    @patch.object(shared_oauth, "boto3")
     def test_get_dynamodb_caches_client(self, mock_boto3):
         """Calling _get_dynamodb twice should only call boto3.resource once."""
         mock_resource = MagicMock()
         mock_boto3.resource.return_value = mock_resource
 
-        first = token_module._get_dynamodb()
-        second = token_module._get_dynamodb()
+        first = shared_oauth._get_dynamodb()
+        second = shared_oauth._get_dynamodb()
 
         assert first is second
         mock_boto3.resource.assert_called_once_with("dynamodb")
 
-    @patch.object(token_module, "boto3")
+    @patch.object(shared_oauth, "boto3")
     def test_get_kms_caches_client(self, mock_boto3):
         """Calling _get_kms twice should only call boto3.client once."""
         mock_client = MagicMock()
         mock_boto3.client.return_value = mock_client
 
-        first = token_module._get_kms()
-        second = token_module._get_kms()
+        first = shared_oauth._get_kms()
+        second = shared_oauth._get_kms()
 
         assert first is second
         mock_boto3.client.assert_called_once_with("kms")
