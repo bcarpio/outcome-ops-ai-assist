@@ -200,6 +200,23 @@ class TestUrlConstruction:
         assert "versionDescriptor.version=main" in url
 
     @patch("azdo_int_api.urllib.request.urlopen")
+    def test_get_file_content_sends_wildcard_accept(self, mock_urlopen):
+        # Regression guard for the 2026-06-05 prd bug. The default
+        # Accept: application/json on every other endpoint must NOT
+        # carry over to get_file_content -- ADO honors Accept and
+        # returns the JSON metadata wrapper (objectId/url/blob href
+        # descriptor, ~900 bytes) instead of the actual blob bytes.
+        # The download=true query param alone is NOT enough.
+        mock_urlopen.return_value = _resp(raw_bytes=b"the actual source")
+        api.get_file_content(
+            "tok", "example-org", "example-project", "example-repo",
+            "/README.md", "main",
+        )
+        req = mock_urlopen.call_args.args[0]
+        # urllib normalizes header keys to title-case
+        assert req.headers["Accept"] == "*/*"
+
+    @patch("azdo_int_api.urllib.request.urlopen")
     def test_list_open_pulls_url(self, mock_urlopen):
         mock_urlopen.return_value = _resp({"value": []})
         api.list_open_pulls(

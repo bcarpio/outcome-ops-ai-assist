@@ -90,15 +90,25 @@ def _request(
     body: Optional[Dict[str, Any]] = None,
     timeout: int = REQUEST_TIMEOUT,
     parse_json: bool = True,
+    accept: str = "application/json",
 ):
     """Single HTTP entry point. Returns (parsed_body, response_headers).
 
     If ``parse_json`` is False, returns (raw_bytes, response_headers)
     instead -- used by ``get_file_content`` which is binary.
+
+    ``accept`` overrides the Accept header. Default is JSON for the
+    metadata endpoints. ``get_file_content`` passes ``*/*`` so ADO's
+    ``download=true`` actually returns the raw blob bytes -- otherwise
+    ADO honors ``Accept: application/json`` and returns the JSON
+    object descriptor (objectId / url / blob hrefs) instead of the
+    file. Live-burned 2026-06-05 on first ADO sync: all 131 files
+    landed in S3 as ~900-byte JSON metadata wrappers instead of the
+    actual source.
     """
     headers = {
         "Authorization": f"Bearer {access_token}",
-        "Accept": "application/json",
+        "Accept": accept,
         "User-Agent": USER_AGENT,
     }
     data = None
@@ -292,8 +302,16 @@ def get_file_content(
     path: str,
     branch: str,
 ) -> bytes:
-    """Raw file bytes. ADO returns the blob as a binary stream when
-    ``download=true`` is set; we don't JSON-parse the response."""
+    """Raw file bytes.
+
+    Two parameters are load-bearing on this call:
+    - ``download=true`` tells ADO to return the blob content (vs the
+      JSON object descriptor).
+    - ``Accept: */*`` overrides the client's default
+      ``Accept: application/json`` -- otherwise ADO honors the JSON
+      Accept and returns the JSON wrapper instead of the file bytes.
+      Burned 2026-06-05 (see _request docstring).
+    """
     url = _add_query(
         f"{DEV_AZURE_HOST}/{org}/{project}/_apis/git/repositories/{repo}/items",
         {
@@ -303,7 +321,12 @@ def get_file_content(
             "api-version": API_VERSION,
         },
     )
-    raw, _ = _request("GET", url, access_token, timeout=DOWNLOAD_TIMEOUT, parse_json=False)
+    raw, _ = _request(
+        "GET", url, access_token,
+        timeout=DOWNLOAD_TIMEOUT,
+        parse_json=False,
+        accept="*/*",
+    )
     return raw
 
 
