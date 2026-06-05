@@ -455,6 +455,7 @@ module "azure_devops_sync_lambda" {
         effect = "Allow"
         actions = [
           "dynamodb:GetItem",
+          "dynamodb:PutItem",
           "dynamodb:UpdateItem",
           "dynamodb:Query",
         ]

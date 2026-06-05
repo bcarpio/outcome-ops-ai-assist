@@ -1024,7 +1024,7 @@ module "azure_devops_sync_lambda_secondary" {
     {
       dynamodb = {
         effect  = "Allow"
-        actions = ["dynamodb:GetItem", "dynamodb:UpdateItem", "dynamodb:Query"]
+        actions = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query"]
         resources = [
           module.workspaces_table_secondary[0].dynamodb_table_arn,
           "${module.workspaces_table_secondary[0].dynamodb_table_arn}/index/*",
