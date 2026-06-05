@@ -104,12 +104,20 @@ import {
   triggerGitHubSync,
   getAzureDevOpsAuthUrl,
   listAzureDevOpsConnections,
+  listAzureDevOpsOrgs,
+  listAzureDevOpsProjects,
+  listAzureDevOpsProjectRepos,
   listAzureDevOpsRepos,
+  addAzureDevOpsRepos,
   triggerAzureDevOpsSync,
   disconnectAzureDevOps,
   removeAzureDevOpsRepo,
   type AzureDevOpsConnection,
+  type AzureDevOpsOrg,
+  type AzureDevOpsProject,
+  type AzureDevOpsAvailableRepo,
   type AzureDevOpsRepo,
+  type AzureDevOpsRepoType,
   type Workspace,
   type WorkspaceMember,
   type ConfluenceConnection,
@@ -340,6 +348,19 @@ export default function WorkspaceSettings() {
   const [disconnectingAzureDevOps, setDisconnectingAzureDevOps] = useState<string | null>(null)
   const [syncingAzureDevOps, setSyncingAzureDevOps] = useState<string | null>(null)
   const [removingAzureDevOpsRepo, setRemovingAzureDevOpsRepo] = useState<string | null>(null)
+  // Repo picker modal
+  const [showAddAzureDevOpsRepo, setShowAddAzureDevOpsRepo] = useState(false)
+  const [pickerConnectionId, setPickerConnectionId] = useState<string | null>(null)
+  const [azureDevOpsOrgs, setAzureDevOpsOrgs] = useState<AzureDevOpsOrg[]>([])
+  const [pickerSelectedOrg, setPickerSelectedOrg] = useState<string>('')
+  const [azureDevOpsProjects, setAzureDevOpsProjects] = useState<AzureDevOpsProject[]>([])
+  const [pickerSelectedProject, setPickerSelectedProject] = useState<string>('')
+  const [azureDevOpsAvailableRepos, setAzureDevOpsAvailableRepos] = useState<AzureDevOpsAvailableRepo[]>([])
+  const [loadingAzureDevOpsOrgs, setLoadingAzureDevOpsOrgs] = useState(false)
+  const [loadingAzureDevOpsProjects, setLoadingAzureDevOpsProjects] = useState(false)
+  const [loadingAzureDevOpsPickerRepos, setLoadingAzureDevOpsPickerRepos] = useState(false)
+  const [addingAzureDevOpsRepo, setAddingAzureDevOpsRepo] = useState<string | null>(null)
+  const [selectedAzureDevOpsRepoType, setSelectedAzureDevOpsRepoType] = useState<AzureDevOpsRepoType>('application')
 
   // Sharing tab state
   const [, setSharingAccess] = useState<WorkspaceSearchAccess[]>([])
@@ -583,6 +604,105 @@ export default function WorkspaceSettings() {
     } finally {
       setRemovingAzureDevOpsRepo(null)
     }
+  }
+
+  // Repo picker (chunk 08 follow-up): cascade org -> project -> repo.
+  async function openAzureDevOpsRepoPicker(connectionId: string) {
+    if (!workspaceId) return
+    setPickerConnectionId(connectionId)
+    setShowAddAzureDevOpsRepo(true)
+    setPickerSelectedOrg('')
+    setPickerSelectedProject('')
+    setAzureDevOpsProjects([])
+    setAzureDevOpsAvailableRepos([])
+    setLoadingAzureDevOpsOrgs(true)
+    try {
+      const orgs = await listAzureDevOpsOrgs(workspaceId, connectionId)
+      setAzureDevOpsOrgs(orgs)
+    } catch (err) {
+      console.error('Failed to load Azure DevOps orgs:', err)
+      setError(err instanceof Error ? err.message : 'Failed to load orgs')
+    } finally {
+      setLoadingAzureDevOpsOrgs(false)
+    }
+  }
+
+  async function onSelectAzureDevOpsOrg(org: string) {
+    if (!workspaceId || !pickerConnectionId) return
+    setPickerSelectedOrg(org)
+    setPickerSelectedProject('')
+    setAzureDevOpsAvailableRepos([])
+    if (!org) {
+      setAzureDevOpsProjects([])
+      return
+    }
+    setLoadingAzureDevOpsProjects(true)
+    try {
+      const projects = await listAzureDevOpsProjects(workspaceId, pickerConnectionId, org)
+      setAzureDevOpsProjects(projects)
+    } catch (err) {
+      console.error('Failed to load Azure DevOps projects:', err)
+      setError(err instanceof Error ? err.message : 'Failed to load projects')
+    } finally {
+      setLoadingAzureDevOpsProjects(false)
+    }
+  }
+
+  async function onSelectAzureDevOpsProject(project: string) {
+    if (!workspaceId || !pickerConnectionId || !pickerSelectedOrg) return
+    setPickerSelectedProject(project)
+    if (!project) {
+      setAzureDevOpsAvailableRepos([])
+      return
+    }
+    setLoadingAzureDevOpsPickerRepos(true)
+    try {
+      const repos = await listAzureDevOpsProjectRepos(
+        workspaceId, pickerConnectionId, pickerSelectedOrg, project,
+      )
+      setAzureDevOpsAvailableRepos(repos)
+    } catch (err) {
+      console.error('Failed to load Azure DevOps repos:', err)
+      setError(err instanceof Error ? err.message : 'Failed to load repos')
+    } finally {
+      setLoadingAzureDevOpsPickerRepos(false)
+    }
+  }
+
+  async function handleAddAzureDevOpsRepo(repoName: string) {
+    if (!workspaceId || !pickerConnectionId || !pickerSelectedOrg || !pickerSelectedProject) return
+    setAddingAzureDevOpsRepo(repoName)
+    setError(null)
+    try {
+      await addAzureDevOpsRepos(workspaceId, pickerConnectionId, [{
+        org: pickerSelectedOrg,
+        project: pickerSelectedProject,
+        repo: repoName,
+        include_code_maps: true,
+        repo_type: selectedAzureDevOpsRepoType,
+      }])
+      // Optimistically flip the already_added flag so the button disables
+      // without a round-trip.
+      setAzureDevOpsAvailableRepos(prev =>
+        prev.map(r => r.name === repoName ? { ...r, already_added: true } : r),
+      )
+      await loadAzureDevOpsData()
+      setSuccess(`Added ${pickerSelectedOrg}/${pickerSelectedProject}/${repoName}`)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to add repo')
+    } finally {
+      setAddingAzureDevOpsRepo(null)
+    }
+  }
+
+  function closeAzureDevOpsRepoPicker() {
+    setShowAddAzureDevOpsRepo(false)
+    setPickerConnectionId(null)
+    setPickerSelectedOrg('')
+    setPickerSelectedProject('')
+    setAzureDevOpsOrgs([])
+    setAzureDevOpsProjects([])
+    setAzureDevOpsAvailableRepos([])
   }
 
   // Legacy loadRepos function removed - now using GitHub App integration
@@ -2399,18 +2519,27 @@ export default function WorkspaceSettings() {
                           </div>
                         </div>
                         {isAdmin && (
-                          <MutationButton
-                            onClick={() => handleDisconnectAzureDevOps(conn.connection_id)}
-                            disabled={disconnectingAzureDevOps === conn.connection_id}
-                            className="flex items-center gap-2 px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-50"
-                          >
-                            {disconnectingAzureDevOps === conn.connection_id ? (
-                              <Loader2 size={16} className="animate-spin" />
-                            ) : (
-                              <Trash2 size={16} />
-                            )}
-                            Disconnect
-                          </MutationButton>
+                          <div className="flex items-center gap-2">
+                            <MutationButton
+                              onClick={() => openAzureDevOpsRepoPicker(conn.connection_id)}
+                              className="flex items-center gap-2 px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                            >
+                              <Plus size={16} />
+                              Add Repos
+                            </MutationButton>
+                            <MutationButton
+                              onClick={() => handleDisconnectAzureDevOps(conn.connection_id)}
+                              disabled={disconnectingAzureDevOps === conn.connection_id}
+                              className="flex items-center gap-2 px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-50"
+                            >
+                              {disconnectingAzureDevOps === conn.connection_id ? (
+                                <Loader2 size={16} className="animate-spin" />
+                              ) : (
+                                <Trash2 size={16} />
+                              )}
+                              Disconnect
+                            </MutationButton>
+                          </div>
                         )}
                       </div>
                     </div>
@@ -2419,10 +2548,7 @@ export default function WorkspaceSettings() {
                   {azureDevOpsRepos.length === 0 ? (
                     <div className="p-8 text-center text-gray-500">
                       <p>No repositories added yet</p>
-                      <p className="text-sm mt-1">
-                        Use the Azure DevOps REST API or the platform CLI to add repos.
-                        Full UI repo picker is a follow-up release.
-                      </p>
+                      <p className="text-sm mt-1">Click <strong>Add Repos</strong> above to pick from your Azure DevOps orgs and projects.</p>
                     </div>
                   ) : (
                     <ul className="divide-y">
@@ -4823,6 +4949,122 @@ export default function WorkspaceSettings() {
                   setSelectedInstallation(null)
                   setGithubRepoSearchQuery('')
                 }}
+                className="px-4 py-2 text-gray-700 hover:bg-gray-200 rounded-lg transition-colors"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Add Azure DevOps Repo Modal */}
+      {showAddAzureDevOpsRepo && pickerConnectionId && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-lg mx-4 max-h-[80vh] flex flex-col">
+            <div className="p-6 border-b">
+              <h2 className="text-lg font-semibold">Add Azure DevOps Repositories</h2>
+              <p className="text-sm text-gray-500 mt-1">
+                Pick an organization, a project, and a repository to add.
+              </p>
+            </div>
+            <div className="p-4 border-b space-y-3">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Organization</label>
+                <select
+                  value={pickerSelectedOrg}
+                  onChange={(e) => onSelectAzureDevOpsOrg(e.target.value)}
+                  disabled={loadingAzureDevOpsOrgs}
+                  className="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="">
+                    {loadingAzureDevOpsOrgs ? 'Loading orgs...' : 'Select an organization'}
+                  </option>
+                  {azureDevOpsOrgs.map(org => (
+                    <option key={org.accountId} value={org.accountName}>{org.accountName}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Project</label>
+                <select
+                  value={pickerSelectedProject}
+                  onChange={(e) => onSelectAzureDevOpsProject(e.target.value)}
+                  disabled={!pickerSelectedOrg || loadingAzureDevOpsProjects}
+                  className="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50"
+                >
+                  <option value="">
+                    {!pickerSelectedOrg
+                      ? 'Pick an organization first'
+                      : loadingAzureDevOpsProjects
+                        ? 'Loading projects...'
+                        : 'Select a project'}
+                  </option>
+                  {azureDevOpsProjects.map(p => (
+                    <option key={p.id} value={p.name}>{p.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Repository Type</label>
+                <select
+                  value={selectedAzureDevOpsRepoType}
+                  onChange={(e) => setSelectedAzureDevOpsRepoType(e.target.value as AzureDevOpsRepoType)}
+                  className="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="application">Application (code, Terraform, serverless)</option>
+                  <option value="standards">Standards (ADRs, docs, YAML, JSON, XML)</option>
+                </select>
+              </div>
+            </div>
+            <div className="flex-1 overflow-y-auto">
+              {!pickerSelectedProject ? (
+                <div className="py-8 text-center text-gray-500">
+                  Pick an organization and project to see repositories
+                </div>
+              ) : loadingAzureDevOpsPickerRepos ? (
+                <div className="py-8 flex items-center justify-center">
+                  <Loader2 className="animate-spin text-gray-400" size={24} />
+                </div>
+              ) : azureDevOpsAvailableRepos.length === 0 ? (
+                <div className="py-8 text-center text-gray-500">
+                  No repositories in this project
+                </div>
+              ) : (
+                <ul className="divide-y">
+                  {azureDevOpsAvailableRepos.map(repo => (
+                    <li key={repo.id} className="p-4 flex items-center justify-between hover:bg-gray-50">
+                      <div className="flex items-center gap-3 min-w-0 flex-1">
+                        <GitBranch className="text-gray-400 flex-shrink-0" size={20} />
+                        <div className="min-w-0">
+                          <p className="font-medium text-gray-900 truncate">{repo.name}</p>
+                          <p className="text-xs text-gray-400 mt-0.5">
+                            Default branch: {repo.default_branch || '(none — empty repo)'}
+                          </p>
+                        </div>
+                      </div>
+                      <MutationButton
+                        onClick={() => handleAddAzureDevOpsRepo(repo.name)}
+                        disabled={addingAzureDevOpsRepo === repo.name || repo.already_added || !repo.default_branch}
+                        className="ml-4 px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center gap-1"
+                      >
+                        {addingAzureDevOpsRepo === repo.name ? (
+                          <Loader2 size={14} className="animate-spin" />
+                        ) : repo.already_added ? (
+                          <Check size={14} />
+                        ) : (
+                          <Plus size={14} />
+                        )}
+                        {repo.already_added ? 'Added' : 'Add'}
+                      </MutationButton>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            <div className="px-6 py-4 bg-gray-50 rounded-b-lg flex justify-end border-t">
+              <button
+                onClick={closeAzureDevOpsRepoPicker}
                 className="px-4 py-2 text-gray-700 hover:bg-gray-200 rounded-lg transition-colors"
               >
                 Done
