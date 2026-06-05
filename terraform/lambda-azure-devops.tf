@@ -435,8 +435,12 @@ module "azure_devops_sync_lambda" {
       AZURE_DEVOPS_CLIENT_ID               = var.azure_devops_client_id
       AZURE_DEVOPS_CLIENT_SECRET_SSM_PARAM = var.azure_devops_client_secret_ssm_param
 
-      FILE_INGESTION_QUEUE    = aws_sqs_queue.file_ingestion[0].url
-      REPO_SUMMARIES_QUEUE    = module.repo_summaries_queue.queue_url
+      # chunk 05a: sync worker writes files DIRECTLY to S3 (not via
+      # file-ingestion / repo-summaries) so we don't contaminate the
+      # github-shaped consumers + their DLQs. process-documents is
+      # S3-triggered + source-agnostic, so KB chat search picks up
+      # the uploaded files automatically.
+      KB_BUCKET               = module.knowledge_base_bucket.s3_bucket_id
       AZURE_DEVOPS_SYNC_QUEUE = aws_sqs_queue.azure_devops_sync[0].url
       AUDIT_TABLE             = module.audit_logs_table.dynamodb_table_id
     },
@@ -487,14 +491,13 @@ module "azure_devops_sync_lambda" {
         resources = [aws_sqs_queue.azure_devops_sync[0].arn]
       }
 
-      sqs_send = {
-        effect  = "Allow"
-        actions = ["sqs:SendMessage"]
-        resources = [
-          aws_sqs_queue.file_ingestion[0].arn,
-          module.repo_summaries_queue.queue_arn,
-          aws_sqs_queue.azure_devops_sync[0].arn,
-        ]
+      # chunk 05a: write blobs directly to the KB bucket. process-documents
+      # is S3-triggered + source-agnostic so chat retrieval picks up
+      # ADO files without a downstream Lambda refactor.
+      s3_kb_write = {
+        effect    = "Allow"
+        actions   = ["s3:PutObject", "s3:PutObjectAcl"]
+        resources = ["${module.knowledge_base_bucket.s3_bucket_arn}/*"]
       }
 
       dynamodb_audit = {

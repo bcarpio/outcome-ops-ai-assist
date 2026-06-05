@@ -1007,8 +1007,11 @@ module "azure_devops_sync_lambda_secondary" {
       AZURE_DEVOPS_CLIENT_ID               = var.azure_devops_client_id
       AZURE_DEVOPS_CLIENT_SECRET_SSM_PARAM = var.azure_devops_client_secret_ssm_param
 
-      FILE_INGESTION_QUEUE    = aws_sqs_queue.file_ingestion_secondary[0].url
-      REPO_SUMMARIES_QUEUE    = module.repo_summaries_queue_secondary.queue_url
+      # chunk 05a: ADO sync writes blobs directly to the KB bucket
+      # (process-documents is S3-triggered + source-agnostic). Skips
+      # the file-ingestion / repo-summaries hop entirely so we don't
+      # contaminate the github-shaped consumers' DLQs.
+      KB_BUCKET               = module.knowledge_base_bucket_secondary.s3_bucket_id
       AZURE_DEVOPS_SYNC_QUEUE = aws_sqs_queue.azure_devops_sync_secondary[0].url
       AUDIT_TABLE             = module.audit_logs_table_secondary[0].dynamodb_table_id
     },
@@ -1047,10 +1050,13 @@ module "azure_devops_sync_lambda_secondary" {
         actions   = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"]
         resources = [aws_sqs_queue.azure_devops_sync_secondary[0].arn]
       }
-      sqs_send = {
+      # chunk 05a: write blobs directly to the secondary-region KB
+      # bucket. Scoped to workspaces/* per the sharepoint-sync
+      # secondary precedent.
+      s3_kb_write = {
         effect    = "Allow"
-        actions   = ["sqs:SendMessage"]
-        resources = [aws_sqs_queue.file_ingestion_secondary[0].arn, module.repo_summaries_queue_secondary.queue_arn, aws_sqs_queue.azure_devops_sync_secondary[0].arn]
+        actions   = ["s3:PutObject", "s3:PutObjectAcl"]
+        resources = ["${module.knowledge_base_bucket_secondary.s3_bucket_arn}/workspaces/*"]
       }
       dynamodb_audit = {
         effect    = "Allow"

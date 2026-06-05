@@ -21,30 +21,37 @@ For each message the worker:
 3. Asks ADO for the default branch + the branch's HEAD commit SHA.
 4. **Skip-unchanged short-circuit.** If the SHA matches the stored
    last_commit_sha AND triggered_by != "manual", mark sync_status=
-   success without enqueuing downstream work. ADR-004 idempotency:
-   the scheduler retriggering the same repo every hour stays cheap.
-5. If changed (or manual): get the repo tree, then enqueue downstream
-   work to file-ingestion / repo-summaries based on repo_type.
+   skip-unchanged without re-uploading. Hourly scheduler reticks
+   stay cheap.
+5. If changed (or manual): walk the tree, fetch each interesting
+   file's content via the ADO REST API, and write it directly to
+   S3 under
+   ``workspaces/{workspace_id}/azure_devops/{slug}/{file_path}``
+   with ``source: "azure_devops"`` metadata. The KB indexer
+   ``process-documents`` is S3-triggered + source-agnostic, so
+   no downstream Lambda change is needed for chat KB search to
+   see ADO files.
 6. Update last_commit_sha + sync_status=success.
 
 On failure: mark sync_status=failed with last_sync_error populated,
 then raise so SQS retries per the redrive policy (DLQ after 3 attempts).
 
-A note on downstream provider-aware routing
--------------------------------------------
-The chunk-05 plan's recommended option (b) is that downstream consumers
-(file-ingestion, process-repo-summary) become provider-aware: they
-read ``provider`` + ``connection_id`` from the message and fetch
-content via the right API. That refactor touches existing GitHub
-prod paths and is tracked separately as chunk 05a.
+Why we write S3 directly instead of enqueuing to file-ingestion or
+repo-summaries
+------------------------------------------------------------------
+file-ingestion + process-repo-summary are GitHub-installation-token
+shaped. Enqueuing a ``provider="azure_devops"`` message would
+Pydantic-reject inside those consumers and DLQ -- contaminating
+the existing GitHub DLQ alarms. Writing to S3 + leaning on
+process-documents (which already accepts any ``source``) gets us
+end-to-end KB search for ADO without touching GitHub prod paths.
 
-This MVP enqueues *the right shape* of downstream message
-(carrying provider="azure_devops", org, project, repo,
-connection_id, path) but the consumers don't yet act on it.
-Sync_status=success here means "ADO side did its job"; the
-downstream KB ingest is still gated on chunk 05a landing.
-ADR-036's "live verification" section calls this out explicitly so a
-buyer reading the design doc understands the wiring.
+The trade-off is that code-map generation (the symbol-graph
+pipeline driven by process-repo-summary) does NOT run for ADO
+repos in this MVP. Chat full-text retrieval works; symbol-graph
+tools (find_callers, find_definitions, etc.) won't find ADO
+symbols. A future iteration could provider-aware process-repo-
+summary or split out an ado-repo-summaries worker.
 """
 
 import json
@@ -68,6 +75,7 @@ from azure_devops_api import (  # noqa: E402
     AzureDevOpsAuthError,
     AzureDevOpsNotFoundError,
     get_default_branch,
+    get_file_content,
     get_latest_commit_sha,
     get_tree_recursive,
 )
@@ -80,9 +88,7 @@ logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 ENV = os.environ.get("ENV", "dev")
 APP_NAME = os.environ.get("APP_NAME", "outcome-ops-ai-assist")
 WORKSPACES_TABLE = os.environ.get("WORKSPACES_TABLE")
-FILE_INGESTION_QUEUE = os.environ.get("FILE_INGESTION_QUEUE")
-REPO_SUMMARIES_QUEUE = os.environ.get("REPO_SUMMARIES_QUEUE")
-
+KB_BUCKET = os.environ.get("KB_BUCKET")
 AZURE_DEVOPS_TENANT_ID = os.environ.get("AZURE_DEVOPS_TENANT_ID", "")
 AZURE_DEVOPS_CLIENT_ID = os.environ.get("AZURE_DEVOPS_CLIENT_ID", "")
 AZURE_DEVOPS_CLIENT_SECRET_SSM_PARAM = os.environ.get(
@@ -90,8 +96,27 @@ AZURE_DEVOPS_CLIENT_SECRET_SSM_PARAM = os.environ.get(
 )
 
 
+# File filtering -- mirrors lambda/github-sync/handler.py constants
+# so the ADO and GitHub paths produce the same shape of KB index.
+# If the github-sync constants change, this needs to follow.
+DOC_EXTENSIONS = {
+    ".md", ".txt", ".html", ".htm", ".yaml", ".yml",
+    ".json", ".rst", ".pdf", ".csv", ".xml",
+}
+CODE_EXTENSIONS = {
+    ".py", ".js", ".ts", ".tsx", ".jsx", ".java", ".kt",
+    ".go", ".rs", ".rb", ".php", ".cs", ".cpp", ".c", ".h",
+    ".tf",
+}
+INDEXABLE_EXTENSIONS = DOC_EXTENSIONS | CODE_EXTENSIONS
+SKIP_DIRS = {
+    "node_modules", ".git", "__pycache__", ".venv", "venv",
+    "dist", "build", ".next", ".nuxt", "coverage",
+}
+MAX_FILE_SIZE = 1024 * 1024
+
+
 _dynamodb = None
-_sqs = None
 _ssm = None
 _client_secret: Optional[str] = None
 
@@ -103,13 +128,6 @@ def _get_dynamodb():
     return _dynamodb
 
 
-def _get_sqs():
-    global _sqs
-    if _sqs is None:
-        _sqs = boto3.client("sqs")
-    return _sqs
-
-
 def _get_ssm():
     global _ssm
     if _ssm is None:
@@ -118,9 +136,6 @@ def _get_ssm():
 
 
 def _get_client_secret() -> str:
-    """Cache-once read of the Entra ID app client secret from SSM.
-    Same shape as the integration Lambda's helper -- the operator owns
-    the parameter VALUE; terraform only knows the parameter NAME."""
     global _client_secret
     if _client_secret is not None:
         return _client_secret
@@ -157,11 +172,11 @@ def _update_sync_status(
     status: str,
     error: Optional[str] = None,
     commit_sha: Optional[str] = None,
+    file_count: Optional[int] = None,
 ) -> None:
-    """Write the new sync_status. ``success`` and ``failed`` are
-    terminal -- both update last_sync_at. ``in_progress`` updates
-    updated_at only so the staleness check upstream can detect a
-    stuck sync."""
+    """Write the new sync_status. Terminal states (success / failed /
+    skip-unchanged) update last_sync_at. in_progress only bumps
+    updated_at so upstream staleness detection can fire."""
     now = _now_iso()
     set_parts = ["last_sync_status = :status", "updated_at = :now"]
     remove_parts: List[str] = []
@@ -180,6 +195,10 @@ def _update_sync_status(
     if commit_sha is not None:
         set_parts.append("last_commit_sha = :sha")
         expr_values[":sha"] = commit_sha
+
+    if file_count is not None:
+        set_parts.append("last_synced_file_count = :fc")
+        expr_values[":fc"] = file_count
 
     update_expr = "SET " + ", ".join(set_parts)
     if remove_parts:
@@ -206,76 +225,103 @@ def _update_sync_status(
 
 
 # ---------------------------------------------------------------------------
-# Downstream enqueue (extension point for chunk 05a)
+# File filter (mirrors github-sync's should_process_*)
 # ---------------------------------------------------------------------------
 
 
-def _queue_downstream_for_application_repo(
-    workspace_id: str, slug: str, org: str, project: str, repo: str,
-    connection_id: str, branch: str, tree: List[Dict[str, Any]],
-) -> int:
-    """Enqueue one repo-summaries job carrying the tree + provider
-    metadata. The chunk-05a consumer in process-repo-summary becomes
-    provider-aware to read ``provider`` + ``connection_id`` and fetch
-    file content via azure_devops_api at process time.
+def _is_indexable(tree_item: Dict[str, Any]) -> bool:
+    if tree_item.get("gitObjectType") != "blob":
+        return False
+    path = tree_item.get("path", "")
+    if not path:
+        return False
+    # Skip files under any of the SKIP_DIRS at any depth.
+    parts = path.strip("/").split("/")
+    for part in parts[:-1]:
+        if part in SKIP_DIRS:
+            return False
+    ext = os.path.splitext(path)[1].lower()
+    if ext not in INDEXABLE_EXTENSIONS:
+        return False
+    size = tree_item.get("size", 0)
+    if isinstance(size, (int, float)) and size > MAX_FILE_SIZE:
+        logger.debug("Skipping large file: %s (%s bytes)", path, size)
+        return False
+    return True
 
-    Returns the number of messages enqueued.
+
+# ---------------------------------------------------------------------------
+# S3 upload (mirrors github-sync's upload_file_to_s3)
+# ---------------------------------------------------------------------------
+
+
+_CONTENT_TYPES = {
+    ".md": "text/markdown",
+    ".json": "application/json",
+    ".yaml": "text/yaml",
+    ".yml": "text/yaml",
+    ".rst": "text/x-rst",
+    ".txt": "text/plain",
+    ".html": "text/html",
+    ".htm": "text/html",
+    ".pdf": "application/pdf",
+    ".csv": "text/csv",
+    ".xml": "application/xml",
+}
+
+
+def _upload_blob_to_s3(
+    workspace_id: str,
+    slug: str,
+    file_path: str,
+    content_bytes: bytes,
+    commit_sha: str,
+    repo_type: str,
+) -> Optional[str]:
+    """Write one file to the KB bucket.
+
+    Key shape: ``workspaces/{workspace_id}/azure_devops/{slug}/{path}``
+    -- mirrors github-sync's ``workspaces/{ws}/github/{repo}/{path}``
+    so process-documents picks it up via the standard ``workspaces/``
+    S3 ObjectCreated trigger and the vector key gets a consistent
+    ``{workspace_id}#azure_devops#...`` prefix.
+
+    Metadata uses the ``source: "azure_devops"`` convention so
+    process-documents' source-agnostic indexing flow surfaces the
+    file in chat retrieval.
     """
-    if not REPO_SUMMARIES_QUEUE:
-        logger.warning("REPO_SUMMARIES_QUEUE not configured -- skipping enqueue")
-        return 0
-    body = {
-        "provider": "azure_devops",
+    if not KB_BUCKET:
+        logger.warning("KB_BUCKET not configured -- skipping S3 upload")
+        return None
+
+    # ADO paths are leading-slashed; normalize so the S3 key is clean.
+    clean_path = file_path.lstrip("/")
+    s3_key = f"workspaces/{workspace_id}/azure_devops/{slug}/{clean_path}"
+
+    ext = os.path.splitext(clean_path)[1].lower()
+    content_type = _CONTENT_TYPES.get(ext, "text/plain")
+
+    metadata = {
+        "source": "azure_devops",
         "workspace_id": workspace_id,
-        "slug": slug,
-        "org": org,
-        "project": project,
-        "repo": repo,
-        "connection_id": connection_id,
-        "branch": branch,
-        "file_count": sum(1 for item in tree if item.get("gitObjectType") == "blob"),
+        "azure_devops_slug": slug,
+        "azure_devops_file_path": clean_path,
+        "azure_devops_commit_sha": commit_sha,
+        "azure_devops_repo_type": repo_type,
     }
-    _get_sqs().send_message(
-        QueueUrl=REPO_SUMMARIES_QUEUE, MessageBody=json.dumps(body),
-    )
-    return 1
 
-
-def _queue_downstream_for_standards_repo(
-    workspace_id: str, slug: str, org: str, project: str, repo: str,
-    connection_id: str, branch: str, tree: List[Dict[str, Any]],
-) -> int:
-    """Enqueue one file-ingestion job per blob. Same downstream-aware
-    contract as the application path: the message carries
-    ``provider="azure_devops"`` so process time can route to the
-    right fetcher.
-    """
-    if not FILE_INGESTION_QUEUE:
-        logger.warning("FILE_INGESTION_QUEUE not configured -- skipping enqueue")
-        return 0
-    queued = 0
-    for item in tree:
-        if item.get("gitObjectType") != "blob":
-            continue
-        path = item.get("path")
-        if not path:
-            continue
-        body = {
-            "provider": "azure_devops",
-            "workspace_id": workspace_id,
-            "slug": slug,
-            "org": org,
-            "project": project,
-            "repo": repo,
-            "connection_id": connection_id,
-            "branch": branch,
-            "path": path,
-        }
-        _get_sqs().send_message(
-            QueueUrl=FILE_INGESTION_QUEUE, MessageBody=json.dumps(body),
+    try:
+        dual_write.s3_put_object(
+            bucket=KB_BUCKET,
+            key=s3_key,
+            body=content_bytes,
+            ContentType=content_type,
+            Metadata=metadata,
         )
-        queued += 1
-    return queued
+        return s3_key
+    except ClientError as e:
+        logger.error("Failed to upload %s to S3: %s", clean_path, e)
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -301,12 +347,13 @@ def process_sync_message(message: Dict[str, Any]) -> Dict[str, Any]:
 
     repo_row = _get_repo_row(workspace_id, slug)
     if repo_row is None:
-        # Row was deleted between scheduler enqueue and our pickup.
         logger.warning("ADO sync skip -- repo row missing: %s/%s", workspace_id, slug)
         return {"slug": slug, "status": "skip-missing-row", "sync_id": sync_id}
     if not repo_row.get("enabled", True):
         logger.info("ADO sync skip -- repo disabled: %s/%s", workspace_id, slug)
         return {"slug": slug, "status": "skip-disabled", "sync_id": sync_id}
+
+    repo_type = repo_row.get("repo_type", "application")
 
     _update_sync_status(workspace_id, slug, status="in_progress")
 
@@ -332,8 +379,6 @@ def process_sync_message(message: Dict[str, Any]) -> Dict[str, Any]:
 
         stored_sha = repo_row.get("last_commit_sha")
         if stored_sha == latest_sha and triggered_by != "manual":
-            # Skip-unchanged. The hourly scheduler retriggering doesn't
-            # need to re-do downstream work.
             _update_sync_status(
                 workspace_id, slug,
                 status="skip-unchanged",
@@ -350,34 +395,65 @@ def process_sync_message(message: Dict[str, Any]) -> Dict[str, Any]:
                 "sync_id": sync_id,
             }
 
-        # Changed (or manual): fetch tree + enqueue downstream.
+        # Changed (or manual): walk tree, upload each indexable file.
         tree = get_tree_recursive(access_token, org, project, repo, default_branch)
-        repo_type = repo_row.get("repo_type", "application")
-        if repo_type == "standards":
-            enqueued = _queue_downstream_for_standards_repo(
-                workspace_id, slug, org, project, repo,
-                connection_id, default_branch, tree,
+        indexable = [t for t in tree if _is_indexable(t)]
+
+        uploaded = 0
+        upload_errors = 0
+        for item in indexable:
+            try:
+                content = get_file_content(
+                    access_token, org, project, repo,
+                    item["path"], default_branch,
+                )
+            except AzureDevOpsAuthError:
+                # Token may have expired mid-walk; bail and let SQS retry.
+                raise
+            except AzureDevOpsNotFoundError:
+                # Race: file deleted between tree-walk and content fetch.
+                logger.info(
+                    "ADO sync: file vanished between tree + fetch: %s",
+                    item.get("path"),
+                )
+                continue
+            except AzureDevOpsAPIError as e:
+                upload_errors += 1
+                logger.warning(
+                    "ADO sync: get_file_content failed for %s: %s",
+                    item.get("path"), e,
+                )
+                continue
+
+            s3_key = _upload_blob_to_s3(
+                workspace_id=workspace_id,
+                slug=slug,
+                file_path=item["path"],
+                content_bytes=content,
+                commit_sha=latest_sha,
+                repo_type=repo_type,
             )
-        else:
-            enqueued = _queue_downstream_for_application_repo(
-                workspace_id, slug, org, project, repo,
-                connection_id, default_branch, tree,
-            )
+            if s3_key:
+                uploaded += 1
+            else:
+                upload_errors += 1
 
         _update_sync_status(
             workspace_id, slug,
             status="success",
             commit_sha=latest_sha,
+            file_count=uploaded,
         )
         logger.info(
-            "ADO sync success: %s/%s -> %d downstream messages",
-            workspace_id, slug, enqueued,
+            "ADO sync success: %s/%s -> %d uploaded (%d errors)",
+            workspace_id, slug, uploaded, upload_errors,
         )
         return {
             "slug": slug,
             "status": "success",
             "commit_sha": latest_sha,
-            "downstream_enqueued": enqueued,
+            "uploaded": uploaded,
+            "upload_errors": upload_errors,
             "sync_id": sync_id,
         }
 
@@ -391,12 +467,9 @@ def process_sync_message(message: Dict[str, Any]) -> Dict[str, Any]:
         _update_sync_status(workspace_id, slug, status="failed", error=msg)
         raise
     except AzureDevOpsAPIError as e:
-        msg = f"ado_api_error: {e}"
         _update_sync_status(workspace_id, slug, status="failed", error=str(e))
         raise
     except RuntimeError as e:
-        # Internal classified failure (token refresh failed,
-        # default_branch missing, etc.).
         _update_sync_status(workspace_id, slug, status="failed", error=str(e))
         raise
     except Exception as e:
