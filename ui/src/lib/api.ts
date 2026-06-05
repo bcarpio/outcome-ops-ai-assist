@@ -2011,6 +2011,224 @@ export async function triggerGitHubSync(workspaceId: string, repoName?: string):
 }
 
 // ============================================================================
+// Azure DevOps integration (chunk 08)
+// ============================================================================
+
+export interface AzureDevOpsConnection {
+  connection_id: string
+  display_name: string
+  user_email_external: string
+  tenant_id: string
+  created_at: string
+}
+
+export interface AzureDevOpsOrg {
+  accountName: string
+  accountId: string
+}
+
+export interface AzureDevOpsProject {
+  id: string
+  name: string
+}
+
+export interface AzureDevOpsAvailableRepo {
+  id: string
+  name: string
+  default_branch: string | null
+  already_added: boolean
+}
+
+export type AzureDevOpsRepoType = 'application' | 'standards' | 'infrastructure'
+
+export interface AzureDevOpsRepo {
+  slug: string
+  org: string
+  project: string
+  repo: string
+  connection_id: string
+  default_branch: string | null
+  enabled: boolean
+  include_code_maps: boolean
+  repo_type: AzureDevOpsRepoType
+  last_sync_at: string | null
+  last_sync_status: string
+  last_sync_error: string | null
+  added_at: string
+  added_by: string
+}
+
+/** Get the Entra ID authorize URL for connecting Azure DevOps to a workspace. */
+export async function getAzureDevOpsAuthUrl(workspaceId: string): Promise<string> {
+  const response = await fetch(
+    `${API_BASE}/azure-devops/authorize?workspace_id=${encodeURIComponent(workspaceId)}`,
+  )
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to get Azure DevOps auth URL: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return data?.auth_url as string
+}
+
+/** List Azure DevOps connections for a workspace. */
+export async function listAzureDevOpsConnections(workspaceId: string): Promise<AzureDevOpsConnection[]> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/azure-devops/connections`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to list Azure DevOps connections: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return (data?.connections as AzureDevOpsConnection[]) || []
+}
+
+/** List Azure DevOps organizations visible to a connection. */
+export async function listAzureDevOpsOrgs(
+  workspaceId: string,
+  connectionId: string,
+): Promise<AzureDevOpsOrg[]> {
+  const response = await fetch(
+    `${API_BASE}/workspaces/${workspaceId}/azure-devops/connections/${encodeURIComponent(connectionId)}/orgs`,
+  )
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to list Azure DevOps orgs: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return (data?.orgs as AzureDevOpsOrg[]) || []
+}
+
+/** List Azure DevOps projects inside an organization. */
+export async function listAzureDevOpsProjects(
+  workspaceId: string,
+  connectionId: string,
+  org: string,
+): Promise<AzureDevOpsProject[]> {
+  const response = await fetch(
+    `${API_BASE}/workspaces/${workspaceId}/azure-devops/connections/${encodeURIComponent(connectionId)}/orgs/${encodeURIComponent(org)}/projects`,
+  )
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to list Azure DevOps projects: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return (data?.projects as AzureDevOpsProject[]) || []
+}
+
+/** List Azure DevOps repos in a project (with already-added flag). */
+export async function listAzureDevOpsProjectRepos(
+  workspaceId: string,
+  connectionId: string,
+  org: string,
+  project: string,
+): Promise<AzureDevOpsAvailableRepo[]> {
+  const response = await fetch(
+    `${API_BASE}/workspaces/${workspaceId}/azure-devops/connections/${encodeURIComponent(connectionId)}/orgs/${encodeURIComponent(org)}/projects/${encodeURIComponent(project)}/repos`,
+  )
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to list Azure DevOps project repos: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return (data?.repos as AzureDevOpsAvailableRepo[]) || []
+}
+
+/** List Azure DevOps repos already in the workspace. */
+export async function listAzureDevOpsRepos(workspaceId: string): Promise<AzureDevOpsRepo[]> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/azure-devops/repos`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to list Azure DevOps repos: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return (data?.repos as AzureDevOpsRepo[]) || []
+}
+
+/** Add Azure DevOps repos to a workspace. */
+export async function addAzureDevOpsRepos(
+  workspaceId: string,
+  connectionId: string,
+  repos: {
+    org: string
+    project: string
+    repo: string
+    include_code_maps?: boolean
+    repo_type?: AzureDevOpsRepoType
+  }[],
+): Promise<AzureDevOpsRepo[]> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/azure-devops/repos`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ connection_id: connectionId, repos }),
+  })
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to add Azure DevOps repos: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return (data?.repos as AzureDevOpsRepo[]) || []
+}
+
+/** Update an Azure DevOps repo's settings. */
+export async function updateAzureDevOpsRepo(
+  workspaceId: string,
+  slug: string,
+  updates: { enabled?: boolean; include_code_maps?: boolean },
+): Promise<AzureDevOpsRepo> {
+  const response = await fetch(
+    `${API_BASE}/workspaces/${workspaceId}/azure-devops/repos/${encodeURIComponent(slug)}`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updates),
+    },
+  )
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to update Azure DevOps repo: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return data?.repo as AzureDevOpsRepo
+}
+
+/** Remove an Azure DevOps repo from a workspace. */
+export async function removeAzureDevOpsRepo(workspaceId: string, slug: string): Promise<void> {
+  const response = await fetch(
+    `${API_BASE}/workspaces/${workspaceId}/azure-devops/repos/${encodeURIComponent(slug)}`,
+    { method: 'DELETE' },
+  )
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to remove Azure DevOps repo: ${response.status}`)
+  }
+}
+
+/** Trigger an Azure DevOps sync (all repos, or a specific slug). */
+export async function triggerAzureDevOpsSync(workspaceId: string, slug?: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/azure-devops/sync`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(slug ? { slug } : {}),
+  })
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to trigger Azure DevOps sync: ${response.status}`)
+  }
+}
+
+/** Disconnect Azure DevOps (cascade-removes connection + tokens + tied repos). */
+export async function disconnectAzureDevOps(workspaceId: string, connectionId: string): Promise<void> {
+  const response = await fetch(
+    `${API_BASE}/workspaces/${workspaceId}/azure-devops/connections/${encodeURIComponent(connectionId)}`,
+    { method: 'DELETE' },
+  )
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to disconnect Azure DevOps: ${response.status}`)
+  }
+}
+
+// ============================================================================
 // MCP Server Management
 // ============================================================================
 

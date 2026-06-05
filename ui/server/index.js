@@ -39,6 +39,7 @@ const SHAREPOINT_LAMBDA_URL = process.env.SHAREPOINT_LAMBDA_URL;
 const ONEDRIVE_LAMBDA_URL = process.env.ONEDRIVE_LAMBDA_URL;
 const ONENOTE_LAMBDA_URL = process.env.ONENOTE_LAMBDA_URL;
 const DATABASE_LAMBDA_URL = process.env.DATABASE_LAMBDA_URL;
+const AZURE_DEVOPS_LAMBDA_URL = process.env.AZURE_DEVOPS_LAMBDA_URL;
 const AWS_REGION = process.env.AWS_REGION || "us-west-2";
 const STATIC_DIR = process.env.STATIC_DIR || "/app/static";
 const LOCAL_DEV_MODE = process.env.LOCAL_DEV_MODE === "true";
@@ -292,6 +293,10 @@ async function signedGitHubFetch(method, path, options = {}) {
  */
 async function signedOutlookFetch(method, path, options = {}) {
   return signedFetch(OUTLOOK_LAMBDA_URL, method, path, options);
+}
+
+async function signedAzureDevOpsFetch(method, path, options = {}) {
+  return signedFetch(AZURE_DEVOPS_LAMBDA_URL, method, path, options);
 }
 
 /**
@@ -1411,6 +1416,170 @@ app.delete("/api/workspaces/:id/github/repos/*", (req, res) => {
 app.post("/api/workspaces/:id/github/sync", (req, res) => {
   proxyGitHubRequest(req, res, "POST", `/workspaces/${req.params.id}/github/sync`);
 });
+
+// ============================================================================
+// Azure DevOps Integration Routes (chunk 08)
+//
+// Mirrors the GitHub proxy shape exactly -- same SigV4 IAM auth path
+// (signedAzureDevOpsFetch -> AZURE_DEVOPS_LAMBDA_URL), same error
+// handling, same redirect-passthrough on OAuth callback.
+// ============================================================================
+
+async function proxyAzureDevOpsRequest(req, res, method, path) {
+  if (!AZURE_DEVOPS_LAMBDA_URL) {
+    console.log("[proxy] AZURE_DEVOPS_LAMBDA_URL not configured - Azure DevOps integration disabled");
+    res.status(404).json({ error: "Azure DevOps integration not enabled. Set AZURE_DEVOPS_LAMBDA_URL." });
+    return;
+  }
+
+  const user = extractUser(req);
+  console.log(`[proxy] AzureDevOps ${method} ${path} for: ${user.email}`);
+
+  try {
+    const options = {
+      extraHeaders: userHeaders(req, user),
+    };
+    if (req.body && Object.keys(req.body).length > 0) {
+      options.body = JSON.stringify(req.body);
+    }
+
+    const response = await signedAzureDevOpsFetch(method, path, options);
+
+    if (response.status === 302) {
+      const location = response.headers.get("location");
+      return res.redirect(location);
+    }
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`[proxy] AzureDevOps Lambda error: ${response.status} - ${errorText}`);
+      res.status(response.status).json({ error: errorText || "Azure DevOps request failed" });
+      return;
+    }
+
+    const text = await response.text();
+    if (!text) {
+      res.status(500).json({ error: "Empty response from Azure DevOps service" });
+      return;
+    }
+
+    try {
+      const data = JSON.parse(text);
+      res.status(response.status).json(data);
+    } catch (parseError) {
+      console.error(`[proxy] Failed to parse Azure DevOps response: ${text}`);
+      res.status(500).json({ error: "Invalid response from Azure DevOps service" });
+    }
+  } catch (error) {
+    console.error(`[proxy] AzureDevOps error: ${error.message}`);
+    if (error.message.includes("credentials") || error.message.includes("Credential")) {
+      res.status(500).json({ error: "AWS credentials not configured." });
+    } else {
+      res.status(500).json({ error: `Failed to process Azure DevOps request: ${error.message}` });
+    }
+  }
+}
+
+// OAuth authorize + callback
+app.get("/api/azure-devops/authorize", (req, res) => {
+  const workspaceId = req.query.workspace_id;
+  proxyAzureDevOpsRequest(req, res, "GET", `/azure-devops/authorize?workspace_id=${encodeURIComponent(workspaceId)}`);
+});
+
+app.get("/api/azure-devops/callback", async (req, res) => {
+  const { code, state, error } = req.query;
+  if (error) {
+    return res.redirect(`/?azure_devops_error=${encodeURIComponent(error)}`);
+  }
+  if (!AZURE_DEVOPS_LAMBDA_URL) {
+    return res.redirect(`/?azure_devops_error=not_configured`);
+  }
+  try {
+    const response = await signedAzureDevOpsFetch("POST", "/azure-devops/callback", {
+      body: JSON.stringify({ code, state }),
+    });
+    if (response.status === 302) {
+      const location = response.headers.get("location");
+      return res.redirect(location);
+    }
+    const text = await response.text();
+    try {
+      const data = JSON.parse(text);
+      if (data.redirect) {
+        return res.redirect(data.redirect);
+      }
+      res.status(response.status).json(data);
+    } catch {
+      res.status(response.status).send(text);
+    }
+  } catch (err) {
+    console.error(`[proxy] Azure DevOps callback error: ${err.message}`);
+    res.redirect(`/?azure_devops_error=callback_failed`);
+  }
+});
+
+// Connections + discovery
+app.get("/api/workspaces/:id/azure-devops/connections", (req, res) =>
+  proxyAzureDevOpsRequest(req, res, "GET", `/workspaces/${req.params.id}/azure-devops/connections`),
+);
+
+app.delete("/api/workspaces/:id/azure-devops/connections/:cid", (req, res) =>
+  proxyAzureDevOpsRequest(
+    req, res, "DELETE",
+    `/workspaces/${req.params.id}/azure-devops/connections/${encodeURIComponent(req.params.cid)}`,
+  ),
+);
+
+app.get("/api/workspaces/:id/azure-devops/connections/:cid/orgs", (req, res) =>
+  proxyAzureDevOpsRequest(
+    req, res, "GET",
+    `/workspaces/${req.params.id}/azure-devops/connections/${encodeURIComponent(req.params.cid)}/orgs`,
+  ),
+);
+
+app.get("/api/workspaces/:id/azure-devops/connections/:cid/orgs/:org/projects", (req, res) =>
+  proxyAzureDevOpsRequest(
+    req, res, "GET",
+    `/workspaces/${req.params.id}/azure-devops/connections/${encodeURIComponent(req.params.cid)}/orgs/${encodeURIComponent(req.params.org)}/projects`,
+  ),
+);
+
+app.get("/api/workspaces/:id/azure-devops/connections/:cid/orgs/:org/projects/:proj/repos", (req, res) =>
+  proxyAzureDevOpsRequest(
+    req, res, "GET",
+    `/workspaces/${req.params.id}/azure-devops/connections/${encodeURIComponent(req.params.cid)}/orgs/${encodeURIComponent(req.params.org)}/projects/${encodeURIComponent(req.params.proj)}/repos`,
+  ),
+);
+
+// Workspace repo set
+app.get("/api/workspaces/:id/azure-devops/repos", (req, res) =>
+  proxyAzureDevOpsRequest(req, res, "GET", `/workspaces/${req.params.id}/azure-devops/repos`),
+);
+
+app.post("/api/workspaces/:id/azure-devops/repos", (req, res) =>
+  proxyAzureDevOpsRequest(req, res, "POST", `/workspaces/${req.params.id}/azure-devops/repos`),
+);
+
+// org/project/repo slug contains two slashes; use the wildcard catch-all.
+app.put("/api/workspaces/:id/azure-devops/repos/*", (req, res) => {
+  const slug = req.params[0];
+  proxyAzureDevOpsRequest(
+    req, res, "PUT",
+    `/workspaces/${req.params.id}/azure-devops/repos/${encodeURIComponent(slug)}`,
+  );
+});
+
+app.delete("/api/workspaces/:id/azure-devops/repos/*", (req, res) => {
+  const slug = req.params[0];
+  proxyAzureDevOpsRequest(
+    req, res, "DELETE",
+    `/workspaces/${req.params.id}/azure-devops/repos/${encodeURIComponent(slug)}`,
+  );
+});
+
+app.post("/api/workspaces/:id/azure-devops/sync", (req, res) =>
+  proxyAzureDevOpsRequest(req, res, "POST", `/workspaces/${req.params.id}/azure-devops/sync`),
+);
 
 // ============================================================================
 // Outlook Integration Routes

@@ -26,6 +26,17 @@ import {
   updateGitHubRepo,
   removeGitHubRepo,
   triggerGitHubSync,
+  getAzureDevOpsAuthUrl,
+  listAzureDevOpsConnections,
+  listAzureDevOpsOrgs,
+  listAzureDevOpsProjects,
+  listAzureDevOpsProjectRepos,
+  listAzureDevOpsRepos,
+  addAzureDevOpsRepos,
+  updateAzureDevOpsRepo,
+  removeAzureDevOpsRepo,
+  triggerAzureDevOpsSync,
+  disconnectAzureDevOps,
 } from '../../../src/lib/api'
 import {
   createConfluenceConnection,
@@ -370,6 +381,149 @@ describe('triggerGitHubSync', () => {
         method: 'POST',
         body: JSON.stringify({ repo_name: 'test-org/test-repo' }),
       })
+    )
+  })
+})
+
+// ============================================================================
+// Azure DevOps (chunk 08)
+// ============================================================================
+
+describe('getAzureDevOpsAuthUrl', () => {
+  it('returns auth URL', async () => {
+    global.fetch = vi.fn().mockResolvedValue(createMockFetchResponse({ auth_url: 'https://login.microsoftonline.com/.../authorize?...' }))
+    const result = await getAzureDevOpsAuthUrl('ws-1')
+    expect(fetch).toHaveBeenCalledWith('/api/azure-devops/authorize?workspace_id=ws-1')
+    expect(result).toContain('login.microsoftonline.com')
+  })
+
+  it('throws on error', async () => {
+    global.fetch = vi.fn().mockResolvedValue(createMockFetchResponse({ error: 'Forbidden' }, false, 403))
+    await expect(getAzureDevOpsAuthUrl('ws-1')).rejects.toThrow('Forbidden')
+  })
+})
+
+describe('listAzureDevOpsConnections', () => {
+  it('returns connections', async () => {
+    const conn = { connection_id: 'c1', display_name: 'Jane', user_email_external: 'jane@contoso.com', tenant_id: 'tenant-xyz', created_at: '2026-06-05T00:00:00Z' }
+    global.fetch = vi.fn().mockResolvedValue(createMockFetchResponse({ connections: [conn] }))
+    const result = await listAzureDevOpsConnections('ws-1')
+    expect(fetch).toHaveBeenCalledWith('/api/workspaces/ws-1/azure-devops/connections')
+    expect(result).toHaveLength(1)
+    expect(result[0].tenant_id).toBe('tenant-xyz')
+  })
+
+  it('returns empty list on 404 (integration not enabled)', async () => {
+    global.fetch = vi.fn().mockResolvedValue(createMockFetchResponse({ error: 'Azure DevOps integration not enabled' }, false, 404))
+    await expect(listAzureDevOpsConnections('ws-1')).rejects.toThrow()
+  })
+})
+
+describe('listAzureDevOpsOrgs', () => {
+  it('lists orgs for connection', async () => {
+    global.fetch = vi.fn().mockResolvedValue(createMockFetchResponse({ orgs: [{ accountName: 'example-org', accountId: 'a1' }] }))
+    const result = await listAzureDevOpsOrgs('ws-1', 'c1')
+    expect(fetch).toHaveBeenCalledWith('/api/workspaces/ws-1/azure-devops/connections/c1/orgs')
+    expect(result[0].accountName).toBe('example-org')
+  })
+})
+
+describe('listAzureDevOpsProjects', () => {
+  it('lists projects in org', async () => {
+    global.fetch = vi.fn().mockResolvedValue(createMockFetchResponse({ projects: [{ id: 'p1', name: 'Demo' }] }))
+    const result = await listAzureDevOpsProjects('ws-1', 'c1', 'example-org')
+    expect(fetch).toHaveBeenCalledWith('/api/workspaces/ws-1/azure-devops/connections/c1/orgs/example-org/projects')
+    expect(result[0].name).toBe('Demo')
+  })
+})
+
+describe('listAzureDevOpsProjectRepos', () => {
+  it('lists repos in project', async () => {
+    global.fetch = vi.fn().mockResolvedValue(createMockFetchResponse({ repos: [{ id: 'r1', name: 'demo-app', default_branch: 'main', already_added: false }] }))
+    const result = await listAzureDevOpsProjectRepos('ws-1', 'c1', 'example-org', 'Demo')
+    expect(fetch).toHaveBeenCalledWith('/api/workspaces/ws-1/azure-devops/connections/c1/orgs/example-org/projects/Demo/repos')
+    expect(result[0].already_added).toBe(false)
+  })
+})
+
+describe('listAzureDevOpsRepos', () => {
+  it('lists workspace repos', async () => {
+    const r = { slug: 'example-org/Demo/demo-app', org: 'example-org', project: 'Demo', repo: 'demo-app', connection_id: 'c1', default_branch: 'main', enabled: true, include_code_maps: true, repo_type: 'application', last_sync_at: null, last_sync_status: 'pending', last_sync_error: null, added_at: '2026-06-05T00:00:00Z', added_by: 'u@example.com' }
+    global.fetch = vi.fn().mockResolvedValue(createMockFetchResponse({ repos: [r] }))
+    const result = await listAzureDevOpsRepos('ws-1')
+    expect(fetch).toHaveBeenCalledWith('/api/workspaces/ws-1/azure-devops/repos')
+    expect(result[0].slug).toBe('example-org/Demo/demo-app')
+  })
+})
+
+describe('addAzureDevOpsRepos', () => {
+  it('posts the right body shape (connection_id + repos)', async () => {
+    global.fetch = vi.fn().mockResolvedValue(createMockFetchResponse({ repos: [] }))
+    await addAzureDevOpsRepos('ws-1', 'c1', [
+      { org: 'example-org', project: 'Demo', repo: 'demo-app' },
+    ])
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/workspaces/ws-1/azure-devops/repos',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          connection_id: 'c1',
+          repos: [{ org: 'example-org', project: 'Demo', repo: 'demo-app' }],
+        }),
+      }),
+    )
+  })
+})
+
+describe('updateAzureDevOpsRepo', () => {
+  it('URL-encodes the slug', async () => {
+    global.fetch = vi.fn().mockResolvedValue(createMockFetchResponse({ repo: { slug: 'a/b/c' } }))
+    await updateAzureDevOpsRepo('ws-1', 'a/b/c', { enabled: false })
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/workspaces/ws-1/azure-devops/repos/a%2Fb%2Fc',
+      expect.objectContaining({ method: 'PUT' }),
+    )
+  })
+})
+
+describe('removeAzureDevOpsRepo', () => {
+  it('URL-encodes the slug', async () => {
+    global.fetch = vi.fn().mockResolvedValue(createMockFetchResponse(null))
+    await removeAzureDevOpsRepo('ws-1', 'a/b/c')
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/workspaces/ws-1/azure-devops/repos/a%2Fb%2Fc',
+      expect.objectContaining({ method: 'DELETE' }),
+    )
+  })
+})
+
+describe('triggerAzureDevOpsSync', () => {
+  it('all-repo body is empty object', async () => {
+    global.fetch = vi.fn().mockResolvedValue(createMockFetchResponse(null))
+    await triggerAzureDevOpsSync('ws-1')
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/workspaces/ws-1/azure-devops/sync',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({}) }),
+    )
+  })
+
+  it('single-repo body carries slug', async () => {
+    global.fetch = vi.fn().mockResolvedValue(createMockFetchResponse(null))
+    await triggerAzureDevOpsSync('ws-1', 'a/b/c')
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/workspaces/ws-1/azure-devops/sync',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ slug: 'a/b/c' }) }),
+    )
+  })
+})
+
+describe('disconnectAzureDevOps', () => {
+  it('deletes connection by id', async () => {
+    global.fetch = vi.fn().mockResolvedValue(createMockFetchResponse(null))
+    await disconnectAzureDevOps('ws-1', 'c1')
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/workspaces/ws-1/azure-devops/connections/c1',
+      expect.objectContaining({ method: 'DELETE' }),
     )
   })
 })

@@ -21,6 +21,7 @@ import {
   File,
   FolderOpen,
   Github,
+  GitBranch,
   Search,
   Lock,
   Globe,
@@ -101,6 +102,14 @@ import {
   updateGitHubRepo,
   removeGitHubRepo,
   triggerGitHubSync,
+  getAzureDevOpsAuthUrl,
+  listAzureDevOpsConnections,
+  listAzureDevOpsRepos,
+  triggerAzureDevOpsSync,
+  disconnectAzureDevOps,
+  removeAzureDevOpsRepo,
+  type AzureDevOpsConnection,
+  type AzureDevOpsRepo,
   type Workspace,
   type WorkspaceMember,
   type ConfluenceConnection,
@@ -323,6 +332,15 @@ export default function WorkspaceSettings() {
   const [githubRepoSearchQuery, setGithubRepoSearchQuery] = useState('')
   const [selectedRepoType, setSelectedRepoType] = useState<GitHubRepoType>('application')
 
+  // Azure DevOps integration state (chunk 08)
+  const [azureDevOpsConnections, setAzureDevOpsConnections] = useState<AzureDevOpsConnection[]>([])
+  const [azureDevOpsRepos, setAzureDevOpsRepos] = useState<AzureDevOpsRepo[]>([])
+  const [loadingAzureDevOps, setLoadingAzureDevOps] = useState(false)
+  const [connectingAzureDevOps, setConnectingAzureDevOps] = useState(false)
+  const [disconnectingAzureDevOps, setDisconnectingAzureDevOps] = useState<string | null>(null)
+  const [syncingAzureDevOps, setSyncingAzureDevOps] = useState<string | null>(null)
+  const [removingAzureDevOpsRepo, setRemovingAzureDevOpsRepo] = useState<string | null>(null)
+
   // Sharing tab state
   const [, setSharingAccess] = useState<WorkspaceSearchAccess[]>([])
   const [sharingOptions, setSharingOptions] = useState<WorkspaceSearchAccess[]>([])
@@ -365,6 +383,7 @@ export default function WorkspaceSettings() {
     } else if (workspaceId && activeTab === 'integrations') {
       loadConnections()
       loadGitHubData()
+      loadAzureDevOpsData()
     } else if (workspaceId && activeTab === 'sharing') {
       loadSharing()
     } else if (workspaceId && activeTab === 'documents') {
@@ -482,6 +501,87 @@ export default function WorkspaceSettings() {
       console.error('Failed to load GitHub data:', err)
     } finally {
       setLoadingGitHub(false)
+    }
+  }
+
+  // Azure DevOps integration loader (chunk 08). 404 from a deploy
+  // that hasn't enabled the integration is silently swallowed so the
+  // tab doesn't display an error -- the section just doesn't appear.
+  async function loadAzureDevOpsData() {
+    if (!workspaceId) return
+    setLoadingAzureDevOps(true)
+    try {
+      const [connections, repos] = await Promise.all([
+        listAzureDevOpsConnections(workspaceId).catch(() => []),
+        listAzureDevOpsRepos(workspaceId).catch(() => []),
+      ])
+      setAzureDevOpsConnections(connections)
+      setAzureDevOpsRepos(repos)
+    } catch (err) {
+      console.error('Failed to load Azure DevOps data:', err)
+    } finally {
+      setLoadingAzureDevOps(false)
+    }
+  }
+
+  async function handleConnectAzureDevOps() {
+    if (!workspaceId) return
+    setConnectingAzureDevOps(true)
+    try {
+      const authUrl = await getAzureDevOpsAuthUrl(workspaceId)
+      // Redirect the browser to Microsoft's consent screen. The
+      // callback writes the connection row + tokens then redirects
+      // back to /workspaces/{id}/settings?tab=integrations
+      // &azure_devops_connected={connection_id}.
+      window.location.href = authUrl
+    } catch (err) {
+      console.error('Failed to start Azure DevOps connect:', err)
+      setConnectingAzureDevOps(false)
+    }
+  }
+
+  async function handleDisconnectAzureDevOps(connectionId: string) {
+    if (!workspaceId) return
+    if (!window.confirm(
+      'Disconnect Azure DevOps? Every repo added through this connection will be ' +
+      'removed from the workspace and its indexed content will be deleted from the ' +
+      'knowledge base. This cannot be undone.'
+    )) return
+    setDisconnectingAzureDevOps(connectionId)
+    try {
+      await disconnectAzureDevOps(workspaceId, connectionId)
+      await loadAzureDevOpsData()
+    } catch (err) {
+      console.error('Failed to disconnect Azure DevOps:', err)
+    } finally {
+      setDisconnectingAzureDevOps(null)
+    }
+  }
+
+  async function handleSyncAzureDevOps(slug?: string) {
+    if (!workspaceId) return
+    setSyncingAzureDevOps(slug || 'all')
+    try {
+      await triggerAzureDevOpsSync(workspaceId, slug)
+      await loadAzureDevOpsData()
+    } catch (err) {
+      console.error('Failed to trigger Azure DevOps sync:', err)
+    } finally {
+      setSyncingAzureDevOps(null)
+    }
+  }
+
+  async function handleRemoveAzureDevOpsRepo(slug: string) {
+    if (!workspaceId) return
+    if (!window.confirm(`Remove ${slug} from this workspace? Indexed content will be deleted.`)) return
+    setRemovingAzureDevOpsRepo(slug)
+    try {
+      await removeAzureDevOpsRepo(workspaceId, slug)
+      await loadAzureDevOpsData()
+    } catch (err) {
+      console.error('Failed to remove Azure DevOps repo:', err)
+    } finally {
+      setRemovingAzureDevOpsRepo(null)
     }
   }
 
@@ -2243,6 +2343,139 @@ export default function WorkspaceSettings() {
                               </>
                             )}
                           </div>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Azure DevOps Integration Section (chunk 08) */}
+            <div className="bg-white rounded-lg border shadow-sm">
+              <div className="p-4 border-b flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <GitBranch className="text-blue-700" size={24} />
+                  <div>
+                    <h3 className="font-medium">Azure DevOps</h3>
+                    <p className="text-sm text-gray-500">Connect Azure DevOps to sync repositories for chat search</p>
+                  </div>
+                </div>
+                {isAdmin && azureDevOpsConnections.length === 0 && (
+                  <MutationButton
+                    onClick={handleConnectAzureDevOps}
+                    disabled={connectingAzureDevOps}
+                    className="flex items-center gap-2 px-3 py-1.5 text-sm bg-gray-900 text-white rounded-lg hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  >
+                    {connectingAzureDevOps ? (
+                      <Loader2 size={16} className="animate-spin" />
+                    ) : (
+                      <Plus size={16} />
+                    )}
+                    Connect Azure DevOps
+                  </MutationButton>
+                )}
+              </div>
+              {loadingAzureDevOps ? (
+                <div className="p-8 flex items-center justify-center">
+                  <Loader2 className="animate-spin text-gray-400" size={24} />
+                </div>
+              ) : azureDevOpsConnections.length === 0 ? (
+                <div className="p-8 text-center text-gray-500">
+                  <GitBranch className="mx-auto text-gray-300 mb-2" size={48} />
+                  <p>No Azure DevOps connection</p>
+                  <p className="text-sm mt-1">Connect your Azure DevOps tenant to sync repositories</p>
+                </div>
+              ) : (
+                <div>
+                  {azureDevOpsConnections.map(conn => (
+                    <div key={conn.connection_id} className="border-b last:border-b-0">
+                      <div className="p-4 bg-gray-50 flex items-center justify-between">
+                        <div className="flex items-center gap-3">
+                          <GitBranch className="text-gray-600" size={20} />
+                          <div>
+                            <p className="font-medium text-gray-900">{conn.display_name}</p>
+                            <p className="text-sm text-gray-500">{conn.user_email_external}</p>
+                          </div>
+                        </div>
+                        {isAdmin && (
+                          <MutationButton
+                            onClick={() => handleDisconnectAzureDevOps(conn.connection_id)}
+                            disabled={disconnectingAzureDevOps === conn.connection_id}
+                            className="flex items-center gap-2 px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-50"
+                          >
+                            {disconnectingAzureDevOps === conn.connection_id ? (
+                              <Loader2 size={16} className="animate-spin" />
+                            ) : (
+                              <Trash2 size={16} />
+                            )}
+                            Disconnect
+                          </MutationButton>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+
+                  {azureDevOpsRepos.length === 0 ? (
+                    <div className="p-8 text-center text-gray-500">
+                      <p>No repositories added yet</p>
+                      <p className="text-sm mt-1">
+                        Use the Azure DevOps REST API or the platform CLI to add repos.
+                        Full UI repo picker is a follow-up release.
+                      </p>
+                    </div>
+                  ) : (
+                    <ul className="divide-y">
+                      {azureDevOpsRepos.map(repo => (
+                        <li key={repo.slug} className="p-4 flex items-center justify-between hover:bg-gray-50">
+                          <div className="flex items-center gap-3 flex-1 min-w-0">
+                            <GitBranch className="text-gray-400 flex-shrink-0" size={20} />
+                            <div className="min-w-0">
+                              <p className="font-medium text-gray-900 truncate">{repo.slug}</p>
+                              <p className="text-sm text-gray-500">
+                                {repo.default_branch || '(branch unknown)'} ·{' '}
+                                <span className={
+                                  repo.last_sync_status === 'success'
+                                    ? 'text-green-600'
+                                    : repo.last_sync_status === 'failed'
+                                      ? 'text-red-600'
+                                      : 'text-gray-500'
+                                }>
+                                  {repo.last_sync_status}
+                                </span>
+                                {repo.last_sync_error && (
+                                  <span className="text-red-500"> · {repo.last_sync_error}</span>
+                                )}
+                              </p>
+                            </div>
+                          </div>
+                          {isAdmin && (
+                            <div className="flex items-center gap-2 flex-shrink-0">
+                              <MutationButton
+                                onClick={() => handleSyncAzureDevOps(repo.slug)}
+                                disabled={syncingAzureDevOps === repo.slug}
+                                className="flex items-center gap-1 px-2 py-1 text-sm text-blue-600 hover:bg-blue-50 rounded transition-colors disabled:opacity-50"
+                              >
+                                {syncingAzureDevOps === repo.slug ? (
+                                  <Loader2 size={14} className="animate-spin" />
+                                ) : (
+                                  <RefreshCw size={14} />
+                                )}
+                                Sync
+                              </MutationButton>
+                              <MutationButton
+                                onClick={() => handleRemoveAzureDevOpsRepo(repo.slug)}
+                                disabled={removingAzureDevOpsRepo === repo.slug}
+                                className="flex items-center gap-1 px-2 py-1 text-sm text-red-600 hover:bg-red-50 rounded transition-colors disabled:opacity-50"
+                              >
+                                {removingAzureDevOpsRepo === repo.slug ? (
+                                  <Loader2 size={14} className="animate-spin" />
+                                ) : (
+                                  <Trash2 size={14} />
+                                )}
+                              </MutationButton>
+                            </div>
+                          )}
                         </li>
                       ))}
                     </ul>

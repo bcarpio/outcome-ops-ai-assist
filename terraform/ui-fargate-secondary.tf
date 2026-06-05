@@ -145,6 +145,10 @@ module "ui_ecs_secondary" {
                 value = aws_lambda_function_url.github_integration_secondary[0].function_url
               },
               {
+                name  = "AZURE_DEVOPS_LAMBDA_URL"
+                value = aws_lambda_function_url.azure_devops_integration_secondary[0].function_url
+              },
+              {
                 name  = "OUTLOOK_LAMBDA_URL"
                 value = aws_lambda_function_url.outlook_integration_secondary[0].function_url
               },
