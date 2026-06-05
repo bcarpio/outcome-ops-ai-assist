@@ -499,3 +499,46 @@ resource "aws_sqs_queue" "delete_dlq_secondary" {
     Purpose = "delete-dlq"
   }
 }
+
+# ----------------------------------------------------------------------------
+# azure_devops_sync (standard) -- chunk 09
+# ----------------------------------------------------------------------------
+
+resource "aws_sqs_queue" "azure_devops_sync_secondary" {
+  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+
+  provider = aws.secondary
+
+  name                       = "${var.environment}-${var.app_name}-azure-devops-sync"
+  visibility_timeout_seconds = 900
+  message_retention_seconds  = 86400
+  receive_wait_time_seconds  = 20
+
+  redrive_policy = jsonencode({
+    deadLetterTargetArn = aws_sqs_queue.azure_devops_sync_dlq_secondary[0].arn
+    maxReceiveCount     = 3
+  })
+
+  sqs_managed_sse_enabled = var.enable_cmk_encryption ? null : true
+  kms_master_key_id       = local.data_cmk_arn_secondary
+
+  tags = {
+    Purpose = "azure-devops-sync-queue"
+  }
+}
+
+resource "aws_sqs_queue" "azure_devops_sync_dlq_secondary" {
+  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+
+  provider = aws.secondary
+
+  name                      = "${var.environment}-${var.app_name}-azure-devops-sync-dlq"
+  message_retention_seconds = 1209600
+
+  sqs_managed_sse_enabled = var.enable_cmk_encryption ? null : true
+  kms_master_key_id       = local.data_cmk_arn_secondary
+
+  tags = {
+    Purpose = "azure-devops-sync-dlq"
+  }
+}

@@ -900,3 +900,96 @@ resource "aws_lambda_permission" "license_heartbeat_eventbridge_secondary" {
   principal     = "events.amazonaws.com"
   source_arn    = aws_cloudwatch_event_rule.license_heartbeat_secondary[0].arn
 }
+
+# ----------------------------------------------------------------------------
+# Azure DevOps scheduler (secondary) -- chunk 09
+#
+# Mirrors the primary's hourly EventBridge rule. The scheduler handler
+# short-circuits on is_active_region() == False so the passive copy
+# logs and returns immediately each tick.
+# ----------------------------------------------------------------------------
+
+module "azure_devops_scheduler_lambda_secondary" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "8.1.2"
+
+  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+
+  providers = {
+    aws = aws.secondary
+  }
+
+  function_name = "${var.environment}-${var.app_name}-azure-devops-scheduler"
+  role_name     = "${var.environment}-${var.app_name}-azure-devops-scheduler-secondary"
+  description   = "Hourly scheduler for Azure DevOps sync jobs (secondary region)"
+  handler       = "handler.lambda_handler"
+  runtime       = "python3.12"
+  timeout       = 60
+  memory_size   = 256
+
+  source_path = [
+    { path = "${path.module}/../lambda/azure-devops-scheduler", pip_requirements = false, patterns = ["!tests/.*", "!__pycache__/.*", "!\\.venv/.*", "!.*\\.pyc"] },
+    { path = "${path.module}/../lambda/shared", prefix_in_zip = "shared" },
+  ]
+
+  cloudwatch_logs_retention_in_days = 7
+  cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs_secondary[0].arn
+  quiet_archive_local_exec          = true
+
+  environment_variables = merge({
+    ENV                     = var.environment
+    APP_NAME                = var.app_name
+    WORKSPACES_TABLE        = module.workspaces_table_secondary[0].dynamodb_table_id
+    AZURE_DEVOPS_SYNC_QUEUE = aws_sqs_queue.azure_devops_sync_secondary[0].url
+    },
+    local.ha_scheduler_env_secondary,
+  )
+
+  attach_policy_statements = true
+  policy_statements = merge({
+    dynamodb = {
+      effect    = "Allow"
+      actions   = ["dynamodb:Scan"]
+      resources = [module.workspaces_table_secondary[0].dynamodb_table_arn]
+    }
+    sqs_send = {
+      effect    = "Allow"
+      actions   = ["sqs:SendMessage"]
+      resources = [aws_sqs_queue.azure_devops_sync_secondary[0].arn]
+    }
+    },
+    local.ha_scheduler_iam_secondary,
+  )
+
+  tags = { Purpose = "azure-devops-scheduler" }
+}
+
+resource "aws_cloudwatch_event_rule" "azure_devops_hourly_sync_secondary" {
+  count    = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  provider = aws.secondary
+
+  name                = "${var.environment}-${var.app_name}-azure-devops-hourly-sync"
+  description         = "Trigger Azure DevOps sync scheduler every hour (secondary region)"
+  schedule_expression = "rate(1 hour)"
+  tags                = { Purpose = "azure-devops-scheduler" }
+}
+
+resource "aws_cloudwatch_event_target" "azure_devops_scheduler_secondary" {
+  count    = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  provider = aws.secondary
+
+  rule      = aws_cloudwatch_event_rule.azure_devops_hourly_sync_secondary[0].name
+  target_id = "azure-devops-scheduler"
+  arn       = module.azure_devops_scheduler_lambda_secondary[0].lambda_function_arn
+}
+
+resource "aws_lambda_permission" "azure_devops_scheduler_eventbridge_secondary" {
+  count    = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  provider = aws.secondary
+
+  statement_id  = "AllowEventBridgeInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = module.azure_devops_scheduler_lambda_secondary[0].lambda_function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.azure_devops_hourly_sync_secondary[0].arn
+}

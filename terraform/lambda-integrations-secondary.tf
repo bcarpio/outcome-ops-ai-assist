@@ -1157,3 +1157,169 @@ output "database_integration_url_secondary" {
   description = "Lambda Function URL for Database integration in secondary region (null when HA disabled)"
   value       = (var.enable_workspaces && var.secondary_region != "") ? aws_lambda_function_url.database_integration_secondary[0].function_url : null
 }
+
+# ----------------------------------------------------------------------------
+# Azure DevOps integration (secondary) -- chunk 09
+# ----------------------------------------------------------------------------
+
+module "azure_devops_integration_lambda_secondary" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "8.1.2"
+
+  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+
+  providers = {
+    aws = aws.secondary
+  }
+
+  function_name = "${var.environment}-${var.app_name}-azure-devops-integration"
+  role_name     = "${var.environment}-${var.app_name}-azure-devops-integration-secondary"
+  description   = "Azure DevOps OAuth and connection management (secondary region)"
+  handler       = "handler.lambda_handler"
+  runtime       = "python3.12"
+  timeout       = 60
+  memory_size   = 512
+
+  source_path = [
+    {
+      path             = "${path.module}/../lambda/azure-devops-integration"
+      pip_requirements = true
+      patterns         = ["!tests/.*", "!__pycache__/.*", "!\\.venv/.*", "!requirements-dev\\.txt", "!.*\\.pyc", "!\\.pytest_cache/.*"]
+    },
+    {
+      path          = "${path.module}/../lambda/shared"
+      prefix_in_zip = "shared"
+    }
+  ]
+
+  cloudwatch_logs_retention_in_days = 7
+  cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs_secondary[0].arn
+  quiet_archive_local_exec          = true
+
+  layers = [var.outcomeops_license_layer_arn_secondary]
+
+  # Env mirrors the primary's azure_devops_integration_lambda except:
+  # - WORKSPACES_TABLE points at the secondary-region table
+  # - AZURE_DEVOPS_SYNC_QUEUE points at the secondary-region queue
+  # - DELETE_QUEUE points at the secondary delete queue
+  # - OAUTH_KMS_KEY_ARN -- per the chunk-09 risk note, OAuth tokens KMS
+  #   is currently primary-only until plan/13-multi-region-kms ships;
+  #   the secondary Lambda references the same key ARN as the primary,
+  #   which is valid as long as the key policy allows secondary-region
+  #   crypto ops. If chunk 13 has shipped by the time this applies,
+  #   swap to aws_kms_key.oauth_tokens_secondary[0].arn.
+  # - AZURE_DEVOPS_TENANT_ID / _CLIENT_ID / _REDIRECT_URI / secret SSM
+  #   param are SAME in both regions (one Entra ID app registration
+  #   per customer).
+  environment_variables = merge(
+    {
+      ENV              = var.environment
+      APP_NAME         = var.app_name
+      WORKSPACES_TABLE = module.workspaces_table_secondary[0].dynamodb_table_id
+
+      OAUTH_KMS_KEY_ARN = aws_kms_key.oauth_tokens[0].arn
+
+      AZURE_DEVOPS_TENANT_ID               = var.azure_devops_tenant_id
+      AZURE_DEVOPS_CLIENT_ID               = var.azure_devops_client_id
+      AZURE_DEVOPS_CLIENT_SECRET_SSM_PARAM = var.azure_devops_client_secret_ssm_param
+      AZURE_DEVOPS_REDIRECT_URI            = var.azure_devops_redirect_uri
+      AZURE_DEVOPS_INTEGRATION_ENABLED     = tostring(var.azure_devops_integration_enabled)
+
+      AZURE_DEVOPS_SYNC_QUEUE = aws_sqs_queue.azure_devops_sync_secondary[0].url
+      DELETE_QUEUE            = aws_sqs_queue.delete_queue_secondary[0].url
+      AUDIT_TABLE             = module.audit_logs_table_secondary[0].dynamodb_table_id
+    },
+    local.outcomeops_license_env,
+    local.ha_writer_env_secondary,
+    local.ha_scheduler_env_secondary,
+  )
+
+  attach_policy_statements = true
+  policy_statements = merge(
+    {
+      dynamodb = {
+        effect  = "Allow"
+        actions = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:Query"]
+        resources = [
+          module.workspaces_table_secondary[0].dynamodb_table_arn,
+          "${module.workspaces_table_secondary[0].dynamodb_table_arn}/index/*",
+        ]
+      }
+      # SSM secret reference -- scope to the exact parameter name in
+      # the SECONDARY region. The operator creates the same parameter
+      # name in both regions; the secret value is the same (one Entra
+      # ID app secret per customer) but lives in the regional SSM
+      # store of each region per the SSM-isn't-global pattern.
+      ssm_secret = {
+        effect  = "Allow"
+        actions = ["ssm:GetParameter"]
+        resources = [
+          "arn:aws:ssm:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:parameter${var.azure_devops_client_secret_ssm_param}",
+        ]
+      }
+      kms_oauth = {
+        effect    = "Allow"
+        actions   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
+        resources = [aws_kms_key.oauth_tokens[0].arn]
+      }
+      kms_ssm = {
+        effect    = "Allow"
+        actions   = ["kms:Decrypt"]
+        resources = ["arn:aws:kms:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:alias/aws/ssm"]
+      }
+      sqs_send = {
+        effect  = "Allow"
+        actions = ["sqs:SendMessage"]
+        resources = [
+          aws_sqs_queue.azure_devops_sync_secondary[0].arn,
+          aws_sqs_queue.delete_queue_secondary[0].arn,
+        ]
+      }
+      dynamodb_audit = {
+        effect    = "Allow"
+        actions   = ["dynamodb:PutItem"]
+        resources = [module.audit_logs_table_secondary[0].dynamodb_table_arn]
+      }
+    },
+    local.outcomeops_license_iam,
+    local.ha_writer_events_iam_secondary,
+    local.ha_scheduler_iam_secondary,
+  )
+
+  tags = { Purpose = "azure-devops-integration" }
+}
+
+resource "aws_lambda_function_url" "azure_devops_integration_secondary" {
+  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+
+  provider = aws.secondary
+
+  function_name      = module.azure_devops_integration_lambda_secondary[0].lambda_function_name
+  authorization_type = "AWS_IAM"
+
+  cors {
+    allow_origins     = ["*"]
+    allow_methods     = ["GET", "POST", "PUT", "DELETE"]
+    allow_headers     = ["content-type", "authorization", "x-amz-date", "x-amz-security-token", "x-user-email"]
+    allow_credentials = false
+    max_age           = 300
+  }
+}
+
+resource "aws_ssm_parameter" "azure_devops_integration_url_secondary" {
+  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+
+  provider = aws.secondary
+
+  name        = "/${var.environment}/${var.app_name}/api/azure-devops-integration-url"
+  description = "Lambda Function URL for Azure DevOps integration in secondary region (IAM auth)"
+  type        = "String"
+  value       = aws_lambda_function_url.azure_devops_integration_secondary[0].function_url
+
+  tags = { Purpose = "azure-devops-integration" }
+}
+
+output "azure_devops_integration_url_secondary" {
+  description = "Lambda Function URL for Azure DevOps integration in secondary region (null when HA disabled)"
+  value       = (var.enable_workspaces && var.secondary_region != "") ? aws_lambda_function_url.azure_devops_integration_secondary[0].function_url : null
+}
