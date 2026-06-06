@@ -38,42 +38,92 @@ from shared.model_client import (
         ("us.openai.gpt-5-5:0", "responses"),
         ("openai.codex-1:0", "responses"),
         ("us.openai.codex-1:0", "responses"),
-        # 2026-06-06: Bedrock Mantle non-OpenAI families. Same Responses
-        # API endpoint as gpt-5.*; auth + transport identical. Added to
-        # exercise the dispatch path while gpt-5.5 entitlement is gated.
-        ("qwen.qwen3-coder-480b-a35b-instruct", "responses"),
-        ("qwen.qwen3-coder-next", "responses"),
-        ("qwen.qwen3-vl-235b-a22b-instruct", "responses"),
-        ("deepseek.v3.2", "responses"),
-        ("mistral.devstral-2-123b", "responses"),
-        ("mistral.mistral-large-3-675b-instruct", "responses"),
-        ("moonshotai.kimi-k2-thinking", "responses"),
-        ("moonshotai.kimi-k2.5", "responses"),
-        ("zai.glm-4.7", "responses"),
-        ("zai.glm-5", "responses"),
-        ("minimax.minimax-m2", "responses"),
     ],
 )
 def test_dispatch_resolves_correct_backend(model_id, expected_backend):
     assert model_client._resolve_backend(model_id) == expected_backend
 
 
-def test_dispatch_unknown_prefix_raises_unsupported_model_error():
+def test_dispatch_unknown_prefix_raises_unsupported_model_error(monkeypatch):
+    # When BEDROCK_DEFAULT_BACKEND is unset (the prd posture: no silent
+    # fallback per ADR-035 rationale), unknown prefixes raise.
+    monkeypatch.delenv("BEDROCK_DEFAULT_BACKEND", raising=False)
     with pytest.raises(UnsupportedModelError):
         model_client._resolve_backend("cohere.command-r-plus")
-    # google.gemma-3-* + writer.palmyra-* + nvidia.nemotron-* are also
-    # on Mantle but NOT in the dispatch table -- adding a family is a
-    # deliberate code change per ADR-035's "no silent fallback" rule.
-    # If a future test wants to use these, add the prefix first.
     with pytest.raises(UnsupportedModelError):
-        model_client._resolve_backend("google.gemma-3-27b-it")
+        model_client._resolve_backend("qwen.qwen3-coder-480b-a35b-instruct")
     with pytest.raises(UnsupportedModelError):
-        model_client._resolve_backend("nvidia.nemotron-super-3-120b")
+        model_client._resolve_backend("deepseek.v3.2")
 
 
 def test_dispatch_empty_model_id_raises_unsupported_model_error():
     with pytest.raises(UnsupportedModelError):
         model_client._resolve_backend("")
+
+
+# ---------------------------------------------------------------------------
+# Per-deploy default backend fallback (BEDROCK_DEFAULT_BACKEND)
+# ---------------------------------------------------------------------------
+
+
+class TestDefaultBackendFallback:
+    """The openai workspace runs Mantle exclusively -- qwen / deepseek /
+    mistral / moonshotai etc. all live behind the same Responses-API
+    endpoint as gpt-5.*. Hard-coding every Mantle family in _DISPATCH
+    became dead weight as soon as the Mantle catalog grew, so we added
+    a per-deploy ``BEDROCK_DEFAULT_BACKEND`` env var. Unset -> raise
+    (prd's posture, unchanged). Set -> route unknown families to that
+    backend (the openai workspace's posture)."""
+
+    @pytest.mark.parametrize("unknown_model_id", [
+        "qwen.qwen3-coder-480b-a35b-instruct",
+        "deepseek.v3.2",
+        "mistral.mistral-large-3-675b-instruct",
+        "moonshotai.kimi-k2-thinking",
+        "zai.glm-4.7",
+        "minimax.minimax-m2",
+        "cohere.command-r-plus",  # not on Mantle either; default still kicks in
+    ])
+    def test_responses_default_routes_unknown_to_mantle(
+        self, monkeypatch, unknown_model_id,
+    ):
+        monkeypatch.setenv("BEDROCK_DEFAULT_BACKEND", "responses")
+        assert model_client._resolve_backend(unknown_model_id) == "responses"
+
+    def test_converse_default_routes_unknown_to_bedrock(self, monkeypatch):
+        # Documents the symmetric case even though it's not a real
+        # deploy posture today -- if someone wanted a Bedrock-Converse-
+        # only deploy and to default Mantle catalog families to
+        # converse (they wouldn't work, but the dispatch would honor it).
+        monkeypatch.setenv("BEDROCK_DEFAULT_BACKEND", "converse")
+        assert model_client._resolve_backend("qwen.qwen3-coder-x") == "converse"
+
+    def test_explicit_dispatch_wins_over_default(self, monkeypatch):
+        # openai.gpt-oss-* is the load-bearing case: it lives on
+        # Bedrock Converse (not Mantle) even though its prefix sits
+        # inside openai.*. The explicit row in _DISPATCH must beat
+        # the default even when the default would have sent it the
+        # wrong way.
+        monkeypatch.setenv("BEDROCK_DEFAULT_BACKEND", "responses")
+        assert model_client._resolve_backend("openai.gpt-oss-120b-1:0") == "converse"
+        # And the gpt-5* path stays on responses (same as default here).
+        assert model_client._resolve_backend("openai.gpt-5-5:0") == "responses"
+
+    def test_invalid_default_value_raises_backend_config_error(self, monkeypatch):
+        from shared.model_client_types import BackendConfigError
+        monkeypatch.setenv("BEDROCK_DEFAULT_BACKEND", "bogus")
+        with pytest.raises(BackendConfigError):
+            model_client._resolve_backend("qwen.qwen3-coder-x")
+
+    def test_empty_string_default_treated_as_unset(self, monkeypatch):
+        monkeypatch.setenv("BEDROCK_DEFAULT_BACKEND", "")
+        with pytest.raises(UnsupportedModelError):
+            model_client._resolve_backend("qwen.qwen3-coder-x")
+
+    def test_whitespace_default_treated_as_unset(self, monkeypatch):
+        monkeypatch.setenv("BEDROCK_DEFAULT_BACKEND", "   ")
+        with pytest.raises(UnsupportedModelError):
+            model_client._resolve_backend("qwen.qwen3-coder-x")
 
 
 def test_longest_prefix_wins():

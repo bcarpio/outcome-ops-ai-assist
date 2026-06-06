@@ -157,6 +157,7 @@ module "process_pr_check_lambda" {
     APP_NAME                      = var.app_name
     AUDIT_TABLE                   = module.audit_logs_table.dynamodb_table_id
     BEDROCK_ADVANCED_MODEL_ID     = var.bedrock_advanced_model_id
+    BEDROCK_DEFAULT_BACKEND       = var.bedrock_default_backend
     BEDROCK_MANTLE_API_KEY_PARAM  = "/${var.environment}/${var.app_name}/bedrock/mantle-api-key"
     BEDROCK_BASIC_MODEL_ID        = var.bedrock_basic_model_id
     BEDROCK_ADVANCED_INPUT_PRICE  = tostring(var.bedrock_advanced_input_price)

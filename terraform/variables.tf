@@ -235,6 +235,30 @@ variable "bedrock_advanced_model_id" {
   default     = "us.anthropic.claude-sonnet-4-6"
 }
 
+variable "bedrock_default_backend" {
+  type        = string
+  description = <<-EOT
+    Fallback backend for model IDs not matched by shared.model_client._DISPATCH.
+
+    Unset (default): prd's posture. Unknown model IDs raise
+    UnsupportedModelError -- the operator must explicitly add the
+    family to _DISPATCH before using it. This is the no-silent-fallback
+    safety per ADR-035.
+
+    "responses": the openai workspace's posture. Mantle-only deploys
+    that exclusively use bedrock-mantle.{region}.api.aws can opt every
+    unknown family (qwen/deepseek/mistral/etc.) into the Responses
+    backend without needing a code change per new vendor.
+
+    "converse": symmetric case; unlikely to be useful on its own.
+  EOT
+  default     = ""
+  validation {
+    condition     = contains(["", "converse", "responses"], var.bedrock_default_backend)
+    error_message = "bedrock_default_backend must be \"\", \"converse\", or \"responses\"."
+  }
+}
+
 variable "bedrock_basic_model_id" {
   type        = string
   description = "Bedrock model ID for fast/default inference (e.g., Claude Haiku)"

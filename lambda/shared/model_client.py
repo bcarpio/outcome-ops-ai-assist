@@ -20,6 +20,7 @@ Public surface:
         -> Iterator[StreamEvent]
 """
 
+import os
 from typing import Iterator, Optional
 
 from .model_client_types import (
@@ -81,23 +82,32 @@ _DISPATCH: list[tuple[str, str]] = [
     ("us.amazon.nova-", "converse"),
     ("amazon.nova-",    "converse"),
     ("openai.gpt-oss-", "converse"),
-    # Bedrock Mantle non-OpenAI families. All hit the same Responses-
-    # API endpoint at bedrock-mantle.{region}.api.aws/openai/v1 --
-    # the API key auth + the openai-SDK transport are identical to
-    # the gpt-5.* path. Added 2026-06-06 to exercise the Mantle
-    # dispatch end-to-end against qwen3-coder-480b on the openai
-    # workspace while waiting on AWS Sales to clear gpt-5.5
-    # entitlement. If qwen flows clean, gpt-5.5 will too -- only
-    # the model ID changes at the wire.
-    ("qwen.qwen3-coder-", "responses"),
-    ("qwen.qwen3-vl-",   "responses"),
-    ("deepseek.",        "responses"),
-    ("mistral.devstral-", "responses"),
-    ("mistral.mistral-large-", "responses"),
-    ("moonshotai.",      "responses"),
-    ("zai.glm-",         "responses"),
-    ("minimax.",         "responses"),
 ]
+
+# Per-deploy fallback for prefixes not in _DISPATCH. The Mantle catalog
+# is large + churns -- qwen/deepseek/mistral/moonshotai/zai/minimax
+# etc. all live behind the same Responses-API endpoint as gpt-5.*, so
+# the explicit-prefix-per-family approach in _DISPATCH became dead
+# weight as soon as we started exercising Mantle with non-OpenAI
+# models. A per-deploy default lets the openai workspace opt into
+# "any unknown family rides Mantle Responses" with one env var,
+# while prd's "no silent fallback" safety (ADR-035 §rationale) stays
+# unchanged because prd leaves the var unset and unknown families
+# still raise.
+_VALID_BACKENDS = ("converse", "responses")
+
+
+def _default_backend() -> Optional[str]:
+    """Resolve BEDROCK_DEFAULT_BACKEND from env. Returns None when unset
+    so _resolve_backend keeps raising on unknown prefixes."""
+    value = (os.environ.get("BEDROCK_DEFAULT_BACKEND") or "").strip()
+    if not value:
+        return None
+    if value not in _VALID_BACKENDS:
+        raise BackendConfigError(
+            f"BEDROCK_DEFAULT_BACKEND={value!r} is not one of {_VALID_BACKENDS}",
+        )
+    return value
 
 
 def _resolve_backend(model_id: str) -> str:
@@ -109,9 +119,15 @@ def _resolve_backend(model_id: str) -> str:
     for prefix, name in sorted(_DISPATCH, key=lambda t: -len(t[0])):
         if model_id.startswith(prefix):
             return name
+    fallback = _default_backend()
+    if fallback is not None:
+        return fallback
     raise UnsupportedModelError(
         f"No backend registered for model_id={model_id!r}. "
-        f"Add a row to _DISPATCH in shared.model_client."
+        f"Add a row to _DISPATCH in shared.model_client, or set "
+        f"BEDROCK_DEFAULT_BACKEND on the deploy to opt into a "
+        f"per-deploy fallback (typically 'responses' on Mantle-only "
+        f"deploys like the openai workspace)."
     )
 
 
