@@ -38,6 +38,20 @@ from shared.model_client import (
         ("us.openai.gpt-5-5:0", "responses"),
         ("openai.codex-1:0", "responses"),
         ("us.openai.codex-1:0", "responses"),
+        # 2026-06-06: Bedrock Mantle non-OpenAI families. Same Responses
+        # API endpoint as gpt-5.*; auth + transport identical. Added to
+        # exercise the dispatch path while gpt-5.5 entitlement is gated.
+        ("qwen.qwen3-coder-480b-a35b-instruct", "responses"),
+        ("qwen.qwen3-coder-next", "responses"),
+        ("qwen.qwen3-vl-235b-a22b-instruct", "responses"),
+        ("deepseek.v3.2", "responses"),
+        ("mistral.devstral-2-123b", "responses"),
+        ("mistral.mistral-large-3-675b-instruct", "responses"),
+        ("moonshotai.kimi-k2-thinking", "responses"),
+        ("moonshotai.kimi-k2.5", "responses"),
+        ("zai.glm-4.7", "responses"),
+        ("zai.glm-5", "responses"),
+        ("minimax.minimax-m2", "responses"),
     ],
 )
 def test_dispatch_resolves_correct_backend(model_id, expected_backend):
@@ -47,6 +61,14 @@ def test_dispatch_resolves_correct_backend(model_id, expected_backend):
 def test_dispatch_unknown_prefix_raises_unsupported_model_error():
     with pytest.raises(UnsupportedModelError):
         model_client._resolve_backend("cohere.command-r-plus")
+    # google.gemma-3-* + writer.palmyra-* + nvidia.nemotron-* are also
+    # on Mantle but NOT in the dispatch table -- adding a family is a
+    # deliberate code change per ADR-035's "no silent fallback" rule.
+    # If a future test wants to use these, add the prefix first.
+    with pytest.raises(UnsupportedModelError):
+        model_client._resolve_backend("google.gemma-3-27b-it")
+    with pytest.raises(UnsupportedModelError):
+        model_client._resolve_backend("nvidia.nemotron-super-3-120b")
 
 
 def test_dispatch_empty_model_id_raises_unsupported_model_error():

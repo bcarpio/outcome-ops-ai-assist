@@ -81,6 +81,22 @@ _DISPATCH: list[tuple[str, str]] = [
     ("us.amazon.nova-", "converse"),
     ("amazon.nova-",    "converse"),
     ("openai.gpt-oss-", "converse"),
+    # Bedrock Mantle non-OpenAI families. All hit the same Responses-
+    # API endpoint at bedrock-mantle.{region}.api.aws/openai/v1 --
+    # the API key auth + the openai-SDK transport are identical to
+    # the gpt-5.* path. Added 2026-06-06 to exercise the Mantle
+    # dispatch end-to-end against qwen3-coder-480b on the openai
+    # workspace while waiting on AWS Sales to clear gpt-5.5
+    # entitlement. If qwen flows clean, gpt-5.5 will too -- only
+    # the model ID changes at the wire.
+    ("qwen.qwen3-coder-", "responses"),
+    ("qwen.qwen3-vl-",   "responses"),
+    ("deepseek.",        "responses"),
+    ("mistral.devstral-", "responses"),
+    ("mistral.mistral-large-", "responses"),
+    ("moonshotai.",      "responses"),
+    ("zai.glm-",         "responses"),
+    ("minimax.",         "responses"),
 ]
 
 
