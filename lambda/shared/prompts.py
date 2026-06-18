@@ -46,24 +46,38 @@ FORMATTING_RULES = """FORMATTING:
 # Stack-agnostic by design: the categories below apply to Python, Java,
 # TypeScript, ABAP/SAP, SQL/PL-SQL, Go, C#, etc. Exact values are read
 # from source on demand via the symbol-graph-located read path.
-CODE_MAP_LITERAL_DISCIPLINE = """CRITICAL — DO NOT TRANSCRIBE SPECIFIC LITERAL VALUES OR EXACT STRING CONSTANTS. This overrides any instruction above that asks you to state an exact format, name, key, or value.
+CODE_MAP_LITERAL_DISCIPLINE = """LITERAL-VALUE DISCIPLINE — refines the instructions above for literal values specifically. The summary is a NARRATIVE + STRUCTURE artifact, not a source of truth for exact values. A downstream tool reads the actual source for any exact value when it is needed.
 
-This summary is a NARRATIVE + STRUCTURE artifact, not a source of truth for exact values — regardless of language, framework, or platform. A downstream tool reads the actual source for any exact value when it is needed. A wrong literal frozen into this summary is far worse than an omitted one: you will be wrong if you transcribe from paraphrase or memory, so do not try.
+A wrong literal frozen into this summary is far worse than an omitted one. You will be wrong if you transcribe a value from paraphrase or memory — so do not try. Past failures: `secrets.token_urlsafe(32)` summarized when the source was `(16)`; a key invented as `USED_TOKEN#` when the source was `MAGIC_TOKEN#`.
 
-DESCRIBE the role and structure; DO NOT state the exact value of:
-- Numeric literals: sizes, lengths, byte/char counts, timeouts, limits, thresholds, ports, retry/backoff counts, version numbers, or any magic number. Name the function/operation that uses the value — never its argument.
-- Exact string constants and identifiers: datastore object names (tables, columns, collections, keys, indexes, partitions), config / parameter-store / secret paths, file paths, URLs and endpoints, queue / topic / channel names, regexes and format strings, hardcoded config values and defaults, transaction / program / module codes.
+The distinction is between LITERAL VALUES (forbidden) and STRUCTURAL NAMES (allowed). Both look like strings in source; only one is safe to transcribe.
 
-You MAY state structural facts — these are language-agnostic and are independently corroborated by the symbol graph:
-- function / method / procedure / module names and their parameter names and types
-- class / interface / struct / type names and their relationships (extends, implements, calls, imports)
-- THAT a unit reads or writes a datastore, calls an external system, or emits an event — without quoting the exact object name or address
-- outcome categories (success path vs failure / error path) — without exact codes or messages
-- control flow and how units relate to one another
+FORBIDDEN — do not transcribe these specific VALUES:
+- Numeric magic values: function arguments like sizes / lengths / byte counts / timeouts / limits / thresholds / ports / retry counts / version numbers. Name the function or operation that uses the value — never the argument itself.
+- Exact string CONTENTS of constants: regex patterns, format strings, hardcoded URLs / endpoints / paths, secret-path / parameter-store / config-key paths, queue / topic / channel name strings, transaction / program / module code strings, hardcoded default values.
+- Exact string CONTENTS of identifier shapes: composite-key / prefix strings (e.g. an actual `FOO#{x}` shape), file path strings, object-store key prefix strings, table / collection name strings. Describe them in words by their role and parts instead.
 
-Do NOT emit a placeholder, example, or templated form of an exact identifier either — e.g. do not write `SOMEPREFIX#{id}` or `table_name` to "illustrate" a key, table, or path. A guessed shape is still a wrong literal, even with a caveat. Describe it in words by its role and parts instead (e.g. "keyed by the JTI").
+ALLOWED — you SHOULD include these structural NAMES; they are language-agnostic structural facts the source unambiguously confirms:
+- Function / method / procedure / module names and their parameter names and types.
+- Class / interface / struct / type names and their relationships (extends, implements, calls, imports).
+- Datastore SCHEMA FIELD names (the names of columns / attributes / NewImage fields / DTO members). The names are structural; only the values stored in those fields are forbidden.
+- Event / record schema field names (e.g. an event with `status` / `lambda_name` / `model_id` fields). The field name is structural; the exact string content of those fields is forbidden.
+- THAT a unit reads or writes a datastore, calls an external system, or emits an event.
+- Outcome categories (success path vs failure / error path) — without exact codes or messages.
+- Control flow and how units relate to one another.
 
-If an exact value matters to the reader, write "(see source)" — never invent or approximate a constant, name, key, or path to fill a gap. Omit it."""
+Examples:
+- ✓ "Returns a dict with keys `org_id`, `workspace_id`, `folder_path`, `filename`." (structural names)
+- ✓ "The NewImage carries `status`, `lambda_name`, `model_id`, `flagged_reason` fields." (structural names)
+- ✓ "Routes by the `status` field value — refusal status triggers the alert path." (names a field, names the outcome category, omits the literal status string)
+- ✗ "Status equals `\"refusal\"`." (literal string content)
+- ✗ "Keyed by `MAGIC_TOKEN#{token_hash}`." (literal string shape)
+- ✗ "Calls `secrets.token_urlsafe(16)`." (literal numeric argument)
+- ✗ "Posts to `/openai/v1/responses`." (literal endpoint string)
+
+Do NOT emit a placeholder, example, or templated form of an exact identifier shape (e.g. don't write `SOMEPREFIX#{id}` to "illustrate" a key shape). A guessed shape is still a wrong literal, even with a caveat. Describe the key's role and parts in words instead (e.g. "keyed by the JTI").
+
+If an exact value matters to the reader, write "(see source)" — never invent or approximate a literal to fill a gap. Omit it."""
 
 
 # RFC 2119 requirement strength guidance

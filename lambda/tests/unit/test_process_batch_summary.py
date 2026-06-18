@@ -754,18 +754,21 @@ class TestHandler:
 
 
 def test_build_batch_prompt_appends_literal_discipline():
-    """ADR-027 — every code-map batch prompt carries the literal-omission
+    """ADR-027 — every code-map batch prompt carries the literal-value
     discipline so no generated summary freezes a wrong value/identifier."""
     prompt = handler_module._build_batch_prompt(
         "handler-group", "owner/repo", "auth", "<<files>>"
     )
-    assert "DO NOT TRANSCRIBE SPECIFIC LITERAL VALUES" in prompt
+    # v1.2 opener; replaces "DO NOT TRANSCRIBE SPECIFIC LITERAL VALUES"
+    # which is gone (see ADR-027 v1.2 + the GPT-5.5 over-interpretation
+    # finding in test_shared_prompts.TestCodeMapLiteralDiscipline).
+    assert "LITERAL-VALUE DISCIPLINE" in prompt
     assert "(see source)" in prompt
     # Also applied to the generic fallback (unknown batch type).
     fallback = handler_module._build_batch_prompt(
         "totally-unknown-type", "owner/repo", "grp", "<<files>>"
     )
-    assert "DO NOT TRANSCRIBE SPECIFIC LITERAL VALUES" in fallback
+    assert "LITERAL-VALUE DISCIPLINE" in fallback
 
 
 def _fact(kind, src, tgt, fp, line):
@@ -806,7 +809,7 @@ def test_build_batch_prompt_injects_grounding_before_discipline():
     assert "VERIFIED SYMBOLS" in prompt
     # Grounding precedes the task body, which precedes the literal discipline.
     assert prompt.index("VERIFIED SYMBOLS") < prompt.index("Analyze the auth")
-    assert prompt.index("Analyze the auth") < prompt.index("DO NOT TRANSCRIBE")
+    assert prompt.index("Analyze the auth") < prompt.index("LITERAL-VALUE DISCIPLINE")
 
 
 def test_build_batch_prompt_no_grounding_unchanged_shape():
@@ -815,7 +818,7 @@ def test_build_batch_prompt_no_grounding_unchanged_shape():
         "handler-group", "owner/repo", "auth", "<<files>>"
     )
     assert "VERIFIED SYMBOLS" not in prompt
-    assert "DO NOT TRANSCRIBE" in prompt
+    assert "LITERAL-VALUE DISCIPLINE" in prompt
 
 
 def _fact_with_sig(kind, src, tgt, fp, line, signature):

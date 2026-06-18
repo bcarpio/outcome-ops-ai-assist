@@ -540,39 +540,85 @@ class TestSynthesisGuardrails:
 
 
 class TestCodeMapLiteralDiscipline:
-    """ADR-027 — code-map generation must omit literals/identifiers,
-    stack-agnostically (it's appended to every code-map prompt)."""
+    """ADR-027 — code-map generation must omit literal VALUES while
+    keeping structural NAMES, stack-agnostically (it's appended to
+    every code-map prompt).
 
-    def test_discipline_omits_numeric_and_string_literals(self):
+    v1.2 (2026-06-18) tightened the wording after a side-by-side
+    comparison showed Claude and GPT-5.5 reading the v1.1 discipline
+    very differently -- Claude judgmentally, keeping useful structural
+    names; GPT-5.5 maximally, stripping everything concrete and
+    sending the reader back to source. The new wording names the
+    two categories explicitly and shows positive + negative examples
+    in the prompt body."""
+
+    def test_discipline_separates_values_from_names(self):
         d = CODE_MAP_LITERAL_DISCIPLINE
-        assert "DO NOT TRANSCRIBE SPECIFIC LITERAL VALUES" in d
-        assert "Numeric literals" in d
-        assert "Exact string constants and identifiers" in d
-        # The two observed failure classes are covered by category.
-        assert "datastore object names" in d  # USED_TOKEN# class
-        assert "magic number" in d            # token_urlsafe(32) class
+        # The v1.2 distinction: LITERAL VALUES (forbidden) vs
+        # STRUCTURAL NAMES (allowed). Both blocks must be present
+        # and visibly separated -- the v1.1 wording had both but in
+        # a way GPT-5.5 collapsed.
+        assert "FORBIDDEN" in d
+        assert "ALLOWED" in d
+        # The two observed value-class failures stay forbidden by
+        # category: numeric magic values + exact string CONTENTS of
+        # constants/identifier shapes.
+        assert "Numeric magic values" in d        # token_urlsafe(32) class
+        assert "string CONTENTS" in d             # USED_TOKEN# / MAGIC_TOKEN# class
+        # Structural names that v1.1 also permitted but didn't visibly
+        # separate -- now explicitly allowed.
+        assert "SCHEMA FIELD names" in d
+        assert "parameter names" in d
 
     def test_discipline_is_stack_agnostic(self):
         d = CODE_MAP_LITERAL_DISCIPLINE
-        # Not biased to one stack: no AWS-specific nouns; covers SAP-ish
-        # and SQL-ish identifiers generically.
-        assert "regardless of language, framework, or platform" in d
-        assert "transaction / program / module codes" in d
-        for aws_noun in ("DynamoDB", "SSM", "token_urlsafe", "PK/SK"):
-            assert aws_noun not in d
+        # Stack-agnostic: covers SAP-ish (transaction/program/module
+        # codes) and DB-ish (PK/SK strings, table name strings)
+        # identifiers without naming a vendor.
+        assert "language-agnostic" in d
+        assert "transaction / program / module code strings" in d
+        # No vendor-specific nouns. (token_urlsafe is in the v1.2
+        # examples as a generic stdlib reference — it appears in
+        # Python / Node / Go in similar form. Bedrock / DynamoDB / SSM
+        # / AWS / DDB would bias the prompt to one stack.)
+        for vendor_noun in ("DynamoDB", "SSM", "PK/SK", "Bedrock", "AWS"):
+            assert vendor_noun not in d
 
     def test_discipline_keeps_structural_facts(self):
         d = CODE_MAP_LITERAL_DISCIPLINE
-        assert "function / method / procedure / module names" in d
+        assert "Function / method / procedure / module names" in d
         assert "(see source)" in d
         assert "never invent" in d
 
     def test_discipline_forbids_placeholder_identifiers(self):
         # A caveated placeholder key (e.g. JTI#{jti}) is still a wrong
-        # literal — the regenerated auth code-map showed it leaking.
+        # literal -- the regenerated auth code-map showed it leaking.
         d = CODE_MAP_LITERAL_DISCIPLINE
         assert "placeholder, example, or templated form" in d
         assert "A guessed shape is still a wrong literal" in d
+
+    def test_discipline_carries_examples_in_prompt_body(self):
+        # v1.2: positive + negative examples bound model behavior more
+        # reliably than rules alone, especially across model families
+        # (Claude reasons over the rule; GPT-5 follows examples more
+        # literally). Pin that both shapes are present.
+        d = CODE_MAP_LITERAL_DISCIPLINE
+        # At least one positive example for STRUCTURAL NAMES allowed.
+        assert "Returns a dict with keys" in d
+        # At least one negative example for each forbidden category.
+        assert "token_urlsafe(16)" in d  # numeric magic value
+        assert "MAGIC_TOKEN" in d         # literal string shape
+
+    def test_discipline_does_not_use_override_framing(self):
+        # v1.2 dropped "This overrides any instruction above" because
+        # that phrasing pushed GPT-5.5 into a maximalist "strip
+        # everything concrete" interpretation. The instructions
+        # ABOVE (handler-group template, etc.) already asked for
+        # structural names; the discipline refines the literal-value
+        # rules, it does not override.
+        d = CODE_MAP_LITERAL_DISCIPLINE
+        assert "overrides any instruction" not in d
+        assert "refines" in d
 
 
 class TestReadSourceVerificationRules:
