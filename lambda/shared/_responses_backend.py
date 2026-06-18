@@ -331,13 +331,31 @@ def _build_responses_kwargs(req: Request) -> dict[str, Any]:
         "model": req.model_id,
         "input": _translate_messages_to_input(req.messages),
         "max_output_tokens": req.max_tokens,
-        "temperature": req.temperature,
     }
     instructions = _normalize_system_to_instructions(req.system)
     if instructions is not None:
         kwargs["instructions"] = instructions
+    # GPT-5 family (gpt-5.4, gpt-5.5, codex-*) on Mantle reject
+    # ``temperature`` and ``top_p`` with HTTP 400
+    # "Unsupported parameter ... is not supported with this model."
+    # The Responses API exposes these fields in the SDK but locks them
+    # server-side at 1.0 for the reasoning models -- the only Responses-
+    # supporting family on Mantle today. Dropping with a warning so the
+    # caller knows their determinism preference can't be honored.
+    # Live-burned 2026-06-18 on the openai workspace's first
+    # entitled call after AWS Sales cleared the gate.
+    if req.temperature != 0.0:
+        logger.warning(
+            "Responses API does not accept temperature; dropping %r. "
+            "(GPT-5 family is locked at temperature=1.0 server-side.)",
+            req.temperature,
+        )
     if req.top_p is not None:
-        kwargs["top_p"] = req.top_p
+        logger.warning(
+            "Responses API does not accept top_p; dropping %r. "
+            "(GPT-5 family is locked server-side.)",
+            req.top_p,
+        )
     if req.stop_sequences:
         logger.warning(
             "Responses API does not support stop_sequences; dropping %r. "

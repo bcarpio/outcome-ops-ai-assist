@@ -250,7 +250,12 @@ def test_stop_sequences_dropped_with_warning(caplog):
     )
 
 
-def test_top_p_passed_when_set():
+def test_top_p_dropped_when_set():
+    # GPT-5 family on Mantle rejects ``top_p`` (locked at 1.0
+    # server-side). Pin that the backend drops it even when the
+    # caller sets it. Pre-2026-06-18 this test verified the opposite
+    # ("passed when set") -- live-burned that day on the first
+    # entitled call against the openai workspace.
     fake_client, captured = _capture_kwargs()
     with _ssm_returns("k"):
         with _mock_openai(fake_client):
@@ -259,7 +264,24 @@ def test_top_p_passed_when_set():
                 messages=[{"role": "user", "content": [{"text": "x"}]}],
                 top_p=0.9,
             ))
-    assert captured["kwargs"]["top_p"] == 0.9
+    assert "top_p" not in captured["kwargs"]
+
+
+def test_temperature_dropped_when_set():
+    # Same shape as test_top_p_dropped_when_set. The caller-facing
+    # Request model still accepts ``temperature`` so the rest of the
+    # platform (which prefers 0.0 for determinism) doesn't need to
+    # know which backend's running -- the dispatcher drops it
+    # silently for Responses.
+    fake_client, captured = _capture_kwargs()
+    with _ssm_returns("k"):
+        with _mock_openai(fake_client):
+            _responses_backend.invoke(Request(
+                model_id="openai.gpt-5.5",
+                messages=[{"role": "user", "content": [{"text": "x"}]}],
+                temperature=0.0,
+            ))
+    assert "temperature" not in captured["kwargs"]
 
 
 # ============================================================================

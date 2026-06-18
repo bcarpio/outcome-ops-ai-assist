@@ -114,7 +114,12 @@ def _fake_completed_text_response(text: str, in_t: int = 10, out_t: int = 5):
     )
 
 
-def test_invoke_text_only_passes_input_max_output_tokens_temperature():
+def test_invoke_text_only_passes_input_max_output_tokens():
+    # GPT-5 family on Mantle rejects ``temperature`` and ``top_p`` --
+    # both are locked at 1.0 server-side. Burned 2026-06-18 on the
+    # first entitled call. The backend now drops both unconditionally;
+    # tests pin that they're absent from the SDK kwargs even when the
+    # caller set them.
     fake_client = MagicMock()
     fake_client.responses.create.return_value = _fake_completed_text_response("Paris")
     with _ssm_returns("k"):
@@ -129,7 +134,8 @@ def test_invoke_text_only_passes_input_max_output_tokens_temperature():
     assert kwargs["model"] == "openai.gpt-5.5"
     assert kwargs["input"] == "Capital of France?"
     assert kwargs["max_output_tokens"] == 64
-    assert kwargs["temperature"] == 0.0
+    assert "temperature" not in kwargs
+    assert "top_p" not in kwargs
     assert resp.text == "Paris"
     assert resp.stop_reason == StopReason.END_TURN
     assert resp.usage.input_tokens == 10
