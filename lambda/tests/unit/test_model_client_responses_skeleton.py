@@ -133,7 +133,13 @@ def test_invoke_text_only_passes_input_max_output_tokens():
     kwargs = fake_client.responses.create.call_args.kwargs
     assert kwargs["model"] == "openai.gpt-5.5"
     assert kwargs["input"] == "Capital of France?"
-    assert kwargs["max_output_tokens"] == 64
+    # max_output_tokens is multiplied by _RESPONSES_REASONING_HEADROOM
+    # (currently 4) so GPT-5 family has room for internal reasoning
+    # tokens without starving the visible output budget. Caller asked
+    # for 64 visible output tokens -> 256 total budget. Pinning the
+    # multiplier explicitly so a future change has to update both
+    # the constant and this test together.
+    assert kwargs["max_output_tokens"] == 64 * 4
     assert "temperature" not in kwargs
     assert "top_p" not in kwargs
     assert resp.text == "Paris"

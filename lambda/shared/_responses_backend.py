@@ -326,11 +326,32 @@ def _translate_tools(tools: list[ToolSpec] | None) -> list[dict] | None:
     ]
 
 
+# GPT-5 family bills internal reasoning tokens against max_output_tokens.
+# A caller asking for "1024 visible output tokens" gets ZERO output if the
+# model spends 1024 on reasoning -- the call returns
+# stop_reason=MAX_TOKENS with empty text. Default reasoning effort is
+# "medium" which consumes ~2-3x the visible output for moderate prompts.
+#
+# The unified Request.max_tokens semantically means "visible output I
+# want to see." Converse backend honors it directly. Responses backend
+# grants 4x headroom so reasoning has room without starving the output.
+# Live-burned 2026-06-18 on the first openai workspace architectural-
+# summary call after AWS Sales cleared GPT-5.5 entitlement:
+#   process-repo-summary requested max_tokens=1024
+#   -> MAX_TOKENS / empty text -> "No text content in openai.gpt-5.5
+#      response" -> repo-summary errored -> no code-units dispatched
+#      -> process-batch-summary never ran -> 0 code-map vectors in
+#      the openai workspace's index.
+# Revisit when a non-reasoning Responses-backed model emerges
+# (today: gpt-5.4, gpt-5.5, codex-* are all reasoning models).
+_RESPONSES_REASONING_HEADROOM = 4
+
+
 def _build_responses_kwargs(req: Request) -> dict[str, Any]:
     kwargs: dict[str, Any] = {
         "model": req.model_id,
         "input": _translate_messages_to_input(req.messages),
-        "max_output_tokens": req.max_tokens,
+        "max_output_tokens": req.max_tokens * _RESPONSES_REASONING_HEADROOM,
     }
     instructions = _normalize_system_to_instructions(req.system)
     if instructions is not None:
