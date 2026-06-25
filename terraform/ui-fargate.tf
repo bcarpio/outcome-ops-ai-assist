@@ -300,6 +300,18 @@ module "ui_alb" {
   # Disable access logs to save costs
   enable_deletion_protection = false
 
+  # 900s ALB idle timeout for chat-streaming SSE traffic.
+  # Default is 60s, which kills GPT-5 reasoning-model streams: the
+  # model can spend multiple minutes in the internal chain-of-thought
+  # between user-visible token emissions, so the wire goes quiet for
+  # longer than 60s and ALB cuts the connection mid-answer. 900s is
+  # the AWS-recommended ceiling for Bedrock-streaming workloads
+  # behind ALB and matches the Lambda Function URL max timeout.
+  # Live-burned 2026-06-25 on a "How does the magic link system work?"
+  # query against the openai workspace (GPT-5.5): 6m18s of model
+  # silence -> proxy reported "Error: terminated" mid-answer.
+  idle_timeout = 900
+
   # When OIDC is disabled, create HTTP listener via module.
   # When OIDC is enabled, listeners are created as separate resources below.
   listeners = local.use_oidc ? {} : {
@@ -535,6 +547,11 @@ module "ui_alb_secondary" {
 
   drop_invalid_header_fields = false
   enable_deletion_protection = false
+
+  # Same 900s idle timeout as the primary ALB (see primary block for
+  # context). Keeps HA failover from reintroducing the GPT-5
+  # reasoning-stream timeout bug.
+  idle_timeout = 900
 
   # When OIDC is disabled, create HTTP listener via module.
   # When OIDC is enabled, listeners are created as separate resources below.
