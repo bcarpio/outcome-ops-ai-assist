@@ -259,6 +259,36 @@ variable "bedrock_default_backend" {
   }
 }
 
+variable "bedrock_responses_reasoning_effort" {
+  type        = string
+  description = <<-EOT
+    Reasoning effort hint sent to the Bedrock Mantle Responses API for
+    GPT-5 family models (gpt-5.4 / gpt-5.5 / codex-*). Has no effect on
+    Converse-routed models -- Claude has no equivalent dial.
+
+    GPT-5 reasoning models bill internal reasoning tokens against
+    max_output_tokens and can spend much longer than non-reasoning
+    models for the same answer length. "minimal" bounds the
+    deliberation chain to keep chat latency tolerable.
+
+    "minimal" (default): chat-friendly. Equivalent reasoning depth to
+        a previous-generation non-reasoning model. Live-burned
+        2026-06-25: the OpenAI-recommended default "medium" let
+        GPT-5.5 reason for >15min on a chat query, tripping Lambda's
+        900s timeout three invocations in a row.
+    "low" / "medium" / "high": progressively more thorough but slower.
+
+    Only relevant when shared.model_client routes a request through
+    _responses_backend (i.e. an openai.gpt-5* / openai.codex-* model
+    or a deploy with bedrock_default_backend = "responses").
+  EOT
+  default     = "minimal"
+  validation {
+    condition     = contains(["minimal", "low", "medium", "high"], var.bedrock_responses_reasoning_effort)
+    error_message = "bedrock_responses_reasoning_effort must be one of: minimal, low, medium, high."
+  }
+}
+
 variable "bedrock_basic_model_id" {
   type        = string
   description = "Bedrock model ID for fast/default inference (e.g., Claude Haiku)"

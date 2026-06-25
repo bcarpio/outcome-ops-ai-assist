@@ -52,25 +52,26 @@ module "process_batch_summary_lambda" {
 
   # Environment variables
   environment_variables = merge({
-    ENV                               = var.environment
-    APP_NAME                          = var.app_name
-    EVENT_BUS_NAME                    = aws_cloudwatch_event_bus.automation.name
-    ENABLE_BEDROCK_COOLDOWN           = tostring(var.enable_bedrock_cooldown)
-    AUDIT_TABLE                       = module.audit_logs_table.dynamodb_table_id
-    WORKSPACES_TABLE                  = module.workspaces_table[0].dynamodb_table_id
-    BEDROCK_ADVANCED_MODEL_ID         = var.bedrock_advanced_model_id
-    BEDROCK_DEFAULT_BACKEND           = var.bedrock_default_backend
-    BEDROCK_MANTLE_API_KEY_PARAM      = "/${var.environment}/${var.app_name}/bedrock/mantle-api-key"
-    BEDROCK_EMBEDDING_MODEL_ID        = var.bedrock_embedding_model_id
-    BEDROCK_ADVANCED_INPUT_PRICE      = tostring(var.bedrock_advanced_input_price)
-    BEDROCK_ADVANCED_OUTPUT_PRICE     = tostring(var.bedrock_advanced_output_price)
-    BEDROCK_BASIC_INPUT_PRICE         = tostring(var.bedrock_basic_input_price)
-    BEDROCK_BASIC_OUTPUT_PRICE        = tostring(var.bedrock_basic_output_price)
-    BEDROCK_EMBEDDING_INPUT_PRICE     = tostring(var.bedrock_embedding_input_price)
-    BEDROCK_EMBEDDING_OUTPUT_PRICE    = tostring(var.bedrock_embedding_output_price)
-    PII_REDACTION_ENABLED             = tostring(var.pii_redaction_enabled)
-    COMPREHEND_PII_PRICE_PER_1M_CHARS = tostring(var.comprehend_pii_price_per_1m_chars)
-    PII_REDACTION_SKIP_TYPES          = join(",", var.pii_redaction_skip_types)
+    ENV                                = var.environment
+    APP_NAME                           = var.app_name
+    EVENT_BUS_NAME                     = aws_cloudwatch_event_bus.automation.name
+    ENABLE_BEDROCK_COOLDOWN            = tostring(var.enable_bedrock_cooldown)
+    AUDIT_TABLE                        = module.audit_logs_table.dynamodb_table_id
+    WORKSPACES_TABLE                   = module.workspaces_table[0].dynamodb_table_id
+    BEDROCK_ADVANCED_MODEL_ID          = var.bedrock_advanced_model_id
+    BEDROCK_DEFAULT_BACKEND            = var.bedrock_default_backend
+    BEDROCK_RESPONSES_REASONING_EFFORT = var.bedrock_responses_reasoning_effort
+    BEDROCK_MANTLE_API_KEY_PARAM       = "/${var.environment}/${var.app_name}/bedrock/mantle-api-key"
+    BEDROCK_EMBEDDING_MODEL_ID         = var.bedrock_embedding_model_id
+    BEDROCK_ADVANCED_INPUT_PRICE       = tostring(var.bedrock_advanced_input_price)
+    BEDROCK_ADVANCED_OUTPUT_PRICE      = tostring(var.bedrock_advanced_output_price)
+    BEDROCK_BASIC_INPUT_PRICE          = tostring(var.bedrock_basic_input_price)
+    BEDROCK_BASIC_OUTPUT_PRICE         = tostring(var.bedrock_basic_output_price)
+    BEDROCK_EMBEDDING_INPUT_PRICE      = tostring(var.bedrock_embedding_input_price)
+    BEDROCK_EMBEDDING_OUTPUT_PRICE     = tostring(var.bedrock_embedding_output_price)
+    PII_REDACTION_ENABLED              = tostring(var.pii_redaction_enabled)
+    COMPREHEND_PII_PRICE_PER_1M_CHARS  = tostring(var.comprehend_pii_price_per_1m_chars)
+    PII_REDACTION_SKIP_TYPES           = join(",", var.pii_redaction_skip_types)
     # Plan-gkg chunks 02 + 03 — symbol-graph regen + pointer-swap path.
     SYMBOL_GRAPH_TABLE = module.symbol_graph_table.dynamodb_table_id
     CODE_MAPS_TABLE    = module.code_maps_table.dynamodb_table_id
@@ -332,24 +333,25 @@ module "process_repo_summary_lambda" {
   # Environment variables
   environment_variables = merge(
     {
-      ENV                               = var.environment
-      APP_NAME                          = var.app_name
-      AUDIT_TABLE                       = module.audit_logs_table.dynamodb_table_id
-      WORKSPACES_TABLE                  = module.workspaces_table[0].dynamodb_table_id
-      DELETE_QUEUE                      = aws_sqs_queue.delete_queue[0].url
-      BEDROCK_ADVANCED_MODEL_ID         = var.bedrock_advanced_model_id
-      BEDROCK_DEFAULT_BACKEND           = var.bedrock_default_backend
-      BEDROCK_MANTLE_API_KEY_PARAM      = "/${var.environment}/${var.app_name}/bedrock/mantle-api-key"
-      BEDROCK_EMBEDDING_MODEL_ID        = var.bedrock_embedding_model_id
-      BEDROCK_ADVANCED_INPUT_PRICE      = tostring(var.bedrock_advanced_input_price)
-      BEDROCK_ADVANCED_OUTPUT_PRICE     = tostring(var.bedrock_advanced_output_price)
-      BEDROCK_BASIC_INPUT_PRICE         = tostring(var.bedrock_basic_input_price)
-      BEDROCK_BASIC_OUTPUT_PRICE        = tostring(var.bedrock_basic_output_price)
-      BEDROCK_EMBEDDING_INPUT_PRICE     = tostring(var.bedrock_embedding_input_price)
-      BEDROCK_EMBEDDING_OUTPUT_PRICE    = tostring(var.bedrock_embedding_output_price)
-      PII_REDACTION_ENABLED             = tostring(var.pii_redaction_enabled)
-      COMPREHEND_PII_PRICE_PER_1M_CHARS = tostring(var.comprehend_pii_price_per_1m_chars)
-      PII_REDACTION_SKIP_TYPES          = join(",", var.pii_redaction_skip_types)
+      ENV                                = var.environment
+      APP_NAME                           = var.app_name
+      AUDIT_TABLE                        = module.audit_logs_table.dynamodb_table_id
+      WORKSPACES_TABLE                   = module.workspaces_table[0].dynamodb_table_id
+      DELETE_QUEUE                       = aws_sqs_queue.delete_queue[0].url
+      BEDROCK_ADVANCED_MODEL_ID          = var.bedrock_advanced_model_id
+      BEDROCK_DEFAULT_BACKEND            = var.bedrock_default_backend
+      BEDROCK_RESPONSES_REASONING_EFFORT = var.bedrock_responses_reasoning_effort
+      BEDROCK_MANTLE_API_KEY_PARAM       = "/${var.environment}/${var.app_name}/bedrock/mantle-api-key"
+      BEDROCK_EMBEDDING_MODEL_ID         = var.bedrock_embedding_model_id
+      BEDROCK_ADVANCED_INPUT_PRICE       = tostring(var.bedrock_advanced_input_price)
+      BEDROCK_ADVANCED_OUTPUT_PRICE      = tostring(var.bedrock_advanced_output_price)
+      BEDROCK_BASIC_INPUT_PRICE          = tostring(var.bedrock_basic_input_price)
+      BEDROCK_BASIC_OUTPUT_PRICE         = tostring(var.bedrock_basic_output_price)
+      BEDROCK_EMBEDDING_INPUT_PRICE      = tostring(var.bedrock_embedding_input_price)
+      BEDROCK_EMBEDDING_OUTPUT_PRICE     = tostring(var.bedrock_embedding_output_price)
+      PII_REDACTION_ENABLED              = tostring(var.pii_redaction_enabled)
+      COMPREHEND_PII_PRICE_PER_1M_CHARS  = tostring(var.comprehend_pii_price_per_1m_chars)
+      PII_REDACTION_SKIP_TYPES           = join(",", var.pii_redaction_skip_types)
       # plan-git-truth chunk 01: SHA-truth ledger tables. process-repo-summary
       # is the code_map dispatcher (fans the single repo-summaries message out
       # to N per-code-unit code-maps messages) and writes the per-unit ledger.

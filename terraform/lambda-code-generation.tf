@@ -54,20 +54,21 @@ module "generate_code_lambda" {
   # Environment variables
   environment_variables = merge(
     {
-      ENV                            = var.environment
-      APP_NAME                       = var.app_name
-      EVENT_BUS_NAME                 = aws_cloudwatch_event_bus.automation.name
-      ENABLE_BEDROCK_COOLDOWN        = tostring(var.enable_bedrock_cooldown)
-      AUDIT_TABLE                    = module.audit_logs_table.dynamodb_table_id
-      BEDROCK_ADVANCED_MODEL_ID      = var.bedrock_advanced_model_id
-      BEDROCK_DEFAULT_BACKEND        = var.bedrock_default_backend
-      BEDROCK_MANTLE_API_KEY_PARAM   = "/${var.environment}/${var.app_name}/bedrock/mantle-api-key"
-      BEDROCK_ADVANCED_INPUT_PRICE   = tostring(var.bedrock_advanced_input_price)
-      BEDROCK_ADVANCED_OUTPUT_PRICE  = tostring(var.bedrock_advanced_output_price)
-      BEDROCK_BASIC_INPUT_PRICE      = tostring(var.bedrock_basic_input_price)
-      BEDROCK_BASIC_OUTPUT_PRICE     = tostring(var.bedrock_basic_output_price)
-      BEDROCK_EMBEDDING_INPUT_PRICE  = tostring(var.bedrock_embedding_input_price)
-      BEDROCK_EMBEDDING_OUTPUT_PRICE = tostring(var.bedrock_embedding_output_price)
+      ENV                                = var.environment
+      APP_NAME                           = var.app_name
+      EVENT_BUS_NAME                     = aws_cloudwatch_event_bus.automation.name
+      ENABLE_BEDROCK_COOLDOWN            = tostring(var.enable_bedrock_cooldown)
+      AUDIT_TABLE                        = module.audit_logs_table.dynamodb_table_id
+      BEDROCK_ADVANCED_MODEL_ID          = var.bedrock_advanced_model_id
+      BEDROCK_DEFAULT_BACKEND            = var.bedrock_default_backend
+      BEDROCK_RESPONSES_REASONING_EFFORT = var.bedrock_responses_reasoning_effort
+      BEDROCK_MANTLE_API_KEY_PARAM       = "/${var.environment}/${var.app_name}/bedrock/mantle-api-key"
+      BEDROCK_ADVANCED_INPUT_PRICE       = tostring(var.bedrock_advanced_input_price)
+      BEDROCK_ADVANCED_OUTPUT_PRICE      = tostring(var.bedrock_advanced_output_price)
+      BEDROCK_BASIC_INPUT_PRICE          = tostring(var.bedrock_basic_input_price)
+      BEDROCK_BASIC_OUTPUT_PRICE         = tostring(var.bedrock_basic_output_price)
+      BEDROCK_EMBEDDING_INPUT_PRICE      = tostring(var.bedrock_embedding_input_price)
+      BEDROCK_EMBEDDING_OUTPUT_PRICE     = tostring(var.bedrock_embedding_output_price)
       # Include /opt/bin in PATH for git from runtime_tools_layer
       PATH = "/opt/bin:/var/lang/bin:/usr/local/bin:/usr/bin:/bin"
       # Tell git where to find helper programs like git-remote-https
@@ -517,21 +518,22 @@ module "run_tests_lambda" {
   architectures          = ["x86_64"]
 
   environment_variables = {
-    ENV                            = var.environment
-    APP_NAME                       = var.app_name
-    TEST_RESULTS_BUCKET            = module.knowledge_base_bucket.s3_bucket_id
-    TEST_RESULTS_PREFIX            = "test-results"
-    EVENT_BUS_NAME                 = aws_cloudwatch_event_bus.automation.name
-    AUDIT_TABLE                    = module.audit_logs_table.dynamodb_table_id
-    BEDROCK_ADVANCED_MODEL_ID      = var.bedrock_advanced_model_id
-    BEDROCK_DEFAULT_BACKEND        = var.bedrock_default_backend
-    BEDROCK_MANTLE_API_KEY_PARAM   = "/${var.environment}/${var.app_name}/bedrock/mantle-api-key"
-    BEDROCK_ADVANCED_INPUT_PRICE   = tostring(var.bedrock_advanced_input_price)
-    BEDROCK_ADVANCED_OUTPUT_PRICE  = tostring(var.bedrock_advanced_output_price)
-    BEDROCK_BASIC_INPUT_PRICE      = tostring(var.bedrock_basic_input_price)
-    BEDROCK_BASIC_OUTPUT_PRICE     = tostring(var.bedrock_basic_output_price)
-    BEDROCK_EMBEDDING_INPUT_PRICE  = tostring(var.bedrock_embedding_input_price)
-    BEDROCK_EMBEDDING_OUTPUT_PRICE = tostring(var.bedrock_embedding_output_price)
+    ENV                                = var.environment
+    APP_NAME                           = var.app_name
+    TEST_RESULTS_BUCKET                = module.knowledge_base_bucket.s3_bucket_id
+    TEST_RESULTS_PREFIX                = "test-results"
+    EVENT_BUS_NAME                     = aws_cloudwatch_event_bus.automation.name
+    AUDIT_TABLE                        = module.audit_logs_table.dynamodb_table_id
+    BEDROCK_ADVANCED_MODEL_ID          = var.bedrock_advanced_model_id
+    BEDROCK_DEFAULT_BACKEND            = var.bedrock_default_backend
+    BEDROCK_RESPONSES_REASONING_EFFORT = var.bedrock_responses_reasoning_effort
+    BEDROCK_MANTLE_API_KEY_PARAM       = "/${var.environment}/${var.app_name}/bedrock/mantle-api-key"
+    BEDROCK_ADVANCED_INPUT_PRICE       = tostring(var.bedrock_advanced_input_price)
+    BEDROCK_ADVANCED_OUTPUT_PRICE      = tostring(var.bedrock_advanced_output_price)
+    BEDROCK_BASIC_INPUT_PRICE          = tostring(var.bedrock_basic_input_price)
+    BEDROCK_BASIC_OUTPUT_PRICE         = tostring(var.bedrock_basic_output_price)
+    BEDROCK_EMBEDDING_INPUT_PRICE      = tostring(var.bedrock_embedding_input_price)
+    BEDROCK_EMBEDDING_OUTPUT_PRICE     = tostring(var.bedrock_embedding_output_price)
     # Git runtime configuration (must match Dockerfile ENV vars)
     PATH            = "/opt/git/bin:/usr/lib/jvm/java-21-amazon-corretto/bin:/usr/local/bin:/var/lang/bin:/usr/local/bin:/usr/bin/:/bin:/opt/bin"
     GIT_EXEC_PATH   = "/opt/git/libexec/git-core"
@@ -627,14 +629,15 @@ module "handle_command_lambda" {
   # Environment variables
   environment_variables = merge(
     {
-      ENV                          = var.environment
-      APP_NAME                     = var.app_name
-      AUDIT_TABLE                  = module.audit_logs_table.dynamodb_table_id
-      BEDROCK_BASIC_MODEL_ID       = var.bedrock_basic_model_id
-      BEDROCK_DEFAULT_BACKEND      = var.bedrock_default_backend
-      BEDROCK_MANTLE_API_KEY_PARAM = "/${var.environment}/${var.app_name}/bedrock/mantle-api-key"
-      BEDROCK_BASIC_INPUT_PRICE    = tostring(var.bedrock_basic_input_price)
-      BEDROCK_BASIC_OUTPUT_PRICE   = tostring(var.bedrock_basic_output_price)
+      ENV                                = var.environment
+      APP_NAME                           = var.app_name
+      AUDIT_TABLE                        = module.audit_logs_table.dynamodb_table_id
+      BEDROCK_BASIC_MODEL_ID             = var.bedrock_basic_model_id
+      BEDROCK_DEFAULT_BACKEND            = var.bedrock_default_backend
+      BEDROCK_RESPONSES_REASONING_EFFORT = var.bedrock_responses_reasoning_effort
+      BEDROCK_MANTLE_API_KEY_PARAM       = "/${var.environment}/${var.app_name}/bedrock/mantle-api-key"
+      BEDROCK_BASIC_INPUT_PRICE          = tostring(var.bedrock_basic_input_price)
+      BEDROCK_BASIC_OUTPUT_PRICE         = tostring(var.bedrock_basic_output_price)
     },
     local.outcomeops_license_env,
   )

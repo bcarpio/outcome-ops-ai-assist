@@ -407,29 +407,30 @@ module "process_batch_summary_lambda_secondary" {
 
   environment_variables = merge(
     {
-      ENV                               = var.environment
-      APP_NAME                          = var.app_name
-      EVENT_BUS_NAME                    = aws_cloudwatch_event_bus.replication_secondary[0].name
-      ENABLE_BEDROCK_COOLDOWN           = tostring(var.enable_bedrock_cooldown)
-      AUDIT_TABLE                       = module.audit_logs_table_secondary[0].dynamodb_table_id
-      WORKSPACES_TABLE                  = module.workspaces_table_secondary[0].dynamodb_table_id
-      BEDROCK_ADVANCED_MODEL_ID         = var.bedrock_advanced_model_id
-      BEDROCK_DEFAULT_BACKEND           = var.bedrock_default_backend
-      BEDROCK_MANTLE_API_KEY_PARAM      = "/${var.environment}/${var.app_name}/bedrock/mantle-api-key"
-      BEDROCK_EMBEDDING_MODEL_ID        = var.bedrock_embedding_model_id
-      BEDROCK_ADVANCED_INPUT_PRICE      = tostring(var.bedrock_advanced_input_price)
-      BEDROCK_ADVANCED_OUTPUT_PRICE     = tostring(var.bedrock_advanced_output_price)
-      BEDROCK_BASIC_INPUT_PRICE         = tostring(var.bedrock_basic_input_price)
-      BEDROCK_BASIC_OUTPUT_PRICE        = tostring(var.bedrock_basic_output_price)
-      BEDROCK_EMBEDDING_INPUT_PRICE     = tostring(var.bedrock_embedding_input_price)
-      BEDROCK_EMBEDDING_OUTPUT_PRICE    = tostring(var.bedrock_embedding_output_price)
-      PII_REDACTION_ENABLED             = tostring(var.pii_redaction_enabled)
-      COMPREHEND_PII_PRICE_PER_1M_CHARS = tostring(var.comprehend_pii_price_per_1m_chars)
-      PII_REDACTION_SKIP_TYPES          = join(",", var.pii_redaction_skip_types)
-      SYMBOL_GRAPH_TABLE                = module.symbol_graph_table_secondary[0].dynamodb_table_id
-      CODE_MAPS_TABLE                   = module.code_maps_table_secondary[0].dynamodb_table_id
-      PENDING_WORK_TABLE                = module.code_map_pending_work_table_secondary[0].dynamodb_table_id
-      FAILED_FILES_TABLE                = module.code_map_failed_files_table_secondary[0].dynamodb_table_id
+      ENV                                = var.environment
+      APP_NAME                           = var.app_name
+      EVENT_BUS_NAME                     = aws_cloudwatch_event_bus.replication_secondary[0].name
+      ENABLE_BEDROCK_COOLDOWN            = tostring(var.enable_bedrock_cooldown)
+      AUDIT_TABLE                        = module.audit_logs_table_secondary[0].dynamodb_table_id
+      WORKSPACES_TABLE                   = module.workspaces_table_secondary[0].dynamodb_table_id
+      BEDROCK_ADVANCED_MODEL_ID          = var.bedrock_advanced_model_id
+      BEDROCK_DEFAULT_BACKEND            = var.bedrock_default_backend
+      BEDROCK_RESPONSES_REASONING_EFFORT = var.bedrock_responses_reasoning_effort
+      BEDROCK_MANTLE_API_KEY_PARAM       = "/${var.environment}/${var.app_name}/bedrock/mantle-api-key"
+      BEDROCK_EMBEDDING_MODEL_ID         = var.bedrock_embedding_model_id
+      BEDROCK_ADVANCED_INPUT_PRICE       = tostring(var.bedrock_advanced_input_price)
+      BEDROCK_ADVANCED_OUTPUT_PRICE      = tostring(var.bedrock_advanced_output_price)
+      BEDROCK_BASIC_INPUT_PRICE          = tostring(var.bedrock_basic_input_price)
+      BEDROCK_BASIC_OUTPUT_PRICE         = tostring(var.bedrock_basic_output_price)
+      BEDROCK_EMBEDDING_INPUT_PRICE      = tostring(var.bedrock_embedding_input_price)
+      BEDROCK_EMBEDDING_OUTPUT_PRICE     = tostring(var.bedrock_embedding_output_price)
+      PII_REDACTION_ENABLED              = tostring(var.pii_redaction_enabled)
+      COMPREHEND_PII_PRICE_PER_1M_CHARS  = tostring(var.comprehend_pii_price_per_1m_chars)
+      PII_REDACTION_SKIP_TYPES           = join(",", var.pii_redaction_skip_types)
+      SYMBOL_GRAPH_TABLE                 = module.symbol_graph_table_secondary[0].dynamodb_table_id
+      CODE_MAPS_TABLE                    = module.code_maps_table_secondary[0].dynamodb_table_id
+      PENDING_WORK_TABLE                 = module.code_map_pending_work_table_secondary[0].dynamodb_table_id
+      FAILED_FILES_TABLE                 = module.code_map_failed_files_table_secondary[0].dynamodb_table_id
     },
     local.outcomeops_license_env,
     local.ha_writer_env_secondary,
@@ -563,28 +564,29 @@ module "process_repo_summary_lambda_secondary" {
 
   environment_variables = merge(
     {
-      ENV                               = var.environment
-      APP_NAME                          = var.app_name
-      AUDIT_TABLE                       = module.audit_logs_table_secondary[0].dynamodb_table_id
-      WORKSPACES_TABLE                  = module.workspaces_table_secondary[0].dynamodb_table_id
-      DELETE_QUEUE                      = aws_sqs_queue.delete_queue_secondary[0].url
-      BEDROCK_ADVANCED_MODEL_ID         = var.bedrock_advanced_model_id
-      BEDROCK_DEFAULT_BACKEND           = var.bedrock_default_backend
-      BEDROCK_MANTLE_API_KEY_PARAM      = "/${var.environment}/${var.app_name}/bedrock/mantle-api-key"
-      BEDROCK_EMBEDDING_MODEL_ID        = var.bedrock_embedding_model_id
-      BEDROCK_ADVANCED_INPUT_PRICE      = tostring(var.bedrock_advanced_input_price)
-      BEDROCK_ADVANCED_OUTPUT_PRICE     = tostring(var.bedrock_advanced_output_price)
-      BEDROCK_BASIC_INPUT_PRICE         = tostring(var.bedrock_basic_input_price)
-      BEDROCK_BASIC_OUTPUT_PRICE        = tostring(var.bedrock_basic_output_price)
-      BEDROCK_EMBEDDING_INPUT_PRICE     = tostring(var.bedrock_embedding_input_price)
-      BEDROCK_EMBEDDING_OUTPUT_PRICE    = tostring(var.bedrock_embedding_output_price)
-      PII_REDACTION_ENABLED             = tostring(var.pii_redaction_enabled)
-      COMPREHEND_PII_PRICE_PER_1M_CHARS = tostring(var.comprehend_pii_price_per_1m_chars)
-      PII_REDACTION_SKIP_TYPES          = join(",", var.pii_redaction_skip_types)
-      PENDING_WORK_TABLE                = module.code_map_pending_work_table_secondary[0].dynamodb_table_id
-      FAILED_FILES_TABLE                = module.code_map_failed_files_table_secondary[0].dynamodb_table_id
-      CODE_MAPS_QUEUE_URL               = module.code_maps_queue_secondary.queue_url
-      KB_BUCKET                         = module.knowledge_base_bucket_secondary.s3_bucket_id
+      ENV                                = var.environment
+      APP_NAME                           = var.app_name
+      AUDIT_TABLE                        = module.audit_logs_table_secondary[0].dynamodb_table_id
+      WORKSPACES_TABLE                   = module.workspaces_table_secondary[0].dynamodb_table_id
+      DELETE_QUEUE                       = aws_sqs_queue.delete_queue_secondary[0].url
+      BEDROCK_ADVANCED_MODEL_ID          = var.bedrock_advanced_model_id
+      BEDROCK_DEFAULT_BACKEND            = var.bedrock_default_backend
+      BEDROCK_RESPONSES_REASONING_EFFORT = var.bedrock_responses_reasoning_effort
+      BEDROCK_MANTLE_API_KEY_PARAM       = "/${var.environment}/${var.app_name}/bedrock/mantle-api-key"
+      BEDROCK_EMBEDDING_MODEL_ID         = var.bedrock_embedding_model_id
+      BEDROCK_ADVANCED_INPUT_PRICE       = tostring(var.bedrock_advanced_input_price)
+      BEDROCK_ADVANCED_OUTPUT_PRICE      = tostring(var.bedrock_advanced_output_price)
+      BEDROCK_BASIC_INPUT_PRICE          = tostring(var.bedrock_basic_input_price)
+      BEDROCK_BASIC_OUTPUT_PRICE         = tostring(var.bedrock_basic_output_price)
+      BEDROCK_EMBEDDING_INPUT_PRICE      = tostring(var.bedrock_embedding_input_price)
+      BEDROCK_EMBEDDING_OUTPUT_PRICE     = tostring(var.bedrock_embedding_output_price)
+      PII_REDACTION_ENABLED              = tostring(var.pii_redaction_enabled)
+      COMPREHEND_PII_PRICE_PER_1M_CHARS  = tostring(var.comprehend_pii_price_per_1m_chars)
+      PII_REDACTION_SKIP_TYPES           = join(",", var.pii_redaction_skip_types)
+      PENDING_WORK_TABLE                 = module.code_map_pending_work_table_secondary[0].dynamodb_table_id
+      FAILED_FILES_TABLE                 = module.code_map_failed_files_table_secondary[0].dynamodb_table_id
+      CODE_MAPS_QUEUE_URL                = module.code_maps_queue_secondary.queue_url
+      KB_BUCKET                          = module.knowledge_base_bucket_secondary.s3_bucket_id
     },
     local.outcomeops_license_env,
     local.ha_writer_env_secondary,

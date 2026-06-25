@@ -329,29 +329,62 @@ def _translate_tools(tools: list[ToolSpec] | None) -> list[dict] | None:
 # GPT-5 family bills internal reasoning tokens against max_output_tokens.
 # A caller asking for "1024 visible output tokens" gets ZERO output if the
 # model spends 1024 on reasoning -- the call returns
-# stop_reason=MAX_TOKENS with empty text. Default reasoning effort is
-# "medium" which consumes ~2-3x the visible output for moderate prompts.
+# stop_reason=MAX_TOKENS with empty text.
 #
 # The unified Request.max_tokens semantically means "visible output I
 # want to see." Converse backend honors it directly. Responses backend
-# grants 4x headroom so reasoning has room without starving the output.
+# grants 4x headroom so reasoning has room without starving the output,
+# capped at REASONING_BUDGET_CEILING to prevent runaway invocations
+# when a caller asks for a big budget (e.g. chat at 8192 -> 32768
+# without the cap, which lets GPT-5.5 reason for 15+ min and trip
+# Lambda's timeout).
+#
 # Live-burned 2026-06-18 on the first openai workspace architectural-
 # summary call after AWS Sales cleared GPT-5.5 entitlement:
 #   process-repo-summary requested max_tokens=1024
 #   -> MAX_TOKENS / empty text -> "No text content in openai.gpt-5.5
 #      response" -> repo-summary errored -> no code-units dispatched
-#      -> process-batch-summary never ran -> 0 code-map vectors in
-#      the openai workspace's index.
-# Revisit when a non-reasoning Responses-backed model emerges
-# (today: gpt-5.4, gpt-5.5, codex-* are all reasoning models).
+#      -> process-batch-summary never ran -> 0 code-map vectors.
+#
+# Live-burned again 2026-06-25 on the openai chat workspace:
+#   chat (max_tokens=8192) -> 32768 budget -> default reasoning
+#   "medium" let GPT-5.5 reason for >15min -> Lambda 900s timeout
+#   killed three invocations in a row.
+#
+# REASONING_EFFORT="minimal" (added 2026-06-25) tells GPT-5 family
+# to spend the minimum reasoning chain that produces a coherent
+# answer. Per OpenAI guidance for chat / latency-sensitive use
+# cases; equivalent reasoning depth to a previous-generation
+# non-reasoning model.
+#
+# Revisit both knobs when a non-reasoning Responses-backed model
+# emerges (today: gpt-5.4, gpt-5.5, codex-* are all reasoning models).
 _RESPONSES_REASONING_HEADROOM = 4
+_RESPONSES_REASONING_BUDGET_CEILING = 8192
+# "minimal" | "low" | "medium" | "high". OpenAI's default is "medium";
+# we override to "minimal" for chat-friendly latency. Reads at module
+# load so a per-deploy env override can switch without code change.
+_RESPONSES_REASONING_EFFORT = os.environ.get(
+    "BEDROCK_RESPONSES_REASONING_EFFORT", "minimal"
+).strip().lower()
 
 
 def _build_responses_kwargs(req: Request) -> dict[str, Any]:
+    # Reasoning budget: 4x the caller's visible-token request, capped
+    # so a generous caller can't accidentally request 30k+ tokens
+    # of reasoning + then time out at the Lambda boundary.
+    reasoning_budget = min(
+        req.max_tokens * _RESPONSES_REASONING_HEADROOM,
+        _RESPONSES_REASONING_BUDGET_CEILING,
+    )
     kwargs: dict[str, Any] = {
         "model": req.model_id,
         "input": _translate_messages_to_input(req.messages),
-        "max_output_tokens": req.max_tokens * _RESPONSES_REASONING_HEADROOM,
+        "max_output_tokens": reasoning_budget,
+        # Tells GPT-5 family how thoroughly to deliberate before
+        # answering. "minimal" matches chat-UI latency expectations
+        # and matches Claude's perceived speed on the same prompts.
+        "reasoning": {"effort": _RESPONSES_REASONING_EFFORT},
     }
     instructions = _normalize_system_to_instructions(req.system)
     if instructions is not None:

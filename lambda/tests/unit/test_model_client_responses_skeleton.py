@@ -117,7 +117,7 @@ def _fake_completed_text_response(text: str, in_t: int = 10, out_t: int = 5):
 def test_invoke_text_only_passes_input_max_output_tokens():
     # GPT-5 family on Mantle rejects ``temperature`` and ``top_p`` --
     # both are locked at 1.0 server-side. Burned 2026-06-18 on the
-    # first entitled call. The backend now drops both unconditionally;
+    # first entitled call. The backend drops both unconditionally;
     # tests pin that they're absent from the SDK kwargs even when the
     # caller set them.
     fake_client = MagicMock()
@@ -133,19 +133,69 @@ def test_invoke_text_only_passes_input_max_output_tokens():
     kwargs = fake_client.responses.create.call_args.kwargs
     assert kwargs["model"] == "openai.gpt-5.5"
     assert kwargs["input"] == "Capital of France?"
-    # max_output_tokens is multiplied by _RESPONSES_REASONING_HEADROOM
-    # (currently 4) so GPT-5 family has room for internal reasoning
-    # tokens without starving the visible output budget. Caller asked
-    # for 64 visible output tokens -> 256 total budget. Pinning the
-    # multiplier explicitly so a future change has to update both
-    # the constant and this test together.
+    # max_output_tokens is the headroom (4x) of caller's max_tokens
+    # capped at the budget ceiling (8192). Caller asked for 64
+    # visible output tokens -> 256 total budget (below ceiling).
+    # Pinning both the multiplier and the ceiling here so a future
+    # change has to update the constant and this test together.
     assert kwargs["max_output_tokens"] == 64 * 4
+    # reasoning.effort is read from BEDROCK_RESPONSES_REASONING_EFFORT
+    # env var with default "minimal" -- bounds GPT-5's deliberation
+    # to chat-friendly latency. Live-burned 2026-06-25: default
+    # "medium" let GPT-5.5 reason >15min on chat queries and trip
+    # Lambda's 900s timeout.
+    assert kwargs["reasoning"] == {"effort": "minimal"}
     assert "temperature" not in kwargs
     assert "top_p" not in kwargs
     assert resp.text == "Paris"
     assert resp.stop_reason == StopReason.END_TURN
     assert resp.usage.input_tokens == 10
     assert resp.usage.output_tokens == 5
+
+
+def test_invoke_caps_reasoning_budget_at_ceiling():
+    # Chat sends max_tokens=8192. Without the ceiling, the 4x
+    # headroom multiplier would request 32768 tokens of budget,
+    # which lets GPT-5.5 reason for 15+ minutes and hit Lambda's
+    # 900s timeout (live-burned 2026-06-25). The ceiling caps the
+    # SDK kwarg at _RESPONSES_REASONING_BUDGET_CEILING regardless
+    # of what the multiplier would produce.
+    fake_client = MagicMock()
+    fake_client.responses.create.return_value = _fake_completed_text_response("ok")
+    with _ssm_returns("k"):
+        with _mock_openai(fake_client):
+            _responses_backend.invoke(Request(
+                model_id="openai.gpt-5.5",
+                messages=[{"role": "user", "content": [{"text": "x"}]}],
+                max_tokens=8192,  # chat's typical setting
+            ))
+    kwargs = fake_client.responses.create.call_args.kwargs
+    # 8192 * 4 = 32768 -> capped at 8192. Without the cap this
+    # would be 32768.
+    assert kwargs["max_output_tokens"] == 8192
+
+
+def test_invoke_reasoning_effort_respects_env_override(monkeypatch):
+    # Default is "minimal"; deploys that want a smarter (slower)
+    # chat tier can override via BEDROCK_RESPONSES_REASONING_EFFORT.
+    # Reading the env at module load means the test must reload
+    # the module after monkeypatching. Simpler: patch the
+    # module-level constant directly -- same semantics for the
+    # downstream behavior we care about.
+    monkeypatch.setattr(
+        _responses_backend, "_RESPONSES_REASONING_EFFORT", "high",
+    )
+    fake_client = MagicMock()
+    fake_client.responses.create.return_value = _fake_completed_text_response("ok")
+    with _ssm_returns("k"):
+        with _mock_openai(fake_client):
+            _responses_backend.invoke(Request(
+                model_id="openai.gpt-5.5",
+                messages=[{"role": "user", "content": [{"text": "x"}]}],
+                max_tokens=64,
+            ))
+    kwargs = fake_client.responses.create.call_args.kwargs
+    assert kwargs["reasoning"] == {"effort": "high"}
 
 
 def test_invoke_max_output_tokens_incomplete_maps_max_tokens_stop_reason():

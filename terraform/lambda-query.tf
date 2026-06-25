@@ -37,17 +37,18 @@ module "ask_claude_lambda" {
 
   # Environment variables
   environment_variables = {
-    ENV                           = var.environment
-    APP_NAME                      = var.app_name
-    AUDIT_TABLE                   = module.audit_logs_table.dynamodb_table_id
-    BEDROCK_ADVANCED_MODEL_ID     = var.bedrock_advanced_model_id
-    BEDROCK_DEFAULT_BACKEND       = var.bedrock_default_backend
-    BEDROCK_MANTLE_API_KEY_PARAM  = "/${var.environment}/${var.app_name}/bedrock/mantle-api-key"
-    BEDROCK_BASIC_MODEL_ID        = var.bedrock_basic_model_id
-    BEDROCK_ADVANCED_INPUT_PRICE  = tostring(var.bedrock_advanced_input_price)
-    BEDROCK_ADVANCED_OUTPUT_PRICE = tostring(var.bedrock_advanced_output_price)
-    BEDROCK_BASIC_INPUT_PRICE     = tostring(var.bedrock_basic_input_price)
-    BEDROCK_BASIC_OUTPUT_PRICE    = tostring(var.bedrock_basic_output_price)
+    ENV                                = var.environment
+    APP_NAME                           = var.app_name
+    AUDIT_TABLE                        = module.audit_logs_table.dynamodb_table_id
+    BEDROCK_ADVANCED_MODEL_ID          = var.bedrock_advanced_model_id
+    BEDROCK_DEFAULT_BACKEND            = var.bedrock_default_backend
+    BEDROCK_RESPONSES_REASONING_EFFORT = var.bedrock_responses_reasoning_effort
+    BEDROCK_MANTLE_API_KEY_PARAM       = "/${var.environment}/${var.app_name}/bedrock/mantle-api-key"
+    BEDROCK_BASIC_MODEL_ID             = var.bedrock_basic_model_id
+    BEDROCK_ADVANCED_INPUT_PRICE       = tostring(var.bedrock_advanced_input_price)
+    BEDROCK_ADVANCED_OUTPUT_PRICE      = tostring(var.bedrock_advanced_output_price)
+    BEDROCK_BASIC_INPUT_PRICE          = tostring(var.bedrock_basic_input_price)
+    BEDROCK_BASIC_OUTPUT_PRICE         = tostring(var.bedrock_basic_output_price)
   }
 
   # IAM permissions
