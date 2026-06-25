@@ -361,11 +361,18 @@ def _translate_tools(tools: list[ToolSpec] | None) -> list[dict] | None:
 # emerges (today: gpt-5.4, gpt-5.5, codex-* are all reasoning models).
 _RESPONSES_REASONING_HEADROOM = 4
 _RESPONSES_REASONING_BUDGET_CEILING = 8192
-# "minimal" | "low" | "medium" | "high". OpenAI's default is "medium";
-# we override to "minimal" for chat-friendly latency. Reads at module
-# load so a per-deploy env override can switch without code change.
+# Bedrock Mantle accepts: "none" | "low" | "medium" | "high" | "xhigh".
+# NOTE: OpenAI direct uses "minimal" for the same intent as Mantle's
+# "none" -- the wire vocabulary diverged. Mantle's default is "medium";
+# we override to "none" for chat-friendly latency (disables the
+# internal chain-of-thought entirely). Reads at module load so a
+# per-deploy env override can switch without code change.
+# Live-burned 2026-06-25: tried "minimal" first (the OpenAI-direct
+# value), got HTTP 400 "Unsupported value: 'minimal' is not
+# supported with the 'openai.gpt-5.5' model. Supported values are:
+# 'none', 'low', 'medium', 'high', and 'xhigh'."
 _RESPONSES_REASONING_EFFORT = os.environ.get(
-    "BEDROCK_RESPONSES_REASONING_EFFORT", "minimal"
+    "BEDROCK_RESPONSES_REASONING_EFFORT", "none"
 ).strip().lower()
 
 

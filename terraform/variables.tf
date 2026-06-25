@@ -268,24 +268,30 @@ variable "bedrock_responses_reasoning_effort" {
 
     GPT-5 reasoning models bill internal reasoning tokens against
     max_output_tokens and can spend much longer than non-reasoning
-    models for the same answer length. "minimal" bounds the
-    deliberation chain to keep chat latency tolerable.
+    models for the same answer length. "none" disables the
+    deliberation chain entirely to keep chat latency tolerable.
 
-    "minimal" (default): chat-friendly. Equivalent reasoning depth to
-        a previous-generation non-reasoning model. Live-burned
-        2026-06-25: the OpenAI-recommended default "medium" let
-        GPT-5.5 reason for >15min on a chat query, tripping Lambda's
-        900s timeout three invocations in a row.
-    "low" / "medium" / "high": progressively more thorough but slower.
+    NOTE: Mantle's vocabulary differs from OpenAI direct. Direct
+    uses "minimal" for the chat-friendly setting; Mantle uses "none."
+    This variable accepts only Mantle's vocabulary -- the wire
+    rejects "minimal" with HTTP 400.
+
+    "none" (default): chat-friendly. Disables the reasoning chain
+        entirely; GPT-5 answers directly like a non-reasoning model.
+        Live-burned 2026-06-25: the OpenAI-recommended default
+        "medium" let GPT-5.5 reason for >15min on a chat query,
+        tripping Lambda's 900s timeout three invocations in a row.
+    "low" / "medium" / "high" / "xhigh": progressively more
+        thorough but slower.
 
     Only relevant when shared.model_client routes a request through
     _responses_backend (i.e. an openai.gpt-5* / openai.codex-* model
     or a deploy with bedrock_default_backend = "responses").
   EOT
-  default     = "minimal"
+  default     = "none"
   validation {
-    condition     = contains(["minimal", "low", "medium", "high"], var.bedrock_responses_reasoning_effort)
-    error_message = "bedrock_responses_reasoning_effort must be one of: minimal, low, medium, high."
+    condition     = contains(["none", "low", "medium", "high", "xhigh"], var.bedrock_responses_reasoning_effort)
+    error_message = "bedrock_responses_reasoning_effort must be one of: none, low, medium, high, xhigh (Mantle vocabulary -- 'minimal' is OpenAI direct only)."
   }
 }
 

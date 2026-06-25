@@ -140,11 +140,13 @@ def test_invoke_text_only_passes_input_max_output_tokens():
     # change has to update the constant and this test together.
     assert kwargs["max_output_tokens"] == 64 * 4
     # reasoning.effort is read from BEDROCK_RESPONSES_REASONING_EFFORT
-    # env var with default "minimal" -- bounds GPT-5's deliberation
-    # to chat-friendly latency. Live-burned 2026-06-25: default
-    # "medium" let GPT-5.5 reason >15min on chat queries and trip
-    # Lambda's 900s timeout.
-    assert kwargs["reasoning"] == {"effort": "minimal"}
+    # env var with default "none" -- disables GPT-5's deliberation
+    # entirely for chat-friendly latency. Mantle vocabulary differs
+    # from OpenAI direct; "minimal" (OpenAI's term) is rejected with
+    # HTTP 400 at the wire. Live-burned 2026-06-25: tried "minimal"
+    # first, got "Unsupported value ... Supported values are: 'none',
+    # 'low', 'medium', 'high', and 'xhigh'."
+    assert kwargs["reasoning"] == {"effort": "none"}
     assert "temperature" not in kwargs
     assert "top_p" not in kwargs
     assert resp.text == "Paris"
