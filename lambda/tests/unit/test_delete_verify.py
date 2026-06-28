@@ -17,7 +17,7 @@ WS = "ws1"
 
 
 def _tables(ddb):
-    for name in ("sg", "cm"):
+    for name in ("sg", "cm", "pw"):
         ddb.create_table(
             TableName=name,
             AttributeDefinitions=[
@@ -45,11 +45,14 @@ def test_check_repo_clean_all_empty():
             workspace_id=WS, repo_bare="repo", repo_name="owner/repo",
             dynamodb=ddb, s3_client=s3,
             symbol_graph_table="sg", code_maps_table="cm", kb_bucket="kb-bucket",
+            pending_work_table="pw",
         )
         assert r["clean"] is True
         assert r["stores"] == {
             "symbol_graph_facts": 0, "code_maps_pointer": False,
+            "code_maps_state_rows": 0,
             "kb_owner_objects": 0, "kb_bare_objects": 0,
+            "pending_work_rows": 0,
         }
 
 
@@ -60,6 +63,20 @@ def test_check_repo_clean_flags_each_leaked_store():
         ddb.Table("sg").put_item(Item={"PK": f"{WS}#repo", "SK": "calls#1"})
         ddb.Table("cm").put_item(
             Item={"PK": f"SYMBOL_GRAPH#{WS}#repo", "SK": "POINTER"}
+        )
+        # State rows (the rows that previously leaked).
+        ddb.Table("cm").put_item(
+            Item={"PK": "repo#repo", "SK": "state#last-processed", "sha": "abc"}
+        )
+        ddb.Table("cm").put_item(
+            Item={"PK": "repo#repo", "SK": "state#ingest-docs", "sha": "abc"}
+        )
+        # Pending-work counters.
+        ddb.Table("pw").put_item(
+            Item={
+                "PK": f"WS#{WS}#GITHUB_REPO#owner/repo",
+                "SK": "PENDING#code_map_dispatch#abc",
+            }
         )
         s3 = boto3.client("s3", region_name="us-west-2")
         s3.create_bucket(
@@ -73,12 +90,15 @@ def test_check_repo_clean_flags_each_leaked_store():
             workspace_id=WS, repo_bare="repo", repo_name="owner/repo",
             dynamodb=ddb, s3_client=s3,
             symbol_graph_table="sg", code_maps_table="cm", kb_bucket="kb-bucket",
+            pending_work_table="pw",
         )
         assert r["clean"] is False
         assert r["stores"]["symbol_graph_facts"] == 1
         assert r["stores"]["code_maps_pointer"] is True
+        assert r["stores"]["code_maps_state_rows"] == 2
         assert r["stores"]["kb_owner_objects"] == 1
         assert r["stores"]["kb_bare_objects"] == 1
+        assert r["stores"]["pending_work_rows"] == 1
 
 
 def test_check_repo_clean_skips_unconfigured_stores():

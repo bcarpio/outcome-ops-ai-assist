@@ -550,9 +550,12 @@ module "delete_worker_lambda" {
       ENV       = var.environment
       APP_NAME  = var.app_name
       KB_BUCKET = module.knowledge_base_bucket.s3_bucket_id
-      # delete_symbol_graph action cleans a removed repo's facts + pointer.
+      # delete_symbol_graph cleans every per-repo store the SHA-truth ledger
+      # writes: symbol-graph facts + pointer, code-maps ingest state rows,
+      # and pending-work fan-out counters.
       SYMBOL_GRAPH_TABLE = module.symbol_graph_table.dynamodb_table_id
       CODE_MAPS_TABLE    = module.code_maps_table.dynamodb_table_id
+      PENDING_WORK_TABLE = module.code_map_pending_work_table.dynamodb_table_id
     },
     local.ha_writer_env,
   )
@@ -560,7 +563,7 @@ module "delete_worker_lambda" {
   # IAM permissions
   attach_policy_statements = true
   policy_statements = merge({
-    # Symbol-graph + code-maps cleanup on repo removal (delete_symbol_graph).
+    # Symbol-graph + code-maps + pending-work cleanup on repo removal.
     dynamodb_symbol_graph = {
       effect = "Allow"
       actions = [
@@ -572,6 +575,7 @@ module "delete_worker_lambda" {
       resources = [
         module.symbol_graph_table.dynamodb_table_arn,
         module.code_maps_table.dynamodb_table_arn,
+        module.code_map_pending_work_table.dynamodb_table_arn,
       ]
     }
 

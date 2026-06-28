@@ -46,6 +46,22 @@ def pointer_present(table, workspace_id: str, repo_bare: str) -> bool:
     return "Item" in resp
 
 
+def count_partition_rows(table, pk: str) -> int:
+    """Total rows under one DynamoDB partition (paginated COUNT)."""
+    total = 0
+    kwargs: Dict[str, Any] = {
+        "KeyConditionExpression": Key("PK").eq(pk),
+        "Select": "COUNT",
+    }
+    while True:
+        resp = table.query(**kwargs)
+        total += resp.get("Count", 0)
+        lek = resp.get("LastEvaluatedKey")
+        if not lek:
+            return total
+        kwargs["ExclusiveStartKey"] = lek
+
+
 def count_s3_objects(s3_client, bucket: str, prefix: str) -> int:
     """Number of S3 objects under a prefix (paginated)."""
     total, token = 0, None
@@ -70,6 +86,7 @@ def check_repo_clean(
     symbol_graph_table: str = "",
     code_maps_table: str = "",
     kb_bucket: str = "",
+    pending_work_table: str = "",
 ) -> Dict[str, Any]:
     """Region-scoped completeness check for a removed repo.
 
@@ -89,6 +106,11 @@ def check_repo_clean(
         if code_maps_table
         else False
     )
+    state_rows = (
+        count_partition_rows(dynamodb.Table(code_maps_table), f"repo#{repo_bare}")
+        if code_maps_table
+        else 0
+    )
     kb_owner = (
         count_s3_objects(s3_client, kb_bucket, f"workspaces/{workspace_id}/github/{repo_name}/")
         if kb_bucket
@@ -99,11 +121,28 @@ def check_repo_clean(
         if kb_bucket and repo_bare != repo_name
         else 0
     )
+    pending = (
+        count_partition_rows(
+            dynamodb.Table(pending_work_table),
+            f"WS#{workspace_id}#GITHUB_REPO#{repo_name}",
+        )
+        if pending_work_table
+        else 0
+    )
     stores = {
         "symbol_graph_facts": sg,
         "code_maps_pointer": ptr,
+        "code_maps_state_rows": state_rows,
         "kb_owner_objects": kb_owner,
         "kb_bare_objects": kb_bare,
+        "pending_work_rows": pending,
     }
-    clean = sg == 0 and not ptr and kb_owner == 0 and kb_bare == 0
+    clean = (
+        sg == 0
+        and not ptr
+        and state_rows == 0
+        and kb_owner == 0
+        and kb_bare == 0
+        and pending == 0
+    )
     return {"clean": clean, "stores": stores}

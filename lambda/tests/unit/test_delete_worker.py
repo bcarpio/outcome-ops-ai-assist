@@ -1765,54 +1765,102 @@ def _make_sg_tables(region="us-west-2"):
         ],
         BillingMode="PAY_PER_REQUEST",
     )
-    return ddb, sg, cm
+    pw = ddb.create_table(
+        TableName="pw-test",
+        AttributeDefinitions=[
+            {"AttributeName": "PK", "AttributeType": "S"},
+            {"AttributeName": "SK", "AttributeType": "S"},
+        ],
+        KeySchema=[
+            {"AttributeName": "PK", "KeyType": "HASH"},
+            {"AttributeName": "SK", "KeyType": "RANGE"},
+        ],
+        BillingMode="PAY_PER_REQUEST",
+    )
+    return ddb, sg, cm, pw
 
 
 def test_handle_delete_symbol_graph_clears_facts_and_pointer():
     from moto import mock_aws
     with mock_aws():
-        ddb, sg, cm = _make_sg_tables()
+        ddb, sg, cm, pw = _make_sg_tables()
         # 3 facts for the target repo + 1 fact for a DIFFERENT repo (must survive).
         for i in range(3):
             sg.put_item(Item={"PK": "ws#repo", "SK": f"calls#{i}", "x": 1})
         sg.put_item(Item={"PK": "ws#other", "SK": "calls#0", "x": 1})
         cm.put_item(Item={"PK": "SYMBOL_GRAPH#ws#repo", "SK": "POINTER", "sha": "abc"})
+        # Ingest-side state rows (the rows that previously leaked).
+        cm.put_item(Item={"PK": "repo#repo", "SK": "state#last-processed", "sha": "abc"})
+        cm.put_item(Item={"PK": "repo#repo", "SK": "state#ingest-docs", "sha": "abc"})
+        # Another repo's state must survive.
+        cm.put_item(Item={"PK": "repo#other", "SK": "state#last-processed", "sha": "xyz"})
+        # Pending-work fan-out counters for the SHA.
+        pw.put_item(Item={
+            "PK": "WS#ws#GITHUB_REPO#owner/repo",
+            "SK": "PENDING#code_map_dispatch#abc",
+            "expected": 1,
+        })
+        pw.put_item(Item={
+            "PK": "WS#ws#GITHUB_REPO#owner/repo",
+            "SK": "PENDING#docs#abc",
+            "expected": 1,
+        })
+        # Another repo's pending-work must survive.
+        pw.put_item(Item={
+            "PK": "WS#ws#GITHUB_REPO#owner/other",
+            "SK": "PENDING#docs#abc",
+            "expected": 1,
+        })
 
         handler_module.dynamodb = ddb
         handler_module.SYMBOL_GRAPH_TABLE = "sg-test"
         handler_module.CODE_MAPS_TABLE = "cm-test"
+        handler_module.PENDING_WORK_TABLE = "pw-test"
 
         res = handler_module.handle_delete_symbol_graph(
-            {"workspace_id": "ws", "repo_bare": "repo"}
+            {"workspace_id": "ws", "repo_bare": "repo", "repo": "owner/repo"}
         )
         assert res["status"] == "success"
         assert res["facts_deleted"] == 3
         assert res["pointer_deleted"] == 1
+        assert res["state_rows_deleted"] == 2
+        assert res["pending_deleted"] == 2
         assert res["verified_clean"] is True
         # Target repo's facts gone; other repo untouched; pointer gone.
-        assert sg.query(
-            KeyConditionExpression=__import__("boto3").dynamodb.conditions.Key("PK").eq("ws#repo")
-        )["Count"] == 0
-        assert sg.query(
-            KeyConditionExpression=__import__("boto3").dynamodb.conditions.Key("PK").eq("ws#other")
-        )["Count"] == 1
+        from boto3.dynamodb.conditions import Key
+        assert sg.query(KeyConditionExpression=Key("PK").eq("ws#repo"))["Count"] == 0
+        assert sg.query(KeyConditionExpression=Key("PK").eq("ws#other"))["Count"] == 1
         assert "Item" not in cm.get_item(
             Key={"PK": "SYMBOL_GRAPH#ws#repo", "SK": "POINTER"}
         )
+        # Target repo's state rows gone; other repo's state row survives.
+        assert cm.query(KeyConditionExpression=Key("PK").eq("repo#repo"))["Count"] == 0
+        assert cm.query(KeyConditionExpression=Key("PK").eq("repo#other"))["Count"] == 1
+        # Target repo's pending-work gone; other repo's pending survives.
+        assert pw.query(
+            KeyConditionExpression=Key("PK").eq("WS#ws#GITHUB_REPO#owner/repo")
+        )["Count"] == 0
+        assert pw.query(
+            KeyConditionExpression=Key("PK").eq("WS#ws#GITHUB_REPO#owner/other")
+        )["Count"] == 1
 
 
 def test_handle_delete_symbol_graph_idempotent_no_facts():
     from moto import mock_aws
     with mock_aws():
-        ddb, sg, cm = _make_sg_tables()
+        ddb, sg, cm, pw = _make_sg_tables()
         handler_module.dynamodb = ddb
         handler_module.SYMBOL_GRAPH_TABLE = "sg-test"
         handler_module.CODE_MAPS_TABLE = "cm-test"
+        handler_module.PENDING_WORK_TABLE = "pw-test"
         res = handler_module.handle_delete_symbol_graph(
-            {"workspace_id": "ws", "repo_bare": "nonexistent"}
+            {"workspace_id": "ws", "repo_bare": "nonexistent", "repo": "owner/nonexistent"}
         )
         assert res["status"] == "success"
         assert res["facts_deleted"] == 0
+        assert res["state_rows_deleted"] == 0
+        assert res["pending_deleted"] == 0
+        assert res["verified_clean"] is True
 
 
 def test_handle_delete_symbol_graph_requires_repo():

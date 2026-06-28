@@ -25,6 +25,9 @@ def test_build_messages_owner_prefixed():
     assert prefixes == {"owner/repo/", "repo/"}  # owner + bare
     sg = [m for m in msgs if m["action"] == "delete_symbol_graph"][0]
     assert sg["repo_bare"] == "repo"
+    # Owner-prefixed name carried separately so the worker can clean
+    # pending-work rows whose PK uses owner/repo (delete-cascade gap fix).
+    assert sg["repo"] == "owner/repo"
     assert all(m["workspace_id"] == "ws1" for m in msgs)
 
 
@@ -34,6 +37,7 @@ def test_build_messages_no_owner_skips_bare_duplicate():
     assert [m["action"] for m in msgs] == ["delete_prefix", "delete_symbol_graph"]
     assert msgs[0]["prefix"] == "repo/"
     assert msgs[1]["repo_bare"] == "repo"
+    assert msgs[1]["repo"] == "repo"
 
 
 def test_dispatch_single_region():

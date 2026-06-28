@@ -44,6 +44,7 @@ APP_NAME = os.environ.get("APP_NAME", "outcome-ops-ai-assist")
 KB_BUCKET = os.environ.get("KB_BUCKET")
 SYMBOL_GRAPH_TABLE = os.environ.get("SYMBOL_GRAPH_TABLE")
 CODE_MAPS_TABLE = os.environ.get("CODE_MAPS_TABLE")
+PENDING_WORK_TABLE = os.environ.get("PENDING_WORK_TABLE")
 
 # AWS clients
 s3_client = boto3.client("s3")
@@ -713,31 +714,8 @@ def handle_delete_orphans(message: Dict) -> Dict[str, Any]:
 # ============================================================================
 
 
-def handle_delete_symbol_graph(message: Dict) -> Dict[str, Any]:
-    """Delete all symbol-graph facts for a removed repo, plus its
-    code-maps pointer row.
-
-    The symbol-graph table is keyed ``PK = {workspace_id}#{repo}`` using
-    the BARE repo name (no owner prefix) — unlike KB keys. Repo removal
-    must clean these or the facts persist forever (polluting structural
-    queries and any re-add). The code-maps pointer
-    (``SYMBOL_GRAPH#{ws}#{repo}`` / ``POINTER``) is the SHA-truth anchor
-    for the same (workspace, repo) and is removed too.
-
-    Idempotent: a repo with no facts / no pointer is a clean no-op.
-    """
-    workspace_id = message.get("workspace_id", "")
-    repo = message.get("repo_bare", "") or message.get("repo", "")
-    if not workspace_id or not repo:
-        return {"status": "error", "reason": "workspace_id and repo required"}
-    if not SYMBOL_GRAPH_TABLE:
-        logger.warning("[delete_symbol_graph] SYMBOL_GRAPH_TABLE not configured; skipping")
-        return {"status": "skipped", "reason": "SYMBOL_GRAPH_TABLE not configured"}
-
-    pk = f"{workspace_id}#{repo}"
-    table = dynamodb.Table(SYMBOL_GRAPH_TABLE)
-
-    # Collect every SK under the partition (project keys only).
+def _query_all_keys(table, pk: str) -> List[Dict[str, str]]:
+    """Return every (PK,SK) pair under one partition. Paginates."""
     keys: List[Dict[str, str]] = []
     query_kwargs = {
         "KeyConditionExpression": Key("PK").eq(pk),
@@ -750,56 +728,143 @@ def handle_delete_symbol_graph(message: Dict) -> Dict[str, Any]:
         if not lek:
             break
         query_kwargs["ExclusiveStartKey"] = lek
+    return keys
 
+
+def handle_delete_symbol_graph(message: Dict) -> Dict[str, Any]:
+    """Clean every per-repo store the SHA-truth ledger writes to.
+
+    Despite the name, this cleans more than the symbol graph — it is the
+    single repo-delete cascade for DynamoDB-backed per-repo state:
+
+    - Symbol-graph facts at ``PK = {workspace_id}#{repo_bare}`` in
+      ``SYMBOL_GRAPH_TABLE`` (bare repo name; mirrors how the writer
+      keys them).
+    - Symbol-graph SHA-truth pointer at
+      ``PK = SYMBOL_GRAPH#{workspace_id}#{repo_bare} / SK = POINTER``
+      in ``CODE_MAPS_TABLE``.
+    - ALL ingest-side state rows for the repo at ``PK = repo#{repo_bare}``
+      in ``CODE_MAPS_TABLE`` (e.g. ``state#last-processed``,
+      ``state#ingest-docs``). github-sync reads ``state#last-processed``
+      to decide skip-vs-resync, so leaving it makes a re-add no-op.
+    - All fan-out counters in ``PENDING_WORK_TABLE`` at
+      ``PK = WS#{workspace_id}#GITHUB_REPO#{owner_repo}``.
+
+    The owner-prefixed ``repo`` field is required for the pending-work
+    cleanup (its PK uses owner/repo, unlike the bare-keyed rows above).
+
+    Idempotent: missing partitions are clean no-ops.
+    """
+    workspace_id = message.get("workspace_id", "")
+    repo_bare = message.get("repo_bare", "") or message.get("repo", "")
+    repo_owner = message.get("repo", "")
+    if not workspace_id or not repo_bare:
+        return {"status": "error", "reason": "workspace_id and repo required"}
+    if not SYMBOL_GRAPH_TABLE:
+        logger.warning("[delete_symbol_graph] SYMBOL_GRAPH_TABLE not configured; skipping")
+        return {"status": "skipped", "reason": "SYMBOL_GRAPH_TABLE not configured"}
+
+    sg_pk = f"{workspace_id}#{repo_bare}"
+    sg_table = dynamodb.Table(SYMBOL_GRAPH_TABLE)
+
+    sg_keys = _query_all_keys(sg_table, sg_pk)
     facts_deleted = 0
-    with table.batch_writer() as bw:
-        for key in keys:
+    with sg_table.batch_writer() as bw:
+        for key in sg_keys:
             bw.delete_item(Key=key)
             facts_deleted += 1
 
     pointer_deleted = 0
+    state_rows_deleted = 0
     if CODE_MAPS_TABLE:
+        cm_table = dynamodb.Table(CODE_MAPS_TABLE)
         try:
-            dynamodb.Table(CODE_MAPS_TABLE).delete_item(
-                Key={"PK": f"SYMBOL_GRAPH#{workspace_id}#{repo}", "SK": "POINTER"}
+            cm_table.delete_item(
+                Key={"PK": f"SYMBOL_GRAPH#{workspace_id}#{repo_bare}", "SK": "POINTER"}
             )
             pointer_deleted = 1
         except ClientError as e:
             logger.warning(
-                f"[delete_symbol_graph] pointer delete failed for {pk}: {e}"
+                f"[delete_symbol_graph] pointer delete failed for {sg_pk}: {e}"
             )
 
-    # Post-delete self-verification (delete-bug 04): the partition + pointer
-    # we just deleted must now be empty. A non-zero remainder means a delete
-    # regression — surface it loudly so it can't ship silently.
-    remaining = table.query(
-        KeyConditionExpression=Key("PK").eq(pk), Select="COUNT"
+        # Ingest-side state rows under repo#{bare}. Query every SK so future
+        # state SKs are cleaned without code change.
+        state_keys = _query_all_keys(cm_table, f"repo#{repo_bare}")
+        with cm_table.batch_writer() as bw:
+            for key in state_keys:
+                bw.delete_item(Key=key)
+                state_rows_deleted += 1
+
+    pending_deleted = 0
+    pending_remaining = 0
+    if PENDING_WORK_TABLE and repo_owner:
+        pw_table = dynamodb.Table(PENDING_WORK_TABLE)
+        pw_pk = f"WS#{workspace_id}#GITHUB_REPO#{repo_owner}"
+        pw_keys = _query_all_keys(pw_table, pw_pk)
+        with pw_table.batch_writer() as bw:
+            for key in pw_keys:
+                bw.delete_item(Key=key)
+                pending_deleted += 1
+        pending_remaining = pw_table.query(
+            KeyConditionExpression=Key("PK").eq(pw_pk), Select="COUNT"
+        ).get("Count", 0)
+    elif not PENDING_WORK_TABLE:
+        logger.warning(
+            "[delete_symbol_graph] PENDING_WORK_TABLE not configured; "
+            "pending-work rows for the repo will be orphaned"
+        )
+    elif not repo_owner:
+        logger.warning(
+            f"[delete_symbol_graph] no owner-prefixed repo in message; "
+            f"cannot clean pending-work for {repo_bare}"
+        )
+
+    # Post-delete self-verification: every partition we just wiped must be
+    # empty. A non-zero remainder means a delete regression — surface it
+    # loudly so it can't ship silently.
+    sg_remaining = sg_table.query(
+        KeyConditionExpression=Key("PK").eq(sg_pk), Select="COUNT"
     ).get("Count", 0)
     pointer_left = False
+    state_remaining = 0
     if CODE_MAPS_TABLE:
-        pointer_left = "Item" in dynamodb.Table(CODE_MAPS_TABLE).get_item(
-            Key={"PK": f"SYMBOL_GRAPH#{workspace_id}#{repo}", "SK": "POINTER"}
+        cm_table = dynamodb.Table(CODE_MAPS_TABLE)
+        pointer_left = "Item" in cm_table.get_item(
+            Key={"PK": f"SYMBOL_GRAPH#{workspace_id}#{repo_bare}", "SK": "POINTER"}
         )
-    verified_clean = remaining == 0 and not pointer_left
+        state_remaining = cm_table.query(
+            KeyConditionExpression=Key("PK").eq(f"repo#{repo_bare}"), Select="COUNT"
+        ).get("Count", 0)
+    verified_clean = (
+        sg_remaining == 0
+        and not pointer_left
+        and state_remaining == 0
+        and pending_remaining == 0
+    )
 
     logger.info(
-        f"[delete_symbol_graph] {pk}: deleted {facts_deleted} facts, "
-        f"{pointer_deleted} pointer row(s)"
+        f"[delete_symbol_graph] {sg_pk}: deleted {facts_deleted} facts, "
+        f"{pointer_deleted} pointer row(s), {state_rows_deleted} state row(s), "
+        f"{pending_deleted} pending-work row(s)"
     )
     if verified_clean:
-        logger.info(f"[delete_symbol_graph] VERIFY clean: {pk}")
+        logger.info(f"[delete_symbol_graph] VERIFY clean: {sg_pk}")
     else:
         logger.warning(
-            f"[delete_symbol_graph] VERIFY FAILED: {pk} still has "
-            f"{remaining} facts, pointer_present={pointer_left}"
+            f"[delete_symbol_graph] VERIFY FAILED: {sg_pk} still has "
+            f"{sg_remaining} facts, pointer_present={pointer_left}, "
+            f"{state_remaining} state row(s), {pending_remaining} pending row(s)"
         )
     return {
         "status": "success",
         "action": "delete_symbol_graph",
         "facts_deleted": facts_deleted,
         "pointer_deleted": pointer_deleted,
+        "state_rows_deleted": state_rows_deleted,
+        "pending_deleted": pending_deleted,
         "verified_clean": verified_clean,
-        "remaining_facts": remaining,
+        "remaining_facts": sg_remaining,
     }
 
 

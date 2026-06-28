@@ -36,6 +36,7 @@ SIBLING = "bcarpio/spring-petclinic"
 SIBLING_BARE = "spring-petclinic"
 SG_TABLE = "sg-int"
 CM_TABLE = "cm-int"
+PW_TABLE = "pw-int"
 KB = "kb-int-bucket"
 
 
@@ -52,7 +53,7 @@ def _load_handler():
 
 def _make_stores(region="us-west-2"):
     ddb = boto3.resource("dynamodb", region_name=region)
-    for name in (SG_TABLE, CM_TABLE):
+    for name in (SG_TABLE, CM_TABLE, PW_TABLE):
         ddb.create_table(
             TableName=name,
             AttributeDefinitions=[
@@ -77,8 +78,19 @@ def _seed_repo(ddb, s3, owner_repo, bare):
     sg = ddb.Table(SG_TABLE)
     for i in range(5):
         sg.put_item(Item={"PK": f"{WS}#{bare}", "SK": f"calls#{i}", "v": i})
-    ddb.Table(CM_TABLE).put_item(
+    cm = ddb.Table(CM_TABLE)
+    cm.put_item(
         Item={"PK": f"SYMBOL_GRAPH#{WS}#{bare}", "SK": "POINTER", "graph_sha": "deadbeef"}
+    )
+    # Ingest-side state rows (the rows the original cascade leaked).
+    cm.put_item(Item={"PK": f"repo#{bare}", "SK": "state#last-processed", "sha": "deadbeef"})
+    cm.put_item(Item={"PK": f"repo#{bare}", "SK": "state#ingest-docs", "sha": "deadbeef"})
+    ddb.Table(PW_TABLE).put_item(
+        Item={
+            "PK": f"WS#{WS}#GITHUB_REPO#{owner_repo}",
+            "SK": "PENDING#code_map_dispatch#deadbeef",
+            "expected": 1,
+        }
     )
     s3.put_object(
         Bucket=KB, Key=f"workspaces/{WS}/github/{owner_repo}/src/Main.java", Body=b"x"
@@ -95,6 +107,7 @@ def _wire(handler, ddb, s3):
     handler.s3_client = s3
     handler.SYMBOL_GRAPH_TABLE = SG_TABLE
     handler.CODE_MAPS_TABLE = CM_TABLE
+    handler.PENDING_WORK_TABLE = PW_TABLE
     handler.KB_BUCKET = KB
 
 
@@ -121,6 +134,7 @@ def _clean(ddb, s3, owner_repo, bare):
         symbol_graph_table=SG_TABLE,
         code_maps_table=CM_TABLE,
         kb_bucket=KB,
+        pending_work_table=PW_TABLE,
     )
 
 
@@ -149,8 +163,10 @@ def test_full_delete_clears_all_stores_in_region(region):
         assert report["stores"] == {
             "symbol_graph_facts": 0,
             "code_maps_pointer": False,
+            "code_maps_state_rows": 0,
             "kb_owner_objects": 0,
             "kb_bare_objects": 0,
+            "pending_work_rows": 0,
         }
 
 
@@ -175,5 +191,7 @@ def test_full_delete_spares_prefix_colliding_sibling():
         assert sibling["clean"] is False
         assert sibling["stores"]["symbol_graph_facts"] == 5
         assert sibling["stores"]["code_maps_pointer"] is True
+        assert sibling["stores"]["code_maps_state_rows"] == 2
         assert sibling["stores"]["kb_owner_objects"] == 1
         assert sibling["stores"]["kb_bare_objects"] == 1
+        assert sibling["stores"]["pending_work_rows"] == 1

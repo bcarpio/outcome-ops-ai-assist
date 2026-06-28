@@ -309,10 +309,12 @@ module "delete_worker_lambda_secondary" {
       ENV       = var.environment
       APP_NAME  = var.app_name
       KB_BUCKET = module.knowledge_base_bucket_secondary.s3_bucket_id
-      # delete_symbol_graph cleans the secondary region's facts + pointer
-      # when repo-delete messages are dispatched here (delete-bug 02).
+      # delete_symbol_graph cleans every per-repo store in the secondary
+      # region: symbol-graph facts + pointer, code-maps ingest state rows,
+      # and pending-work fan-out counters (delete-bug 02).
       SYMBOL_GRAPH_TABLE = module.symbol_graph_table_secondary[0].dynamodb_table_id
       CODE_MAPS_TABLE    = module.code_maps_table_secondary[0].dynamodb_table_id
+      PENDING_WORK_TABLE = module.code_map_pending_work_table_secondary[0].dynamodb_table_id
     },
     local.ha_writer_env_secondary,
   )
@@ -326,6 +328,7 @@ module "delete_worker_lambda_secondary" {
         resources = [
           module.symbol_graph_table_secondary[0].dynamodb_table_arn,
           module.code_maps_table_secondary[0].dynamodb_table_arn,
+          module.code_map_pending_work_table_secondary[0].dynamodb_table_arn,
         ]
       }
       s3_kb = {

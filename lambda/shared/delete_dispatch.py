@@ -57,6 +57,7 @@ def build_repo_delete_messages(workspace_id: str, repo_name: str) -> List[Dict[s
             "action": "delete_symbol_graph",
             "workspace_id": workspace_id,
             "repo_bare": repo_bare,
+            "repo": repo_name,
         }
     )
     return messages
