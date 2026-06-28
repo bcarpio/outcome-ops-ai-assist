@@ -319,6 +319,47 @@ class TestGenerateEmbedding:
         assert len(result) == 1024
         mock_bedrock.invoke_model.assert_called_once()
 
+    @patch("process_batch_summary_handler.bedrock_client")
+    def test_generate_embedding_truncates_long_text(self, mock_bedrock):
+        """Titan Embeddings v2 hard-caps input at 50000 chars and
+        rejects with ValidationException above that. The safety net
+        truncates at 45000 chars BEFORE the call so a verbose-day
+        summary still gets a vector. Live-burned 2026-06-28:
+        27 of 31 handler-group summaries on app.retrieveit.ai had
+        failed embedding silently before this guard."""
+        # Arrange: text longer than the safety-net limit.
+        long_text = "x" * 60000
+        mock_embedding = [0.1] * 1024
+        mock_bedrock.invoke_model.return_value = {
+            "body": MagicMock(read=lambda: json.dumps({"embedding": mock_embedding}).encode())
+        }
+
+        # Act
+        result = generate_embedding(long_text)
+
+        # Assert: call succeeded; payload was truncated to 45000.
+        assert result == mock_embedding
+        mock_bedrock.invoke_model.assert_called_once()
+        sent_body = json.loads(mock_bedrock.invoke_model.call_args.kwargs["body"])
+        assert len(sent_body["inputText"]) == 45000
+
+    @patch("process_batch_summary_handler.bedrock_client")
+    def test_generate_embedding_does_not_truncate_short_text(self, mock_bedrock):
+        """Backward-compat: text under the cap is passed through
+        unchanged. Normal-sized code-map summaries (~20k chars after
+        the prompt-tightening commit) should not see truncation."""
+        text = "x" * 30000
+        mock_embedding = [0.1] * 1024
+        mock_bedrock.invoke_model.return_value = {
+            "body": MagicMock(read=lambda: json.dumps({"embedding": mock_embedding}).encode())
+        }
+
+        result = generate_embedding(text)
+
+        assert result == mock_embedding
+        sent_body = json.loads(mock_bedrock.invoke_model.call_args.kwargs["body"])
+        assert len(sent_body["inputText"]) == 30000
+
 
 class TestStoreBatchSummary:
     """Test storing batch summaries in S3 Vectors."""
@@ -808,8 +849,12 @@ def test_build_batch_prompt_injects_grounding_before_discipline():
     )
     assert "VERIFIED SYMBOLS" in prompt
     # Grounding precedes the task body, which precedes the literal discipline.
-    assert prompt.index("VERIFIED SYMBOLS") < prompt.index("Analyze the auth")
-    assert prompt.index("Analyze the auth") < prompt.index("LITERAL-VALUE DISCIPLINE")
+    # Anchor on a stable phrase from the handler-group prompt body
+    # (was "Analyze the auth" pre-2026-06-28; the prompt was tightened
+    # to produce concise summaries and the new opener is
+    # "Write a CONCISE implementation overview").
+    assert prompt.index("VERIFIED SYMBOLS") < prompt.index("CONCISE implementation overview")
+    assert prompt.index("CONCISE implementation overview") < prompt.index("LITERAL-VALUE DISCIPLINE")
 
 
 def test_build_batch_prompt_no_grounding_unchanged_shape():

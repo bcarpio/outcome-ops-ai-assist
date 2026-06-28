@@ -467,50 +467,26 @@ def _build_batch_prompt(
     """Build prompt based on batch type with the given files section."""
     prompt_templates = {
         "infrastructure": f"Summarize the infrastructure for {repo} based on these Terraform files. Describe what resources are created, how they're organized, and the overall architecture.\n\n{files_section}",
-        "handler-group": f"""Analyze the {group_name} Lambda handler for {repo} and provide detailed implementation documentation for debugging.
+        "handler-group": f"""Write a CONCISE implementation overview of the {group_name} Lambda handler for {repo}. Target ~3000 words. A reader uses this summary as an INDEX to navigate the source -- they will read source for exact values. Do not turn this into a documentation rewrite.
 
-Extract the following for EACH function in this handler:
+Discipline:
+- Group functions by what they DO. Don't document each function in its own subsection unless it is genuinely unique. Helper functions, similar CRUD functions, and lazy-init client factories should be summarized as one paragraph naming the group, not enumerated.
+- State each pattern ONCE. If five functions all read SSM the same way, write "The handler reads SSM parameters via a cached client" once and list which functions use it. Don't repeat the pattern in each function's section.
+- Skip cross-references unless they're load-bearing for understanding (e.g. an unobvious dependency on another Lambda). Don't list every shared utility import.
+- If a function is trivial (one-line wrapper, getter, formatter), do not document it. Mention by name only.
 
-## Function Signatures
-- Function name and parameters with types
-- Parameter format specifications (e.g., UUID format, slug format: {{{{name[:90]}}}}-{{{{id[:6]}}}})
-- Query string parameters (for API handlers) or event structure (for event-driven handlers)
-- Required vs optional parameters
+Cover these themes, blended into prose -- not separate per-function rubric:
 
-## Query Patterns
-- DynamoDB query patterns (PK/SK keys, filters, scans, indexes)
-- S3 access patterns (bucket, key patterns)
-- External API calls and their purposes
+1. Module role + trigger model. What invokes the handler (SQS, EventBridge, API Gateway, DynamoDB Streams). Top-level dispatch logic.
+2. The principal user-facing functions (typically 2-5 per handler). For each, briefly: what it does, what calls it, what it returns on success vs failure (outcome category, not exact codes), and the one or two pitfalls that matter.
+3. Datastore / external-system interactions, by KIND not by exact identifier. Name the FIELDS schema, not the table-name strings. Mention "writes to a DynamoDB table keyed by a customer-scoped prefix" rather than listing exact key strings.
+4. Notable design decisions or non-obvious behaviors that a debugger would benefit from knowing (e.g. "blacklisted users receive a 200 silently to avoid enumeration").
 
-## Returns and Errors
-- Success responses with HTTP status codes (e.g., 200, 201)
-- Error responses with HTTP status codes (e.g., 400, 404, 500)
-- What triggers each error condition
-- Response body structure for success and error cases
-
-## Data Contracts
-- Data format specifications (slug format, ID format, timestamp format, etc.)
-- Where data is stored (DynamoDB table/fields, S3 paths, SSM parameters)
-- Data relationships (e.g., slug derived from name + first 6 chars of ID)
-- Field names and their types
-
-## Common Pitfalls
-- Incorrect parameter usage patterns that cause errors
-- What will cause 404s (not found), 400s (bad request), or 500s (server errors)
-- Incorrect assumptions about data formats
-- Examples:
-  - "❌ Passing UUID as 'slug' parameter → 404 not found"
-  - "✅ Pass UUID as 'id' parameter OR actual slug as 'slug' parameter"
-  - "❌ Assuming slug equals character_id"
-  - "✅ Slug is derived from name + first 6 chars of ID"
-
-## Cross-References
-- Related functions in other handlers (with file paths)
-- Shared utilities and their locations (e.g., jwt_helper.py, utils.py)
-- Dependencies on other Lambdas or AWS services
-- Where data transformations happen (e.g., slugify() function in character_management)
-
-Format the output as structured documentation that helps developers debug issues and understand implementation details, not just high-level purpose.
+Skip:
+- Exhaustive parameter tables. Name the inputs in prose.
+- Function-by-function signature blocks. The symbol graph already carries signatures.
+- Cross-reference link dumps. The reader has source access.
+- Pitfall examples for trivial mistakes. Only flag pitfalls that take >5min to debug.
 
 {files_section}
 """,
@@ -1071,6 +1047,17 @@ def generate_batch_summary(
     return _call_bedrock_and_audit(merge_prompt, f"{group_name} (merge)")
 
 
+# Titan Embeddings v2 hard input cap. Bedrock rejects InvokeModel with
+# ValidationException "Malformed input request: expected maxLength: 50000"
+# above this. The prompt update lands summaries at ~3000 words / ~20k
+# chars under normal behavior; this constant is a safety net so a
+# verbose-day summary still gets a vector instead of silently failing
+# the whole code-map. Live-burned 2026-06-28: 27 of 31 handler-group
+# summaries on app.retrieveit.ai failed embedding because the legacy
+# prompt produced 58k+ char summaries.
+_EMBEDDING_INPUT_CHAR_LIMIT = 45000
+
+
 def generate_embedding(text: str) -> List[float]:
     """
     Generate embedding using Bedrock Titan Embeddings v2.
@@ -1081,6 +1068,22 @@ def generate_embedding(text: str) -> List[float]:
     Returns:
         1024-dimensional embedding vector
     """
+    if len(text) > _EMBEDDING_INPUT_CHAR_LIMIT:
+        # Truncate at the safety net. The full text still lives in the
+        # vector metadata + S3 (process-batch-summary writes both); only
+        # the embedding's semantic anchor is truncated. The first ~45k
+        # chars of a code-map summary carry the structural overview;
+        # the dropped tail is typically the trailing per-function detail
+        # that would muddy the embedding's semantics anyway.
+        logger.warning(
+            "Embedding input %d chars exceeds %d limit; truncating. "
+            "Code-map prompt should produce shorter summaries -- a "
+            "consistent miss here means the prompt update lost an "
+            "instance.",
+            len(text), _EMBEDDING_INPUT_CHAR_LIMIT,
+        )
+        text = text[:_EMBEDDING_INPUT_CHAR_LIMIT]
+
     def call_titan():
         payload = {
             "inputText": text,
