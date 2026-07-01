@@ -73,6 +73,19 @@ module "analyze_pr_lambda" {
     SYMBOL_GRAPH_TABLE      = module.symbol_graph_table.dynamodb_table_id
     CODE_MAPS_TABLE         = module.code_maps_table.dynamodb_table_id
     GRAPH_RETRIEVAL_ENABLED = "true"
+
+    # Azure DevOps OAuth app credentials -- needed for the widened
+    # provider-aware dispatch path (analyze-pr accepts
+    # provider="azure_devops" requests + refreshes the customer's
+    # OAuth access token before fetching PR metadata / posting the
+    # initial "analysis started" comment). Empty on customer deploys
+    # that haven't configured ADO; the ADO branch surfaces a clear
+    # error in that case. Existing SSM read policy already grants
+    # /prd/outcome-ops-ai-assist/* wildcard which covers the client-
+    # secret path.
+    AZURE_DEVOPS_TENANT_ID               = var.azure_devops_tenant_id
+    AZURE_DEVOPS_CLIENT_ID               = var.azure_devops_client_id
+    AZURE_DEVOPS_CLIENT_SECRET_SSM_PARAM = var.azure_devops_client_secret_ssm_param
   }
 
   # IAM permissions
