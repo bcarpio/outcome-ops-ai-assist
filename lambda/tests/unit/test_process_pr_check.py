@@ -433,8 +433,9 @@ class TestProcessCheckJob:
         # Act
         result = process_check_job(job)
 
-        # Assert
-        assert result.PK == "PR#123"
+        # Assert -- PK is self-contained per (provider, repo, PR)
+        # per chunk 02 of the update-in-place plan.
+        assert result.PK == "PR#github#owner/repo#123"
         assert result.SK == "CHECK#test_coverage"
         assert result.status == CheckStatus.PASS
         assert result.comment_url == "https://github.com/owner/repo/pull/123#issuecomment-456"
@@ -443,6 +444,96 @@ class TestProcessCheckJob:
         mock_get_token.assert_called_once()
         mock_post_comment.assert_called_once()
         assert mock_store.call_count == 2  # Once before comment, once after
+        # Provider-comment-id is extracted from POST response and lands on
+        # the CheckResult so chunk 03's PATCH can target it.
+        assert result.provider_comment_id == 456
+        assert result.provider_thread_id is None
+        assert result.provider_thread_comment_id is None
+
+
+class TestCheckResultUpdateInPlaceFields:
+    """Chunk 02: CheckResult schema carries provider comment identifiers +
+    the widened PK shape so subsequent runs can PATCH the existing
+    comment instead of POSTing a new one."""
+
+    def test_defaults_all_provider_ids_to_none(self):
+        # Backward compat: existing serialized rows had none of these
+        # fields; a CheckResult with just the pre-widening fields
+        # continues to construct cleanly and reports None for all three.
+        r = CheckResult(
+            PK="PR#github#owner/repo#42",
+            SK="CHECK#adr_compliance",
+            checkType=CheckType.ADR_COMPLIANCE,
+            status=CheckStatus.PASS,
+            message="ok", details=[], timestamp="2026-07-01T00:00:00Z",
+        )
+        assert r.provider_comment_id is None
+        assert r.provider_thread_id is None
+        assert r.provider_thread_comment_id is None
+
+    def test_store_check_result_writes_new_fields_when_set(self):
+        result = CheckResult(
+            PK="PR#github#owner/repo#42",
+            SK="CHECK#adr_compliance",
+            checkType=CheckType.ADR_COMPLIANCE,
+            status=CheckStatus.PASS,
+            message="ok", details=[], timestamp="2026-07-01T00:00:00Z",
+            provider_comment_id=12345,
+        )
+        with patch("process_pr_check_handler.dual_write.ddb_put_item") as mock_put:
+            handler_module.store_check_result(result)
+        item = mock_put.call_args.args[1]
+        assert item["providerCommentId"] == 12345
+        assert "providerThreadId" not in item      # None -> omitted
+        assert "providerThreadCommentId" not in item
+
+    def test_store_check_result_writes_ado_thread_fields(self):
+        result = CheckResult(
+            PK="PR#azure_devops#org/proj/repo#7",
+            SK="CHECK#test_coverage",
+            checkType=CheckType.TEST_COVERAGE,
+            status=CheckStatus.WARN,
+            message="warn", details=[], timestamp="2026-07-01T00:00:00Z",
+            provider_thread_id=99,
+            provider_thread_comment_id=1,
+        )
+        with patch("process_pr_check_handler.dual_write.ddb_put_item") as mock_put:
+            handler_module.store_check_result(result)
+        item = mock_put.call_args.args[1]
+        assert item["providerThreadId"] == 99
+        assert item["providerThreadCommentId"] == 1
+        assert "providerCommentId" not in item
+
+    @patch('process_pr_check_handler.store_check_result')
+    @patch('process_pr_check_handler._post_azure_devops_thread')
+    @patch('process_pr_check_handler.run_check')
+    def test_ado_process_check_job_extracts_thread_and_comment_ids(
+        self, mock_run, mock_post_ado, mock_store,
+    ):
+        # ADO POST response shape carries both {"id": thread_id} and
+        # {"comments": [{"id": comment_id, ...}], ...}. Both surface on
+        # the returned CheckResult.
+        mock_run.return_value = {
+            "status": "PASS", "message": "ok", "details": [],
+        }
+        mock_post_ado.return_value = {"id": 77, "comments": [{"id": 1, "content": "x"}]}
+
+        job = CheckJob(
+            checkType="ADR_COMPLIANCE",
+            pr_number=42,
+            repository="example-org/example-project/example-repo",
+            changedFiles=[],
+            provider="azure_devops",
+            connection_id="conn-xyz",
+            org="example-org",
+            project="example-project",
+            repo="example-repo",
+        )
+        result = process_check_job(job)
+        assert result.PK == "PR#azure_devops#example-org/example-project/example-repo#42"
+        assert result.provider_thread_id == 77
+        assert result.provider_thread_comment_id == 1
+        assert result.provider_comment_id is None
 
 
 class TestLicenseComplianceHelpers:

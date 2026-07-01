@@ -150,7 +150,14 @@ class CheckJob(BaseModel):
 
 
 class CheckResult(BaseModel):
-    """Check result schema (stored in DynamoDB)."""
+    """Check result schema (stored in DynamoDB).
+
+    PK shape: ``PR#{provider}#{repo}#{pr_number}`` — self-contained per
+    (provider, repo, PR). Pre-widening the key was ``PR#{pr_number}``,
+    which collided across repos with matching PR numbers; safe with
+    display-only reads, actively broken with the update-in-place UX
+    that reads the stored comment identifiers.
+    """
     PK: str
     SK: str
     check_type: CheckType = Field(..., alias="checkType")
@@ -159,6 +166,25 @@ class CheckResult(BaseModel):
     details: List[str]
     timestamp: str
     comment_url: str | None = Field(None, alias="commentUrl")
+
+    # Provider-specific comment identifiers used by the update-in-place
+    # PR-check UX. Populated after the initial POST; read on subsequent
+    # check-runs to target a PATCH instead of another POST.
+    #
+    # - GitHub: only ``provider_comment_id`` (the issue-comment ID from
+    #   POST /repos/{r}/issues/{n}/comments -> {"id": ...}).
+    # - Azure DevOps: ``provider_thread_id`` (the thread's ID from
+    #   POST .../threads -> {"id": ...}) AND
+    #   ``provider_thread_comment_id`` (the first comment's ID within
+    #   the thread; ADO thread POST returns
+    #   ``{"comments": [{"id": ..., ...}], "id": ...}``).
+    #
+    # All three optional so existing rows (pre-update-in-place) round-
+    # trip cleanly and are treated as "no existing comment -> POST" by
+    # the upsert path.
+    provider_comment_id: int | None = Field(None, alias="providerCommentId")
+    provider_thread_id: int | None = Field(None, alias="providerThreadId")
+    provider_thread_comment_id: int | None = Field(None, alias="providerThreadCommentId")
 
     class Config:
         populate_by_name = True
@@ -359,6 +385,12 @@ def store_check_result(result: CheckResult) -> None:
 
     if result.comment_url:
         item["commentUrl"] = result.comment_url
+    if result.provider_comment_id is not None:
+        item["providerCommentId"] = result.provider_comment_id
+    if result.provider_thread_id is not None:
+        item["providerThreadId"] = result.provider_thread_id
+    if result.provider_thread_comment_id is not None:
+        item["providerThreadCommentId"] = result.provider_thread_comment_id
 
     try:
         dual_write.ddb_put_item(DYNAMODB_TABLE, item)
@@ -534,11 +566,14 @@ def process_check_job(job: CheckJob) -> CheckResult:
     check_result = run_check(job)
     usage = check_result.get("usage")
 
-    # Build full result
+    # Build full result. PK is self-contained per (provider, repo, PR)
+    # so rows don't collide across repos with the same PR number.
+    pk = f"PR#{job.provider}#{job.repository}#{job.pr_number}"
+    sk = f"CHECK#{job.check_type.value.lower()}"
     timestamp = datetime.utcnow().isoformat() + "Z"
     result = CheckResult(
-        PK=f"PR#{job.pr_number}",
-        SK=f"CHECK#{job.check_type.value.lower()}",
+        PK=pk,
+        SK=sk,
         checkType=job.check_type,
         status=CheckStatus(check_result["status"]),
         message=check_result["message"],
@@ -549,7 +584,9 @@ def process_check_job(job: CheckJob) -> CheckResult:
     # Store result in DynamoDB
     store_check_result(result)
 
-    # Post result as a PR comment via the right provider.
+    # Post result as a PR comment via the right provider. Extract the
+    # provider-side comment identifiers so subsequent runs on the same
+    # PR can PATCH-in-place instead of POSTing duplicates (chunk 03).
     comment = format_check_comment(result, usage)
     if job.provider == "azure_devops":
         comment_response = _post_azure_devops_thread(
@@ -560,10 +597,13 @@ def process_check_job(job: CheckJob) -> CheckResult:
             body=comment,
             connection_id=job.connection_id,
         )
-        # ADO thread response shape carries an integer id; build a
-        # human-followable URL so the result row mirrors the github
-        # commentUrl semantics.
+        # ADO thread response shape:
+        #   {"id": <thread_id>, "comments": [{"id": <cid>, ...}], ...}
         thread_id = comment_response.get("id")
+        comments = comment_response.get("comments") or []
+        thread_comment_id = comments[0].get("id") if comments else None
+        result.provider_thread_id = thread_id
+        result.provider_thread_comment_id = thread_comment_id
         comment_url = (
             f"https://dev.azure.com/{job.azure_devops_org}/{job.azure_devops_project}"
             f"/_git/{job.azure_devops_repo}/pullrequest/{job.pr_number}"
@@ -574,11 +614,12 @@ def process_check_job(job: CheckJob) -> CheckResult:
         token = get_github_token()
         comment_response = post_pr_comment(job.repository, job.pr_number, comment, token)
         comment_url = comment_response.get("html_url", "")
+        result.provider_comment_id = comment_response.get("id")
 
     # Update result with comment URL
     result.comment_url = comment_url
 
-    # Update DynamoDB with comment URL
+    # Update DynamoDB with comment URL + provider comment identifiers
     store_check_result(result)
 
     logger.info(f"Check complete: {result.status.value} - {result.message}")
