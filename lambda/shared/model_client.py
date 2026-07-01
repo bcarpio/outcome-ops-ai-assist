@@ -75,6 +75,8 @@ _DISPATCH: list[tuple[str, str]] = [
     ("openai.gpt-5",    "responses"),
     ("us.openai.codex-", "responses"),
     ("openai.codex-",   "responses"),
+    ("us.xai.grok-",    "responses"),
+    ("xai.grok-",       "responses"),
     ("us.anthropic.",   "converse"),
     ("anthropic.",      "converse"),
     ("us.meta.",        "converse"),
