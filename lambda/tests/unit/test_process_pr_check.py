@@ -1934,7 +1934,7 @@ class TestReadmeFreshnessADO:
 
 class TestLicenseComplianceADO:
 
-    def test_ado_branch_scans_files_and_notes_skip(self):
+    def test_ado_branch_scans_files_end_to_end(self):
         from shared.pr_metadata import PRMetadata
 
         fake_pr = PRMetadata(
@@ -1948,6 +1948,8 @@ class TestLicenseComplianceADO:
                    side_effect=[b"before src\n", b"after src\n"]), \
              patch.object(license_compliance_module, "query_knowledge_base",
                           return_value={"answer": "policy text", "sources": []}), \
+             patch.object(license_compliance_module, "get_ai_generated_files",
+                          return_value=[]), \
              patch.object(license_compliance_module, "analyze_file_comprehensive",
                           return_value={"status": "PASS", "issues": [], "phase2_triggered": False}):
             result = license_compliance_module.check_license_compliance(
@@ -1963,12 +1965,16 @@ class TestLicenseComplianceADO:
                 ado_project="example-project",
                 ado_repo="example-repo",
             )
-        # Skip-note appended to details.
-        assert any("commit-list inspection" in d for d in result["details"])
+        # No more skip-note; result details are just the per-file
+        # analysis output.
+        assert result["status"] == "PASS"
+        assert not any(
+            "commit-list inspection" in d for d in result["details"]
+        )
 
-    def test_ado_branch_skips_ai_generated_detection(self):
-        # get_ai_generated_files is GitHub-only; on ADO no commits are
-        # fetched. Assert the helper is NOT called.
+    def test_ado_branch_runs_ai_generated_detection_via_shared_primitive(self):
+        # get_ai_generated_files IS called on ADO now (Phase 2 wired via
+        # shared.pr_commits.fetch_pr_commits with ADO context).
         from shared.pr_metadata import PRMetadata
 
         fake_pr = PRMetadata(
@@ -1984,7 +1990,8 @@ class TestLicenseComplianceADO:
                           return_value={"answer": "", "sources": []}), \
              patch.object(license_compliance_module, "analyze_file_comprehensive",
                           return_value={"status": "PASS", "issues": [], "phase2_triggered": False}), \
-             patch.object(license_compliance_module, "get_ai_generated_files") as mock_ai:
+             patch.object(license_compliance_module, "get_ai_generated_files",
+                          return_value=[]) as mock_ai:
             license_compliance_module.check_license_compliance(
                 check_type="LICENSE_COMPLIANCE",
                 pr_number=1, repository="o/p/r", changed_files=["src/x.py"],
@@ -1992,7 +1999,11 @@ class TestLicenseComplianceADO:
                 provider="azure_devops", connection_id="c",
                 ado_org="o", ado_project="p", ado_repo="r",
             )
-        mock_ai.assert_not_called()
+        # Called with provider + ADO context (not skipped).
+        mock_ai.assert_called_once()
+        _, kwargs = mock_ai.call_args
+        assert kwargs["provider"] == "azure_devops"
+        assert kwargs["ado_org"] == "o"
 
 
 class TestTestCoverageADO:

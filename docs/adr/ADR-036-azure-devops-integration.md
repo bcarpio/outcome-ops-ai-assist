@@ -268,12 +268,13 @@ now produce the same six-check result set as GitHub PR checks.
 
 Deferred sub-features (do NOT block parity):
 
-- `LICENSE_COMPLIANCE`'s AI-generated-code detection (Phase 2)
-  inspects the PR's commit list for known AI-tool co-author
-  metadata. This is GitHub-only in v1; the same file-content
-  license/copyright scan (Phase 1) runs on ADO.
-- ADO commit-list traversal in general — a follow-up primitive
-  if a customer surface asks for it.
+- ~~`LICENSE_COMPLIANCE`'s AI-generated-code detection (Phase 2)~~
+  Closed 2026-07-01 via `shared.pr_commits.fetch_pr_commits`. The
+  primitive dispatches on provider; the ADO branch handles ADO's
+  truncated-comment quirk by refetching the individual `/commits/{id}`
+  when `commentTruncated=true`, so `Co-Authored-By: Claude` trailers
+  in the body are visible for detection. Phase 1 and Phase 2 now
+  both run on ADO end-to-end.
 
 New shared primitives introduced by the parity work:
 

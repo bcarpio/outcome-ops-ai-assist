@@ -277,12 +277,13 @@ OutcomeOps AI Assist").
 `ARCHITECTURAL_DUPLICATION`, `LICENSE_COMPLIANCE`) run real
 analysis against Azure DevOps source — same behavior as the
 GitHub integration. The pipeline fetches PR metadata + file diffs
-via the ADO REST API, invokes Bedrock Claude for analysis, and
-posts the result to your PR thread. One deferred sub-feature:
-`LICENSE_COMPLIANCE`'s "AI-generated code" detection (which
-inspects the PR's commit list for known AI-tool co-author lines)
-is GitHub-only for v1; the same file-content license/copyright
-scan still runs on ADO.
++ commit list via the ADO REST API, invokes Bedrock Claude for
+analysis, and posts the result to your PR thread. `LICENSE_COMPLIANCE`'s
+"AI-generated code" detection (Phase 2 — inspects the PR's commit
+list for AI-tool co-author markers like `Co-Authored-By: Claude`)
+runs on both providers; the ADO code path transparently refetches
+individual commits when the list endpoint truncates the message
+body so trailer detection still works.
 
 UI-driven manual triggers work without any pipeline changes — workspace
 members open a PR's check page in the UI and click "Run check."

@@ -434,14 +434,45 @@ def _fetch_license_file_diff(
     raise ValueError(f"Unknown provider: {provider}")
 
 
-def get_ai_generated_files(repository: str, pr_number: int, changed_files: List[str], token: str) -> List[str]:
+def get_ai_generated_files(
+    repository: str,
+    pr_number: int,
+    changed_files: List[str],
+    token: Optional[str],
+    *,
+    provider: str = "github",
+    ado_org: Optional[str] = None,
+    ado_project: Optional[str] = None,
+    ado_repo: Optional[str] = None,
+    ado_access_token: Optional[str] = None,
+) -> List[str]:
     """
     Filter changed files to only those from AI-generated commits.
 
     Returns subset of changed_files that were added/modified in AI commits.
+
+    Provider-aware: dispatches through ``shared.pr_commits.fetch_pr_commits``
+    which handles GitHub's full-message commits endpoint and ADO's
+    truncated-comment endpoint (auto-refetches truncated entries so
+    Co-Authored-By trailers are visible).
     """
     try:
-        commits = fetch_pr_commits(repository, pr_number, token)
+        if provider == "azure_devops":
+            from shared.pr_commits import fetch_pr_commits as _fetch_commits_shared
+            shared_commits = _fetch_commits_shared(
+                "azure_devops", pr_number,
+                ado_org=ado_org, ado_project=ado_project, ado_repo=ado_repo,
+                ado_access_token=ado_access_token,
+            )
+            # Adapt the shared NamedTuple shape to the dict shape
+            # is_ai_generated_commit() expects.
+            commits = [
+                {"sha": c.sha, "message": c.message, "author": c.author}
+                for c in shared_commits
+            ]
+        else:
+            commits = fetch_pr_commits(repository, pr_number, token)
+
         ai_commits = [c for c in commits if is_ai_generated_commit(c)]
 
         if not ai_commits:
@@ -775,9 +806,9 @@ def check_license_compliance(
     Phase 2: Detects code similarity to copyrighted OSS (AI-generated code only).
 
     Provider-aware: dispatches on ``provider`` for per-file diff fetch
-    (main scan surface). On ADO the PR commit-list inspection used to
-    detect AI-generated code (Phase 2 activation) is skipped with a
-    detail note — file-content license/copyright scanning still runs.
+    (main scan) AND the PR commit-list inspection used to detect
+    AI-generated code (Phase 2 activation). Both surfaces work on
+    GitHub and Azure DevOps.
     """
     if provider not in ("github", "azure_devops"):
         raise NotImplementedError(
@@ -797,7 +828,6 @@ def check_license_compliance(
     ado_access_token: Optional[str] = None
     ado_base_sha: Optional[str] = None
     ado_head_sha: Optional[str] = None
-    ado_commit_list_note: Optional[str] = None
 
     if provider == "github":
         github_token = get_github_token(github_token_param)
@@ -812,13 +842,6 @@ def check_license_compliance(
         )
         ado_base_sha = pr.base_sha
         ado_head_sha = pr.head_sha
-        ado_commit_list_note = (
-            "PR commit-list inspection is not yet implemented for "
-            "Azure DevOps; content-based license/copyright scan ran "
-            "successfully. AI-generated code detection (Phase 2) "
-            "requires a subsequent chunk."
-        )
-        logger.info(ado_commit_list_note)
 
     # Query knowledge base for license policy
     logger.info("Querying KB for license compliance policy (ADR-008)...")
@@ -843,15 +866,20 @@ def check_license_compliance(
             "usage": usage_tracker
         }
 
-    # AI-generated-code detection is GitHub-only for v1 (requires PR
-    # commit-list traversal). On ADO we treat every file as non-AI-
-    # generated for the license scan.
+    # AI-generated-code detection (Phase 2 activation) via PR commit-list
+    # inspection. Works on both providers now -- see
+    # shared.pr_commits.fetch_pr_commits.
     if provider == "github":
         ai_generated_files = get_ai_generated_files(
             repository, pr_number, source_files, github_token,
         )
-    else:
-        ai_generated_files: List[str] = []
+    else:  # azure_devops
+        ai_generated_files = get_ai_generated_files(
+            repository, pr_number, source_files, None,
+            provider="azure_devops",
+            ado_org=ado_org, ado_project=ado_project, ado_repo=ado_repo,
+            ado_access_token=ado_access_token,
+        )
     logger.info(f"Scanning {len(source_files)} source files ({len(ai_generated_files)} AI-generated)")
 
     # Analyze each file
@@ -929,14 +957,10 @@ def check_license_compliance(
     else:
         message = f"All {len(source_files)} file(s) passed license compliance"
 
-    final_details = list(file_results)
-    if ado_commit_list_note:
-        final_details.append(f"_Note: {ado_commit_list_note}_")
-
     return {
         "checkType": check_type,
         "status": overall_status,
         "message": message,
-        "details": final_details,
+        "details": file_results,
         "usage": usage_tracker
     }
