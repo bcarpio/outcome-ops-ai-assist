@@ -382,6 +382,105 @@ class TestCheckTestCoverage:
         assert "All source files have test coverage" in result["message"]
 
 
+class TestFetchOutcomeopsYamlRefParam:
+    """.outcomeops.yaml is fetched at the PR HEAD, not the default branch.
+    Was skipping the check even when a PR introduced a valid config;
+    only merges to main took effect. See commit message on
+    'fix(test-coverage): read .outcomeops.yaml at PR head SHA'."""
+
+    @patch('test_coverage_handler.requests.get')
+    def test_fetch_outcomeops_yaml_appends_ref_query_param(self, mock_get):
+        # Given a ref, the URL carries ?ref=<sha> so GitHub returns the
+        # file at that commit, not at the repo default branch.
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.text = "code_generation:\n  backend: python\n"
+        mock_get.return_value = mock_response
+
+        result = handler_module.fetch_outcomeops_yaml(
+            "owner/repo", "ghp_xxx", ref="deadbeefabc123",
+        )
+        assert result == {"code_generation": {"backend": "python"}}
+        url = mock_get.call_args.args[0]
+        assert url == (
+            "https://api.github.com/repos/owner/repo/contents/.outcomeops.yaml"
+            "?ref=deadbeefabc123"
+        )
+
+    @patch('test_coverage_handler.requests.get')
+    def test_fetch_outcomeops_yaml_omits_ref_when_none(self, mock_get):
+        # Backward compat: existing callers that pass no ref get the
+        # default-branch behavior GitHub's API defaults to.
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.text = "code_generation:\n  backend: python\n"
+        mock_get.return_value = mock_response
+
+        handler_module.fetch_outcomeops_yaml("owner/repo", "ghp")
+        url = mock_get.call_args.args[0]
+        assert "?ref=" not in url
+
+    @patch('test_coverage_handler.query_testing_standards')
+    @patch('test_coverage_handler.fetch_outcomeops_yaml')
+    @patch('shared.pr_metadata.fetch_pr_metadata')
+    @patch('test_coverage_handler.get_github_token')
+    def test_check_test_coverage_github_passes_head_sha_to_yaml_fetch(
+        self, mock_token, mock_pr_meta, mock_yaml, mock_kb,
+    ):
+        # GitHub path: check_test_coverage fetches PR metadata,
+        # then reads .outcomeops.yaml at pr_meta.head_sha.
+        from unittest.mock import MagicMock
+        mock_token.return_value = "ghp_xxx"
+        fake_meta = MagicMock()
+        fake_meta.head_sha = "abc123head"
+        mock_pr_meta.return_value = fake_meta
+        mock_yaml.return_value = {"code_generation": {"backend": "python"}}
+        mock_kb.return_value = ("", None, {})
+
+        check_test_coverage(
+            "TEST_COVERAGE", 42, "owner/repo",
+            ["lambda/hello/handler.py"],
+            github_token_param="/test/token",
+            query_kb_lambda_name="test-query-kb",
+        )
+
+        mock_pr_meta.assert_called_once()
+        _, mp_kwargs = mock_pr_meta.call_args
+        assert mp_kwargs.get("repository") == "owner/repo"
+        assert mp_kwargs.get("github_token") == "ghp_xxx"
+
+        mock_yaml.assert_called_once()
+        _, my_kwargs = mock_yaml.call_args
+        assert my_kwargs.get("ref") == "abc123head"
+
+    @patch('test_coverage_handler.query_testing_standards')
+    @patch('test_coverage_handler.fetch_outcomeops_yaml')
+    @patch('shared.pr_metadata.fetch_pr_metadata')
+    @patch('test_coverage_handler.get_github_token')
+    def test_check_test_coverage_github_falls_back_to_default_branch_on_pr_meta_fail(
+        self, mock_token, mock_pr_meta, mock_yaml, mock_kb,
+    ):
+        # If fetch_pr_metadata throws (bad token, deleted branch, etc.)
+        # we fall back to the pre-fix behavior: read from default branch.
+        from shared.pr_metadata import PRMetadataError
+        mock_token.return_value = "ghp"
+        mock_pr_meta.side_effect = PRMetadataError("boom")
+        mock_yaml.return_value = None
+        mock_kb.return_value = ("", None, {})
+
+        check_test_coverage(
+            "TEST_COVERAGE", 42, "owner/repo",
+            ["lambda/hello/handler.py"],
+            github_token_param="/test/token",
+            query_kb_lambda_name="test-query-kb",
+        )
+
+        # fallback call: no ref kwarg, or ref is None
+        assert mock_yaml.called
+        _, fallback_kwargs = mock_yaml.call_args
+        assert fallback_kwargs.get("ref") is None
+
+
 class TestParseTestingConfig:
     """Tests for parsing testing config from .outcomeops.yaml"""
 

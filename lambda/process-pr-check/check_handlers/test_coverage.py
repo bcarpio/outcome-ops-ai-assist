@@ -105,18 +105,29 @@ def get_github_token(github_token_param: str) -> str:
         raise
 
 
-def fetch_outcomeops_yaml(repository: str, token: str) -> Optional[Dict[str, Any]]:
+def fetch_outcomeops_yaml(
+    repository: str,
+    token: str,
+    *,
+    ref: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
     """
-    Fetch .outcomeops.yaml from the repository's default branch.
+    Fetch .outcomeops.yaml from the repository.
 
     Args:
         repository: Repository in format "owner/repo"
         token: GitHub personal access token
+        ref: git ref (SHA, branch, or tag) to read the file at. When
+            None, GitHub defaults to the repo's default branch — but
+            callers driving PR-check config should pass the PR head
+            SHA so a PR's config changes take effect on the same PR.
 
     Returns:
         Parsed YAML dict or None if not found
     """
     url = f"https://api.github.com/repos/{repository}/contents/.outcomeops.yaml"
+    if ref:
+        url = f"{url}?ref={ref}"
     headers = {
         "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github.v3.raw",
@@ -126,7 +137,10 @@ def fetch_outcomeops_yaml(repository: str, token: str) -> Optional[Dict[str, Any
     try:
         response = requests.get(url, headers=headers, timeout=10)
         if response.status_code == 404:
-            logger.info(f"No .outcomeops.yaml found in {repository}")
+            logger.info(
+                f"No .outcomeops.yaml found in {repository}"
+                + (f" at ref {ref}" if ref else "")
+            )
             return None
         response.raise_for_status()
         return yaml.safe_load(response.text)
@@ -459,15 +473,39 @@ def check_test_coverage(
     ado_default_branch: Optional[str] = None
     ado_repo_file_paths: Optional[List[str]] = None
 
+    # Fetch .outcomeops.yaml at the PR HEAD (not the default branch)
+    # so a PR that adds/edits config sees that config applied to itself
+    # -- matching ADR_COMPLIANCE and the other source-reading checks
+    # which all read PR-head content, not main. Prior to this the check
+    # skipped with "no testing configuration found" even when the PR
+    # branch introduced a valid .outcomeops.yaml; only merges to main
+    # took effect. Governance note: this means a PR can (in principle)
+    # weaken its own coverage rules; treat that as a code-review
+    # concern rather than a technical guard here.
+    from shared.pr_metadata import fetch_pr_metadata, PRMetadataError
+    from shared.source_fetch import fetch_file_at_sha, SourceFetchError
+
     if provider == "github":
         try:
             token = get_github_token(github_token_param)
-            raw_config = fetch_outcomeops_yaml(repository, token)
+            try:
+                pr_meta = fetch_pr_metadata(
+                    "github", pr_number,
+                    repository=repository, github_token=token,
+                )
+                raw_config = fetch_outcomeops_yaml(
+                    repository, token, ref=pr_meta.head_sha,
+                )
+            except PRMetadataError as e:
+                logger.warning(
+                    f"Could not fetch PR metadata for {repository}#{pr_number}: {e}. "
+                    "Falling back to default branch for .outcomeops.yaml."
+                )
+                raw_config = fetch_outcomeops_yaml(repository, token)
         except Exception as e:
             logger.warning(f"Could not fetch .outcomeops.yaml: {e}")
     else:  # azure_devops
         from shared.repo_metadata import fetch_repo_metadata, RepoMetadataError
-        from shared.source_fetch import fetch_file_at_sha, SourceFetchError
 
         try:
             ado_access_token = refresh_ado_token(connection_id)
@@ -479,18 +517,40 @@ def check_test_coverage(
             ado_default_branch = repo_meta.default_branch
             ado_repo_file_paths = repo_meta.file_paths
 
-            # Try to read .outcomeops.yaml at default-branch tip.
+            # Read .outcomeops.yaml at the PR HEAD (see note above --
+            # parity with GitHub side, matches every other check's
+            # source-fetch semantics). Fall back to the default branch
+            # only if PR-metadata retrieval fails.
+            try:
+                pr_meta = fetch_pr_metadata(
+                    "azure_devops", pr_number,
+                    ado_org=ado_org, ado_project=ado_project,
+                    ado_repo=ado_repo, ado_access_token=ado_access_token,
+                )
+                yaml_ref = pr_meta.head_sha
+                yaml_version_type = "commit"
+            except PRMetadataError as e:
+                logger.warning(
+                    f"Could not fetch ADO PR metadata for #{pr_number}: {e}. "
+                    "Falling back to default branch for .outcomeops.yaml."
+                )
+                yaml_ref = ado_default_branch
+                yaml_version_type = "branch"
+
             try:
                 yaml_bytes = fetch_file_at_sha(
                     "azure_devops", ".outcomeops.yaml",
-                    ado_default_branch,
+                    yaml_ref,
                     ado_org=ado_org, ado_project=ado_project, ado_repo=ado_repo,
                     ado_access_token=ado_access_token,
-                    ado_version_type="branch",
+                    ado_version_type=yaml_version_type,
                 )
                 raw_config = yaml.safe_load(yaml_bytes.decode("utf-8", errors="replace"))
             except SourceFetchError:
-                logger.info(f"No .outcomeops.yaml at default branch in ADO repo {ado_repo}")
+                logger.info(
+                    f"No .outcomeops.yaml at {yaml_version_type} {yaml_ref} "
+                    f"in ADO repo {ado_repo}"
+                )
         except RepoMetadataError as e:
             logger.warning(f"Could not fetch ADO repo metadata: {e}")
 
