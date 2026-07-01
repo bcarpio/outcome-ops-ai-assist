@@ -196,41 +196,75 @@ Once the operator confirms the deploy succeeded:
 
 If your team uses Azure Pipelines and wants PR-check results to post
 automatically on every PR build, add this step to your
-`azure-pipelines.yml`:
+`azure-pipelines.yml`. The step invokes the platform's `analyze-pr`
+Lambda directly via the AWS CLI (the CLI ships pre-installed on
+Microsoft-hosted `ubuntu-latest` / `windows-latest` agents).
 
 ```yaml
-- task: PowerShell@2
+- task: AWSShellScript@1
   displayName: 'Trigger OutcomeOps PR-check'
   condition: eq(variables['Build.Reason'], 'PullRequest')
   inputs:
-    targetType: 'inline'
-    script: |
-      $body = @{
-        provider = "azure_devops"
-        connection_id = "$(OUTCOMEOPS_CONNECTION_ID)"
-        org = "$(System.TeamProject)"
-        project = "$(System.TeamProject)"
-        repo = "$(Build.Repository.Name)"
-        pull_request_id = "$(System.PullRequest.PullRequestId)"
-        check_types = @("ADR_COMPLIANCE", "TEST_COVERAGE")
-      } | ConvertTo-Json
-      Invoke-RestMethod `
-        -Uri "https://{platform-domain}/api/workspaces/{workspace-id}/pr-checks/run" `
-        -Method POST -Body $body `
-        -Headers @{ "Authorization" = "Bearer $(OUTCOMEOPS_API_TOKEN)" } `
-        -ContentType "application/json"
+    awsCredentials: 'OutcomeOps-PRCheck'   # AWS service connection
+    regionName: 'us-west-2'                # your platform's aws_region
+    scriptType: 'inline'
+    inlineScript: |
+      # Parse ADO's Build.Repository.ID into org/project/repo shape.
+      # ADO ships $(System.TeamProject) + $(Build.Repository.Name) as
+      # project + repo; the org is your Azure DevOps organization slug.
+      PAYLOAD=$(jq -n \
+        --argjson pr_number "$(System.PullRequest.PullRequestId)" \
+        --arg org  "$(OUTCOMEOPS_ADO_ORG)" \
+        --arg proj "$(System.TeamProject)" \
+        --arg repo "$(Build.Repository.Name)" \
+        --arg conn "$(OUTCOMEOPS_CONNECTION_ID)" \
+        '{
+          pr_number: $pr_number,
+          repository: ($org + "/" + $proj + "/" + $repo),
+          provider: "azure_devops",
+          connection_id: $conn,
+          ado_org: $org,
+          ado_project: $proj,
+          ado_repo: $repo
+        }')
+      aws lambda invoke \
+        --function-name prd-outcome-ops-ai-assist-analyze-pr \
+        --payload "$PAYLOAD" \
+        --cli-binary-format raw-in-base64-out \
+        /tmp/response.json > /dev/null
+      cat /tmp/response.json | jq .
 ```
 
-Pipeline secrets to provision (Project Settings → Pipelines →
-Library):
+Pipeline prerequisites (one-time setup):
 
-- `OUTCOMEOPS_API_TOKEN` — platform service token; the operator
-  provisions this following the platform's existing API-token
+- **`OutcomeOps-PRCheck` AWS service connection** in your Azure DevOps
+  project (Project Settings → Service connections → New → AWS). Uses
+  an IAM user (or role) in the platform operator's AWS account with
+  `lambda:InvokeFunction` on the `*-analyze-pr` function ARN. The
+  operator provisions this following the platform's existing API-token
   process.
+- **AWS Toolkit for Azure DevOps** extension installed in the
+  organization (adds the `AWSShellScript@1` task). Free from the
+  Marketplace.
+
+Pipeline variables to define (Pipelines → Library → Variable group):
+
+- `OUTCOMEOPS_ADO_ORG` — your Azure DevOps organization slug (the
+  `{org}` in `dev.azure.com/{org}`). Not sensitive.
 - `OUTCOMEOPS_CONNECTION_ID` — the Azure DevOps connection ID
   visible in Workspace Settings → Integrations after step 7. Treat
   it as opaque; it's not sensitive (no auth value) but rotating it
   is a manual replace-everywhere operation.
+
+Alternate trigger: from any machine with AWS CLI + credentials to
+the platform account (e.g. a developer's terminal), run:
+
+```bash
+scripts/outcome-ops-assist analyze-pr-ado <pr_number> <org>/<project>/<repo> \
+  --connection-id <connection_id> --env prd
+```
+
+Same payload, same Lambda, human-driven instead of pipeline-driven.
 
 The PR-check Lambda posts a comment thread on the named PR with the
 check results. Comments are authored by the user who created the
