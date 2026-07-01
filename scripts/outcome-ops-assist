@@ -4,6 +4,7 @@
 # Usage:
 #   outcome-ops-assist "your question here" [--topK 5] [--env dev]
 #   outcome-ops-assist analyze-pr <pr_number> <repository> [--env dev]
+#   outcome-ops-assist analyze-pr-ado <pr_number> <org>/<project>/<repo> --connection-id <id> [--env dev]
 #
 # Legacy subcommands (ingest-docs, generate-code-maps) have been removed.
 # These functions are now handled by the workspace pipeline (github-sync -> process-repo-summary).
@@ -20,6 +21,7 @@ PR_NUMBER=""
 REPOSITORY=""
 SHOW_COST=false
 MODEL="haiku"
+CONNECTION_ID=""
 
 # Show help
 show_help() {
@@ -30,19 +32,24 @@ USAGE:
   Knowledge Base Query:
     outcome-ops-assist "your question here" [options]
 
-  PR Analysis:
+  PR Analysis (GitHub):
     outcome-ops-assist analyze-pr <pr_number> <repository> [options]
+
+  PR Analysis (Azure DevOps):
+    outcome-ops-assist analyze-pr-ado <pr_number> <org>/<project>/<repo> --connection-id <id> [options]
 
 COMMANDS:
   analyze-pr           Analyze a GitHub Pull Request
+  analyze-pr-ado       Analyze an Azure DevOps Pull Request
   (default)            Query the knowledge base
 
 OPTIONS:
-  --env ENV         Environment (default: dev, from \$ENVIRONMENT env var)
-  --topK N          Number of top results for KB queries (default: 5)
-  --cost            Show token usage and cost for KB queries
-  --advanced        Use Sonnet model for complex reasoning (default: Haiku)
-  --help, -h        Show this help message
+  --env ENV            Environment (default: prd, from \$ENVIRONMENT env var)
+  --topK N             Number of top results for KB queries (default: 5)
+  --cost               Show token usage and cost for KB queries
+  --advanced           Use Sonnet model for complex reasoning (default: Haiku)
+  --connection-id ID   ADO connection ID (required for analyze-pr-ado)
+  --help, -h           Show this help message
 
 EXAMPLES:
   Knowledge Base Queries:
@@ -50,9 +57,13 @@ EXAMPLES:
     outcome-ops-assist "How should I structure ADRs?" --topK 3
     outcome-ops-assist "What Terraform modules should I use?" --env prd
 
-  PR Analysis:
+  PR Analysis (GitHub):
     outcome-ops-assist analyze-pr 123 owner/repo
     outcome-ops-assist analyze-pr 456 myorg/myrepo --env prd
+
+  PR Analysis (Azure DevOps):
+    outcome-ops-assist analyze-pr-ado 42 bcarpio/OutcomeOps/ooai-license-server \\
+      --connection-id conn-xyz --env prd
 
 ENVIRONMENT VARIABLES:
   AWS_PROFILE       AWS profile to use for authentication
@@ -82,6 +93,22 @@ while [[ $# -gt 0 ]]; do
       fi
       PR_NUMBER="$1"
       REPOSITORY="$2"
+      shift 2
+      ;;
+    analyze-pr-ado)
+      COMMAND="analyze-pr-ado"
+      shift
+      if [[ $# -lt 2 ]]; then
+        echo "Error: analyze-pr-ado requires <pr_number> and <org>/<project>/<repo>" >&2
+        echo "Usage: outcome-ops-assist analyze-pr-ado <pr_number> <org>/<project>/<repo> --connection-id <id> [--env ENV]" >&2
+        exit 1
+      fi
+      PR_NUMBER="$1"
+      REPOSITORY="$2"
+      shift 2
+      ;;
+    --connection-id)
+      CONNECTION_ID="$2"
       shift 2
       ;;
     --env)
@@ -298,6 +325,93 @@ analyze_pr() {
 }
 
 # ============================================================================
+# Command: Analyze Azure DevOps PR
+# ============================================================================
+
+analyze_pr_ado() {
+  local pr_number="$1"
+  local repository="$2"    # org/project/repo slug
+  local connection_id="$3"
+  local lambda_name="${ENVIRONMENT}-${APP_NAME}-analyze-pr"
+
+  # Parse the 3-segment slug into org / project / repo.
+  local ado_org ado_project ado_repo
+  IFS='/' read -r ado_org ado_project ado_repo <<< "$repository"
+
+  echo "🔍 Analyzing Azure DevOps Pull Request..." >&2
+  echo "Environment:   $ENVIRONMENT" >&2
+  echo "Org:           $ado_org" >&2
+  echo "Project:       $ado_project" >&2
+  echo "Repo:          $ado_repo" >&2
+  echo "PR Number:     $pr_number" >&2
+  echo "Connection ID: $connection_id" >&2
+  echo "" >&2
+
+  # Build ADO-shape payload for the widened AnalyzePrRequest.
+  local payload=$(jq -n \
+    --argjson pr_number "$pr_number" \
+    --arg repository "$repository" \
+    --arg connection_id "$connection_id" \
+    --arg ado_org "$ado_org" \
+    --arg ado_project "$ado_project" \
+    --arg ado_repo "$ado_repo" \
+    '{
+      pr_number: $pr_number,
+      repository: $repository,
+      provider: "azure_devops",
+      connection_id: $connection_id,
+      ado_org: $ado_org,
+      ado_project: $ado_project,
+      ado_repo: $ado_repo
+    }')
+
+  local temp_file
+  temp_file=$(mktemp)
+  trap "rm -f $temp_file" EXIT
+
+  if ! aws lambda invoke \
+    --function-name "$lambda_name" \
+    --payload "$payload" \
+    --cli-binary-format raw-in-base64-out \
+    "$temp_file" > /dev/null 2>&1; then
+    echo "❌ Error: Failed to invoke Lambda function: $lambda_name" >&2
+    echo "Make sure the function exists and you have permissions to invoke it" >&2
+    exit 1
+  fi
+
+  local response
+  response=$(cat "$temp_file")
+
+  if echo "$response" | jq -e '.errorMessage' > /dev/null 2>&1; then
+    echo "❌ Error from Lambda:" >&2
+    echo "$response" | jq -r '.errorMessage' >&2
+    exit 1
+  fi
+
+  local message checks_queued
+  message=$(echo "$response" | jq -r '.message' 2>/dev/null)
+  checks_queued=$(echo "$response" | jq -r '.checks_queued' 2>/dev/null)
+
+  if [[ -z "$message" || "$message" == "null" ]]; then
+    echo "❌ Error: Invalid response from analyze-pr Lambda" >&2
+    echo "Response: $response" >&2
+    exit 1
+  fi
+
+  echo "✅ $message" >&2
+  echo "" >&2
+
+  if [[ "$checks_queued" != "null" && "$checks_queued" != "0" ]]; then
+    echo "Queued $checks_queued check(s) for processing" >&2
+    echo "Results will be posted as comments on the PR when complete" >&2
+    echo "" >&2
+    echo "View PR: https://dev.azure.com/$ado_org/$ado_project/_git/$ado_repo/pullrequest/$pr_number" >&2
+  else
+    echo "No checks were needed for this PR" >&2
+  fi
+}
+
+# ============================================================================
 # Main Execution
 # ============================================================================
 
@@ -324,6 +438,27 @@ case "$COMMAND" in
     fi
 
     analyze_pr "$PR_NUMBER" "$REPOSITORY"
+    ;;
+
+  analyze-pr-ado)
+    if [[ -z "$PR_NUMBER" || -z "$REPOSITORY" ]]; then
+      echo "Error: analyze-pr-ado requires <pr_number> and <org>/<project>/<repo>" >&2
+      exit 1
+    fi
+    if ! [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
+      echo "Error: PR number must be a positive integer" >&2
+      exit 1
+    fi
+    if ! [[ "$REPOSITORY" =~ ^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$ ]]; then
+      echo "Error: ADO repository must be in format 'org/project/repo'" >&2
+      exit 1
+    fi
+    if [[ -z "$CONNECTION_ID" ]]; then
+      echo "Error: analyze-pr-ado requires --connection-id <id>" >&2
+      echo "Usage: outcome-ops-assist analyze-pr-ado <pr_number> <org>/<project>/<repo> --connection-id <id> [--env ENV]" >&2
+      exit 1
+    fi
+    analyze_pr_ado "$PR_NUMBER" "$REPOSITORY" "$CONNECTION_ID"
     ;;
 
   *)
