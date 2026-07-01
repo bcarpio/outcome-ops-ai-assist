@@ -340,6 +340,7 @@ module "process_pr_check_lambda" {
         effect = "Allow"
         actions = [
           "dynamodb:GetItem",
+          "dynamodb:PutItem",
           "dynamodb:UpdateItem",
           "dynamodb:Query",
         ]
