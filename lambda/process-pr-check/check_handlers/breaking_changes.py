@@ -196,7 +196,13 @@ def check_breaking_changes(
     pr_number: int,
     repository: str,
     changed_files: List[str],
-    query_kb_lambda_name: str
+    query_kb_lambda_name: str,
+    *,
+    provider: str = "github",
+    connection_id: str | None = None,
+    ado_org: str | None = None,
+    ado_project: str | None = None,
+    ado_repo: str | None = None,
 ) -> Dict[str, Any]:
     """
     Breaking Changes check handler.
@@ -206,8 +212,18 @@ def check_breaking_changes(
     confidence (handler name + queue/topic/invocation explicitly mentioned).
 
     Filters out generic architectural descriptions and focuses on handler-group summaries.
+
+    Provider-aware: BREAKING_CHANGES is provider-agnostic — it works
+    entirely off ``changed_files`` (already normalized in the CheckJob)
+    and KB queries (already indexed for both GitHub and Azure DevOps
+    per the ADO Repos plan chunk 05a). The ADO-specific kwargs
+    (``connection_id``, ``ado_org``, ``ado_project``, ``ado_repo``)
+    are accepted for parity with sibling handlers but not used.
     """
-    logger.info(f"Running breaking changes check for PR #{pr_number}")
+    logger.info(
+        f"Running breaking changes check for PR #{pr_number} "
+        f"(provider={provider})"
+    )
 
     # Detect change types for all relevant files
     relevant_files = [

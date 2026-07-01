@@ -29,6 +29,7 @@ import yaml
 from botocore.exceptions import ClientError
 
 from .bedrock_utils import UsageTracker, BedrockUsage, HAIKU_MODEL_ID
+from .ado_context import refresh_ado_token
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -395,7 +396,13 @@ def check_test_coverage(
     repository: str,
     changed_files: List[str],
     github_token_param: str = "",
-    query_kb_lambda_name: str = ""
+    query_kb_lambda_name: str = "",
+    *,
+    provider: str = "github",
+    connection_id: str | None = None,
+    ado_org: str | None = None,
+    ado_project: str | None = None,
+    ado_repo: str | None = None,
 ) -> Dict[str, Any]:
     """
     Language-agnostic test coverage check.
@@ -408,6 +415,10 @@ def check_test_coverage(
 
     Key improvement: Checks against ALL test files in the repo, not just changed files.
 
+    Provider-aware kwargs (``provider``, ``connection_id``, ``ado_org``,
+    ``ado_project``, ``ado_repo``) exist for Azure DevOps parity; real
+    ADO execution ships in a subsequent chunk.
+
     Args:
         check_type: The check type identifier
         pr_number: Pull request number
@@ -419,7 +430,15 @@ def check_test_coverage(
     Returns:
         Check result dict with status, message, and details
     """
-    logger.info(f"Running test coverage check for PR #{pr_number} in {repository}")
+    if provider not in ("github", "azure_devops"):
+        raise NotImplementedError(
+            f"check_test_coverage does not support provider={provider!r}."
+        )
+
+    logger.info(
+        f"Running test coverage check for PR #{pr_number} in {repository} "
+        f"(provider={provider})"
+    )
 
     # Default to environment variables if not provided
     if not github_token_param:
@@ -432,16 +451,48 @@ def check_test_coverage(
         app_name = os.environ.get("APP_NAME", "outcome-ops-ai-assist")
         query_kb_lambda_name = f"{environment}-{app_name}-query-kb"
 
-    # Fetch repository configuration
+    # Fetch repository configuration + default branch (provider-dispatched)
     raw_config = None
     backend = None
     token = None
+    ado_access_token: Optional[str] = None
+    ado_default_branch: Optional[str] = None
+    ado_repo_file_paths: Optional[List[str]] = None
 
-    try:
-        token = get_github_token(github_token_param)
-        raw_config = fetch_outcomeops_yaml(repository, token)
-    except Exception as e:
-        logger.warning(f"Could not fetch .outcomeops.yaml: {e}")
+    if provider == "github":
+        try:
+            token = get_github_token(github_token_param)
+            raw_config = fetch_outcomeops_yaml(repository, token)
+        except Exception as e:
+            logger.warning(f"Could not fetch .outcomeops.yaml: {e}")
+    else:  # azure_devops
+        from shared.repo_metadata import fetch_repo_metadata, RepoMetadataError
+        from shared.source_fetch import fetch_file_at_sha, SourceFetchError
+
+        try:
+            ado_access_token = refresh_ado_token(connection_id)
+            repo_meta = fetch_repo_metadata(
+                "azure_devops",
+                ado_org=ado_org, ado_project=ado_project, ado_repo=ado_repo,
+                ado_access_token=ado_access_token,
+            )
+            ado_default_branch = repo_meta.default_branch
+            ado_repo_file_paths = repo_meta.file_paths
+
+            # Try to read .outcomeops.yaml at default-branch tip.
+            try:
+                yaml_bytes = fetch_file_at_sha(
+                    "azure_devops", ".outcomeops.yaml",
+                    ado_default_branch,
+                    ado_org=ado_org, ado_project=ado_project, ado_repo=ado_repo,
+                    ado_access_token=ado_access_token,
+                    ado_version_type="branch",
+                )
+                raw_config = yaml.safe_load(yaml_bytes.decode("utf-8", errors="replace"))
+            except SourceFetchError:
+                logger.info(f"No .outcomeops.yaml at default branch in ADO repo {ado_repo}")
+        except RepoMetadataError as e:
+            logger.warning(f"Could not fetch ADO repo metadata: {e}")
 
     # Create usage tracker (TEST_COVERAGE uses Haiku via KB queries)
     usage_tracker = UsageTracker()
@@ -555,8 +606,16 @@ def check_test_coverage(
 
     # Fetch ALL test files from the repository (not just changed files)
     all_test_files = []
-    if token and test_patterns:
-        all_test_files = fetch_repo_test_files(repository, token, test_patterns)
+    if test_patterns:
+        if provider == "github":
+            if token:
+                all_test_files = fetch_repo_test_files(repository, token, test_patterns)
+        else:  # azure_devops
+            if ado_repo_file_paths is not None:
+                all_test_files = [
+                    f for f in ado_repo_file_paths
+                    if matches_pattern(f, test_patterns)
+                ]
         logger.info(f"Fetched {len(all_test_files)} test files from repository")
 
     # Also include test files from changed files (in case they're being added in this PR)

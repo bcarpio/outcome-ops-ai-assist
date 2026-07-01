@@ -20,6 +20,7 @@ import requests
 from botocore.exceptions import ClientError
 
 from .bedrock_utils import call_bedrock, UsageTracker, SONNET_MODEL_ID
+from .ado_context import refresh_ado_token
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -384,6 +385,55 @@ def is_ai_generated_commit(commit: Dict[str, Any]) -> bool:
     return False
 
 
+def _fetch_license_file_diff(
+    *,
+    provider: str,
+    file_path: str,
+    repository: str,
+    pr_number: int,
+    github_token: Optional[str] = None,
+    ado_org: Optional[str] = None,
+    ado_project: Optional[str] = None,
+    ado_repo: Optional[str] = None,
+    ado_access_token: Optional[str] = None,
+    ado_base_sha: Optional[str] = None,
+    ado_head_sha: Optional[str] = None,
+) -> str:
+    """Provider-dispatching per-file diff for license/copyright scanning.
+
+    On GitHub uses the server-side unified-diff endpoint. On ADO
+    fetches base+head bytes at PR SHAs and computes diff client-side.
+    """
+    if provider == "github":
+        return fetch_pr_file_diff(repository, pr_number, file_path, github_token)
+
+    if provider == "azure_devops":
+        from shared.source_fetch import fetch_file_at_sha, SourceFetchError
+        from shared.pr_diff import compute_file_diff
+
+        base_bytes: Optional[bytes]
+        head_bytes: Optional[bytes]
+        try:
+            base_bytes = fetch_file_at_sha(
+                "azure_devops", file_path, ado_base_sha,
+                ado_org=ado_org, ado_project=ado_project, ado_repo=ado_repo,
+                ado_access_token=ado_access_token,
+            )
+        except SourceFetchError:
+            base_bytes = None
+        try:
+            head_bytes = fetch_file_at_sha(
+                "azure_devops", file_path, ado_head_sha,
+                ado_org=ado_org, ado_project=ado_project, ado_repo=ado_repo,
+                ado_access_token=ado_access_token,
+            )
+        except SourceFetchError:
+            head_bytes = None
+        return compute_file_diff(base_bytes, head_bytes, file_path)
+
+    raise ValueError(f"Unknown provider: {provider}")
+
+
 def get_ai_generated_files(repository: str, pr_number: int, changed_files: List[str], token: str) -> List[str]:
     """
     Filter changed files to only those from AI-generated commits.
@@ -710,21 +760,65 @@ def check_license_compliance(
     repository: str,
     changed_files: List[str],
     query_kb_lambda_name: str,
-    github_token_param: str
+    github_token_param: str,
+    *,
+    provider: str = "github",
+    connection_id: str | None = None,
+    ado_org: str | None = None,
+    ado_project: str | None = None,
+    ado_repo: str | None = None,
 ) -> Dict[str, Any]:
     """
     License Compliance check handler.
 
     Phase 1: Scans source files for license patterns and copyright headers.
     Phase 2: Detects code similarity to copyrighted OSS (AI-generated code only).
+
+    Provider-aware: dispatches on ``provider`` for per-file diff fetch
+    (main scan surface). On ADO the PR commit-list inspection used to
+    detect AI-generated code (Phase 2 activation) is skipped with a
+    detail note — file-content license/copyright scanning still runs.
     """
-    logger.info(f"Running license compliance check for PR #{pr_number}")
+    if provider not in ("github", "azure_devops"):
+        raise NotImplementedError(
+            f"check_license_compliance does not support provider={provider!r}."
+        )
+
+    logger.info(
+        f"Running license compliance check for PR #{pr_number} "
+        f"(provider={provider})"
+    )
 
     # Create usage tracker
     usage_tracker = UsageTracker()
 
-    # Get GitHub token
-    github_token = get_github_token(github_token_param)
+    # Provider-specific auth + PR context prep.
+    github_token: Optional[str] = None
+    ado_access_token: Optional[str] = None
+    ado_base_sha: Optional[str] = None
+    ado_head_sha: Optional[str] = None
+    ado_commit_list_note: Optional[str] = None
+
+    if provider == "github":
+        github_token = get_github_token(github_token_param)
+    else:  # azure_devops
+        from shared.pr_metadata import fetch_pr_metadata
+
+        ado_access_token = refresh_ado_token(connection_id)
+        pr = fetch_pr_metadata(
+            "azure_devops", pr_number,
+            ado_org=ado_org, ado_project=ado_project, ado_repo=ado_repo,
+            ado_access_token=ado_access_token,
+        )
+        ado_base_sha = pr.base_sha
+        ado_head_sha = pr.head_sha
+        ado_commit_list_note = (
+            "PR commit-list inspection is not yet implemented for "
+            "Azure DevOps; content-based license/copyright scan ran "
+            "successfully. AI-generated code detection (Phase 2) "
+            "requires a subsequent chunk."
+        )
+        logger.info(ado_commit_list_note)
 
     # Query knowledge base for license policy
     logger.info("Querying KB for license compliance policy (ADR-008)...")
@@ -749,8 +843,15 @@ def check_license_compliance(
             "usage": usage_tracker
         }
 
-    # Check for AI-generated commits (Phase 2 activation)
-    ai_generated_files = get_ai_generated_files(repository, pr_number, source_files, github_token)
+    # AI-generated-code detection is GitHub-only for v1 (requires PR
+    # commit-list traversal). On ADO we treat every file as non-AI-
+    # generated for the license scan.
+    if provider == "github":
+        ai_generated_files = get_ai_generated_files(
+            repository, pr_number, source_files, github_token,
+        )
+    else:
+        ai_generated_files: List[str] = []
     logger.info(f"Scanning {len(source_files)} source files ({len(ai_generated_files)} AI-generated)")
 
     # Analyze each file
@@ -760,8 +861,20 @@ def check_license_compliance(
 
     for file_path in source_files:
         try:
-            # Fetch file diff
-            file_diff = fetch_pr_file_diff(repository, pr_number, file_path, github_token)
+            # Provider-dispatched per-file diff fetch.
+            file_diff = _fetch_license_file_diff(
+                provider=provider,
+                file_path=file_path,
+                repository=repository,
+                pr_number=pr_number,
+                github_token=github_token,
+                ado_org=ado_org,
+                ado_project=ado_project,
+                ado_repo=ado_repo,
+                ado_access_token=ado_access_token,
+                ado_base_sha=ado_base_sha,
+                ado_head_sha=ado_head_sha,
+            )
 
             # Comprehensive analysis (Phase 1 + Phase 2)
             is_ai_generated = file_path in ai_generated_files
@@ -816,10 +929,14 @@ def check_license_compliance(
     else:
         message = f"All {len(source_files)} file(s) passed license compliance"
 
+    final_details = list(file_results)
+    if ado_commit_list_note:
+        final_details.append(f"_Note: {ado_commit_list_note}_")
+
     return {
         "checkType": check_type,
         "status": overall_status,
         "message": message,
-        "details": file_results,
+        "details": final_details,
         "usage": usage_tracker
     }

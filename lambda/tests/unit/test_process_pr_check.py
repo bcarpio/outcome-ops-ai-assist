@@ -1359,20 +1359,23 @@ class TestCheckJobAdoFields:
 
 class TestProcessCheckJobAdoBranch:
     """process_check_job dispatches the comment-post step on
-    job.provider. For ADO, run_check is short-circuited (the
-    check_handlers/ subpackage is GitHub-only) and a stub PASS
-    result is returned. The comment then posts via the ADO
-    thread API."""
+    job.provider. Chunk 05 removed the stub-PASS short-circuit
+    that used to intercept ADO jobs; they now run the full
+    check pipeline the same as GitHub jobs."""
 
     @patch.object(handler_module, "store_check_result")
     @patch.object(handler_module, "_post_azure_devops_thread")
     @patch.object(handler_module, "run_check")
-    def test_ado_job_skips_run_check_and_posts_via_ado_path(
+    def test_ado_job_runs_real_check_and_posts_via_ado_path(
         self, mock_run_check, mock_post_ado, mock_store,
     ):
-        # If run_check were called for an ADO job, the check_handlers
-        # would attempt to fetch source from the GitHub API + 404.
-        # Pin that the dispatch DOESN'T enter run_check for ADO.
+        # Chunk 05: run_check IS called for ADO jobs now (real check
+        # execution). Chunk 03/04 wired ADO in every check_handler.
+        mock_run_check.return_value = {
+            "status": "PASS",
+            "message": "All ADR standards met on ADO PR",
+            "details": [],
+        }
         mock_post_ado.return_value = {"id": 99}
         job = CheckJob(
             checkType="ADR_COMPLIANCE",
@@ -1386,7 +1389,8 @@ class TestProcessCheckJobAdoBranch:
             repo="example-repo",
         )
         result = process_check_job(job)
-        assert not mock_run_check.called
+
+        mock_run_check.assert_called_once()
         # Comment posted via ADO; not via the GitHub path.
         mock_post_ado.assert_called_once()
         kwargs = mock_post_ado.call_args.kwargs
@@ -1395,8 +1399,6 @@ class TestProcessCheckJobAdoBranch:
         assert kwargs["repo"] == "example-repo"
         assert kwargs["pull_request_id"] == 42
         assert kwargs["connection_id"] == "conn-xyz"
-        # ADO stub result returns PASS so the customer's pipeline
-        # gets a successful round-trip + a transparent comment.
         assert result.status == CheckStatus.PASS
 
     @patch.object(handler_module, "store_check_result")
@@ -1405,6 +1407,9 @@ class TestProcessCheckJobAdoBranch:
     def test_ado_job_comment_url_points_at_dev_azure_thread(
         self, mock_run_check, mock_post_ado, mock_store,
     ):
+        mock_run_check.return_value = {
+            "status": "PASS", "message": "ok", "details": [],
+        }
         mock_post_ado.return_value = {"id": 77}
         job = CheckJob(
             checkType="ADR_COMPLIANCE",
@@ -1506,3 +1511,547 @@ class TestPostAzureDevOpsThread:
         # The UI uses "reconnect_required" as a sentinel to surface
         # the reconnect-Azure-DevOps banner -- pin the wording.
         assert "reconnect_required" in str(ctx.value)
+
+
+# ---------------------------------------------------------------------------
+# Chunk 02 of AI-PR-Analyzer ADO parity plan: widened check_* signatures
+# and provider-context forwarding through run_check().
+# ---------------------------------------------------------------------------
+
+
+class TestCheckHandlerSignatureWidening:
+    """Every check_* accepts the provider-context kwargs (default github)
+    and raises NotImplementedError for other providers. Behavior on the
+    GitHub path is preserved by the defaults."""
+
+    def _minimal_kwargs(self):
+        return dict(
+            check_type="ADR_COMPLIANCE",
+            pr_number=1,
+            repository="o/r",
+            changed_files=[],
+            query_kb_lambda_name="qkb",
+            github_token_param="/env/app/github/token",
+        )
+
+    def test_check_adr_compliance_defaults_to_github(self):
+        # Passing no provider should not raise NotImplementedError.
+        # We patch the internals it calls so no real network happens.
+        with patch.object(adr_compliance_module, "get_github_token", return_value="tok"), \
+             patch.object(adr_compliance_module, "analyze_lambda_handlers", return_value={"status": "PASS", "details": []}), \
+             patch.object(adr_compliance_module, "analyze_terraform_files", return_value={"status": "PASS", "details": []}):
+            result = adr_compliance_module.check_adr_compliance(**self._minimal_kwargs())
+            assert result["status"] == "PASS"
+
+    # Chunks 03 + 04 wired ADO for ALL six check handlers, so the
+    # NotImplementedError guards were removed. What remains is the
+    # "unknown provider" guard: any provider string other than
+    # "github" or "azure_devops" should still raise loudly.
+
+    def test_unknown_provider_still_raises(self):
+        with pytest.raises(NotImplementedError):
+            license_compliance_module.check_license_compliance(
+                check_type="LICENSE_COMPLIANCE",
+                pr_number=1, repository="o/r", changed_files=[],
+                query_kb_lambda_name="qkb", github_token_param="/x",
+                provider="gitlab",
+            )
+        with pytest.raises(NotImplementedError):
+            readme_freshness_module.check_readme_freshness(
+                check_type="README_FRESHNESS",
+                pr_number=1, repository="o/r", changed_files=[],
+                github_token_param="/x",
+                provider="gitlab",
+            )
+        with pytest.raises(NotImplementedError):
+            test_coverage_module.check_test_coverage(
+                check_type="TEST_COVERAGE",
+                pr_number=1, repository="o/r", changed_files=[],
+                github_token_param="/x", query_kb_lambda_name="qkb",
+                provider="gitlab",
+            )
+
+
+class TestRunCheckProviderForwarding:
+    """run_check() extracts provider context from CheckJob and forwards
+    it to each handler. On a GitHub job (default provider) the handler
+    behaves as before. On an ADO job, the handler receives the ADO context
+    and raises NotImplementedError (until chunks 03-04)."""
+
+    def _ado_job(self, check_type="ADR_COMPLIANCE"):
+        return CheckJob(
+            checkType=check_type,
+            pr_number=42,
+            repository="example-org/example-project/example-repo",
+            changedFiles=["src/foo.py"],
+            provider="azure_devops",
+            connection_id="conn-xyz",
+            slug="example-org/example-project/example-repo",
+            org="example-org",
+            project="example-project",
+            repo="example-repo",
+        )
+
+    def _github_job(self, check_type="ADR_COMPLIANCE"):
+        return CheckJob(
+            checkType=check_type,
+            pr_number=42,
+            repository="o/r",
+            changedFiles=["src/foo.py"],
+        )
+
+    @patch.object(handler_module, "check_adr_compliance")
+    def test_forwards_github_defaults_when_provider_not_set(self, mock_check):
+        mock_check.return_value = {"status": "PASS", "message": "ok", "details": []}
+        run_check(self._github_job("ADR_COMPLIANCE"))
+        # The handler received provider="github" and no ADO context.
+        _, kwargs = mock_check.call_args
+        assert kwargs["provider"] == "github"
+        assert kwargs["connection_id"] is None
+        assert kwargs["ado_org"] is None
+        assert kwargs["ado_project"] is None
+        assert kwargs["ado_repo"] is None
+
+    @patch.object(handler_module, "check_adr_compliance")
+    def test_forwards_ado_context_to_handler(self, mock_check):
+        # Even though the handler's NotImplementedError would fire in
+        # reality, we mock it here to inspect the kwargs run_check
+        # actually passes.
+        mock_check.return_value = {"status": "PASS", "message": "ok", "details": []}
+        run_check(self._ado_job("ADR_COMPLIANCE"))
+        _, kwargs = mock_check.call_args
+        assert kwargs["provider"] == "azure_devops"
+        assert kwargs["connection_id"] == "conn-xyz"
+        assert kwargs["ado_org"] == "example-org"
+        assert kwargs["ado_project"] == "example-project"
+        assert kwargs["ado_repo"] == "example-repo"
+
+    @patch.object(handler_module, "check_readme_freshness")
+    def test_forwards_ado_context_across_check_types(self, mock_check):
+        mock_check.return_value = {"status": "PASS", "message": "ok", "details": []}
+        run_check(self._ado_job("README_FRESHNESS"))
+        _, kwargs = mock_check.call_args
+        assert kwargs["provider"] == "azure_devops"
+        assert kwargs["ado_org"] == "example-org"
+
+    @patch.object(handler_module, "check_breaking_changes")
+    def test_forwards_ado_context_to_breaking_changes(self, mock_check):
+        # breaking_changes has a slightly different signature (no
+        # github_token_param) -- confirm run_check still forwards the
+        # provider kwargs.
+        mock_check.return_value = {"status": "PASS", "message": "ok", "details": []}
+        run_check(self._ado_job("BREAKING_CHANGES"))
+        _, kwargs = mock_check.call_args
+        assert kwargs["provider"] == "azure_devops"
+        assert kwargs["ado_project"] == "example-project"
+
+    @patch.object(handler_module, "check_test_coverage")
+    def test_forwards_ado_context_to_test_coverage(self, mock_check):
+        mock_check.return_value = {"status": "PASS", "message": "ok", "details": []}
+        run_check(self._ado_job("TEST_COVERAGE"))
+        _, kwargs = mock_check.call_args
+        assert kwargs["provider"] == "azure_devops"
+        assert kwargs["ado_repo"] == "example-repo"
+
+    @patch.object(handler_module, "check_license_compliance")
+    def test_forwards_ado_context_to_license_compliance(self, mock_check):
+        mock_check.return_value = {"status": "PASS", "message": "ok", "details": []}
+        run_check(self._ado_job("LICENSE_COMPLIANCE"))
+        _, kwargs = mock_check.call_args
+        assert kwargs["provider"] == "azure_devops"
+
+    @patch.object(handler_module, "check_architectural_duplication")
+    def test_forwards_ado_context_to_arch_duplication(self, mock_check):
+        mock_check.return_value = {"status": "PASS", "message": "ok", "details": []}
+        run_check(self._ado_job("ARCHITECTURAL_DUPLICATION"))
+        _, kwargs = mock_check.call_args
+        assert kwargs["provider"] == "azure_devops"
+
+    def test_run_check_with_ado_job_reaches_handler_not_guard(self):
+        # Chunk 04 wired all 6 handlers so run_check no longer
+        # hits a NotImplementedError guard on ADO jobs. Mock the
+        # handler and confirm run_check forwards the ADO context.
+        with patch.object(handler_module, "check_license_compliance") as mock_check:
+            mock_check.return_value = {"status": "PASS", "message": "ok", "details": []}
+            run_check(self._ado_job("LICENSE_COMPLIANCE"))
+            _, kwargs = mock_check.call_args
+            assert kwargs["provider"] == "azure_devops"
+
+
+# ---------------------------------------------------------------------------
+# Chunk 03 of AI-PR-Analyzer ADO parity plan: real ADO execution wired
+# into BREAKING_CHANGES, ADR_COMPLIANCE, ARCHITECTURAL_DUPLICATION.
+# ---------------------------------------------------------------------------
+
+
+class TestBreakingChangesADO:
+    """BREAKING_CHANGES is provider-agnostic — no fetch, no auth."""
+
+    def test_ado_job_runs_end_to_end_without_touching_ado_apis(self):
+        # No mocks needed for ADO plumbing because BREAKING_CHANGES
+        # only reads changed_files (already in the CheckJob) and
+        # KB. The provider-context kwargs are accepted but unused.
+        # Empty changed_files short-circuits before any KB call.
+        result = breaking_changes_module.check_breaking_changes(
+            check_type="BREAKING_CHANGES",
+            pr_number=1,
+            repository="example-org/example-project/example-repo",
+            changed_files=[],
+            query_kb_lambda_name="qkb",
+            provider="azure_devops",
+            connection_id="conn-xyz",
+            ado_org="example-org", ado_project="example-project",
+            ado_repo="example-repo",
+        )
+        assert result["status"] in ("PASS", "WARN", "FAIL")
+
+
+class TestADRComplianceADO:
+    """ADR_COMPLIANCE end-to-end on ADO: refreshes token, fetches PR
+    metadata + base/head file bytes, computes diff client-side."""
+
+    @patch.object(adr_compliance_module, "refresh_ado_token", return_value="ado-tok")
+    def test_ado_branch_refreshes_token_and_fetches_pr_metadata(self, mock_refresh):
+        # Build a fake PRMetadata NamedTuple that fetch_pr_metadata
+        # would return; we mock it at the source_fetch/pr_metadata
+        # boundary so no actual HTTP happens.
+        from shared.pr_metadata import PRMetadata
+
+        fake_pr = PRMetadata(
+            head_sha="head-sha",
+            base_sha="base-sha",
+            base_branch="main",
+            changed_files=["lambda/hello/handler.py"],
+            author="user@example.com",
+            title="Add hello",
+        )
+
+        with patch("shared.pr_metadata.fetch_pr_metadata", return_value=fake_pr), \
+             patch("shared.source_fetch.fetch_file_at_sha",
+                   side_effect=[b"before content\n", b"after content\n"]), \
+             patch.object(adr_compliance_module, "query_knowledge_base",
+                          return_value={"answer": "std", "sources": []}), \
+             patch.object(adr_compliance_module, "analyze_code_with_claude",
+                          return_value={"compliant": True, "explanation": "ok", "suggestions": []}):
+            result = adr_compliance_module.check_adr_compliance(
+                check_type="ADR_COMPLIANCE",
+                pr_number=42,
+                repository="example-org/example-project/example-repo",
+                changed_files=["lambda/hello/handler.py"],
+                query_kb_lambda_name="qkb",
+                github_token_param="/x",
+                provider="azure_devops",
+                connection_id="conn-xyz",
+                ado_org="example-org",
+                ado_project="example-project",
+                ado_repo="example-repo",
+            )
+
+        assert result["status"] == "PASS"
+        mock_refresh.assert_called_once_with("conn-xyz")
+
+    @patch.object(adr_compliance_module, "refresh_ado_token", return_value="ado-tok")
+    def test_ado_branch_handles_added_file_no_base_content(self, _mock_refresh):
+        # File exists in head but not in base -- fetch_file_at_sha for
+        # base_sha raises SourceFetchError, and pr_diff.compute_file_diff
+        # emits a valid diff with /dev/null on the base side.
+        from shared.pr_metadata import PRMetadata
+        from shared.source_fetch import SourceFetchError
+
+        fake_pr = PRMetadata(
+            head_sha="head-sha",
+            base_sha="base-sha",
+            base_branch="main",
+            changed_files=["lambda/added/handler.py"],
+            author="u",
+            title="t",
+        )
+
+        def _fetch(*args, **kwargs):
+            if kwargs.get("sha") == "base-sha" or (len(args) >= 3 and args[2] == "base-sha"):
+                raise SourceFetchError("404 in base")
+            return b"new file content\n"
+
+        with patch("shared.pr_metadata.fetch_pr_metadata", return_value=fake_pr), \
+             patch("shared.source_fetch.fetch_file_at_sha", side_effect=_fetch), \
+             patch.object(adr_compliance_module, "query_knowledge_base",
+                          return_value={"answer": "std", "sources": []}), \
+             patch.object(adr_compliance_module, "analyze_code_with_claude",
+                          return_value={"compliant": True, "explanation": "ok", "suggestions": []}):
+            result = adr_compliance_module.check_adr_compliance(
+                check_type="ADR_COMPLIANCE",
+                pr_number=1,
+                repository="example-org/example-project/example-repo",
+                changed_files=["lambda/added/handler.py"],
+                query_kb_lambda_name="qkb",
+                github_token_param="/x",
+                provider="azure_devops",
+                connection_id="conn",
+                ado_org="example-org",
+                ado_project="example-project",
+                ado_repo="example-repo",
+            )
+        assert result["status"] == "PASS"
+
+    def test_github_path_unchanged_by_ado_addition(self):
+        # Regression: passing no provider kwarg still runs the GitHub
+        # path with a get_github_token + fetch_pr_file_diff flow.
+        with patch.object(adr_compliance_module, "get_github_token", return_value="ghp"), \
+             patch.object(adr_compliance_module, "analyze_lambda_handlers",
+                          return_value={"status": "PASS", "message": "ok", "details": []}), \
+             patch.object(adr_compliance_module, "analyze_terraform_files",
+                          return_value={"status": "PASS", "message": "ok", "details": []}):
+            result = adr_compliance_module.check_adr_compliance(
+                check_type="ADR_COMPLIANCE",
+                pr_number=1, repository="o/r", changed_files=[],
+                query_kb_lambda_name="qkb", github_token_param="/x",
+            )
+        assert result["status"] == "PASS"
+
+
+class TestArchitecturalDuplicationADO:
+    """ARCHITECTURAL_DUPLICATION end-to-end on ADO: mirrors the
+    ADR_COMPLIANCE ADO pattern (token refresh + PR metadata +
+    per-file diff via base/head fetch + client-side diff)."""
+
+    def test_ado_branch_ends_up_with_diffs_computed_client_side(self):
+        # Patch the module-local refresh_ado_token helper directly so
+        # we don't need the ado_context module to be importable.
+        from shared.pr_metadata import PRMetadata
+
+        fake_pr = PRMetadata(
+            head_sha="head-sha", base_sha="base-sha", base_branch="main",
+            changed_files=["lambda/foo/handler.py"],
+            author="u", title="t",
+        )
+
+        with patch.object(architectural_duplication_module, "refresh_ado_token",
+                          return_value="ado-tok", create=True), \
+             patch("shared.pr_metadata.fetch_pr_metadata", return_value=fake_pr), \
+             patch("shared.source_fetch.fetch_file_at_sha",
+                   side_effect=[b"base\n", b"head\n"]), \
+             patch.object(architectural_duplication_module, "summarize_pr_with_claude",
+                          return_value="summary"), \
+             patch.object(architectural_duplication_module, "extract_functional_keywords",
+                          return_value=["q1"]), \
+             patch.object(architectural_duplication_module, "query_knowledge_base",
+                          return_value={"answer": "", "sources": []}), \
+             patch.object(architectural_duplication_module, "analyze_similarity_with_claude",
+                          return_value={"has_related_functionality": False, "matches": []}):
+            result = architectural_duplication_module.check_architectural_duplication(
+                check_type="ARCHITECTURAL_DUPLICATION",
+                pr_number=42,
+                repository="example-org/example-project/example-repo",
+                changed_files=["lambda/foo/handler.py"],
+                query_kb_lambda_name="qkb",
+                github_token_param="/x",
+                provider="azure_devops",
+                connection_id="conn-xyz",
+                ado_org="example-org",
+                ado_project="example-project",
+                ado_repo="example-repo",
+            )
+
+        assert result["status"] in ("PASS", "WARN")
+
+    def test_github_path_unchanged_by_ado_addition(self):
+        # GitHub regression: no provider kwarg still runs the GitHub
+        # path with get_github_token + fetch_pr_file_diff flow.
+        with patch.object(architectural_duplication_module, "get_github_token", return_value="ghp"), \
+             patch.object(architectural_duplication_module, "fetch_pr_file_diff", return_value="diff"), \
+             patch.object(architectural_duplication_module, "summarize_pr_with_claude",
+                          return_value="summary"), \
+             patch.object(architectural_duplication_module, "extract_functional_keywords",
+                          return_value=["q1"]), \
+             patch.object(architectural_duplication_module, "query_knowledge_base",
+                          return_value={"answer": "", "sources": []}), \
+             patch.object(architectural_duplication_module, "analyze_similarity_with_claude",
+                          return_value={"has_related_functionality": False, "matches": []}):
+            result = architectural_duplication_module.check_architectural_duplication(
+                check_type="ARCHITECTURAL_DUPLICATION",
+                pr_number=1,
+                repository="o/r",
+                changed_files=["lambda/foo/handler.py"],
+                query_kb_lambda_name="qkb",
+                github_token_param="/x",
+            )
+        assert result["status"] in ("PASS", "WARN")
+
+
+# ---------------------------------------------------------------------------
+# Chunk 04 of AI-PR-Analyzer ADO parity plan: introspection-heavy
+# handlers (README_FRESHNESS, LICENSE_COMPLIANCE, TEST_COVERAGE)
+# wired for Azure DevOps.
+# ---------------------------------------------------------------------------
+
+
+class TestReadmeFreshnessADO:
+
+    def test_ado_branch_readme_updated_runs_end_to_end(self):
+        from shared.pr_metadata import PRMetadata
+
+        fake_pr = PRMetadata(
+            head_sha="head", base_sha="base", base_branch="main",
+            changed_files=["README.md"], author="u", title="t",
+        )
+        with patch.object(readme_freshness_module, "refresh_ado_token",
+                          return_value="ado-tok", create=True), \
+             patch("shared.pr_metadata.fetch_pr_metadata", return_value=fake_pr), \
+             patch("shared.source_fetch.fetch_file_at_sha",
+                   side_effect=[b"before readme\n", b"after readme\n"]), \
+             patch.object(readme_freshness_module, "analyze_readme_with_claude",
+                          return_value={"adequate": True, "explanation": "documented"}):
+            result = readme_freshness_module.check_readme_freshness(
+                check_type="README_FRESHNESS",
+                pr_number=42,
+                repository="example-org/example-project/example-repo",
+                changed_files=["lambda/foo/handler.py", "README.md"],
+                github_token_param="/x",
+                provider="azure_devops",
+                connection_id="conn-xyz",
+                ado_org="example-org",
+                ado_project="example-project",
+                ado_repo="example-repo",
+            )
+        assert result["status"] == "PASS"
+
+    def test_ado_branch_readme_not_updated_returns_warn_without_ado_fetch(self):
+        # If README wasn't in changed_files, no fetch/refresh needed —
+        # handler returns WARN immediately. Confirms the ADO code path
+        # short-circuits on the same input GitHub short-circuits on.
+        result = readme_freshness_module.check_readme_freshness(
+            check_type="README_FRESHNESS",
+            pr_number=1,
+            repository="o/r",
+            changed_files=["terraform/x.tf"],
+            github_token_param="/x",
+            provider="azure_devops",
+            connection_id="conn",
+            ado_org="o", ado_project="p", ado_repo="r",
+        )
+        assert result["status"] == "WARN"
+
+
+class TestLicenseComplianceADO:
+
+    def test_ado_branch_scans_files_and_notes_skip(self):
+        from shared.pr_metadata import PRMetadata
+
+        fake_pr = PRMetadata(
+            head_sha="head", base_sha="base", base_branch="main",
+            changed_files=["src/x.py"], author="u", title="t",
+        )
+        with patch.object(license_compliance_module, "refresh_ado_token",
+                          return_value="ado-tok", create=True), \
+             patch("shared.pr_metadata.fetch_pr_metadata", return_value=fake_pr), \
+             patch("shared.source_fetch.fetch_file_at_sha",
+                   side_effect=[b"before src\n", b"after src\n"]), \
+             patch.object(license_compliance_module, "query_knowledge_base",
+                          return_value={"answer": "policy text", "sources": []}), \
+             patch.object(license_compliance_module, "analyze_file_comprehensive",
+                          return_value={"status": "PASS", "issues": [], "phase2_triggered": False}):
+            result = license_compliance_module.check_license_compliance(
+                check_type="LICENSE_COMPLIANCE",
+                pr_number=1,
+                repository="example-org/example-project/example-repo",
+                changed_files=["src/x.py"],
+                query_kb_lambda_name="qkb",
+                github_token_param="/x",
+                provider="azure_devops",
+                connection_id="conn",
+                ado_org="example-org",
+                ado_project="example-project",
+                ado_repo="example-repo",
+            )
+        # Skip-note appended to details.
+        assert any("commit-list inspection" in d for d in result["details"])
+
+    def test_ado_branch_skips_ai_generated_detection(self):
+        # get_ai_generated_files is GitHub-only; on ADO no commits are
+        # fetched. Assert the helper is NOT called.
+        from shared.pr_metadata import PRMetadata
+
+        fake_pr = PRMetadata(
+            head_sha="head", base_sha="base", base_branch="main",
+            changed_files=["src/x.py"], author="u", title="t",
+        )
+        with patch.object(license_compliance_module, "refresh_ado_token",
+                          return_value="ado-tok", create=True), \
+             patch("shared.pr_metadata.fetch_pr_metadata", return_value=fake_pr), \
+             patch("shared.source_fetch.fetch_file_at_sha",
+                   side_effect=[b"a\n", b"b\n"]), \
+             patch.object(license_compliance_module, "query_knowledge_base",
+                          return_value={"answer": "", "sources": []}), \
+             patch.object(license_compliance_module, "analyze_file_comprehensive",
+                          return_value={"status": "PASS", "issues": [], "phase2_triggered": False}), \
+             patch.object(license_compliance_module, "get_ai_generated_files") as mock_ai:
+            license_compliance_module.check_license_compliance(
+                check_type="LICENSE_COMPLIANCE",
+                pr_number=1, repository="o/p/r", changed_files=["src/x.py"],
+                query_kb_lambda_name="qkb", github_token_param="/x",
+                provider="azure_devops", connection_id="c",
+                ado_org="o", ado_project="p", ado_repo="r",
+            )
+        mock_ai.assert_not_called()
+
+
+class TestTestCoverageADO:
+
+    def test_ado_branch_uses_repo_metadata_for_tree_and_config(self):
+        from shared.repo_metadata import RepoMetadata
+
+        fake_repo = RepoMetadata(
+            default_branch="main",
+            file_paths=[
+                "lambda/foo/handler.py",
+                "lambda/foo/tests/unit/test_handler.py",
+                "lambda/bar/handler.py",
+            ],
+        )
+        with patch.object(test_coverage_module, "refresh_ado_token",
+                          return_value="ado-tok", create=True), \
+             patch("shared.repo_metadata.fetch_repo_metadata", return_value=fake_repo), \
+             patch("shared.source_fetch.fetch_file_at_sha",
+                   return_value=b"testing:\n  require_tests: []\n"), \
+             patch.object(test_coverage_module, "query_testing_standards",
+                          return_value=("std", "ADR-XYZ", {"input_tokens": 0, "output_tokens": 0})):
+            result = test_coverage_module.check_test_coverage(
+                check_type="TEST_COVERAGE",
+                pr_number=1,
+                repository="example-org/example-project/example-repo",
+                changed_files=["lambda/foo/handler.py"],
+                github_token_param="/x",
+                query_kb_lambda_name="qkb",
+                provider="azure_devops",
+                connection_id="conn",
+                ado_org="example-org",
+                ado_project="example-project",
+                ado_repo="example-repo",
+            )
+        # Handler ran without touching GitHub.
+        assert result["status"] in ("PASS", "WARN", "FAIL")
+
+    def test_ado_config_yaml_missing_still_runs(self):
+        # If .outcomeops.yaml doesn't exist in the ADO repo,
+        # fetch_file_at_sha raises SourceFetchError; the handler
+        # should fall through to backend defaults, not crash.
+        from shared.repo_metadata import RepoMetadata
+        from shared.source_fetch import SourceFetchError
+
+        fake_repo = RepoMetadata(default_branch="main", file_paths=[])
+        with patch.object(test_coverage_module, "refresh_ado_token",
+                          return_value="ado-tok", create=True), \
+             patch("shared.repo_metadata.fetch_repo_metadata", return_value=fake_repo), \
+             patch("shared.source_fetch.fetch_file_at_sha",
+                   side_effect=SourceFetchError("404")), \
+             patch.object(test_coverage_module, "query_testing_standards",
+                          return_value=("", None, None)):
+            result = test_coverage_module.check_test_coverage(
+                check_type="TEST_COVERAGE",
+                pr_number=1, repository="o/p/r",
+                changed_files=[],
+                github_token_param="/x", query_kb_lambda_name="qkb",
+                provider="azure_devops", connection_id="c",
+                ado_org="o", ado_project="p", ado_repo="r",
+            )
+        assert result["status"] in ("PASS", "WARN", "FAIL")

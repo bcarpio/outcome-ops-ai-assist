@@ -329,6 +329,14 @@ def run_check(job: CheckJob) -> Dict[str, Any]:
     """
     Route to appropriate check handler based on check type.
 
+    Provider-aware: forwards ``provider`` + ADO context fields from the
+    CheckJob to each handler. Today every handler still raises
+    ``NotImplementedError`` for non-github providers (see the widened
+    signatures in ``check_handlers/*.py``), so callers reaching this
+    function with an ADO job hit a loud failure. The
+    ``process_check_job`` short-circuit above prevents that from
+    happening in production until chunk 05 removes it.
+
     Args:
         job: CheckJob with check type and PR metadata
 
@@ -340,6 +348,14 @@ def run_check(job: CheckJob) -> Dict[str, Any]:
     """
     github_token_param = f"/{ENVIRONMENT}/{APP_NAME}/github/token"
 
+    provider_kwargs = {
+        "provider": job.provider,
+        "connection_id": job.connection_id,
+        "ado_org": job.azure_devops_org,
+        "ado_project": job.azure_devops_project,
+        "ado_repo": job.azure_devops_repo,
+    }
+
     if job.check_type == CheckType.ADR_COMPLIANCE:
         return check_adr_compliance(
             check_type=job.check_type.value,
@@ -347,7 +363,8 @@ def run_check(job: CheckJob) -> Dict[str, Any]:
             repository=job.repository,
             changed_files=job.changed_files,
             query_kb_lambda_name=QUERY_KB_LAMBDA_NAME,
-            github_token_param=github_token_param
+            github_token_param=github_token_param,
+            **provider_kwargs,
         )
 
     elif job.check_type == CheckType.README_FRESHNESS:
@@ -356,7 +373,8 @@ def run_check(job: CheckJob) -> Dict[str, Any]:
             pr_number=job.pr_number,
             repository=job.repository,
             changed_files=job.changed_files,
-            github_token_param=github_token_param
+            github_token_param=github_token_param,
+            **provider_kwargs,
         )
 
     elif job.check_type == CheckType.TEST_COVERAGE:
@@ -366,7 +384,8 @@ def run_check(job: CheckJob) -> Dict[str, Any]:
             repository=job.repository,
             changed_files=job.changed_files,
             github_token_param=github_token_param,
-            query_kb_lambda_name=QUERY_KB_LAMBDA_NAME
+            query_kb_lambda_name=QUERY_KB_LAMBDA_NAME,
+            **provider_kwargs,
         )
 
     elif job.check_type == CheckType.BREAKING_CHANGES:
@@ -375,7 +394,8 @@ def run_check(job: CheckJob) -> Dict[str, Any]:
             pr_number=job.pr_number,
             repository=job.repository,
             changed_files=job.changed_files,
-            query_kb_lambda_name=QUERY_KB_LAMBDA_NAME
+            query_kb_lambda_name=QUERY_KB_LAMBDA_NAME,
+            **provider_kwargs,
         )
 
     elif job.check_type == CheckType.ARCHITECTURAL_DUPLICATION:
@@ -385,7 +405,8 @@ def run_check(job: CheckJob) -> Dict[str, Any]:
             repository=job.repository,
             changed_files=job.changed_files,
             query_kb_lambda_name=QUERY_KB_LAMBDA_NAME,
-            github_token_param=github_token_param
+            github_token_param=github_token_param,
+            **provider_kwargs,
         )
 
     elif job.check_type == CheckType.LICENSE_COMPLIANCE:
@@ -395,7 +416,8 @@ def run_check(job: CheckJob) -> Dict[str, Any]:
             repository=job.repository,
             changed_files=job.changed_files,
             query_kb_lambda_name=QUERY_KB_LAMBDA_NAME,
-            github_token_param=github_token_param
+            github_token_param=github_token_param,
+            **provider_kwargs,
         )
 
     else:
@@ -459,31 +481,14 @@ def process_check_job(job: CheckJob) -> CheckResult:
         job.check_type.value, job.pr_number, job.provider,
     )
 
-    # chunk 07: for ADO jobs, short-circuit the check execution.
-    # check_handlers/ fetches source from the GitHub API; running it
-    # against an ADO slug would 404. v1 ships a transparent stub PASS
-    # so the customer's pipeline gets a successful round-trip + a
-    # comment that says "checks against ADO source are pending a
-    # follow-up release." Surface checks for ADO are tracked
-    # separately (provider-aware refactor of check_handlers/).
-    if job.provider == "azure_devops":
-        check_result = {
-            "status": "PASS",
-            "message": "Azure DevOps PR-check pipeline reached the platform successfully.",
-            "details": [
-                "PR-check wiring for Azure DevOps is operational: this comment "
-                "posted via your platform's Azure DevOps OAuth connection.",
-                "Surface check execution (ADR_COMPLIANCE, README_FRESHNESS, "
-                "TEST_COVERAGE, etc.) against Azure DevOps source is not yet "
-                "wired in this release. Track the follow-up in the platform's "
-                "ADO integration plan.",
-            ],
-        }
-        usage = None
-    else:
-        # Run the appropriate check (existing GitHub-only path).
-        check_result = run_check(job)
-        usage = check_result.get("usage")
+    # All 6 check handlers accept ``provider=azure_devops`` and dispatch
+    # source-fetching accordingly (chunks 03-04 of the AI-PR-Analyzer
+    # ADO parity plan). The chunk-07-era short-circuit that stubbed
+    # ADO to a PASS with a "not yet implemented" comment was removed
+    # in chunk 05; ADO jobs now run the same check pipeline GitHub
+    # jobs do.
+    check_result = run_check(job)
+    usage = check_result.get("usage")
 
     # Build full result
     timestamp = datetime.utcnow().isoformat() + "Z"

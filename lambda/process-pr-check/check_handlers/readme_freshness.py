@@ -9,13 +9,14 @@ Checks:
 
 import json
 import logging
-from typing import Dict, List, Any, Set
+from typing import Dict, List, Any, Optional, Set
 
 import boto3
 import requests
 from botocore.exceptions import ClientError
 
 from .bedrock_utils import call_bedrock, UsageTracker, SONNET_MODEL_ID
+from .ado_context import refresh_ado_token
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -219,12 +220,73 @@ Examples:
         raise
 
 
+def _fetch_readme_diff(
+    *,
+    provider: str,
+    repository: str,
+    pr_number: int,
+    github_token_param: str,
+    connection_id: Optional[str],
+    ado_org: Optional[str],
+    ado_project: Optional[str],
+    ado_repo: Optional[str],
+) -> str:
+    """Fetch the README.md diff for a PR, dispatched by provider.
+
+    GitHub uses the server-side unified-diff endpoint via
+    ``fetch_pr_file_diff``. Azure DevOps refreshes the OAuth token,
+    fetches PR metadata for base+head SHAs, fetches README.md bytes
+    at both, and computes the diff client-side via
+    ``shared.pr_diff.compute_file_diff``.
+    """
+    if provider == "github":
+        token = get_github_token(github_token_param)
+        return fetch_pr_file_diff(repository, pr_number, "README.md", token)
+
+    if provider == "azure_devops":
+        from shared.pr_metadata import fetch_pr_metadata
+        from shared.source_fetch import fetch_file_at_sha, SourceFetchError
+        from shared.pr_diff import compute_file_diff
+
+        access_token = refresh_ado_token(connection_id)
+        pr = fetch_pr_metadata(
+            "azure_devops", pr_number,
+            ado_org=ado_org, ado_project=ado_project, ado_repo=ado_repo,
+            ado_access_token=access_token,
+        )
+        try:
+            base_bytes = fetch_file_at_sha(
+                "azure_devops", "README.md", pr.base_sha,
+                ado_org=ado_org, ado_project=ado_project, ado_repo=ado_repo,
+                ado_access_token=access_token,
+            )
+        except SourceFetchError:
+            base_bytes = None
+        try:
+            head_bytes = fetch_file_at_sha(
+                "azure_devops", "README.md", pr.head_sha,
+                ado_org=ado_org, ado_project=ado_project, ado_repo=ado_repo,
+                ado_access_token=access_token,
+            )
+        except SourceFetchError:
+            head_bytes = None
+        return compute_file_diff(base_bytes, head_bytes, "README.md")
+
+    raise ValueError(f"Unknown provider: {provider}")
+
+
 def check_readme_freshness(
     check_type: str,
     pr_number: int,
     repository: str,
     changed_files: List[str],
-    github_token_param: str
+    github_token_param: str,
+    *,
+    provider: str = "github",
+    connection_id: str | None = None,
+    ado_org: str | None = None,
+    ado_project: str | None = None,
+    ado_repo: str | None = None,
 ) -> Dict[str, Any]:
     """
     README Freshness check handler.
@@ -233,8 +295,20 @@ def check_readme_freshness(
     - If terraform files changed, README.md should be updated
     - If new handlers added, README.md should document them
     - Uses Claude to analyze if README updates are meaningful
+
+    Provider-aware: dispatches on ``provider`` for the README.md diff
+    fetch. Fires ``NotImplementedError`` for unknown providers as a
+    safety net.
     """
-    logger.info(f"Running README freshness check for PR #{pr_number}")
+    if provider not in ("github", "azure_devops"):
+        raise NotImplementedError(
+            f"check_readme_freshness does not support provider={provider!r}."
+        )
+
+    logger.info(
+        f"Running README freshness check for PR #{pr_number} "
+        f"(provider={provider})"
+    )
 
     # Create usage tracker
     usage_tracker = UsageTracker()
@@ -281,11 +355,19 @@ def check_readme_freshness(
     logger.info("README.md was updated, analyzing adequacy with Claude...")
 
     try:
-        # Fetch GitHub token
-        token = get_github_token(github_token_param)
-
-        # Fetch README diff from GitHub
-        readme_diff = fetch_pr_file_diff(repository, pr_number, "README.md", token)
+        # Provider-dispatched README.md diff fetch. On GitHub uses the
+        # server-side unified-diff endpoint; on ADO fetches base+head
+        # bytes at the PR head/base SHAs and computes the diff client-side.
+        readme_diff = _fetch_readme_diff(
+            provider=provider,
+            repository=repository,
+            pr_number=pr_number,
+            github_token_param=github_token_param,
+            connection_id=connection_id,
+            ado_org=ado_org,
+            ado_project=ado_project,
+            ado_repo=ado_repo,
+        )
 
         if not readme_diff or readme_diff == f"diff --git a/README.md b/README.md\n(No diff available)":
             logger.warning("README.md in changed files but no diff found")

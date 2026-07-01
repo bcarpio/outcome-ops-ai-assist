@@ -2,18 +2,20 @@
 ADR Compliance check handler.
 
 Analyzes Lambda handlers and Terraform files against ADR standards using Claude.
-Fetches PR file diffs from GitHub and uses Bedrock Claude to analyze compliance.
+Fetches PR file diffs from GitHub or Azure DevOps and uses Bedrock Claude to
+analyze compliance.
 """
 
 import json
 import logging
-from typing import Dict, List, Any, Literal
+from typing import Dict, List, Any, Literal, Optional
 
 import boto3
 import requests
 from botocore.exceptions import ClientError
 
 from .bedrock_utils import call_bedrock, UsageTracker, SONNET_MODEL_ID
+from .ado_context import refresh_ado_token
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -98,6 +100,66 @@ def extract_file_diff_from_full_diff(full_diff: str, file_path: str) -> str:
             file_diff_lines.append(line)
 
     return "\n".join(file_diff_lines) if file_diff_lines else ""
+
+
+def _fetch_file_diff(
+    *,
+    provider: str,
+    file_path: str,
+    repository: str,
+    pr_number: int,
+    # GitHub context (unused for ADO)
+    github_token: Optional[str] = None,
+    # ADO context (unused for GitHub)
+    ado_org: Optional[str] = None,
+    ado_project: Optional[str] = None,
+    ado_repo: Optional[str] = None,
+    ado_access_token: Optional[str] = None,
+    ado_base_sha: Optional[str] = None,
+    ado_head_sha: Optional[str] = None,
+) -> str:
+    """Provider-dispatching per-file diff fetcher.
+
+    On GitHub, uses the existing ``fetch_pr_file_diff`` which pulls the
+    server-side unified diff via ``Accept: application/vnd.github.v3.diff``.
+
+    On Azure DevOps, ADO has no equivalent server-side diff endpoint, so
+    we fetch base and head file bytes at the SHAs already computed by
+    the caller (via ``shared.pr_metadata.fetch_pr_metadata``) and produce
+    a unified diff client-side via ``shared.pr_diff.compute_file_diff``.
+    """
+    if provider == "github":
+        return fetch_pr_file_diff(repository, pr_number, file_path, github_token)
+
+    if provider == "azure_devops":
+        # Late imports so unit tests can load this module without the
+        # shared/ package being on sys.path at import time (the parent
+        # handler.py sets that up).
+        from shared.source_fetch import fetch_file_at_sha, SourceFetchError
+        from shared.pr_diff import compute_file_diff
+
+        base_bytes: Optional[bytes]
+        head_bytes: Optional[bytes]
+        try:
+            base_bytes = fetch_file_at_sha(
+                "azure_devops", file_path, ado_base_sha,
+                ado_org=ado_org, ado_project=ado_project, ado_repo=ado_repo,
+                ado_access_token=ado_access_token,
+            )
+        except SourceFetchError:
+            base_bytes = None  # File added — did not exist in base
+        try:
+            head_bytes = fetch_file_at_sha(
+                "azure_devops", file_path, ado_head_sha,
+                ado_org=ado_org, ado_project=ado_project, ado_repo=ado_repo,
+                ado_access_token=ado_access_token,
+            )
+        except SourceFetchError:
+            head_bytes = None  # File deleted in head
+
+        return compute_file_diff(base_bytes, head_bytes, file_path)
+
+    raise ValueError(f"Unknown provider: {provider}")
 
 
 def query_knowledge_base(lambda_name: str, query: str, top_k: int = 3) -> Dict[str, Any]:
@@ -242,8 +304,16 @@ def analyze_lambda_handlers(
     pr_number: int,
     files: List[str],
     query_kb_lambda_name: str,
-    github_token: str,
-    usage_tracker: UsageTracker
+    github_token: Optional[str],
+    usage_tracker: UsageTracker,
+    *,
+    provider: str = "github",
+    ado_org: Optional[str] = None,
+    ado_project: Optional[str] = None,
+    ado_repo: Optional[str] = None,
+    ado_access_token: Optional[str] = None,
+    ado_base_sha: Optional[str] = None,
+    ado_head_sha: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Analyze Lambda handlers against ADR standards using Claude."""
     # Filter for Lambda handler files (exclude tests, shared libs)
@@ -275,8 +345,20 @@ def analyze_lambda_handlers(
 
     for file in handler_files:
         try:
-            # Fetch file diff from GitHub
-            file_diff = fetch_pr_file_diff(repository, pr_number, file, github_token)
+            # Fetch file diff from the source provider
+            file_diff = _fetch_file_diff(
+                provider=provider,
+                file_path=file,
+                repository=repository,
+                pr_number=pr_number,
+                github_token=github_token,
+                ado_org=ado_org,
+                ado_project=ado_project,
+                ado_repo=ado_repo,
+                ado_access_token=ado_access_token,
+                ado_base_sha=ado_base_sha,
+                ado_head_sha=ado_head_sha,
+            )
 
             # Analyze with Claude
             analysis = analyze_code_with_claude(
@@ -316,8 +398,16 @@ def analyze_terraform_files(
     pr_number: int,
     files: List[str],
     query_kb_lambda_name: str,
-    github_token: str,
-    usage_tracker: UsageTracker
+    github_token: Optional[str],
+    usage_tracker: UsageTracker,
+    *,
+    provider: str = "github",
+    ado_org: Optional[str] = None,
+    ado_project: Optional[str] = None,
+    ado_repo: Optional[str] = None,
+    ado_access_token: Optional[str] = None,
+    ado_base_sha: Optional[str] = None,
+    ado_head_sha: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Analyze Terraform files against module standards using Claude."""
     terraform_files = [f for f in files if f.startswith("terraform/") and f.endswith(".tf")]
@@ -344,8 +434,20 @@ def analyze_terraform_files(
 
     for file in terraform_files:
         try:
-            # Fetch file diff from GitHub
-            file_diff = fetch_pr_file_diff(repository, pr_number, file, github_token)
+            # Fetch file diff from the source provider
+            file_diff = _fetch_file_diff(
+                provider=provider,
+                file_path=file,
+                repository=repository,
+                pr_number=pr_number,
+                github_token=github_token,
+                ado_org=ado_org,
+                ado_project=ado_project,
+                ado_repo=ado_repo,
+                ado_access_token=ado_access_token,
+                ado_base_sha=ado_base_sha,
+                ado_head_sha=ado_head_sha,
+            )
 
             # Analyze with Claude
             analysis = analyze_code_with_claude(
@@ -386,7 +488,13 @@ def check_adr_compliance(
     repository: str,
     changed_files: List[str],
     query_kb_lambda_name: str,
-    github_token_param: str
+    github_token_param: str,
+    *,
+    provider: str = "github",
+    connection_id: str | None = None,
+    ado_org: str | None = None,
+    ado_project: str | None = None,
+    ado_repo: str | None = None,
 ) -> Dict[str, Any]:
     """
     ADR Compliance check handler.
@@ -395,23 +503,65 @@ def check_adr_compliance(
     - Lambda handlers follow ADR standards (Pydantic validation, error handling, documentation)
     - Terraform files follow module standards (terraform-aws-modules, version pinning)
     - Uses Claude to analyze actual code diffs against KB standards
+
+    Provider-aware: on ``provider="github"`` fetches per-file diffs
+    via GitHub's server-side unified-diff endpoint. On
+    ``provider="azure_devops"`` refreshes the customer's ADO OAuth
+    token, fetches PR head/base commit SHAs via
+    ``shared.pr_metadata.fetch_pr_metadata``, then computes each
+    file's diff client-side from base+head file bytes via
+    ``shared.pr_diff.compute_file_diff``.
     """
-    logger.info(f"Running ADR compliance check for PR #{pr_number}")
+    logger.info(
+        f"Running ADR compliance check for PR #{pr_number} "
+        f"(provider={provider})"
+    )
 
     # Create usage tracker
     usage_tracker = UsageTracker()
 
     try:
-        # Fetch GitHub token
-        token = get_github_token(github_token_param)
+        # Provider-specific auth + PR context prep.
+        github_token: Optional[str] = None
+        ado_access_token: Optional[str] = None
+        ado_base_sha: Optional[str] = None
+        ado_head_sha: Optional[str] = None
+
+        if provider == "github":
+            github_token = get_github_token(github_token_param)
+        elif provider == "azure_devops":
+            # Late import so unit tests can load this module without
+            # the shared/ package on sys.path at import time.
+            from shared.pr_metadata import fetch_pr_metadata
+
+            ado_access_token = refresh_ado_token(connection_id)
+            pr = fetch_pr_metadata(
+                "azure_devops", pr_number,
+                ado_org=ado_org, ado_project=ado_project, ado_repo=ado_repo,
+                ado_access_token=ado_access_token,
+            )
+            ado_base_sha = pr.base_sha
+            ado_head_sha = pr.head_sha
+        else:
+            raise ValueError(f"Unknown provider: {provider}")
 
         # Analyze Lambda handlers and Terraform files with Claude
         lambda_result = analyze_lambda_handlers(
-            repository, pr_number, changed_files, query_kb_lambda_name, token, usage_tracker
+            repository, pr_number, changed_files, query_kb_lambda_name,
+            github_token, usage_tracker,
+            provider=provider,
+            ado_org=ado_org, ado_project=ado_project, ado_repo=ado_repo,
+            ado_access_token=ado_access_token,
+            ado_base_sha=ado_base_sha, ado_head_sha=ado_head_sha,
         )
 
         terraform_result = analyze_terraform_files(
-            repository, pr_number, changed_files, query_kb_lambda_name, token, usage_tracker
+            repository, pr_number, changed_files, query_kb_lambda_name,
+            github_token, usage_tracker,
+            provider=provider,
+            ado_org=ado_org, ado_project=ado_project, ado_repo=ado_repo,
+            ado_access_token=ado_access_token,
+            ado_base_sha=ado_base_sha, ado_head_sha=ado_head_sha,
         )
 
         # Combine results

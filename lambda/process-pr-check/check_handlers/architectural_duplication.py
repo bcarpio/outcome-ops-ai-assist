@@ -8,7 +8,7 @@ This is purely informational and empowers engineers with platform-wide context.
 
 import json
 import logging
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 
 import boto3
 import requests
@@ -94,6 +94,53 @@ def extract_file_diff_from_full_diff(full_diff: str, file_path: str) -> str:
             file_diff_lines.append(line)
 
     return "\n".join(file_diff_lines) if file_diff_lines else ""
+
+
+def _fetch_arch_dup_file_diff(
+    *,
+    provider: str,
+    file_path: str,
+    repository: str,
+    pr_number: int,
+    github_token: Optional[str] = None,
+    ado_org: Optional[str] = None,
+    ado_project: Optional[str] = None,
+    ado_repo: Optional[str] = None,
+    ado_access_token: Optional[str] = None,
+    ado_base_sha: Optional[str] = None,
+    ado_head_sha: Optional[str] = None,
+) -> str:
+    """Provider-dispatching per-file diff fetcher for architectural
+    duplication analysis. Same shape as the adr_compliance helper;
+    kept module-local so the two handlers can evolve independently."""
+    if provider == "github":
+        return fetch_pr_file_diff(repository, pr_number, file_path, github_token)
+
+    if provider == "azure_devops":
+        from shared.source_fetch import fetch_file_at_sha, SourceFetchError
+        from shared.pr_diff import compute_file_diff
+
+        base_bytes: Optional[bytes]
+        head_bytes: Optional[bytes]
+        try:
+            base_bytes = fetch_file_at_sha(
+                "azure_devops", file_path, ado_base_sha,
+                ado_org=ado_org, ado_project=ado_project, ado_repo=ado_repo,
+                ado_access_token=ado_access_token,
+            )
+        except SourceFetchError:
+            base_bytes = None
+        try:
+            head_bytes = fetch_file_at_sha(
+                "azure_devops", file_path, ado_head_sha,
+                ado_org=ado_org, ado_project=ado_project, ado_repo=ado_repo,
+                ado_access_token=ado_access_token,
+            )
+        except SourceFetchError:
+            head_bytes = None
+        return compute_file_diff(base_bytes, head_bytes, file_path)
+
+    raise ValueError(f"Unknown provider: {provider}")
 
 
 def query_knowledge_base(
@@ -459,7 +506,13 @@ def check_architectural_duplication(
     repository: str,
     changed_files: List[str],
     query_kb_lambda_name: str,
-    github_token_param: str
+    github_token_param: str,
+    *,
+    provider: str = "github",
+    connection_id: str | None = None,
+    ado_org: str | None = None,
+    ado_project: str | None = None,
+    ado_repo: str | None = None,
 ) -> Dict[str, Any]:
     """
     Architectural Duplication check handler.
@@ -472,8 +525,14 @@ def check_architectural_duplication(
     2. Query knowledge base for related functionality across repos
     3. Analyze KB results to identify meaningful relationships (using Claude)
     4. Present findings as opportunities for consideration
+
+    Provider-aware kwargs exist for Azure DevOps parity; real ADO
+    execution ships in a subsequent chunk.
     """
-    logger.info(f"Running architectural duplication check for PR #{pr_number}")
+    logger.info(
+        f"Running architectural duplication check for PR #{pr_number} "
+        f"(provider={provider})"
+    )
 
     # Create usage tracker
     usage_tracker = UsageTracker()
@@ -496,14 +555,49 @@ def check_architectural_duplication(
         }
 
     try:
-        # Fetch GitHub token
-        token = get_github_token(github_token_param)
+        # Provider-specific auth + PR context prep. On ADO we fetch PR
+        # metadata once to get base/head SHAs, then use them to compute
+        # per-file diffs client-side (ADO has no server-side unified-
+        # diff endpoint).
+        github_token: Optional[str] = None
+        ado_access_token: Optional[str] = None
+        ado_base_sha: Optional[str] = None
+        ado_head_sha: Optional[str] = None
 
-        # Fetch diffs for all handler files
+        if provider == "github":
+            github_token = get_github_token(github_token_param)
+        elif provider == "azure_devops":
+            from shared.pr_metadata import fetch_pr_metadata
+            from .ado_context import refresh_ado_token as _refresh_ado_token
+
+            ado_access_token = _refresh_ado_token(connection_id)
+            pr = fetch_pr_metadata(
+                "azure_devops", pr_number,
+                ado_org=ado_org, ado_project=ado_project, ado_repo=ado_repo,
+                ado_access_token=ado_access_token,
+            )
+            ado_base_sha = pr.base_sha
+            ado_head_sha = pr.head_sha
+        else:
+            raise ValueError(f"Unknown provider: {provider}")
+
+        # Fetch diffs for all handler files (provider-dispatched)
         file_diffs = {}
         for file in handler_files:
             try:
-                file_diffs[file] = fetch_pr_file_diff(repository, pr_number, file, token)
+                file_diffs[file] = _fetch_arch_dup_file_diff(
+                    provider=provider,
+                    file_path=file,
+                    repository=repository,
+                    pr_number=pr_number,
+                    github_token=github_token,
+                    ado_org=ado_org,
+                    ado_project=ado_project,
+                    ado_repo=ado_repo,
+                    ado_access_token=ado_access_token,
+                    ado_base_sha=ado_base_sha,
+                    ado_head_sha=ado_head_sha,
+                )
             except Exception as e:
                 logger.warning(f"Could not fetch diff for {file}: {e}")
                 file_diffs[file] = "(Diff unavailable)"
