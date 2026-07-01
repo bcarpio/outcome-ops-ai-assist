@@ -178,7 +178,11 @@ class TestCheckTestCoverage:
     @patch('test_coverage_handler.fetch_outcomeops_yaml')
     @patch('test_coverage_handler.query_testing_standards')
     def test_no_config_skips_check(self, mock_kb, mock_yaml, mock_token):
-        """Test: No .outcomeops.yaml returns PASS with warning"""
+        """No .outcomeops.yaml returns WARN. Prior behavior was PASS
+        with a "skipped" body that then carried a warn glyph, which
+        contradicted the row's overall PASS glyph in
+        ``format_check_comment``. The check couldn't actually run --
+        WARN is the honest status; message must not embed its own emoji."""
         mock_token.return_value = "token"
         mock_yaml.return_value = None  # No config found
         mock_kb.return_value = ("", None, {})  # 3-tuple: (answer, adr_ref, usage)
@@ -190,9 +194,12 @@ class TestCheckTestCoverage:
             query_kb_lambda_name="test-query-kb"
         )
 
-        assert result["status"] == "PASS"
+        assert result["status"] == "WARN"
         assert "skipped" in result["message"].lower()
         assert "no testing configuration found" in result["message"].lower()
+        # Message must NOT start with a status glyph -- the row's
+        # emoji is supplied by format_check_comment.
+        assert not result["message"].lstrip().startswith(("✅", "⚠️", "❌"))
 
     @patch('test_coverage_handler.get_github_token')
     @patch('test_coverage_handler.fetch_outcomeops_yaml')
@@ -380,6 +387,57 @@ class TestCheckTestCoverage:
         assert result["status"] == "PASS"
         # When there are no source files matching patterns, it still passes
         assert "All source files have test coverage" in result["message"]
+
+
+class TestMessagesDoNotEmbedStatusGlyph:
+    """Regression guard: check-result messages must NOT start with a
+    status emoji. ``handler.format_check_comment`` supplies the glyph
+    on the summary line; a message like "✅ All tests pass" then
+    stacks as "✅ TEST COVERAGE: ✅ All tests pass"."""
+
+    _GLYPHS = ("✅", "⚠️", "❌", ":white_check_mark:", ":warning:", ":x:")
+
+    @patch('test_coverage_handler.get_github_token')
+    @patch('test_coverage_handler.fetch_outcomeops_yaml')
+    @patch('test_coverage_handler.query_testing_standards')
+    @patch('test_coverage_handler.fetch_repo_test_files')
+    def test_pass_message_has_no_leading_glyph(
+        self, mock_repo_files, mock_kb, mock_yaml, mock_token,
+    ):
+        mock_token.return_value = "t"
+        mock_yaml.return_value = {"code_generation": {"backend": "python"}}
+        mock_kb.return_value = ("", "ADR-003", {})
+        mock_repo_files.return_value = ["lambda/hello/tests/test_hello.py"]
+
+        result = check_test_coverage(
+            "TEST_COVERAGE", 1, "owner/repo",
+            ["lambda/hello/handler.py"],
+            github_token_param="/test/token",
+            query_kb_lambda_name="test-query-kb",
+        )
+        assert result["status"] == "PASS"
+        assert not result["message"].lstrip().startswith(self._GLYPHS)
+
+    @patch('test_coverage_handler.get_github_token')
+    @patch('test_coverage_handler.fetch_outcomeops_yaml')
+    @patch('test_coverage_handler.query_testing_standards')
+    @patch('test_coverage_handler.fetch_repo_test_files')
+    def test_fail_message_has_no_leading_glyph(
+        self, mock_repo_files, mock_kb, mock_yaml, mock_token,
+    ):
+        mock_token.return_value = "t"
+        mock_yaml.return_value = {"code_generation": {"backend": "python"}}
+        mock_kb.return_value = ("", None, {})
+        mock_repo_files.return_value = []  # no tests exist -> FAIL
+
+        result = check_test_coverage(
+            "TEST_COVERAGE", 1, "owner/repo",
+            ["lambda/hello/handler.py"],
+            github_token_param="/test/token",
+            query_kb_lambda_name="test-query-kb",
+        )
+        assert result["status"] == "FAIL"
+        assert not result["message"].lstrip().startswith(self._GLYPHS)
 
 
 class TestFetchOutcomeopsYamlRefParam:

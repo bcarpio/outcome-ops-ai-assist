@@ -636,12 +636,17 @@ def check_test_coverage(
             config_source = f"backend defaults ({backend})"
             logger.info(f"Using {backend} backend defaults")
 
-    # No configuration found - skip check with warning
+    # No configuration found - return WARN. The check couldn't
+    # actually run, so treating this as PASS is misleading (and the
+    # emoji glyph on the comment then contradicted the "skipped"
+    # message body). The status glyph is supplied by
+    # ``format_check_comment``; the message must not start with its
+    # own emoji or the comment shows two glyphs stacked.
     if not testing_config:
         return {
             "checkType": check_type,
-            "status": "PASS",
-            "message": "⚠️ Test coverage check skipped - no testing configuration found",
+            "status": "WARN",
+            "message": "Test coverage check skipped - no testing configuration found",
             "details": [
                 "No `.outcomeops.yaml` found or no testing configuration.",
                 "Add testing configuration to enable this check:",
@@ -764,20 +769,22 @@ def check_test_coverage(
                     f"  - Config source: {config_source}"
                 )
 
-    # Determine final status
+    # Determine final status. The status glyph is supplied by
+    # ``format_check_comment``; message must NOT start with its own
+    # emoji or the comment shows two glyphs stacked.
     if not suggestions:
         if skipped_files:
-            message = f"✅ Test coverage OK ({len(skipped_files)} file(s) excluded per config)"
+            message = f"Test coverage OK ({len(skipped_files)} file(s) excluded per config)"
         elif adr_reference:
-            message = f"✅ All source files have test coverage per {adr_reference}"
+            message = f"All source files have test coverage per {adr_reference}"
         else:
-            message = "✅ All source files have test coverage"
+            message = "All source files have test coverage"
         status = "PASS"
         details = suggestions
     else:
         status = "FAIL"
         violation_ref = f"({adr_reference} violation)" if adr_reference else "(testing standards violation)"
-        message = f"⚠️ {len(suggestions)} source file(s) missing required tests {violation_ref}"
+        message = f"{len(suggestions)} source file(s) missing required tests {violation_ref}"
 
         # Build details with suggestions and standards context
         details = suggestions.copy()
