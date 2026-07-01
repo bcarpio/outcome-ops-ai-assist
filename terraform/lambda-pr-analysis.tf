@@ -141,6 +141,7 @@ module "analyze_pr_lambda" {
         effect = "Allow"
         actions = [
           "dynamodb:GetItem",
+          "dynamodb:PutItem",
           "dynamodb:UpdateItem",
           "dynamodb:Query",
         ]

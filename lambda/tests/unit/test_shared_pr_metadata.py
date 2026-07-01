@@ -194,12 +194,15 @@ class TestFetchPRMetadataAzureDevOps:
                 {"id": 3},
             ],
         })
+        # ADO's pull-request-iteration-changes endpoint returns entries
+        # WITHOUT gitObjectType on item -- confirmed live 2026-07-01.
+        # Only entries missing a path get skipped.
         changes_resp = _mock_response({
             "changeEntries": [
-                {"item": {"path": "/src/a.py", "gitObjectType": "blob"}},
-                {"item": {"path": "/src/b.py", "gitObjectType": "blob"}},
-                # folder entry -- should be filtered out
-                {"item": {"path": "/src", "gitObjectType": "tree"}},
+                {"item": {"path": "/src/a.py"}},
+                {"item": {"path": "/src/b.py"}},
+                # entry with no path -- skipped defensively.
+                {"item": {"objectId": "abc"}},
             ],
         })
         mock_urlopen.side_effect = [pr_resp, iterations_resp, changes_resp]

@@ -246,8 +246,13 @@ def _fetch_pr_from_ado(
     changed_files: List[str] = []
     for entry in changes_body.get("changeEntries", []) or []:
         item = entry.get("item") or {}
-        if item.get("gitObjectType") != "blob":
-            continue
+        # Note: ADO's pull-request-iteration-changes endpoint does NOT
+        # populate `item.gitObjectType` -- that's a field on the recursive
+        # tree items endpoint. Every ``changeEntries`` entry represents a
+        # file change (folders don't get their own change entries here),
+        # so filter only on presence of a path. Live-burned 2026-07-01:
+        # a ``gitObjectType != "blob"`` filter here dropped every entry
+        # and returned changed_files=[] for every ADO PR.
         raw_path = item.get("path")
         if raw_path:
             changed_files.append(raw_path.lstrip("/"))
