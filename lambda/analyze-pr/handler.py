@@ -33,6 +33,7 @@ import requests
 # includes lambda/shared/ at zip root via terraform source_path.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared.audit_writer import ACTION_PR_ANALYZED, log_admin_action
+from shared import dual_write
 import yaml
 from botocore.exceptions import ClientError
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -44,10 +45,15 @@ logger.setLevel(logging.INFO)
 # AWS clients (initialized once per container)
 ssm_client = boto3.client("ssm")
 sqs_client = boto3.client("sqs")
+dynamodb = boto3.resource("dynamodb")
 
 # Load environment variables
 ENVIRONMENT = os.environ.get("ENV", "dev")
 APP_NAME = os.environ.get("APP_NAME", "outcome-ops-ai-assist")
+DYNAMODB_TABLE = os.environ.get(
+    "DYNAMODB_TABLE",
+    os.environ.get("CODE_MAPS_TABLE", f"{ENVIRONMENT}-{APP_NAME}-code-maps"),
+)
 
 
 class CheckType(str, Enum):
@@ -413,6 +419,193 @@ def patch_pr_comment(
     except requests.exceptions.RequestException as e:
         logger.error(f"Failed to update comment {comment_id} in {repository}: {e}")
         raise Exception(f"GitHub API error: {str(e)}")
+
+
+# =============================================================================
+# Upsert helpers: PATCH the same comment on subsequent runs instead of
+# POSTing a new one. Companion DDB row is keyed by (PR × comment-role).
+# Mirrors the process-pr-check side, but adapted to analyze-pr's three
+# self-emitted comments (analysis_started / structural_impact /
+# no_checks_needed) which don't fit the CheckResult schema.
+# =============================================================================
+
+COMMENT_ROLE_ANALYSIS_STARTED = "analysis_started"
+COMMENT_ROLE_STRUCTURAL_IMPACT = "structural_impact"
+COMMENT_ROLE_NO_CHECKS_NEEDED = "no_checks_needed"
+
+
+def _build_comment_pk(provider: str, repository: str, pr_number: int) -> str:
+    """Match the process-pr-check chunk-02 shape: PR#{provider}#{repo}#{n}."""
+    return f"PR#{provider}#{repository}#{pr_number}"
+
+
+def _get_existing_comment_row(pk: str, sk: str) -> Optional[Dict[str, Any]]:
+    """Read the existing DDB row for (PR × comment-role), or None.
+    Non-fatal on read failure -- caller POSTs a new comment."""
+    try:
+        table = dynamodb.Table(DYNAMODB_TABLE)
+        response = table.get_item(Key={"PK": pk, "SK": sk})
+        return response.get("Item")
+    except ClientError as e:
+        logger.warning(
+            f"[analyze-pr.upsert] Failed to read existing comment row "
+            f"{pk}/{sk}: {e}. Falling back to POST."
+        )
+        return None
+
+
+def _store_comment_row(
+    *,
+    pk: str,
+    sk: str,
+    provider_comment_id: Optional[int] = None,
+    provider_thread_id: Optional[int] = None,
+    provider_thread_comment_id: Optional[int] = None,
+    comment_url: Optional[str] = None,
+) -> None:
+    """Write the companion DDB row so the next run can PATCH instead of POST.
+    Non-fatal on write failure -- the comment is already live in the PR."""
+    item: Dict[str, Any] = {
+        "PK": pk,
+        "SK": sk,
+        "updatedAt": datetime.utcnow().isoformat() + "Z",
+    }
+    if provider_comment_id is not None:
+        item["providerCommentId"] = int(provider_comment_id)
+    if provider_thread_id is not None:
+        item["providerThreadId"] = int(provider_thread_id)
+    if provider_thread_comment_id is not None:
+        item["providerThreadCommentId"] = int(provider_thread_comment_id)
+    if comment_url:
+        item["commentUrl"] = comment_url
+
+    try:
+        dual_write.ddb_put_item(DYNAMODB_TABLE, item)
+    except ClientError as e:
+        logger.warning(
+            f"[analyze-pr.upsert] Failed to store comment row {pk}/{sk}: {e}"
+        )
+
+
+def _upsert_github_comment(
+    *,
+    repository: str,
+    pr_number: int,
+    role: str,
+    body: str,
+    token: str,
+) -> None:
+    """PATCH the existing GitHub comment for this (PR × role) if we have one;
+    otherwise POST a new one. Stores the resulting comment ID for next run."""
+    pk = _build_comment_pk("github", repository, pr_number)
+    sk = f"COMMENT#{role}"
+
+    existing_row = _get_existing_comment_row(pk, sk)
+    existing_id = (existing_row or {}).get("providerCommentId")
+
+    if existing_id is not None:
+        try:
+            response = patch_pr_comment(repository, int(existing_id), body, token)
+            _store_comment_row(
+                pk=pk, sk=sk,
+                provider_comment_id=int(existing_id),
+                comment_url=response.get("html_url"),
+            )
+            return
+        except Exception as e:
+            logger.warning(
+                f"[analyze-pr.upsert] GitHub PATCH failed for comment "
+                f"{existing_id} in {repository} PR #{pr_number} "
+                f"({role}): {e}. Falling back to POST."
+            )
+
+    try:
+        response = post_pr_comment(repository, pr_number, body, token)
+    except Exception as e:
+        logger.error(
+            f"[analyze-pr.upsert] GitHub POST failed for {repository} PR "
+            f"#{pr_number} ({role}): {e}"
+        )
+        return
+    _store_comment_row(
+        pk=pk, sk=sk,
+        provider_comment_id=response.get("id"),
+        comment_url=response.get("html_url"),
+    )
+
+
+def _upsert_ado_comment(
+    *,
+    repository: str,
+    ado_org: str,
+    ado_project: str,
+    ado_repo: str,
+    pr_number: int,
+    access_token: str,
+    role: str,
+    body: str,
+) -> None:
+    """PATCH the existing ADO thread comment for this (PR × role) if we have
+    one; otherwise POST a new thread. Stores the resulting thread + comment
+    IDs for next run."""
+    pk = _build_comment_pk("azure_devops", repository, pr_number)
+    sk = f"COMMENT#{role}"
+
+    existing_row = _get_existing_comment_row(pk, sk)
+    existing_thread = (existing_row or {}).get("providerThreadId")
+    existing_comment = (existing_row or {}).get("providerThreadCommentId")
+
+    if existing_thread is not None and existing_comment is not None:
+        try:
+            from azure_devops_api import update_pull_request_thread_comment
+            update_pull_request_thread_comment(
+                access_token=access_token,
+                org=ado_org, project=ado_project, repo=ado_repo,
+                pull_request_id=pr_number,
+                thread_id=int(existing_thread),
+                comment_id=int(existing_comment),
+                comment_markdown=body,
+            )
+            _store_comment_row(
+                pk=pk, sk=sk,
+                provider_thread_id=int(existing_thread),
+                provider_thread_comment_id=int(existing_comment),
+            )
+            return
+        except Exception as e:
+            logger.warning(
+                f"[analyze-pr.upsert] ADO PATCH failed for thread "
+                f"{existing_thread}/comment {existing_comment} in "
+                f"{ado_org}/{ado_project}/{ado_repo} PR #{pr_number} "
+                f"({role}): {e}. Falling back to POST."
+            )
+
+    try:
+        from azure_devops_api import (
+            AzureDevOpsAPIError, post_pull_request_thread,
+        )
+        response = post_pull_request_thread(
+            access_token=access_token,
+            org=ado_org, project=ado_project, repo=ado_repo,
+            pull_request_id=pr_number,
+            comment_markdown=body,
+        )
+    except Exception as e:
+        logger.error(
+            f"[analyze-pr.upsert] ADO POST failed for "
+            f"{ado_org}/{ado_project}/{ado_repo} PR #{pr_number} "
+            f"({role}): {e}"
+        )
+        return
+
+    thread_id = response.get("id") if isinstance(response, dict) else None
+    comments = response.get("comments") or [] if isinstance(response, dict) else []
+    comment_id = comments[0].get("id") if comments else None
+    _store_comment_row(
+        pk=pk, sk=sk,
+        provider_thread_id=thread_id,
+        provider_thread_comment_id=comment_id,
+    )
 
 
 @dataclass
@@ -844,8 +1037,12 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                     structural_block
                     + "\n\n---\n*Powered by [OutcomeOps AI Assist](https://outcomeops.ai)*"
                 )
-                post_pr_comment(
-                    request.repository, request.pr_number, comment_body, token
+                _upsert_github_comment(
+                    repository=request.repository,
+                    pr_number=request.pr_number,
+                    role=COMMENT_ROLE_STRUCTURAL_IMPACT,
+                    body=comment_body,
+                    token=token,
                 )
                 logger.info(
                     "[analyze-pr.structural] posted structural-impact comment "
@@ -865,7 +1062,13 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
 ---
 *Powered by [OutcomeOps AI Assist](https://outcomeops.ai)*"""
-            post_pr_comment(request.repository, request.pr_number, comment_body, token)
+            _upsert_github_comment(
+                repository=request.repository,
+                pr_number=request.pr_number,
+                role=COMMENT_ROLE_NO_CHECKS_NEEDED,
+                body=comment_body,
+                token=token,
+            )
 
             _emit_pr_analyzed(
                 repository=request.repository,
@@ -897,7 +1100,13 @@ Results will be posted as comments when complete.
 ---
 *Powered by [OutcomeOps AI Assist](https://outcomeops.ai)*"""
 
-        post_pr_comment(request.repository, request.pr_number, comment_body, token)
+        _upsert_github_comment(
+            repository=request.repository,
+            pr_number=request.pr_number,
+            role=COMMENT_ROLE_ANALYSIS_STARTED,
+            body=comment_body,
+            token=token,
+        )
 
         # Queue check jobs to SQS
         jobs_queued = queue_check_jobs(request.repository, request.pr_number, checks_to_run, changed_files)
@@ -1117,9 +1326,11 @@ def _handle_azure_devops(
             "(no relevant files changed)\n\n---\n"
             "*Powered by [OutcomeOps AI Assist](https://outcomeops.ai)*"
         )
-        _post_ado_initial_comment(
+        _upsert_ado_comment(
+            repository=request.repository,
             ado_org=ado_org, ado_project=ado_project, ado_repo=ado_repo,
             pr_number=request.pr_number, access_token=access_token,
+            role=COMMENT_ROLE_NO_CHECKS_NEEDED,
             body=comment_body,
         )
         return AnalyzePrResponse(
@@ -1135,9 +1346,11 @@ def _handle_azure_devops(
         "Results will be posted as comments when complete.\n\n---\n"
         "*Powered by [OutcomeOps AI Assist](https://outcomeops.ai)*"
     )
-    _post_ado_initial_comment(
+    _upsert_ado_comment(
+        repository=request.repository,
         ado_org=ado_org, ado_project=ado_project, ado_repo=ado_repo,
         pr_number=request.pr_number, access_token=access_token,
+        role=COMMENT_ROLE_ANALYSIS_STARTED,
         body=comment_body,
     )
 

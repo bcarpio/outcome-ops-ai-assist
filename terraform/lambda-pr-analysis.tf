@@ -132,6 +132,23 @@ module "analyze_pr_lambda" {
         module.pr_checks_queue.queue_arn
       ]
     }
+
+    # PR-comment upsert (analyze-pr's analysis-started /
+    # structural-impact / no-checks-needed comments each carry a
+    # companion DDB row keyed by (PR x comment-role); on subsequent
+    # runs the handler PATCHes instead of POSTing so a customer that
+    # pushes 5 times doesn't get 5 duplicate analysis-started
+    # comments). Read + write on the code-maps table.
+    dynamodb_code_maps_upsert = {
+      effect = "Allow"
+      actions = [
+        "dynamodb:GetItem",
+        "dynamodb:PutItem",
+      ]
+      resources = [
+        module.code_maps_table.dynamodb_table_arn,
+      ]
+    }
     },
     # ADO dispatch path (widened analyze-pr) needs DDB read + KMS
     # decrypt to refresh the customer's OAuth token on request-

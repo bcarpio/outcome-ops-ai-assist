@@ -306,6 +306,155 @@ class TestPatchPrComment:
             )
 
 
+class TestAnalyzePrUpsertHelpers:
+    """Chunk 04 of the update-in-place plan: analyze-pr's three
+    self-emitted comments (analysis_started / structural_impact /
+    no_checks_needed) get PATCHed on subsequent runs instead of POSTed."""
+
+    def test_build_comment_pk_shape(self):
+        assert handler_module._build_comment_pk(
+            "github", "owner/repo", 123,
+        ) == "PR#github#owner/repo#123"
+        assert handler_module._build_comment_pk(
+            "azure_devops", "org/project/repo", 42,
+        ) == "PR#azure_devops#org/project/repo#42"
+
+    @patch('analyze_pr_handler.post_pr_comment')
+    @patch('analyze_pr_handler.patch_pr_comment')
+    @patch('analyze_pr_handler._get_existing_comment_row', return_value=None)
+    @patch('analyze_pr_handler._store_comment_row')
+    def test_upsert_github_first_run_posts(
+        self, mock_store, _mock_exist, mock_patch, mock_post,
+    ):
+        mock_post.return_value = {
+            "id": 555,
+            "html_url": "https://github.com/o/r/pull/1#issuecomment-555",
+        }
+        handler_module._upsert_github_comment(
+            repository="owner/repo",
+            pr_number=1,
+            role=handler_module.COMMENT_ROLE_ANALYSIS_STARTED,
+            body="hi",
+            token="ghp",
+        )
+        mock_post.assert_called_once()
+        mock_patch.assert_not_called()
+        # Row stored with the returned comment ID.
+        _, kwargs = mock_store.call_args
+        assert kwargs["provider_comment_id"] == 555
+        assert kwargs["sk"] == "COMMENT#analysis_started"
+
+    @patch('analyze_pr_handler.post_pr_comment')
+    @patch('analyze_pr_handler.patch_pr_comment')
+    @patch('analyze_pr_handler._get_existing_comment_row')
+    @patch('analyze_pr_handler._store_comment_row')
+    def test_upsert_github_second_run_patches(
+        self, mock_store, mock_exist, mock_patch, mock_post,
+    ):
+        mock_exist.return_value = {
+            "PK": "PR#github#owner/repo#1",
+            "SK": "COMMENT#analysis_started",
+            "providerCommentId": 555,
+        }
+        mock_patch.return_value = {
+            "id": 555,
+            "html_url": "https://github.com/o/r/pull/1#issuecomment-555",
+        }
+        handler_module._upsert_github_comment(
+            repository="owner/repo",
+            pr_number=1,
+            role=handler_module.COMMENT_ROLE_ANALYSIS_STARTED,
+            body="new body",
+            token="ghp",
+        )
+        mock_patch.assert_called_once()
+        mock_post.assert_not_called()
+        _, kwargs = mock_store.call_args
+        assert kwargs["provider_comment_id"] == 555
+
+    @patch('analyze_pr_handler.post_pr_comment')
+    @patch('analyze_pr_handler.patch_pr_comment',
+           side_effect=Exception("GitHub API error: 404"))
+    @patch('analyze_pr_handler._get_existing_comment_row')
+    @patch('analyze_pr_handler._store_comment_row')
+    def test_upsert_github_patch_failure_falls_back_to_post(
+        self, mock_store, mock_exist, mock_patch, mock_post,
+    ):
+        mock_exist.return_value = {
+            "providerCommentId": 999,  # stale (deleted)
+        }
+        mock_post.return_value = {
+            "id": 777,
+            "html_url": "https://github.com/o/r/pull/1#issuecomment-777",
+        }
+        handler_module._upsert_github_comment(
+            repository="owner/repo",
+            pr_number=1,
+            role=handler_module.COMMENT_ROLE_ANALYSIS_STARTED,
+            body="hi",
+            token="ghp",
+        )
+        mock_patch.assert_called_once()
+        mock_post.assert_called_once()
+        # The NEW POST id gets stored, not the stale 999.
+        _, kwargs = mock_store.call_args
+        assert kwargs["provider_comment_id"] == 777
+
+    @patch('analyze_pr_handler._get_existing_comment_row', return_value=None)
+    @patch('analyze_pr_handler._store_comment_row')
+    def test_upsert_ado_first_run_posts(self, mock_store, _mock_exist):
+        # First-run POST populates thread + comment IDs from response.
+        with patch.dict(sys.modules, {
+            'azure_devops_api': Mock(
+                post_pull_request_thread=Mock(return_value={
+                    "id": 88, "comments": [{"id": 1, "content": "x"}],
+                }),
+                update_pull_request_thread_comment=Mock(),
+                AzureDevOpsAPIError=Exception,
+            ),
+        }):
+            handler_module._upsert_ado_comment(
+                repository="org/project/repo",
+                ado_org="org", ado_project="project", ado_repo="repo",
+                pr_number=42, access_token="tok",
+                role=handler_module.COMMENT_ROLE_ANALYSIS_STARTED,
+                body="hi",
+            )
+        _, kwargs = mock_store.call_args
+        assert kwargs["provider_thread_id"] == 88
+        assert kwargs["provider_thread_comment_id"] == 1
+        assert kwargs["sk"] == "COMMENT#analysis_started"
+
+    @patch('analyze_pr_handler._get_existing_comment_row')
+    @patch('analyze_pr_handler._store_comment_row')
+    def test_upsert_ado_second_run_patches(self, mock_store, mock_exist):
+        mock_exist.return_value = {
+            "providerThreadId": 88,
+            "providerThreadCommentId": 1,
+        }
+        patch_mock = Mock(return_value={"id": 1})
+        post_mock = Mock()
+        with patch.dict(sys.modules, {
+            'azure_devops_api': Mock(
+                post_pull_request_thread=post_mock,
+                update_pull_request_thread_comment=patch_mock,
+                AzureDevOpsAPIError=Exception,
+            ),
+        }):
+            handler_module._upsert_ado_comment(
+                repository="org/project/repo",
+                ado_org="org", ado_project="project", ado_repo="repo",
+                pr_number=42, access_token="tok",
+                role=handler_module.COMMENT_ROLE_ANALYSIS_STARTED,
+                body="new body",
+            )
+        patch_mock.assert_called_once()
+        post_mock.assert_not_called()
+        _, kwargs = mock_store.call_args
+        assert kwargs["provider_thread_id"] == 88
+        assert kwargs["provider_thread_comment_id"] == 1
+
+
 class TestParseChangedFiles:
     """Test file change parsing and check determination."""
 
@@ -1215,7 +1364,7 @@ class TestHandleAzureDevOpsEndToEnd:
         )
 
     @patch('analyze_pr_handler.queue_check_jobs', return_value=6)
-    @patch('analyze_pr_handler._post_ado_initial_comment')
+    @patch('analyze_pr_handler._upsert_ado_comment')
     @patch('analyze_pr_handler._refresh_ado_access_token', return_value="ado-tok")
     def test_ado_e2e_queues_check_jobs(
         self, _mock_refresh, _mock_post, mock_queue,
@@ -1243,7 +1392,7 @@ class TestHandleAzureDevOpsEndToEnd:
         assert kwargs["ado_org"] == "example-org"
 
     @patch('analyze_pr_handler.queue_check_jobs', return_value=0)
-    @patch('analyze_pr_handler._post_ado_initial_comment')
+    @patch('analyze_pr_handler._upsert_ado_comment')
     @patch('analyze_pr_handler._refresh_ado_access_token', return_value="ado-tok")
     def test_ado_e2e_no_relevant_changes_short_circuits(
         self, _mock_refresh, mock_post, mock_queue,
@@ -1267,7 +1416,7 @@ class TestHandleAzureDevOpsEndToEnd:
         mock_post.assert_called_once()
 
     @patch('analyze_pr_handler.queue_check_jobs', return_value=6)
-    @patch('analyze_pr_handler._post_ado_initial_comment')
+    @patch('analyze_pr_handler._upsert_ado_comment')
     @patch('analyze_pr_handler._refresh_ado_access_token', return_value="ado-tok")
     def test_ado_e2e_missing_config_still_runs(
         self, _mock_refresh, _mock_post, mock_queue,
