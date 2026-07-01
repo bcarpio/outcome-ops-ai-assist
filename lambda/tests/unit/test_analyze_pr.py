@@ -306,6 +306,47 @@ class TestPatchPrComment:
             )
 
 
+class TestBuildAnalysisStartedComment:
+    """The Analysis Started comment is wrapped in a <details> block so
+    reviewers see a one-line summary and expand only when needed --
+    matches the collapsible treatment format_check_comment gives every
+    check-result comment. Both providers use the same helper."""
+
+    def test_wraps_in_collapsible_details(self):
+        comment = handler_module._build_analysis_started_comment(
+            ["ADR_COMPLIANCE", "TEST_COVERAGE", "BREAKING_CHANGES"]
+        )
+        assert comment.startswith("<details>")
+        assert comment.rstrip().endswith("</details>")
+        assert "<summary>" in comment and "</summary>" in comment
+
+    def test_summary_carries_scannable_status(self):
+        comment = handler_module._build_analysis_started_comment(
+            ["ADR_COMPLIANCE", "TEST_COVERAGE"]
+        )
+        start = comment.index("<summary>") + len("<summary>")
+        end = comment.index("</summary>")
+        summary_line = comment[start:end]
+        assert "OutcomeOps Analysis Started" in summary_line
+        assert "Running 2 check(s)" in summary_line
+
+    def test_check_list_is_in_collapsed_body(self):
+        comment = handler_module._build_analysis_started_comment(
+            ["ADR_COMPLIANCE", "TEST_COVERAGE"]
+        )
+        body = comment[comment.index("</summary>"):]
+        # human-readable names (underscores -> spaces).
+        assert "- ADR COMPLIANCE" in body
+        assert "- TEST COVERAGE" in body
+        assert "Powered by [OutcomeOps AI Assist]" in body
+
+    def test_blank_line_after_summary_for_markdown_rendering(self):
+        # Well-known GH/ADO quirk: markdown inside <details> renders
+        # only if there's a blank line after </summary>.
+        comment = handler_module._build_analysis_started_comment(["FOO"])
+        assert "</summary>\n\n" in comment
+
+
 class TestAnalyzePrUpsertHelpers:
     """Chunk 04 of the update-in-place plan: analyze-pr's three
     self-emitted comments (analysis_started / structural_impact /

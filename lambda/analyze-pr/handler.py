@@ -434,6 +434,45 @@ COMMENT_ROLE_STRUCTURAL_IMPACT = "structural_impact"
 COMMENT_ROLE_NO_CHECKS_NEEDED = "no_checks_needed"
 
 
+def _build_analysis_started_comment(checks_to_run: List[str]) -> str:
+    """Compose the "OutcomeOps Analysis Started" comment body.
+
+    Wrapped in an HTML ``<details>`` block for the same reason
+    ``format_check_comment`` is (see process-pr-check handler): each
+    PR-Analyzer run drops multiple comments; a reviewer scanning the
+    PR wants the one-line status ("Analysis started, N checks
+    running") without the full check list unfolding by default.
+
+    Both GitHub and Azure DevOps render <details>/<summary> in PR
+    comment markdown. The blank line after </summary> is required for
+    the body's markdown to render inside the block.
+
+    Provider-agnostic: both dispatch paths call this helper so the
+    template stays in a single place.
+    """
+    checks_list = "\n".join(
+        [f"- {check.replace('_', ' ')}" for check in checks_to_run]
+    )
+    summary_line = (
+        f"🔍 <b>OutcomeOps Analysis Started</b>: "
+        f"Running {len(checks_to_run)} check(s)"
+    )
+    body = (
+        "**Checks queued:**\n\n"
+        f"{checks_list}\n\n"
+        "Results will be posted as comments when complete.\n\n"
+        "---\n"
+        "*Powered by [OutcomeOps AI Assist](https://outcomeops.ai)*"
+    )
+    return (
+        f"<details>\n"
+        f"<summary>{summary_line}</summary>\n"
+        f"\n"
+        f"{body}\n"
+        f"</details>"
+    )
+
+
 def _build_comment_pk(provider: str, repository: str, pr_number: int) -> str:
     """Match the process-pr-check chunk-02 shape: PR#{provider}#{repo}#{n}."""
     return f"PR#{provider}#{repository}#{pr_number}"
@@ -1088,23 +1127,12 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             )
             return response.dict()
 
-        # Post initial comment to PR
-        checks_list = "\n".join([f"- {check.replace('_', ' ')}" for check in checks_to_run])
-        comment_body = f"""**OutcomeOps Analysis Started**
-
-Running {len(checks_to_run)} checks:
-{checks_list}
-
-Results will be posted as comments when complete.
-
----
-*Powered by [OutcomeOps AI Assist](https://outcomeops.ai)*"""
-
+        # Post initial comment to PR (collapsed <details> template).
         _upsert_github_comment(
             repository=request.repository,
             pr_number=request.pr_number,
             role=COMMENT_ROLE_ANALYSIS_STARTED,
-            body=comment_body,
+            body=_build_analysis_started_comment(checks_to_run),
             token=token,
         )
 
@@ -1341,19 +1369,12 @@ def _handle_azure_devops(
             checks_queued=0,
         ).dict()
 
-    checks_list = "\n".join([f"- {c.replace('_', ' ')}" for c in checks_to_run])
-    comment_body = (
-        "**OutcomeOps Analysis Started**\n\n"
-        f"Running {len(checks_to_run)} checks:\n{checks_list}\n\n"
-        "Results will be posted as comments when complete.\n\n---\n"
-        "*Powered by [OutcomeOps AI Assist](https://outcomeops.ai)*"
-    )
     _upsert_ado_comment(
         repository=request.repository,
         ado_org=ado_org, ado_project=ado_project, ado_repo=ado_repo,
         pr_number=request.pr_number, access_token=access_token,
         role=COMMENT_ROLE_ANALYSIS_STARTED,
-        body=comment_body,
+        body=_build_analysis_started_comment(checks_to_run),
     )
 
     # Queue check jobs to SQS with ADO context so process-pr-check
