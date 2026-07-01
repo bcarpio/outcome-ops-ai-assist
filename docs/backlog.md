@@ -151,6 +151,54 @@ decision and context.
 
 ---
 
+### Claude Sonnet 5 support in `shared._converse_backend`
+
+**Filed:** 2026-07-01
+**Severity:** Medium (unblocks a real model swap, not urgent)
+**Component:** `lambda/shared/_converse_backend.py`, `lambda/shared/model_client.py`
+
+Sonnet 5 (`anthropic.claude-sonnet-5`, `us.anthropic.claude-sonnet-5`,
+`global.anthropic.claude-sonnet-5`) is available and ACTIVE in
+us-west-2 as of 2026-07-01. Live Converse invoke against
+`us.anthropic.claude-sonnet-5` succeeded with account model access
+already granted. But swapping `bedrock_advanced_model_id` to it
+requires backend work first — three behavior deltas vs Sonnet 4.6:
+
+1. **`temperature` is deprecated.** Passing any temperature value
+   returns `ValidationException: 'temperature' is deprecated for
+   this model`. Our chat handler currently sets `temperature=0.1`
+   on the advanced-tier Converse call; that would fail hard.
+2. **Reasoning-native model** (same posture as GPT-5 family). Every
+   response's `content[0]` is a `reasoningContent` block (empty
+   `text` + `signature`), then `content[1..N]` are the message
+   text blocks. Existing `_extract_text(content_blocks)` walks all
+   blocks and pulls `.get("text")` from each, so should Just Work
+   for reading, but need to verify.
+3. **Reasoning tokens bill against `maxTokens` and the output rate**
+   — same tax GPT-5 has. A normal chat call at `maxTokens=4096`
+   regularly starves visible output on hard turns. Our
+   `_responses_backend` already gives `max_output_tokens ×= 4`;
+   `_converse_backend` would need the same headroom applied for
+   the Sonnet-5 family.
+
+**Fix shape (one commit, mirrors what `_responses_backend` did for GPT-5):**
+
+1. Detect Sonnet-5 family by model-ID prefix (`us.anthropic.claude-sonnet-5`,
+   `anthropic.claude-sonnet-5`, `global.anthropic.claude-sonnet-5`) in
+   `_converse_backend.invoke` / `invoke_stream`.
+2. If matched: strip `temperature` from `inferenceConfig`, multiply
+   `maxTokens` by a headroom constant (start with 4×, tune from
+   there), and add reasoning-token accounting to usage.
+3. Update pricing constants in `shared.audit` when we know Sonnet 5's
+   published per-M rates (unknown at time of filing).
+4. Live smoke a chat turn on the openai workspace or a scratch
+   workspace against `bedrock_advanced_model_id = "us.anthropic.claude-sonnet-5"`
+   and confirm the chat UI streams a real answer.
+
+**Not blocking anything today.** prd runs cleanly on Sonnet 4.6.
+Reopen when the demand for Sonnet 5 shows up (customer ask, blog
+post, or maintainer curiosity).
+
 ## Closed (kept for historical context until pruned)
 
 _(none yet)_
