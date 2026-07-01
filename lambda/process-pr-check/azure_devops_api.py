@@ -382,3 +382,48 @@ def post_pull_request_thread(
     }
     body, _ = _request("POST", url, access_token, body=payload)
     return body
+
+
+def update_pull_request_thread_comment(
+    access_token: str,
+    org: str,
+    project: str,
+    repo: str,
+    pull_request_id: int,
+    thread_id: int,
+    comment_id: int,
+    comment_markdown: str,
+) -> Dict[str, Any]:
+    """Update the content of an existing PR-thread comment.
+
+    Used by the update-in-place PR-check UX so subsequent runs edit
+    the existing comment rather than posting a new one.
+
+    ADO's PATCH shape for a thread comment:
+        ``{"content": str, "commentType": 1, "parentCommentId": 0}``
+    ``parentCommentId=0`` marks this as a top-level thread comment
+    (not a reply). Same commentType=1 (text) as the POST.
+
+    Args:
+        thread_id: The thread's numeric ID (from post_pull_request_thread's
+            ``id`` field on the returned body).
+        comment_id: The comment's numeric ID within the thread. For threads
+            created by ``post_pull_request_thread`` (single-comment threads),
+            this is always ``1`` -- but we pass it explicitly so future
+            multi-comment thread edits work.
+
+    Raises AzureDevOpsAPIError on non-2xx (Auth/Scope/NotFound mapped
+    like the existing GET/POST wrappers via ``_request``).
+    """
+    url = _add_query(
+        f"{DEV_AZURE_HOST}/{org}/{project}/_apis/git/repositories/{repo}/"
+        f"pullRequests/{pull_request_id}/threads/{thread_id}/comments/{comment_id}",
+        {"api-version": API_VERSION},
+    )
+    payload = {
+        "content": comment_markdown,
+        "commentType": 1,
+        "parentCommentId": 0,
+    }
+    body, _ = _request("PATCH", url, access_token, body=payload)
+    return body

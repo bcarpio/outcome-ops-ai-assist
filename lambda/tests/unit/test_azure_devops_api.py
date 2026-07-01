@@ -348,6 +348,93 @@ class TestPullRequestThreadBody:
         }
 
 
+class TestUpdatePullRequestThreadComment:
+    """Test the PATCH-side sibling to post_pull_request_thread.
+
+    Used by the update-in-place PR-check UX so subsequent runs edit
+    the existing comment rather than posting a new one.
+    """
+
+    @patch("azdo_int_api.urllib.request.urlopen")
+    def test_patch_uses_correct_url_and_method(self, mock_urlopen):
+        mock_urlopen.return_value = _resp({"id": 1, "content": "new body"})
+        api.update_pull_request_thread_comment(
+            "tok", "example-org", "example-project", "example-repo",
+            pull_request_id=42, thread_id=99, comment_id=1,
+            comment_markdown="new body",
+        )
+        req = mock_urlopen.call_args.args[0]
+        # URL shape: .../pullRequests/{n}/threads/{tid}/comments/{cid}?api-version=7.0
+        assert (
+            "dev.azure.com/example-org/example-project/_apis/git/"
+            "repositories/example-repo/pullRequests/42/threads/99/comments/1"
+            in req.full_url
+        )
+        assert "api-version=7.0" in req.full_url
+        assert req.get_method() == "PATCH"
+
+    @patch("azdo_int_api.urllib.request.urlopen")
+    def test_patch_body_matches_ado_shape(self, mock_urlopen):
+        # ADO's PATCH shape requires content + commentType + parentCommentId.
+        # parentCommentId=0 marks a top-level thread comment (not a reply).
+        mock_urlopen.return_value = _resp({"id": 1, "content": "x"})
+        api.update_pull_request_thread_comment(
+            "tok", "org", "proj", "repo",
+            pull_request_id=1, thread_id=5, comment_id=1,
+            comment_markdown="edited",
+        )
+        req = mock_urlopen.call_args.args[0]
+        payload = json.loads(req.data.decode("utf-8"))
+        assert payload == {
+            "content": "edited",
+            "commentType": 1,
+            "parentCommentId": 0,
+        }
+
+    @patch("azdo_int_api.urllib.request.urlopen")
+    def test_patch_returns_body(self, mock_urlopen):
+        mock_urlopen.return_value = _resp({"id": 1, "content": "updated"})
+        result = api.update_pull_request_thread_comment(
+            "tok", "org", "proj", "repo",
+            pull_request_id=1, thread_id=5, comment_id=1,
+            comment_markdown="updated",
+        )
+        assert result["content"] == "updated"
+
+    @patch("azdo_int_api.urllib.request.urlopen")
+    def test_patch_404_maps_to_not_found_error(self, mock_urlopen):
+        # If the thread/comment was deleted between POST and PATCH,
+        # the underlying _request maps 404 to AzureDevOpsNotFoundError.
+        # Caller catches this and falls back to POST (chunk 03 logic).
+        mock_urlopen.side_effect = _http_error(404)
+        with pytest.raises(api.AzureDevOpsNotFoundError):
+            api.update_pull_request_thread_comment(
+                "tok", "org", "proj", "repo",
+                pull_request_id=1, thread_id=999, comment_id=1,
+                comment_markdown="x",
+            )
+
+    @patch("azdo_int_api.urllib.request.urlopen")
+    def test_patch_401_maps_to_auth_error(self, mock_urlopen):
+        mock_urlopen.side_effect = _http_error(401)
+        with pytest.raises(api.AzureDevOpsAuthError):
+            api.update_pull_request_thread_comment(
+                "tok", "org", "proj", "repo",
+                pull_request_id=1, thread_id=5, comment_id=1,
+                comment_markdown="x",
+            )
+
+    @patch("azdo_int_api.urllib.request.urlopen")
+    def test_patch_403_maps_to_scope_error(self, mock_urlopen):
+        mock_urlopen.side_effect = _http_error(403)
+        with pytest.raises(api.AzureDevOpsScopeError):
+            api.update_pull_request_thread_comment(
+                "tok", "org", "proj", "repo",
+                pull_request_id=1, thread_id=5, comment_id=1,
+                comment_markdown="x",
+            )
+
+
 # ---------------------------------------------------------------------------
 # Error mapping
 # ---------------------------------------------------------------------------

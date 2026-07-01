@@ -232,6 +232,50 @@ def post_pr_comment(repository: str, pr_number: int, body: str, token: str) -> D
         raise Exception(f"GitHub API error: {str(e)}")
 
 
+def patch_pr_comment(
+    repository: str,
+    comment_id: int,
+    body: str,
+    token: str,
+) -> Dict[str, Any]:
+    """
+    Update an existing PR/issue comment via GitHub REST.
+
+    Args:
+        repository: Repository in format "owner/repo"
+        comment_id: The comment's numeric ID (from a prior POST response's ``id``)
+        body: New comment body
+        token: GitHub personal access token
+
+    Returns:
+        API response dict with the updated comment metadata
+
+    Raises:
+        Exception: If API request fails
+    """
+    url = f"https://api.github.com/repos/{repository}/issues/comments/{comment_id}"
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github.v3+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "Content-Type": "application/json"
+    }
+
+    payload = {"body": body}
+
+    try:
+        response = requests.patch(url, headers=headers, json=payload, timeout=30)
+        response.raise_for_status()
+
+        logger.info(f"Updated comment {comment_id} in {repository}")
+        return response.json()
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Failed to update comment {comment_id} in {repository}: {e}")
+        raise Exception(f"GitHub API error: {str(e)}")
+
+
 def _post_azure_devops_thread(
     org: str,
     project: str,

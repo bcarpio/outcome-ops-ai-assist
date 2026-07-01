@@ -271,6 +271,41 @@ class TestPostPrComment:
             post_pr_comment("owner/repo", 123, "Test comment", "test-token")
 
 
+class TestPatchPrComment:
+    """PATCH-side sibling to TestPostPrComment. Chunk 01 of the
+    update-in-place PR-check UX plan."""
+
+    @patch('analyze_pr_handler.requests.patch')
+    def test_patch_pr_comment_success(self, mock_patch_req):
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"id": 999, "body": "new body"}
+        mock_patch_req.return_value = mock_response
+
+        result = handler_module.patch_pr_comment(
+            "owner/repo", 999, "new body", "ghp",
+        )
+        assert result["id"] == 999
+        req_url = mock_patch_req.call_args.args[0]
+        assert req_url == (
+            "https://api.github.com/repos/owner/repo/issues/comments/999"
+        )
+        assert mock_patch_req.call_args.kwargs["json"] == {"body": "new body"}
+
+    @patch('analyze_pr_handler.requests.patch')
+    def test_patch_pr_comment_404_raises(self, mock_patch_req):
+        mock_response = Mock()
+        mock_response.status_code = 404
+        mock_response.raise_for_status.side_effect = (
+            handler_module.requests.exceptions.HTTPError("404 Not Found")
+        )
+        mock_patch_req.return_value = mock_response
+        with pytest.raises(Exception, match="GitHub API error"):
+            handler_module.patch_pr_comment(
+                "owner/repo", 999, "body", "ghp",
+            )
+
+
 class TestParseChangedFiles:
     """Test file change parsing and check determination."""
 

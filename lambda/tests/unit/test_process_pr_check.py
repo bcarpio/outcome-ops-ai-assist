@@ -266,6 +266,55 @@ class TestPostPrComment:
             post_pr_comment("owner/repo", 123, "Test comment", "test-token")
 
 
+class TestPatchPrComment:
+    """Test updating existing PR comments -- chunk 01 of the update-in-place plan."""
+
+    @patch('process_pr_check_handler.requests.patch')
+    def test_patch_pr_comment_success(self, mock_patch_req):
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "id": 456,
+            "html_url": "https://github.com/owner/repo/pull/123#issuecomment-456",
+            "body": "Updated body",
+        }
+        mock_patch_req.return_value = mock_response
+
+        result = handler_module.patch_pr_comment(
+            "owner/repo", 456, "Updated body", "ghp_xxx",
+        )
+        assert result["id"] == 456
+        assert result["body"] == "Updated body"
+
+        # URL shape: /repos/{r}/issues/comments/{cid}
+        call_args = mock_patch_req.call_args
+        assert call_args.args[0] == (
+            "https://api.github.com/repos/owner/repo/issues/comments/456"
+        )
+        # Header + payload shape
+        headers = call_args.kwargs["headers"]
+        assert headers["Authorization"] == "Bearer ghp_xxx"
+        assert headers["Accept"] == "application/vnd.github.v3+json"
+        assert call_args.kwargs["json"] == {"body": "Updated body"}
+
+    @patch('process_pr_check_handler.requests.patch')
+    def test_patch_pr_comment_404_raises(self, mock_patch_req):
+        # Comment was deleted between POST and next PATCH attempt --
+        # let the caller catch this and fall back to POST (chunk 03
+        # logic).
+        mock_response = Mock()
+        mock_response.status_code = 404
+        mock_response.raise_for_status.side_effect = (
+            handler_module.requests.exceptions.HTTPError("404 Not Found")
+        )
+        mock_patch_req.return_value = mock_response
+
+        with pytest.raises(Exception, match="GitHub API error"):
+            handler_module.patch_pr_comment(
+                "owner/repo", 999, "body", "ghp_xxx",
+            )
+
+
 class TestStoreCheckResult:
     """Test storing check results in DynamoDB."""
 
