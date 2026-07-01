@@ -614,10 +614,14 @@ def format_check_comment(result: CheckResult, usage: UsageTracker | None = None)
     Returns:
         Markdown-formatted comment string
     """
+    # Raw Unicode emoji instead of GitHub markdown shortcodes
+    # (:white_check_mark: / :warning: / :x:). GitHub renders the
+    # shortcodes; Azure DevOps does NOT and shows them as literal
+    # text. Unicode renders identically on both providers.
     status_emoji = {
-        CheckStatus.PASS: ":white_check_mark:",
-        CheckStatus.WARN: ":warning:",
-        CheckStatus.FAIL: ":x:",
+        CheckStatus.PASS: "✅",       # ✅
+        CheckStatus.WARN: "⚠️", # ⚠️ (warning sign + emoji variation)
+        CheckStatus.FAIL: "❌",       # ❌
     }[result.status]
 
     check_name = result.check_type.value.replace("_", " ")

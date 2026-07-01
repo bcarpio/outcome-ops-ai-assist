@@ -168,8 +168,8 @@ class TestFormatCheckComment:
         # Act
         comment = format_check_comment(result)
 
-        # Assert
-        assert ":white_check_mark:" in comment
+        # Assert -- raw Unicode emoji so ADO renders the same as GH.
+        assert "✅" in comment
         assert "TEST COVERAGE" in comment
         assert "All handlers have test coverage" in comment
         assert "lambda/hello/handler.py" in comment
@@ -191,8 +191,8 @@ class TestFormatCheckComment:
         # Act
         comment = format_check_comment(result)
 
-        # Assert
-        assert ":warning:" in comment
+        # Assert -- raw Unicode emoji so ADO renders the same as GH.
+        assert "⚠️" in comment
         assert "README FRESHNESS" in comment
         assert "README.md not updated" in comment
 
@@ -223,7 +223,7 @@ class TestFormatCheckComment:
         summary_start = comment.index("<summary>") + len("<summary>")
         summary_end = comment.index("</summary>")
         summary_line = comment[summary_start:summary_end]
-        assert ":white_check_mark:" in summary_line
+        assert "✅" in summary_line
         assert "BREAKING CHANGES" in summary_line
         assert "No dependencies found - safe to modify" in summary_line
 
