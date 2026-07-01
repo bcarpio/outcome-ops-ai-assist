@@ -199,6 +199,87 @@ requires backend work first — three behavior deltas vs Sonnet 4.6:
 Reopen when the demand for Sonnet 5 shows up (customer ask, blog
 post, or maintainer curiosity).
 
+### LICENSE_COMPLIANCE check has hardcoded policy patterns
+
+**Filed:** 2026-07-01
+**Severity:** Medium — surfaces the moment a customer's SecOps has a
+different license posture than the platform maintainer's
+**Component:** `lambda/process-pr-check/check_handlers/license_compliance.py`
+
+The LICENSE_COMPLIANCE check is partially customer-configurable: it
+queries the KB for the customer's license policy (`query_knowledge_base("...our
+open source license compliance policies?...")`) and passes the answer
+to Claude as `license_policy` for judgment. That path IS customer-tunable
+via docs per ADR-007.
+
+But the pre-scan pattern detection (`detect_license_patterns` +
+`check_copyright_header` + `is_ai_generated_commit`) is hardcoded in
+`license_compliance.py:35-96`:
+
+- `PROHIBITED_PATTERNS` — regex for GPL/AGPL/SSPL only
+- `ALLOWED_PATTERNS` — MIT/Apache/BSD/ISC only
+- `REVIEW_PATTERNS` — LGPL/MPL only
+- `COPYRIGHT_PATTERN` — matches "Copyright YYYY Name" only
+- `SPDX_PATTERN` — matches the SPDX identifier line format
+- `GPL_ALGORITHM_PATTERNS` — hardcoded regex for specific GPL-implementation
+  code shapes
+- `SOURCE_EXTENSIONS` — the file types that get scanned
+- `is_ai_generated_commit()` markers — Claude-only (`Co-Authored-By:
+  Claude`, `Generated with Claude Code`)
+
+Concrete customer scenarios this breaks:
+
+- **Customer prohibits LGPL.** The pre-scan tags LGPL as
+  `review_required`, not `prohibited`. Claude might override based
+  on the policy but the pre-scan miscategorizes it.
+- **Customer requires a company-specific copyright header format**
+  (e.g., `Copyright (c) 2026 ACME Corp` with parens, or "Property of
+  ACME. All rights reserved.", or SPDX-only headers). The current
+  regex misses non-standard shapes and the file gets falsely flagged
+  as missing header.
+- **Customer uses Cursor / Copilot / Windsurf** (not Claude Code).
+  Phase 2 AI-generated detection never triggers because their
+  commit trailers don't match the hardcoded Claude markers.
+
+**Fix shape (per ADR-007 "documentation-driven decisions"):**
+
+1. Move `PROHIBITED_PATTERNS` / `ALLOWED_PATTERNS` / `REVIEW_PATTERNS`
+   to a customer-configurable location. Two viable slots:
+   - **KB entry** — a well-known ADR / policy doc the customer
+     ingests. The check parses it at runtime. Consistent with how
+     the current `license_policy` is already retrieved.
+   - **`.outcomeops.yaml`** — a `license_compliance:` block in each
+     repo's config file. More per-repo granular but requires
+     schema changes.
+   KB-entry is probably right for org-wide policy; `.outcomeops.yaml`
+   is right if per-repo overrides matter.
+2. Same for `COPYRIGHT_PATTERN` / `SPDX_PATTERN` — customer specifies
+   the acceptable formats. Default to today's regex if unset.
+3. `AI_GENERATED_MARKERS` — customer-provided list of trailer / body
+   patterns that indicate AI authorship. Default: Claude + common
+   Copilot / Cursor markers so the average customer gets useful
+   detection out of the box.
+4. `SOURCE_EXTENSIONS` — customer specifies which file types matter.
+   Default to today's list.
+
+Alternative (bigger scope, cleaner design): replace the pre-scan
+regex layer entirely with an LLM pass. Claude gets the file diff +
+license policy + AI-tool markers as prompt input and does all the
+detection. Removes the "hardcoded pattern coverage" problem
+completely at the cost of one extra LLM call per file.
+
+**Interim workaround for customers who need it now:** write a very
+explicit ADR-008 in their KB spelling out where the platform's
+hardcoded pattern coverage differs from their intent. Claude reads
+that policy and interprets findings accordingly. Doc-only hack; the
+real fix is de-hardcoding the patterns.
+
+**Related:** the `[[tech-debt: PR-check handlers query the KB
+workspace-blind]]` entry — even if a customer configures their own
+policy, workspace-blind retrieval means the wrong workspace's policy
+could win the ranking. Fix both together for a coherent customer
+experience.
+
 ## Closed (kept for historical context until pruned)
 
 _(none yet)_
