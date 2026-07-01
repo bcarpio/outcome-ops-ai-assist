@@ -363,6 +363,101 @@ def _post_azure_devops_thread(
         raise
 
 
+def _get_existing_check_result_row(pk: str, sk: str) -> Optional[Dict[str, Any]]:
+    """Read the existing DDB row for this (PR × check_type), or return None.
+
+    Used by ``process_check_job``'s upsert path: if we've posted a
+    comment on a previous run, its provider comment identifiers live
+    on this row. The upsert path uses them to PATCH instead of POST.
+    """
+    try:
+        table = dynamodb.Table(DYNAMODB_TABLE)
+        response = table.get_item(Key={"PK": pk, "SK": sk})
+        return response.get("Item")
+    except ClientError as e:
+        # Non-fatal -- if the read fails we just POST a new comment,
+        # matching the pre-upsert behavior.
+        logger.warning(
+            f"Failed to read existing check result at {pk}/{sk}: {e}. "
+            f"Falling back to POST."
+        )
+        return None
+
+
+def _try_patch_github_comment(
+    repository: str,
+    existing_row: Dict[str, Any],
+    comment_body: str,
+) -> Optional[str]:
+    """Try to PATCH the existing GitHub comment. Returns the comment's
+    html_url on success; ``None`` if there's no stored comment ID or
+    the PATCH failed (caller falls back to POST)."""
+    comment_id = existing_row.get("providerCommentId")
+    if comment_id is None:
+        return None
+    try:
+        token = get_github_token()
+        response = patch_pr_comment(repository, int(comment_id), comment_body, token)
+        return response.get("html_url", "")
+    except Exception as e:
+        logger.warning(
+            f"[upsert] PATCH failed for GitHub comment {comment_id} in "
+            f"{repository}: {e}. Falling back to POST."
+        )
+        return None
+
+
+def _try_patch_ado_comment(
+    *,
+    org: str,
+    project: str,
+    repo: str,
+    pull_request_id: int,
+    connection_id: str,
+    existing_row: Dict[str, Any],
+    comment_body: str,
+) -> Optional[str]:
+    """Try to PATCH the existing ADO thread comment. Returns the
+    human-followable URL on success; ``None`` if there's no stored
+    thread/comment ID or the PATCH failed."""
+    if not _ADO_AVAILABLE:
+        return None
+    thread_id = existing_row.get("providerThreadId")
+    thread_comment_id = existing_row.get("providerThreadCommentId")
+    if thread_id is None or thread_comment_id is None:
+        return None
+    try:
+        from azure_devops_api import update_pull_request_thread_comment
+        access_token = _ado_refresh_access_token(
+            connection_id=connection_id,
+            tenant_id=AZURE_DEVOPS_TENANT_ID,
+            client_id=AZURE_DEVOPS_CLIENT_ID,
+            client_secret=_get_ado_client_secret(),
+        )
+        if not access_token:
+            return None
+        update_pull_request_thread_comment(
+            access_token=access_token,
+            org=org, project=project, repo=repo,
+            pull_request_id=pull_request_id,
+            thread_id=int(thread_id),
+            comment_id=int(thread_comment_id),
+            comment_markdown=comment_body,
+        )
+        return (
+            f"https://dev.azure.com/{org}/{project}/_git/{repo}"
+            f"/pullrequest/{pull_request_id}"
+            f"?_a=overview&discussionId={thread_id}"
+        )
+    except Exception as e:
+        logger.warning(
+            f"[upsert] ADO PATCH failed for thread {thread_id}/comment "
+            f"{thread_comment_id} in {org}/{project}/{repo} PR "
+            f"#{pull_request_id}: {e}. Falling back to POST."
+        )
+        return None
+
+
 def store_check_result(result: CheckResult) -> None:
     """
     Store check result in DynamoDB.
@@ -581,14 +676,54 @@ def process_check_job(job: CheckJob) -> CheckResult:
         timestamp=timestamp,
     )
 
-    # Store result in DynamoDB
+    # Upsert prep: read the existing row BEFORE we overwrite it in the
+    # intermediate store, so we can find provider comment identifiers
+    # from a previous run and target a PATCH.
+    existing_row = _get_existing_check_result_row(pk, sk)
+
+    # Store intermediate row (matches pre-upsert semantics: check-result
+    # data persists even if the comment post/patch below fails).
     store_check_result(result)
 
-    # Post result as a PR comment via the right provider. Extract the
-    # provider-side comment identifiers so subsequent runs on the same
-    # PR can PATCH-in-place instead of POSTing duplicates (chunk 03).
+    # Post OR update the PR comment. On repeat runs (subsequent pushes
+    # to the same PR) we PATCH the existing comment instead of POSTing
+    # a fresh one; the customer sees one comment per (PR × check_type)
+    # that stays current instead of a fresh one every push.
     comment = format_check_comment(result, usage)
-    if job.provider == "azure_devops":
+    patched_url: Optional[str] = None
+    if existing_row:
+        if job.provider == "azure_devops":
+            patched_url = _try_patch_ado_comment(
+                org=job.azure_devops_org,
+                project=job.azure_devops_project,
+                repo=job.azure_devops_repo,
+                pull_request_id=job.pr_number,
+                connection_id=job.connection_id,
+                existing_row=existing_row,
+                comment_body=comment,
+            )
+        else:  # github
+            patched_url = _try_patch_github_comment(
+                repository=job.repository,
+                existing_row=existing_row,
+                comment_body=comment,
+            )
+
+    if patched_url is not None:
+        # PATCH succeeded: preserve the existing comment identifiers on
+        # the new row so future runs continue to find and update the
+        # same comment.
+        result.provider_comment_id = existing_row.get("providerCommentId")
+        result.provider_thread_id = existing_row.get("providerThreadId")
+        result.provider_thread_comment_id = existing_row.get("providerThreadCommentId")
+        comment_url = patched_url
+        logger.info(
+            f"[upsert] Updated existing comment for {job.check_type.value} "
+            f"on {job.provider} PR #{job.pr_number}"
+        )
+    elif job.provider == "azure_devops":
+        # POST new ADO thread. Extract thread ID + first comment ID so
+        # the next run can PATCH.
         comment_response = _post_azure_devops_thread(
             org=job.azure_devops_org,
             project=job.azure_devops_project,
@@ -597,8 +732,6 @@ def process_check_job(job: CheckJob) -> CheckResult:
             body=comment,
             connection_id=job.connection_id,
         )
-        # ADO thread response shape:
-        #   {"id": <thread_id>, "comments": [{"id": <cid>, ...}], ...}
         thread_id = comment_response.get("id")
         comments = comment_response.get("comments") or []
         thread_comment_id = comments[0].get("id") if comments else None
@@ -611,6 +744,8 @@ def process_check_job(job: CheckJob) -> CheckResult:
             if thread_id else ""
         )
     else:
+        # POST new GitHub comment. Extract comment ID so the next run
+        # can PATCH.
         token = get_github_token()
         comment_response = post_pr_comment(job.repository, job.pr_number, comment, token)
         comment_url = comment_response.get("html_url", "")

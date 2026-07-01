@@ -536,6 +536,158 @@ class TestCheckResultUpdateInPlaceFields:
         assert result.provider_comment_id is None
 
 
+class TestUpsertBehavior:
+    """Chunk 03 of the update-in-place plan: process_check_job
+    PATCHes an existing comment instead of POSTing on subsequent runs."""
+
+    def _fresh_job_github(self):
+        return CheckJob(
+            checkType="TEST_COVERAGE",
+            pr_number=123,
+            repository="owner/repo",
+            changedFiles=["src/x.py"],
+        )
+
+    def _fresh_job_ado(self):
+        return CheckJob(
+            checkType="TEST_COVERAGE",
+            pr_number=42,
+            repository="example-org/example-project/example-repo",
+            changedFiles=["src/x.py"],
+            provider="azure_devops",
+            connection_id="conn-xyz",
+            org="example-org",
+            project="example-project",
+            repo="example-repo",
+        )
+
+    def _default_check_result(self):
+        return {"status": "PASS", "message": "ok", "details": []}
+
+    @patch('process_pr_check_handler.store_check_result')
+    @patch('process_pr_check_handler.post_pr_comment')
+    @patch('process_pr_check_handler.patch_pr_comment')
+    @patch('process_pr_check_handler.get_github_token', return_value="ghp")
+    @patch('process_pr_check_handler._get_existing_check_result_row', return_value=None)
+    @patch('process_pr_check_handler.run_check')
+    def test_first_run_posts_new_comment(
+        self, mock_run, _mock_exist, _mock_tok, mock_patch, mock_post, mock_store,
+    ):
+        # No existing row -> POST path fires, PATCH doesn't.
+        mock_run.return_value = self._default_check_result()
+        mock_post.return_value = {
+            "id": 111,
+            "html_url": "https://github.com/o/r/pull/1#issuecomment-111",
+        }
+        result = process_check_job(self._fresh_job_github())
+        mock_post.assert_called_once()
+        mock_patch.assert_not_called()
+        assert result.provider_comment_id == 111
+
+    @patch('process_pr_check_handler.store_check_result')
+    @patch('process_pr_check_handler.post_pr_comment')
+    @patch('process_pr_check_handler.patch_pr_comment')
+    @patch('process_pr_check_handler.get_github_token', return_value="ghp")
+    @patch('process_pr_check_handler._get_existing_check_result_row')
+    @patch('process_pr_check_handler.run_check')
+    def test_second_run_with_github_id_patches_instead_of_posting(
+        self, mock_run, mock_exist, _mock_tok, mock_patch, mock_post, mock_store,
+    ):
+        mock_run.return_value = self._default_check_result()
+        mock_exist.return_value = {
+            "PK": "PR#github#owner/repo#123",
+            "SK": "CHECK#test_coverage",
+            "providerCommentId": 111,
+            "commentUrl": "https://github.com/owner/repo/pull/123#issuecomment-111",
+        }
+        mock_patch.return_value = {
+            "id": 111,
+            "html_url": "https://github.com/owner/repo/pull/123#issuecomment-111",
+        }
+        result = process_check_job(self._fresh_job_github())
+        mock_patch.assert_called_once()
+        assert mock_patch.call_args.args[1] == 111  # comment_id
+        mock_post.assert_not_called()
+        # ID preserved on the new row.
+        assert result.provider_comment_id == 111
+
+    @patch('process_pr_check_handler.store_check_result')
+    @patch('process_pr_check_handler.post_pr_comment')
+    @patch('process_pr_check_handler.patch_pr_comment',
+           side_effect=Exception("GitHub API error: 404"))
+    @patch('process_pr_check_handler.get_github_token', return_value="ghp")
+    @patch('process_pr_check_handler._get_existing_check_result_row')
+    @patch('process_pr_check_handler.run_check')
+    def test_patch_failure_falls_back_to_post(
+        self, mock_run, mock_exist, _mock_tok, mock_patch, mock_post, mock_store,
+    ):
+        # PATCH raises (comment deleted, auth error, etc.) -> POST fires.
+        mock_run.return_value = self._default_check_result()
+        mock_exist.return_value = {
+            "PK": "PR#github#owner/repo#123",
+            "SK": "CHECK#test_coverage",
+            "providerCommentId": 999,  # stale (deleted comment)
+        }
+        mock_post.return_value = {
+            "id": 222,  # brand new comment
+            "html_url": "https://github.com/owner/repo/pull/123#issuecomment-222",
+        }
+        result = process_check_job(self._fresh_job_github())
+        mock_patch.assert_called_once()
+        mock_post.assert_called_once()
+        assert result.provider_comment_id == 222  # new POST'd id, not stale
+
+    @patch('process_pr_check_handler.store_check_result')
+    @patch('process_pr_check_handler._post_azure_devops_thread')
+    @patch('process_pr_check_handler._try_patch_ado_comment')
+    @patch('process_pr_check_handler._get_existing_check_result_row')
+    @patch('process_pr_check_handler.run_check')
+    def test_second_run_with_ado_thread_id_patches(
+        self, mock_run, mock_exist, mock_patch_ado, mock_post_ado, mock_store,
+    ):
+        mock_run.return_value = self._default_check_result()
+        mock_exist.return_value = {
+            "PK": "PR#azure_devops#example-org/example-project/example-repo#42",
+            "SK": "CHECK#test_coverage",
+            "providerThreadId": 77,
+            "providerThreadCommentId": 1,
+        }
+        mock_patch_ado.return_value = (
+            "https://dev.azure.com/example-org/example-project/_git/example-repo"
+            "/pullrequest/42?_a=overview&discussionId=77"
+        )
+        result = process_check_job(self._fresh_job_ado())
+        mock_patch_ado.assert_called_once()
+        mock_post_ado.assert_not_called()
+        assert result.provider_thread_id == 77
+        assert result.provider_thread_comment_id == 1
+
+    @patch('process_pr_check_handler.store_check_result')
+    @patch('process_pr_check_handler._post_azure_devops_thread')
+    @patch('process_pr_check_handler._try_patch_ado_comment', return_value=None)
+    @patch('process_pr_check_handler._get_existing_check_result_row')
+    @patch('process_pr_check_handler.run_check')
+    def test_ado_patch_returning_none_falls_back_to_post(
+        self, mock_run, mock_exist, _mock_patch, mock_post_ado, mock_store,
+    ):
+        # _try_patch_ado_comment returning None means "couldn't PATCH,
+        # fall back to POST". Row has no IDs (never posted before),
+        # simulated by a row without them.
+        mock_run.return_value = self._default_check_result()
+        mock_exist.return_value = {
+            "PK": "PR#azure_devops#example-org/example-project/example-repo#42",
+            "SK": "CHECK#test_coverage",
+            # no providerThreadId / providerThreadCommentId
+        }
+        mock_post_ado.return_value = {
+            "id": 88, "comments": [{"id": 1, "content": "x"}],
+        }
+        result = process_check_job(self._fresh_job_ado())
+        mock_post_ado.assert_called_once()
+        assert result.provider_thread_id == 88
+        assert result.provider_thread_comment_id == 1
+
+
 class TestLicenseComplianceHelpers:
     """Test license compliance helper functions."""
 
