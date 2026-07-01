@@ -1296,12 +1296,14 @@ def _handle_azure_devops(
     logger.info(f"[analyze-pr.ado] Detected backend type: {backend}")
 
     # ADO's fetch_pr_metadata returns a plain list of changed-file
-    # paths. Wrap them in the GitHubFile shape that parse_changed_files
-    # expects (only the filename + status fields are read there).
+    # paths + a per-path status map (translated from ADO's changeType
+    # to GitHub's status vocab in the shared shim). Wrap them in the
+    # GitHubFile shape that parse_changed_files expects; a missing key
+    # defaults to "modified" for parity with the pre-fix behavior.
     files = [
         GitHubFile(
             filename=path,
-            status="modified",
+            status=pr_meta.file_change_types.get(path, "modified"),
             additions=0,
             deletions=0,
             changes=0,

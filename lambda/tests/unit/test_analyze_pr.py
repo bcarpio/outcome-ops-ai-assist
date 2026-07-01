@@ -1439,6 +1439,40 @@ class TestHandleAzureDevOpsEndToEnd:
 
         assert result["checks_queued"] == 6
 
+    @patch('analyze_pr_handler.queue_check_jobs', return_value=5)
+    @patch('analyze_pr_handler._upsert_ado_comment')
+    @patch('analyze_pr_handler._refresh_ado_access_token', return_value="ado-tok")
+    def test_ado_e2e_new_file_does_not_queue_breaking_changes(
+        self, _mock_refresh, _mock_post, mock_queue,
+    ):
+        # Bug fix: prior to shared.pr_metadata surfacing ADO's changeType,
+        # every ADO file was force-labelled "modified" and
+        # BREAKING_CHANGES ran on newly-added handler files. GitHub had
+        # it right (added files are skipped). This asserts the wrapper
+        # now honors file_change_types so the two providers agree.
+        from shared.pr_metadata import PRMetadata
+
+        fake_pr = PRMetadata(
+            head_sha="h", base_sha="b", base_branch="main",
+            changed_files=["lambda/probe-health/handler.py"],
+            author="u", title="t",
+            file_change_types={"lambda/probe-health/handler.py": "added"},
+        )
+        with patch("shared.pr_metadata.fetch_pr_metadata", return_value=fake_pr), \
+             patch("shared.source_fetch.fetch_file_at_sha",
+                   return_value=b"code_generation:\n  backend: python\n"):
+            handler_module._handle_azure_devops(self._ado_request(), 0.0)
+
+        _, kwargs = mock_queue.call_args
+        checks_queued = kwargs.get("checks") or (
+            mock_queue.call_args.args[2] if len(mock_queue.call_args.args) >= 3 else []
+        )
+        assert "BREAKING_CHANGES" not in checks_queued, (
+            "Newly-added file must not trigger BREAKING_CHANGES on ADO "
+            "(parity with GitHub: an added file has no prior version "
+            "that could have been broken)."
+        )
+
     def test_refresh_ado_access_token_missing_env_vars(self, monkeypatch):
         # Sanity: refresh helper raises if OAuth app not configured.
         monkeypatch.delenv("AZURE_DEVOPS_TENANT_ID", raising=False)

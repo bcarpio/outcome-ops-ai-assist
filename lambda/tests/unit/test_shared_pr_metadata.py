@@ -345,6 +345,113 @@ class TestFetchPRMetadataAzureDevOps:
         assert req.headers["Authorization"] == "Bearer tok"
 
 
+class TestAdoChangeTypeToGitHubStatus:
+    """Map ADO's ``changeType`` -> GitHub's ``status`` vocabulary so
+    downstream check-selection code (written to GitHub semantics)
+    treats both providers uniformly. Prior to the mapping, ADO PRs
+    fired BREAKING_CHANGES on newly-added handler files because the
+    analyze-pr wrapper force-labelled everything ``"modified"``.
+    """
+
+    def test_add_maps_to_added(self):
+        assert pr_metadata._ado_change_type_to_github_status("add") == "added"
+
+    def test_edit_maps_to_modified(self):
+        assert pr_metadata._ado_change_type_to_github_status("edit") == "modified"
+
+    def test_delete_maps_to_removed(self):
+        assert pr_metadata._ado_change_type_to_github_status("delete") == "removed"
+
+    def test_rename_maps_to_renamed(self):
+        assert pr_metadata._ado_change_type_to_github_status("rename") == "renamed"
+
+    def test_undelete_maps_to_added(self):
+        assert pr_metadata._ado_change_type_to_github_status("undelete") == "added"
+
+    def test_delete_wins_over_edit_in_combo(self):
+        # ADO can emit comma-joined combos like "edit, delete" for
+        # unusual cases; delete dominates so downstream sees "removed".
+        assert pr_metadata._ado_change_type_to_github_status(
+            "edit, delete"
+        ) == "removed"
+
+    def test_add_wins_over_rename_in_combo(self):
+        # Copy-into-new-path shows up as "add, rename"; we want
+        # "added" so BREAKING_CHANGES stays skipped for the new file.
+        assert pr_metadata._ado_change_type_to_github_status(
+            "add, rename"
+        ) == "added"
+
+    def test_empty_defaults_to_modified(self):
+        assert pr_metadata._ado_change_type_to_github_status("") == "modified"
+        assert pr_metadata._ado_change_type_to_github_status(None) == "modified"
+
+    def test_unknown_defaults_to_modified(self):
+        assert pr_metadata._ado_change_type_to_github_status(
+            "some-future-value"
+        ) == "modified"
+
+    def test_ado_pr_metadata_populates_file_change_types(self):
+        # End-to-end: fetch_pr_metadata for ADO surfaces per-path
+        # GitHub-style status in file_change_types.
+        with patch.object(pr_metadata, "urlopen") as mock_urlopen:
+            pr_resp = _mock_response({
+                "lastMergeSourceCommit": {"commitId": "h"},
+                "lastMergeTargetCommit": {"commitId": "b"},
+                "targetRefName": "refs/heads/main",
+                "createdBy": {"uniqueName": "u"},
+                "title": "t",
+            })
+            iterations_resp = _mock_response({"value": [{"id": 1}]})
+            changes_resp = _mock_response({
+                "changeEntries": [
+                    {"item": {"path": "/new.py"}, "changeType": "add"},
+                    {"item": {"path": "/old.py"}, "changeType": "edit"},
+                    {"item": {"path": "/gone.py"}, "changeType": "delete"},
+                ],
+            })
+            mock_urlopen.side_effect = [pr_resp, iterations_resp, changes_resp]
+
+            result = pr_metadata.fetch_pr_metadata(
+                "azure_devops", 1,
+                ado_org="o", ado_project="p", ado_repo="r",
+                ado_access_token="tok",
+            )
+
+        assert result.file_change_types == {
+            "new.py": "added",
+            "old.py": "modified",
+            "gone.py": "removed",
+        }
+
+    def test_github_pr_metadata_populates_file_change_types(self):
+        with patch.object(pr_metadata, "urlopen") as mock_urlopen:
+            pr_resp = _mock_response({
+                "head": {"sha": "h"},
+                "base": {"sha": "b", "ref": "main"},
+                "user": {"login": "u"},
+                "title": "t",
+            })
+            files_resp = _mock_response([
+                {"filename": "new.py", "status": "added"},
+                {"filename": "old.py", "status": "modified"},
+                {"filename": "gone.py", "status": "removed"},
+            ])
+            mock_urlopen.side_effect = [pr_resp, files_resp]
+
+            result = pr_metadata.fetch_pr_metadata(
+                "github", 1,
+                repository="owner/repo",
+                github_token="ghp",
+            )
+
+        assert result.file_change_types == {
+            "new.py": "added",
+            "old.py": "modified",
+            "gone.py": "removed",
+        }
+
+
 # ---------------------------------------------------------------------------
 # _parse_github_link_next helper directly.
 # ---------------------------------------------------------------------------

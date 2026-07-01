@@ -23,7 +23,7 @@ in the branch functions below.
 
 import json
 import logging
-from typing import List, NamedTuple, Optional
+from typing import Dict, List, NamedTuple, Optional
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -50,6 +50,14 @@ class PRMetadata(NamedTuple):
     that don't map cleanly across providers (labels, reviewers, draft
     status, etc.) are deliberately excluded — this NamedTuple is the
     stable common surface, not a general-purpose PR object.
+
+    ``file_change_types`` maps each entry in ``changed_files`` to its
+    GitHub-style status ("added", "modified", "removed", "renamed").
+    The ADO branch translates from ADO's ``changeType`` vocabulary
+    ("add", "edit", "delete", "rename") so downstream callers can treat
+    both providers uniformly. A missing key defaults to "modified" per
+    the pre-existing caller behavior; the map is best-effort, not
+    required-for-correctness.
     """
     head_sha: str
     base_sha: str
@@ -57,6 +65,36 @@ class PRMetadata(NamedTuple):
     changed_files: List[str]
     author: str
     title: str
+    file_change_types: Dict[str, str] = {}
+
+
+# ADO's `changeType` -> GitHub's `status` vocabulary. See
+# https://learn.microsoft.com/en-us/rest/api/azure/devops/git/pull-request-iteration-changes
+# for the ADO values; can be a single word or a comma-joined
+# combination like "edit, rename".
+def _ado_change_type_to_github_status(change_type: Optional[str]) -> str:
+    """Map ADO's ``changeType`` to GitHub's ``status`` vocabulary.
+
+    Rules, ordered by dominance:
+      1. any "delete" -> "removed"
+      2. any "add" (incl. "undelete") -> "added"
+      3. any "rename" (without add/delete) -> "renamed"
+      4. anything else (incl. "edit", unknown, empty) -> "modified"
+
+    "add" wins over "rename" so a copy-into-new-path shows up as
+    "added" (the file didn't exist at the base SHA, so BREAKING_CHANGES
+    on it makes no sense).
+    """
+    if not change_type:
+        return "modified"
+    parts = {p.strip().lower() for p in change_type.split(",")}
+    if "delete" in parts:
+        return "removed"
+    if "add" in parts or "undelete" in parts:
+        return "added"
+    if "rename" in parts or "sourcerename" in parts:
+        return "renamed"
+    return "modified"
 
 
 def fetch_pr_metadata(
@@ -152,12 +190,17 @@ def _fetch_pr_from_github(
 
     files_url = f"{_GITHUB_API}/repos/{repository}/pulls/{pr_number}/files?per_page=100"
     changed_files: List[str] = []
+    file_change_types: Dict[str, str] = {}
     while files_url:
         page, next_url = _github_get_with_next(files_url, github_token)
         for entry in page or []:
             filename = entry.get("filename")
             if filename:
                 changed_files.append(filename)
+                # GitHub's `status` is already in our target vocab
+                # ("added" / "modified" / "removed" / "renamed").
+                status = entry.get("status") or "modified"
+                file_change_types[filename] = status
         files_url = next_url
 
     return PRMetadata(
@@ -167,6 +210,7 @@ def _fetch_pr_from_github(
         changed_files=changed_files,
         author=author,
         title=title,
+        file_change_types=file_change_types,
     )
 
 
@@ -244,6 +288,7 @@ def _fetch_pr_from_ado(
     changes_body = _ado_get(changes_url, ado_access_token)
 
     changed_files: List[str] = []
+    file_change_types: Dict[str, str] = {}
     for entry in changes_body.get("changeEntries", []) or []:
         item = entry.get("item") or {}
         # Note: ADO's pull-request-iteration-changes endpoint does NOT
@@ -255,7 +300,17 @@ def _fetch_pr_from_ado(
         # and returned changed_files=[] for every ADO PR.
         raw_path = item.get("path")
         if raw_path:
-            changed_files.append(raw_path.lstrip("/"))
+            path = raw_path.lstrip("/")
+            changed_files.append(path)
+            # ADO's `changeType` -> GitHub's `status` vocabulary so
+            # downstream check-selection code (which was written to
+            # GitHub semantics) treats both providers uniformly. Prior
+            # to this, every ADO file was force-labelled "modified" at
+            # the analyze-pr wrapper, causing BREAKING_CHANGES to fire
+            # on newly-added handler files on ADO but not on GitHub.
+            file_change_types[path] = _ado_change_type_to_github_status(
+                entry.get("changeType"),
+            )
 
     return PRMetadata(
         head_sha=head_sha,
@@ -264,6 +319,7 @@ def _fetch_pr_from_ado(
         changed_files=changed_files,
         author=author,
         title=title,
+        file_change_types=file_change_types,
     )
 
 
