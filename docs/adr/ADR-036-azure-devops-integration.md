@@ -237,3 +237,61 @@ The runbook walks through the customer-facing setup; verification is:
 Until the operator stands up the test ADO tenant, the implementation
 is "shipped, unit-tested, live-deferred" — the same posture as the
 GPT-5.5 path while it waited on AWS Marketplace entitlement.
+
+## Addendum: AI PR Analyzer parity closure (2026-07-01)
+
+The initial ADR-036 shipment intentionally stopped the ADO
+PR-check pipeline at "wiring works, check execution stubbed."
+`process_check_job` intercepted `provider=azure_devops` jobs
+before `run_check` and returned a transparent PASS with a
+"checks against ADO source are pending" comment.
+
+A follow-up six-chunk plan closed that gap. Every check handler
+in `lambda/process-pr-check/check_handlers/` now runs against
+Azure DevOps source with parity to its GitHub behavior:
+
+- `ADR_COMPLIANCE`, `ARCHITECTURAL_DUPLICATION`,
+  `README_FRESHNESS`, `LICENSE_COMPLIANCE` — dispatch on
+  `provider`; refresh the customer's ADO OAuth token, fetch PR
+  head/base commit SHAs via `shared.pr_metadata`, fetch per-file
+  bytes via `shared.source_fetch.fetch_file_at_sha`, compute
+  unified diffs client-side via `shared.pr_diff.compute_file_diff`.
+- `TEST_COVERAGE` — uses `shared.repo_metadata` for the
+  default-branch + recursive tree walk, and reads
+  `.outcomeops.yaml` at the branch tip via
+  `fetch_file_at_sha(ado_version_type="branch")`.
+- `BREAKING_CHANGES` — was already provider-agnostic (KB queries
+  keyed off `changed_files`); the chunk-02 guard was removed.
+
+The `process_check_job` short-circuit was deleted. ADO PR checks
+now produce the same six-check result set as GitHub PR checks.
+
+Deferred sub-features (do NOT block parity):
+
+- `LICENSE_COMPLIANCE`'s AI-generated-code detection (Phase 2)
+  inspects the PR's commit list for known AI-tool co-author
+  metadata. This is GitHub-only in v1; the same file-content
+  license/copyright scan (Phase 1) runs on ADO.
+- ADO commit-list traversal in general — a follow-up primitive
+  if a customer surface asks for it.
+
+New shared primitives introduced by the parity work:
+
+- `shared.pr_metadata.fetch_pr_metadata` — PR head/base + changed
+  files, provider-agnostic
+- `shared.repo_metadata.fetch_repo_metadata` — default branch +
+  recursive file tree, provider-agnostic
+- `shared.source_fetch.fetch_file_at_sha` — file bytes at
+  commit SHA or branch tip, provider-agnostic
+- `shared.pr_diff.compute_file_diff` — client-side unified diff
+  from base + head bytes (ADO has no server-side diff endpoint
+  equivalent to GitHub's `application/vnd.github.v3.diff`)
+- `lambda/process-pr-check/check_handlers/ado_context.refresh_ado_token`
+  — handler-local ADO token-refresh helper wrapping
+  `azure_devops_token_manager` + env-var / SSM plumbing
+
+No new customer prerequisites. No new IAM. No new tfvars. The
+parity work reuses every credential the initial ADR-036 shipment
+already established: the OAuth token at
+`AZDO_TOKEN#{connection_id}` from Repos plan chunks 01a + 02
+and the SSM read grant added in Repos plan chunk 07.
