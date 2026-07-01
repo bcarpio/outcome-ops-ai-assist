@@ -80,9 +80,17 @@ module "analyze_pr_lambda" {
     # OAuth access token before fetching PR metadata / posting the
     # initial "analysis started" comment). Empty on customer deploys
     # that haven't configured ADO; the ADO branch surfaces a clear
-    # error in that case. Existing SSM read policy already grants
-    # /prd/outcome-ops-ai-assist/* wildcard which covers the client-
-    # secret path.
+    # error in that case.
+    #
+    # Token refresh reads the encrypted refresh token from
+    # WORKSPACES_TABLE (AZDO_TOKEN# rows), decrypts via the OAuth
+    # tokens KMS key, and refreshes against the customer's Entra ID
+    # tenant. Client secret comes from SSM at request time. All
+    # gated on enable_workspaces so customer deploys without the
+    # workspaces feature still build (the workspaces table + KMS
+    # key only exist when enable_workspaces=true).
+    WORKSPACES_TABLE                     = var.enable_workspaces ? module.workspaces_table[0].dynamodb_table_id : ""
+    OAUTH_KMS_KEY_ARN                    = var.enable_workspaces ? aws_kms_key.oauth_tokens[0].arn : ""
     AZURE_DEVOPS_TENANT_ID               = var.azure_devops_tenant_id
     AZURE_DEVOPS_CLIENT_ID               = var.azure_devops_client_id
     AZURE_DEVOPS_CLIENT_SECRET_SSM_PARAM = var.azure_devops_client_secret_ssm_param
@@ -90,7 +98,7 @@ module "analyze_pr_lambda" {
 
   # IAM permissions
   attach_policy_statements = true
-  policy_statements = {
+  policy_statements = merge({
     # Read SSM parameters (GitHub token and SQS queue URL)
     ssm_read = {
       effect = "Allow"
@@ -124,7 +132,29 @@ module "analyze_pr_lambda" {
         module.pr_checks_queue.queue_arn
       ]
     }
-  }
+    },
+    # ADO dispatch path (widened analyze-pr) needs DDB read + KMS
+    # decrypt to refresh the customer's OAuth token on request-
+    # entry. Matches the same grants process-pr-check gets.
+    var.enable_workspaces ? {
+      dynamodb_workspaces_read = {
+        effect = "Allow"
+        actions = [
+          "dynamodb:GetItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:Query",
+        ]
+        resources = [
+          module.workspaces_table[0].dynamodb_table_arn,
+        ]
+      }
+      kms_oauth = {
+        effect    = "Allow"
+        actions   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
+        resources = [aws_kms_key.oauth_tokens[0].arn]
+      }
+    } : {},
+  )
 
   tags = {
     Purpose = "analyze-pr"
