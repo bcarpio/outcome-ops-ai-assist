@@ -1,6 +1,6 @@
 # ADR-035: Bedrock Converse vs Responses API dispatch via unified model client
 
-## Status: Proposed
+## Status: Accepted
 
 ## Context
 
@@ -334,6 +334,54 @@ All five are required. The chat UI cannot ship without streaming on both
 backends — degraded chat UX on the GPT-5 path is not an acceptable
 shipping state, because tfvars-driven swappability is the
 product-positioning claim this ADR defends.
+
+### Verification Trace (2026-07-01)
+
+All five criteria demonstrated on live infrastructure:
+
+1. **Shared module + fixture-driven tests:** `shared.model_client` +
+   `_converse_backend` + `_responses_backend` shipped. `make test-unit`
+   runs 6087 passing, 3 skipped, 0 failed. Translation table (Converse ↔
+   Responses) covered both directions, both streaming and non-streaming.
+
+2. **Non-streaming GPT-5.5 on openai:** `app.retrieveit.ai` connected
+   fresh into the openai workspace (`WS#VS6QCfpkmI_oST5zqVhA6w`,
+   us-east-2). `process-repo-summary` + `process-batch-summary` generated
+   40 code-map units at SHA `c05485e393fa8581e936ac8b3b12a7cce633898c`
+   with 0 failures. Handler-group summaries, tests summaries, docs
+   summary, infrastructure summary, and architectural summary (2 chunks)
+   all landed in `openai-outcome-ops-ai-assist-vectors` under the
+   workspace prefix. Zero `ValidationException`.
+
+3. **Non-streaming Claude regression on prd:** same repo, same SHA,
+   generated 40 code-map units on prd (`WS#B1MgdLzM1j0YeyAqCWbyxg`,
+   us-west-2). Identical ledger shape, 0 failures, 178 vectors landed
+   under the workspace prefix.
+
+4. **Streaming GPT-5.5 in openai chat UI (with tool call):** opened
+   chat on `openai.outcomeops.ai`, asked "what are our lambda handler
+   standards?" — GPT-5.5 streamed a grounded response quoting
+   `outcomeops-adrs/docs/adr/ADR-004-lambda-handler-standards.md`
+   verbatim, and cross-referenced the `audit-alert/handler.py`
+   call chain via mid-stream code-map lookup. Ran the
+   pre-migration-regression query "who calls require_auth?" — routed
+   correctly to structural, graph returned 94 callers, response
+   listed per-module breakdown with grounded line numbers, zero
+   fabricated aggregate headers. Pre-migration ALB idle_timeout=60s
+   killed silent reasoning streams; commit `0ee30cf` raised it to
+   900s and streams now hold.
+
+5. **Streaming Claude regression on prd:** same "who calls
+   require_auth?" query returned a clean per-module breakdown
+   with 94 callers, no fabrication, identical routing behavior to
+   pre-migration. See earlier 2026-06-04 baseline trace in
+   `[[project_model_client_live_verified]]`.
+
+The 2026-06-04 require_auth aggregate-fabrication regression
+(fabricated header "40 distinct Lambda handler modules ... 94 direct
+call sites") does not recur on either backend as of 2026-07-01 after
+the ADR-027 v1.2 (commit `2d180d1`) + ADR-032 principled prompt-rule
+fixes (commits `9aebe19`, `fb31a24`, `6e3535a`, `c2ef76b`).
 
 ## References
 
