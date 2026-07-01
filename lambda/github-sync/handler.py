@@ -219,7 +219,8 @@ def get_repo_tree(token: str, owner: str, repo: str, ref: str = "HEAD") -> List[
     try:
         with urllib.request.urlopen(req, timeout=60) as response:
             data = json.loads(response.read().decode())
-            return data.get("tree", [])
+            tree = data.get("tree", [])
+            return tree
     except urllib.error.HTTPError as e:
         error_body = e.read().decode() if e.fp else ""
         logger.error(f"Failed to get repo tree: {e.code} - {error_body}")
