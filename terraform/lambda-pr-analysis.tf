@@ -43,6 +43,14 @@ module "analyze_pr_lambda" {
     {
       path          = "${path.module}/../lambda/process-batch-summary/extractor"
       prefix_in_zip = "extractor"
+    },
+    # analyze-pr's ADO dispatch path (widened for provider awareness in
+    # the AI PR Analyzer follow-up plan) consumes shared.pr_metadata,
+    # shared.source_fetch, and shared.repo_metadata. Ship them here the
+    # same way process-pr-check does.
+    {
+      path          = "${path.module}/../lambda/shared"
+      prefix_in_zip = "shared"
     }
   ]
 

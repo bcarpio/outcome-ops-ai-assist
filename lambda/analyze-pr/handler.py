@@ -23,7 +23,7 @@ import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Literal, Optional, Set
 from enum import Enum
 
 import boto3
@@ -35,7 +35,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared.audit_writer import ACTION_PR_ANALYZED, log_admin_action
 import yaml
 from botocore.exceptions import ClientError
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 # Setup logging
 logger = logging.getLogger()
@@ -61,20 +61,78 @@ class CheckType(str, Enum):
 
 
 class AnalyzePrRequest(BaseModel):
-    """Request schema for analyze-pr Lambda."""
+    """Request schema for analyze-pr Lambda.
+
+    ``provider`` defaults to ``"github"`` so existing GitHub-only
+    invocations continue to validate unchanged. When
+    ``provider="azure_devops"``, the caller MUST provide
+    ``connection_id`` + ``ado_org`` + ``ado_project`` + ``ado_repo``;
+    ``repository`` in that shape is a 3-segment slug
+    (``{org}/{project}/{repo}``) matching the CheckJob wire format
+    downstream.
+    """
     pr_number: int = Field(..., gt=0, description="Pull Request number")
-    repository: str = Field(..., min_length=1, description="Repository in format 'owner/repo'")
+
+    # Provider MUST be declared before ``repository`` so pydantic's
+    # in-order field validation populates ``info.data['provider']``
+    # before ``validate_repository_format`` runs.
+    provider: Literal["github", "azure_devops"] = "github"
+    connection_id: Optional[str] = None
+    ado_org: Optional[str] = None
+    ado_project: Optional[str] = None
+    ado_repo: Optional[str] = None
+
+    repository: str = Field(
+        ...,
+        min_length=1,
+        description="Repository slug (owner/repo for GitHub, org/project/repo for Azure DevOps)",
+    )
 
     @field_validator("repository")
     @classmethod
-    def validate_repository_format(cls, v):
-        """Validate repository is in owner/repo format."""
+    def validate_repository_format(cls, v, info):
+        """Validate repository format by provider.
+
+        GitHub: ``owner/repo`` (exactly 1 slash).
+        Azure DevOps: ``org/project/repo`` (exactly 2 slashes).
+        """
+        provider = (info.data or {}).get("provider", "github")
+        if provider == "azure_devops":
+            if v.count("/") != 2:
+                raise ValueError(
+                    "Azure DevOps repository must be in format 'org/project/repo'"
+                )
+            org, project, repo = v.split("/")
+            if not (org and project and repo):
+                raise ValueError("Org, project, and repo cannot be empty")
+            return v
+        # github
         if "/" not in v or v.count("/") != 1:
             raise ValueError("Repository must be in format 'owner/repo'")
         owner, repo = v.split("/")
         if not owner or not repo:
             raise ValueError("Owner and repo cannot be empty")
         return v
+
+    @model_validator(mode="after")
+    def _require_ado_context_for_azure_devops(self):
+        """Cross-field: ADO provider requires connection_id + org + project + repo."""
+        if self.provider != "azure_devops":
+            return self
+        missing = []
+        if not self.connection_id:
+            missing.append("connection_id")
+        if not self.ado_org:
+            missing.append("ado_org")
+        if not self.ado_project:
+            missing.append("ado_project")
+        if not self.ado_repo:
+            missing.append("ado_repo")
+        if missing:
+            raise ValueError(
+                f"provider='azure_devops' requires: {', '.join(missing)}"
+            )
+        return self
 
 
 class AnalyzePrResponse(BaseModel):
@@ -85,11 +143,30 @@ class AnalyzePrResponse(BaseModel):
 
 
 class CheckJob(BaseModel):
-    """Schema for check job sent to SQS."""
-    check_type: CheckType
-    pr_number: int
+    """Schema for check job sent to SQS.
+
+    Field-for-field wire-compatible with ``process-pr-check.CheckJob``
+    (aliases + optional ADO fields identical) so the SQS round-trip
+    preserves every field the downstream consumer needs. Any drift
+    between the two schemas silently breaks ADO PR-checks; a shape-
+    parity regression test in ``test_analyze_pr.py`` pins it.
+    """
+    check_type: CheckType = Field(..., alias="checkType")
+    pr_number: int = Field(..., alias="pr_number", gt=0)
     repository: str
-    changed_files: List[str]
+    changed_files: List[str] = Field(..., alias="changedFiles")
+
+    # ADO-specific fields. All optional so GitHub-shape messages
+    # continue to validate.
+    provider: Literal["github", "azure_devops"] = "github"
+    connection_id: Optional[str] = None
+    azure_devops_slug: Optional[str] = Field(None, alias="slug")
+    azure_devops_org: Optional[str] = Field(None, alias="org")
+    azure_devops_project: Optional[str] = Field(None, alias="project")
+    azure_devops_repo: Optional[str] = Field(None, alias="repo")
+
+    class Config:
+        populate_by_name = True
 
 
 class GitHubPullRequest(BaseModel):
@@ -551,15 +628,30 @@ def parse_changed_files(files: List[GitHubFile], backend: str = "python") -> Dic
     }
 
 
-def queue_check_jobs(repository: str, pr_number: int, checks: List[str], changed_files: List[str]) -> int:
+def queue_check_jobs(
+    repository: str,
+    pr_number: int,
+    checks: List[str],
+    changed_files: List[str],
+    *,
+    provider: str = "github",
+    connection_id: Optional[str] = None,
+    ado_org: Optional[str] = None,
+    ado_project: Optional[str] = None,
+    ado_repo: Optional[str] = None,
+) -> int:
     """
     Queue check jobs to SQS FIFO queue for async processing.
 
     Args:
-        repository: Repository in format "owner/repo"
+        repository: Repository slug — ``owner/repo`` for GitHub,
+            ``org/project/repo`` for Azure DevOps.
         pr_number: Pull Request number
         checks: List of check types to run
         changed_files: List of changed file paths
+        provider: ``"github"`` (default) or ``"azure_devops"``.
+        connection_id: ADO connection ID; required for ADO.
+        ado_org / ado_project / ado_repo: ADO context; required for ADO.
 
     Returns:
         Number of jobs queued
@@ -579,12 +671,24 @@ def queue_check_jobs(repository: str, pr_number: int, checks: List[str], changed
     jobs_queued = 0
 
     for check_type in checks:
-        job = CheckJob(
+        job_kwargs = dict(
             check_type=CheckType(check_type),
             pr_number=pr_number,
             repository=repository,
-            changed_files=changed_files
+            changed_files=changed_files,
         )
+        if provider == "azure_devops":
+            # Embed ADO context so process-pr-check.CheckJob's
+            # provider-aware branch fires downstream.
+            job_kwargs.update(
+                provider="azure_devops",
+                connection_id=connection_id,
+                azure_devops_slug=repository,
+                azure_devops_org=ado_org,
+                azure_devops_project=ado_project,
+                azure_devops_repo=ado_repo,
+            )
+        job = CheckJob(**job_kwargs)
 
         # Message group ensures ordered processing per PR
         message_group_id = f"pr-{repository.replace('/', '-')}-{pr_number}"
@@ -613,8 +717,18 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """
     Main Lambda handler for PR analysis orchestration.
 
+    Dispatches on ``provider``. GitHub-shape requests use the
+    existing api.github.com path unchanged. Azure DevOps-shape
+    requests (``provider="azure_devops"``) refresh the customer's
+    OAuth token, fetch PR metadata + repo config through the
+    shared primitives, post an initial "analysis started" comment
+    via the ADO PR-thread API, and queue CheckJobs carrying the
+    ADO context so ``process-pr-check`` can consume them.
+
     Args:
-        event: Lambda event with pr_number and repository
+        event: Lambda event with pr_number + repository, plus
+            provider + connection_id + ado_org/project/repo when
+            provider is azure_devops.
         context: Lambda context (unused)
 
     Returns:
@@ -627,8 +741,15 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     try:
         # Validate request
         request = AnalyzePrRequest(**event)
-        logger.info(f"Analyzing PR #{request.pr_number} in {request.repository}")
+        logger.info(
+            f"Analyzing PR #{request.pr_number} in {request.repository} "
+            f"(provider={request.provider})"
+        )
 
+        if request.provider == "azure_devops":
+            return _handle_azure_devops(request, start_time)
+
+        # ==== GitHub flow (unchanged from pre-widening) ====
         # Fetch GitHub token
         token = get_github_token()
 
@@ -760,6 +881,245 @@ Results will be posted as comments when complete.
     except Exception as e:
         logger.error(f"Error analyzing PR: {str(e)}", exc_info=True)
         raise
+
+
+# =============================================================================
+# Azure DevOps dispatch path
+# =============================================================================
+
+
+def _refresh_ado_access_token(connection_id: str) -> str:
+    """Refresh the ADO OAuth access token for the given connection.
+
+    Mirrors the ``refresh_ado_token`` helper in
+    ``lambda/process-pr-check/check_handlers/ado_context.py`` --
+    reads AZURE_DEVOPS_TENANT_ID / AZURE_DEVOPS_CLIENT_ID env vars
+    plus the client-secret from SSM at AZURE_DEVOPS_CLIENT_SECRET_SSM_PARAM,
+    then calls azure_devops_token_manager.refresh_access_token.
+
+    Raises RuntimeError on any missing prereq or refresh failure --
+    callers surface a "reconnect_required" hint on that.
+    """
+    if not connection_id:
+        raise ValueError("connection_id required for ADO token refresh")
+
+    tenant_id = os.environ.get("AZURE_DEVOPS_TENANT_ID", "")
+    client_id = os.environ.get("AZURE_DEVOPS_CLIENT_ID", "")
+    if not (tenant_id and client_id):
+        raise RuntimeError(
+            "Azure DevOps OAuth app not configured "
+            "(AZURE_DEVOPS_TENANT_ID / AZURE_DEVOPS_CLIENT_ID env vars missing)"
+        )
+
+    param_name = os.environ.get("AZURE_DEVOPS_CLIENT_SECRET_SSM_PARAM", "")
+    if not param_name:
+        raise RuntimeError("AZURE_DEVOPS_CLIENT_SECRET_SSM_PARAM not configured")
+    ssm_response = ssm_client.get_parameter(Name=param_name, WithDecryption=True)
+    client_secret = ssm_response["Parameter"]["Value"]
+
+    from azure_devops_token_manager import refresh_access_token as _refresh  # noqa: E402
+
+    access_token = _refresh(
+        connection_id=connection_id,
+        tenant_id=tenant_id,
+        client_id=client_id,
+        client_secret=client_secret,
+    )
+    if not access_token:
+        raise RuntimeError(
+            "Failed to refresh Azure DevOps access token; reconnect_required"
+        )
+    return access_token
+
+
+def _post_ado_initial_comment(
+    *,
+    ado_org: str,
+    ado_project: str,
+    ado_repo: str,
+    pr_number: int,
+    access_token: str,
+    body: str,
+) -> None:
+    """Post the initial "analysis started" comment on an ADO PR thread.
+
+    Uses the same primitive process-pr-check uses for check-result
+    comment posting (``azure_devops_api.post_pull_request_thread``).
+    Errors are logged and swallowed -- the check-execution pipeline
+    still runs even if the initial-comment post fails.
+    """
+    from azure_devops_api import (  # noqa: E402
+        AzureDevOpsAPIError,
+        post_pull_request_thread,
+    )
+
+    try:
+        post_pull_request_thread(
+            access_token=access_token,
+            org=ado_org,
+            project=ado_project,
+            repo=ado_repo,
+            pull_request_id=pr_number,
+            comment_markdown=body,
+        )
+        logger.info(
+            "[analyze-pr.ado] posted initial comment on %s/%s/%s PR #%s",
+            ado_org, ado_project, ado_repo, pr_number,
+        )
+    except AzureDevOpsAPIError as e:
+        # Don't fail the whole analysis if the initial comment doesn't
+        # post -- the check-execution pipeline still runs and its
+        # comments still land.
+        logger.warning(
+            "[analyze-pr.ado] initial comment post failed on %s/%s/%s PR #%s: %s",
+            ado_org, ado_project, ado_repo, pr_number, e,
+        )
+
+
+def _handle_azure_devops(
+    request: AnalyzePrRequest, start_time: float,
+) -> Dict[str, Any]:
+    """Handle an Azure DevOps analyze-pr request.
+
+    Mirrors the GitHub flow through the shared/ primitives:
+    - Refresh ADO OAuth token.
+    - Fetch PR metadata (head SHA, base SHA, base branch, changed
+      files) via shared.pr_metadata.fetch_pr_metadata.
+    - Fetch .outcomeops.yaml at the base branch tip via
+      shared.source_fetch.fetch_file_at_sha (branch-mode).
+    - Parse changed files against backend patterns to determine
+      which checks to run.
+    - Post initial "analysis started" comment via ADO PR-thread API.
+    - Queue CheckJobs carrying ADO context so process-pr-check
+      dispatches on provider="azure_devops" downstream.
+
+    Structural-impact block is NOT posted for ADO in v1 -- it depends
+    on GitHub-specific data plumbing (a follow-up cleans that up).
+    """
+    from shared.pr_metadata import fetch_pr_metadata
+    from shared.source_fetch import fetch_file_at_sha, SourceFetchError
+
+    ado_org = request.ado_org
+    ado_project = request.ado_project
+    ado_repo = request.ado_repo
+    connection_id = request.connection_id
+
+    # Refresh the customer's ADO access token.
+    access_token = _refresh_ado_access_token(connection_id)
+
+    # Fetch PR metadata (head/base SHAs + base branch + changed files
+    # + title + author) in one call.
+    pr_meta = fetch_pr_metadata(
+        "azure_devops",
+        request.pr_number,
+        ado_org=ado_org,
+        ado_project=ado_project,
+        ado_repo=ado_repo,
+        ado_access_token=access_token,
+    )
+    base_branch = pr_meta.base_branch
+
+    # Fetch .outcomeops.yaml at the base branch tip to determine backend.
+    repo_config: Optional[Dict[str, Any]] = None
+    try:
+        yaml_bytes = fetch_file_at_sha(
+            "azure_devops",
+            ".outcomeops.yaml",
+            base_branch,
+            ado_org=ado_org,
+            ado_project=ado_project,
+            ado_repo=ado_repo,
+            ado_access_token=access_token,
+            ado_version_type="branch",
+        )
+        repo_config = yaml.safe_load(yaml_bytes.decode("utf-8", errors="replace"))
+    except SourceFetchError:
+        logger.info(
+            "[analyze-pr.ado] no .outcomeops.yaml at base branch in %s/%s/%s",
+            ado_org, ado_project, ado_repo,
+        )
+
+    backend = get_backend_from_config(repo_config)
+    logger.info(f"[analyze-pr.ado] Detected backend type: {backend}")
+
+    # ADO's fetch_pr_metadata returns a plain list of changed-file
+    # paths. Wrap them in the GitHubFile shape that parse_changed_files
+    # expects (only the filename + status fields are read there).
+    files = [
+        GitHubFile(
+            filename=path,
+            status="modified",
+            additions=0,
+            deletions=0,
+            changes=0,
+        )
+        for path in pr_meta.changed_files
+    ]
+
+    parse_result = parse_changed_files(files, backend=backend)
+    changed_files = parse_result["changed_files"]
+    checks_to_run = parse_result["checks_to_run"]
+
+    logger.info(
+        f"[analyze-pr.ado] Changed files: {len(changed_files)}, "
+        f"Checks to run: {len(checks_to_run)}"
+    )
+
+    # Post initial "analysis started" comment (or a "no checks" comment
+    # when nothing to run).
+    if not checks_to_run:
+        comment_body = (
+            "**OutcomeOps Analysis:** No checks needed for this PR "
+            "(no relevant files changed)\n\n---\n"
+            "*Powered by [OutcomeOps AI Assist](https://outcomeops.ai)*"
+        )
+        _post_ado_initial_comment(
+            ado_org=ado_org, ado_project=ado_project, ado_repo=ado_repo,
+            pr_number=request.pr_number, access_token=access_token,
+            body=comment_body,
+        )
+        return AnalyzePrResponse(
+            message="No checks needed for this PR",
+            pr_number=request.pr_number,
+            checks_queued=0,
+        ).dict()
+
+    checks_list = "\n".join([f"- {c.replace('_', ' ')}" for c in checks_to_run])
+    comment_body = (
+        "**OutcomeOps Analysis Started**\n\n"
+        f"Running {len(checks_to_run)} checks:\n{checks_list}\n\n"
+        "Results will be posted as comments when complete.\n\n---\n"
+        "*Powered by [OutcomeOps AI Assist](https://outcomeops.ai)*"
+    )
+    _post_ado_initial_comment(
+        ado_org=ado_org, ado_project=ado_project, ado_repo=ado_repo,
+        pr_number=request.pr_number, access_token=access_token,
+        body=comment_body,
+    )
+
+    # Queue check jobs to SQS with ADO context so process-pr-check
+    # dispatches on provider="azure_devops".
+    jobs_queued = queue_check_jobs(
+        request.repository,
+        request.pr_number,
+        checks_to_run,
+        changed_files,
+        provider="azure_devops",
+        connection_id=connection_id,
+        ado_org=ado_org,
+        ado_project=ado_project,
+        ado_repo=ado_repo,
+    )
+
+    logger.info(
+        f"[analyze-pr.ado] Successfully queued {jobs_queued} checks "
+        f"for PR #{request.pr_number} in {request.repository}"
+    )
+    return AnalyzePrResponse(
+        message=f"Analysis started for PR #{request.pr_number}",
+        pr_number=request.pr_number,
+        checks_queued=jobs_queued,
+    ).dict()
 
 
 def _build_structural_impact_comment(

@@ -907,3 +907,361 @@ class TestHandler:
         # Act & Assert
         with pytest.raises(Exception):
             handler(event, None)
+
+
+# =============================================================================
+# Chunk 01 of the AI PR Analyzer dispatch entry-point plan: widen
+# analyze-pr for provider="azure_devops"
+# =============================================================================
+
+
+class TestAnalyzePrRequestProviderAwareness:
+    """AnalyzePrRequest accepts optional provider + ADO context."""
+
+    def test_defaults_to_github_when_provider_unset(self):
+        request = AnalyzePrRequest(pr_number=1, repository="owner/repo")
+        assert request.provider == "github"
+        assert request.connection_id is None
+        assert request.ado_org is None
+
+    def test_ado_shape_accepted(self):
+        request = AnalyzePrRequest(
+            pr_number=42,
+            repository="example-org/example-project/example-repo",
+            provider="azure_devops",
+            connection_id="conn-xyz",
+            ado_org="example-org",
+            ado_project="example-project",
+            ado_repo="example-repo",
+        )
+        assert request.provider == "azure_devops"
+        assert request.connection_id == "conn-xyz"
+        assert request.ado_org == "example-org"
+
+    def test_ado_repository_shape_rejects_two_segments(self):
+        # GitHub-shape slug on an ADO provider should fail validation.
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            AnalyzePrRequest(
+                pr_number=1,
+                repository="owner/repo",           # only 1 slash
+                provider="azure_devops",
+                connection_id="c",
+                ado_org="o", ado_project="p", ado_repo="r",
+            )
+
+    def test_github_repository_shape_rejects_three_segments(self):
+        # ADO-shape slug on a github provider should fail validation.
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            AnalyzePrRequest(
+                pr_number=1,
+                repository="org/project/repo",     # 2 slashes
+                provider="github",
+            )
+
+    def test_ado_without_connection_id_rejected(self):
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            AnalyzePrRequest(
+                pr_number=1,
+                repository="o/p/r",
+                provider="azure_devops",
+                ado_org="o", ado_project="p", ado_repo="r",
+                # missing connection_id
+            )
+
+    def test_unknown_provider_rejected(self):
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            AnalyzePrRequest(
+                pr_number=1, repository="o/r",
+                provider="bitbucket",
+            )
+
+
+class TestCheckJobShapeParity:
+    """analyze-pr.CheckJob must be JSON round-trip compatible with
+    process-pr-check.CheckJob. If either drifts, ADO PR-checks break
+    silently at SQS-consume time."""
+
+    def test_check_job_carries_ado_fields(self):
+        job = CheckJob(
+            check_type=CheckType.ADR_COMPLIANCE,
+            pr_number=42,
+            repository="example-org/example-project/example-repo",
+            changed_files=["src/x.py"],
+            provider="azure_devops",
+            connection_id="conn-xyz",
+            azure_devops_slug="example-org/example-project/example-repo",
+            azure_devops_org="example-org",
+            azure_devops_project="example-project",
+            azure_devops_repo="example-repo",
+        )
+        assert job.provider == "azure_devops"
+        assert job.connection_id == "conn-xyz"
+        assert job.azure_devops_org == "example-org"
+
+    def test_github_check_job_still_validates_without_ado_fields(self):
+        # Legacy shape from before the widening: no provider, no ADO
+        # fields. Must continue to validate cleanly.
+        job = CheckJob(
+            check_type=CheckType.ADR_COMPLIANCE,
+            pr_number=1,
+            repository="o/r",
+            changed_files=[],
+        )
+        assert job.provider == "github"
+        assert job.connection_id is None
+
+    def test_json_wire_round_trip_preserves_ado_fields(self):
+        # Instantiate analyze-pr CheckJob → serialize → deserialize back
+        # into analyze-pr CheckJob (same class). If the serialization uses
+        # any keys the class can't re-read from, this fails.
+        analyze_pr_job = CheckJob(
+            check_type=CheckType.ADR_COMPLIANCE,
+            pr_number=42,
+            repository="example-org/example-project/example-repo",
+            changed_files=["src/x.py"],
+            provider="azure_devops",
+            connection_id="conn-xyz",
+            azure_devops_slug="example-org/example-project/example-repo",
+            azure_devops_org="example-org",
+            azure_devops_project="example-project",
+            azure_devops_repo="example-repo",
+        )
+        wire_dict = json.loads(analyze_pr_job.model_dump_json())
+        # Round-trip.
+        round_trip = CheckJob(**wire_dict)
+        assert round_trip.provider == "azure_devops"
+        assert round_trip.azure_devops_org == "example-org"
+        assert round_trip.check_type == CheckType.ADR_COMPLIANCE
+
+    def test_shape_parity_with_process_pr_check_source(self):
+        # Regression guard: read process-pr-check.CheckJob's field
+        # names + aliases from source and confirm analyze-pr.CheckJob
+        # matches. If either drifts, ADO SQS wire breaks silently at
+        # consume time -- this test catches it at build time.
+        pp_source_path = os.path.join(
+            os.path.dirname(__file__),
+            '../../process-pr-check/handler.py',
+        )
+        with open(pp_source_path) as f:
+            source = f.read()
+        # Confirm all analyze-pr.CheckJob ADO fields are declared in
+        # process-pr-check.CheckJob source (same names + aliases).
+        for expected in [
+            'provider: Literal["github", "azure_devops"]',
+            'connection_id: Optional[str]',
+            'azure_devops_slug',
+            'azure_devops_org',
+            'azure_devops_project',
+            'azure_devops_repo',
+            'alias="slug"',
+            'alias="org"',
+            'alias="project"',
+            'alias="repo"',
+            'populate_by_name = True',
+        ]:
+            assert expected in source, (
+                f"process-pr-check.CheckJob missing {expected!r}; "
+                f"analyze-pr.CheckJob would drift on SQS wire"
+            )
+
+
+class TestQueueCheckJobsWithAdo:
+    """queue_check_jobs embeds ADO context in CheckJob when provider is
+    azure_devops."""
+
+    @patch('analyze_pr_handler.sqs_client')
+    @patch('analyze_pr_handler.ssm_client')
+    def test_ado_context_embedded_in_queued_message(self, mock_ssm, mock_sqs):
+        mock_ssm.get_parameter.return_value = {
+            "Parameter": {"Value": "https://sqs.us-west-2.amazonaws.com/x/q"},
+        }
+        mock_sqs.send_message.return_value = {"MessageId": "abc"}
+
+        queued = queue_check_jobs(
+            repository="example-org/example-project/example-repo",
+            pr_number=42,
+            checks=["ADR_COMPLIANCE"],
+            changed_files=["src/x.py"],
+            provider="azure_devops",
+            connection_id="conn-xyz",
+            ado_org="example-org",
+            ado_project="example-project",
+            ado_repo="example-repo",
+        )
+        assert queued == 1
+        body = mock_sqs.send_message.call_args.kwargs["MessageBody"]
+        payload = json.loads(body)
+        assert payload["provider"] == "azure_devops"
+        assert payload["connection_id"] == "conn-xyz"
+        assert payload["azure_devops_org"] == "example-org"
+        assert payload["azure_devops_project"] == "example-project"
+        assert payload["azure_devops_repo"] == "example-repo"
+        assert payload["azure_devops_slug"] == "example-org/example-project/example-repo"
+
+    @patch('analyze_pr_handler.sqs_client')
+    @patch('analyze_pr_handler.ssm_client')
+    def test_github_context_unchanged_by_ado_addition(self, mock_ssm, mock_sqs):
+        mock_ssm.get_parameter.return_value = {
+            "Parameter": {"Value": "https://sqs.us-west-2.amazonaws.com/x/q"},
+        }
+        mock_sqs.send_message.return_value = {"MessageId": "abc"}
+
+        queued = queue_check_jobs(
+            repository="owner/repo",
+            pr_number=1,
+            checks=["ADR_COMPLIANCE"],
+            changed_files=[],
+        )
+        assert queued == 1
+        payload = json.loads(mock_sqs.send_message.call_args.kwargs["MessageBody"])
+        assert payload["provider"] == "github"
+        assert payload["connection_id"] is None
+        assert payload["azure_devops_org"] is None
+
+
+class TestHandlerAzureDevOpsDispatch:
+    """handler() dispatches to _handle_azure_devops when
+    provider=azure_devops."""
+
+    @patch('analyze_pr_handler._handle_azure_devops')
+    def test_ado_event_routes_to_ado_branch(self, mock_ado_handler):
+        mock_ado_handler.return_value = {
+            "message": "Analysis started",
+            "pr_number": 42,
+            "checks_queued": 6,
+        }
+        event = {
+            "pr_number": 42,
+            "repository": "example-org/example-project/example-repo",
+            "provider": "azure_devops",
+            "connection_id": "conn-xyz",
+            "ado_org": "example-org",
+            "ado_project": "example-project",
+            "ado_repo": "example-repo",
+        }
+        result = handler(event, None)
+        mock_ado_handler.assert_called_once()
+        assert result["checks_queued"] == 6
+
+    @patch('analyze_pr_handler.get_github_token')
+    @patch('analyze_pr_handler.fetch_pull_request')
+    def test_github_event_unchanged_by_ado_addition(
+        self, mock_fetch_pr, mock_token,
+    ):
+        # Confirm the GitHub path still runs the original code (get_github_token
+        # + fetch_pull_request are called), not the ADO branch.
+        mock_token.return_value = "ghp_xxx"
+        mock_fetch_pr.side_effect = Exception("stop here")
+
+        event = {"pr_number": 1, "repository": "owner/repo"}
+        with pytest.raises(Exception, match="stop here"):
+            handler(event, None)
+        mock_token.assert_called_once()
+
+
+class TestHandleAzureDevOpsEndToEnd:
+    """_handle_azure_devops runs the full ADO flow with mocked
+    primitives -- refresh token, fetch PR meta, fetch config,
+    parse files, post comment, queue jobs."""
+
+    def _ado_request(self):
+        return AnalyzePrRequest(
+            pr_number=42,
+            repository="example-org/example-project/example-repo",
+            provider="azure_devops",
+            connection_id="conn-xyz",
+            ado_org="example-org",
+            ado_project="example-project",
+            ado_repo="example-repo",
+        )
+
+    @patch('analyze_pr_handler.queue_check_jobs', return_value=6)
+    @patch('analyze_pr_handler._post_ado_initial_comment')
+    @patch('analyze_pr_handler._refresh_ado_access_token', return_value="ado-tok")
+    def test_ado_e2e_queues_check_jobs(
+        self, _mock_refresh, _mock_post, mock_queue,
+    ):
+        from shared.pr_metadata import PRMetadata
+
+        fake_pr = PRMetadata(
+            head_sha="head-sha",
+            base_sha="base-sha",
+            base_branch="main",
+            changed_files=["lambda/hello/handler.py"],
+            author="user@example.com",
+            title="Add hello",
+        )
+        with patch("shared.pr_metadata.fetch_pr_metadata", return_value=fake_pr), \
+             patch("shared.source_fetch.fetch_file_at_sha",
+                   return_value=b"code_generation:\n  backend: python\n"):
+            result = handler_module._handle_azure_devops(self._ado_request(), 0.0)
+
+        assert result["checks_queued"] == 6
+        # queue_check_jobs must have been called with ADO context.
+        _, kwargs = mock_queue.call_args
+        assert kwargs["provider"] == "azure_devops"
+        assert kwargs["connection_id"] == "conn-xyz"
+        assert kwargs["ado_org"] == "example-org"
+
+    @patch('analyze_pr_handler.queue_check_jobs', return_value=0)
+    @patch('analyze_pr_handler._post_ado_initial_comment')
+    @patch('analyze_pr_handler._refresh_ado_access_token', return_value="ado-tok")
+    def test_ado_e2e_no_relevant_changes_short_circuits(
+        self, _mock_refresh, mock_post, mock_queue,
+    ):
+        # PR with no changed files at all: post "no checks needed"
+        # comment, skip queue_check_jobs, return checks_queued=0.
+        from shared.pr_metadata import PRMetadata
+
+        fake_pr = PRMetadata(
+            head_sha="h", base_sha="b", base_branch="main",
+            changed_files=[],
+            author="u", title="t",
+        )
+        with patch("shared.pr_metadata.fetch_pr_metadata", return_value=fake_pr), \
+             patch("shared.source_fetch.fetch_file_at_sha",
+                   return_value=b"code_generation:\n  backend: python\n"):
+            result = handler_module._handle_azure_devops(self._ado_request(), 0.0)
+
+        assert result["checks_queued"] == 0
+        mock_queue.assert_not_called()
+        mock_post.assert_called_once()
+
+    @patch('analyze_pr_handler.queue_check_jobs', return_value=6)
+    @patch('analyze_pr_handler._post_ado_initial_comment')
+    @patch('analyze_pr_handler._refresh_ado_access_token', return_value="ado-tok")
+    def test_ado_e2e_missing_config_still_runs(
+        self, _mock_refresh, _mock_post, mock_queue,
+    ):
+        # If .outcomeops.yaml is not present at the base branch,
+        # SourceFetchError is caught and backend defaults kick in
+        # via get_backend_from_config(None).
+        from shared.pr_metadata import PRMetadata
+        from shared.source_fetch import SourceFetchError
+
+        fake_pr = PRMetadata(
+            head_sha="h", base_sha="b", base_branch="main",
+            changed_files=["lambda/hello/handler.py"],
+            author="u", title="t",
+        )
+        with patch("shared.pr_metadata.fetch_pr_metadata", return_value=fake_pr), \
+             patch("shared.source_fetch.fetch_file_at_sha",
+                   side_effect=SourceFetchError("404")):
+            result = handler_module._handle_azure_devops(self._ado_request(), 0.0)
+
+        assert result["checks_queued"] == 6
+
+    def test_refresh_ado_access_token_missing_env_vars(self, monkeypatch):
+        # Sanity: refresh helper raises if OAuth app not configured.
+        monkeypatch.delenv("AZURE_DEVOPS_TENANT_ID", raising=False)
+        monkeypatch.delenv("AZURE_DEVOPS_CLIENT_ID", raising=False)
+        with pytest.raises(RuntimeError, match="OAuth app not configured"):
+            handler_module._refresh_ado_access_token("conn-xyz")
+
+    def test_refresh_ado_access_token_missing_connection_id(self):
+        with pytest.raises(ValueError):
+            handler_module._refresh_ado_access_token("")
