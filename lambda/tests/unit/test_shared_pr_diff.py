@@ -19,6 +19,9 @@ class TestComputeFileDiff:
             filename="src/new.py",
         )
         assert "diff --git a/src/new.py b/src/new.py" in result
+        # Load-bearing: downstream is_new_file() detection in
+        # license_compliance.py greps for this marker.
+        assert "new file mode 100644" in result
         assert "--- /dev/null" in result
         assert "+++ b/src/new.py" in result
         assert "+line one" in result
@@ -31,9 +34,22 @@ class TestComputeFileDiff:
             filename="src/removed.py",
         )
         assert "diff --git a/src/removed.py b/src/removed.py" in result
+        assert "deleted file mode 100644" in result
         assert "--- a/src/removed.py" in result
         assert "+++ /dev/null" in result
         assert "-gone content" in result
+
+    def test_modified_file_omits_mode_lines(self):
+        # Regular modification (both base + head present) does NOT emit
+        # new/deleted file mode lines -- matches how GitHub's server-side
+        # diff formats these.
+        result = pr_diff.compute_file_diff(
+            base_content=b"a\n",
+            head_content=b"b\n",
+            filename="src/mod.py",
+        )
+        assert "new file mode" not in result
+        assert "deleted file mode" not in result
 
     def test_modified_file_shows_both_sides(self):
         result = pr_diff.compute_file_diff(

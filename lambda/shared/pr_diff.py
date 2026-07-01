@@ -100,15 +100,25 @@ def compute_file_diff(
     base_lines = base_text.splitlines(keepends=True)
     head_lines = head_text.splitlines(keepends=True)
 
+    # Git-metadata prefix. Downstream consumers grep the diff string for
+    # markers like ``"new file mode"`` (see
+    # lambda/process-pr-check/check_handlers/license_compliance.py:is_new_file)
+    # -- GitHub's server-side diff includes these lines and any diff we
+    # produce needs to match. Live-burned 2026-07-01: without the
+    # ``new file mode`` line, LICENSE_COMPLIANCE mis-classified an
+    # added file as "existing" and skipped the copyright-header check.
     if base_content is None:
         base_label = "/dev/null"
         head_label = f"b/{filename}"
+        git_meta = "new file mode 100644\n"
     elif head_content is None:
         base_label = f"a/{filename}"
         head_label = "/dev/null"
+        git_meta = "deleted file mode 100644\n"
     else:
         base_label = f"a/{filename}"
         head_label = f"b/{filename}"
+        git_meta = ""
 
     diff_iter = difflib.unified_diff(
         base_lines,
@@ -119,7 +129,7 @@ def compute_file_diff(
         lineterm="",
     )
 
-    header = f"diff --git a/{filename} b/{filename}\n"
+    header = f"diff --git a/{filename} b/{filename}\n{git_meta}"
     body = "\n".join(diff_iter)
     if body and not body.endswith("\n"):
         body += "\n"
