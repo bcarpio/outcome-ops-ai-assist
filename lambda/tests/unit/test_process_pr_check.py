@@ -196,6 +196,61 @@ class TestFormatCheckComment:
         assert "README FRESHNESS" in comment
         assert "README.md not updated" in comment
 
+    def test_format_comment_is_wrapped_in_collapsible_details(self):
+        """Comment must open with <details><summary>... so reviewers see
+        a one-line row and expand only when they want the body. Both
+        GitHub and ADO markdown render this natively."""
+        result = CheckResult(
+            PK="PR#github#owner/repo#1",
+            SK="CHECK#breaking_changes",
+            checkType="BREAKING_CHANGES",
+            status="PASS",
+            message="No dependencies found - safe to modify",
+            details=["Checked 3 handler(s) for external callers"],
+            timestamp="2025-01-15T10:00:00Z",
+        )
+        comment = format_check_comment(result)
+
+        assert comment.startswith("<details>"), (
+            "collapsible: comment must open with <details>"
+        )
+        assert comment.rstrip().endswith("</details>"), (
+            "collapsible: comment must close with </details>"
+        )
+        assert "<summary>" in comment and "</summary>" in comment
+
+        # The summary line carries the scannable bits (glyph + name + message).
+        summary_start = comment.index("<summary>") + len("<summary>")
+        summary_end = comment.index("</summary>")
+        summary_line = comment[summary_start:summary_end]
+        assert ":white_check_mark:" in summary_line
+        assert "BREAKING CHANGES" in summary_line
+        assert "No dependencies found - safe to modify" in summary_line
+
+        # Details + timestamp live INSIDE the block so they're hidden
+        # by default.
+        body_start = summary_end
+        body = comment[body_start:]
+        assert "Checked 3 handler(s) for external callers" in body
+        assert "2025-01-15T10:00:00Z" in body
+
+    def test_format_comment_has_blank_line_after_summary(self):
+        """Markdown-inside-HTML requires a blank line after </summary>
+        or GH/ADO won't render bold/lists/etc. inside the details block."""
+        result = CheckResult(
+            PK="PR#github#owner/repo#1",
+            SK="CHECK#adr_compliance",
+            checkType="ADR_COMPLIANCE",
+            status="WARN",
+            message="Found compliance issues",
+            details=["- Handler missing schema validation"],
+            timestamp="2025-01-15T10:00:00Z",
+        )
+        comment = format_check_comment(result)
+        assert "</summary>\n\n" in comment, (
+            "markdown-in-html requires blank line after </summary>"
+        )
+
 
 class TestGetGitHubToken:
     """Test fetching GitHub token from SSM."""

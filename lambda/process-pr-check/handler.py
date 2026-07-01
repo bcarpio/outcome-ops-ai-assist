@@ -597,7 +597,15 @@ def run_check(job: CheckJob) -> Dict[str, Any]:
 
 def format_check_comment(result: CheckResult, usage: UsageTracker | None = None) -> str:
     """
-    Format check result as GitHub PR comment.
+    Format check result as a PR comment.
+
+    The comment is wrapped in an HTML ``<details>`` block so reviewers
+    see just a one-line summary (status glyph + check name + message)
+    per check, and expand only when they want the full detail. Both
+    GitHub and Azure DevOps render ``<details>`` / ``<summary>`` in
+    their PR-comment markdown. The blank line after ``</summary>`` is
+    required so markdown inside the block renders (a well-known
+    GitHub-flavored markdown quirk that ADO shares).
 
     Args:
         result: CheckResult to format
@@ -614,24 +622,41 @@ def format_check_comment(result: CheckResult, usage: UsageTracker | None = None)
 
     check_name = result.check_type.value.replace("_", " ")
 
-    comment = f"{status_emoji} **{check_name}**: {result.message}\n"
+    # Summary line stays scannable; everything else lives inside the
+    # collapsible body.
+    summary_line = f"{status_emoji} <b>{check_name}</b>: {result.message}"
 
+    body_parts: List[str] = []
     if result.details:
-        comment += "\n**Details:**\n"
+        body_parts.append("**Details:**")
         for detail in result.details:
-            comment += f"{detail}\n"
+            body_parts.append(str(detail))
 
-    # Add usage info if available
     if usage and usage.total_tokens > 0:
-        comment += f"\n**Usage:**\n"
-        comment += f"Model: {usage.primary_model}\n"
-        comment += f"Tokens: {usage.total_input_tokens:,} input + {usage.total_output_tokens:,} output = {usage.total_tokens:,} total\n"
-        comment += f"Cost: ${usage.total_cost:.4f}\n"
+        body_parts.append("**Usage:**")
+        body_parts.append(f"Model: {usage.primary_model}")
+        body_parts.append(
+            f"Tokens: {usage.total_input_tokens:,} input + "
+            f"{usage.total_output_tokens:,} output = "
+            f"{usage.total_tokens:,} total"
+        )
+        body_parts.append(f"Cost: ${usage.total_cost:.4f}")
 
-    comment += f"\n_Check completed at {result.timestamp}_"
-    comment += "\n\n---\n*Powered by [OutcomeOps AI Assist](https://outcomeops.ai)*"
+    body_parts.append(f"_Check completed at {result.timestamp}_")
+    body_parts.append(
+        "---\n*Powered by [OutcomeOps AI Assist](https://outcomeops.ai)*"
+    )
+    # Blank line separator between body sections so markdown paragraph
+    # breaks render correctly inside the <details> block.
+    body = "\n\n".join(body_parts)
 
-    return comment
+    return (
+        f"<details>\n"
+        f"<summary>{summary_line}</summary>\n"
+        f"\n"
+        f"{body}\n"
+        f"</details>"
+    )
 
 
 def process_check_job(job: CheckJob) -> CheckResult:
