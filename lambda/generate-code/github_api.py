@@ -114,6 +114,38 @@ def get_headers(github_token: str) -> Dict[str, str]:
 # ============================================================================
 
 
+def get_default_branch(
+    repo_full_name: str,
+    github_token: str,
+) -> str:
+    """Return the repo's default branch name.
+
+    Calls ``GET /repos/{owner}/{repo}`` and reads ``default_branch``.
+    Falls back to ``"main"`` on any API error so a transient GitHub
+    hiccup doesn't block the whole codegen flow -- the wrong branch
+    surfaces loudly on the next ``create_branch`` call, which is a
+    better failure mode than an unattributed 500 out of the handler.
+
+    Used by both the Jira-driven codegen path
+    (``handler.py::process_jira_event``) and the PR-command path
+    (``handle-command`` sends ``base_branch`` in the SQS message)
+    to stop hardcoding "main" for repos still on ``master`` / etc.
+    """
+    url = f"{GITHUB_API_BASE}/repos/{repo_full_name}"
+    try:
+        response = requests.get(url, headers=get_headers(github_token), timeout=30)
+        response.raise_for_status()
+        branch = response.json().get("default_branch") or "main"
+        logger.info(f"[github] Resolved default branch for {repo_full_name}: {branch}")
+        return branch
+    except requests.exceptions.RequestException as e:
+        logger.warning(
+            f"[github] Could not resolve default branch for {repo_full_name}: {e}. "
+            f"Falling back to 'main'."
+        )
+        return "main"
+
+
 def create_branch(
     repo_full_name: str,
     branch_name: str,

@@ -444,35 +444,6 @@ def retry_bedrock_call(func, max_retries: int = 5):
     raise last_error
 
 
-def list_repository_files(repo_project: str) -> List[str]:
-    """
-    List all files in a repository using GitHub API.
-
-    Args:
-        repo_project: Repository in format "owner/repo"
-
-    Returns:
-        List of file paths
-    """
-    url = f"{GITHUB_API_URL}/repos/{repo_project}/git/trees/main?recursive=1"
-    headers = {
-        "Authorization": f"Bearer {GITHUB_TOKEN}",
-        "User-Agent": "outcome-ops-process-repo-summary",
-        "Accept": "application/vnd.github.v3+json"
-    }
-
-    try:
-        request = Request(url, headers=headers)
-        with urlopen(request) as response:
-            data = json.loads(response.read().decode("utf-8"))
-            tree = data.get("tree", [])
-            # Filter to only files (not directories)
-            return [item["path"] for item in tree if item["type"] == "blob"]
-    except URLError as e:
-        logger.error(f"Failed to list files from GitHub: {e}")
-        raise
-
-
 def generate_architectural_summary(repo: str, repo_type: str, all_files: List[str]) -> str:
     """
     Generate architectural summary using Claude via Bedrock.

@@ -125,50 +125,6 @@ class TestRetryBedrockCall:
         assert result == expected
 
 
-class TestListRepositoryFiles:
-    """Test GitHub file listing."""
-
-    @patch.object(repo_summary_handler, 'urlopen')
-    @patch.object(repo_summary_handler, 'GITHUB_TOKEN', 'test-token')
-    def test_list_files_returns_paths(self, mock_urlopen):
-        """Test: Returns list of file paths."""
-        mock_response = MagicMock()
-        mock_response.read.return_value = json.dumps({
-            "tree": [
-                {"path": "file1.py", "type": "blob"},
-                {"path": "file2.py", "type": "blob"},
-                {"path": "dir", "type": "tree"},
-            ]
-        }).encode()
-        mock_response.__enter__ = MagicMock(return_value=mock_response)
-        mock_response.__exit__ = MagicMock(return_value=False)
-        mock_urlopen.return_value = mock_response
-
-        result = repo_summary_handler.list_repository_files("owner/repo")
-
-        assert result == ["file1.py", "file2.py"]
-
-    @patch.object(repo_summary_handler, 'urlopen')
-    @patch.object(repo_summary_handler, 'GITHUB_TOKEN', 'test-token')
-    def test_list_files_excludes_directories(self, mock_urlopen):
-        """Test: Excludes directories from results."""
-        mock_response = MagicMock()
-        mock_response.read.return_value = json.dumps({
-            "tree": [
-                {"path": "src", "type": "tree"},
-                {"path": "src/main.py", "type": "blob"},
-            ]
-        }).encode()
-        mock_response.__enter__ = MagicMock(return_value=mock_response)
-        mock_response.__exit__ = MagicMock(return_value=False)
-        mock_urlopen.return_value = mock_response
-
-        result = repo_summary_handler.list_repository_files("owner/repo")
-
-        assert "src" not in result
-        assert "src/main.py" in result
-
-
 class TestHandler:
     """Test main Lambda handler."""
 

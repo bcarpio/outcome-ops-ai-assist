@@ -248,6 +248,32 @@ class TestGenerateBranchName:
         assert result == "456-fix-api-returns-500-error"
 
 
+class TestGetDefaultBranch:
+    """github_api.get_default_branch resolves the repo's actual default
+    branch. Prior behavior hardcoded ``main``, silently breaking
+    codegen for repos still on ``master`` / ``develop`` / ``trunk``."""
+
+    @patch.object(github_api, "requests")
+    def test_returns_master_when_repo_defaults_master(self, mock_requests):
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json.return_value = {"default_branch": "master"}
+        mock_requests.get.return_value = mock_response
+
+        branch = github_api.get_default_branch("corp/legacy-app", "ghp")
+        assert branch == "master"
+
+    @patch.object(github_api, "requests")
+    def test_falls_back_to_main_on_api_failure(self, mock_requests):
+        # Model requests as raising an actual requests.exceptions.RequestException
+        import requests as real_requests
+        mock_requests.exceptions = real_requests.exceptions
+        mock_requests.get.side_effect = real_requests.exceptions.HTTPError("500")
+
+        branch = github_api.get_default_branch("corp/app", "ghp")
+        assert branch == "main"
+
+
 class TestCreateGitHubBranch:
     """Test GitHub branch creation."""
 

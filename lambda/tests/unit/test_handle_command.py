@@ -340,6 +340,37 @@ class TestPRComment:
         assert result is False
 
 
+class TestGetDefaultBranch:
+    """The ``get_default_branch`` helper resolves the repo's actual
+    default branch so /fix-tests, /fix-readme, /fix-adr commit against
+    the right base. Prior behavior hardcoded ``main``, silently wrong
+    on legacy master / develop / trunk repos."""
+
+    @patch('requests.get')
+    def test_returns_master_when_repo_defaults_master(self, mock_get):
+        mock_response = Mock()
+        mock_response.raise_for_status = Mock()
+        mock_response.json.return_value = {"default_branch": "master"}
+        mock_get.return_value = mock_response
+
+        branch = handler_module.get_default_branch(
+            "corp/legacy-app", "ghp_test_token",
+        )
+        assert branch == "master"
+
+    @patch('requests.get')
+    def test_falls_back_to_main_on_api_failure(self, mock_get):
+        # Transient GitHub hiccup shouldn't drop the whole command --
+        # fall back to main so codegen still fires, and let the wrong
+        # branch surface loudly at the create_branch step instead.
+        mock_get.side_effect = Exception("500 server error")
+
+        branch = handler_module.get_default_branch(
+            "corp/app", "ghp_test_token",
+        )
+        assert branch == "main"
+
+
 class TestCommandHandlers:
     """Test individual command handlers."""
 
@@ -364,13 +395,15 @@ class TestCommandHandlers:
         body = call_args[2]  # third arg is body
         assert "outcomeops: help" in body.lower()
 
+    @patch.object(handler_module, 'get_default_branch')
     @patch.object(handler_module, 'send_pr_command_message')
     @patch.object(handler_module, 'post_pr_comment')
-    def test_handle_fix_readme_command(self, mock_post, mock_send_sqs):
+    def test_handle_fix_readme_command(self, mock_post, mock_send_sqs, mock_default_branch):
         """Test fix readme command handler dispatches to SQS."""
         # Arrange
         mock_post.return_value = True
         mock_send_sqs.return_value = {"MessageId": "test-message-id"}
+        mock_default_branch.return_value = "main"
 
         # Act
         result = handle_fix_readme_command(
@@ -381,14 +414,20 @@ class TestCommandHandlers:
             github_token="ghp_test_token"
         )
 
-        # Assert - verify SQS message was sent
+        # Assert - verify SQS message was sent with resolved default_branch.
+        # The handler now looks up the repo's actual default branch instead
+        # of hardcoding "main" -- customers on legacy repos (master /
+        # develop / trunk) previously got fix commits rebased against the
+        # wrong base.
         mock_send_sqs.assert_called_once_with(
             action="fix_readme",
             pr_number=123,
             repo_full_name="owner/repo",
             branch_name="feature-branch",
-            commenter="testuser"
+            commenter="testuser",
+            base_branch="main",
         )
+        mock_default_branch.assert_called_once_with("owner/repo", "ghp_test_token")
 
         # Assert - verify acknowledgment comment was posted
         assert "Dispatched" in result or "PR #123" in result
@@ -448,15 +487,19 @@ class TestLambdaHandler:
         assert body["success"] is True
         assert body["command_type"] == "help"
 
+    @patch.object(handler_module, 'get_default_branch')
     @patch.object(handler_module, 'get_github_token')
     @patch.object(handler_module, 'post_pr_comment')
     @patch.object(handler_module, 'send_pr_command_message')
-    def test_handler_fix_readme_command_success(self, mock_send, mock_post, mock_token):
+    def test_handler_fix_readme_command_success(
+        self, mock_send, mock_post, mock_token, mock_default_branch,
+    ):
         """Test handler with fix readme command."""
         # Arrange
         mock_token.return_value = "ghp_test_token"
         mock_post.return_value = True
         mock_send.return_value = {"MessageId": "test-message-id"}
+        mock_default_branch.return_value = "main"
 
         event = {
             "command": "outcomeops: fix readme",
@@ -479,7 +522,8 @@ class TestLambdaHandler:
             pr_number=42,
             repo_full_name="owner/repo",
             branch_name="feature-branch",
-            commenter="testuser"
+            commenter="testuser",
+            base_branch="main",
         )
 
     @patch.object(handler_module, 'get_github_token')
@@ -1081,12 +1125,14 @@ class TestParseFixAdrCommand:
 class TestHandleFixAdrCommand:
     """Test fix adr command handler."""
 
+    @patch.object(handler_module, 'get_default_branch')
     @patch.object(handler_module, 'send_pr_command_message')
     @patch.object(handler_module, 'post_pr_comment')
-    def test_handle_fix_adr_command(self, mock_post, mock_send_sqs):
+    def test_handle_fix_adr_command(self, mock_post, mock_send_sqs, mock_default_branch):
         """Test fix adr command handler dispatches to SQS."""
         mock_post.return_value = True
         mock_send_sqs.return_value = {"MessageId": "test-message-id"}
+        mock_default_branch.return_value = "main"
 
         result = handle_fix_adr_command(
             repo="owner/repo",
@@ -1097,13 +1143,14 @@ class TestHandleFixAdrCommand:
             github_token="ghp_test_token"
         )
 
-        # Assert - verify SQS message was sent
+        # Assert - verify SQS message was sent with resolved default_branch.
         mock_send_sqs.assert_called_once_with(
             action="fix_adr",
             pr_number=123,
             repo_full_name="owner/repo",
             branch_name="feature-branch",
             commenter="testuser",
+            base_branch="main",
             guidance=None
         )
 
@@ -1139,14 +1186,18 @@ class TestHandleFixAdrCommand:
 class TestLambdaHandlerFixAdr:
     """Test Lambda handler with fix adr command."""
 
+    @patch.object(handler_module, 'get_default_branch')
     @patch.object(handler_module, 'get_github_token')
     @patch.object(handler_module, 'post_pr_comment')
     @patch.object(handler_module, 'send_pr_command_message')
-    def test_handler_fix_adr_command_success(self, mock_send, mock_post, mock_token):
+    def test_handler_fix_adr_command_success(
+        self, mock_send, mock_post, mock_token, mock_default_branch,
+    ):
         """Test handler with fix adr command."""
         mock_token.return_value = "ghp_test_token"
         mock_post.return_value = True
         mock_send.return_value = {"MessageId": "test-message-id"}
+        mock_default_branch.return_value = "main"
 
         event = {
             "command": "outcomeops: fix adr",
@@ -1168,6 +1219,7 @@ class TestLambdaHandlerFixAdr:
             repo_full_name="owner/repo",
             branch_name="feature-branch",
             commenter="testuser",
+            base_branch="main",
             guidance=None
         )
 

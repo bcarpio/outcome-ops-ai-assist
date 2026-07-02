@@ -20,7 +20,7 @@ from uuid import uuid4
 import boto3
 from botocore.exceptions import ClientError
 
-from github_api import create_branch, get_github_token, get_webhook_secret
+from github_api import create_branch, get_default_branch, get_github_token, get_webhook_secret
 from models import (
     APIGatewayProxyEvent,
     GitHubWebhookEvent,
@@ -416,8 +416,13 @@ def handle_jira_event(event: Dict[str, Any]) -> Dict[str, Any]:
                 })
             }
 
-        # Default branch - could be enhanced to fetch from GitHub API if needed
-        default_branch = "main"
+        # Get GitHub token first so we can resolve the actual default
+        # branch. Repos on `master` / `develop` / `trunk` used to 404
+        # here because we hardcoded "main"; resolve dynamically now.
+        # get_default_branch itself falls back to "main" on API error
+        # so the flow degrades gracefully.
+        github_token = get_github_token()
+        default_branch = get_default_branch(repo_full_name, github_token)
 
         # Extract issue number from Jira key for branch naming
         issue_number = extract_issue_number_from_jira_key(issue_key)
@@ -429,11 +434,9 @@ def handle_jira_event(event: Dict[str, Any]) -> Dict[str, Any]:
         )
 
         logger.info(
-            f"Jira {issue_key} → GitHub {repo_full_name}, branch: {branch_name}"
+            f"Jira {issue_key} → GitHub {repo_full_name}, "
+            f"base={default_branch}, feature={branch_name}"
         )
-
-        # Get GitHub token
-        github_token = get_github_token()
 
         # Create branch
         result = create_branch(

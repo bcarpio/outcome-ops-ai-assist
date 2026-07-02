@@ -176,6 +176,37 @@ def send_pr_command_message(
         raise
 
 
+def get_default_branch(repo: str, github_token: str) -> str:
+    """Resolve the repo's default branch.
+
+    Calls ``GET /repos/{owner}/{repo}`` and reads ``default_branch``.
+    Falls back to ``"main"`` on any API error so a transient GitHub
+    hiccup doesn't block the whole command flow -- the wrong branch
+    surfaces loudly at the codegen step, which is a better failure
+    mode than dropping the whole command silently.
+
+    Used by the /fix-tests and /fix-readme PR commands to stop
+    hardcoding "main" for repos still on master / develop / trunk.
+    """
+    url = f"https://api.github.com/repos/{repo}"
+    headers = {
+        "Authorization": f"Bearer {github_token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    try:
+        response = requests.get(url, headers=headers, timeout=30)
+        response.raise_for_status()
+        branch = response.json().get("default_branch") or "main"
+        logger.info(f"Resolved default branch for {repo}: {branch}")
+        return branch
+    except Exception as e:
+        logger.warning(
+            f"Could not resolve default branch for {repo}: {e}. Falling back to 'main'."
+        )
+        return "main"
+
+
 def post_pr_comment(repo: str, pr_number: int, body: str, github_token: str) -> bool:
     """Post a comment to a GitHub PR."""
     url = f"https://api.github.com/repos/{repo}/issues/{pr_number}/comments"
@@ -421,14 +452,18 @@ Please run `outcomeops: explain failed tests` first to analyze the failures, the
         post_pr_comment(repo, pr_number, message, github_token)
         return "Fix tests requires analysis first"
 
-    # Send to SQS for async processing
+    # Send to SQS for async processing. Resolve the actual default
+    # branch instead of assuming "main" -- customers on legacy repos
+    # (master / develop / trunk) got fix commits rebased against the
+    # wrong branch silently before this.
+    base_branch = get_default_branch(repo, github_token)
     send_pr_command_message(
         action="fix_tests",
         pr_number=pr_number,
         repo_full_name=repo,
         branch_name=branch,
         commenter=commenter,
-        base_branch="main",
+        base_branch=base_branch,
         guidance=guidance if guidance else None
     )
 
@@ -544,13 +579,17 @@ def handle_fix_readme_command(
     5. Commit and push changes
     6. Post result comment
     """
-    # Send to SQS for async processing
+    # Send to SQS for async processing. Resolve default branch so
+    # customers on legacy repos (master / develop / trunk) get the
+    # commit against the right base.
+    base_branch = get_default_branch(repo, github_token)
     send_pr_command_message(
         action="fix_readme",
         pr_number=pr_number,
         repo_full_name=repo,
         branch_name=branch,
-        commenter=commenter
+        commenter=commenter,
+        base_branch=base_branch,
     )
 
     # Post acknowledgment comment
@@ -589,13 +628,17 @@ def handle_fix_adr_command(
     4. Commit and push changes
     5. Post result comment
     """
-    # Send to SQS for async processing
+    # Send to SQS for async processing. Resolve default branch so
+    # customers on legacy repos (master / develop / trunk) get the
+    # commit against the right base.
+    base_branch = get_default_branch(repo, github_token)
     send_pr_command_message(
         action="fix_adr",
         pr_number=pr_number,
         repo_full_name=repo,
         branch_name=branch,
         commenter=commenter,
+        base_branch=base_branch,
         guidance=guidance if guidance else None
     )
 
