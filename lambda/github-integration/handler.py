@@ -56,6 +56,7 @@ from github_app import (
     get_app_installations,
     get_github_config,
     get_installation_repos,
+    get_repo_default_branch,
 )
 
 # Configure logging
@@ -294,8 +295,17 @@ def save_repo(
     include_code_maps: bool,
     added_by: str,
     repo_type: str = "application",
+    default_branch: Optional[str] = None,
 ) -> Dict:
-    """Save a GitHub repo to workspace."""
+    """Save a GitHub repo to workspace.
+
+    ``default_branch`` is the branch every downstream sync path reads
+    from. Resolved from ``get_repo_default_branch`` at add-time by
+    ``handle_add_repos`` so the row is self-contained and downstream
+    consumers don't burn a live GitHub call per sync. Customers can
+    override at add-time to sync from a non-default branch (e.g.
+    ``develop``); the resolved-or-overridden value lands here.
+    """
     now = _now_iso()
 
     item = {
@@ -314,9 +324,14 @@ def save_repo(
         "added_at": now,
         "added_by": added_by,
     }
+    if default_branch:
+        item["default_branch"] = default_branch
 
     dual_write.ddb_put_item(WORKSPACES_TABLE, item)
-    logger.info(f"Saved GitHub repo {repo_name} (type={repo_type}) for workspace {workspace_id}")
+    logger.info(
+        f"Saved GitHub repo {repo_name} (type={repo_type}, "
+        f"branch={default_branch or '?'}) for workspace {workspace_id}"
+    )
     return item
 
 
@@ -737,6 +752,11 @@ def handle_add_repos(event: Dict) -> Dict:
         installation_id = repo.get("installation_id")
         include_code_maps = repo.get("include_code_maps", True)
         repo_type = repo.get("repo_type", "application")  # application, standards, infrastructure
+        # UI may pass an explicit branch override (customer picked
+        # `develop` in the auto-detect + confirmable widget). If not
+        # provided, resolve via GitHub API below so the DDB row is
+        # self-contained and downstream syncs don't burn a live call.
+        default_branch: Optional[str] = repo.get("default_branch")
 
         if not repo_name or not installation_id:
             continue
@@ -751,6 +771,24 @@ def handle_add_repos(event: Dict) -> Dict:
         if existing:
             continue
 
+        # Resolve default_branch from provider if the UI didn't pass
+        # an override. Falls back to `main` on API failure so the
+        # add-repo request still succeeds -- a bad branch surfaces
+        # loudly on first sync, which is a better failure mode than
+        # silently rejecting the add.
+        if not default_branch:
+            try:
+                owner, repo_short = repo_name.split("/", 1)
+                default_branch = get_repo_default_branch(
+                    installation_id, owner, repo_short,
+                )
+            except (ValueError, GitHubAppError) as e:
+                logger.warning(
+                    f"Could not resolve default_branch for {repo_name}: {e}. "
+                    f"Falling back to 'main'."
+                )
+                default_branch = "main"
+
         item = save_repo(
             workspace_id=workspace_id,
             repo_name=repo_name,
@@ -758,6 +796,7 @@ def handle_add_repos(event: Dict) -> Dict:
             include_code_maps=include_code_maps,
             added_by=user_email,
             repo_type=repo_type,
+            default_branch=default_branch,
         )
         added.append(item)
 
@@ -779,6 +818,7 @@ def handle_add_repos(event: Dict) -> Dict:
                 "installation_id": r["installation_id"],
                 "include_code_maps": r["include_code_maps"],
                 "repo_type": r.get("repo_type", "application"),
+                "default_branch": r.get("default_branch"),
             }
             for r in added
         ]

@@ -1309,7 +1309,10 @@ class TestHandleAddRepos:
             },
         )
 
-        result = handle_add_repos(event)
+        with patch.object(
+            handler_module, "get_repo_default_branch", return_value="main",
+        ):
+            result = handle_add_repos(event)
         assert result["statusCode"] == 201
         body = json.loads(result["body"])
         assert body["added"] == 1
@@ -1318,6 +1321,157 @@ class TestHandleAddRepos:
         mock_save_repo.assert_called_once()
         mock_update_status.assert_called_once_with("ws_test", "test-org/my-repo", "queued")
         mock_queue_sync.assert_called_once()
+
+    @patch.object(handler_module, 'queue_sync_job')
+    @patch.object(handler_module, 'update_repo_sync_status')
+    @patch.object(handler_module, 'save_repo')
+    @patch.object(handler_module, 'get_repo')
+    @patch.object(handler_module, 'get_installation')
+    @patch.object(handler_module, '_get_dynamodb')
+    def test_add_repos_resolves_default_branch_via_github_api(
+        self, mock_db, mock_get_inst, mock_get_repo, mock_save_repo,
+        mock_update_status, mock_queue_sync,
+        mock_dynamodb, mock_table, sample_installation,
+    ):
+        """When the UI doesn't pass an explicit branch, resolve via
+        the GitHub App's default-branch helper. This is the on-add
+        detection that closes the "hardcoded main" gap for repos
+        still on master / develop / trunk."""
+        mock_db.return_value = mock_dynamodb
+        mock_table.get_item.return_value = {"Item": {"role": "workspace_admin"}}
+        mock_get_inst.return_value = sample_installation
+        mock_get_repo.return_value = None
+        mock_save_repo.return_value = {
+            "repo_name": "corp/legacy-app",
+            "installation_id": "12345",
+            "include_code_maps": True,
+            "repo_type": "application",
+            "default_branch": "master",
+        }
+
+        event = _authed_event(
+            method="POST",
+            path="/workspaces/ws_test/github/repos",
+            path_params={"id": "ws_test"},
+            email="admin@example.com",
+            body={"repos": [{
+                "repo_name": "corp/legacy-app",
+                "installation_id": "12345",
+                "include_code_maps": True,
+            }]},
+        )
+
+        with patch.object(
+            handler_module, "get_repo_default_branch", return_value="master",
+        ) as mock_resolve:
+            result = handle_add_repos(event)
+
+        assert result["statusCode"] == 201
+        # The helper must have been called with (installation_id, owner, repo)
+        mock_resolve.assert_called_once_with("12345", "corp", "legacy-app")
+        # save_repo receives the resolved value.
+        _, kwargs = mock_save_repo.call_args
+        assert kwargs["default_branch"] == "master"
+        # Response surfaces the branch so the UI can display it.
+        body = json.loads(result["body"])
+        assert body["repos"][0]["default_branch"] == "master"
+
+    @patch.object(handler_module, 'queue_sync_job')
+    @patch.object(handler_module, 'update_repo_sync_status')
+    @patch.object(handler_module, 'save_repo')
+    @patch.object(handler_module, 'get_repo')
+    @patch.object(handler_module, 'get_installation')
+    @patch.object(handler_module, '_get_dynamodb')
+    def test_add_repos_ui_override_branch_wins_over_resolution(
+        self, mock_db, mock_get_inst, mock_get_repo, mock_save_repo,
+        mock_update_status, mock_queue_sync,
+        mock_dynamodb, mock_table, sample_installation,
+    ):
+        """UI's confirmable-override widget: customer typed `develop`
+        into the branch field before submit. Resolver must NOT run;
+        UI value passes through."""
+        mock_db.return_value = mock_dynamodb
+        mock_table.get_item.return_value = {"Item": {"role": "workspace_admin"}}
+        mock_get_inst.return_value = sample_installation
+        mock_get_repo.return_value = None
+        mock_save_repo.return_value = {
+            "repo_name": "corp/app",
+            "installation_id": "12345",
+            "include_code_maps": True,
+            "repo_type": "application",
+            "default_branch": "develop",
+        }
+
+        event = _authed_event(
+            method="POST",
+            path="/workspaces/ws_test/github/repos",
+            path_params={"id": "ws_test"},
+            email="admin@example.com",
+            body={"repos": [{
+                "repo_name": "corp/app",
+                "installation_id": "12345",
+                "include_code_maps": True,
+                "default_branch": "develop",
+            }]},
+        )
+
+        with patch.object(
+            handler_module, "get_repo_default_branch",
+        ) as mock_resolve:
+            handle_add_repos(event)
+        mock_resolve.assert_not_called()
+        _, kwargs = mock_save_repo.call_args
+        assert kwargs["default_branch"] == "develop"
+
+    @patch.object(handler_module, 'queue_sync_job')
+    @patch.object(handler_module, 'update_repo_sync_status')
+    @patch.object(handler_module, 'save_repo')
+    @patch.object(handler_module, 'get_repo')
+    @patch.object(handler_module, 'get_installation')
+    @patch.object(handler_module, '_get_dynamodb')
+    def test_add_repos_falls_back_to_main_on_resolution_failure(
+        self, mock_db, mock_get_inst, mock_get_repo, mock_save_repo,
+        mock_update_status, mock_queue_sync,
+        mock_dynamodb, mock_table, sample_installation,
+    ):
+        """If the GitHub API call fails during on-add resolution, we
+        don't reject the add -- we fall back to 'main'. A wrong
+        branch surfaces loudly on first sync, which is a better
+        failure mode than blocking add-repo on transient API errors."""
+        from github_app import GitHubAppError
+
+        mock_db.return_value = mock_dynamodb
+        mock_table.get_item.return_value = {"Item": {"role": "workspace_admin"}}
+        mock_get_inst.return_value = sample_installation
+        mock_get_repo.return_value = None
+        mock_save_repo.return_value = {
+            "repo_name": "corp/app",
+            "installation_id": "12345",
+            "include_code_maps": True,
+            "repo_type": "application",
+            "default_branch": "main",
+        }
+
+        event = _authed_event(
+            method="POST",
+            path="/workspaces/ws_test/github/repos",
+            path_params={"id": "ws_test"},
+            email="admin@example.com",
+            body={"repos": [{
+                "repo_name": "corp/app",
+                "installation_id": "12345",
+                "include_code_maps": True,
+            }]},
+        )
+        with patch.object(
+            handler_module, "get_repo_default_branch",
+            side_effect=GitHubAppError("500 server error"),
+        ):
+            result = handle_add_repos(event)
+
+        assert result["statusCode"] == 201
+        _, kwargs = mock_save_repo.call_args
+        assert kwargs["default_branch"] == "main"
 
     def test_add_repos_no_auth(self):
         """Test adding repos returns 401 without auth."""

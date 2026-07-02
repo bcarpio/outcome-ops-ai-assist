@@ -741,6 +741,11 @@ def handle_add_repos(event: Dict) -> Dict:
         repo_name = repo.get("repo")
         repo_type = repo.get("repo_type", "application")
         include_code_maps = repo.get("include_code_maps", True)
+        # UI may pass an explicit branch override (customer picked
+        # `develop` in the auto-detect + confirmable widget). If not
+        # provided, resolve via ADO API. Whichever wins gets persisted
+        # to the DDB row; downstream syncs read from there.
+        branch_override: Optional[str] = repo.get("default_branch")
         if not (org and project and repo_name):
             skipped.append({"repo": repo, "reason": "missing org/project/repo"})
             continue
@@ -751,7 +756,9 @@ def handle_add_repos(event: Dict) -> Dict:
             continue
 
         try:
-            default_branch = get_default_branch(access_token, org, project, repo_name)
+            default_branch = branch_override or get_default_branch(
+                access_token, org, project, repo_name,
+            )
             latest_sha = (
                 get_latest_commit_sha(access_token, org, project, repo_name, default_branch)
                 if default_branch else None

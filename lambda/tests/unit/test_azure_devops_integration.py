@@ -490,6 +490,45 @@ class TestAddRepos:
         # No DDB write for skipped repo.
         assert not mock_dual.ddb_put_item.called
 
+    @patch.object(handler, "_connection_access_token")
+    @patch.object(handler, "get_default_branch")
+    @patch.object(handler, "get_latest_commit_sha")
+    @patch.object(handler, "_get_sqs")
+    @patch.object(handler, "dual_write")
+    def test_ui_override_branch_wins_over_resolution(
+        self, mock_dual, mock_sqs_fn, mock_sha, mock_branch, mock_token, mock_table,
+    ):
+        """Customer picked `develop` in the auto-detect + confirmable
+        widget. Resolver must NOT run; UI value flows to DDB row."""
+        mock_token.return_value = "access-token"
+        mock_sha.return_value = "abc123"
+        mock_sqs_fn.return_value = MagicMock()
+
+        def gi(Key, **_):
+            if Key["SK"].startswith("WS_MEMBER#"):
+                return {"Item": {"role": "workspace_admin"}}
+            if Key["SK"].startswith("AZDO_CONNECTION#"):
+                return {"Item": {"connection_id": "c1"}}
+            return {}
+        mock_table.get_item.side_effect = gi
+
+        event = _make_event(
+            "POST", "/workspaces/w1/azure-devops/repos",
+            body={
+                "connection_id": "c1",
+                "repos": [{
+                    "org": "example-org", "project": "example-project",
+                    "repo": "example-repo",
+                    "default_branch": "develop",
+                }],
+            },
+        )
+        result = handler.lambda_handler(event, None)
+        assert result["statusCode"] == 201
+        mock_branch.assert_not_called()  # resolver skipped
+        item = mock_dual.ddb_put_item.call_args.args[1]
+        assert item["default_branch"] == "develop"
+
 
 # ---------------------------------------------------------------------------
 # Update / delete repo (URL-encoded slug)
