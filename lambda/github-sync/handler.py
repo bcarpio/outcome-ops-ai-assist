@@ -475,6 +475,71 @@ def get_repo(workspace_id: str, repo_name: str) -> Optional[Dict]:
     return response.get("Item")
 
 
+def _backfill_default_branch(
+    workspace_id: str, repo_name: str, default_branch: str,
+) -> None:
+    """Write ``default_branch`` back to the GITHUB_REPO# row so the
+    next sync can read it without a live GitHub API call.
+
+    Used only by the lazy-backfill path in ``resolve_sync_branch``:
+    existing rows added before chunk 01 lack the field, and rows
+    added by pre-fix installs of this Lambda too. Best-effort --
+    a write failure just means the next sync re-resolves (extra
+    quota, correct behavior). Goes through dual_write so the HA
+    secondary picks it up on the same tick.
+    """
+    try:
+        dual_write.ddb_update_item(
+            WORKSPACES_TABLE,
+            {"PK": f"WS#{workspace_id}", "SK": f"GITHUB_REPO#{repo_name}"},
+            UpdateExpression="SET default_branch = :b",
+            ExpressionAttributeValues={":b": default_branch},
+            ConditionExpression="attribute_exists(repo_name)",
+        )
+    except Exception as e:
+        logger.warning(
+            f"[github-sync] Could not backfill default_branch for "
+            f"{repo_name}: {e}. Next sync will re-resolve."
+        )
+
+
+def resolve_sync_branch(
+    repo_row: Dict,
+    token: str,
+    owner: str,
+    repo_short: str,
+    workspace_id: str,
+    repo_name: str,
+) -> str:
+    """Return the branch this sync should walk.
+
+    Priority:
+    1. The ``default_branch`` field on the repo's DDB row -- this is
+       what the customer picked in the add-repo picker (chunk 03) or
+       what the backend resolved on add (chunk 01).
+    2. Live ``GET /repos/{owner}/{repo}`` lookup, with the result
+       written back to the row so the next sync doesn't burn quota.
+
+    Case (2) fires only for rows added before chunk 01 shipped
+    (they lack the field). After the first sync backfills it, every
+    subsequent sync takes case (1).
+    """
+    stored = repo_row.get("default_branch")
+    if stored:
+        logger.info(
+            f"[github-sync] Using stored default_branch={stored} "
+            f"for {repo_name}"
+        )
+        return stored
+    logger.info(
+        f"[github-sync] No stored default_branch for {repo_name}; "
+        f"resolving live and backfilling."
+    )
+    resolved = get_default_branch(token, owner, repo_short)
+    _backfill_default_branch(workspace_id, repo_name, resolved)
+    return resolved
+
+
 def update_sync_status(
     workspace_id: str,
     repo_name: str,
@@ -1224,7 +1289,13 @@ def process_sync_request(message: Dict) -> Dict:
 
         # Get default branch and latest commit (plan-git-truth chunk 02:
         # commit_timestamp drives the monotonic-advance check downstream).
-        default_branch = get_default_branch(token, owner, repo_short)
+        # ``resolve_sync_branch`` reads the customer's stored/picked
+        # branch from the DDB row first (honors the chunk-03 override,
+        # avoids a live GitHub call), lazy-backfilling on the first
+        # sync of a pre-chunk-01 row.
+        default_branch = resolve_sync_branch(
+            repo, token, owner, repo_short, workspace_id, repo_name,
+        )
         current_sha, current_commit_timestamp = get_latest_commit(
             token, owner, repo_short, default_branch
         )

@@ -1436,6 +1436,79 @@ class TestProcessApplicationRepo:
 # ============================================================================
 
 
+class TestResolveSyncBranch:
+    """``resolve_sync_branch`` reads the customer's stored branch from
+    the GITHUB_REPO# row first (honors the chunk-03 override, avoids a
+    live GitHub call), lazy-backfilling on rows added before
+    chunk 01 shipped."""
+
+    @patch.object(handler_module, "get_default_branch")
+    @patch.object(handler_module, "_backfill_default_branch")
+    def test_uses_stored_branch_when_row_has_it(
+        self, mock_backfill, mock_live_call,
+    ):
+        # Row has the field -> skip the API call, skip the backfill,
+        # return the stored value. This is the happy-path for every
+        # repo added or synced since chunk 01.
+        repo_row = {
+            "repo_name": "acme/my-repo",
+            "default_branch": "develop",  # customer picked non-default
+        }
+        branch = handler_module.resolve_sync_branch(
+            repo_row, "tok", "acme", "my-repo", "ws_test", "acme/my-repo",
+        )
+        assert branch == "develop"
+        mock_live_call.assert_not_called()
+        mock_backfill.assert_not_called()
+
+    @patch.object(handler_module, "get_default_branch")
+    @patch.object(handler_module, "_backfill_default_branch")
+    def test_backfills_when_row_lacks_the_field(
+        self, mock_backfill, mock_live_call,
+    ):
+        # Legacy row (added before chunk 01) has no default_branch.
+        # Resolve via live API + write back so the next sync skips
+        # the live call.
+        mock_live_call.return_value = "master"
+        repo_row = {"repo_name": "corp/legacy-app"}
+
+        branch = handler_module.resolve_sync_branch(
+            repo_row, "tok", "corp", "legacy-app", "ws_test", "corp/legacy-app",
+        )
+        assert branch == "master"
+        mock_live_call.assert_called_once_with("tok", "corp", "legacy-app")
+        mock_backfill.assert_called_once_with(
+            "ws_test", "corp/legacy-app", "master",
+        )
+
+
+class TestBackfillDefaultBranch:
+    """Isolated coverage for the lazy-backfill write path so a
+    dual_write failure is caught + logged, not surfaced to callers."""
+
+    @patch.object(handler_module, "dual_write")
+    def test_writes_via_dual_write_with_conditional(self, mock_dw):
+        handler_module._backfill_default_branch(
+            "ws_test", "acme/my-repo", "master",
+        )
+        mock_dw.ddb_update_item.assert_called_once()
+        kwargs = mock_dw.ddb_update_item.call_args.kwargs
+        # UpdateItem uses SET default_branch = :b
+        assert "default_branch" in kwargs["UpdateExpression"]
+        assert kwargs["ExpressionAttributeValues"] == {":b": "master"}
+        # Conditional prevents recreating deleted rows.
+        assert "attribute_exists(repo_name)" in kwargs["ConditionExpression"]
+
+    @patch.object(handler_module, "dual_write")
+    def test_swallows_failures_so_sync_still_runs(self, mock_dw):
+        mock_dw.ddb_update_item.side_effect = Exception("DDB unavailable")
+        # Should not raise -- resolve_sync_branch's caller depends on
+        # this method's best-effort semantics.
+        handler_module._backfill_default_branch(
+            "ws_test", "acme/my-repo", "master",
+        )
+
+
 class TestProcessSyncRequest:
     """Test the main sync processing orchestration."""
 
