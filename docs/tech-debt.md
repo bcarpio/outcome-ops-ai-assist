@@ -34,32 +34,6 @@ The Teams file sync re-processes ALL files every hourly sync cycle, even if they
 1. **Teams sync (primary):** Use the SharePoint drive delta API for channel files (Teams stores files in SharePoint under the hood) or filter files by `lastModifiedDateTime` >= `last_sync_at`, matching the Confluence/SharePoint pattern
 2. **File ingestion (safety net):** Before uploading to S3, compare the file's etag or content hash against the existing S3 object. Skip upload if unchanged
 
-## Code Maps: Hardcoded `main` Branch in File Listing
-
-**Discovered:** 2026-05-03
-**Severity:** Medium
-**Component:** `process-repo-summary`
-
-`list_repository_files()` in `lambda/process-repo-summary/handler.py:355` hardcodes the branch name in the GitHub trees API URL:
-
-```python
-url = f"{GITHUB_API_URL}/repos/{repo_project}/git/trees/main?recursive=1"
-```
-
-Any repo whose default branch is not `main` (e.g., `master`, `develop`, `trunk`) will 404 here, and `process-repo-summary` will fail to discover files for that repo.
-
-**Impact:** F500 customers commonly have pre-2020 repos still defaulting to `master`. For those repos, code-map generation silently fails at the file-listing step. Affects every backend (Python, Java, TypeScript, React, ABAP, C#) - this is not language-specific.
-
-**Inconsistency:** The per-backend change-detection code already does this correctly. For example, `csharp_backend.py:494` (`_get_default_branch`) and the equivalents in the other backends call `GET /repos/{repo}/` and read `default_branch` before fetching commit/compare data. So one half of the pipeline resolves the branch dynamically and the other half hardcodes `main`.
-
-**Fix:**
-1. Extract the existing `_get_default_branch` logic into a shared helper (or move it onto the base backend) so the handler can call it once per repo.
-2. Replace the hardcoded `main` in `list_repository_files()` with the resolved default branch.
-3. Pass the resolved branch through to `detect_changes()` so the backend doesn't re-resolve it.
-4. Add a unit test covering a repo with `default_branch: "master"`.
-
-**Workaround until fixed:** Only point the platform at repos whose default branch is `main`.
-
 ## Audit: Bedrock Pricing Env Vars Wired in Terraform but Ignored by audit.py
 
 **Discovered:** 2026-05-03
