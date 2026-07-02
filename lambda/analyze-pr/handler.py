@@ -454,7 +454,7 @@ def _build_analysis_started_comment(checks_to_run: List[str]) -> str:
         [f"- {check.replace('_', ' ')}" for check in checks_to_run]
     )
     summary_line = (
-        f"🔍 <b>OutcomeOps Analysis Started</b>: "
+        f"<b>OutcomeOps Analysis Started</b>: "
         f"Running {len(checks_to_run)} check(s)"
     )
     body = (
