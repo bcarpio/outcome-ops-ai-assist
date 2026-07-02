@@ -1875,6 +1875,10 @@ export interface GitHubRepo {
   last_commit_sha: string | null
   added_at: string
   added_by: string
+  // The branch the platform syncs from. Persisted on add (resolved
+  // from GitHub API unless the customer picked an override in the
+  // picker). Pre-chunk-01 rows lack this field.
+  default_branch?: string | null
 }
 
 export interface GitHubAvailableRepo {
@@ -1946,7 +1950,17 @@ export async function listGitHubRepos(workspaceId: string): Promise<GitHubRepo[]
  */
 export async function addGitHubRepos(
   workspaceId: string,
-  repos: { repo_name: string; installation_id: string; include_code_maps?: boolean; repo_type?: GitHubRepoType }[]
+  repos: {
+    repo_name: string
+    installation_id: string
+    include_code_maps?: boolean
+    repo_type?: GitHubRepoType
+    // Optional override for the repo's default branch. If omitted, the
+    // backend resolves via GitHub API on add. UI sends this when the
+    // customer edits the branch input in the picker (e.g. syncs from
+    // ``develop`` on a `main`-defaulted repo).
+    default_branch?: string
+  }[]
 ): Promise<GitHubRepo[]> {
   const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/github/repos`, {
     method: 'POST',
@@ -2154,6 +2168,10 @@ export async function addAzureDevOpsRepos(
     repo: string
     include_code_maps?: boolean
     repo_type?: AzureDevOpsRepoType
+    // Optional override for the repo's default branch. If omitted, the
+    // backend resolves via ADO API on add. UI sends this when the
+    // customer edits the branch input in the picker.
+    default_branch?: string
   }[],
 ): Promise<AzureDevOpsRepo[]> {
   const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/azure-devops/repos`, {

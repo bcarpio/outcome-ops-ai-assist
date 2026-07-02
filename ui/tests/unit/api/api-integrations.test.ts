@@ -333,6 +333,26 @@ describe('addGitHubRepos', () => {
     )
     expect(result).toHaveLength(1)
   })
+
+  it('forwards default_branch override when the picker set one', async () => {
+    // The auto-detect + confirmable UI lets the customer pick a
+    // non-default branch (e.g. `develop`) before hitting Add. The
+    // API surface must pass this value through so the backend
+    // stores the customer's choice instead of re-resolving to the
+    // provider's default.
+    const repo = createGitHubRepo()
+    const fetchMock = vi.fn().mockResolvedValue(createMockFetchResponse({ repos: [repo] }))
+    global.fetch = fetchMock
+    await addGitHubRepos('ws-1', [
+      {
+        repo_name: 'corp/legacy-app',
+        installation_id: 'install-1',
+        default_branch: 'develop',
+      },
+    ])
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    expect(body.repos[0].default_branch).toBe('develop')
+  })
 })
 
 describe('updateGitHubRepo', () => {
@@ -472,6 +492,19 @@ describe('addAzureDevOpsRepos', () => {
         }),
       }),
     )
+  })
+
+  it('forwards default_branch override when the picker set one', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(createMockFetchResponse({ repos: [] }))
+    global.fetch = fetchMock
+    await addAzureDevOpsRepos('ws-1', 'c1', [
+      {
+        org: 'example-org', project: 'Demo', repo: 'demo-app',
+        default_branch: 'develop',
+      },
+    ])
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    expect(body.repos[0].default_branch).toBe('develop')
   })
 })
 

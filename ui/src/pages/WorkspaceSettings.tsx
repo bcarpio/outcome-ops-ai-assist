@@ -339,6 +339,12 @@ export default function WorkspaceSettings() {
   const [syncingGitHub, setSyncingGitHub] = useState<string | null>(null)
   const [githubRepoSearchQuery, setGithubRepoSearchQuery] = useState('')
   const [selectedRepoType, setSelectedRepoType] = useState<GitHubRepoType>('application')
+  // Per-row branch override for the GitHub add-repo picker. Empty
+  // entry (or missing key) means "use the repo's detected default
+  // branch"; a value means the customer picked a non-default (e.g.
+  // ``develop``) in the confirmable input. Keyed by full_name so
+  // multiple rows can hold their own edits before the user Adds.
+  const [githubBranchOverrides, setGithubBranchOverrides] = useState<Record<string, string>>({})
 
   // Azure DevOps integration state (chunk 08)
   const [azureDevOpsConnections, setAzureDevOpsConnections] = useState<AzureDevOpsConnection[]>([])
@@ -361,6 +367,10 @@ export default function WorkspaceSettings() {
   const [loadingAzureDevOpsPickerRepos, setLoadingAzureDevOpsPickerRepos] = useState(false)
   const [addingAzureDevOpsRepo, setAddingAzureDevOpsRepo] = useState<string | null>(null)
   const [selectedAzureDevOpsRepoType, setSelectedAzureDevOpsRepoType] = useState<AzureDevOpsRepoType>('application')
+  // Per-row branch override for the ADO add-repo picker. Mirror of
+  // the GitHub side; keyed by repo name (unique within the project
+  // dropdown selection).
+  const [azureDevOpsBranchOverrides, setAzureDevOpsBranchOverrides] = useState<Record<string, string>>({})
 
   // Sharing tab state
   const [, setSharingAccess] = useState<WorkspaceSearchAccess[]>([])
@@ -673,6 +683,9 @@ export default function WorkspaceSettings() {
     if (!workspaceId || !pickerConnectionId || !pickerSelectedOrg || !pickerSelectedProject) return
     setAddingAzureDevOpsRepo(repoName)
     setError(null)
+    // Pull the customer's override, if any (mirror of GitHub side).
+    const overrideRaw = azureDevOpsBranchOverrides[repoName]
+    const branchOverride = overrideRaw && overrideRaw.trim() ? overrideRaw.trim() : undefined
     try {
       await addAzureDevOpsRepos(workspaceId, pickerConnectionId, [{
         org: pickerSelectedOrg,
@@ -680,12 +693,20 @@ export default function WorkspaceSettings() {
         repo: repoName,
         include_code_maps: true,
         repo_type: selectedAzureDevOpsRepoType,
+        default_branch: branchOverride,
       }])
       // Optimistically flip the already_added flag so the button disables
       // without a round-trip.
       setAzureDevOpsAvailableRepos(prev =>
         prev.map(r => r.name === repoName ? { ...r, already_added: true } : r),
       )
+      // Clear the per-row override so a re-open of the picker starts
+      // fresh next time (mirror of GitHub side).
+      setAzureDevOpsBranchOverrides(prev => {
+        const next = { ...prev }
+        delete next[repoName]
+        return next
+      })
       await loadAzureDevOpsData()
       setSuccess(`Added ${pickerSelectedOrg}/${pickerSelectedProject}/${repoName}`)
     } catch (err) {
@@ -1794,15 +1815,29 @@ export default function WorkspaceSettings() {
     if (!workspaceId || !selectedInstallation) return
     setAddingGitHubRepo(repoName)
     setError(null)
+    // Pull the customer's override, if any. Empty-string is treated
+    // as "no override" -- the picker input starts pre-populated with
+    // the detected default branch, so an explicit clear is unusual
+    // but should still fall through to server-side detection.
+    const overrideRaw = githubBranchOverrides[repoName]
+    const branchOverride = overrideRaw && overrideRaw.trim() ? overrideRaw.trim() : undefined
     try {
       const repos = await addGitHubRepos(workspaceId, [{
         repo_name: repoName,
         installation_id: selectedInstallation.installation_id,
         include_code_maps: true,
         repo_type: selectedRepoType,
+        default_branch: branchOverride,
       }])
       setGithubRepos(prev => [...prev, ...repos])
       setInstallationRepos(prev => prev.filter(r => r.full_name !== repoName))
+      // Clear the per-row override so a re-open of the picker starts
+      // fresh next time.
+      setGithubBranchOverrides(prev => {
+        const next = { ...prev }
+        delete next[repoName]
+        return next
+      })
       setSuccess(`Added ${repoName} as ${selectedRepoType}`)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to add repo')
@@ -4920,9 +4955,24 @@ export default function WorkspaceSettings() {
                           {repo.description && (
                             <p className="text-sm text-gray-500 truncate">{repo.description}</p>
                           )}
-                          <p className="text-xs text-gray-400 mt-0.5">
-                            Default branch: {repo.default_branch}
-                          </p>
+                          <label className="text-xs text-gray-500 mt-1 flex items-center gap-1">
+                            <span>Sync from branch:</span>
+                            <input
+                              type="text"
+                              value={
+                                githubBranchOverrides[repo.full_name] ?? repo.default_branch
+                              }
+                              onChange={(e) =>
+                                setGithubBranchOverrides(prev => ({
+                                  ...prev,
+                                  [repo.full_name]: e.target.value,
+                                }))
+                              }
+                              placeholder={repo.default_branch}
+                              className="ml-1 px-1.5 py-0.5 text-xs font-mono border border-gray-200 rounded focus:outline-none focus:ring-1 focus:ring-blue-400 focus:border-blue-400 w-32"
+                              aria-label={`Sync branch for ${repo.full_name}`}
+                            />
+                          </label>
                         </div>
                       </div>
                       <MutationButton
@@ -5038,9 +5088,30 @@ export default function WorkspaceSettings() {
                         <GitBranch className="text-gray-400 flex-shrink-0" size={20} />
                         <div className="min-w-0">
                           <p className="font-medium text-gray-900 truncate">{repo.name}</p>
-                          <p className="text-xs text-gray-400 mt-0.5">
-                            Default branch: {repo.default_branch || '(none — empty repo)'}
-                          </p>
+                          {repo.default_branch ? (
+                            <label className="text-xs text-gray-500 mt-1 flex items-center gap-1">
+                              <span>Sync from branch:</span>
+                              <input
+                                type="text"
+                                value={
+                                  azureDevOpsBranchOverrides[repo.name] ?? repo.default_branch
+                                }
+                                onChange={(e) =>
+                                  setAzureDevOpsBranchOverrides(prev => ({
+                                    ...prev,
+                                    [repo.name]: e.target.value,
+                                  }))
+                                }
+                                placeholder={repo.default_branch}
+                                className="ml-1 px-1.5 py-0.5 text-xs font-mono border border-gray-200 rounded focus:outline-none focus:ring-1 focus:ring-blue-400 focus:border-blue-400 w-32"
+                                aria-label={`Sync branch for ${repo.name}`}
+                              />
+                            </label>
+                          ) : (
+                            <p className="text-xs text-gray-400 mt-0.5">
+                              (empty repo — no default branch)
+                            </p>
+                          )}
                         </div>
                       </div>
                       <MutationButton
