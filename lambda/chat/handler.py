@@ -129,14 +129,26 @@ MEMORY_TOP_K = 3  # Number of memory chunks to retrieve
 # question asks "how does X work" / "what calls Y" / "where is Z
 # defined", these are the authoritative sources.
 #
-# DOC_TYPES: human-authored prose -- ADRs, README, markdown, HTML
-# (Confluence), YAML configs, PDFs, presentations. Drift-prone; the
-# narrative half of the precedence rule.
+# DOC_TYPES: human-authored prose + structured docs -- ADRs, READMEs,
+# markdown, HTML (Confluence), YAML configs, PDFs, presentations,
+# plain text, dependency manifests (json), spreadsheets, CSV. Drift-
+# prone; the narrative / reference half of the precedence rule.
 #
-# Other types (json, text, unknown, conversation_memory, no-type)
-# remain absent from the dual-channel filters. Those are raw build
-# data / lookup files; not retrieval-relevant for structural or
-# narrative answers.
+# The 2026-06-03 initial cut of this tuple deliberately excluded
+# `text`, `json`, `xlsx`, `csv` as "raw build data / lookup files;
+# not retrieval-relevant for structural or narrative answers." That
+# framing was wrong for the dependency- and reference-question
+# shapes: a CVE query against `react-router` needs the
+# `package.json` chunks that answer "which apps run the vulnerable
+# version"; a "what does the CHANGELOG say" question needs the
+# `.txt`; an "what fields does this spreadsheet have" question needs
+# the xlsx/csv. Restored to the tuple 2026-07-02 after the Boeing-
+# demo-shaped query regression was traced to their absence.
+#
+# `unknown` (text-decodable fallback for unrecognized extensions)
+# and `binary` (empty content, never retrievable) are intentionally
+# NOT included -- those catch build logs, generated dumps, random
+# dotfiles, etc. and would readmit ADR-033's original noise problem.
 CODE_MAP_TYPES = (
     "handler-group-summary",
     "source-module-summary",
@@ -167,6 +179,10 @@ DOC_TYPES = (
     "yaml",
     "pptx",
     "docx",
+    "text",   # .txt files -- NOTES, CHANGELOG, TODO, etc.
+    "json",   # package.json / composer.json / TS configs / API schemas
+    "xlsx",   # Excel spreadsheets (extracted-to-text via process-documents)
+    "csv",    # tabular data (extracted-to-text via process-documents)
 )
 
 
@@ -1454,6 +1470,45 @@ def search_kb_dual_channel(
     return combined
 
 
+def split_rerank_budget(
+    top_k: int, code_map_count: int, doc_count: int,
+) -> Tuple[int, int]:
+    """Adaptive per-lane rerank top_n split.
+
+    Start from an even 50/50 (odd budget goes to docs -- the larger
+    pool in any non-thin-ingest workspace), then cap each lane at its
+    actual candidate count and redistribute unused slots to the other
+    lane so we don't waste room in the final context.
+
+    Prior behavior forced exactly ``top_k // 2`` per lane regardless
+    of what fetch returned; a thin code-maps lane (2 candidates) left
+    3 slots empty on a ``top_k=10`` turn instead of letting the docs
+    lane fill them. The 2026-06-29 hybrid-deployment repro traced
+    exactly to this: the model refused ("I don't have SAP ABAP
+    codebase maps ...") because only 4 sources reached synthesis when
+    10 slots were available in the pool.
+
+    Returns ``(code_map_top_n, doc_top_n)``; both non-negative;
+    their sum is min(``top_k``, ``code_map_count + doc_count``).
+    """
+    target_code = max(1, top_k // 2)
+    target_docs = max(1, top_k - target_code)
+    code_map_top_n = min(target_code, code_map_count)
+    doc_top_n = min(target_docs, doc_count)
+    leftover = top_k - code_map_top_n - doc_top_n
+    if leftover > 0:
+        # Docs lane usually has the larger candidate pool in a mature
+        # workspace, so absorb overflow there first, then fall
+        # through to code-maps if docs is itself the thin side.
+        extra_docs = min(leftover, doc_count - doc_top_n)
+        doc_top_n += extra_docs
+        leftover -= extra_docs
+        if leftover > 0:
+            extra_code = min(leftover, code_map_count - code_map_top_n)
+            code_map_top_n += extra_code
+    return code_map_top_n, doc_top_n
+
+
 def rerank_results(
     query: str,
     documents: List[Dict],
@@ -2255,12 +2310,11 @@ def handle_chat_stream(event: Dict) -> Generator[str, None, None]:
                     user_agent=user_agent,
                 )
             else:
-                # Split top_n budget per lane. Even split with floor at
-                # 1 each so a small top_k still keeps both lanes
-                # represented. Odd budget goes to docs (the larger pool
-                # in any non-thin-ingest workspace).
-                code_map_top_n = max(1, request.top_k // 2)
-                doc_top_n = max(1, request.top_k - code_map_top_n)
+                # Adaptive per-lane split. See ``split_rerank_budget``
+                # for the rationale + regression trace.
+                code_map_top_n, doc_top_n = split_rerank_budget(
+                    request.top_k, len(code_map_hits), len(doc_hits),
+                )
                 reranked_code_maps = rerank_results(
                     search_query,
                     code_map_hits,

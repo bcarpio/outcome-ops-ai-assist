@@ -1095,6 +1095,95 @@ class TestSearchKbDualChannel:
             set(handler_module.DOC_TYPES)
         )
 
+    def test_dual_channel_doc_types_includes_json_text_xlsx_csv(self):
+        """Regression guard: DOC_TYPES must include the types the
+        ingestion pipeline emits for common doc-shaped files that were
+        dropped in the 2026-06-03 initial cut. Before the 2026-07-02
+        fix, dependency / CVE / plaintext / spreadsheet queries silently
+        returned 0 chunks despite the vectors being correctly ingested.
+
+        The Boeing CVE demo shape ("which apps run react-router
+        <version>?") depends specifically on `json` being here so
+        `package.json` chunks are reachable via the docs lane.
+        """
+        for required in ("text", "json", "xlsx", "csv"):
+            assert required in handler_module.DOC_TYPES, (
+                f"{required!r} must be in DOC_TYPES; process-documents "
+                f"emits this type and it must be retrievable"
+            )
+
+    def test_dual_channel_doc_types_excludes_unknown(self):
+        """The `unknown` type is the text-decodable fallback bucket
+        that catches build logs / generated dumps / random dotfiles.
+        Including it would reintroduce ADR-033's original noise
+        problem; keep it out."""
+        assert "unknown" not in handler_module.DOC_TYPES
+
+
+class TestSplitRerankBudget:
+    """Adaptive per-lane rerank top_n split. Prior behavior was a
+    rigid 50/50 that wasted slots when one lane was thin. The
+    2026-06-29 hybrid-deployment repro (model refused with "I don't
+    have SAP ABAP codebase maps..." because 4 sources reached
+    synthesis when 10 were available) traced to that starvation."""
+
+    def test_both_lanes_plenty_returns_even_split(self):
+        code_top, doc_top = handler_module.split_rerank_budget(
+            top_k=10, code_map_count=20, doc_count=20,
+        )
+        assert (code_top, doc_top) == (5, 5)
+
+    def test_odd_top_k_gives_extra_to_docs(self):
+        # Docs is the larger pool in mature workspaces, so the odd
+        # slot goes there.
+        code_top, doc_top = handler_module.split_rerank_budget(
+            top_k=11, code_map_count=20, doc_count=20,
+        )
+        assert (code_top, doc_top) == (5, 6)
+
+    def test_thin_code_map_lane_hands_leftover_to_docs(self):
+        # The 2026-06-29 SAP repro shape: code_map lane returned only
+        # 2 useful hits out of 5-slot quota. Pre-adaptive: 2 + 5 = 7
+        # slots filled, 3 slots empty. Post-adaptive: docs absorbs.
+        code_top, doc_top = handler_module.split_rerank_budget(
+            top_k=10, code_map_count=2, doc_count=20,
+        )
+        assert (code_top, doc_top) == (2, 8)
+        assert code_top + doc_top == 10
+
+    def test_thin_docs_lane_hands_leftover_to_code_maps(self):
+        # Reverse case: docs lane thin, code_map has capacity.
+        code_top, doc_top = handler_module.split_rerank_budget(
+            top_k=10, code_map_count=20, doc_count=2,
+        )
+        assert (code_top, doc_top) == (8, 2)
+        assert code_top + doc_top == 10
+
+    def test_both_lanes_thin_returns_actual_counts(self):
+        # Combined pool doesn't have top_k available; return what we
+        # have, don't invent slots.
+        code_top, doc_top = handler_module.split_rerank_budget(
+            top_k=10, code_map_count=2, doc_count=3,
+        )
+        assert (code_top, doc_top) == (2, 3)
+        assert code_top + doc_top == 5
+
+    def test_one_lane_at_exact_quota_no_redistribution(self):
+        # Code_map at exact quota (5); docs with plenty. No leftover
+        # to redistribute; even split preserved.
+        code_top, doc_top = handler_module.split_rerank_budget(
+            top_k=10, code_map_count=5, doc_count=20,
+        )
+        assert (code_top, doc_top) == (5, 5)
+
+    def test_docs_lane_at_zero_and_code_map_plenty(self):
+        # Docs lane returned nothing (e.g., no docs ingested). Code
+        # maps takes all slots up to its capacity.
+        code_top, doc_top = handler_module.split_rerank_budget(
+            top_k=10, code_map_count=20, doc_count=0,
+        )
+        assert (code_top, doc_top) == (10, 0)
+
 
 class TestPerLaneRerank:
     """ADR-033 per-lane rerank: after dual-channel retrieval, each lane's
@@ -1235,10 +1324,15 @@ class TestPerLaneRerank:
             with patch.object(handler_module, "log_audit_entry"):
                 list(handle_chat_stream(event))
 
-            # Two calls. Their top_n must sum to <= request.top_k (10).
+            # Two calls. Their top_n reflects the adaptive split:
+            # with a 1-vector-per-lane mock, code_map has 1 hit and
+            # docs has 1 hit, so each lane is capped at its actual
+            # candidate count -- expected [1, 1] not [5, 5] (the
+            # pre-adaptive behavior wasted the other 8 slots).
             top_ns = sorted(c.kwargs["top_n"] for c in mock_rerank.call_args_list)
-            assert top_ns == [5, 5], (
-                f"Expected even 5/5 split of top_k=10, got {top_ns}"
+            assert top_ns == [1, 1], (
+                f"Adaptive split with 1 hit/lane should cap at [1, 1]; "
+                f"got {top_ns}"
             )
 
     def test_per_lane_rerank_isolates_code_map_lane_from_doc_lane(
