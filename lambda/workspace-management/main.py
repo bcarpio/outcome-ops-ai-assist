@@ -121,6 +121,22 @@ async def list_workspaces(request: Request):
     return _parse_response(result)
 
 
+@app.get("/workspaces/{workspace_id}/public")
+async def get_workspace_public(workspace_id: str, request: Request):
+    """Non-sensitive view of a Global workspace for non-members.
+
+    Backend 404s any workspace that isn't ``is_global=true`` so this
+    endpoint never leaks the existence of private workspaces.
+    Registered before the greedy ``/workspaces/{workspace_id}`` route
+    so FastAPI resolves the more specific path first.
+    """
+    from handler import lambda_handler
+
+    event = _build_event(request, "GET", f"/workspaces/{workspace_id}/public")
+    result = lambda_handler(event, None)
+    return _parse_response(result)
+
+
 @app.get("/workspaces/{workspace_id}")
 async def get_workspace(workspace_id: str, request: Request):
     """Get workspace details."""

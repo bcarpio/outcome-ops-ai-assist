@@ -376,6 +376,56 @@ class TestListWorkspaces:
             _cleanup_handler()
 
 
+class TestGetWorkspacePublic:
+    """Test GET /workspaces/{workspace_id}/public endpoint.
+
+    Regression guard for the ADR-037 Global-workspace non-member view:
+    the FastAPI layer must register this route explicitly, otherwise
+    it falls through to the greedy ``/workspaces/{workspace_id}`` and
+    the tail ``/public`` gets swallowed into the id.
+    """
+
+    def test_public_route_reaches_handler(self):
+        mock_handler = _setup_mock_handler(
+            _mock_lambda_response(200, {
+                "workspace": {
+                    "workspace_id": "ws-global-1",
+                    "name": "Standards and ADRs",
+                    "description": "",
+                    "is_global": True,
+                    "admin_emails": ["admin@example.com"],
+                },
+            }),
+        )
+        try:
+            client = TestClient(app)
+            response = client.get("/workspaces/ws-global-1/public")
+            assert response.status_code == 200
+            event = mock_handler.call_args[0][0]
+            assert (
+                event["requestContext"]["http"]["path"]
+                == "/workspaces/ws-global-1/public"
+            )
+            body = response.json()
+            assert body["workspace"]["is_global"] is True
+        finally:
+            _cleanup_handler()
+
+    def test_public_route_registered_before_greedy(self):
+        """Verify FastAPI resolves /public to the public route, not the
+        greedy /workspaces/{id} with id='ws-1/public'. Route ordering
+        would silently break the non-member Global-workspace view."""
+        mock_handler = _setup_mock_handler(_mock_lambda_response(200, {}))
+        try:
+            client = TestClient(app)
+            client.get("/workspaces/ws-1/public")
+            event = mock_handler.call_args[0][0]
+            # Path must end with /public, not have it swallowed into id.
+            assert event["requestContext"]["http"]["path"].endswith("/public")
+        finally:
+            _cleanup_handler()
+
+
 class TestGetWorkspace:
     """Test GET /workspaces/{workspace_id} endpoint."""
 
