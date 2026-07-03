@@ -381,6 +381,56 @@ def sample_messages():
     ]
 
 
+class TestDdbNormalize:
+    """boto3's Table resource returns every DDB Number as
+    ``decimal.Decimal``. Bedrock Converse's SDK rejects Decimal on
+    the ``document`` param used by tool ``inputSchema``. AWS's hosted
+    MCP server publishes tool schemas with numeric ``default`` /
+    ``minimum`` / ``maximum`` fields; without normalization the whole
+    chat turn blows up with a Bedrock ValidationException the first
+    time an admin adds one.
+    """
+
+    def test_top_level_decimal_becomes_int_for_whole_numbers(self):
+        from decimal import Decimal
+        assert handler_module._ddb_normalize(Decimal("100")) == 100
+        assert isinstance(handler_module._ddb_normalize(Decimal("100")), int)
+
+    def test_top_level_decimal_becomes_float_for_fractional(self):
+        from decimal import Decimal
+        result = handler_module._ddb_normalize(Decimal("2.5"))
+        assert result == 2.5
+        assert isinstance(result, float)
+
+    def test_recurses_into_dicts_and_lists(self):
+        from decimal import Decimal
+        schema = {
+            "type": "object",
+            "properties": {
+                "timeout": {
+                    "type": "integer",
+                    "default": Decimal("100"),
+                    "minimum": Decimal("1"),
+                    "maximum": Decimal("900"),
+                },
+                "tags": [Decimal("1"), Decimal("2.5"), "keep"],
+            },
+        }
+        normalized = handler_module._ddb_normalize(schema)
+        timeout = normalized["properties"]["timeout"]
+        assert timeout["default"] == 100
+        assert isinstance(timeout["default"], int)
+        assert timeout["minimum"] == 1
+        assert timeout["maximum"] == 900
+        assert normalized["properties"]["tags"] == [1, 2.5, "keep"]
+
+    def test_non_decimal_values_pass_through(self):
+        assert handler_module._ddb_normalize("hello") == "hello"
+        assert handler_module._ddb_normalize(True) is True
+        assert handler_module._ddb_normalize(None) is None
+        assert handler_module._ddb_normalize(42) == 42
+
+
 # ============================================================================
 # Chunk 03 of the workspace-scope plan: resolve_chat_workspace_scope
 # ============================================================================

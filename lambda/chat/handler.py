@@ -438,6 +438,34 @@ def resolve_chat_workspace_scope(
     return sorted(scope)
 
 
+def _ddb_normalize(value):
+    """Recursively convert DynamoDB ``Decimal`` values to native ints/floats.
+
+    boto3's Table resource returns every DDB Number as ``decimal.Decimal``.
+    Bedrock Converse's SDK does strict type validation on the
+    ``document`` parameter shape used for tool ``inputSchema``, and
+    rejects Decimal even though it's a numeric type. Any MCP server
+    whose tool schema carries numeric ``default`` / ``minimum`` /
+    ``maximum`` / ``multipleOf`` etc. (e.g. AWS's hosted MCP with
+    ``timeout: default 100 / maximum 900``) blows up the whole chat
+    turn with a Bedrock ValidationException.
+
+    Called at the DDB-boundary in ``_load_mcp_configs`` so every
+    downstream consumer sees clean JSON-serializable types.
+    """
+    from decimal import Decimal
+    if isinstance(value, Decimal):
+        # Preserve integer-vs-float distinction so JSON Schema
+        # validators downstream don't see ``5.0`` where ``5`` was
+        # intended.
+        return int(value) if value == value.to_integral_value() else float(value)
+    if isinstance(value, list):
+        return [_ddb_normalize(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _ddb_normalize(v) for k, v in value.items()}
+    return value
+
+
 def _load_mcp_configs(mcp_server_ids: List[str]) -> List[Dict]:
     """Load MCP server configs and tool manifests from DynamoDB."""
     dynamodb = _get_dynamodb()
@@ -463,7 +491,10 @@ def _load_mcp_configs(mcp_server_ids: List[str]) -> List[Dict]:
                 logger.warning(f"[chat_handler] MCP server {mcp_id} has no cached tools, skipping")
                 continue
 
-            tools = tools_resp["Item"].get("tools", [])
+            # Normalize Decimal -> int/float at the DDB boundary so the
+            # tool inputSchema is JSON-serializable + Bedrock-Converse-
+            # compatible. See ``_ddb_normalize`` docstring.
+            tools = _ddb_normalize(tools_resp["Item"].get("tools", []))
             if not tools:
                 continue
 

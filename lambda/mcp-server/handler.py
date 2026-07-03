@@ -961,6 +961,23 @@ def discover_mcp_servers(user_workspace_ids):
     return servers
 
 
+def _ddb_normalize_tools(value):
+    """Recursively convert ``decimal.Decimal`` -> int/float in a DDB-
+    fetched tools blob so downstream JSON serialization + strict SDK
+    type validators (Bedrock Converse's ``document`` param) don't
+    reject numeric ``default`` / ``minimum`` / ``maximum`` fields on
+    a proxied MCP server's inputSchema. Mirror of ``_ddb_normalize``
+    in ``lambda/chat/handler.py``."""
+    from decimal import Decimal
+    if isinstance(value, Decimal):
+        return int(value) if value == value.to_integral_value() else float(value)
+    if isinstance(value, list):
+        return [_ddb_normalize_tools(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _ddb_normalize_tools(v) for k, v in value.items()}
+    return value
+
+
 def _load_mcp_server(table, mcp_id):
     """Load MCP server config and tools, with in-memory caching."""
     now = time.time()
@@ -991,10 +1008,15 @@ def _load_mcp_server(table, mcp_id):
         "encrypted_credentials": meta.get("encrypted_credentials", ""),
     }
 
-    # Load cached tool manifest from DynamoDB
+    # Load cached tool manifest from DynamoDB. Normalize any Decimal
+    # values in the schema (e.g. numeric ``default`` / ``minimum`` /
+    # ``maximum`` fields from an MCP server's inputSchema) to native
+    # int/float so downstream JSON serialization + strict Bedrock
+    # SDK type validation succeed. Mirror of ``_ddb_normalize`` in
+    # the chat handler.
     tools_resp = table.get_item(Key={"PK": f"MCP#{mcp_id}", "SK": "TOOLS"})
     tools_item = tools_resp.get("Item")
-    tools = tools_item.get("tools", []) if tools_item else []
+    tools = _ddb_normalize_tools(tools_item.get("tools", [])) if tools_item else []
 
     # If no cached tools, try fetching live
     if not tools and config["url"]:
