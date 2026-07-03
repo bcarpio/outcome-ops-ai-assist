@@ -21,6 +21,8 @@ import {
   getGitHubInstallUrl,
   listGitHubInstallations,
   listGitHubInstallationRepos,
+  listGitHubRepoBranches,
+  listAzureDevOpsRepoBranches,
   listGitHubRepos,
   addGitHubRepos,
   updateGitHubRepo,
@@ -365,6 +367,50 @@ describe('updateGitHubRepo', () => {
       expect.objectContaining({ method: 'PUT' })
     )
     expect(result.enabled).toBe(false)
+  })
+
+  it('sends default_branch when passed', async () => {
+    // The edit-branch modal (chunk 07) will call this with just
+    // default_branch to retarget an existing repo. Verify the field
+    // rides in the PUT body.
+    const repo = createGitHubRepo()
+    const fetchMock = vi.fn().mockResolvedValue(createMockFetchResponse({ repo }))
+    global.fetch = fetchMock
+    await updateGitHubRepo('ws-1', 'corp/legacy', { default_branch: 'main' })
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    expect(body.default_branch).toBe('main')
+  })
+})
+
+describe('listGitHubRepoBranches', () => {
+  it('GETs the branches subresource + parses response shape', async () => {
+    global.fetch = vi.fn().mockResolvedValue(createMockFetchResponse({
+      branches: [{ name: 'main' }, { name: 'develop' }],
+      current_default: 'main',
+      stored_default: 'master',
+    }))
+    const result = await listGitHubRepoBranches('ws-1', 'corp/legacy')
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/workspaces/ws-1/github/repos/corp%2Flegacy/branches',
+    )
+    expect(result.branches).toHaveLength(2)
+    // Drift-detect signal: stored differs from provider's current.
+    expect(result.current_default).toBe('main')
+    expect(result.stored_default).toBe('master')
+  })
+})
+
+describe('listAzureDevOpsRepoBranches', () => {
+  it('GETs the branches subresource for an ADO slug', async () => {
+    global.fetch = vi.fn().mockResolvedValue(createMockFetchResponse({
+      branches: [{ name: 'main' }],
+      current_default: 'main',
+      stored_default: 'main',
+    }))
+    await listAzureDevOpsRepoBranches('ws-1', 'example-org/proj/repo')
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/workspaces/ws-1/azure-devops/repos/example-org%2Fproj%2Frepo/branches',
+    )
   })
 })
 

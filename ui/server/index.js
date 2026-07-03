@@ -1401,6 +1401,18 @@ app.get("/api/workspaces/:id/github/repos", (req, res) => {
 app.post("/api/workspaces/:id/github/repos", (req, res) => {
   proxyGitHubRequest(req, res, "POST", `/workspaces/${req.params.id}/github/repos`);
 });
+// Sub-resource: /repos/{name}/branches — MUST precede the /repos/*
+// wildcards below so the wildcard doesn't greedy-match "branches".
+// (The wildcard captures everything after "repos/", so declaring this
+// second wouldn't break anything on the wildcards themselves, but the
+// intent is clearer with the more-specific route first.)
+app.get("/api/workspaces/:id/github/repos/*/branches", (req, res) => {
+  const repoName = req.params[0];
+  proxyGitHubRequest(
+    req, res, "GET",
+    `/workspaces/${req.params.id}/github/repos/${encodeURIComponent(repoName)}/branches`,
+  );
+});
 app.put("/api/workspaces/:id/github/repos/*", (req, res) => {
   // Extract repo name from wildcard (supports slashes like "owner/repo")
   const repoName = req.params[0];
@@ -1559,6 +1571,16 @@ app.get("/api/workspaces/:id/azure-devops/repos", (req, res) =>
 app.post("/api/workspaces/:id/azure-devops/repos", (req, res) =>
   proxyAzureDevOpsRequest(req, res, "POST", `/workspaces/${req.params.id}/azure-devops/repos`),
 );
+
+// Sub-resource: /repos/{slug}/branches. Slug is org/project/repo
+// (two slashes) so the wildcard captures the full slug.
+app.get("/api/workspaces/:id/azure-devops/repos/*/branches", (req, res) => {
+  const slug = req.params[0];
+  proxyAzureDevOpsRequest(
+    req, res, "GET",
+    `/workspaces/${req.params.id}/azure-devops/repos/${encodeURIComponent(slug)}/branches`,
+  );
+});
 
 // org/project/repo slug contains two slashes; use the wildcard catch-all.
 app.put("/api/workspaces/:id/azure-devops/repos/*", (req, res) => {

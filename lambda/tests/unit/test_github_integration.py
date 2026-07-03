@@ -1814,6 +1814,129 @@ class TestHandleUpdateRepo:
         result = handle_update_repo(event)
         assert result["statusCode"] == 401
 
+    @patch.object(handler_module, 'get_repo')
+    @patch.object(handler_module, 'update_repo')
+    @patch.object(handler_module, '_get_dynamodb')
+    def test_update_repo_accepts_default_branch(
+        self, mock_db, mock_update, mock_get_repo,
+        mock_dynamodb, mock_table, sample_repo,
+    ):
+        """The PATCH allow-list is widened to accept default_branch.
+        Admin retargets a repo's sync branch (e.g. master -> main after
+        an org-wide cutover) without remove/re-add."""
+        mock_db.return_value = mock_dynamodb
+        mock_table.get_item.return_value = {"Item": {"role": "workspace_admin"}}
+        mock_get_repo.side_effect = [
+            sample_repo,
+            {**sample_repo, "default_branch": "develop"},
+        ]
+
+        event = _authed_event(
+            method="PUT",
+            path="/workspaces/ws_test/github/repos/test-org/my-repo",
+            path_params={"id": "ws_test", "repoName": "test-org/my-repo"},
+            email="admin@example.com",
+            body={"default_branch": "develop"},
+        )
+        result = handle_update_repo(event)
+        assert result["statusCode"] == 200
+        _, kwargs = mock_update.call_args
+        assert kwargs["default_branch"] == "develop"
+        body = json.loads(result["body"])
+        assert body["repo"]["default_branch"] == "develop"
+
+    @patch.object(handler_module, 'get_repo')
+    @patch.object(handler_module, 'update_repo')
+    @patch.object(handler_module, '_get_dynamodb')
+    def test_update_repo_default_branch_strips_whitespace_and_treats_empty_as_none(
+        self, mock_db, mock_update, mock_get_repo,
+        mock_dynamodb, mock_table, sample_repo,
+    ):
+        # Whitespace-only submissions should not overwrite a real
+        # branch name with "" -- treat as "no change" for safety.
+        mock_db.return_value = mock_dynamodb
+        mock_table.get_item.return_value = {"Item": {"role": "workspace_admin"}}
+        mock_get_repo.side_effect = [sample_repo, sample_repo]
+        event = _authed_event(
+            method="PUT",
+            path="/workspaces/ws_test/github/repos/test-org/my-repo",
+            path_params={"id": "ws_test", "repoName": "test-org/my-repo"},
+            email="admin@example.com",
+            body={"default_branch": "   "},
+        )
+        handle_update_repo(event)
+        _, kwargs = mock_update.call_args
+        assert kwargs["default_branch"] is None
+
+
+class TestHandleListRepoBranches:
+    """New GET /repos/{name}/branches endpoint. Returns available
+    branches + provider's current default so the edit-branch modal
+    can render a dropdown + drift-detect badge without a client-side
+    GitHub call."""
+
+    @patch.object(handler_module, 'get_repo_default_branch')
+    @patch.object(handler_module, 'list_repo_branches')
+    @patch.object(handler_module, 'get_repo')
+    @patch.object(handler_module, '_get_dynamodb')
+    def test_success_returns_branches_current_default_and_stored(
+        self, mock_db, mock_get_repo, mock_list, mock_default,
+        mock_dynamodb, mock_table,
+    ):
+        mock_db.return_value = mock_dynamodb
+        mock_table.get_item.return_value = {"Item": {"role": "workspace_admin"}}
+        mock_get_repo.return_value = {
+            "repo_name": "corp/legacy-app",
+            "installation_id": "12345",
+            "default_branch": "master",  # what we stored
+        }
+        mock_list.return_value = [
+            {"name": "master", "protected": True},
+            {"name": "main", "protected": False},
+            {"name": "develop", "protected": False},
+        ]
+        mock_default.return_value = "main"  # what GitHub says now
+
+        event = _authed_event(
+            method="GET",
+            path="/workspaces/ws_test/github/repos/corp/legacy-app/branches",
+            path_params={"id": "ws_test", "repoName": "corp/legacy-app"},
+            email="admin@example.com",
+        )
+        result = handler_module.handle_list_repo_branches(event)
+        assert result["statusCode"] == 200
+        body = json.loads(result["body"])
+        assert len(body["branches"]) == 3
+        assert body["current_default"] == "main"
+        assert body["stored_default"] == "master"  # drift visible to UI
+        mock_list.assert_called_once_with("12345", "corp", "legacy-app")
+
+    @patch.object(handler_module, 'get_repo')
+    @patch.object(handler_module, '_get_dynamodb')
+    def test_returns_404_when_repo_not_in_workspace(
+        self, mock_db, mock_get_repo, mock_dynamodb, mock_table,
+    ):
+        mock_db.return_value = mock_dynamodb
+        mock_table.get_item.return_value = {"Item": {"role": "workspace_admin"}}
+        mock_get_repo.return_value = None
+        event = _authed_event(
+            method="GET",
+            path="/workspaces/ws_test/github/repos/corp/missing/branches",
+            path_params={"id": "ws_test", "repoName": "corp/missing"},
+            email="admin@example.com",
+        )
+        result = handler_module.handle_list_repo_branches(event)
+        assert result["statusCode"] == 404
+
+    def test_returns_401_without_auth(self):
+        event = _make_event(
+            method="GET",
+            path="/workspaces/ws_test/github/repos/corp/x/branches",
+            path_params={"id": "ws_test", "repoName": "corp/x"},
+        )
+        result = handler_module.handle_list_repo_branches(event)
+        assert result["statusCode"] == 401
+
     @patch.object(handler_module, '_get_dynamodb')
     def test_update_repo_not_admin(self, mock_db, mock_dynamodb, mock_table):
         """Test updating repo returns 403 for non-admin."""

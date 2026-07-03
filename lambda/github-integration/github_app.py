@@ -325,6 +325,57 @@ def get_repo_default_branch(
         raise GitHubAppError(f"Failed to get repo info: {e.code}")
 
 
+def list_repo_branches(
+    installation_id: str,
+    owner: str,
+    repo: str,
+    max_pages: int = 5,
+) -> list:
+    """List all branch names for a repository.
+
+    Uses ``GET /repos/{owner}/{repo}/branches`` (paginated, 100/page).
+    Returns a list of ``{"name": str, "protected": bool}`` dicts.
+
+    ``max_pages`` caps quota burn on repos with thousands of branches
+    (5 pages * 100 = 500 branches — enough for every real-world repo;
+    the edit-branch modal doesn't need the extreme tail).
+    """
+    token, _ = get_installation_token(installation_id)
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+    branches = []
+    for page in range(1, max_pages + 1):
+        url = (
+            f"{GITHUB_API_BASE}/repos/{owner}/{repo}/branches"
+            f"?per_page=100&page={page}"
+        )
+        req = urllib.request.Request(url, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=30) as response:
+                page_data = json.loads(response.read().decode())
+                if not page_data:
+                    break
+                for b in page_data:
+                    name = b.get("name")
+                    if name:
+                        branches.append({
+                            "name": name,
+                            "protected": bool(b.get("protected", False)),
+                        })
+                if len(page_data) < 100:
+                    break
+        except urllib.error.HTTPError as e:
+            error_body = e.read().decode() if e.fp else ""
+            logger.error(f"Failed to list branches: {e.code} - {error_body}")
+            raise GitHubAppError(f"Failed to list branches: {e.code}")
+
+    return branches
+
+
 def get_latest_commit_sha(
     installation_id: str,
     owner: str,

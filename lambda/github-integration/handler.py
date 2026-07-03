@@ -57,6 +57,7 @@ from github_app import (
     get_github_config,
     get_installation_repos,
     get_repo_default_branch,
+    list_repo_branches,
 )
 
 # Configure logging
@@ -362,8 +363,17 @@ def update_repo(
     repo_name: str,
     include_code_maps: Optional[bool] = None,
     enabled: Optional[bool] = None,
+    default_branch: Optional[str] = None,
 ) -> None:
-    """Update repo settings."""
+    """Update repo settings.
+
+    ``default_branch`` is the branch the sync path walks. Persisted
+    here so admins can retarget an added repo without remove/re-add
+    (e.g. their org cut over from master to main; or they want to
+    sync from `develop` on a `main`-defaulted repo). Downstream
+    ``github-sync::resolve_sync_branch`` reads this value; the
+    change takes effect on the next sync.
+    """
     update_parts = ["updated_at = :now"]
     expr_values = {":now": _now_iso()}
 
@@ -373,6 +383,9 @@ def update_repo(
     if enabled is not None:
         update_parts.append("enabled = :enabled")
         expr_values[":enabled"] = enabled
+    if default_branch is not None:
+        update_parts.append("default_branch = :db")
+        expr_values[":db"] = default_branch
 
     dual_write.ddb_update_item(
         WORKSPACES_TABLE,
@@ -891,12 +904,16 @@ def handle_update_repo(event: Dict) -> Dict:
 
     include_code_maps = body.get("include_code_maps")
     enabled = body.get("enabled")
+    default_branch = body.get("default_branch")
+    if default_branch is not None:
+        default_branch = str(default_branch).strip() or None
 
     update_repo(
         workspace_id=workspace_id,
         repo_name=repo_name,
         include_code_maps=include_code_maps,
         enabled=enabled,
+        default_branch=default_branch,
     )
 
     updated = get_repo(workspace_id, repo_name)
@@ -912,7 +929,58 @@ def handle_update_repo(event: Dict) -> Dict:
             "last_sync_error": updated.get("last_sync_error"),
             "added_at": updated.get("added_at"),
             "added_by": updated.get("added_by"),
+            "default_branch": updated.get("default_branch"),
         }
+    })
+
+
+def handle_list_repo_branches(event: Dict) -> Dict:
+    """GET /workspaces/{id}/github/repos/{name}/branches
+
+    Returns available branches for a repo + the provider's *current*
+    default branch. Powers the edit-branch modal's dropdown +
+    drift-detect badge ("stored=master, provider now says main").
+
+    Requires workspace admin (mirrors update_repo).
+    """
+    user_email = _get_user_from_request(event)
+    if not user_email:
+        return _error(401, "User email not provided")
+
+    path_params = event.get("pathParameters", {})
+    workspace_id = path_params.get("id")
+    repo_name = path_params.get("repoName")
+    if not repo_name:
+        return _error(400, "Repo name is required")
+    repo_name = urllib.parse.unquote(repo_name)
+
+    table = _get_dynamodb().Table(WORKSPACES_TABLE)
+    if not _is_workspace_admin(table, user_email, workspace_id):
+        return _error(403, "Only workspace admins can list branches")
+
+    repo = get_repo(workspace_id, repo_name)
+    if not repo:
+        return _error(404, "Repo not found")
+
+    installation_id = repo.get("installation_id", "")
+    if "/" not in repo_name:
+        return _error(400, "Repo name must be owner/repo")
+    owner, repo_short = repo_name.split("/", 1)
+
+    try:
+        branches = list_repo_branches(installation_id, owner, repo_short)
+        current_default = get_repo_default_branch(
+            installation_id, owner, repo_short,
+        )
+    except GitHubAppError as e:
+        return _error(502, f"GitHub API error: {e}")
+
+    return _response(200, {
+        "branches": branches,
+        # Provider's current default -- the UI compares this to
+        # ``stored_default`` to render the drift badge.
+        "current_default": current_default,
+        "stored_default": repo.get("default_branch"),
     })
 
 
@@ -1088,6 +1156,21 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
                 except RegionPassiveError:
                     return passive_response("github_add_repos")
                 return handle_add_repos(event)
+
+        # Sub-resource: /workspaces/{id}/github/repos/{name}/branches
+        # Must match BEFORE the single-repo route below (which greedy-
+        # joins everything after parts[4:]).
+        if (
+            len(parts) >= 6
+            and parts[0] == "workspaces"
+            and parts[2] == "github"
+            and parts[3] == "repos"
+            and parts[-1] == "branches"
+            and http_method == "GET"
+        ):
+            repo_name = "/".join(parts[4:-1])
+            event["pathParameters"] = {"id": parts[1], "repoName": repo_name}
+            return handle_list_repo_branches(event)
 
         # Single repo routes: /workspaces/{id}/github/repos/{name}
         # Note: name may contain slashes (owner/repo), so we need to join remaining parts

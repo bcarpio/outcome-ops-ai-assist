@@ -77,6 +77,7 @@ from azure_devops_api import (  # noqa: E402
     get_latest_commit_sha,
     get_repo as ado_get_repo,
     list_accessible_orgs,
+    list_branches as ado_list_branches,
     list_projects as ado_list_projects,
     list_repos as ado_list_repos,
 )
@@ -879,6 +880,9 @@ def handle_update_repo(event: Dict) -> Dict:
 
     include_code_maps = body.get("include_code_maps")
     enabled = body.get("enabled")
+    default_branch = body.get("default_branch")
+    if default_branch is not None:
+        default_branch = str(default_branch).strip() or None
 
     set_parts = ["updated_at = :now"]
     expr_values = {":now": _now_iso()}
@@ -888,6 +892,9 @@ def handle_update_repo(event: Dict) -> Dict:
     if enabled is not None:
         set_parts.append("enabled = :enabled")
         expr_values[":enabled"] = bool(enabled)
+    if default_branch is not None:
+        set_parts.append("default_branch = :db")
+        expr_values[":db"] = default_branch
 
     dual_write.ddb_update_item(
         WORKSPACES_TABLE,
@@ -904,6 +911,54 @@ def handle_update_repo(event: Dict) -> Dict:
             "include_code_maps": updated.get("include_code_maps", True),
             "repo_type": updated.get("repo_type", "application"),
         }
+    })
+
+
+def handle_list_repo_branches(event: Dict) -> Dict:
+    """GET /workspaces/{id}/azure-devops/repos/{slug}/branches
+
+    Returns available branches for a repo + the provider's *current*
+    default branch. Powers the edit-branch modal's dropdown +
+    drift-detect badge. Mirror of the GitHub-side endpoint.
+    """
+    user_email = _get_user_from_request(event)
+    if not user_email:
+        return _error(401, "User email not provided")
+    path_params = event.get("pathParameters", {})
+    workspace_id = path_params.get("id")
+    slug = urllib.parse.unquote(path_params.get("slug", ""))
+    parts = _slug_to_parts(slug)
+    if not parts:
+        return _error(400, "Invalid slug; expected org/project/repo")
+    org, project, repo_name = parts
+
+    table = _get_dynamodb().Table(WORKSPACES_TABLE)
+    if not _is_workspace_admin(table, user_email, workspace_id):
+        return _error(403, "Only workspace admins can list branches")
+
+    repo_row = _get_workspace_repo(workspace_id, slug)
+    if not repo_row:
+        return _error(404, "Repo not found")
+
+    connection_id = repo_row.get("connection_id", "")
+    access_token = _connection_access_token(connection_id)
+    if not access_token:
+        return _error(401, "ADO connection auth failed; please reconnect")
+
+    try:
+        branches = ado_list_branches(access_token, org, project, repo_name)
+        current_default = get_default_branch(access_token, org, project, repo_name)
+    except AzureDevOpsAuthError:
+        return _error(401, "Authentication failed. Please reconnect.")
+    except AzureDevOpsNotFoundError:
+        return _error(404, "Repo not found in ADO")
+    except AzureDevOpsAPIError as e:
+        return _error(502, f"Azure DevOps API error: {e}")
+
+    return _response(200, {
+        "branches": branches,
+        "current_default": current_default,
+        "stored_default": repo_row.get("default_branch"),
     })
 
 
@@ -1112,6 +1167,20 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
                     except RegionPassiveError:
                         return passive_response("azure_devops_add_repos")
                     return handle_add_repos(event)
+
+            # Sub-resource: /workspaces/{id}/azure-devops/repos/{slug...}/branches
+            # slug is org/project/repo (2 slashes), branches appended;
+            # parts[-1] == "branches", slug spans parts[4:-1]. Must
+            # match before the greedy /{slug} route below.
+            if (
+                len(parts) >= 8
+                and parts[3] == "repos"
+                and parts[-1] == "branches"
+                and http_method == "GET"
+            ):
+                slug = "/".join(parts[4:-1])
+                event["pathParameters"] = {"id": workspace_id, "slug": slug}
+                return handle_list_repo_branches(event)
 
             # /workspaces/{id}/azure-devops/repos/{slug...}
             # ``slug`` is org/project/repo and contains TWO slashes,

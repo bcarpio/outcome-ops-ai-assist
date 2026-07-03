@@ -578,6 +578,87 @@ class TestUpdateRepo:
         )
         assert handler.lambda_handler(event, None)["statusCode"] == 404
 
+    @patch.object(handler, "dual_write")
+    def test_accepts_default_branch(self, mock_dual, mock_table):
+        # PATCH allow-list widened to accept default_branch on ADO too
+        # so admins can retarget an added repo without remove/re-add.
+        _admin_user(mock_table)
+        def gi(Key, **_):
+            if Key["SK"].startswith("WS_MEMBER#"):
+                return {"Item": {"role": "workspace_admin"}}
+            if Key["SK"].startswith("AZDO_REPO#"):
+                return {"Item": {
+                    "slug": "o/p/r", "enabled": True,
+                    "include_code_maps": True, "repo_type": "application",
+                }}
+            return {}
+        mock_table.get_item.side_effect = gi
+
+        event = _make_event(
+            "PUT", "/workspaces/w1/azure-devops/repos/o/p/r",
+            body={"default_branch": "develop"},
+        )
+        result = handler.lambda_handler(event, None)
+        assert result["statusCode"] == 200
+        call_kwargs = mock_dual.ddb_update_item.call_args.kwargs
+        assert "default_branch = :db" in call_kwargs["UpdateExpression"]
+        assert call_kwargs["ExpressionAttributeValues"][":db"] == "develop"
+
+
+class TestListRepoBranches:
+    """New GET /azure-devops/repos/{slug}/branches endpoint. Mirror
+    of the GitHub-side handler; returns available branches + provider's
+    current default for the edit-branch modal to render."""
+
+    @patch.object(handler, "get_default_branch")
+    @patch.object(handler, "ado_list_branches")
+    @patch.object(handler, "_connection_access_token")
+    def test_success_returns_branches_current_default_and_stored(
+        self, mock_token, mock_list, mock_default, mock_table,
+    ):
+        _admin_user(mock_table)
+        def gi(Key, **_):
+            if Key["SK"].startswith("WS_MEMBER#"):
+                return {"Item": {"role": "workspace_admin"}}
+            if Key["SK"].startswith("AZDO_REPO#"):
+                return {"Item": {
+                    "slug": "example-org/proj/repo",
+                    "connection_id": "c1",
+                    "default_branch": "master",
+                }}
+            return {}
+        mock_table.get_item.side_effect = gi
+        mock_token.return_value = "access-token"
+        mock_list.return_value = [{"name": "master"}, {"name": "main"}]
+        mock_default.return_value = "main"
+
+        event = _make_event(
+            "GET", "/workspaces/w1/azure-devops/repos/example-org/proj/repo/branches",
+        )
+        result = handler.lambda_handler(event, None)
+        assert result["statusCode"] == 200
+        body = json.loads(result["body"])
+        assert len(body["branches"]) == 2
+        assert body["current_default"] == "main"
+        assert body["stored_default"] == "master"
+
+    @patch.object(handler, "_connection_access_token")
+    def test_returns_404_when_repo_not_in_workspace(
+        self, mock_token, mock_table,
+    ):
+        _admin_user(mock_table)
+        def gi(Key, **_):
+            if Key["SK"].startswith("WS_MEMBER#"):
+                return {"Item": {"role": "workspace_admin"}}
+            return {}
+        mock_table.get_item.side_effect = gi
+
+        event = _make_event(
+            "GET", "/workspaces/w1/azure-devops/repos/example-org/proj/missing/branches",
+        )
+        result = handler.lambda_handler(event, None)
+        assert result["statusCode"] == 404
+
 
 class TestDeleteRepo:
 

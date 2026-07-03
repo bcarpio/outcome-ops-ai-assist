@@ -249,6 +249,34 @@ def get_default_branch(access_token: str, org: str, project: str, repo: str) -> 
     return default
 
 
+def list_branches(
+    access_token: str, org: str, project: str, repo: str,
+) -> List[Dict[str, Any]]:
+    """List branches for a repo.
+
+    Uses ``GET /_apis/git/repositories/{repo}/refs?filter=heads/`` to
+    scope to branch refs (skip tags, notes). Returns
+    ``[{"name": "main"}]`` -- short ref names, no ``refs/heads/``
+    prefix (matches the vocabulary get_default_branch already speaks).
+    """
+    url = _add_query(
+        f"{DEV_AZURE_HOST}/{org}/{project}/_apis/git/repositories/{repo}/refs",
+        {"api-version": API_VERSION, "filter": "heads/"},
+    )
+    body, _ = _request("GET", url, access_token)
+    refs = body.get("value", []) or []
+    branches = []
+    for ref in refs:
+        raw = ref.get("name", "") or ""
+        # ADO returns full ref: "refs/heads/main". Strip the prefix so
+        # every consumer speaks the same short-ref form GitHub uses.
+        if raw.startswith("refs/heads/"):
+            branches.append({"name": raw[len("refs/heads/"):]})
+        elif raw:
+            branches.append({"name": raw})
+    return branches
+
+
 def get_latest_commit_sha(
     access_token: str,
     org: str,

@@ -1981,7 +1981,7 @@ export async function addGitHubRepos(
 export async function updateGitHubRepo(
   workspaceId: string,
   repoName: string,
-  updates: { enabled?: boolean; include_code_maps?: boolean }
+  updates: { enabled?: boolean; include_code_maps?: boolean; default_branch?: string }
 ): Promise<GitHubRepo> {
   const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/github/repos/${encodeURIComponent(repoName)}`, {
     method: 'PUT',
@@ -1994,6 +1994,34 @@ export async function updateGitHubRepo(
   }
   const data = await safeJson(response)
   return data?.repo as GitHubRepo
+}
+
+/** Response shape from ``GET /repos/{name}/branches`` — powers the
+ * edit-branch modal's dropdown and drift-detect badge. */
+export interface RepoBranchesResponse {
+  branches: { name: string; protected?: boolean }[]
+  /** Provider's current default (may have changed since we stored ours). */
+  current_default: string
+  /** What our DDB row has today (may be null on legacy pre-chunk-01 rows). */
+  stored_default: string | null
+}
+
+/** List branches for a GitHub repo. Server-side calls GitHub's
+ * paginated branches API (up to 500 branches) and returns them
+ * alongside the provider's current default for drift detection. */
+export async function listGitHubRepoBranches(
+  workspaceId: string,
+  repoName: string,
+): Promise<RepoBranchesResponse> {
+  const response = await fetch(
+    `${API_BASE}/workspaces/${workspaceId}/github/repos/${encodeURIComponent(repoName)}/branches`,
+  )
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to list branches: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return data as RepoBranchesResponse
 }
 
 /**
@@ -2191,7 +2219,7 @@ export async function addAzureDevOpsRepos(
 export async function updateAzureDevOpsRepo(
   workspaceId: string,
   slug: string,
-  updates: { enabled?: boolean; include_code_maps?: boolean },
+  updates: { enabled?: boolean; include_code_maps?: boolean; default_branch?: string },
 ): Promise<AzureDevOpsRepo> {
   const response = await fetch(
     `${API_BASE}/workspaces/${workspaceId}/azure-devops/repos/${encodeURIComponent(slug)}`,
@@ -2207,6 +2235,22 @@ export async function updateAzureDevOpsRepo(
   }
   const data = await safeJson(response)
   return data?.repo as AzureDevOpsRepo
+}
+
+/** List branches for an ADO repo. Mirror of listGitHubRepoBranches. */
+export async function listAzureDevOpsRepoBranches(
+  workspaceId: string,
+  slug: string,
+): Promise<RepoBranchesResponse> {
+  const response = await fetch(
+    `${API_BASE}/workspaces/${workspaceId}/azure-devops/repos/${encodeURIComponent(slug)}/branches`,
+  )
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to list branches: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return data as RepoBranchesResponse
 }
 
 /** Remove an Azure DevOps repo from a workspace. */
