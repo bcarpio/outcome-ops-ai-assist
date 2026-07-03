@@ -2021,7 +2021,7 @@ export async function listGitHubRepoBranches(
     throw new Error((data?.error as string) || `Failed to list branches: ${response.status}`)
   }
   const data = await safeJson(response)
-  return data as RepoBranchesResponse
+  return data as unknown as RepoBranchesResponse
 }
 
 /**
@@ -2250,7 +2250,7 @@ export async function listAzureDevOpsRepoBranches(
     throw new Error((data?.error as string) || `Failed to list branches: ${response.status}`)
   }
   const data = await safeJson(response)
-  return data as RepoBranchesResponse
+  return data as unknown as RepoBranchesResponse
 }
 
 /** Remove an Azure DevOps repo from a workspace. */
