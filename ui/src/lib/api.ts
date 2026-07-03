@@ -800,7 +800,14 @@ export async function listSharingOptions(workspaceId: string): Promise<Workspace
 export interface SearchableWorkspace {
   workspace_id: string
   name: string
-  access_type: 'member' | 'shared' | 'org_admin'
+  // ``global`` = surfaced because the workspace is is_global=true and
+  // the caller isn't a member. Content is readable by anyone in the
+  // deployment per ADR-037.
+  access_type: 'member' | 'shared' | 'org_admin' | 'global'
+  // Global workspace metadata surfaced so the picker can render a
+  // ``Global`` badge. True for is_global workspaces regardless of
+  // whether the caller is a member.
+  is_global?: boolean
 }
 
 /**

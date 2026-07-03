@@ -21,6 +21,7 @@ import {
   List,
   Mic,
   Share2,
+  Globe,
 } from 'lucide-react'
 import {
   sendChatMessage,
@@ -675,8 +676,21 @@ export default function Chat() {
                             className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
                           />
                           <div className="flex-1 min-w-0">
-                            <p className="text-sm font-medium text-gray-900 truncate">{ws.name}</p>
-                            <p className="text-xs text-gray-500 capitalize">{ws.access_type}</p>
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              <p className="text-sm font-medium text-gray-900 truncate">{ws.name}</p>
+                              {ws.is_global && (
+                                <span
+                                  className="text-[10px] px-1 py-0.5 rounded bg-blue-100 text-blue-700 inline-flex items-center gap-0.5 flex-shrink-0"
+                                  title="Global workspace — content applies across the deployment"
+                                >
+                                  <Globe size={9} />
+                                  Global
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-xs text-gray-500 capitalize">
+                              {ws.access_type === 'global' ? 'Global · Read-only' : ws.access_type}
+                            </p>
                           </div>
                         </label>
                       ))}

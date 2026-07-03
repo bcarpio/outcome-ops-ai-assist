@@ -1902,13 +1902,16 @@ def get_searchable_workspaces(user_email: str) -> Dict:
         logger.info(f"Searchable workspaces for {user_email}: is_org_admin={is_admin}")
 
         if is_admin:
-            # Org admins can search all workspaces
+            # Org admins can search all workspaces. Global flag is
+            # surfaced so the chat picker can render the badge; the
+            # access type stays org_admin (their read is unconditional).
             all_ws = _scan_all_workspaces(table)
             workspaces = [
                 {
                     "workspace_id": ws.get("workspace_id"),
                     "name": ws.get("name"),
                     "access_type": "org_admin",
+                    "is_global": bool(ws.get("is_global", False)),
                 }
                 for ws in all_ws
             ]
@@ -1969,6 +1972,33 @@ def get_searchable_workspaces(user_email: str) -> Dict:
 
                 if cross_count > 0:
                     logger.info(f"User {user_email}: {cross_count} cross-workspace shared")
+
+            # ADR-037: is_global workspaces are readable by every user.
+            # Include them in the chat picker regardless of membership
+            # or explicit share so the customer can add them to their
+            # chat context alongside their own workspaces. Chat scope
+            # resolution (chunk 03) enforces the actual retrieval
+            # semantics; this is just picker surfacing.
+            all_ws_for_globals = _scan_all_workspaces(table)
+            global_count = 0
+            for ws in all_ws_for_globals:
+                ws_id = ws.get("workspace_id")
+                if ws_id in seen_ids:
+                    continue
+                if not ws.get("is_global"):
+                    continue
+                workspaces.append({
+                    "workspace_id": ws_id,
+                    "name": ws.get("name"),
+                    "access_type": "global",
+                    "is_global": True,
+                })
+                seen_ids.add(ws_id)
+                global_count += 1
+            if global_count > 0:
+                logger.info(
+                    f"User {user_email}: {global_count} global workspace(s) surfaced"
+                )
 
         # Sort by name
         workspaces.sort(key=lambda x: x.get("name", "").lower())
