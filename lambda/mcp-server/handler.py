@@ -1315,9 +1315,11 @@ def handle_list_workspace_documents(params, email):
         return {"error": "workspace_id is required"}
 
     # Verify access — same path chat uses, includes direct membership,
-    # shared workspaces, and org-admin enumeration.
+    # shared workspaces, and org-admin enumeration. ADR-037: is_global
+    # workspaces are readable by any authenticated caller regardless of
+    # membership.
     user_ws_ids = get_user_workspace_ids(email)
-    if workspace_id not in user_ws_ids:
+    if workspace_id not in user_ws_ids and not _workspace_is_global(workspace_id):
         return {"error": "You do not have access to this workspace"}
 
     s3vectors = _get_s3vectors_client()
@@ -1461,20 +1463,42 @@ def _resolution_result_to_dict(resolution_result) -> dict:
     }
 
 
+def _workspace_is_global(workspace_id):
+    """Return True if the workspace has ``is_global=true`` on its METADATA row.
+
+    ADR-037: is_global workspaces are readable by any authenticated caller
+    in the deploy regardless of membership. This helper is the pass-through
+    for per-tool workspace-access gates on the MCP server. Fail-soft: on
+    any DDB error, return False so callers collapse to the membership-only
+    behavior rather than silently opening access.
+    """
+    if not workspace_id:
+        return False
+    try:
+        table = _get_dynamodb().Table(DYNAMODB_TABLE)
+        resp = table.get_item(Key={"PK": f"WS#{workspace_id}", "SK": "METADATA"})
+        return bool(resp.get("Item", {}).get("is_global", False))
+    except ClientError:
+        return False
+
+
 def _check_symbol_graph_workspace_access(workspace_id, email):
     """Return None if access is allowed, else an error-payload dict.
 
-    Mirrors the access check in ``handle_list_workspace_documents``: the
-    user must be a member (direct or via cross-workspace share) of the
-    requested workspace. The symbol-graph reader itself does NOT enforce
-    auth -- the gateway does.
+    Access is granted when the caller is a member (direct or via
+    cross-workspace share) of the requested workspace OR when the
+    workspace is flagged ``is_global=true`` (ADR-037: globals are readable
+    by any authenticated caller). The symbol-graph reader itself does NOT
+    enforce auth -- the gateway does.
     """
     if not workspace_id:
         return {"error": "workspace_id is required"}
     user_ws_ids = get_user_workspace_ids(email)
-    if workspace_id not in user_ws_ids:
-        return {"error": "You do not have access to this workspace"}
-    return None
+    if workspace_id in user_ws_ids:
+        return None
+    if _workspace_is_global(workspace_id):
+        return None
+    return {"error": "You do not have access to this workspace"}
 
 
 def handle_find_callers(params, email):

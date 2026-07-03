@@ -265,6 +265,19 @@ def query_s3_vectors(
 5. **Citation polish.** `format_source` and `query_s3_vectors`
    surface workspace name per source; `WORKSPACES_TABLE` +
    `dynamodb:BatchGetItem` grant added to query-kb Lambda.
+6. **MCP per-tool access gates.** Chunk 01 widened the
+   `list_workspaces` enumeration, but every per-tool call
+   still gated on direct membership via
+   `_check_symbol_graph_workspace_access` (used by all 8
+   symbol-graph tools including `read_source`) and the inline
+   check in `handle_list_workspace_documents`. Both now
+   pass through when the target workspace is `is_global=true`,
+   via a shared `_workspace_is_global` DDB helper. Fail-soft:
+   any DDB error collapses back to membership-only.
+   Discovered when Claude Code hit "You do not have access"
+   invoking `read_source` on a Global workspace it could see
+   in `list_workspaces`. Fourth per-surface fix after chat
+   resolver, searchable-workspaces, and MCP `list_workspaces`.
 
 ### Next phases
 
@@ -301,20 +314,23 @@ def query_s3_vectors(
 
 ## References
 
-- `plan/overview.md` (soon-to-be-swept) — chunk breakdown, open
-  questions, and locked-in design decisions from the pre-ship
-  conversation.
-- `lambda/workspace-management/handler.py:458` — MCP-server
-  `is_global` field on `CreateMcpServerRequest` (the pattern this
-  ADR extends to workspaces themselves).
+- `lambda/workspace-management/handler.py::create_workspace` +
+  `update_workspace` — MCP-server `is_global` field on
+  `CreateMcpServerRequest` (the pattern this ADR extends to
+  workspaces themselves).
 - `lambda/chat/handler.py::resolve_chat_workspace_scope`.
+- `lambda/mcp-server/handler.py::_workspace_is_global` +
+  `_check_symbol_graph_workspace_access`.
 - `lambda/shared/pr_check_scope.py`.
 - `docs/mcp-toolset-spec.md` §5.1.
 
 Version History:
 
-- v1.0 (2026-07-03): Initial decision. Chunks 01-05 shipped
-  (commits `8c66c9c`, `08a1e98`, `ecf5e77`, `0662df7`, `bfc56ce`).
+- v1.0 (2026-07-03): Initial decision. Chunks 01-05 shipped.
   Closes the workspace-blind tech-debt entry.
+- v1.1 (2026-07-03): MCP per-tool access gates widened to
+  honor `is_global` (fourth per-surface fix). Covers all 8
+  symbol-graph tools plus `read_source` and
+  `list_workspace_documents`.
 
 <!-- Confluence sync -->

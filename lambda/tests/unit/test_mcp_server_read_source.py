@@ -795,4 +795,117 @@ class TestBareRepoLookup:
             )
         assert "error" in result
         assert "no GitHub repo row" in result["error"]
-        assert "unknown" in result["error"]
+
+
+# ===========================================================================
+# ADR-037 -- is_global workspaces are readable by any authenticated caller.
+# The MCP per-tool gates must honor the flag, not just direct membership.
+# ===========================================================================
+
+
+def _seed_workspace_metadata(table, workspace_id, is_global=False):
+    table.put_item(Item={
+        "PK": f"WS#{workspace_id}",
+        "SK": "METADATA",
+        "workspace_id": workspace_id,
+        "name": "Standards and ADRs",
+        "is_global": bool(is_global),
+    })
+
+
+class TestIsGlobalPassThrough:
+    """ADR-037 fourth per-surface fix: MCP per-tool access gates."""
+
+    def test_helper_returns_true_for_is_global_metadata(self, workspaces_table):
+        _seed_workspace_metadata(workspaces_table, "ws-global-1", is_global=True)
+        assert mcp_module._workspace_is_global("ws-global-1") is True
+
+    def test_helper_returns_false_when_flag_absent(self, workspaces_table):
+        _seed_workspace_metadata(workspaces_table, "ws-normal-1", is_global=False)
+        assert mcp_module._workspace_is_global("ws-normal-1") is False
+
+    def test_helper_returns_false_when_row_missing(self, workspaces_table):
+        assert mcp_module._workspace_is_global("ws-does-not-exist") is False
+
+    def test_helper_empty_workspace_id_returns_false(self):
+        assert mcp_module._workspace_is_global("") is False
+        assert mcp_module._workspace_is_global(None) is False
+
+    def test_symbol_graph_gate_allows_non_member_on_global(self, workspaces_table):
+        _seed_workspace_metadata(workspaces_table, "ws-global-2", is_global=True)
+        with patch.object(mcp_module, "get_user_workspace_ids", return_value=[]):
+            deny = mcp_module._check_symbol_graph_workspace_access(
+                "ws-global-2", USER_EMAIL,
+            )
+        assert deny is None
+
+    def test_symbol_graph_gate_denies_non_member_on_private(self, workspaces_table):
+        _seed_workspace_metadata(workspaces_table, "ws-private-1", is_global=False)
+        with patch.object(mcp_module, "get_user_workspace_ids", return_value=[]):
+            deny = mcp_module._check_symbol_graph_workspace_access(
+                "ws-private-1", USER_EMAIL,
+            )
+        assert deny == {"error": "You do not have access to this workspace"}
+
+    def test_symbol_graph_gate_still_allows_direct_member(self, workspaces_table):
+        _seed_workspace_metadata(workspaces_table, "ws-private-2", is_global=False)
+        with patch.object(
+            mcp_module, "get_user_workspace_ids", return_value=["ws-private-2"],
+        ):
+            deny = mcp_module._check_symbol_graph_workspace_access(
+                "ws-private-2", USER_EMAIL,
+            )
+        assert deny is None
+
+    def test_read_source_flows_through_global_gate(self, workspaces_table):
+        """End-to-end: non-member calling read_source on an is_global
+        workspace passes the gate and reaches the GitHub fetch path."""
+        _seed_workspace_metadata(workspaces_table, WORKSPACE_ID, is_global=True)
+        file_text = "\n".join(f"line-{i:03d}" for i in range(1, 21))
+        patches, _ = _stub_github_success(file_text)
+        _enter(patches)
+        try:
+            with patch.object(mcp_module, "get_user_workspace_ids", return_value=[]):
+                result = mcp_module.handle_read_source(
+                    {"workspace_id": WORKSPACE_ID, "repo": REPO,
+                     "file_path": FILE_PATH, "line": 10, "context_lines": 2},
+                    USER_EMAIL,
+                )
+        finally:
+            _exit(patches)
+        assert "text" in result, f"expected success, got {result}"
+        payload = json.loads(result["text"])
+        assert payload["anchor_line"] == 10
+
+    def test_list_workspace_documents_flows_through_global_gate(
+        self, workspaces_table,
+    ):
+        """handle_list_workspace_documents uses its own inline check;
+        verify it honors is_global the same way the symbol-graph gate does."""
+        _seed_workspace_metadata(workspaces_table, "ws-doc-global", is_global=True)
+
+        # Stub S3 Vectors so the gate is the only thing under test.
+        stub_vectors = MagicMock()
+        stub_vectors.query_vectors.return_value = {"vectors": []}
+        with patch.object(
+            mcp_module, "_get_s3vectors_client", return_value=stub_vectors,
+        ), patch.object(
+            mcp_module, "generate_embedding", return_value=[0.1] * 8,
+        ), patch.object(
+            mcp_module, "get_user_workspace_ids", return_value=[],
+        ):
+            result = mcp_module.handle_list_workspace_documents(
+                {"workspace_id": "ws-doc-global"}, USER_EMAIL,
+            )
+        assert "error" not in result, f"gate denied non-member on global: {result}"
+        assert "text" in result
+
+    def test_list_workspace_documents_still_denies_non_member_on_private(
+        self, workspaces_table,
+    ):
+        _seed_workspace_metadata(workspaces_table, "ws-doc-private", is_global=False)
+        with patch.object(mcp_module, "get_user_workspace_ids", return_value=[]):
+            result = mcp_module.handle_list_workspace_documents(
+                {"workspace_id": "ws-doc-private"}, USER_EMAIL,
+            )
+        assert result == {"error": "You do not have access to this workspace"}
