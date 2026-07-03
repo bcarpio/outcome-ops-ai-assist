@@ -657,6 +657,93 @@ class TestSymbolGraphWiring:
         mock_abandon.assert_called_once_with("ws-graph", "owner/repo")
 
 
+class TestGitHubApiCallsUseFullRepoName:
+    """The symbol-graph path calls two GitHub APIs -- ``get_default_branch``
+    and ``_load_symbol_graph_filter`` (via ``load_repo_config_from_github``)
+    -- both of which need the full ``owner/repo``. The bug this class
+    guards against: they used to receive ``sg_repo`` (the SHORT bare
+    name that keys the fact-store namespace), which 404'd against
+    ``/repos/{name}``. GitHub 404 -> fallback to ``main`` (coincidentally
+    correct for main-defaulted repos) and to ``DEFAULT_SYMBOL_GRAPH_FILTER``
+    (silently ignoring the per-repo ``.outcomeops.yaml::ingestion.symbol_graph``
+    config). Fix uses ``repo_project`` (owner/repo) for both API calls
+    while leaving ``sg_repo`` as the fact-store key.
+    """
+
+    @patch("process_batch_summary_handler.store_batch_summary")
+    @patch("process_batch_summary_handler.generate_embedding")
+    @patch("process_batch_summary_handler.generate_batch_summary")
+    @patch("process_batch_summary_handler._emit_facts")
+    @patch("process_batch_summary_handler._commit_symbol_graph_swap")
+    @patch("process_batch_summary_handler._abandon_symbol_graph_swap")
+    @patch("process_batch_summary_handler._load_symbol_graph_filter")
+    @patch("process_batch_summary_handler.get_default_branch")
+    def test_full_name_passed_to_get_default_branch_and_symbol_graph_filter(
+        self,
+        mock_default_branch,
+        mock_load_filter,
+        mock_abandon,
+        mock_commit,
+        mock_emit_facts,
+        mock_summary,
+        mock_embedding,
+        mock_store,
+    ):
+        # Use DISTINCT values for ``repo`` (short) and ``repo_project``
+        # (full owner/repo) so a regression that flips back to sg_repo
+        # would fail this test loudly.
+        record = {
+            "body": json.dumps({
+                "repo": "outcome-ops-ai-assist-private",  # short (fact-store key)
+                "repo_project": "bcarpio/outcome-ops-ai-assist-private",  # full (API arg)
+                "batch_type": "shared",
+                "group_name": "utils",
+                "file_paths": ["x.py"],
+                "storage_key": "summary#utils",
+                "workspace_id": "ws-graph",
+                "commit_sha": "deadbeef",
+            })
+        }
+        mock_default_branch.return_value = "main"
+        mock_load_filter.return_value = None  # returns default filter
+        mock_summary.return_value = "summary text"
+        mock_embedding.return_value = [0.1] * 1024
+        mock_store.return_value = True
+
+        with patch(
+            "shared.symbol_graph_pointer.begin_swap",
+            return_value=True,
+        ), patch(
+            "shared.symbol_graph_pointer.get_previous_graph_sha",
+            return_value=None,
+        ):
+            process_batch_record(record)
+
+        # Both API calls must receive the FULL owner/repo, not the short
+        # bare name. The bare name would 404 against GitHub, be swallowed,
+        # and silently ignore the customer's .outcomeops.yaml config.
+        mock_default_branch.assert_called_once_with(
+            "bcarpio/outcome-ops-ai-assist-private"
+        )
+        mock_load_filter.assert_called_once()
+        first_arg = mock_load_filter.call_args.args[0]
+        assert first_arg == "bcarpio/outcome-ops-ai-assist-private", (
+            "_load_symbol_graph_filter must receive owner/repo, not the "
+            "bare short name (which 404s and silently drops per-repo "
+            "ingestion.symbol_graph config)"
+        )
+
+        # Fact-store namespace keys stay bare (unchanged by the fix).
+        # Guard here so a future change that unifies the namespace has
+        # to update this assertion deliberately -- see the ADR note in
+        # the fix commit.
+        emit_kwargs = mock_emit_facts.call_args.kwargs
+        assert emit_kwargs["repo"] == "outcome-ops-ai-assist-private"
+        mock_commit.assert_called_once_with(
+            "ws-graph", "outcome-ops-ai-assist-private", "deadbeef",
+        )
+
+
 class TestPiiRedactionWiring:
     """plan/ chunk 05 - verify the redact -> embed pipeline wiring for
     workspace-scoped batch summaries."""

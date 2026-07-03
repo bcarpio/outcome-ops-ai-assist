@@ -1492,9 +1492,24 @@ def process_batch_record(record: Dict[str, Any]) -> None:
     # the filter is irrelevant.
     try:
         if sg_claimed:
-            sg_branch = get_default_branch(sg_repo)
+            # GitHub API calls need the full ``owner/repo`` slug;
+            # ``sg_repo`` is the bare short name used only as the
+            # symbol-graph fact-store namespace key. Pre-fix these
+            # calls received ``sg_repo`` (short), which 404'd against
+            # ``/repos/{name}`` and fell back to ``"main"``.
+            # Coincidentally correct for main-defaulted repos, silently
+            # wrong for master/develop/trunk. Worse: the same short
+            # name was handed to ``_load_symbol_graph_filter`` whose
+            # ``load_repo_config_from_github`` call also 404'd,
+            # silently swallowing the per-repo
+            # ``.outcomeops.yaml::ingestion.symbol_graph`` config.
+            # ``repo_project`` (owner/repo) resolves both correctly.
+            # Fact-store keys below (``sg_repo``) intentionally unchanged
+            # -- flipping the namespace would orphan existing bare-keyed
+            # data; that decision needs its own ADR + migration.
+            sg_branch = get_default_branch(repo_project)
             sg_filter = _load_symbol_graph_filter(
-                sg_repo, sg_branch, GITHUB_TOKEN or ""
+                repo_project, sg_branch, GITHUB_TOKEN or ""
             )
             batch_summary = generate_batch_summary(
                 batch, fact_sink=sg_facts, sg_filter=sg_filter
