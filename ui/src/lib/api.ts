@@ -359,6 +359,28 @@ export async function getWorkspace(workspaceId: string): Promise<Workspace> {
   return data?.workspace as Workspace
 }
 
+/** Non-member view of a Global workspace. Returns name, description,
+ * is_global=true, and admin_emails so the UI can render "contact
+ * these admins to request changes." Returns 404 for private
+ * workspaces (no existence leak). */
+export interface WorkspacePublicView {
+  workspace_id: string
+  name: string
+  description: string
+  is_global: true
+  admin_emails: string[]
+}
+
+export async function getWorkspacePublic(workspaceId: string): Promise<WorkspacePublicView> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/public`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to get workspace: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return data?.workspace as WorkspacePublicView
+}
+
 /**
  * Update workspace
  */

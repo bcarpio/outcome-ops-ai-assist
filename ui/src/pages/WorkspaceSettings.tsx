@@ -31,6 +31,8 @@ import {
 } from 'lucide-react'
 import {
   getWorkspace,
+  getWorkspacePublic,
+  type WorkspacePublicView,
   updateWorkspace,
   deleteWorkspace,
   listMembers,
@@ -182,6 +184,11 @@ export default function WorkspaceSettings() {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
+  // Non-member view of a Global workspace. Set when getWorkspace()
+  // fails (403/404) and the fallback getWorkspacePublic() succeeds.
+  // Renders a friendly "This is a Global workspace, contact these
+  // admins" panel instead of a bare "Workspace not found."
+  const [globalPublicView, setGlobalPublicView] = useState<WorkspacePublicView | null>(null)
 
   // Auto-clear success banners after 3 seconds. Owned by a useEffect
   // with a cleanup so when the component unmounts (or success changes
@@ -457,13 +464,25 @@ export default function WorkspaceSettings() {
   async function loadWorkspace() {
     if (!workspaceId) return
     setLoading(true)
+    setGlobalPublicView(null)
     try {
       const data = await getWorkspace(workspaceId)
       setWorkspace(data)
       setName(data.name)
       setDescription(data.description || '')
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load workspace')
+    } catch {
+      // Membership-required fetch failed (403 or 404). Fall back to
+      // the public view -- returns 200 only if this is a Global
+      // workspace, so it's a scoped "why can't I access this" answer
+      // without leaking private-workspace existence.
+      try {
+        const pub = await getWorkspacePublic(workspaceId)
+        setGlobalPublicView(pub)
+      } catch {
+        // Both fetches failed -- workspace really doesn't exist or
+        // isn't global. Fall through to the "Workspace not found"
+        // render.
+      }
     } finally {
       setLoading(false)
     }
@@ -2128,6 +2147,70 @@ export default function WorkspaceSettings() {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
         <Loader2 className="animate-spin text-blue-600" size={32} />
+      </div>
+    )
+  }
+
+  // Non-member landed on a Global workspace: show a friendly info
+  // panel with the workspace's name / description / admin contact
+  // list instead of a bare "Workspace not found." Backend enforces
+  // ``is_global`` == true so this can't reveal private workspaces.
+  if (!workspace && globalPublicView) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center px-4">
+        <div className="max-w-lg w-full bg-white rounded-lg border shadow-sm p-6">
+          <div className="flex items-center gap-2 mb-3">
+            <Globe className="text-blue-600" size={20} />
+            <h1 className="text-lg font-semibold text-gray-900">
+              {globalPublicView.name}
+            </h1>
+            <span
+              className="text-xs px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 inline-flex items-center gap-1"
+              title="Global workspace"
+            >
+              Global
+            </span>
+          </div>
+          {globalPublicView.description && (
+            <p className="text-sm text-gray-600 mb-4">{globalPublicView.description}</p>
+          )}
+          <p className="text-sm text-gray-700 mb-3">
+            This is a <strong>Global workspace</strong>. Its content is available
+            to you in chat and PR checks across the deployment, but only
+            workspace admins can manage its members, repos, and integrations.
+          </p>
+          {globalPublicView.admin_emails.length > 0 ? (
+            <>
+              <p className="text-sm text-gray-700 mb-2">
+                To request changes (add a repo, update standards, add a member),
+                contact a workspace admin:
+              </p>
+              <ul className="space-y-1 mb-4">
+                {globalPublicView.admin_emails.map(email => (
+                  <li key={email} className="text-sm">
+                    <a
+                      href={`mailto:${email}`}
+                      className="text-blue-600 hover:text-blue-700 hover:underline"
+                    >
+                      {email}
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : (
+            <p className="text-sm text-gray-500 mb-4">
+              No workspace admins listed. Contact your org admin to request
+              changes.
+            </p>
+          )}
+          <button
+            onClick={() => navigate('/workspaces')}
+            className="text-sm text-blue-600 hover:text-blue-700"
+          >
+            ← Back to workspaces
+          </button>
+        </div>
       </div>
     )
   }

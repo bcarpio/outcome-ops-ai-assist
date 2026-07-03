@@ -687,6 +687,7 @@ app.get("/api/region/role", (req, res) => proxyWorkspaceRequest(req, res, "GET",
 // Workspace CRUD
 app.post("/api/workspaces", (req, res) => proxyWorkspaceRequest(req, res, "POST", "/workspaces"));
 app.get("/api/workspaces", (req, res) => proxyWorkspaceRequest(req, res, "GET", "/workspaces"));
+app.get("/api/workspaces/:id/public", (req, res) => proxyWorkspaceRequest(req, res, "GET", `/workspaces/${req.params.id}/public`));
 app.get("/api/workspaces/:id", (req, res) => proxyWorkspaceRequest(req, res, "GET", `/workspaces/${req.params.id}`));
 app.patch("/api/workspaces/:id", (req, res) => proxyWorkspaceRequest(req, res, "PATCH", `/workspaces/${req.params.id}`));
 app.delete("/api/workspaces/:id", (req, res) => proxyWorkspaceRequest(req, res, "DELETE", `/workspaces/${req.params.id}`));

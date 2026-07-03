@@ -753,6 +753,71 @@ def list_workspaces(user_email: str) -> Dict:
         return _error(500, "Failed to list workspaces")
 
 
+def get_workspace_public(user_email: str, workspace_id: str) -> Dict:
+    """Get non-sensitive workspace details for a Global workspace.
+
+    Returns 404 for any workspace that isn't ``is_global=true`` -- the
+    endpoint deliberately doesn't leak the existence of private
+    workspaces to non-members. For global workspaces returns just
+    ``{workspace_id, name, description, is_global, admin_emails}`` so
+    a non-member landing on ``/workspaces/{id}`` can see who to
+    contact instead of a bare "Workspace not found."
+
+    Any authenticated user can call this; no membership check.
+    """
+    if not user_email:
+        return _error(401, "Authentication required")
+
+    dynamodb = _get_dynamodb()
+    table = dynamodb.Table(_get_workspaces_table())
+
+    try:
+        response = table.get_item(Key={"PK": f"WS#{workspace_id}", "SK": "METADATA"})
+        item = response.get("Item")
+        if not item:
+            return _error(404, "Workspace not found")
+        if not item.get("is_global"):
+            # Don't leak the existence of private workspaces.
+            return _error(404, "Workspace not found")
+
+        # Enumerate workspace admins so the UI can render a "contact
+        # these people" list. Uses the GSI1 (repo membership index) --
+        # each WS_MEMBER row is duplicated with GSI1PK=WS#{id} so we
+        # can list members without scanning USER#{email} keyspaces.
+        admin_emails: List[str] = []
+        try:
+            members_resp = table.query(
+                IndexName="GSI1",
+                KeyConditionExpression="GSI1PK = :pk",
+                ExpressionAttributeValues={":pk": f"WS#{workspace_id}"},
+            )
+            for member in members_resp.get("Items", []) or []:
+                if member.get("role") == "workspace_admin":
+                    email = member.get("user_email") or member.get(
+                        "PK", ""
+                    ).replace("USER#", "")
+                    if email and email not in admin_emails:
+                        admin_emails.append(email)
+        except ClientError as e:
+            # Fail-soft: return the workspace without admins if the
+            # index query blows up. UI can still render the "Global
+            # workspace" copy without a contact list.
+            logger.warning(f"Could not list admins for global ws {workspace_id}: {e}")
+
+        return _response(200, {
+            "workspace": {
+                "workspace_id": workspace_id,
+                "name": item.get("name", ""),
+                "description": item.get("description", ""),
+                "is_global": True,
+                "admin_emails": sorted(admin_emails),
+            }
+        })
+    except ClientError as e:
+        logger.error(f"Error getting public workspace details: {e}")
+        return _error(500, "Failed to get workspace")
+
+
 def get_workspace(user_email: str, workspace_id: str) -> Dict:
     """Get workspace details."""
     dynamodb = _get_dynamodb()
@@ -5216,6 +5281,18 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         # Route: GET /workspaces
         if parts == ("workspaces",) and http_method == "GET":
             return list_workspaces(user_email)
+
+        # Route: GET /workspaces/{id}/public
+        # Non-sensitive view of a Global workspace for non-members --
+        # lets the UI render a "This is a Global workspace, contact
+        # <admins>" message instead of a bare "Workspace not found."
+        if (
+            len(parts) == 3
+            and parts[0] == "workspaces"
+            and parts[2] == "public"
+            and http_method == "GET"
+        ):
+            return get_workspace_public(user_email, parts[1])
 
         # Route: GET /workspaces/{id}
         if len(parts) == 2 and parts[0] == "workspaces" and http_method == "GET":
