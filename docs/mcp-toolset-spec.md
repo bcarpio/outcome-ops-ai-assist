@@ -119,13 +119,24 @@ that yields the `workspace_id` values every other tool needs.
 ```json
 {
   "workspaces": [
-    { "workspace_id": "ws_abc123", "name": "Payments Platform", "description": "…" }
+    { "workspace_id": "ws_abc123", "name": "Payments Platform",
+      "description": "…", "is_global": false },
+    { "workspace_id": "ws_sec789", "name": "Security Standards",
+      "description": "…", "is_global": true }
   ]
 }
 ```
 
+The `is_global` flag marks workspaces whose content is available in
+every user's chat and PR-check retrieval scope across the deployment.
+An external agent can use this signal to reason about
+cross-workspace applicability — a `Global` workspace's ADRs apply
+to the whole portfolio, not just its own members.
+
 *Backing:* `handle_list_workspaces` → `lambda/mcp-server/handler.py:1198`. Native tool
 returns a markdown list today (JSON normalization = small facade work).
+The `is_global` field is populated from the DDB row (default `false`
+for pre-2026-07-03 workspace rows).
 
 ### 5.2 `resource_type: "documents"`  ✅ (top-500 cap)
 

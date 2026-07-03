@@ -327,6 +327,51 @@ class TestCreateWorkspace:
         assert item["privacy_mode"] == "NONE"
 
 
+class TestCreateWorkspaceIsGlobal:
+    """Chunk 01 of the workspace-scope plan. Verify the is_global
+    request field is accepted, persisted to the metadata row, and
+    defaults to False when omitted."""
+
+    @patch("workspace_management_handler._is_org_admin", return_value=True)
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_defaults_to_false_when_omitted(
+        self, mock_dynamodb, mock_get_table, mock_is_admin,
+    ):
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+        mock_batch_writer = MagicMock()
+        mock_table.batch_writer.return_value.__enter__ = lambda s: mock_batch_writer
+        mock_table.batch_writer.return_value.__exit__ = MagicMock(return_value=False)
+
+        req = CreateWorkspaceRequest(name="Team A")
+        result = create_workspace("admin@example.com", req)
+        assert result["statusCode"] == 201
+
+        body = json.loads(result["body"])
+        assert body["workspace"]["is_global"] is False
+
+    @patch("workspace_management_handler._is_org_admin", return_value=True)
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_is_global_true_persisted_when_set(
+        self, mock_dynamodb, mock_get_table, mock_is_admin,
+    ):
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+        mock_batch_writer = MagicMock()
+        mock_table.batch_writer.return_value.__enter__ = lambda s: mock_batch_writer
+        mock_table.batch_writer.return_value.__exit__ = MagicMock(return_value=False)
+
+        req = CreateWorkspaceRequest(name="Security Standards", is_global=True)
+        result = create_workspace("admin@example.com", req)
+        assert result["statusCode"] == 201
+        body = json.loads(result["body"])
+        assert body["workspace"]["is_global"] is True
+
+
 class TestListWorkspaces:
     """Test workspace listing."""
 
@@ -364,6 +409,60 @@ class TestListWorkspaces:
         assert len(body["workspaces"]) == 2
         # Should be sorted by updated_at descending
         assert body["workspaces"][0]["name"] == "Workspace 2"
+
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_list_workspaces_surfaces_is_global_workspaces_to_non_members(
+        self, mock_dynamodb, mock_get_table,
+    ):
+        """Chunk 01 of the workspace-scope plan: every caller sees
+        is_global=true workspaces even when they're not a member.
+        Global workspaces show up tagged role='global_reader' so the
+        UI + downstream scope resolvers can distinguish them from
+        owned workspaces."""
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+
+        # User is a member of one workspace (ws-eng).
+        mock_table.query.return_value = {
+            "Items": [{"workspace_id": "ws-eng", "role": "member"}],
+        }
+        mock_table.get_item.side_effect = [
+            {},  # org_admin check -> not an org admin
+            {"Item": {
+                "workspace_id": "ws-eng", "name": "Engineering",
+                "updated_at": "2024-01-01",
+            }},
+        ]
+        # Global-scan returns Security (is_global=true) that the user
+        # is NOT a member of, plus their own Eng workspace (should be
+        # deduped since already surfaced above).
+        mock_table.scan.return_value = {
+            "Items": [
+                {
+                    "workspace_id": "ws-sec", "name": "Security Standards",
+                    "is_global": True, "updated_at": "2024-01-02",
+                },
+                {
+                    "workspace_id": "ws-eng", "name": "Engineering",
+                    "is_global": False, "updated_at": "2024-01-01",
+                },
+            ],
+        }
+
+        result = list_workspaces("engineer@example.com")
+        assert result["statusCode"] == 200
+        body = json.loads(result["body"])
+        workspace_ids = [w["workspace_id"] for w in body["workspaces"]]
+        assert "ws-eng" in workspace_ids
+        assert "ws-sec" in workspace_ids
+        # Security workspace comes through tagged global_reader.
+        sec = next(w for w in body["workspaces"] if w["workspace_id"] == "ws-sec")
+        assert sec["role"] == "global_reader"
+        # And the Eng workspace stays as the user's own role.
+        eng = next(w for w in body["workspaces"] if w["workspace_id"] == "ws-eng")
+        assert eng["role"] == "member"
 
     @patch("workspace_management_handler._get_workspaces_table")
     @patch("workspace_management_handler._get_dynamodb")
@@ -1022,6 +1121,67 @@ class TestUpdateWorkspace:
         result = update_workspace("user@example.com", "ws1", request)
 
         assert result["statusCode"] == 403
+
+    # ------------------------------------------------------------------
+    # Chunk 01 of the workspace-scope plan.
+    # ------------------------------------------------------------------
+
+    @patch("workspace_management_handler._is_workspace_admin", return_value=True)
+    @patch("workspace_management_handler._is_org_admin", return_value=False)
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_workspace_admin_cannot_flip_is_global(
+        self, mock_dynamodb, mock_get_table, mock_org_admin, mock_ws_admin,
+    ):
+        """Only org admins can flip is_global. Workspace admins can
+        still update name/description; they just can't broaden the
+        deployment's read surface."""
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+
+        request = UpdateWorkspaceRequest(is_global=True)
+        result = update_workspace("workspace-admin@example.com", "ws1", request)
+        assert result["statusCode"] == 403
+        body = json.loads(result["body"])
+        assert "org admins" in body["error"].lower()
+
+    @patch("workspace_management_handler.log_admin_action")
+    @patch("workspace_management_handler._is_workspace_admin", return_value=True)
+    @patch("workspace_management_handler._is_org_admin", return_value=True)
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_flipping_is_global_emits_dedicated_audit_action(
+        self, mock_dynamodb, mock_get_table, mock_org_admin, mock_ws_admin, mock_log,
+    ):
+        """The is_global flip emits WORKSPACE_GLOBAL_FLAG_SET in
+        addition to the generic WORKSPACE_UPDATED, so compliance
+        auditors can filter their feed to just scope changes."""
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+        mock_table.get_item.side_effect = [
+            # First read: existing row's prior is_global value
+            {"Item": {"workspace_id": "ws1", "name": "Sec", "is_global": False}},
+            # Second read: post-update get_workspace call
+            {"Item": {"workspace_id": "ws1", "name": "Sec", "is_global": True, "role": "org_admin"}},
+        ]
+
+        request = UpdateWorkspaceRequest(is_global=True)
+        result = update_workspace("admin@example.com", "ws1", request)
+        assert result["statusCode"] == 200
+
+        # Two audit calls: WORKSPACE_UPDATED + WORKSPACE_GLOBAL_FLAG_SET.
+        actions = [c.args[1] for c in mock_log.call_args_list]
+        assert "WORKSPACE_UPDATED" in actions
+        assert "WORKSPACE_GLOBAL_FLAG_SET" in actions
+        # The global-flag audit row carries old->new.
+        global_call = next(
+            c for c in mock_log.call_args_list
+            if c.args[1] == "WORKSPACE_GLOBAL_FLAG_SET"
+        )
+        assert global_call.kwargs["details"]["old"] is False
+        assert global_call.kwargs["details"]["new"] is True
 
 
 class TestDeleteWorkspace:

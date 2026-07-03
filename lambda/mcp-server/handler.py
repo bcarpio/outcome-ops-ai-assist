@@ -1196,12 +1196,20 @@ def handle_query_knowledge_base(params, email):
 
 
 def handle_list_workspaces(params, email):
-    """Handle list_workspaces tool call."""
+    """Handle list_workspaces tool call.
+
+    Returns the caller's own workspaces plus every ``is_global=true``
+    workspace they can read but aren't a member of (mirror of the
+    web-app ``list_workspaces`` behavior). External agents can then
+    reason about scope: a ``Global`` badge on a workspace tells the
+    agent its content applies to every retrieval across the deploy.
+    """
     dynamodb = _get_dynamodb()
     table = dynamodb.Table(DYNAMODB_TABLE)
 
     try:
         workspace_ids = get_user_workspace_ids(email)
+        seen: set = set()
         workspaces = []
         for ws_id in workspace_ids:
             resp = table.get_item(Key={"PK": f"WS#{ws_id}", "SK": "METADATA"})
@@ -1211,14 +1219,52 @@ def handle_list_workspaces(params, email):
                     "workspace_id": ws_id,
                     "name": item.get("name", ""),
                     "description": item.get("description", ""),
+                    "is_global": bool(item.get("is_global", False)),
                 })
+                seen.add(ws_id)
+
+        # Append every is_global workspace the caller can't already see.
+        # Paginated scan filtered to METADATA rows with is_global=true.
+        # Caller has to be authenticated (validated earlier in the
+        # request path) but doesn't need membership to enumerate
+        # globals -- global content is by definition non-confidential.
+        try:
+            scan_kwargs = {
+                "FilterExpression": "begins_with(SK, :sk) AND is_global = :ig",
+                "ExpressionAttributeValues": {
+                    ":sk": "METADATA", ":ig": True,
+                },
+            }
+            while True:
+                ws_scan = table.scan(**scan_kwargs)
+                for item in ws_scan.get("Items", []):
+                    ws_id = item.get("workspace_id")
+                    if not ws_id or ws_id in seen:
+                        continue
+                    workspaces.append({
+                        "workspace_id": ws_id,
+                        "name": item.get("name", ""),
+                        "description": item.get("description", ""),
+                        "is_global": True,
+                    })
+                    seen.add(ws_id)
+                last_key = ws_scan.get("LastEvaluatedKey")
+                if not last_key:
+                    break
+                scan_kwargs["ExclusiveStartKey"] = last_key
+        except Exception as exc:
+            # If the global-scan fails, degrade gracefully to
+            # membership-only listing. External agents can't tell the
+            # difference from an owner-with-no-globals case.
+            logger.warning(f"list_workspaces global-scan failed: {exc}")
 
         text = "Your workspaces:\n\n"
         if not workspaces:
             text = "You have no workspaces."
         else:
             for ws in workspaces:
-                text += f"- **{ws['name']}** (ID: {ws['workspace_id']})"
+                marker = " [Global]" if ws.get("is_global") else ""
+                text += f"- **{ws['name']}**{marker} (ID: {ws['workspace_id']})"
                 if ws["description"]:
                     text += f" - {ws['description']}"
                 text += "\n"

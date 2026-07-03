@@ -123,6 +123,7 @@ from shared.audit_writer import (
     ACTION_WORKSPACE_BUDGET_UPDATED,
     ACTION_WORKSPACE_CREATED,
     ACTION_WORKSPACE_DELETED,
+    ACTION_WORKSPACE_GLOBAL_FLAG_SET,
     ACTION_WORKSPACE_MEMBER_ADDED,
     ACTION_WORKSPACE_MEMBER_REMOVED,
     ACTION_WORKSPACE_REPO_ADDED,
@@ -292,6 +293,17 @@ class CreateWorkspaceRequest(BaseModel):
     # Optional in the request so the handler defaults to "STRICT" when
     # absent. Validated below if provided. Plan/ chunk 03.
     privacy_mode: Optional[str] = Field(default=None)
+    # Bidirectional scope flag. When ``true``:
+    # 1. This workspace's ingested content is included in every user's
+    #    chat retrieval pool and every PR check's retrieval pool for
+    #    the standards checks (per the per-check scope table).
+    # 2. Its members get implicit read access on every other
+    #    workspace's content when querying from this workspace.
+    # Set at provisioning time by org admins; only rendered in the
+    # workspace-create UI for org admins. Mirrors the ``is_global``
+    # semantics already implemented for MCP servers (see
+    # ``CreateMcpServerRequest``).
+    is_global: bool = Field(default=False)
 
     @field_validator("name")
     @classmethod
@@ -313,6 +325,10 @@ class UpdateWorkspaceRequest(BaseModel):
 
     name: Optional[str] = Field(default=None, min_length=1, max_length=100)
     description: Optional[str] = Field(default=None, max_length=500)
+    # See ``CreateWorkspaceRequest.is_global`` for semantics. Optional
+    # here so PATCH consumers who don't touch this field don't flip
+    # the flag by accident.
+    is_global: Optional[bool] = None
 
 
 class AddMemberRequest(BaseModel):
@@ -615,6 +631,12 @@ def create_workspace(
         # privacy endpoints (chunk 04). Org-level kill switch lives in
         # the pii_redaction_enabled tfvar (chunk 07).
         "privacy_mode": request.privacy_mode or "STRICT",
+        # Bidirectional scope flag; see CreateWorkspaceRequest docstring.
+        # Only settable by org admins (org-admin gate is above), which
+        # is the design's "provisioning-time" ceremony -- no in-product
+        # propose/approve state machine, org gates via their own
+        # ticketing (ServiceNow, etc.).
+        "is_global": bool(request.is_global),
     }
 
     # Create membership for creator (admin)
@@ -655,20 +677,35 @@ def create_workspace(
 
 
 def list_workspaces(user_email: str) -> Dict:
-    """List workspaces for a user. Org admins see all workspaces."""
+    """List workspaces for a user.
+
+    Every caller sees:
+    - The workspaces they belong to (as a member/admin), OR every
+      workspace (if org admin).
+    - Every ``is_global=true`` workspace they don't already belong to,
+      appended as read-only entries with ``role = "global_reader"``.
+      This is the enabler for chunks 03/04: the picker shows Security
+      / EA / Compliance workspaces so the user can add them to chat
+      context, and PR-check scope can pull the same set server-side.
+    """
     dynamodb = _get_dynamodb()
     table = dynamodb.Table(_get_workspaces_table())
 
     try:
         is_org_admin = _is_org_admin(table, user_email)
 
+        seen_workspace_ids: set = set()
+        workspaces: list = []
+
         if is_org_admin:
-            # Org admins see all workspaces
+            # Org admins see all workspaces (no need for a separate
+            # is_global merge below -- they'll already see the globals
+            # in the scan pass).
             all_ws = _scan_all_workspaces(table)
-            workspaces = []
             for ws in all_ws:
                 ws["role"] = "org_admin"
                 workspaces.append(ws)
+                seen_workspace_ids.add(ws.get("workspace_id"))
         else:
             # Regular users see only their workspaces
             response = table.query(
@@ -682,7 +719,6 @@ def list_workspaces(user_email: str) -> Dict:
             memberships = response.get("Items", [])
 
             # Fetch workspace metadata for each membership
-            workspaces = []
             for membership in memberships:
                 workspace_id = membership.get("workspace_id")
                 ws_response = table.get_item(
@@ -692,6 +728,21 @@ def list_workspaces(user_email: str) -> Dict:
                     workspace = ws_response["Item"]
                     workspace["role"] = membership.get("role")
                     workspaces.append(workspace)
+                    seen_workspace_ids.add(workspace_id)
+
+            # Append every is_global workspace the user is NOT already
+            # a member of, tagged as global_reader. Downstream (chat +
+            # PR check) resolvers use this to build the picker set +
+            # retrieval scope. Non-org-admins never see the underlying
+            # membership of a global workspace they're not part of --
+            # only its metadata + is_global flag.
+            for ws in _scan_all_workspaces(table):
+                if not ws.get("is_global"):
+                    continue
+                if ws.get("workspace_id") in seen_workspace_ids:
+                    continue
+                ws["role"] = "global_reader"
+                workspaces.append(ws)
 
         # Sort by updated_at descending
         workspaces.sort(key=lambda x: x.get("updated_at", ""), reverse=True)
@@ -738,7 +789,14 @@ def update_workspace(
     request: UpdateWorkspaceRequest,
     audit_ctx: Optional[Dict[str, str]] = None,
 ) -> Dict:
-    """Update workspace details (admin only)."""
+    """Update workspace details (admin only).
+
+    Notes on ``is_global``: this field can only be flipped by an ORG
+    admin. Workspace admins can update name/description but not
+    scope. That mirrors the workspace-creation gate (only org admins
+    can create) so the "who can broaden read across the deployment"
+    decision stays in one hands.
+    """
     dynamodb = _get_dynamodb()
     table = dynamodb.Table(_get_workspaces_table())
 
@@ -746,6 +804,16 @@ def update_workspace(
         # Check admin membership
         if not _is_workspace_admin(table, user_email, workspace_id):
             return _error(403, "Only workspace admins can update workspace")
+
+        # is_global changes require org-admin, not just workspace-admin.
+        # Read the current row so the audit-row payload can carry old->new.
+        want_flip_global = request.is_global is not None
+        if want_flip_global:
+            if not _is_org_admin(table, user_email):
+                return _error(
+                    403,
+                    "Only org admins can change the is_global flag on a workspace",
+                )
 
         # Build update expression
         update_parts = []
@@ -761,6 +829,17 @@ def update_workspace(
             update_parts.append("description = :desc")
             expr_values[":desc"] = request.description
             changed_fields.append("description")
+        # Snapshot the current is_global before we write it, so the
+        # audit row can carry (old -> new). Read once outside the SET.
+        prior_is_global: Optional[bool] = None
+        if want_flip_global:
+            existing_row = table.get_item(
+                Key={"PK": f"WS#{workspace_id}", "SK": "METADATA"},
+            ).get("Item")
+            prior_is_global = bool((existing_row or {}).get("is_global", False))
+            update_parts.append("is_global = :ig")
+            expr_values[":ig"] = bool(request.is_global)
+            changed_fields.append("is_global")
 
         update_parts.append("updated_at = :ua")
         expr_values[":ua"] = now
@@ -783,6 +862,23 @@ def update_workspace(
             user_agent=ctx.get("user_agent", ""),
             details={"changed_fields": changed_fields},
         )
+
+        # Emit a distinct audit action when is_global flips. Kept
+        # separate from the generic WORKSPACE_UPDATED so compliance
+        # auditors have a single-action feed to filter on.
+        if want_flip_global and prior_is_global != bool(request.is_global):
+            log_admin_action(
+                AUDIT_TABLE,
+                ACTION_WORKSPACE_GLOBAL_FLAG_SET,
+                workspace_id=workspace_id,
+                user_email=user_email,
+                source_ip=ctx.get("source_ip", ""),
+                user_agent=ctx.get("user_agent", ""),
+                details={
+                    "old": prior_is_global,
+                    "new": bool(request.is_global),
+                },
+            )
 
         logger.info(f"Updated workspace: {workspace_id}")
         return get_workspace(user_email, workspace_id)

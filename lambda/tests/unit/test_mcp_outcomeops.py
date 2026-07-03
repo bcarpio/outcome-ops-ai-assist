@@ -206,6 +206,11 @@ class TestMcpToolHandlers:
         """Test list_workspaces when user has no workspaces."""
         mock_dynamodb.get_item.return_value = {"Item": {"org_role": "member"}}
         mock_dynamodb.query.return_value = {"Items": []}
+        # Chunk 01 of workspace-scope plan: handler now scans for
+        # is_global workspaces to append. Return an empty page so the
+        # scan loop exits cleanly instead of hitting a MagicMock's
+        # truthy LastEvaluatedKey and spinning forever.
+        mock_dynamodb.scan.return_value = {"Items": []}
 
         result = mcp_module.handle_list_workspaces({}, "user@example.com")
 

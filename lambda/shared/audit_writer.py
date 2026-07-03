@@ -43,6 +43,12 @@ ACTION_WORKSPACE_CREATED = "WORKSPACE_CREATED"
 ACTION_WORKSPACE_UPDATED = "WORKSPACE_UPDATED"
 ACTION_WORKSPACE_DELETED = "WORKSPACE_DELETED"
 ACTION_WORKSPACE_BUDGET_UPDATED = "WORKSPACE_BUDGET_UPDATED"
+# Bidirectional-scope flag change. Emitted separately from the plain
+# WORKSPACE_UPDATED action because the change materially affects who
+# can read what across the deployment; compliance auditors want to
+# see these flips in a distinct feed rather than buried in a
+# generic-metadata-change row.
+ACTION_WORKSPACE_GLOBAL_FLAG_SET = "WORKSPACE_GLOBAL_FLAG_SET"
 ACTION_WORKSPACE_MEMBER_ADDED = "WORKSPACE_MEMBER_ADDED"
 ACTION_WORKSPACE_MEMBER_REMOVED = "WORKSPACE_MEMBER_REMOVED"
 ACTION_WORKSPACE_REPO_ADDED = "WORKSPACE_REPO_ADDED"
