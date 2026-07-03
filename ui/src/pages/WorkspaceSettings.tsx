@@ -100,6 +100,7 @@ import {
   listGitHubRepos,
   addGitHubRepos,
   updateGitHubRepo,
+  listGitHubRepoBranches,
   removeGitHubRepo,
   triggerGitHubSync,
   getAzureDevOpsAuthUrl,
@@ -112,6 +113,9 @@ import {
   triggerAzureDevOpsSync,
   disconnectAzureDevOps,
   removeAzureDevOpsRepo,
+  updateAzureDevOpsRepo,
+  listAzureDevOpsRepoBranches,
+  type RepoBranchesResponse,
   type AzureDevOpsConnection,
   type AzureDevOpsOrg,
   type AzureDevOpsProject,
@@ -345,6 +349,18 @@ export default function WorkspaceSettings() {
   // ``develop``) in the confirmable input. Keyed by full_name so
   // multiple rows can hold their own edits before the user Adds.
   const [githubBranchOverrides, setGithubBranchOverrides] = useState<Record<string, string>>({})
+  // Edit-branch modal state (per-row gear icon). One modal at a time
+  // for either provider -- the modal keys off the provider so a
+  // single set of state carries both. When ``editBranchProvider ==
+  // "github"``, ``editBranchTarget`` is the repo full_name; when
+  // ``"azure_devops"``, it's the org/project/repo slug.
+  const [editBranchProvider, setEditBranchProvider] = useState<'github' | 'azure_devops' | null>(null)
+  const [editBranchTarget, setEditBranchTarget] = useState<string | null>(null)
+  const [editBranchLoading, setEditBranchLoading] = useState(false)
+  const [editBranchData, setEditBranchData] = useState<RepoBranchesResponse | null>(null)
+  const [editBranchError, setEditBranchError] = useState<string | null>(null)
+  const [editBranchSelected, setEditBranchSelected] = useState<string>('')
+  const [editBranchSaving, setEditBranchSaving] = useState(false)
 
   // Azure DevOps integration state (chunk 08)
   const [azureDevOpsConnections, setAzureDevOpsConnections] = useState<AzureDevOpsConnection[]>([])
@@ -1873,6 +1889,84 @@ export default function WorkspaceSettings() {
     }
   }
 
+  // ==========================================================================
+  // Edit-branch modal (gear icon per row, both providers)
+  // ==========================================================================
+
+  function openEditBranchModal(
+    provider: 'github' | 'azure_devops',
+    target: string,
+    storedDefault: string | null | undefined,
+  ) {
+    setEditBranchProvider(provider)
+    setEditBranchTarget(target)
+    setEditBranchSelected(storedDefault || '')
+    setEditBranchData(null)
+    setEditBranchError(null)
+    // Kick off the branch-list fetch; the modal renders "loading"
+    // until it resolves. If it fails, the modal falls back to a
+    // plain text input pre-populated with the stored value.
+    setEditBranchLoading(true)
+    ;(async () => {
+      if (!workspaceId) return
+      try {
+        const data = provider === 'github'
+          ? await listGitHubRepoBranches(workspaceId, target)
+          : await listAzureDevOpsRepoBranches(workspaceId, target)
+        setEditBranchData(data)
+        // If the row has no stored branch (legacy pre-chunk-01), seed
+        // the input with the provider's current default so the customer
+        // has a sensible starting point.
+        if (!storedDefault && data.current_default) {
+          setEditBranchSelected(data.current_default)
+        }
+      } catch (err) {
+        setEditBranchError(err instanceof Error ? err.message : 'Failed to load branches')
+      } finally {
+        setEditBranchLoading(false)
+      }
+    })()
+  }
+
+  function closeEditBranchModal() {
+    setEditBranchProvider(null)
+    setEditBranchTarget(null)
+    setEditBranchLoading(false)
+    setEditBranchData(null)
+    setEditBranchError(null)
+    setEditBranchSelected('')
+    setEditBranchSaving(false)
+  }
+
+  async function handleSaveBranch() {
+    if (!workspaceId || !editBranchProvider || !editBranchTarget) return
+    const chosen = editBranchSelected.trim()
+    if (!chosen) {
+      setError('Branch name cannot be empty')
+      return
+    }
+    setEditBranchSaving(true)
+    setError(null)
+    try {
+      if (editBranchProvider === 'github') {
+        const updated = await updateGitHubRepo(workspaceId, editBranchTarget, {
+          default_branch: chosen,
+        })
+        setGithubRepos(prev => prev.map(r => r.repo_name === editBranchTarget ? updated : r))
+      } else {
+        const updated = await updateAzureDevOpsRepo(workspaceId, editBranchTarget, {
+          default_branch: chosen,
+        })
+        setAzureDevOpsRepos(prev => prev.map(r => r.slug === editBranchTarget ? updated : r))
+      }
+      setSuccess(`Sync branch updated to "${chosen}" for ${editBranchTarget}`)
+      closeEditBranchModal()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update branch')
+      setEditBranchSaving(false)
+    }
+  }
+
   async function handleTriggerGitHubSync(repoName?: string) {
     if (!workspaceId) return
     setSyncingGitHub(repoName || 'all')
@@ -2480,6 +2574,14 @@ export default function WorkspaceSettings() {
                             )}
                             {isAdmin && (
                               <>
+                                <button
+                                  type="button"
+                                  onClick={() => openEditBranchModal('github', repo.repo_name, repo.default_branch)}
+                                  className="p-1.5 text-gray-500 hover:bg-gray-100 rounded transition-colors"
+                                  title="Change sync branch"
+                                >
+                                  <Settings size={16} />
+                                </button>
                                 <MutationButton
                                   onClick={() => handleTriggerGitHubSync(repo.repo_name)}
                                   disabled={syncingGitHub === repo.repo_name || (repo.repo_type !== 'standards' && !repo.include_code_maps)}
@@ -2621,6 +2723,14 @@ export default function WorkspaceSettings() {
                           </div>
                           {isAdmin && (
                             <div className="flex items-center gap-2 flex-shrink-0">
+                              <button
+                                type="button"
+                                onClick={() => openEditBranchModal('azure_devops', repo.slug, repo.default_branch)}
+                                className="p-1.5 text-gray-500 hover:bg-gray-100 rounded transition-colors"
+                                title="Change sync branch"
+                              >
+                                <Settings size={14} />
+                              </button>
                               <MutationButton
                                 onClick={() => handleSyncAzureDevOps(repo.slug)}
                                 disabled={syncingAzureDevOps === repo.slug}
@@ -4897,6 +5007,129 @@ export default function WorkspaceSettings() {
                   Save & Sync
                 </MutationButton>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Sync Branch Modal (both providers). Opens from the
+          gear icon on each added-repo row. Shows a branch dropdown
+          populated from chunk 06's /branches endpoint, falls back to
+          a text input if the endpoint fails (permission, rate-limit),
+          and surfaces a drift badge when the stored branch differs
+          from the provider's current default. */}
+      {editBranchProvider && editBranchTarget && (
+        <div
+          className="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Change sync branch"
+        >
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-md mx-4 flex flex-col">
+            <div className="p-6 border-b">
+              <h2 className="text-lg font-semibold">Change sync branch</h2>
+              <p className="text-sm text-gray-500 mt-1 font-mono truncate">{editBranchTarget}</p>
+            </div>
+            <div className="p-6 space-y-4">
+              {editBranchLoading ? (
+                <div className="py-6 flex items-center justify-center gap-2 text-gray-500">
+                  <Loader2 className="animate-spin" size={18} />
+                  <span>Loading branches...</span>
+                </div>
+              ) : editBranchError ? (
+                <>
+                  <div className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded p-3">
+                    Could not load branch list ({editBranchError}). Enter the branch name manually.
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Sync from branch</label>
+                    <input
+                      type="text"
+                      value={editBranchSelected}
+                      onChange={(e) => setEditBranchSelected(e.target.value)}
+                      placeholder="e.g. main, master, develop"
+                      className="w-full px-3 py-2 text-sm font-mono border rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+                </>
+              ) : editBranchData ? (
+                <>
+                  {/* Drift badge: stored branch differs from
+                      provider's current default. Only render when we
+                      have both values and they disagree. */}
+                  {editBranchData.stored_default
+                    && editBranchData.stored_default !== editBranchData.current_default && (
+                    <div className="text-sm bg-amber-50 border border-amber-200 rounded p-3">
+                      <p className="text-amber-900 font-medium">Branch drift detected</p>
+                      <p className="text-amber-800 mt-1">
+                        Currently syncing from{' '}
+                        <code className="font-mono bg-white px-1 rounded">
+                          {editBranchData.stored_default}
+                        </code>{' '}
+                        but the provider now reports{' '}
+                        <code className="font-mono bg-white px-1 rounded">
+                          {editBranchData.current_default}
+                        </code>{' '}
+                        as the default.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => setEditBranchSelected(editBranchData.current_default)}
+                        className="mt-2 text-sm text-blue-700 hover:text-blue-900 underline"
+                      >
+                        Use {editBranchData.current_default} (current provider default)
+                      </button>
+                    </div>
+                  )}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Sync from branch</label>
+                    <select
+                      value={editBranchSelected}
+                      onChange={(e) => setEditBranchSelected(e.target.value)}
+                      className="w-full px-3 py-2 text-sm font-mono border rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    >
+                      {/* If the current stored branch isn't in the
+                          returned list (deleted, or paginated past the
+                          500 cap), include it as an explicit option so
+                          we never lose the customer's current
+                          selection to a dropdown that can't render it. */}
+                      {editBranchSelected
+                        && !editBranchData.branches.some(b => b.name === editBranchSelected) && (
+                        <option value={editBranchSelected}>{editBranchSelected} (not in list)</option>
+                      )}
+                      {editBranchData.branches.map(b => (
+                        <option key={b.name} value={b.name}>
+                          {b.name}
+                          {b.name === editBranchData.current_default ? ' (provider default)' : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </>
+              ) : null}
+            </div>
+            <div className="p-6 border-t flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={closeEditBranchModal}
+                disabled={editBranchSaving}
+                className="px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded transition-colors disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <MutationButton
+                onClick={handleSaveBranch}
+                disabled={
+                  editBranchSaving
+                  || editBranchLoading
+                  || !editBranchSelected.trim()
+                  || editBranchSelected.trim() === (editBranchData?.stored_default || '')
+                }
+                className="px-4 py-2 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center gap-1"
+              >
+                {editBranchSaving && <Loader2 size={14} className="animate-spin" />}
+                Save
+              </MutationButton>
             </div>
           </div>
         </div>

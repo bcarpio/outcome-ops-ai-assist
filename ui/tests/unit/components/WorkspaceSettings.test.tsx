@@ -44,8 +44,11 @@ vi.mock('../../../src/lib/api', () => ({
   listGitHubRepos: vi.fn(),
   addGitHubRepos: vi.fn(),
   updateGitHubRepo: vi.fn(),
+  listGitHubRepoBranches: vi.fn(),
   removeGitHubRepo: vi.fn(),
   triggerGitHubSync: vi.fn(),
+  updateAzureDevOpsRepo: vi.fn(),
+  listAzureDevOpsRepoBranches: vi.fn(),
   listTeamsConnections: vi.fn(),
   getTeamsAuthUrl: vi.fn(),
   listTeamsTeams: vi.fn(),
@@ -94,7 +97,8 @@ import {
   listDocuments, deleteDocument,
   listOutlookConnections,
   listGitHubInstallations, listGitHubRepos, listGitHubInstallationRepos,
-  addGitHubRepos, removeGitHubRepo, triggerGitHubSync,
+  addGitHubRepos, updateGitHubRepo, listGitHubRepoBranches,
+  removeGitHubRepo, triggerGitHubSync,
   listTeamsConnections, listSharePointConnections,
   getTeamsAuthUrl, deleteTeamsConnection, triggerTeamsSync,
   getSharePointAuthUrl, deleteSharePointConnection, triggerSharePointSync,
@@ -951,6 +955,98 @@ describe('WorkspaceSettings', () => {
     // No branch chip should exist for this row.
     expect(screen.queryByText('main')).not.toBeInTheDocument()
     expect(screen.queryByText('master')).not.toBeInTheDocument()
+  })
+
+  it('opens the edit-branch modal from the gear icon and loads branches', async () => {
+    const mockListBranches = vi.mocked(listGitHubRepoBranches)
+    mockListGitHubInstallations.mockResolvedValue([
+      { installation_id: 'inst-1', workspace_id: 'ws-1', account_login: 'my-org', account_type: 'Organization', permissions: { contents: 'read' }, created_by: 'user@test.com', created_at: '2024-01-01' },
+    ])
+    mockListGitHubRepos.mockResolvedValue([
+      { repo_name: 'my-org/legacy-app', workspace_id: 'ws-1', installation_id: 'inst-1', enabled: true, include_code_maps: true, repo_type: 'application', last_sync_at: null, last_sync_status: null, last_sync_error: null, last_commit_sha: null, added_at: '2024-01-01', added_by: 'user@test.com', default_branch: 'master' },
+    ])
+    mockListBranches.mockResolvedValue({
+      branches: [{ name: 'master', protected: true }, { name: 'main', protected: false }, { name: 'develop', protected: false }],
+      current_default: 'main',   // drift: provider says main
+      stored_default: 'master',  // we're still on master
+    })
+    renderSettings('integrations')
+
+    await waitFor(() => {
+      expect(screen.getByText('my-org/legacy-app')).toBeInTheDocument()
+    })
+
+    const user = userEvent.setup()
+    await user.click(screen.getByTitle('Change sync branch'))
+
+    // Modal opens with a heading and the target repo name.
+    await waitFor(() => {
+      expect(screen.getByRole('dialog', { name: /change sync branch/i })).toBeInTheDocument()
+    })
+    expect(mockListBranches).toHaveBeenCalledWith('ws-1', 'my-org/legacy-app')
+
+    // Drift badge visible with both branch names surfaced.
+    await waitFor(() => {
+      expect(screen.getByText(/branch drift detected/i)).toBeInTheDocument()
+    })
+    expect(screen.getByText(/current provider default/i)).toBeInTheDocument()
+  })
+
+  it('saves the picked branch via updateGitHubRepo', async () => {
+    const mockListBranches = vi.mocked(listGitHubRepoBranches)
+    const mockUpdateRepo = vi.mocked(updateGitHubRepo)
+    mockListGitHubInstallations.mockResolvedValue([
+      { installation_id: 'inst-1', workspace_id: 'ws-1', account_login: 'my-org', account_type: 'Organization', permissions: { contents: 'read' }, created_by: 'user@test.com', created_at: '2024-01-01' },
+    ])
+    const initial = { repo_name: 'my-org/legacy-app', workspace_id: 'ws-1', installation_id: 'inst-1', enabled: true, include_code_maps: true, repo_type: 'application' as const, last_sync_at: null, last_sync_status: null, last_sync_error: null, last_commit_sha: null, added_at: '2024-01-01', added_by: 'user@test.com', default_branch: 'master' }
+    mockListGitHubRepos.mockResolvedValue([initial])
+    mockListBranches.mockResolvedValue({
+      branches: [{ name: 'master' }, { name: 'main' }],
+      current_default: 'main',
+      stored_default: 'master',
+    })
+    mockUpdateRepo.mockResolvedValue({ ...initial, default_branch: 'main' })
+
+    renderSettings('integrations')
+    await waitFor(() => {
+      expect(screen.getByText('my-org/legacy-app')).toBeInTheDocument()
+    })
+    const user = userEvent.setup()
+    await user.click(screen.getByTitle('Change sync branch'))
+    await waitFor(() => {
+      expect(screen.getByRole('dialog', { name: /change sync branch/i })).toBeInTheDocument()
+    })
+    // Click the "Use main (current provider default)" affordance and save.
+    await user.click(screen.getByText(/use main \(current provider default\)/i))
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => {
+      expect(mockUpdateRepo).toHaveBeenCalledWith('ws-1', 'my-org/legacy-app', { default_branch: 'main' })
+    })
+  })
+
+  it('falls back to a text input when the branches endpoint fails', async () => {
+    const mockListBranches = vi.mocked(listGitHubRepoBranches)
+    mockListGitHubInstallations.mockResolvedValue([
+      { installation_id: 'inst-1', workspace_id: 'ws-1', account_login: 'my-org', account_type: 'Organization', permissions: { contents: 'read' }, created_by: 'user@test.com', created_at: '2024-01-01' },
+    ])
+    mockListGitHubRepos.mockResolvedValue([
+      { repo_name: 'my-org/app', workspace_id: 'ws-1', installation_id: 'inst-1', enabled: true, include_code_maps: true, repo_type: 'application', last_sync_at: null, last_sync_status: null, last_sync_error: null, last_commit_sha: null, added_at: '2024-01-01', added_by: 'user@test.com', default_branch: 'main' },
+    ])
+    mockListBranches.mockRejectedValue(new Error('rate limit'))
+
+    renderSettings('integrations')
+    await waitFor(() => {
+      expect(screen.getByText('my-org/app')).toBeInTheDocument()
+    })
+    const user = userEvent.setup()
+    await user.click(screen.getByTitle('Change sync branch'))
+    // Modal renders the graceful fallback (text input) with the
+    // error message.
+    await waitFor(() => {
+      expect(screen.getByText(/could not load branch list/i)).toBeInTheDocument()
+    })
+    expect(screen.getByPlaceholderText(/e.g. main, master, develop/i)).toBeInTheDocument()
   })
 
   it('removes a GitHub repo', async () => {
