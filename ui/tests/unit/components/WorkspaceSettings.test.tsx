@@ -912,6 +912,47 @@ describe('WorkspaceSettings', () => {
     expect(screen.getByText('my-org')).toBeInTheDocument()
   })
 
+  it('shows the sync-branch chip on GitHub repos when default_branch is set', async () => {
+    // Post-chunk-01 rows carry default_branch. The chip makes it
+    // scannable at a glance so admins can see which repos are still
+    // syncing from master after an org-wide master -> main cutover.
+    mockListGitHubInstallations.mockResolvedValue([
+      { installation_id: 'inst-1', workspace_id: 'ws-1', account_login: 'my-org', account_type: 'Organization', permissions: { contents: 'read' }, created_by: 'user@test.com', created_at: '2024-01-01' },
+    ])
+    mockListGitHubRepos.mockResolvedValue([
+      { repo_name: 'my-org/main-repo', workspace_id: 'ws-1', installation_id: 'inst-1', enabled: true, include_code_maps: true, repo_type: 'application', last_sync_at: null, last_sync_status: null, last_sync_error: null, last_commit_sha: null, added_at: '2024-01-01', added_by: 'user@test.com', default_branch: 'main' },
+      { repo_name: 'my-org/legacy-repo', workspace_id: 'ws-1', installation_id: 'inst-1', enabled: true, include_code_maps: true, repo_type: 'application', last_sync_at: null, last_sync_status: null, last_sync_error: null, last_commit_sha: null, added_at: '2024-01-01', added_by: 'user@test.com', default_branch: 'master' },
+    ])
+    renderSettings('integrations')
+
+    await waitFor(() => {
+      expect(screen.getByText('my-org/main-repo')).toBeInTheDocument()
+    })
+    // Both branch chips render.
+    expect(screen.getByText('main')).toBeInTheDocument()
+    expect(screen.getByText('master')).toBeInTheDocument()
+  })
+
+  it('does not render a branch chip on legacy GitHub rows that lack default_branch', async () => {
+    // Pre-chunk-01 rows may lack the field until backfilled on next
+    // sync. Show nothing rather than assume 'main' -- assuming 'main'
+    // would silently mislead admins about repos still on master.
+    mockListGitHubInstallations.mockResolvedValue([
+      { installation_id: 'inst-1', workspace_id: 'ws-1', account_login: 'my-org', account_type: 'Organization', permissions: { contents: 'read' }, created_by: 'user@test.com', created_at: '2024-01-01' },
+    ])
+    mockListGitHubRepos.mockResolvedValue([
+      { repo_name: 'my-org/legacy', workspace_id: 'ws-1', installation_id: 'inst-1', enabled: true, include_code_maps: true, repo_type: 'application', last_sync_at: null, last_sync_status: null, last_sync_error: null, last_commit_sha: null, added_at: '2024-01-01', added_by: 'user@test.com' },
+    ])
+    renderSettings('integrations')
+
+    await waitFor(() => {
+      expect(screen.getByText('my-org/legacy')).toBeInTheDocument()
+    })
+    // No branch chip should exist for this row.
+    expect(screen.queryByText('main')).not.toBeInTheDocument()
+    expect(screen.queryByText('master')).not.toBeInTheDocument()
+  })
+
   it('removes a GitHub repo', async () => {
     mockListGitHubInstallations.mockResolvedValue([
       { installation_id: 'inst-1', workspace_id: 'ws-1', account_login: 'my-org', account_type: 'Organization', permissions: { contents: 'read' }, created_by: 'user@test.com', created_at: '2024-01-01' },

@@ -2432,11 +2432,20 @@ export default function WorkspaceSettings() {
                           <div className="flex items-center gap-3 flex-1 min-w-0">
                             <Github className="text-gray-400 flex-shrink-0" size={20} />
                             <div className="min-w-0">
-                              <div className="flex items-center gap-2">
+                              <div className="flex items-center gap-2 flex-wrap">
                                 <p className="font-medium text-gray-900 truncate">{repo.repo_name}</p>
                                 <span className="text-xs px-1.5 py-0.5 rounded bg-gray-100 text-gray-600">
                                   {repo.repo_type || 'application'}
                                 </span>
+                                {repo.default_branch && (
+                                  <span
+                                    className="text-xs px-1.5 py-0.5 rounded bg-gray-100 text-gray-600 font-mono inline-flex items-center gap-1"
+                                    title={`Syncing from branch ${repo.default_branch}`}
+                                  >
+                                    <GitBranch size={11} />
+                                    {repo.default_branch}
+                                  </span>
+                                )}
                               </div>
                               <p className="text-sm text-gray-500">
                                 {repo.last_sync_status ? (
