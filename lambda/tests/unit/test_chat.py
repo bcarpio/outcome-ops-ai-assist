@@ -63,6 +63,15 @@ def _load_handler_module():
     handler_module._workspaces_table = "test-workspaces-table"
     # Bypass workspace access validation in tests
     handler_module._validate_workspace_access = lambda user_email, workspace_ids: workspace_ids
+    # Bypass scope resolution too (chunk 03 of the workspace-scope plan).
+    # Save a reference to the real resolver so the dedicated resolver
+    # tests can reach past the stub.
+    handler_module._real_resolve_chat_workspace_scope = (
+        handler_module.resolve_chat_workspace_scope
+    )
+    handler_module.resolve_chat_workspace_scope = (
+        lambda user_email, workspace_ids: workspace_ids
+    )
 
     return handler_module
 
@@ -370,6 +379,121 @@ def sample_messages():
             "created_at": "2025-01-15T10:01:00+00:00",
         },
     ]
+
+
+# ============================================================================
+# Chunk 03 of the workspace-scope plan: resolve_chat_workspace_scope
+# ============================================================================
+
+
+class TestResolveChatWorkspaceScope:
+    """Bidirectional-read scope resolver. Rules:
+    1. Standard access check passes through.
+    2. is_global workspaces readable by anyone.
+    3. If user is a member of an is_global workspace they've included
+       in the request, broaden to every workspace in the deployment.
+    """
+
+    def _table_stub(self, ws_meta, all_ws_scan):
+        """Build a MagicMock table whose get_item returns per-ws metadata
+        and whose scan returns the all-workspaces list once (no pagination)."""
+        from unittest.mock import MagicMock
+        table = MagicMock()
+
+        def get_item(Key, **_):
+            ws_id = Key["PK"].replace("WS#", "")
+            item = ws_meta.get(ws_id)
+            return {"Item": item} if item else {}
+        table.get_item.side_effect = get_item
+        table.scan.return_value = {"Items": all_ws_scan}
+        return table
+
+    def _call_real(self, ws_meta, all_ws_scan, authorized, user_ws_ids, request_ids):
+        """Invoke the *real* resolver (bypassing the fixture stub) with
+        the given ddb + user context patched in."""
+        from unittest.mock import patch, MagicMock
+
+        table = self._table_stub(ws_meta, all_ws_scan)
+        with patch.object(
+            handler_module, "_get_dynamodb",
+            return_value=MagicMock(Table=lambda _: table),
+        ), patch.object(
+            handler_module, "_validate_workspace_access",
+            return_value=authorized,
+        ), patch.object(
+            handler_module, "_get_user_workspace_ids",
+            return_value=user_ws_ids,
+        ):
+            return handler_module._real_resolve_chat_workspace_scope(
+                "user@example.com", request_ids,
+            ), table
+
+    def test_pure_owned_workspace_passes_through(self):
+        # No globals involved. User is a member of ws-eng.
+        result, _ = self._call_real(
+            ws_meta={"ws-eng": {"workspace_id": "ws-eng", "is_global": False}},
+            all_ws_scan=[],
+            authorized=["ws-eng"],
+            user_ws_ids=["ws-eng"],
+            request_ids=["ws-eng"],
+        )
+        assert result == ["ws-eng"]
+
+    def test_global_workspace_passes_through_for_non_member(self):
+        # User picked a global workspace they're NOT a member of; the
+        # is_global pass-through makes it readable. Broaden should NOT
+        # fire.
+        result, table = self._call_real(
+            ws_meta={
+                "ws-eng": {"workspace_id": "ws-eng", "is_global": False},
+                "ws-sec": {"workspace_id": "ws-sec", "is_global": True},
+            },
+            all_ws_scan=[],
+            authorized=["ws-eng"],  # access check filtered ws-sec out
+            user_ws_ids=["ws-eng"],
+            request_ids=["ws-eng", "ws-sec"],
+        )
+        assert set(result) == {"ws-eng", "ws-sec"}
+        table.scan.assert_not_called()
+
+    def test_global_member_broadens_to_all_workspaces(self):
+        # Sec-team member picks their own global workspace -> broaden
+        # to every workspace in the deployment.
+        result, _ = self._call_real(
+            ws_meta={
+                "ws-sec": {"workspace_id": "ws-sec", "is_global": True},
+            },
+            all_ws_scan=[
+                {"workspace_id": "ws-sec"},
+                {"workspace_id": "ws-eng"},
+                {"workspace_id": "ws-payments"},
+            ],
+            authorized=["ws-sec"],
+            user_ws_ids=["ws-sec"],
+            request_ids=["ws-sec"],
+        )
+        assert set(result) == {"ws-sec", "ws-eng", "ws-payments"}
+
+    def test_global_member_narrowing_to_non_global_does_not_broaden(self):
+        # Sec-team member picks JUST ws-eng (excluding their global
+        # workspace) -> respect the narrowing; no auto-broaden.
+        # Plan open-question #4.
+        result, table = self._call_real(
+            ws_meta={"ws-eng": {"workspace_id": "ws-eng", "is_global": False}},
+            all_ws_scan=[],
+            authorized=["ws-eng"],
+            user_ws_ids=["ws-sec", "ws-eng"],
+            request_ids=["ws-eng"],
+        )
+        assert result == ["ws-eng"]
+        table.scan.assert_not_called()
+
+    def test_empty_request_returns_empty(self):
+        # No table access needed for the empty case.
+        result = handler_module._real_resolve_chat_workspace_scope(
+            "user@example.com", [],
+        )
+        assert result == []
 
 
 # ============================================================================

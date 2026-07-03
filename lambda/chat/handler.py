@@ -25,7 +25,7 @@ import secrets
 import sys
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, Generator, List, Optional, Tuple
+from typing import Any, Dict, Generator, List, Optional, Set, Tuple
 
 import boto3
 from botocore.config import Config
@@ -347,6 +347,95 @@ def _validate_workspace_access(user_email: str, workspace_ids: List[str]) -> Lis
             continue
 
     return authorized
+
+
+def _list_all_workspace_metadata(table) -> List[Dict]:
+    """Paginated scan of every workspace METADATA row.
+
+    Used by ``resolve_chat_workspace_scope`` on the bidirectional-
+    read path. Not exposed publicly -- callers must have already
+    established that the user is a member of an ``is_global``
+    workspace in the requested set before reaching here.
+    """
+    items = []
+    scan_kwargs = {
+        "FilterExpression": "SK = :sk AND begins_with(PK, :pk_prefix)",
+        "ExpressionAttributeValues": {":sk": "METADATA", ":pk_prefix": "WS#"},
+    }
+    while True:
+        response = table.scan(**scan_kwargs)
+        items.extend(response.get("Items", []))
+        last_key = response.get("LastEvaluatedKey")
+        if not last_key:
+            break
+        scan_kwargs["ExclusiveStartKey"] = last_key
+    return items
+
+
+def resolve_chat_workspace_scope(
+    user_email: str,
+    requested_workspace_ids: List[str],
+) -> List[str]:
+    """Resolve the effective retrieval scope for a chat turn.
+
+    Rules (see plan/overview.md for the design):
+
+    1. Every requested workspace the user is authorized to read
+       passes through unchanged.
+    2. ``is_global=true`` workspaces are readable by anyone -- they
+       pass through even if the standard access check would have
+       filtered them out.
+    3. **Bidirectional pull:** if the user is a member of any
+       ``is_global`` workspace present in ``requested_workspace_ids``,
+       broaden the scope to include every workspace in the
+       deployment. That's how Security / EA / Compliance members
+       get cross-portfolio visibility without hand-shares.
+
+    Rule 3's trigger is "member AND included in the request." A
+    global-workspace member who narrows to just Team A in the picker
+    (excluding their global workspace) does NOT auto-broaden --
+    respect the explicit narrowing. Matches the plan's open-question
+    #4 recommendation.
+    """
+    if not requested_workspace_ids:
+        return []
+
+    dynamodb = _get_dynamodb()
+    table = dynamodb.Table(_get_workspaces_table())
+
+    # Determine which requested workspaces are ``is_global``.
+    global_flags: Dict[str, bool] = {}
+    for ws_id in requested_workspace_ids:
+        try:
+            resp = table.get_item(Key={"PK": f"WS#{ws_id}", "SK": "METADATA"})
+            item = resp.get("Item", {}) or {}
+            global_flags[ws_id] = bool(item.get("is_global", False))
+        except ClientError:
+            global_flags[ws_id] = False
+
+    # Standard access check.
+    authorized = _validate_workspace_access(user_email, requested_workspace_ids)
+    scope: Set[str] = set(authorized)
+
+    # Rule 2: ``is_global`` workspaces are readable by anyone.
+    for ws_id in requested_workspace_ids:
+        if global_flags.get(ws_id):
+            scope.add(ws_id)
+
+    # Rule 3: bidirectional pull. Fires only when the user is a member
+    # of an ``is_global`` workspace that they've included in the request.
+    user_ws_ids = set(_get_user_workspace_ids(user_email))
+    triggers_broaden = any(
+        global_flags.get(ws_id) and ws_id in user_ws_ids
+        for ws_id in requested_workspace_ids
+    )
+    if triggers_broaden:
+        for item in _list_all_workspace_metadata(table):
+            ws_id = item.get("workspace_id")
+            if ws_id:
+                scope.add(ws_id)
+
+    return sorted(scope)
 
 
 def _load_mcp_configs(mcp_server_ids: List[str]) -> List[Dict]:
@@ -2136,16 +2225,28 @@ def handle_chat_stream(event: Dict) -> Generator[str, None, None]:
     # Support both workspace_ids (new) and workspace_id (deprecated)
     workspace_ids = request.workspace_ids or ([request.workspace_id] if request.workspace_id else None)
 
-    # Validate workspace access - only allow workspaces the user is a member of
+    # Resolve workspace scope with is_global-aware bidirectional read.
+    # Rules (see ``resolve_chat_workspace_scope`` docstring): standard
+    # access check + is_global workspaces readable by anyone + when
+    # the user is a member of an is_global workspace they've included
+    # in the picker, broaden to every workspace in the deployment.
+    # Stores the caller-selected primary before broaden so the
+    # conversation still lands in the "picked" workspace.
+    caller_primary_workspace_id = workspace_ids[0] if workspace_ids else None
     if workspace_ids and user_id:
-        authorized_ws = _validate_workspace_access(user_id, workspace_ids)
-        if not authorized_ws:
+        resolved_scope = resolve_chat_workspace_scope(user_id, workspace_ids)
+        if not resolved_scope:
             yield _stream_error("You do not have access to the requested workspace(s)", 403) + "\n"
             return
-        workspace_ids = authorized_ws
+        workspace_ids = resolved_scope
 
-    # For conversation storage, use first workspace_id
-    primary_workspace_id = workspace_ids[0] if workspace_ids else None
+    # For conversation storage, use the caller's originally-picked
+    # workspace (or the first of the resolved set if the picker set
+    # is empty for some reason). The bidirectional broaden shouldn't
+    # move the conversation into another team's workspace by accident.
+    primary_workspace_id = caller_primary_workspace_id or (
+        workspace_ids[0] if workspace_ids else None
+    )
 
     # Use explicitly selected prompt workspace, or fall back to primary
     prompt_ws_id = request.prompt_workspace_id or primary_workspace_id
