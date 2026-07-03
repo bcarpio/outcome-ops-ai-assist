@@ -160,6 +160,10 @@ module "query_kb_lambda" {
     RERANK_ENABLED                 = tostring(var.bedrock_rerank_enabled)
     RERANK_MAX_FETCH               = tostring(var.rerank_max_fetch)
     RERANK_MIN_SCORE               = tostring(var.rerank_min_score)
+    # Workspace metadata table for chunk-05 source-workspace name
+    # resolution. Empty when the deploy has enable_workspaces=false;
+    # the resolver treats missing as "no lookup available".
+    WORKSPACES_TABLE               = var.enable_workspaces ? module.workspaces_table[0].dynamodb_table_id : ""
   }
 
   # IAM permissions
@@ -174,6 +178,23 @@ module "query_kb_lambda" {
       resources = [
         module.audit_logs_table.dynamodb_table_arn
       ]
+    }
+
+    # Workspace metadata read for the chunk-05 citation polish:
+    # BatchGetItem resolves workspace_id -> workspace name so source
+    # citations carry "(Workspace Name)" for compliance auditor
+    # traceability. Fail-soft in the handler if this grant is
+    # missing; sources render name-less. Only fires when the
+    # deployment has workspaces enabled.
+    dynamodb_workspaces_read = {
+      effect = "Allow"
+      actions = [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetItem",
+      ]
+      resources = var.enable_workspaces ? [
+        module.workspaces_table[0].dynamodb_table_arn,
+      ] : []
     }
 
     # Read SSM parameters (to get Lambda ARNs and S3 Vectors config)

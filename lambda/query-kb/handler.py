@@ -149,50 +149,73 @@ def generate_embedding(text: str) -> List[float]:
         raise
 
 
-def format_source(metadata: Dict[str, Any]) -> str:
+def format_source(
+    metadata: Dict[str, Any],
+    workspace_names: Optional[Dict[str, str]] = None,
+) -> str:
     """
     Format document source for display.
 
     Args:
-        metadata: Vector metadata containing type, repo, file_path
+        metadata: Vector metadata containing type, repo, file_path,
+            and (chunk 05 of the workspace-scope plan) ``workspace_id``.
+        workspace_names: Optional map from workspace_id -> human-readable
+            name. When present and the metadata carries a workspace_id
+            resolvable through the map, the returned source string gets
+            a `` (Workspace Name)`` suffix so compliance auditors can
+            trace which tier of standards a citation came from.
 
     Returns:
-        Formatted source string (e.g., "ADR: ADR-001", "README.md - repo-name")
+        Formatted source string (e.g., "ADR: ADR-001 (Enterprise
+        Architecture)", "README.md - repo-name")
     """
     doc_type = metadata.get("type", "")
     repo = metadata.get("repo", "")
     file_path = metadata.get("file_path", "")
+    workspace_id = metadata.get("workspace_id")
+
+    def _suffix() -> str:
+        # Attach a resolvable workspace name only when we have one.
+        # Silent no-op when the caller didn't supply the map.
+        if not workspace_names or not workspace_id:
+            return ""
+        name = workspace_names.get(workspace_id)
+        return f" ({name})" if name else ""
 
     if doc_type == "adr":
         # Extract ADR ID from file path or use a fallback
         if file_path:
             filename = file_path.split("/")[-1]
             adr_id = filename.rsplit(".", 1)[0] if "." in filename else filename
-            return f"ADR: {adr_id}"
-        return f"ADR - {repo}"
+            return f"ADR: {adr_id}{_suffix()}"
+        return f"ADR - {repo}{_suffix()}"
 
     elif doc_type == "readme":
-        return f"README.md - {repo}"
+        return f"README.md - {repo}{_suffix()}"
 
     elif doc_type == "doc":
         if file_path:
             filename = file_path.split("/")[-1]
             doc_name = filename.rsplit(".", 1)[0] if "." in filename else filename
-            return f"{doc_name}.md - {repo}"
-        return f"Doc - {repo}"
+            return f"{doc_name}.md - {repo}{_suffix()}"
+        return f"Doc - {repo}{_suffix()}"
 
     elif doc_type == "dependency":
         language = metadata.get("language", "")
         if file_path:
             filename = file_path.split("/")[-1]
-            return f"{filename} ({language}) - {repo}"
-        return f"Dependencies ({language}) - {repo}"
+            return f"{filename} ({language}) - {repo}{_suffix()}"
+        return f"Dependencies ({language}) - {repo}{_suffix()}"
 
     elif doc_type in ("code-map", "handler-group-summary", "infrastructure-summary"):
-        return f"Code map - {repo}"
+        return f"Code map - {repo}{_suffix()}"
 
     else:
-        return f"{doc_type} - {repo}" if doc_type else f"Document - {repo}"
+        return (
+            f"{doc_type} - {repo}{_suffix()}"
+            if doc_type
+            else f"Document - {repo}{_suffix()}"
+        )
 
 
 def query_s3_vectors(
@@ -260,20 +283,75 @@ def query_s3_vectors(
         logger.error(f"[query-kb] Failed to query S3 Vectors: {e}")
         raise
 
+    # Resolve workspace names for citation polish (chunk 05). Only
+    # for workspaces that show up in the result set -- one batch DDB
+    # lookup, no per-doc round trip. Fail-soft: on any error, sources
+    # render without the workspace suffix (pre-fix format).
+    workspace_ids_in_results = {
+        d["metadata"].get("workspace_id")
+        for d in docs
+        if d["metadata"].get("workspace_id")
+    }
+    workspace_names = _resolve_workspace_names(workspace_ids_in_results)
+
     results = [
         {
             "score": d["score"],
             "text": d["text"],
-            "source": format_source(d["metadata"]),
+            "source": format_source(d["metadata"], workspace_names=workspace_names),
             "type": d["type"],
             "repo": d["repo"],
             "file_path": d["file_path"],
+            # Surface the workspace_id + human-readable name so
+            # downstream consumers (chat, PR-check comment renderer)
+            # can display or filter by workspace without re-fetching.
+            "workspace_id": d["metadata"].get("workspace_id"),
+            "workspace_name": workspace_names.get(
+                d["metadata"].get("workspace_id"),
+            ),
         }
         for d in docs
     ]
 
     logger.info(f"[query-kb] Found {len(results)} results from S3 Vectors")
     return results
+
+
+def _resolve_workspace_names(workspace_ids: set) -> Dict[str, str]:
+    """Batch-lookup workspace names for the given ids. Returns empty
+    dict on any failure so callers degrade cleanly to name-less
+    source strings."""
+    if not workspace_ids:
+        return {}
+    try:
+        import boto3
+        ddb = boto3.resource("dynamodb")
+        table_name = os.environ.get("WORKSPACES_TABLE")
+        if not table_name:
+            return {}
+        table = ddb.Table(table_name)
+        # BatchGetItem via table resource caps at 100 items per call.
+        # Chunk defensively.
+        names: Dict[str, str] = {}
+        ids = list(workspace_ids)
+        for chunk_start in range(0, len(ids), 100):
+            batch_keys = [
+                {"PK": f"WS#{wid}", "SK": "METADATA"}
+                for wid in ids[chunk_start:chunk_start + 100]
+            ]
+            response = ddb.batch_get_item(
+                RequestItems={
+                    table_name: {"Keys": batch_keys},
+                },
+            )
+            for item in response.get("Responses", {}).get(table_name, []):
+                wid = item.get("workspace_id")
+                if wid:
+                    names[wid] = item.get("name", wid)
+        return names
+    except Exception as e:
+        logger.warning(f"[query-kb] Could not resolve workspace names: {e}")
+        return {}
 
 
 def rerank_results(

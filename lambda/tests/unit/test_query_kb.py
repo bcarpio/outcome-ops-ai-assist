@@ -724,6 +724,37 @@ class TestFormatSource:
         result = format_source(metadata)
         assert result == "guide.md - my-repo"
 
+    def test_format_source_adds_workspace_name_suffix_when_provided(self):
+        """Chunk 05: when workspace_names is provided and the metadata
+        carries a resolvable workspace_id, the source string appends
+        ``(WorkspaceName)`` so compliance auditors can see which tier
+        of standards a citation came from."""
+        metadata = {
+            "type": "adr", "repo": "my-repo",
+            "file_path": "docs/adrs/ADR-014-idempotency.md",
+            "workspace_id": "ws-ea",
+        }
+        result = format_source(metadata, workspace_names={"ws-ea": "Enterprise Architecture"})
+        assert result == "ADR: ADR-014-idempotency (Enterprise Architecture)"
+
+    def test_format_source_no_suffix_when_workspace_names_omitted(self):
+        # Backward-compat: existing callers that don't pass the map
+        # still get the pre-fix string.
+        metadata = {
+            "type": "adr", "repo": "my-repo",
+            "file_path": "docs/adrs/ADR-001.md",
+            "workspace_id": "ws-ea",
+        }
+        result = format_source(metadata)
+        assert result == "ADR: ADR-001"
+
+    def test_format_source_no_suffix_when_workspace_id_missing(self):
+        # Legacy vectors without a workspace_id in metadata degrade
+        # cleanly to the unadorned source string.
+        metadata = {"type": "adr", "repo": "my-repo", "file_path": "docs/ADR-001.md"}
+        result = format_source(metadata, workspace_names={"ws-ea": "EA"})
+        assert result == "ADR: ADR-001"
+
 
 class TestQueryS3Vectors:
     """Test S3 Vectors querying."""
