@@ -5,6 +5,7 @@ import {
   Folder,
   Users,
   Loader2,
+  Globe,
 } from 'lucide-react'
 import {
   listWorkspaces,
@@ -24,6 +25,12 @@ export default function Workspaces() {
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [newName, setNewName] = useState('')
   const [newDescription, setNewDescription] = useState('')
+  const [newIsGlobal, setNewIsGlobal] = useState(false)
+  // Two-step confirm for is_global at creation. Off-toggle is a
+  // de-escalation and doesn't warrant the same friction, but flipping
+  // ON at creation broadens the read surface for the whole deploy --
+  // ceremony matches the risk.
+  const [showGlobalWarning, setShowGlobalWarning] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [isOrgAdmin, setIsOrgAdmin] = useState(false)
 
@@ -72,11 +79,17 @@ export default function Workspaces() {
     setError(null)
 
     try {
-      const workspace = await createWorkspace(newName.trim(), newDescription.trim())
+      const workspace = await createWorkspace(
+        newName.trim(),
+        newDescription.trim(),
+        { is_global: newIsGlobal },
+      )
       setWorkspaces(prev => [workspace, ...prev])
       setShowCreateModal(false)
       setNewName('')
       setNewDescription('')
+      setNewIsGlobal(false)
+      setShowGlobalWarning(false)
       // Navigate to the new workspace
       navigate(`/workspaces/${workspace.workspace_id}`)
     } catch (err) {
@@ -148,7 +161,18 @@ export default function Workspaces() {
                 className="bg-white rounded-lg border shadow-sm hover:shadow-md hover:border-blue-300 transition-all cursor-pointer"
               >
                 <div className="p-4">
-                  <h3 className="font-medium text-gray-900 truncate">{workspace.name}</h3>
+                  <div className="flex items-center gap-2 min-w-0">
+                    <h3 className="font-medium text-gray-900 truncate flex-1">{workspace.name}</h3>
+                    {workspace.is_global && (
+                      <span
+                        className="text-xs px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 inline-flex items-center gap-1 flex-shrink-0"
+                        title="Global workspace — content applies across the deployment"
+                      >
+                        <Globe size={11} />
+                        Global
+                      </span>
+                    )}
+                  </div>
                   {workspace.description && (
                     <p className="mt-1 text-sm text-gray-500 line-clamp-2">{workspace.description}</p>
                   )}
@@ -202,6 +226,30 @@ export default function Workspaces() {
                     className="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
                   />
                 </div>
+                {/* Global toggle — org-admin only (whole create modal
+                    is already gated to org admins upstream, so no
+                    additional gate here). Bidirectional-scope
+                    ceremony is handled by the two-step confirm below. */}
+                <div className="pt-2 border-t">
+                  <label className="flex items-start gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={newIsGlobal}
+                      onChange={(e) => setNewIsGlobal(e.target.checked)}
+                      className="mt-1 w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
+                    />
+                    <div>
+                      <div className="text-sm font-medium text-gray-700 flex items-center gap-1">
+                        <Globe size={14} className="text-blue-600" />
+                        Global workspace
+                      </div>
+                      <p className="text-xs text-gray-500 mt-0.5">
+                        This workspace&rsquo;s content applies across the deployment (chat + PR checks).
+                        Members get read across all other workspaces when querying from here.
+                      </p>
+                    </div>
+                  </label>
+                </div>
               </div>
             </div>
             <div className="px-6 py-4 bg-gray-50 rounded-b-lg flex justify-end gap-3">
@@ -210,6 +258,8 @@ export default function Workspaces() {
                   setShowCreateModal(false)
                   setNewName('')
                   setNewDescription('')
+                  setNewIsGlobal(false)
+                  setShowGlobalWarning(false)
                   setError(null)
                 }}
                 className="px-4 py-2 text-gray-700 hover:bg-gray-200 rounded-lg transition-colors"
@@ -217,12 +267,71 @@ export default function Workspaces() {
                 Cancel
               </button>
               <button
-                onClick={handleCreate}
+                onClick={() => {
+                  // Two-step confirm if is_global was ticked. Non-global
+                  // creates skip straight to handleCreate.
+                  if (newIsGlobal) {
+                    setShowGlobalWarning(true)
+                  } else {
+                    handleCreate()
+                  }
+                }}
                 disabled={!newName.trim() || creating}
                 className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
               >
                 {creating && <Loader2 size={16} className="animate-spin" />}
                 Create
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Global-workspace two-step confirm. Renders on top of the
+          create modal (higher z-index). */}
+      {showGlobalWarning && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[60]">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-md mx-4">
+            <div className="p-6">
+              <div className="flex items-center gap-2 mb-3">
+                <Globe className="text-blue-600" size={20} />
+                <h2 className="text-lg font-semibold">Confirm Global workspace</h2>
+              </div>
+              <p className="text-sm text-gray-700 mb-3">
+                Marking <span className="font-semibold">{newName.trim() || 'this workspace'}</span> as
+                Global does two things:
+              </p>
+              <ul className="text-sm text-gray-700 space-y-2 mb-4 list-disc pl-5">
+                <li>
+                  Its content (ADRs, docs, code-maps) will be available in every user&rsquo;s chat
+                  and every PR check across this deployment.
+                </li>
+                <li>
+                  Its members will have implicit read access on every other workspace&rsquo;s
+                  content when querying from this workspace.
+                </li>
+              </ul>
+              <p className="text-sm text-gray-600 mb-4">
+                Only enable for teams whose enterprise-wide read posture is intentional —
+                typically Enterprise Architecture, Security, Compliance, IT policies, or
+                (rarely) Legal shared-guides.
+              </p>
+            </div>
+            <div className="px-6 py-4 bg-gray-50 rounded-b-lg flex justify-end gap-3">
+              <button
+                onClick={() => setShowGlobalWarning(false)}
+                disabled={creating}
+                className="px-4 py-2 text-gray-700 hover:bg-gray-200 rounded-lg transition-colors disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleCreate}
+                disabled={creating}
+                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
+              >
+                {creating && <Loader2 size={16} className="animate-spin" />}
+                Confirm — Create as Global
               </button>
             </div>
           </div>

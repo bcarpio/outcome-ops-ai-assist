@@ -254,7 +254,16 @@ export interface Workspace {
   created_at: string
   updated_at: string
   created_by: string
-  role?: 'workspace_admin' | 'member' | 'org_admin'
+  // ``global_reader`` is returned by the backend for workspaces the
+  // caller doesn't own but that are is_global=true. See
+  // plan/overview.md for the bidirectional-scope semantics.
+  role?: 'workspace_admin' | 'member' | 'org_admin' | 'global_reader'
+  // Bidirectional-scope flag. When true, this workspace's content is
+  // in-scope for every user's chat retrieval and every PR check's
+  // retrieval pool across the deployment; its members get implicit
+  // read on every other workspace when querying from this one. Set
+  // at provisioning by an org admin.
+  is_global?: boolean
 }
 
 export interface WorkspaceMember {
@@ -316,11 +325,15 @@ async function safeJson(response: Response): Promise<Record<string, unknown> | n
 /**
  * Create a new workspace
  */
-export async function createWorkspace(name: string, description?: string): Promise<Workspace> {
+export async function createWorkspace(
+  name: string,
+  description?: string,
+  options?: { is_global?: boolean },
+): Promise<Workspace> {
   const response = await fetch(`${API_BASE}/workspaces`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, description }),
+    body: JSON.stringify({ name, description, is_global: options?.is_global }),
   })
   if (!response.ok) {
     const data = await safeJson(response)
@@ -351,7 +364,7 @@ export async function getWorkspace(workspaceId: string): Promise<Workspace> {
  */
 export async function updateWorkspace(
   workspaceId: string,
-  updates: { name?: string; description?: string }
+  updates: { name?: string; description?: string; is_global?: boolean }
 ): Promise<Workspace> {
   const response = await fetch(`${API_BASE}/workspaces/${workspaceId}`, {
     method: 'PATCH',

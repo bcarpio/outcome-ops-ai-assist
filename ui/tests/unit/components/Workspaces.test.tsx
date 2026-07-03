@@ -160,7 +160,66 @@ describe('Workspaces', () => {
     await user.click(screen.getByRole('button', { name: /^create$/i }))
 
     await waitFor(() => {
-      expect(mockCreateWorkspace).toHaveBeenCalledWith('My WS', 'Description')
+      expect(mockCreateWorkspace).toHaveBeenCalledWith(
+        'My WS', 'Description', { is_global: false },
+      )
+    })
+  })
+
+  it('shows a Global badge on workspaces flagged is_global', async () => {
+    // Chunk 02 of the workspace-scope plan. Global workspaces (Security,
+    // Enterprise Architecture, etc.) are visually distinguishable in the
+    // list so admins can scan the deployment's read-scope at a glance.
+    mockListWorkspaces.mockResolvedValue([
+      createWorkspace({ workspace_id: 'ws-1', name: 'Team Eng' }),
+      createWorkspace({
+        workspace_id: 'ws-2', name: 'Security Standards',
+        is_global: true, role: 'global_reader',
+      }),
+    ])
+    renderWithRouter(<Workspaces />)
+    await waitFor(() => expect(mockListWorkspaces).toHaveBeenCalled())
+
+    // Both workspaces render, but only the Security one has a Global badge.
+    expect(screen.getByText('Team Eng')).toBeInTheDocument()
+    expect(screen.getByText('Security Standards')).toBeInTheDocument()
+    const badges = screen.getAllByText('Global')
+    expect(badges).toHaveLength(1)
+  })
+
+  it('requires a two-step confirm when creating a Global workspace', async () => {
+    // Ticking is_global at create time triggers the provisioning
+    // warning modal so admins see the bidirectional-read consequence
+    // before submitting.
+    asOrgAdmin()
+    mockListWorkspaces.mockResolvedValue([])
+    const newWs = createWorkspace({
+      workspace_id: 'ws-sec', name: 'Sec', is_global: true,
+    })
+    mockCreateWorkspace.mockResolvedValue(newWs)
+    renderWithRouter(<Workspaces />)
+    await waitFor(() => expect(mockListWorkspaces).toHaveBeenCalled())
+
+    const user = userEvent.setup()
+    // Open the empty-state CTA (Create Your First Workspace).
+    await user.click(screen.getByRole('button', { name: /create your first workspace/i }))
+    await user.type(screen.getByPlaceholderText('My Workspace'), 'Sec')
+    // Tick is_global.
+    await user.click(screen.getByRole('checkbox', { name: /global workspace/i }))
+    // Clicking Create should NOT fire the API yet -- it should show
+    // the warning modal first.
+    await user.click(screen.getByRole('button', { name: /^create$/i }))
+    expect(mockCreateWorkspace).not.toHaveBeenCalled()
+    // Warning modal is visible.
+    expect(screen.getByText(/confirm global workspace/i)).toBeInTheDocument()
+    // Avoid apostrophe encoding differences (rsquo vs straight quote).
+    expect(screen.getByText(/every user/i)).toBeInTheDocument()
+    // Confirm -> API fires with is_global=true.
+    await user.click(screen.getByRole('button', { name: /confirm — create as global/i }))
+    await waitFor(() => {
+      expect(mockCreateWorkspace).toHaveBeenCalledWith(
+        'Sec', '', { is_global: true },
+      )
     })
   })
 
