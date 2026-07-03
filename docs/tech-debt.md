@@ -93,7 +93,7 @@ These drive `_calculate_cost()`, which materializes `cost_usd` onto every audit 
 ## Grok 4.3 fabricates aggregate headers + pattern claims on structural graph questions
 
 **Discovered:** 2026-07-01
-**Severity:** High — blocks Grok as a customer-shippable basic-tier default
+**Severity:** Low — no current customer demand for Grok as a basic-tier default; sandbox eval only. Re-raise if a prospect asks for Grok cheaper-than-Claude economics on structural queries.
 **Component:** `chat` / prompt discipline (ADR-032 no-model-authored-aggregates rule, ADR-027 v1.2 divergence discipline)
 
 The Claude/GPT-5.5 divergence that ADR-027 v1.2 (commit `2d180d1`, 2026-06-19) closed **does not extend to Grok 4.3**. Live-verified against `xai.grok-4.3` on prd (us-west-2) via the basic-tier swap.
