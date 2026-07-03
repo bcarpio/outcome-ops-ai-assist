@@ -195,12 +195,18 @@ module "chat_streaming_lambda" {
       ]
     }
 
-    # DynamoDB read on workspaces table (for MCP configs)
+    # DynamoDB read on workspaces table (for MCP configs).
+    # Scan added for ADR-037's ``resolve_chat_workspace_scope``:
+    # when a global-workspace member queries from their global
+    # workspace, the resolver walks every workspace metadata row
+    # to build the bidirectional-broaden scope. Filtered scan; not
+    # a hot path (once per turn on the broaden branch only).
     workspaces_table_read = {
       effect = "Allow"
       actions = [
         "dynamodb:GetItem",
-        "dynamodb:Query"
+        "dynamodb:Query",
+        "dynamodb:Scan",
       ]
       resources = [
         module.workspaces_table[0].dynamodb_table_arn,
