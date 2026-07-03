@@ -281,7 +281,8 @@ def file_requires_tests(file_path: str, requirements: List[TestRequirement]) -> 
 def query_testing_standards(
     query_kb_lambda_name: str,
     repository: str,
-    scope: str = "local"
+    scope: str = "local",
+    workspace_ids: Optional[List[str]] = None,
 ) -> Tuple[str, Optional[str], Dict[str, Any]]:
     """
     Query knowledge base for testing standards.
@@ -312,10 +313,12 @@ def query_testing_standards(
             "What ADR defines our testing policy?"
         )
 
-    payload = {
+    payload: Dict[str, Any] = {
         "query": query,
-        "topK": 5  # Increase to capture both local and global docs
+        "topK": 5,  # Increase to capture both local and global docs
     }
+    if workspace_ids:
+        payload["workspaceIds"] = workspace_ids
 
     try:
         response = lambda_client.invoke(
@@ -564,10 +567,27 @@ def check_test_coverage(
     local_standards, local_adr_reference = "", None
     global_standards, global_adr_reference = "", None
 
+    # Resolve per-check retrieval scope. TEST_COVERAGE is a
+    # "standards" check: walks the repo's workspace(s) + all
+    # is_global workspaces. Fail-soft: retrieval falls back to
+    # workspace-blind on error, matching pre-fix behavior.
+    scope_workspace_ids: Optional[List[str]] = None
+    try:
+        from shared.pr_check_scope import resolve_pr_check_workspace_scope
+        scope_workspace_ids = resolve_pr_check_workspace_scope(
+            check_type=check_type, repo_name=repository,
+        )
+    except Exception as scope_exc:
+        logger.warning(
+            f"Could not resolve workspace scope for TEST_COVERAGE: "
+            f"{scope_exc}. Falling back to workspace-blind retrieval."
+        )
+
     try:
         # Query local repo-specific standards first
         local_standards, local_adr_reference, local_usage = query_testing_standards(
-            query_kb_lambda_name, repository, scope="local"
+            query_kb_lambda_name, repository, scope="local",
+            workspace_ids=scope_workspace_ids,
         )
         if local_usage:
             # query-kb returns usage with snake_case keys: input_tokens, output_tokens, cost_usd
@@ -583,7 +603,8 @@ def check_test_coverage(
     try:
         # Query global organization-wide standards
         global_standards, global_adr_reference, global_usage = query_testing_standards(
-            query_kb_lambda_name, repository, scope="global"
+            query_kb_lambda_name, repository, scope="global",
+            workspace_ids=scope_workspace_ids,
         )
         if global_usage:
             # query-kb returns usage with snake_case keys: input_tokens, output_tokens, cost_usd

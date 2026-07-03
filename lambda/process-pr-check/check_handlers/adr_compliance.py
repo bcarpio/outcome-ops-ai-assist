@@ -162,12 +162,23 @@ def _fetch_file_diff(
     raise ValueError(f"Unknown provider: {provider}")
 
 
-def query_knowledge_base(lambda_name: str, query: str, top_k: int = 3) -> Dict[str, Any]:
-    """Query knowledge base via query-kb Lambda."""
+def query_knowledge_base(
+    lambda_name: str, query: str, top_k: int = 3,
+    workspace_ids: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Query knowledge base via query-kb Lambda.
+
+    ``workspace_ids`` scopes retrieval to those workspaces only
+    (chunk 04 of the workspace-scope plan). Empty/None ==
+    workspace-blind (pre-fix legacy behavior; callers should
+    always pass a scope now).
+    """
     payload = {
         "query": query,
-        "topK": top_k
+        "topK": top_k,
     }
+    if workspace_ids:
+        payload["workspaceIds"] = workspace_ids
 
     try:
         response = lambda_client.invoke(
@@ -307,6 +318,7 @@ def analyze_lambda_handlers(
     github_token: Optional[str],
     usage_tracker: UsageTracker,
     *,
+    workspace_ids: Optional[List[str]] = None,
     provider: str = "github",
     ado_org: Optional[str] = None,
     ado_project: Optional[str] = None,
@@ -330,11 +342,13 @@ def analyze_lambda_handlers(
             "details": []
         }
 
-    # Query KB for Lambda standards
+    # Query KB for Lambda standards, scoped to the workspaces the
+    # ADR check should walk (repo's workspace + all is_global).
     kb_result = query_knowledge_base(
         query_kb_lambda_name,
         "What are our Lambda handler standards? Include requirements for Pydantic validation, error handling, documentation, and testing.",
-        top_k=5
+        top_k=5,
+        workspace_ids=workspace_ids,
     )
 
     logger.info(f"Lambda KB Result: {kb_result['answer']}")
@@ -401,6 +415,7 @@ def analyze_terraform_files(
     github_token: Optional[str],
     usage_tracker: UsageTracker,
     *,
+    workspace_ids: Optional[List[str]] = None,
     provider: str = "github",
     ado_org: Optional[str] = None,
     ado_project: Optional[str] = None,
@@ -419,11 +434,13 @@ def analyze_terraform_files(
             "details": []
         }
 
-    # Query KB for Terraform standards
+    # Query KB for Terraform standards, scoped to the workspaces the
+    # ADR check should walk (repo's workspace + all is_global).
     kb_result = query_knowledge_base(
         query_kb_lambda_name,
         "What are our Terraform module standards? Include requirements for terraform-aws-modules, version pinning, and naming conventions.",
-        top_k=5
+        top_k=5,
+        workspace_ids=workspace_ids,
     )
 
     logger.info(f"Terraform KB Result: {kb_result['answer']}")
@@ -545,10 +562,29 @@ def check_adr_compliance(
         else:
             raise ValueError(f"Unknown provider: {provider}")
 
+        # Resolve per-check retrieval scope. ADR_COMPLIANCE is a
+        # "standards" check: walks the repo's workspace(s) + all
+        # is_global workspaces so enterprise-tier ADRs apply.
+        # See lambda/shared/pr_check_scope.py. Fail-soft on any
+        # error (DDB access, missing table, etc.) -- retrieval falls
+        # back to workspace-blind, matching pre-fix behavior.
+        workspace_ids: Optional[List[str]] = None
+        try:
+            from shared.pr_check_scope import resolve_pr_check_workspace_scope
+            workspace_ids = resolve_pr_check_workspace_scope(
+                check_type=check_type, repo_name=repository,
+            )
+        except Exception as scope_exc:
+            logger.warning(
+                f"Could not resolve workspace scope for {check_type}: "
+                f"{scope_exc}. Falling back to workspace-blind retrieval."
+            )
+
         # Analyze Lambda handlers and Terraform files with Claude
         lambda_result = analyze_lambda_handlers(
             repository, pr_number, changed_files, query_kb_lambda_name,
             github_token, usage_tracker,
+            workspace_ids=workspace_ids,
             provider=provider,
             ado_org=ado_org, ado_project=ado_project, ado_repo=ado_repo,
             ado_access_token=ado_access_token,
@@ -558,6 +594,7 @@ def check_adr_compliance(
         terraform_result = analyze_terraform_files(
             repository, pr_number, changed_files, query_kb_lambda_name,
             github_token, usage_tracker,
+            workspace_ids=workspace_ids,
             provider=provider,
             ado_org=ado_org, ado_project=ado_project, ado_repo=ado_repo,
             ado_access_token=ado_access_token,

@@ -360,6 +360,11 @@ module "process_pr_check_lambda" {
           "dynamodb:PutItem",
           "dynamodb:UpdateItem",
           "dynamodb:Query",
+          # Scan needed for pr_check_scope resolver: finds workspaces
+          # for a repo + lists is_global workspaces + (for
+          # ARCHITECTURAL_DUPLICATION) lists every workspace_id.
+          # Filtered scans; not a hot path (once per check).
+          "dynamodb:Scan",
         ]
         resources = [
           module.workspaces_table[0].dynamodb_table_arn,

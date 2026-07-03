@@ -147,7 +147,8 @@ def query_knowledge_base(
     lambda_name: str,
     query: str,
     top_k: int = 20,
-    doc_types: List[str] = None
+    doc_types: List[str] = None,
+    workspace_ids: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """
     Query knowledge base via query-kb Lambda using raw mode.
@@ -161,6 +162,9 @@ def query_knowledge_base(
         query: Search query
         top_k: Number of results to return
         doc_types: Optional list of doc types to filter (e.g., ["code-map"])
+        workspace_ids: Optional workspace scope. ARCHITECTURAL_DUPLICATION
+            is a cross-portfolio check by design; passes every workspace
+            in the deployment via chunk 04 of the workspace-scope plan.
     """
     payload = {
         "query": query,
@@ -171,6 +175,8 @@ def query_knowledge_base(
     # Filter to specific document types if provided
     if doc_types:
         payload["docTypes"] = doc_types
+    if workspace_ids:
+        payload["workspaceIds"] = workspace_ids
 
     try:
         response = lambda_client.invoke(
@@ -609,6 +615,23 @@ def check_architectural_duplication(
         search_queries = extract_functional_keywords(pr_summary, file_diffs, usage_tracker)
         logger.info(f"Generated {len(search_queries)} search queries: {search_queries}")
 
+        # Resolve per-check retrieval scope. ARCHITECTURAL_DUPLICATION
+        # is a cross-portfolio similarity check -- scope covers every
+        # workspace in the deployment. Fail-soft: falls back to
+        # workspace-blind on any error.
+        scope_workspace_ids: Optional[List[str]] = None
+        try:
+            from shared.pr_check_scope import resolve_pr_check_workspace_scope
+            scope_workspace_ids = resolve_pr_check_workspace_scope(
+                check_type=check_type, repo_name=repository,
+            )
+        except Exception as scope_exc:
+            logger.warning(
+                f"Could not resolve workspace scope for "
+                f"ARCHITECTURAL_DUPLICATION: {scope_exc}. Falling back "
+                f"to workspace-blind retrieval."
+            )
+
         # Step 3: Query KB with multiple keywords to improve coverage
         # Different phrasings of the same function may match different code maps
         # Filter to code-map types only - we want actual code, not docs/ADRs
@@ -620,7 +643,8 @@ def check_architectural_duplication(
                     query_kb_lambda_name,
                     query,
                     top_k=10,  # Fewer per query since we're doing multiple
-                    doc_types=["code-map", "handler-group-summary"]
+                    doc_types=["code-map", "handler-group-summary"],
+                    workspace_ids=scope_workspace_ids,
                 )
 
                 # Dedupe by source, keeping highest score

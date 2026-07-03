@@ -8,7 +8,7 @@ confidence (handler name + queue/topic/invocation explicitly mentioned).
 
 import json
 import logging
-from typing import Dict, List, Any, Literal, Set
+from typing import Dict, List, Any, Literal, Optional, Set
 from collections import defaultdict
 
 import boto3
@@ -43,7 +43,10 @@ class Dependency:
         self.source = source
 
 
-def query_vector_search(lambda_name: str, query: str, top_k: int = 5) -> List[KbVectorResult]:
+def query_vector_search(
+    lambda_name: str, query: str, top_k: int = 5,
+    workspace_ids: Optional[List[str]] = None,
+) -> List[KbVectorResult]:
     """
     Query knowledge base vector search directly to get full results with metadata.
 
@@ -51,6 +54,10 @@ def query_vector_search(lambda_name: str, query: str, top_k: int = 5) -> List[Kb
         lambda_name: query-kb Lambda name
         query: Search query
         top_k: Number of results to return
+        workspace_ids: Optional per-check retrieval scope (chunk 04
+            of the workspace-scope plan). BREAKING_CHANGES is a
+            "standards" check: walks the repo's workspace + all
+            is_global workspaces.
 
     Returns:
         List of KbVectorResult objects with score, text, and source metadata
@@ -58,10 +65,12 @@ def query_vector_search(lambda_name: str, query: str, top_k: int = 5) -> List[Kb
     # Query the vector-query Lambda directly (not query-kb orchestrator)
     vector_lambda_name = lambda_name.replace("query-kb", "vector-query")
 
-    payload = {
+    payload: Dict[str, Any] = {
         "query": query,
-        "topK": top_k
+        "topK": top_k,
     }
+    if workspace_ids:
+        payload["workspaceIds"] = workspace_ids
 
     try:
         response = lambda_client.invoke(
@@ -243,6 +252,22 @@ def check_breaking_changes(
             "usage": UsageTracker()
         }
 
+    # Resolve per-check retrieval scope. BREAKING_CHANGES is a
+    # "standards" check: walks the repo's workspace(s) + all
+    # is_global workspaces. Fail-soft: falls back to
+    # workspace-blind on any error.
+    scope_workspace_ids: Optional[List[str]] = None
+    try:
+        from shared.pr_check_scope import resolve_pr_check_workspace_scope
+        scope_workspace_ids = resolve_pr_check_workspace_scope(
+            check_type=check_type, repo_name=repository,
+        )
+    except Exception as scope_exc:
+        logger.warning(
+            f"Could not resolve workspace scope for BREAKING_CHANGES: "
+            f"{scope_exc}. Falling back to workspace-blind retrieval."
+        )
+
     # Group files by handler and change type
     changes_by_handler: Dict[str, Dict[str, Any]] = defaultdict(
         lambda: {"files": [], "change_types": set()}
@@ -274,7 +299,10 @@ def check_breaking_changes(
 
         try:
             logger.info(f"Querying KB for {handler_name} ({primary_change_type} change): {query}")
-            raw_results = query_vector_search(query_kb_lambda_name, query, top_k=5)
+            raw_results = query_vector_search(
+                query_kb_lambda_name, query, top_k=5,
+                workspace_ids=scope_workspace_ids,
+            )
 
             # Filter to handler-group-summary only
             filtered_results = filter_handler_summaries(raw_results)

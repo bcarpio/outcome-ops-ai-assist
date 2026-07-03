@@ -491,12 +491,21 @@ def get_ai_generated_files(
         return []
 
 
-def query_knowledge_base(lambda_name: str, query: str, top_k: int = 3) -> Dict[str, Any]:
-    """Query knowledge base via query-kb Lambda."""
-    payload = {
+def query_knowledge_base(
+    lambda_name: str, query: str, top_k: int = 3,
+    workspace_ids: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Query knowledge base via query-kb Lambda.
+
+    ``workspace_ids`` scopes retrieval to those workspaces (chunk 04
+    of the workspace-scope plan).
+    """
+    payload: Dict[str, Any] = {
         "query": query,
-        "topK": top_k
+        "topK": top_k,
     }
+    if workspace_ids:
+        payload["workspaceIds"] = workspace_ids
 
     try:
         response = lambda_client.invoke(
@@ -843,12 +852,29 @@ def check_license_compliance(
         ado_base_sha = pr.base_sha
         ado_head_sha = pr.head_sha
 
+    # Resolve per-check retrieval scope. LICENSE_COMPLIANCE is a
+    # "standards" check: walks the repo's workspace(s) + all
+    # is_global workspaces. Fail-soft: falls back to
+    # workspace-blind on any error.
+    scope_workspace_ids: Optional[List[str]] = None
+    try:
+        from shared.pr_check_scope import resolve_pr_check_workspace_scope
+        scope_workspace_ids = resolve_pr_check_workspace_scope(
+            check_type=check_type, repo_name=repository,
+        )
+    except Exception as scope_exc:
+        logger.warning(
+            f"Could not resolve workspace scope for LICENSE_COMPLIANCE: "
+            f"{scope_exc}. Falling back to workspace-blind retrieval."
+        )
+
     # Query knowledge base for license policy
     logger.info("Querying KB for license compliance policy (ADR-008)...")
     kb_response = query_knowledge_base(
         query_kb_lambda_name,
         "What are our open source license compliance policies? Which licenses are prohibited, allowed, or require review?",
-        top_k=3
+        top_k=3,
+        workspace_ids=scope_workspace_ids,
     )
     license_policy = kb_response.get("answer", "")
     logger.info(f"License policy from KB: {license_policy[:200]}...")

@@ -199,7 +199,8 @@ def query_s3_vectors(
     query_embedding: List[float],
     top_k: int = 5,
     repo_filter: Optional[str] = None,
-    doc_types: Optional[List[str]] = None
+    doc_types: Optional[List[str]] = None,
+    workspace_ids: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
     """
     Query S3 Vectors for similar documents.
@@ -209,6 +210,11 @@ def query_s3_vectors(
         top_k: Number of results to return
         repo_filter: Optional repo name to filter
         doc_types: Optional list of document types to filter
+        workspace_ids: Optional list of workspace_ids to scope retrieval
+            to. Powers the per-check PR scope (chunk 04 of the
+            workspace-scope plan): standards checks pass repo+globals,
+            README passes just the repo's workspace, dup passes every
+            workspace. Empty list == no filter (backwards compat).
 
     Returns:
         List of documents with scores and metadata
@@ -217,6 +223,22 @@ def query_s3_vectors(
         logger.info(f"[query-kb] Filtering by repo: {repo_filter}")
     if doc_types:
         logger.info(f"[query-kb] Will filter doc_types client-side: {doc_types}")
+    if workspace_ids:
+        logger.info(f"[query-kb] Scoping to workspace_ids: {workspace_ids}")
+
+    # Build the S3 Vectors filter. ``$in`` for workspace scoping;
+    # ``equals`` for the legacy single-repo filter. Both compose so a
+    # PR check can filter to (this repo, [these workspaces]) at once.
+    filter_dict = None
+    if repo_filter and workspace_ids:
+        filter_dict = {
+            "repo": {"equals": repo_filter},
+            "workspace_id": {"$in": list(workspace_ids)},
+        }
+    elif repo_filter:
+        filter_dict = {"repo": {"equals": repo_filter}}
+    elif workspace_ids:
+        filter_dict = {"workspace_id": {"$in": list(workspace_ids)}}
 
     # Retrieval mechanics (S3 Vectors query + normalization) live in the
     # shared module so chat and the MCP server cannot drift. query-kb
@@ -230,7 +252,7 @@ def query_s3_vectors(
             vector_index=VECTOR_INDEX,
             query_embedding=query_embedding,
             top_k=top_k,
-            filter_dict={"repo": {"equals": repo_filter}} if repo_filter else None,
+            filter_dict=filter_dict,
             doc_types=doc_types,
             text_truncate=20000,
         )
@@ -375,6 +397,7 @@ def handler(event, context):
         raw_mode = event.get("raw", False)
         repo_filter = event.get("repo")  # Optional repo filter
         doc_types = event.get("docTypes")  # Optional doc type filter
+        workspace_ids = event.get("workspaceIds") or event.get("workspace_ids")
         model = event.get("model", "haiku")  # Optional model selection
 
         if not query:
@@ -405,7 +428,10 @@ def handler(event, context):
         # Step 2: Query S3 Vectors for relevant documents
         logger.info("[query-kb] Querying S3 Vectors...")
         fetch_k = min(top_k * 4, RERANK_MAX_FETCH) if RERANK_ENABLED else top_k
-        context_docs = query_s3_vectors(query_embedding, fetch_k, repo_filter, doc_types)
+        context_docs = query_s3_vectors(
+            query_embedding, fetch_k, repo_filter, doc_types,
+            workspace_ids=workspace_ids,
+        )
 
         if not context_docs:
             logger.info("[query-kb] No relevant documents found")
