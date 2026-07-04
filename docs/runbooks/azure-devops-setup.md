@@ -343,38 +343,150 @@ because both are currently valid.
 
 ## 12. Enabling Boards on an existing Repos integration
 
-_(Section content lands with the Boards integration ship; this is a
-runbook stub only.)_
-
 The Azure DevOps Boards integration ingests **work items** (User
 Stories, Bugs, Tasks, Epics, Features) into the platform's knowledge
 base as searchable context — the ADO analog of the Jira integration.
 It's a **separate integration** from Repos with independent OAuth
 consent, an independent workspace-settings tab, an independent
-disconnect flow, and its own license-layer counting bucket (see the
-license identifier scheme in `lambda/shared/license_repos.py`).
+disconnect flow, and its own license-layer counting bucket
+([ADR-039](../adr/ADR-039-azure-devops-boards-integration.md)).
 
-Boards reuses everything Repos already set up in §3 (app registration),
-§5 (client secret), and §6 (tfvars). The only Boards-specific step is
-adding the `vso.work` API permission to the same Entra ID app used
-for Repos, then flipping the `azure_devops_boards_integration_enabled`
-tfvar.
+Boards reuses the Entra ID app you already registered for Repos
+(§3), the client secret you already put in SSM (§5), and the tfvars
+you already populated (§6). Two new steps: add the `vso.work` API
+permission to the existing app, and register a second redirect URI.
 
-Concrete steps (filled in by the chunk 09 shipment):
+Time budget: ~15 minutes for an admin who has completed the Repos
+setup.
 
-1. Add the `vso.work` (or `vso.work_write`) API permission to your
-   existing Entra ID app.
-2. Grant admin consent for the new permission.
-3. Set `azure_devops_boards_integration_enabled = true` in tfvars.
-4. `terraform apply` — deploys the Boards Lambdas + UI tab.
-5. In workspace settings, click "Connect Azure DevOps Boards", complete
-   OAuth, pick 1+ projects.
-6. Work items appear in chat retrieval within one scheduler tick
-   (default 1 hour).
+### 12.1 Add the `vso.work` API permission
 
-Design rationale (why Boards is a sibling integration to Repos and not
-bundled into it) is captured in the Boards ADR that ships with the
-integration.
+Go to the Azure DevOps Boards work-items scope of the app registration:
+
+1. Azure Portal → **Entra ID** → **App registrations** → your existing
+   OutcomeOps AI Assist app (the one you registered in §3).
+2. **API permissions** → **Add a permission** → **APIs my organization
+   uses** → search for **Azure DevOps** → click it.
+3. Choose **Delegated permissions** → tick **vso.work** (Read your
+   organization's work items and their metadata) → **Add permissions**.
+4. Back on the API permissions list, click **Grant admin consent for
+   {your tenant}** → confirm.
+
+If your customer's Boards workflow requires the platform to post
+comments back to work items (v2 feature, not yet in v1), also tick
+**vso.work_write**. Not required for read-only ingest, which is what
+v1 ships.
+
+### 12.2 Add the second redirect URI
+
+Entra ID validates redirect URIs literally; the Boards OAuth callback
+lands on a different path than Repos.
+
+1. Same app → **Authentication** → **Redirect URIs** → **Add URI**.
+2. Enter `https://{your-app-fqdn}/api/azure-devops-boards/callback`
+   (mirrors the Repos redirect you added in §3, but with
+   `-boards` in the path).
+3. **Save**.
+
+### 12.3 Update tfvars
+
+In `terraform/prd.tfvars` (or your equivalent):
+
+```hcl
+azure_devops_boards_integration_enabled = true
+azure_devops_boards_redirect_uri        = "https://{your-app-fqdn}/api/azure-devops-boards/callback"
+```
+
+The tenant / client-id / client-secret-SSM-param values from Repos
+are reused. Don't duplicate them.
+
+### 12.4 Deploy
+
+```bash
+cd terraform
+terraform apply -var-file=prd.tfvars
+```
+
+The apply creates:
+- `{env}-{app}-azure-devops-boards-integration` Lambda + Function URL
+- `{env}-{app}-azure-devops-boards-sync` Lambda + SQS queue + DLQ
+- `{env}-{app}-azure-devops-boards-scheduler` Lambda + EventBridge rule
+  (`rate(1 hour)`)
+- Identical resources under `aws.secondary` if `secondary_region` is
+  set (HA mode)
+
+The UI's Integrations tab now shows an "Azure DevOps (Boards)"
+section next to the "Azure DevOps (Repos)" section.
+
+### 12.5 Connect a workspace
+
+1. Log into the platform → navigate to any workspace → **Settings** →
+   **Integrations**.
+2. Under "Azure DevOps (Boards)", click **Connect Azure DevOps Boards**.
+3. Complete the OAuth consent screen (Microsoft asks for `vso.work`
+   only, so the consent copy is scoped correctly — customers who
+   flagged the Repos consent as "too broad" typically approve this
+   one without pushback).
+4. Back on the settings tab, the connection shows with **Add projects**.
+5. Click **Add projects**, pick 1+ projects from the dropdown, save.
+6. The initial WIQL sync fires immediately (`triggered_by=connect` in
+   CloudWatch); subsequent syncs run hourly via the scheduler.
+
+Work items become retrievable in chat within one scheduler tick
+(typically <1 hour, less if the workspace admin clicked the per-
+project **Sync** button).
+
+### 12.6 What syncs vs. doesn't
+
+- **Only open work items are re-synced each cycle.** Filter is
+  `[System.State] NOT IN ('Closed', 'Done', 'Removed', 'Resolved')`.
+- **Once ingested, closed items stay in the KB indefinitely.** A
+  bug you fix today stays retrievable ("what was the fix for X?").
+  History grows over time.
+- **Work items closed *before* Boards was connected are not
+  ingested.** No retroactive backfill in v1.
+- **Initial sync is capped at the 5000 most recently changed work
+  items per project.** Larger projects require an operator-run
+  backfill script (out of scope for this runbook).
+- **v1 field set is fixed:** Title, State, WorkItemType, AssignedTo,
+  Description, Repro Steps, Acceptance Criteria, Priority, Severity,
+  Tags, Area, Iteration, Created, Changed, Reason, Id. Custom fields
+  are a v2 feature.
+- **Comments are included inline** on each work item's document (not
+  as separate documents), matching the Jira pattern.
+- **Attachments are not ingested** in v1.
+
+### 12.7 Troubleshooting
+
+**"AADSTS65001: The user or administrator has not consented" on
+connect.** The `vso.work` permission wasn't granted admin consent in
+step 12.1. Go back to Azure Portal, grant admin consent, retry.
+
+**"AADSTS500011: The resource principal named 499b84ac-... was not
+found."** The Entra ID app doesn't have the Azure DevOps API
+permission at all. Same fix as above — add it, grant consent.
+
+**Connection shows `auth_error` with "reconnect_required".** The
+stored refresh token was revoked (user password change, admin
+revoke, or 90-day inactivity). Disconnect and reconnect from the UI.
+
+**Initial sync completes but no work items appear in chat.** Wait
+5-10 minutes for embedding + indexing. If still empty after that,
+check CloudWatch logs for
+`/aws/lambda/{env}-{app}-azure-devops-boards-sync` — look for
+`[boards-sync] WIQL for {org}/{project}` and confirm the WIQL query
+returned IDs.
+
+**All work items sync but comments are missing on some.** ADO's
+comments API is best-effort: a transient failure ingests the work
+item without comments. The next sync retries and picks them up. Not
+a bug; expected under intermittent ADO API load.
+
+**Disconnect leaves work-item documents in the KB.** By design.
+Disconnecting removes the connection + tokens but preserves the
+already-ingested documents until an explicit workspace-level
+cleanup. Reconnecting the same connection resumes the ingest without
+re-uploading unchanged content.
 
 ## References
 
