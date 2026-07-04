@@ -492,29 +492,46 @@ MCP_TOOLS = [
     {
         "name": "read_source",
         "description": (
-            "Fetch a bounded window of source code from GitHub anchored "
-            "at file:line. Use this when an exact code value is being "
-            "claimed (a literal, a key prefix like 'MAGIC_TOKEN#', a "
-            "specific algorithm choice, a signature parameter) and the "
-            "code-map summary plus the symbol graph are not enough to "
-            "verify it. The code-map deliberately omits literals "
-            "(ADR-027) and the symbol graph stores anchors but not "
-            "values -- read_source supplies the actual line. Reads HEAD "
-            "of the default branch by default; pass `ref` to pin to a "
-            "specific SHA (recommended when the file:line came from the "
-            "symbol graph, since the graph's anchor is pinned to the "
-            "graph_sha and HEAD may have drifted)."
+            "Fetch a bounded window of source code from GitHub or Azure "
+            "DevOps anchored at file:line. Platform is auto-detected "
+            "from the `repo` shape: `owner/name` = GitHub, "
+            "`org/project/repo` = Azure DevOps. Use this when an exact "
+            "code value is being claimed (a literal, a key prefix like "
+            "'MAGIC_TOKEN#', a specific algorithm choice, a signature "
+            "parameter) and the code-map summary plus the symbol graph "
+            "are not enough to verify it. The code-map deliberately "
+            "omits literals (ADR-027) and the symbol graph stores "
+            "anchors but not values -- read_source supplies the actual "
+            "line. Reads HEAD of the default branch by default; pass "
+            "`ref` to pin to a specific SHA (recommended when the "
+            "file:line came from the symbol graph, since the graph's "
+            "anchor is pinned to the graph_sha and HEAD may have "
+            "drifted). The response payload's `platform` field is "
+            "either 'github' or 'azure_devops' so the caller can log "
+            "which side served the read."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "workspace_id": {
                     "type": "string",
-                    "description": "Workspace ID scoping auth + GitHub-installation lookup.",
+                    "description": (
+                        "Workspace ID scoping auth + code-hosting "
+                        "connection lookup (GitHub App installation or "
+                        "Azure DevOps OAuth connection)."
+                    ),
                 },
                 "repo": {
                     "type": "string",
-                    "description": "Repository in 'owner/name' form (e.g. 'bcarpio/eShop').",
+                    "description": (
+                        "Repository. For GitHub: 'owner/name' "
+                        "(e.g. 'bcarpio/eShop'). For Azure DevOps: "
+                        "'org/project/repo' "
+                        "(e.g. 'bcarpio/OutcomeOps/ooai-license-server'). "
+                        "Slash count identifies the platform; the "
+                        "router rejects a shape that doesn't match the "
+                        "workspace's actual connection."
+                    ),
                 },
                 "file_path": {
                     "type": "string",
