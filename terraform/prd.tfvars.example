@@ -373,6 +373,11 @@ audit_stream_export_enabled = true
 # populated AND verified end-to-end against your Entra ID app registration.
 # azure_devops_integration_enabled = false
 
+# Master switch for the Azure DevOps Boards (work items) integration.
+# Reuses the same tenant / client-id / client-secret above; requires
+# vso.work API permission granted on the app registration.
+# azure_devops_boards_integration_enabled = false
+
 # Entra ID tenant ID hosting your Azure DevOps OAuth app registration.
 # azure_devops_tenant_id = ""
 

@@ -138,6 +138,12 @@ variable "azure_devops_integration_enabled" {
   default     = false
 }
 
+variable "azure_devops_boards_integration_enabled" {
+  type        = bool
+  description = "Enable the Azure DevOps Boards (work items) integration. Reuses the same Entra ID app + tenant + client-secret config as the Repos integration; requires the vso.work API permission granted on that app registration. When false, the Boards Lambdas are still deployed but the UI tab and OAuth endpoints return 404."
+  default     = false
+}
+
 variable "github_app_slug" {
   type        = string
   description = "GitHub App URL slug (from the App settings page URL, e.g., 'my-company-ai-assist')"

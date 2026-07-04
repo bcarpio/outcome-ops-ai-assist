@@ -26,7 +26,8 @@ Explicitly NOT in v1, documented here so SecOps review doesn't ask:
   manual triggers; it does not subscribe to ADO push events.
 - Azure Pipelines integration. The platform is a code-knowledge
   surface, not a CI dashboard; the PR-check endpoint is the boundary.
-- ADO Wiki / Boards / Test Plans. Separate integration paths.
+- ADO Wiki / Test Plans. Separate integration paths.
+  (Boards ships as a sibling integration to Repos; see §12 below.)
 
 See [ADR-036](../adr/ADR-036-azure-devops-integration.md) for the
 architectural rationale on each of these.
@@ -340,11 +341,47 @@ Lambda invocations and you have a few seconds of "the old secret is
 SSM but the Lambda's cached copy is the older older one" — harmless
 because both are currently valid.
 
+## 12. Enabling Boards on an existing Repos integration
+
+_(Section content lands with the Boards integration ship; this is a
+runbook stub only.)_
+
+The Azure DevOps Boards integration ingests **work items** (User
+Stories, Bugs, Tasks, Epics, Features) into the platform's knowledge
+base as searchable context — the ADO analog of the Jira integration.
+It's a **separate integration** from Repos with independent OAuth
+consent, an independent workspace-settings tab, an independent
+disconnect flow, and its own license-layer counting bucket (see the
+license identifier scheme in `lambda/shared/license_repos.py`).
+
+Boards reuses everything Repos already set up in §3 (app registration),
+§5 (client secret), and §6 (tfvars). The only Boards-specific step is
+adding the `vso.work` API permission to the same Entra ID app used
+for Repos, then flipping the `azure_devops_boards_integration_enabled`
+tfvar.
+
+Concrete steps (filled in by the chunk 09 shipment):
+
+1. Add the `vso.work` (or `vso.work_write`) API permission to your
+   existing Entra ID app.
+2. Grant admin consent for the new permission.
+3. Set `azure_devops_boards_integration_enabled = true` in tfvars.
+4. `terraform apply` — deploys the Boards Lambdas + UI tab.
+5. In workspace settings, click "Connect Azure DevOps Boards", complete
+   OAuth, pick 1+ projects.
+6. Work items appear in chat retrieval within one scheduler tick
+   (default 1 hour).
+
+Design rationale (why Boards is a sibling integration to Repos and not
+bundled into it) is captured in the Boards ADR that ships with the
+integration.
+
 ## References
 
 - Architectural decisions for this integration:
   [ADR-036 — Azure DevOps source-code integration](../adr/ADR-036-azure-devops-integration.md)
-- License layer counting (ADO repos count toward customer repo limit):
+- License layer counting (ADO repos count toward customer repo limit;
+  Boards projects count as a separate `azure_devops_boards:` identifier):
   ADR-019
 - Multi-region active/passive (the integration is duplicated under
   `aws.secondary` so failover preserves access): ADR-022
