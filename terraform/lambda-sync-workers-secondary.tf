@@ -206,10 +206,17 @@ module "confluence_sync_lambda_secondary" {
         actions   = ["ssm:GetParameter", "ssm:GetParameters"]
         resources = ["arn:aws:ssm:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/oauth/atlassian/*"]
       }
+      # Include both the secondary replica ARN (encrypt/decrypt in the
+      # passive region) AND the primary ARN so a token minted against
+      # the primary ARN is still decryptable after failover routes an
+      # SQS message to this Lambda.
       kms_oauth = {
-        effect    = "Allow"
-        actions   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
-        resources = [aws_kms_replica_key.oauth_tokens_secondary[0].arn]
+        effect  = "Allow"
+        actions = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
+        resources = [
+          aws_kms_replica_key.oauth_tokens_secondary[0].arn,
+          aws_kms_key.oauth_tokens[0].arn,
+        ]
       }
       kms_ssm = {
         effect    = "Allow"
@@ -310,10 +317,17 @@ module "jira_sync_lambda_secondary" {
         actions   = ["ssm:GetParameter", "ssm:GetParameters"]
         resources = ["arn:aws:ssm:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/oauth/atlassian/*"]
       }
+      # Include both the secondary replica ARN (encrypt/decrypt in the
+      # passive region) AND the primary ARN so a token minted against
+      # the primary ARN is still decryptable after failover routes an
+      # SQS message to this Lambda.
       kms_oauth = {
-        effect    = "Allow"
-        actions   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
-        resources = [aws_kms_replica_key.oauth_tokens_secondary[0].arn]
+        effect  = "Allow"
+        actions = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
+        resources = [
+          aws_kms_replica_key.oauth_tokens_secondary[0].arn,
+          aws_kms_key.oauth_tokens[0].arn,
+        ]
       }
       kms_ssm = {
         effect    = "Allow"
@@ -416,10 +430,17 @@ module "outlook_sync_lambda_secondary" {
         actions   = ["ssm:GetParameter", "ssm:GetParameters"]
         resources = ["arn:aws:ssm:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/oauth/microsoft/*"]
       }
+      # Include both the secondary replica ARN (encrypt/decrypt in the
+      # passive region) AND the primary ARN so a token minted against
+      # the primary ARN is still decryptable after failover routes an
+      # SQS message to this Lambda.
       kms_oauth = {
-        effect    = "Allow"
-        actions   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
-        resources = [aws_kms_replica_key.oauth_tokens_secondary[0].arn]
+        effect  = "Allow"
+        actions = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
+        resources = [
+          aws_kms_replica_key.oauth_tokens_secondary[0].arn,
+          aws_kms_key.oauth_tokens[0].arn,
+        ]
       }
       kms_ssm = {
         effect    = "Allow"
@@ -517,10 +538,17 @@ module "teams_sync_lambda_secondary" {
         actions   = ["ssm:GetParameter", "ssm:GetParameters"]
         resources = ["arn:aws:ssm:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/oauth/microsoft/*"]
       }
+      # Include both the secondary replica ARN (encrypt/decrypt in the
+      # passive region) AND the primary ARN so a token minted against
+      # the primary ARN is still decryptable after failover routes an
+      # SQS message to this Lambda.
       kms_oauth = {
-        effect    = "Allow"
-        actions   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
-        resources = [aws_kms_replica_key.oauth_tokens_secondary[0].arn]
+        effect  = "Allow"
+        actions = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
+        resources = [
+          aws_kms_replica_key.oauth_tokens_secondary[0].arn,
+          aws_kms_key.oauth_tokens[0].arn,
+        ]
       }
       kms_ssm = {
         effect    = "Allow"
@@ -618,10 +646,17 @@ module "sharepoint_sync_lambda_secondary" {
         actions   = ["ssm:GetParameter", "ssm:GetParameters"]
         resources = ["arn:aws:ssm:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/oauth/microsoft/*"]
       }
+      # Include both the secondary replica ARN (encrypt/decrypt in the
+      # passive region) AND the primary ARN so a token minted against
+      # the primary ARN is still decryptable after failover routes an
+      # SQS message to this Lambda.
       kms_oauth = {
-        effect    = "Allow"
-        actions   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
-        resources = [aws_kms_replica_key.oauth_tokens_secondary[0].arn]
+        effect  = "Allow"
+        actions = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
+        resources = [
+          aws_kms_replica_key.oauth_tokens_secondary[0].arn,
+          aws_kms_key.oauth_tokens[0].arn,
+        ]
       }
       kms_ssm = {
         effect    = "Allow"
@@ -719,10 +754,17 @@ module "onedrive_sync_lambda_secondary" {
         actions   = ["ssm:GetParameter", "ssm:GetParameters"]
         resources = ["arn:aws:ssm:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/oauth/microsoft/*"]
       }
+      # Include both the secondary replica ARN (encrypt/decrypt in the
+      # passive region) AND the primary ARN so a token minted against
+      # the primary ARN is still decryptable after failover routes an
+      # SQS message to this Lambda.
       kms_oauth = {
-        effect    = "Allow"
-        actions   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
-        resources = [aws_kms_replica_key.oauth_tokens_secondary[0].arn]
+        effect  = "Allow"
+        actions = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
+        resources = [
+          aws_kms_replica_key.oauth_tokens_secondary[0].arn,
+          aws_kms_key.oauth_tokens[0].arn,
+        ]
       }
       kms_ssm = {
         effect    = "Allow"
@@ -820,10 +862,17 @@ module "onenote_sync_lambda_secondary" {
         actions   = ["ssm:GetParameter", "ssm:GetParameters"]
         resources = ["arn:aws:ssm:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/oauth/microsoft/*"]
       }
+      # Include both the secondary replica ARN (encrypt/decrypt in the
+      # passive region) AND the primary ARN so a token minted against
+      # the primary ARN is still decryptable after failover routes an
+      # SQS message to this Lambda.
       kms_oauth = {
-        effect    = "Allow"
-        actions   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
-        resources = [aws_kms_replica_key.oauth_tokens_secondary[0].arn]
+        effect  = "Allow"
+        actions = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
+        resources = [
+          aws_kms_replica_key.oauth_tokens_secondary[0].arn,
+          aws_kms_key.oauth_tokens[0].arn,
+        ]
       }
       kms_ssm = {
         effect    = "Allow"
@@ -1035,10 +1084,17 @@ module "azure_devops_sync_lambda_secondary" {
         actions   = ["ssm:GetParameter"]
         resources = ["arn:aws:ssm:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:parameter${var.azure_devops_client_secret_ssm_param}"]
       }
+      # Include both the secondary replica ARN (encrypt/decrypt in the
+      # passive region) AND the primary ARN so a token minted against
+      # the primary ARN is still decryptable after failover routes an
+      # SQS message to this Lambda.
       kms_oauth = {
-        effect    = "Allow"
-        actions   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
-        resources = [aws_kms_replica_key.oauth_tokens_secondary[0].arn]
+        effect  = "Allow"
+        actions = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
+        resources = [
+          aws_kms_replica_key.oauth_tokens_secondary[0].arn,
+          aws_kms_key.oauth_tokens[0].arn,
+        ]
       }
       kms_ssm = {
         effect    = "Allow"

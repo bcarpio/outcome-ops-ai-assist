@@ -1256,10 +1256,17 @@ module "azure_devops_integration_lambda_secondary" {
           "arn:aws:ssm:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:parameter${var.azure_devops_client_secret_ssm_param}",
         ]
       }
+      # Include both the secondary replica ARN (encrypt/decrypt in the
+      # passive region) AND the primary ARN so a token minted against
+      # the primary ARN is still decryptable when this Lambda handles
+      # a Function URL callback post-failover.
       kms_oauth = {
-        effect    = "Allow"
-        actions   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
-        resources = [aws_kms_replica_key.oauth_tokens_secondary[0].arn]
+        effect  = "Allow"
+        actions = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
+        resources = [
+          aws_kms_replica_key.oauth_tokens_secondary[0].arn,
+          aws_kms_key.oauth_tokens[0].arn,
+        ]
       }
       kms_ssm = {
         effect    = "Allow"

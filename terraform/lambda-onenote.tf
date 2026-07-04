@@ -90,7 +90,12 @@ module "onenote_integration_lambda" {
         ]
       }
 
-      # KMS for token encryption/decryption
+      # KMS for token encryption/decryption. Includes both the
+      # primary MRK ARN and (when HA is enabled) the secondary
+      # replica ARN. The multi-region key material is shared, but
+      # IAM requires the ARN of the specific key the ciphertext
+      # was minted against -- so a token encrypted in the passive
+      # region needs the replica ARN on the decrypt side too.
       kms_oauth = {
         effect = "Allow"
         actions = [
@@ -98,9 +103,10 @@ module "onenote_integration_lambda" {
           "kms:Decrypt",
           "kms:GenerateDataKey*"
         ]
-        resources = [
-          aws_kms_key.oauth_tokens[0].arn
-        ]
+        resources = concat(
+          [aws_kms_key.oauth_tokens[0].arn],
+          var.secondary_region != "" ? [aws_kms_replica_key.oauth_tokens_secondary[0].arn] : []
+        )
       }
 
       # KMS for SSM parameter decryption
@@ -314,7 +320,12 @@ module "onenote_sync_lambda" {
         ]
       }
 
-      # KMS for token encryption/decryption
+      # KMS for token encryption/decryption. Includes both the
+      # primary MRK ARN and (when HA is enabled) the secondary
+      # replica ARN. The multi-region key material is shared, but
+      # IAM requires the ARN of the specific key the ciphertext
+      # was minted against -- so a token encrypted in the passive
+      # region needs the replica ARN on the decrypt side too.
       kms_oauth = {
         effect = "Allow"
         actions = [
@@ -322,9 +333,10 @@ module "onenote_sync_lambda" {
           "kms:Decrypt",
           "kms:GenerateDataKey*"
         ]
-        resources = [
-          aws_kms_key.oauth_tokens[0].arn
-        ]
+        resources = concat(
+          [aws_kms_key.oauth_tokens[0].arn],
+          var.secondary_region != "" ? [aws_kms_replica_key.oauth_tokens_secondary[0].arn] : []
+        )
       }
 
       # KMS for SSM parameter decryption
