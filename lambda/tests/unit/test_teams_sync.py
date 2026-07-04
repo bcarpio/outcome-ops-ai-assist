@@ -343,7 +343,7 @@ class TestTeamsSyncQueueIngestion:
 
 class TestTeamsSyncProcessRequest:
 
-    @patch.object(handler_module, "_sync_channel_files")
+    @patch.object(handler_module, "_sync_team_files")
     @patch.object(handler_module, "_sync_channel_full")
     @patch.object(handler_module, "refresh_access_token")
     @patch.object(handler_module, "_load_oauth_config")
@@ -506,7 +506,7 @@ class TestTeamsSyncLicenseEnforcement:
              patch.object(handler_module, "get_connection") as mock_get_conn, \
              patch.object(handler_module, "update_connection_status"), \
              patch.object(handler_module, "_sync_channel_full") as mock_full, \
-             patch.object(handler_module, "_sync_channel_files") as mock_files:
+             patch.object(handler_module, "_sync_team_files") as mock_files:
             mock_get_conn.return_value = sample_connection
             mock_oauth.return_value = {"client_id": "c", "client_secret": "s"}
             mock_refresh.return_value = "tok"
@@ -519,3 +519,366 @@ class TestTeamsSyncLicenseEnforcement:
             # Blocked: per-channel sync work is skipped.
             mock_full.assert_not_called()
             mock_files.assert_not_called()
+
+
+# ============================================================================
+# Chunk 02 -- drive-delta file sync (per-team + parent-id routing)
+# ============================================================================
+
+
+class TestGetDriveDelta:
+    """teams_api.get_drive_delta -- new in chunk 02."""
+
+    @patch.object(teams_api_module, "_make_request")
+    def test_initial_call_no_token_hits_root_delta_url(self, mock_req):
+        mock_req.return_value = {
+            "value": [{"id": "f1", "file": {}}],
+            "@odata.deltaLink": "https://delta.example/next",
+        }
+        items, new_delta = teams_api_module.get_drive_delta("tok", "drive-x")
+        assert items == [{"id": "f1", "file": {}}]
+        assert new_delta == "https://delta.example/next"
+        called_url = mock_req.call_args[0][1]
+        assert called_url.endswith("/drives/drive-x/root/delta?$top=100")
+
+    @patch.object(teams_api_module, "_make_request")
+    def test_existing_token_used_as_url(self, mock_req):
+        mock_req.return_value = {
+            "value": [],
+            "@odata.deltaLink": "https://delta.example/next",
+        }
+        teams_api_module.get_drive_delta(
+            "tok", "drive-x", delta_token="https://delta.example/prev",
+        )
+        assert mock_req.call_args[0][1] == "https://delta.example/prev"
+
+    @patch.object(teams_api_module, "_make_request")
+    def test_pagination_via_next_link(self, mock_req):
+        mock_req.side_effect = [
+            {"value": [{"id": "a"}], "@odata.nextLink": "https://n1"},
+            {"value": [{"id": "b"}], "@odata.nextLink": "https://n2"},
+            {"value": [{"id": "c"}], "@odata.deltaLink": "https://d-final"},
+        ]
+        items, new_delta = teams_api_module.get_drive_delta("tok", "drive-x")
+        assert [i["id"] for i in items] == ["a", "b", "c"]
+        assert new_delta == "https://d-final"
+
+    @patch.object(teams_api_module, "_make_request")
+    def test_410_raises_delta_token_invalid(self, mock_req):
+        mock_req.side_effect = teams_api_module.DeltaTokenInvalidError(
+            "Delta token invalid: 410", status_code=410,
+        )
+        with pytest.raises(teams_api_module.DeltaTokenInvalidError):
+            teams_api_module.get_drive_delta(
+                "tok", "drive-x", delta_token="https://stale",
+            )
+
+
+class TestIsDeleted:
+
+    def test_deleted_facet(self):
+        assert handler_module._is_deleted({"deleted": {"state": "deleted"}}) is True
+
+    def test_removed_annotation(self):
+        assert handler_module._is_deleted({"@removed": {"reason": "deleted"}}) is True
+
+    def test_normal_item_not_deleted(self):
+        assert handler_module._is_deleted({"id": "x", "file": {}}) is False
+
+
+class TestGetChannelRoots:
+
+    def _folder(self, folder_id, drive_id="drive-x"):
+        return {"id": folder_id, "parentReference": {"driveId": drive_id}}
+
+    def test_returns_map_of_channel_metadata(self):
+        channels = [
+            {"channel_id": "c1", "channel_name": "General"},
+            {"channel_id": "c2", "channel_name": "Random"},
+        ]
+        with patch.object(
+            handler_module, "get_channel_files_folder",
+            side_effect=[self._folder("f1"), self._folder("f2")],
+        ):
+            result = handler_module._get_channel_roots("tok", "team-x", channels)
+        assert result == {
+            "c1": {"name": "General", "folder_id": "f1", "drive_id": "drive-x"},
+            "c2": {"name": "Random", "folder_id": "f2", "drive_id": "drive-x"},
+        }
+
+    def test_drops_channels_with_failed_folder_lookup(self):
+        channels = [
+            {"channel_id": "c1", "channel_name": "General"},
+            {"channel_id": "c2", "channel_name": "Broken"},
+        ]
+        with patch.object(
+            handler_module, "get_channel_files_folder",
+            side_effect=[self._folder("f1"), None],
+        ):
+            result = handler_module._get_channel_roots("tok", "team-x", channels)
+        assert list(result.keys()) == ["c1"]
+
+    def test_drops_channels_sharing_drive_root_as_folder(self, caplog):
+        """Chunk 01 §6: post-migration private channels report the
+        drive root as their filesFolder. Detect and drop both."""
+        channels = [
+            {"channel_id": "c1", "channel_name": "PrivateOne"},
+            {"channel_id": "c2", "channel_name": "PrivateTwo"},
+            {"channel_id": "c3", "channel_name": "General"},
+        ]
+        with patch.object(
+            handler_module, "get_channel_files_folder",
+            side_effect=[
+                self._folder("root-id"),   # PrivateOne -> drive root
+                self._folder("root-id"),   # PrivateTwo -> drive root (collision)
+                self._folder("f3"),        # General has its own folder
+            ],
+        ):
+            import logging
+            caplog.set_level(logging.WARNING)
+            result = handler_module._get_channel_roots(
+                "tok", "team-x", channels,
+            )
+        # Both private channels dropped; General keeps its own routing.
+        assert list(result.keys()) == ["c3"]
+        # Warning line matches the documented shape.
+        assert any(
+            "share drive root" in rec.message
+            and "PrivateOne" in rec.message
+            and "PrivateTwo" in rec.message
+            for rec in caplog.records
+        )
+
+
+class TestSyncTeamFiles:
+
+    def _folder_item(self, item_id, parent_id):
+        return {
+            "id": item_id, "name": item_id, "folder": {},
+            "parentReference": {"id": parent_id, "driveId": "drive-x"},
+        }
+
+    def _file_item(self, item_id, parent_id, name=None):
+        return {
+            "id": item_id, "name": name or item_id, "file": {"mimeType": "text/plain"},
+            "parentReference": {"id": parent_id, "driveId": "drive-x"},
+            "@microsoft.graph.downloadUrl": f"https://download/{item_id}",
+        }
+
+    def _channel_roots(self, mapping):
+        """Convenience: {channel_id: (name, folder_id)} -> real shape."""
+        return {
+            cid: {"name": n, "folder_id": fid, "drive_id": "drive-x"}
+            for cid, (n, fid) in mapping.items()
+        }
+
+    def test_file_at_channel_root_routes_by_parent_id(self):
+        """Item's parentReference.id == channel folder_id -> route."""
+        with patch.object(
+            handler_module, "_get_channel_roots",
+            return_value=self._channel_roots({"c1": ("General", "f1")}),
+        ), patch.object(
+            handler_module, "get_drive_delta",
+            return_value=([self._file_item("file-a", "f1")], "https://d-new"),
+        ), patch.object(handler_module, "queue_file_ingestion") as mock_queue:
+            delta_links: dict = {}
+            channel_folder_maps: dict = {}
+            count = handler_module._sync_team_files(
+                access_token="tok", workspace_id="ws", connection_id="conn",
+                team_id="team-x",
+                channels=[{"channel_id": "c1", "channel_name": "General"}],
+                delta_links=delta_links,
+                channel_folder_maps=channel_folder_maps,
+                sync_id="sid",
+            )
+        assert count == 1
+        assert mock_queue.call_count == 1
+        assert mock_queue.call_args.kwargs["channel_name"] == "General"
+        # Delta token persisted.
+        assert delta_links == {"team_drive_drive-x": "https://d-new"}
+        # Ancestor map seeded with the channel root.
+        assert channel_folder_maps == {"team_drive_drive-x": {"f1": "General"}}
+
+    def test_file_in_subfolder_routes_via_ancestor_map(self):
+        """Delta returns the subfolder first (ancestor map extends),
+        then the nested file (map lookup succeeds via subfolder id)."""
+        items = [
+            self._folder_item("sub1", "f1"),        # under General root
+            self._file_item("nested", "sub1"),      # under sub1
+        ]
+        with patch.object(
+            handler_module, "_get_channel_roots",
+            return_value=self._channel_roots({"c1": ("General", "f1")}),
+        ), patch.object(
+            handler_module, "get_drive_delta",
+            return_value=(items, "https://d-new"),
+        ), patch.object(handler_module, "queue_file_ingestion") as mock_queue:
+            delta_links: dict = {}
+            channel_folder_maps: dict = {}
+            count = handler_module._sync_team_files(
+                access_token="tok", workspace_id="ws", connection_id="conn",
+                team_id="team-x",
+                channels=[{"channel_id": "c1", "channel_name": "General"}],
+                delta_links=delta_links,
+                channel_folder_maps=channel_folder_maps,
+                sync_id="sid",
+            )
+        assert count == 1
+        assert mock_queue.call_args.kwargs["channel_name"] == "General"
+        # Ancestor map now includes the subfolder.
+        persisted = channel_folder_maps["team_drive_drive-x"]
+        assert persisted["f1"] == "General"
+        assert persisted["sub1"] == "General"
+
+    def test_file_with_unknown_parent_id_skips(self):
+        """Root-level file whose parent_id isn't in the ancestor map
+        (e.g., drive root for post-migration private channels) skips."""
+        with patch.object(
+            handler_module, "_get_channel_roots",
+            return_value=self._channel_roots({"c1": ("General", "f1")}),
+        ), patch.object(
+            handler_module, "get_drive_delta",
+            return_value=(
+                [self._file_item("orphan", "drive-root-id")], "https://d-new",
+            ),
+        ), patch.object(handler_module, "queue_file_ingestion") as mock_queue:
+            count = handler_module._sync_team_files(
+                access_token="tok", workspace_id="ws", connection_id="conn",
+                team_id="team-x",
+                channels=[{"channel_id": "c1", "channel_name": "General"}],
+                delta_links={},
+                channel_folder_maps={},
+                sync_id="sid",
+            )
+        assert count == 0
+        mock_queue.assert_not_called()
+
+    def test_ancestor_map_persists_across_cycles(self):
+        """Load persisted map first, so a subfolder ancestor known from
+        a prior cycle can still route this cycle's files."""
+        persisted = {"team_drive_drive-x": {"f1": "General", "sub1": "General"}}
+        with patch.object(
+            handler_module, "_get_channel_roots",
+            return_value=self._channel_roots({"c1": ("General", "f1")}),
+        ), patch.object(
+            handler_module, "get_drive_delta",
+            return_value=(
+                # Only the file was changed; subfolder came from before.
+                [self._file_item("nested", "sub1")], "https://d-new",
+            ),
+        ), patch.object(handler_module, "queue_file_ingestion") as mock_queue:
+            count = handler_module._sync_team_files(
+                access_token="tok", workspace_id="ws", connection_id="conn",
+                team_id="team-x",
+                channels=[{"channel_id": "c1", "channel_name": "General"}],
+                delta_links={},
+                channel_folder_maps=persisted,
+                sync_id="sid",
+            )
+        assert count == 1
+        assert mock_queue.call_args.kwargs["channel_name"] == "General"
+
+    def test_delta_token_persists_across_cycles(self):
+        with patch.object(
+            handler_module, "_get_channel_roots",
+            return_value=self._channel_roots({"c1": ("General", "f1")}),
+        ), patch.object(
+            handler_module, "get_drive_delta",
+            return_value=([], "https://d-new"),
+        ), patch.object(handler_module, "queue_file_ingestion"):
+            delta_links: dict = {}
+            handler_module._sync_team_files(
+                access_token="tok", workspace_id="ws", connection_id="conn",
+                team_id="team-x",
+                channels=[{"channel_id": "c1", "channel_name": "General"}],
+                delta_links=delta_links,
+                channel_folder_maps={},
+                sync_id="sid",
+            )
+        assert delta_links == {"team_drive_drive-x": "https://d-new"}
+
+    def test_delta_token_invalid_falls_back_to_full(self):
+        """410 Gone recovers with delta_token=None on the retry."""
+        call_log = []
+
+        def _mock_delta(access_token, drive_id, delta_token=None):
+            call_log.append(delta_token)
+            if delta_token == "https://stale":
+                raise teams_api_module.DeltaTokenInvalidError(
+                    "Delta token invalid: 410", status_code=410,
+                )
+            return ([self._file_item("a", "f1")], "https://d-fresh")
+
+        with patch.object(
+            handler_module, "_get_channel_roots",
+            return_value=self._channel_roots({"c1": ("General", "f1")}),
+        ), patch.object(
+            handler_module, "get_drive_delta", side_effect=_mock_delta,
+        ), patch.object(handler_module, "queue_file_ingestion"):
+            delta_links = {"team_drive_drive-x": "https://stale"}
+            count = handler_module._sync_team_files(
+                access_token="tok", workspace_id="ws", connection_id="conn",
+                team_id="team-x",
+                channels=[{"channel_id": "c1", "channel_name": "General"}],
+                delta_links=delta_links,
+                channel_folder_maps={},
+                sync_id="sid",
+            )
+        assert count == 1
+        assert call_log == ["https://stale", None]  # retried without token
+        assert delta_links == {"team_drive_drive-x": "https://d-fresh"}
+
+    def test_deleted_items_are_skipped(self):
+        items = [
+            {"id": "x", "deleted": {"state": "deleted"},
+             "parentReference": {"id": "f1"}},
+        ]
+        with patch.object(
+            handler_module, "_get_channel_roots",
+            return_value=self._channel_roots({"c1": ("General", "f1")}),
+        ), patch.object(
+            handler_module, "get_drive_delta",
+            return_value=(items, "https://d-new"),
+        ), patch.object(handler_module, "queue_file_ingestion") as mock_queue:
+            handler_module._sync_team_files(
+                access_token="tok", workspace_id="ws", connection_id="conn",
+                team_id="team-x",
+                channels=[{"channel_id": "c1", "channel_name": "General"}],
+                delta_links={},
+                channel_folder_maps={},
+                sync_id="sid",
+            )
+        mock_queue.assert_not_called()
+
+    def test_first_sync_has_no_delta_token(self):
+        """delta_links empty -> get_drive_delta called with None."""
+        with patch.object(
+            handler_module, "_get_channel_roots",
+            return_value=self._channel_roots({"c1": ("General", "f1")}),
+        ), patch.object(
+            handler_module, "get_drive_delta",
+            return_value=([], "https://d-new"),
+        ) as mock_delta, patch.object(handler_module, "queue_file_ingestion"):
+            handler_module._sync_team_files(
+                access_token="tok", workspace_id="ws", connection_id="conn",
+                team_id="team-x",
+                channels=[{"channel_id": "c1", "channel_name": "General"}],
+                delta_links={},
+                channel_folder_maps={},
+                sync_id="sid",
+            )
+        assert mock_delta.call_args.kwargs["delta_token"] is None
+
+    def test_no_resolvable_channels_returns_zero(self):
+        """When _get_channel_roots returns empty, skip the delta call
+        entirely."""
+        with patch.object(
+            handler_module, "_get_channel_roots", return_value={},
+        ), patch.object(handler_module, "get_drive_delta") as mock_delta:
+            count = handler_module._sync_team_files(
+                access_token="tok", workspace_id="ws", connection_id="conn",
+                team_id="team-x", channels=[], delta_links={},
+                channel_folder_maps={}, sync_id="sid",
+            )
+        assert count == 0
+        mock_delta.assert_not_called()

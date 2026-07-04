@@ -30,11 +30,13 @@ import boto3
 from botocore.exceptions import ClientError
 
 from teams_api import (
+    DeltaTokenInvalidError,
     TeamsAPIError,
     TeamsAuthError,
     filter_messages_by_date,
     get_channel_files_folder,
     get_channel_messages,
+    get_drive_delta,
     get_message_replies,
     get_messages_delta,
     list_folder_files,
@@ -122,9 +124,15 @@ def update_connection_status(
     message_count: int = 0,
     file_count: int = 0,
     delta_links: Optional[Dict] = None,
+    channel_folder_maps: Optional[Dict] = None,
     error: Optional[str] = None,
 ):
-    """Update connection sync status."""
+    """Update connection sync status.
+
+    ``channel_folder_maps`` (ADR-###): {team_drive_{drive_id}:
+    {folder_id: channel_name}} — chunk 02's persisted ancestor map for
+    drive-delta parent-id routing.
+    """
     table = dynamodb.Table(WORKSPACES_TABLE)
     now = datetime.now(timezone.utc).isoformat()
 
@@ -146,6 +154,10 @@ def update_connection_status(
     if delta_links is not None:
         update_expr += ", delta_links = :delta"
         expr_values[":delta"] = delta_links
+
+    if channel_folder_maps is not None:
+        update_expr += ", channel_folder_maps = :cfm"
+        expr_values[":cfm"] = channel_folder_maps
 
     if error:
         update_expr += ", last_sync_error = :error"
@@ -338,6 +350,7 @@ def process_sync_request(message: Dict) -> Dict[str, Any]:
     days_back = int(config.get("days_back", 30))
     sync_files = config.get("sync_files", True)
     delta_links = connection.get("delta_links", {}) or {}
+    channel_folder_maps = connection.get("channel_folder_maps", {}) or {}
 
     if not include_channels:
         logger.warning(f"No channels configured for connection {connection_id}")
@@ -365,74 +378,92 @@ def process_sync_request(message: Dict) -> Dict[str, Any]:
     total_files = 0
 
     try:
+        # Group channels by team so file-sync can make one drive-delta
+        # call per team (chunk 02 §Overview). Preserve original ordering
+        # for consistent CloudWatch traces.
+        team_to_channels: Dict[str, List[Dict]] = {}
         for channel_info in include_channels:
-            team_id = channel_info.get("team_id")
-            channel_id = channel_info.get("channel_id")
-            channel_name = channel_info.get("channel_name", "Unknown")
-
-            if not team_id or not channel_id:
+            tid = channel_info.get("team_id")
+            if not tid:
                 continue
+            team_to_channels.setdefault(tid, []).append(channel_info)
 
-            # Per-source repo-limit enforcement (ADR-019). Use the stable
-            # team/channel GUIDs (not the display name, which can change).
-            # check_repo_limit returns allowed=True for already-tracked
-            # channels, so this is a no-op for previously-synced sources.
-            repo_project = f"teams:{team_id}/{channel_id}"
-            limit_result = check_repo_limit(repo=repo_project)
-            if not limit_result.allowed:
-                logger.warning(
-                    f"[teams-sync] Repo limit reached for {repo_project}: "
-                    f"{limit_result.reason} "
-                    f"(current={limit_result.current}/{limit_result.limit})"
-                )
-                continue
+        for team_id, team_channels in team_to_channels.items():
+            # Message-sync loop: still per-channel because Graph's
+            # message delta is scoped to a single channel. Track which
+            # channels pass the repo-limit check so file-sync (team
+            # level) also skips blocked channels.
+            unblocked_channels: List[Dict] = []
+            for channel_info in team_channels:
+                channel_id = channel_info.get("channel_id")
+                channel_name = channel_info.get("channel_name", "Unknown")
 
-            delta_key = f"{team_id}_{channel_id}"
-            existing_delta = delta_links.get(delta_key)
+                if not channel_id:
+                    continue
 
-            # Sync messages
-            if existing_delta:
-                # Delta sync
-                msg_count, new_delta = _sync_channel_delta(
+                # Per-source repo-limit enforcement (ADR-019). Uses
+                # the stable team/channel GUIDs, not the display name.
+                repo_project = f"teams:{team_id}/{channel_id}"
+                limit_result = check_repo_limit(repo=repo_project)
+                if not limit_result.allowed:
+                    logger.warning(
+                        f"[teams-sync] Repo limit reached for {repo_project}: "
+                        f"{limit_result.reason} "
+                        f"(current={limit_result.current}/{limit_result.limit})"
+                    )
+                    continue
+
+                unblocked_channels.append(channel_info)
+                delta_key = f"{team_id}_{channel_id}"
+                existing_delta = delta_links.get(delta_key)
+
+                if existing_delta:
+                    msg_count, new_delta = _sync_channel_delta(
+                        access_token=access_token,
+                        workspace_id=workspace_id,
+                        connection_id=connection_id,
+                        team_id=team_id,
+                        channel_id=channel_id,
+                        channel_name=channel_name,
+                        delta_link=existing_delta,
+                        sync_id=sync_id,
+                        messages_so_far=total_messages,
+                    )
+                    if new_delta:
+                        delta_links[delta_key] = new_delta
+                else:
+                    msg_count, new_delta = _sync_channel_full(
+                        access_token=access_token,
+                        workspace_id=workspace_id,
+                        connection_id=connection_id,
+                        team_id=team_id,
+                        channel_id=channel_id,
+                        channel_name=channel_name,
+                        days_back=days_back,
+                        sync_id=sync_id,
+                        messages_so_far=total_messages,
+                    )
+                    if new_delta:
+                        delta_links[delta_key] = new_delta
+
+                total_messages += msg_count
+
+            # File-sync: one drive-delta call for the whole team.
+            # Chunk 02 §Overview: replaces the previous per-channel
+            # list_folder_files enumeration with parent-id routing
+            # via a persisted ancestor map. Blocked channels
+            # (repo-limit) are dropped -- files from those channels
+            # would not route to any known root and would skip anyway,
+            # but making it explicit keeps the CloudWatch logs honest.
+            if sync_files and unblocked_channels:
+                file_count = _sync_team_files(
                     access_token=access_token,
                     workspace_id=workspace_id,
                     connection_id=connection_id,
                     team_id=team_id,
-                    channel_id=channel_id,
-                    channel_name=channel_name,
-                    delta_link=existing_delta,
-                    sync_id=sync_id,
-                    messages_so_far=total_messages,
-                )
-                if new_delta:
-                    delta_links[delta_key] = new_delta
-            else:
-                # Full sync with date filter
-                msg_count, new_delta = _sync_channel_full(
-                    access_token=access_token,
-                    workspace_id=workspace_id,
-                    connection_id=connection_id,
-                    team_id=team_id,
-                    channel_id=channel_id,
-                    channel_name=channel_name,
-                    days_back=days_back,
-                    sync_id=sync_id,
-                    messages_so_far=total_messages,
-                )
-                if new_delta:
-                    delta_links[delta_key] = new_delta
-
-            total_messages += msg_count
-
-            # Sync files if enabled
-            if sync_files:
-                file_count = _sync_channel_files(
-                    access_token=access_token,
-                    workspace_id=workspace_id,
-                    connection_id=connection_id,
-                    team_id=team_id,
-                    channel_id=channel_id,
-                    channel_name=channel_name,
+                    channels=unblocked_channels,
+                    delta_links=delta_links,
+                    channel_folder_maps=channel_folder_maps,
                     sync_id=sync_id,
                 )
                 total_files += file_count
@@ -445,6 +476,7 @@ def process_sync_request(message: Dict) -> Dict[str, Any]:
             message_count=total_messages,
             file_count=total_files,
             delta_links=delta_links,
+            channel_folder_maps=channel_folder_maps,
         )
 
         log_source_sync(
@@ -621,48 +653,184 @@ def _sync_channel_full(
     return queued, delta_link
 
 
-def _sync_channel_files(
+def _is_deleted(item: Dict) -> bool:
+    """True if a delta result represents a deleted or removed item.
+
+    Delta returns removed items with either a ``deleted`` facet
+    (``{"state": "deleted"}``) or a top-level ``@removed`` annotation.
+    Both mean 'drop from local state' per Graph docs.
+    """
+    if "deleted" in item:
+        return True
+    if item.get("@removed"):
+        return True
+    return False
+
+
+def _get_channel_roots(
+    access_token: str,
+    team_id: str,
+    channels: List[Dict],
+) -> Dict[str, Dict]:
+    """{channel_id: {"name", "folder_id", "drive_id"}} for every
+    channel with a resolvable filesFolder.
+
+    Skips channels whose folder lookup fails (sync continues for the
+    rest). Detects the post-migration private-channel case where two
+    or more channels share the drive root as their filesFolder id:
+    drops both from the returned map and logs a warning. Files at
+    that folder id will then not route to any channel and are
+    skipped -- documented ADR non-goal.
+    """
+    per_channel: Dict[str, Dict] = {}
+    for chan in channels:
+        chan_id = chan.get("channel_id")
+        chan_name = chan.get("channel_name", "Unknown")
+        if not chan_id:
+            continue
+        folder = get_channel_files_folder(access_token, team_id, chan_id)
+        if not folder:
+            continue
+        drive_id = folder.get("parentReference", {}).get("driveId")
+        folder_id = folder.get("id")
+        if not drive_id or not folder_id:
+            continue
+        per_channel[chan_id] = {
+            "name": chan_name,
+            "folder_id": folder_id,
+            "drive_id": drive_id,
+        }
+
+    # Detect collisions: multiple channels reporting the same
+    # folder_id means their filesFolder is the drive root
+    # (post-migration private-channel enhancement, per
+    # https://learn.microsoft.com/en-us/graph/api/channel-get-filesfolder).
+    folder_to_channels: Dict[str, List[str]] = {}
+    for chan_id, meta in per_channel.items():
+        folder_to_channels.setdefault(meta["folder_id"], []).append(chan_id)
+
+    for folder_id, chan_ids in folder_to_channels.items():
+        if len(chan_ids) <= 1:
+            continue
+        names = ", ".join(per_channel[cid]["name"] for cid in chan_ids)
+        logger.warning(
+            f"[teams-file-sync] channels {names} share drive root "
+            f"({folder_id}) as filesFolder; files at drive root will "
+            "not be ingested. This is a Microsoft private-channel "
+            "design constraint (post-migration), not a sync bug."
+        )
+        for cid in chan_ids:
+            per_channel.pop(cid, None)
+
+    return per_channel
+
+
+def _sync_team_files(
     access_token: str,
     workspace_id: str,
     connection_id: str,
     team_id: str,
-    channel_id: str,
-    channel_name: str,
+    channels: List[Dict],
+    delta_links: Dict,
+    channel_folder_maps: Dict,
     sync_id: str,
 ) -> int:
-    """Sync files from a channel's SharePoint folder. Returns file count."""
-    files_folder = get_channel_files_folder(access_token, team_id, channel_id)
-    if not files_folder:
+    """Sync files for all channels of a team via one drive-delta call.
+
+    Chunk 01 §2 + §3: Graph's driveitem-delta does NOT populate
+    ``parentReference.path`` on returned items. Routing is by
+    ``parentReference.id`` through a folder-ancestor map:
+    {folder_id: channel_name}. The map is seeded with each channel's
+    root folder and grown incrementally as delta returns subfolder
+    driveItems. It's persisted on the connection row alongside
+    ``delta_links``.
+
+    Chunk 01 §6: post-migration private channels report the drive
+    root as their filesFolder. ``_get_channel_roots`` detects the
+    collision and drops the affected channels; files at drive root
+    are not attributable to a specific channel and get skipped
+    (documented non-goal).
+
+    Fails soft on delta-token invalidation (410 Gone): retries once
+    with delta_token=None, matching Graph's documented recovery path.
+    """
+    channel_roots = _get_channel_roots(access_token, team_id, channels)
+    if not channel_roots:
         return 0
 
-    drive_id = files_folder.get("parentReference", {}).get("driveId")
-    folder_id = files_folder.get("id")
+    drive_id = next(iter(channel_roots.values()))["drive_id"]
+    delta_key = f"team_drive_{drive_id}"
 
-    if not drive_id or not folder_id:
-        return 0
+    # Seed the ancestor map from persisted state + channel roots.
+    # Channel roots always win over persisted state (a channel could
+    # have been recreated with a new folder_id).
+    ancestor_map: Dict[str, str] = dict(channel_folder_maps.get(delta_key, {}) or {})
+    for meta in channel_roots.values():
+        ancestor_map[meta["folder_id"]] = meta["name"]
 
+    existing_delta = delta_links.get(delta_key)
     try:
-        files = list_folder_files(access_token, drive_id, folder_id)
+        items, new_delta = get_drive_delta(
+            access_token=access_token,
+            drive_id=drive_id,
+            delta_token=existing_delta,
+        )
+    except DeltaTokenInvalidError:
+        logger.warning(
+            f"[teams-file-sync] delta token for {delta_key} was rejected "
+            "by Graph (410 Gone); recovering with a full drive enumeration"
+        )
+        items, new_delta = get_drive_delta(
+            access_token=access_token,
+            drive_id=drive_id,
+            delta_token=None,
+        )
     except TeamsAPIError as e:
-        logger.error(f"Failed to list files for channel {channel_name}: {e}")
+        logger.error(f"[teams-file-sync] drive-delta failed for {delta_key}: {e}")
         return 0
+
+    if new_delta:
+        delta_links[delta_key] = new_delta
 
     queued = 0
-    for file_item in files:
-        # Skip folders
-        if "folder" in file_item:
+    for item in items:
+        if _is_deleted(item):
+            continue
+        parent_id = (item.get("parentReference") or {}).get("id")
+
+        if "folder" in item:
+            # Extend the ancestor map so this folder's descendants can
+            # route. Falls through when the parent isn't known yet --
+            # a subsequent cycle will pick up any files under it once
+            # the folder+child ordering catches up.
+            if parent_id and parent_id in ancestor_map:
+                ancestor_map[item["id"]] = ancestor_map[parent_id]
+            continue
+
+        # File. Route via the ancestor map.
+        channel_name = ancestor_map.get(parent_id) if parent_id else None
+        if channel_name is None:
+            # File lives outside any known channel folder subtree.
+            # Includes drive-root files (post-migration private
+            # channels; see _get_channel_roots) and files under
+            # folders whose ancestor chain hasn't been seen yet.
             continue
 
         queue_file_ingestion(
             workspace_id=workspace_id,
             connection_id=connection_id,
-            file_item=file_item,
+            file_item=item,
             channel_name=channel_name,
             sync_id=sync_id,
         )
         queued += 1
 
-    logger.info(f"Queued {queued} files from channel {channel_name}")
+    channel_folder_maps[delta_key] = ancestor_map
+
+    logger.info(
+        f"[teams-file-sync] team={team_id} queued={queued} "
+        f"map_size={len(ancestor_map)}"
+    )
     return queued
 
 

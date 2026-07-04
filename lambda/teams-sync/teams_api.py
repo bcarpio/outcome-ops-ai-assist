@@ -35,6 +35,18 @@ class TeamsAuthError(TeamsAPIError):
     pass
 
 
+class DeltaTokenInvalidError(TeamsAPIError):
+    """Raised when Graph returns 410 Gone on a delta call.
+
+    Per Graph's driveitem-delta docs, this happens when a stored delta
+    token expires or the server state advances beyond what the token
+    can express. Recovery is a fresh full enumeration with
+    delta_token=None. Caller catches this and retries without the
+    stored token; the retry returns a new deltaLink for future cycles.
+    """
+    pass
+
+
 def _make_request(
     access_token: str,
     url: str,
@@ -56,6 +68,14 @@ def _make_request(
         if e.code in (401, 403):
             raise TeamsAuthError(
                 f"Authentication failed: {e.code}",
+                status_code=e.code,
+                response=error_body,
+            )
+        if e.code == 410:
+            # Drive-delta docs: 410 Gone means the delta token is
+            # invalid. Callers recover by retrying with delta_token=None.
+            raise DeltaTokenInvalidError(
+                f"Delta token invalid: {e.code} - {error_body}",
                 status_code=e.code,
                 response=error_body,
             )
@@ -170,6 +190,45 @@ def list_folder_files(
         url = response.get("@odata.nextLink")
 
     return all_files
+
+
+def get_drive_delta(
+    access_token: str,
+    drive_id: str,
+    delta_token: Optional[str] = None,
+) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    """Return (items, new_delta_link) for a team's SharePoint drive.
+
+    Chunk 01 §2: the returned items' ``parentReference`` includes
+    ``id`` (the immediate parent driveItem id) and ``driveId``, but
+    NOT ``path``. Callers must route by parent-id, not by path prefix.
+
+    When ``delta_token`` is None, walks the drive from scratch (initial
+    enumeration). When a token is supplied but the server rejects it
+    with 410 Gone (``DeltaTokenInvalidError``), the caller is expected
+    to retry with ``delta_token=None``.
+    """
+    if delta_token:
+        url = delta_token
+    else:
+        url = f"{GRAPH_API_BASE}/drives/{drive_id}/root/delta?$top=100"
+
+    all_items: List[Dict[str, Any]] = []
+    new_delta: Optional[str] = None
+
+    while url:
+        response = _make_request(access_token, url)
+        items = response.get("value", []) or []
+        all_items.extend(items)
+        if "@odata.nextLink" in response:
+            url = response["@odata.nextLink"]
+        elif "@odata.deltaLink" in response:
+            new_delta = response["@odata.deltaLink"]
+            url = None
+        else:
+            url = None
+
+    return all_items, new_delta
 
 
 def filter_messages_by_date(
