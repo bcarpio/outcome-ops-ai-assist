@@ -407,3 +407,109 @@ resource "aws_lambda_event_source_mapping" "azure_devops_boards_sync" {
 
   function_response_types = ["ReportBatchItemFailures"]
 }
+
+# ============================================================================
+# Boards Scheduler Lambda (chunk 06)
+#
+# Hourly EventBridge trigger. Scans workspace-projects table, enqueues
+# a sync message per enabled AZDO_BOARDS_PROJECT# row. Active-region
+# guard prevents double-fires during dual-write windows.
+# ============================================================================
+
+module "azure_devops_boards_scheduler_lambda" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "8.1.2"
+
+  count = var.enable_workspaces ? 1 : 0
+
+  function_name = "${var.environment}-${var.app_name}-azure-devops-boards-scheduler"
+  description   = "Hourly scan-and-enqueue of Boards sync jobs for OutcomeOps AI Assist"
+  handler       = "handler.lambda_handler"
+  runtime       = "python3.12"
+  timeout       = 300
+  memory_size   = 512
+
+  source_path = [
+    {
+      path             = "${path.module}/../lambda/azure-devops-boards-scheduler"
+      pip_requirements = true
+      patterns = [
+        "!tests/.*",
+        "!__pycache__/.*",
+        "!\\.venv/.*",
+        "!.*\\.pyc",
+        "!\\.pytest_cache/.*",
+      ]
+    },
+    {
+      path          = "${path.module}/../lambda/shared"
+      prefix_in_zip = "shared"
+    },
+  ]
+
+  cloudwatch_logs_retention_in_days = 7
+  cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs.arn
+  quiet_archive_local_exec          = true
+
+  environment_variables = merge(
+    {
+      ENV              = var.environment
+      APP_NAME         = var.app_name
+      WORKSPACES_TABLE = module.workspaces_table[0].dynamodb_table_id
+
+      AZURE_DEVOPS_BOARDS_SYNC_QUEUE = aws_sqs_queue.azure_devops_boards_sync[0].url
+    },
+    local.ha_scheduler_env,
+  )
+
+  attach_policy_statements = true
+  policy_statements = merge(
+    {
+      dynamodb_scan = {
+        effect    = "Allow"
+        actions   = ["dynamodb:Scan"]
+        resources = [module.workspaces_table[0].dynamodb_table_arn]
+      }
+
+      sqs_send = {
+        effect    = "Allow"
+        actions   = ["sqs:SendMessage"]
+        resources = [aws_sqs_queue.azure_devops_boards_sync[0].arn]
+      }
+    },
+    local.ha_scheduler_iam,
+  )
+
+  tags = {
+    Purpose = "azure-devops-boards-scheduler"
+  }
+}
+
+resource "aws_cloudwatch_event_rule" "azure_devops_boards_hourly_sync" {
+  count = var.enable_workspaces ? 1 : 0
+
+  name                = "${var.environment}-${var.app_name}-azure-devops-boards-hourly-sync"
+  description         = "Hourly Boards sync scheduler trigger"
+  schedule_expression = "rate(1 hour)"
+
+  tags = {
+    Purpose = "azure-devops-boards-scheduler-trigger"
+  }
+}
+
+resource "aws_cloudwatch_event_target" "azure_devops_boards_scheduler" {
+  count = var.enable_workspaces ? 1 : 0
+
+  rule = aws_cloudwatch_event_rule.azure_devops_boards_hourly_sync[0].name
+  arn  = module.azure_devops_boards_scheduler_lambda[0].lambda_function_arn
+}
+
+resource "aws_lambda_permission" "azure_devops_boards_scheduler_eventbridge" {
+  count = var.enable_workspaces ? 1 : 0
+
+  statement_id  = "AllowEventBridgeInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = module.azure_devops_boards_scheduler_lambda[0].lambda_function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.azure_devops_boards_hourly_sync[0].arn
+}
