@@ -1120,6 +1120,207 @@ export async function deleteJiraConnection(workspaceId: string, connectionId: st
 }
 
 // ============================================================================
+// Azure DevOps Boards Integration Types and API
+// ============================================================================
+
+export interface AzureDevOpsBoardsConnection {
+  connection_id: string
+  display_name: string
+  user_email_external: string
+  tenant_id: string
+  created_at: string
+}
+
+// Result of discovery -- projects in an org, with an `already_added` flag
+// so the picker can disable projects that already exist in this workspace.
+export interface AzureDevOpsBoardsDiscoveryProject {
+  id: string
+  name: string
+  description?: string
+  already_added: boolean
+}
+
+// Workspace's currently-selected Boards project, one row per
+// AZDO_BOARDS_PROJECT# in DDB.
+export interface AzureDevOpsBoardsProject {
+  slug: string
+  org: string
+  project: string
+  connection_id: string
+  enabled: boolean
+  sync_status: 'pending' | 'in_progress' | 'success' | 'failed' | 'auth_error'
+  last_sync_at: string | null
+  last_sync_error: string | null
+  last_changed_watermark: string | null
+  added_at: string
+  added_by: string
+}
+
+export interface AzureDevOpsBoardsOrg {
+  accountName: string
+  accountId: string
+}
+
+export async function getAzureDevOpsBoardsAuthUrl(workspaceId: string): Promise<string> {
+  const response = await fetch(
+    `${API_BASE}/azure-devops-boards/authorize?workspace_id=${encodeURIComponent(workspaceId)}`,
+  )
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to get auth URL: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return data?.auth_url as string
+}
+
+export async function listAzureDevOpsBoardsConnections(
+  workspaceId: string,
+): Promise<AzureDevOpsBoardsConnection[]> {
+  const response = await fetch(
+    `${API_BASE}/workspaces/${workspaceId}/azure-devops-boards/connections`,
+  )
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error(
+      (data?.error as string) || `Failed to list Boards connections: ${response.status}`,
+    )
+  }
+  const data = await safeJson(response)
+  return (data?.connections as AzureDevOpsBoardsConnection[]) || []
+}
+
+export async function listAzureDevOpsBoardsOrgs(
+  workspaceId: string,
+  connectionId: string,
+): Promise<AzureDevOpsBoardsOrg[]> {
+  const response = await fetch(
+    `${API_BASE}/workspaces/${workspaceId}/azure-devops-boards/connections/${connectionId}/orgs`,
+  )
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error(
+      (data?.error as string) || `Failed to list Boards orgs: ${response.status}`,
+    )
+  }
+  const data = await safeJson(response)
+  return (data?.orgs as AzureDevOpsBoardsOrg[]) || []
+}
+
+export async function listAzureDevOpsBoardsDiscoveryProjects(
+  workspaceId: string,
+  connectionId: string,
+  org: string,
+): Promise<AzureDevOpsBoardsDiscoveryProject[]> {
+  const response = await fetch(
+    `${API_BASE}/workspaces/${workspaceId}/azure-devops-boards/connections/${connectionId}/orgs/${encodeURIComponent(org)}/projects`,
+  )
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error(
+      (data?.error as string) || `Failed to list Boards projects: ${response.status}`,
+    )
+  }
+  const data = await safeJson(response)
+  return (data?.projects as AzureDevOpsBoardsDiscoveryProject[]) || []
+}
+
+export async function addAzureDevOpsBoardsProjects(
+  workspaceId: string,
+  connectionId: string,
+  projects: { org: string; project: string }[],
+): Promise<{ added: number; projects: AzureDevOpsBoardsProject[] }> {
+  const response = await fetch(
+    `${API_BASE}/workspaces/${workspaceId}/azure-devops-boards/projects`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ connection_id: connectionId, projects }),
+    },
+  )
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error(
+      (data?.error as string) || `Failed to add Boards projects: ${response.status}`,
+    )
+  }
+  const data = await safeJson(response)
+  return {
+    added: (data?.added as number) || 0,
+    projects: (data?.projects as AzureDevOpsBoardsProject[]) || [],
+  }
+}
+
+export async function listWorkspaceAzureDevOpsBoardsProjects(
+  workspaceId: string,
+): Promise<AzureDevOpsBoardsProject[]> {
+  const response = await fetch(
+    `${API_BASE}/workspaces/${workspaceId}/azure-devops-boards/projects`,
+  )
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error(
+      (data?.error as string) || `Failed to list workspace Boards projects: ${response.status}`,
+    )
+  }
+  const data = await safeJson(response)
+  return (data?.projects as AzureDevOpsBoardsProject[]) || []
+}
+
+export async function removeAzureDevOpsBoardsProject(
+  workspaceId: string,
+  slug: string,
+): Promise<void> {
+  const response = await fetch(
+    `${API_BASE}/workspaces/${workspaceId}/azure-devops-boards/projects/${slug.split('/').map(encodeURIComponent).join('/')}`,
+    { method: 'DELETE' },
+  )
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error(
+      (data?.error as string) || `Failed to remove Boards project: ${response.status}`,
+    )
+  }
+}
+
+export async function triggerAzureDevOpsBoardsSync(
+  workspaceId: string,
+  slug?: string,
+): Promise<{ projects: number }> {
+  const response = await fetch(
+    `${API_BASE}/workspaces/${workspaceId}/azure-devops-boards/sync`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: slug ? JSON.stringify({ slug }) : '{}',
+    },
+  )
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error(
+      (data?.error as string) || `Failed to trigger Boards sync: ${response.status}`,
+    )
+  }
+  const data = await safeJson(response)
+  return { projects: (data?.projects as number) || 0 }
+}
+
+export async function disconnectAzureDevOpsBoards(
+  workspaceId: string,
+  connectionId: string,
+): Promise<void> {
+  const response = await fetch(
+    `${API_BASE}/workspaces/${workspaceId}/azure-devops-boards/connections/${connectionId}`,
+    { method: 'DELETE' },
+  )
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error(
+      (data?.error as string) || `Failed to disconnect Boards: ${response.status}`,
+    )
+  }
+}
+
+// ============================================================================
 // Outlook Integration Types and API
 // ============================================================================
 

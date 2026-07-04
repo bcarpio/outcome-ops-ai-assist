@@ -40,6 +40,7 @@ const ONEDRIVE_LAMBDA_URL = process.env.ONEDRIVE_LAMBDA_URL;
 const ONENOTE_LAMBDA_URL = process.env.ONENOTE_LAMBDA_URL;
 const DATABASE_LAMBDA_URL = process.env.DATABASE_LAMBDA_URL;
 const AZURE_DEVOPS_LAMBDA_URL = process.env.AZURE_DEVOPS_LAMBDA_URL;
+const AZURE_DEVOPS_BOARDS_LAMBDA_URL = process.env.AZURE_DEVOPS_BOARDS_LAMBDA_URL;
 const AWS_REGION = process.env.AWS_REGION || "us-west-2";
 const STATIC_DIR = process.env.STATIC_DIR || "/app/static";
 const LOCAL_DEV_MODE = process.env.LOCAL_DEV_MODE === "true";
@@ -297,6 +298,10 @@ async function signedOutlookFetch(method, path, options = {}) {
 
 async function signedAzureDevOpsFetch(method, path, options = {}) {
   return signedFetch(AZURE_DEVOPS_LAMBDA_URL, method, path, options);
+}
+
+async function signedAzureDevOpsBoardsFetch(method, path, options = {}) {
+  return signedFetch(AZURE_DEVOPS_BOARDS_LAMBDA_URL, method, path, options);
 }
 
 /**
@@ -1602,6 +1607,178 @@ app.delete("/api/workspaces/:id/azure-devops/repos/*", (req, res) => {
 
 app.post("/api/workspaces/:id/azure-devops/sync", (req, res) =>
   proxyAzureDevOpsRequest(req, res, "POST", `/workspaces/${req.params.id}/azure-devops/sync`),
+);
+
+// ============================================================================
+// Azure DevOps Boards Integration Routes
+//
+// Same shape as the Repos proxy above (signedAzureDevOpsBoardsFetch ->
+// AZURE_DEVOPS_BOARDS_LAMBDA_URL). Independent Function URL because
+// Boards and Repos are separate Lambdas per the plan overview.
+// ============================================================================
+
+async function proxyAzureDevOpsBoardsRequest(req, res, method, path) {
+  if (!AZURE_DEVOPS_BOARDS_LAMBDA_URL) {
+    console.log("[proxy] AZURE_DEVOPS_BOARDS_LAMBDA_URL not configured - Boards integration disabled");
+    res.status(404).json({ error: "Azure DevOps Boards integration not enabled. Set AZURE_DEVOPS_BOARDS_LAMBDA_URL." });
+    return;
+  }
+
+  const user = extractUser(req);
+  console.log(`[proxy] Boards ${method} ${path} for: ${user.email}`);
+
+  try {
+    const options = {
+      extraHeaders: userHeaders(req, user),
+    };
+    if (req.body && Object.keys(req.body).length > 0) {
+      options.body = JSON.stringify(req.body);
+    }
+
+    const response = await signedAzureDevOpsBoardsFetch(method, path, options);
+
+    if (response.status === 302) {
+      const location = response.headers.get("location");
+      return res.redirect(location);
+    }
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`[proxy] Boards Lambda error: ${response.status} - ${errorText}`);
+      res.status(response.status).json({ error: errorText || "Boards request failed" });
+      return;
+    }
+
+    const text = await response.text();
+    if (!text) {
+      res.status(500).json({ error: "Empty response from Boards service" });
+      return;
+    }
+
+    try {
+      const data = JSON.parse(text);
+      res.status(response.status).json(data);
+    } catch (parseError) {
+      console.error(`[proxy] Failed to parse Boards response: ${text}`);
+      res.status(500).json({ error: "Invalid response from Boards service" });
+    }
+  } catch (error) {
+    console.error(`[proxy] Boards error: ${error.message}`);
+    if (error.message.includes("credentials") || error.message.includes("Credential")) {
+      res.status(500).json({ error: "AWS credentials not configured." });
+    } else {
+      res.status(500).json({ error: `Failed to process Boards request: ${error.message}` });
+    }
+  }
+}
+
+// OAuth authorize + callback
+app.get("/api/azure-devops-boards/authorize", (req, res) => {
+  const workspaceId = req.query.workspace_id;
+  proxyAzureDevOpsBoardsRequest(
+    req, res, "GET",
+    `/azure-devops-boards/authorize?workspace_id=${encodeURIComponent(workspaceId)}`,
+  );
+});
+
+app.get("/api/azure-devops-boards/callback", async (req, res) => {
+  const { code, state, error } = req.query;
+  if (error) {
+    return res.redirect(`/?azure_devops_boards_error=${encodeURIComponent(error)}`);
+  }
+  if (!AZURE_DEVOPS_BOARDS_LAMBDA_URL) {
+    return res.redirect(`/?azure_devops_boards_error=not_configured`);
+  }
+  try {
+    const response = await signedAzureDevOpsBoardsFetch("POST", "/azure-devops-boards/callback", {
+      body: JSON.stringify({ code, state }),
+    });
+    if (response.status === 302) {
+      const location = response.headers.get("location");
+      return res.redirect(location);
+    }
+    const text = await response.text();
+    try {
+      const data = JSON.parse(text);
+      if (data.redirect) {
+        return res.redirect(data.redirect);
+      }
+      res.status(response.status).json(data);
+    } catch {
+      res.status(response.status).send(text);
+    }
+  } catch (err) {
+    console.error(`[proxy] Boards callback error: ${err.message}`);
+    res.redirect(`/?azure_devops_boards_error=callback_failed`);
+  }
+});
+
+// Connections + discovery
+app.get("/api/workspaces/:id/azure-devops-boards/connections", (req, res) =>
+  proxyAzureDevOpsBoardsRequest(
+    req, res, "GET",
+    `/workspaces/${req.params.id}/azure-devops-boards/connections`,
+  ),
+);
+
+app.delete("/api/workspaces/:id/azure-devops-boards/connections/:cid", (req, res) =>
+  proxyAzureDevOpsBoardsRequest(
+    req, res, "DELETE",
+    `/workspaces/${req.params.id}/azure-devops-boards/connections/${encodeURIComponent(req.params.cid)}`,
+  ),
+);
+
+app.get("/api/workspaces/:id/azure-devops-boards/connections/:cid/orgs", (req, res) =>
+  proxyAzureDevOpsBoardsRequest(
+    req, res, "GET",
+    `/workspaces/${req.params.id}/azure-devops-boards/connections/${encodeURIComponent(req.params.cid)}/orgs`,
+  ),
+);
+
+app.get("/api/workspaces/:id/azure-devops-boards/connections/:cid/orgs/:org/projects", (req, res) =>
+  proxyAzureDevOpsBoardsRequest(
+    req, res, "GET",
+    `/workspaces/${req.params.id}/azure-devops-boards/connections/${encodeURIComponent(req.params.cid)}/orgs/${encodeURIComponent(req.params.org)}/projects`,
+  ),
+);
+
+// Workspace project set
+app.get("/api/workspaces/:id/azure-devops-boards/projects", (req, res) =>
+  proxyAzureDevOpsBoardsRequest(
+    req, res, "GET",
+    `/workspaces/${req.params.id}/azure-devops-boards/projects`,
+  ),
+);
+
+app.post("/api/workspaces/:id/azure-devops-boards/projects", (req, res) =>
+  proxyAzureDevOpsBoardsRequest(
+    req, res, "POST",
+    `/workspaces/${req.params.id}/azure-devops-boards/projects`,
+  ),
+);
+
+// Slug is org/project (one slash) so the wildcard captures it.
+app.put("/api/workspaces/:id/azure-devops-boards/projects/*", (req, res) => {
+  const slug = req.params[0];
+  proxyAzureDevOpsBoardsRequest(
+    req, res, "PUT",
+    `/workspaces/${req.params.id}/azure-devops-boards/projects/${encodeURIComponent(slug)}`,
+  );
+});
+
+app.delete("/api/workspaces/:id/azure-devops-boards/projects/*", (req, res) => {
+  const slug = req.params[0];
+  proxyAzureDevOpsBoardsRequest(
+    req, res, "DELETE",
+    `/workspaces/${req.params.id}/azure-devops-boards/projects/${encodeURIComponent(slug)}`,
+  );
+});
+
+app.post("/api/workspaces/:id/azure-devops-boards/sync", (req, res) =>
+  proxyAzureDevOpsBoardsRequest(
+    req, res, "POST",
+    `/workspaces/${req.params.id}/azure-devops-boards/sync`,
+  ),
 );
 
 // ============================================================================

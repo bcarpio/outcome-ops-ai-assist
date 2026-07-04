@@ -51,6 +51,15 @@ import {
   updateJiraProjects,
   triggerJiraSync,
   deleteJiraConnection,
+  getAzureDevOpsBoardsAuthUrl,
+  listAzureDevOpsBoardsConnections,
+  listAzureDevOpsBoardsOrgs,
+  listAzureDevOpsBoardsDiscoveryProjects,
+  addAzureDevOpsBoardsProjects,
+  listWorkspaceAzureDevOpsBoardsProjects,
+  removeAzureDevOpsBoardsProject,
+  triggerAzureDevOpsBoardsSync,
+  disconnectAzureDevOpsBoards,
   getSearchAccess,
   updateSearchAccess,
   listSharingOptions,
@@ -130,6 +139,10 @@ import {
   type ConfluenceSpace,
   type JiraConnection,
   type JiraProject,
+  type AzureDevOpsBoardsConnection,
+  type AzureDevOpsBoardsProject,
+  type AzureDevOpsBoardsDiscoveryProject,
+  type AzureDevOpsBoardsOrg,
   type WorkspaceSearchAccess,
   type WorkspaceDocument,
   type GitHubInstallation,
@@ -247,6 +260,21 @@ export default function WorkspaceSettings() {
   const [jiraIncludeComments, setJiraIncludeComments] = useState(true)
   const [savingProjects, setSavingProjects] = useState(false)
   const [syncingJira, setSyncingJira] = useState<string | null>(null)
+
+  // Azure DevOps Boards integration state
+  const [azdoBoardsConnections, setAzdoBoardsConnections] = useState<AzureDevOpsBoardsConnection[]>([])
+  const [azdoBoardsProjects, setAzdoBoardsProjects] = useState<AzureDevOpsBoardsProject[]>([])
+  const [connectingAzdoBoards, setConnectingAzdoBoards] = useState(false)
+
+  // Boards project picker modal state
+  const [addingAzdoBoardsToConn, setAddingAzdoBoardsToConn] = useState<AzureDevOpsBoardsConnection | null>(null)
+  const [azdoBoardsOrgs, setAzdoBoardsOrgs] = useState<AzureDevOpsBoardsOrg[]>([])
+  const [azdoBoardsPickerOrg, setAzdoBoardsPickerOrg] = useState<string>('')
+  const [azdoBoardsDiscoveredProjects, setAzdoBoardsDiscoveredProjects] = useState<AzureDevOpsBoardsDiscoveryProject[]>([])
+  const [azdoBoardsLoadingDiscovery, setAzdoBoardsLoadingDiscovery] = useState(false)
+  const [azdoBoardsSelectedForAdd, setAzdoBoardsSelectedForAdd] = useState<Set<string>>(new Set())
+  const [azdoBoardsAdding, setAzdoBoardsAdding] = useState(false)
+  const [syncingAzdoBoards, setSyncingAzdoBoards] = useState<string | null>(null)
 
   // Outlook integration state
   const [outlookConnections, setOutlookConnections] = useState<OutlookConnection[]>([])
@@ -528,7 +556,11 @@ export default function WorkspaceSettings() {
     if (!workspaceId) return
     setLoadingConnections(true)
     try {
-      const [confluenceData, jiraData, outlookData, teamsData, sharePointData, oneDriveData, oneNoteData, databaseData] = await Promise.all([
+      const [
+        confluenceData, jiraData, outlookData, teamsData, sharePointData,
+        oneDriveData, oneNoteData, databaseData,
+        azdoBoardsConns, azdoBoardsProjs,
+      ] = await Promise.all([
         listConfluenceConnections(workspaceId),
         listJiraConnections(workspaceId),
         listOutlookConnections(workspaceId).catch(() => []),
@@ -537,6 +569,8 @@ export default function WorkspaceSettings() {
         listOneDriveConnections(workspaceId).catch(() => []),
         listOneNoteConnections(workspaceId).catch(() => []),
         listDatabaseConnections(workspaceId).catch(() => []),
+        listAzureDevOpsBoardsConnections(workspaceId).catch(() => []),
+        listWorkspaceAzureDevOpsBoardsProjects(workspaceId).catch(() => []),
       ])
       setConfluenceConnections(confluenceData)
       setJiraConnections(jiraData)
@@ -546,6 +580,8 @@ export default function WorkspaceSettings() {
       setOneDriveConnections(oneDriveData)
       setOneNoteConnections(oneNoteData)
       setDatabaseConnections(databaseData)
+      setAzdoBoardsConnections(azdoBoardsConns)
+      setAzdoBoardsProjects(azdoBoardsProjs)
     } catch (err) {
       console.error('Failed to load connections:', err)
     } finally {
@@ -1093,6 +1129,140 @@ export default function WorkspaceSettings() {
       }
       return next
     })
+  }
+
+  // Azure DevOps Boards handlers
+  async function handleConnectAzdoBoards() {
+    if (!workspaceId) return
+    setConnectingAzdoBoards(true)
+    setError(null)
+    try {
+      const authUrl = await getAzureDevOpsBoardsAuthUrl(workspaceId)
+      window.location.href = authUrl
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to start Boards connection')
+      setConnectingAzdoBoards(false)
+    }
+  }
+
+  async function openAzdoBoardsProjectPicker(connection: AzureDevOpsBoardsConnection) {
+    if (!workspaceId) return
+    setAddingAzdoBoardsToConn(connection)
+    setAzdoBoardsLoadingDiscovery(true)
+    setAzdoBoardsSelectedForAdd(new Set())
+    setError(null)
+    try {
+      const orgs = await listAzureDevOpsBoardsOrgs(workspaceId, connection.connection_id)
+      setAzdoBoardsOrgs(orgs)
+      if (orgs.length > 0) {
+        const first = orgs[0].accountName
+        setAzdoBoardsPickerOrg(first)
+        const projects = await listAzureDevOpsBoardsDiscoveryProjects(
+          workspaceId, connection.connection_id, first,
+        )
+        setAzdoBoardsDiscoveredProjects(projects)
+      } else {
+        setAzdoBoardsPickerOrg('')
+        setAzdoBoardsDiscoveredProjects([])
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load orgs')
+      setAddingAzdoBoardsToConn(null)
+    } finally {
+      setAzdoBoardsLoadingDiscovery(false)
+    }
+  }
+
+  async function handleAzdoBoardsOrgChange(org: string) {
+    if (!workspaceId || !addingAzdoBoardsToConn) return
+    setAzdoBoardsPickerOrg(org)
+    setAzdoBoardsLoadingDiscovery(true)
+    setAzdoBoardsSelectedForAdd(new Set())
+    try {
+      const projects = await listAzureDevOpsBoardsDiscoveryProjects(
+        workspaceId, addingAzdoBoardsToConn.connection_id, org,
+      )
+      setAzdoBoardsDiscoveredProjects(projects)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load projects')
+    } finally {
+      setAzdoBoardsLoadingDiscovery(false)
+    }
+  }
+
+  function toggleAzdoBoardsProjectForAdd(projectName: string) {
+    setAzdoBoardsSelectedForAdd(prev => {
+      const next = new Set(prev)
+      if (next.has(projectName)) {
+        next.delete(projectName)
+      } else {
+        next.add(projectName)
+      }
+      return next
+    })
+  }
+
+  async function handleAddAzdoBoardsProjects() {
+    if (!workspaceId || !addingAzdoBoardsToConn) return
+    if (azdoBoardsSelectedForAdd.size === 0) return
+    setAzdoBoardsAdding(true)
+    setError(null)
+    try {
+      const projects = Array.from(azdoBoardsSelectedForAdd).map(name => ({
+        org: azdoBoardsPickerOrg,
+        project: name,
+      }))
+      await addAzureDevOpsBoardsProjects(
+        workspaceId, addingAzdoBoardsToConn.connection_id, projects,
+      )
+      setSuccess(`Added ${projects.length} Boards project(s); initial sync queued`)
+      setAddingAzdoBoardsToConn(null)
+      loadConnections()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to add projects')
+    } finally {
+      setAzdoBoardsAdding(false)
+    }
+  }
+
+  async function handleRemoveAzdoBoardsProject(slug: string) {
+    if (!workspaceId) return
+    setError(null)
+    try {
+      await removeAzureDevOpsBoardsProject(workspaceId, slug)
+      setAzdoBoardsProjects(prev => prev.filter(p => p.slug !== slug))
+      setSuccess('Boards project removed')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to remove project')
+    }
+  }
+
+  async function handleTriggerAzdoBoardsSync(slug?: string) {
+    if (!workspaceId) return
+    setSyncingAzdoBoards(slug || 'all')
+    setError(null)
+    try {
+      await triggerAzureDevOpsBoardsSync(workspaceId, slug)
+      setSuccess('Boards sync queued')
+      loadConnections()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to trigger sync')
+    } finally {
+      setSyncingAzdoBoards(null)
+    }
+  }
+
+  async function handleDisconnectAzdoBoards(connectionId: string) {
+    if (!workspaceId) return
+    setError(null)
+    try {
+      await disconnectAzureDevOpsBoards(workspaceId, connectionId)
+      setAzdoBoardsConnections(prev => prev.filter(c => c.connection_id !== connectionId))
+      setAzdoBoardsProjects(prev => prev.filter(p => p.connection_id !== connectionId))
+      setSuccess('Boards connection disconnected')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to disconnect')
+    }
   }
 
   // Outlook handlers
@@ -3073,6 +3243,164 @@ export default function WorkspaceSettings() {
                 </ul>
               )}
             </div>
+
+            {/* Azure DevOps Boards Section */}
+            <div className="bg-white rounded-lg border shadow-sm">
+              <div className="p-4 border-b flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <svg className="w-6 h-6 text-blue-600" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                    <path d="M0 8.877L2.247 5.91l8.405-3.416v-2.32l7.37 5.416L2.187 8.404v8.35L0 15.559zm24-4.792v14.665l-5.68 4.75-9.184-3.02V24l-6.928-8.514 15.744 1.242V5.303z"/>
+                  </svg>
+                  <div>
+                    <h3 className="text-lg font-semibold">Azure DevOps (Boards)</h3>
+                    <p className="text-sm text-gray-500">Ingest work items (bugs, user stories, tasks) as chat context</p>
+                  </div>
+                </div>
+                {azdoBoardsConnections.length === 0 && (
+                  <button
+                    type="button"
+                    onClick={handleConnectAzdoBoards}
+                    disabled={connectingAzdoBoards}
+                    className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
+                  >
+                    {connectingAzdoBoards ? 'Connecting...' : 'Connect Azure DevOps Boards'}
+                  </button>
+                )}
+              </div>
+              {azdoBoardsConnections.length > 0 && (
+                <div className="p-4 space-y-3">
+                  {azdoBoardsConnections.map(conn => {
+                    const projects = azdoBoardsProjects.filter(p => p.connection_id === conn.connection_id)
+                    return (
+                      <div key={conn.connection_id} className="border rounded p-3">
+                        <div className="flex items-center justify-between mb-2">
+                          <div>
+                            <div className="font-medium">{conn.display_name}</div>
+                            <div className="text-xs text-gray-500">{conn.user_email_external}</div>
+                          </div>
+                          <div className="flex gap-2">
+                            <button
+                              type="button"
+                              onClick={() => openAzdoBoardsProjectPicker(conn)}
+                              className="px-2.5 py-1 text-xs bg-gray-100 rounded hover:bg-gray-200"
+                            >
+                              Add projects
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDisconnectAzdoBoards(conn.connection_id)}
+                              className="px-2.5 py-1 text-xs text-red-600 hover:bg-red-50 rounded"
+                            >
+                              Disconnect
+                            </button>
+                          </div>
+                        </div>
+                        {projects.length > 0 ? (
+                          <ul className="space-y-1 mt-2">
+                            {projects.map(p => (
+                              <li key={p.slug} className="flex items-center justify-between text-sm">
+                                <div>
+                                  <span className="font-mono">{p.slug}</span>
+                                  <span className={`ml-2 text-xs ${p.sync_status === 'success' ? 'text-green-600' : p.sync_status === 'failed' ? 'text-red-600' : 'text-gray-500'}`}>
+                                    {p.sync_status}
+                                  </span>
+                                  {p.last_sync_error && (
+                                    <span className="ml-2 text-xs text-red-600">({p.last_sync_error})</span>
+                                  )}
+                                </div>
+                                <div className="flex gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleTriggerAzdoBoardsSync(p.slug)}
+                                    disabled={syncingAzdoBoards === p.slug}
+                                    className="px-2 py-0.5 text-xs bg-blue-50 text-blue-700 rounded hover:bg-blue-100 disabled:opacity-50"
+                                  >
+                                    {syncingAzdoBoards === p.slug ? 'Syncing...' : 'Sync'}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleRemoveAzdoBoardsProject(p.slug)}
+                                    className="px-2 py-0.5 text-xs text-red-600 hover:bg-red-50 rounded"
+                                  >
+                                    Remove
+                                  </button>
+                                </div>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <p className="text-xs text-gray-500 mt-2">No projects added yet</p>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Azure DevOps Boards project picker modal */}
+            {addingAzdoBoardsToConn && (
+              <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" role="dialog" aria-modal="true">
+                <div className="bg-white rounded-lg p-6 max-w-lg w-full mx-4 max-h-[80vh] overflow-y-auto">
+                  <h3 className="text-lg font-semibold mb-3">Add Boards projects</h3>
+                  {azdoBoardsOrgs.length > 1 && (
+                    <div className="mb-3">
+                      <label className="block text-sm font-medium mb-1">Organization</label>
+                      <select
+                        value={azdoBoardsPickerOrg}
+                        onChange={e => handleAzdoBoardsOrgChange(e.target.value)}
+                        className="w-full border rounded px-2 py-1 text-sm"
+                      >
+                        {azdoBoardsOrgs.map(o => (
+                          <option key={o.accountId} value={o.accountName}>{o.accountName}</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                  {azdoBoardsLoadingDiscovery ? (
+                    <p className="text-sm text-gray-500">Loading projects...</p>
+                  ) : (
+                    <ul className="space-y-1 mb-4">
+                      {azdoBoardsDiscoveredProjects.map(p => (
+                        <li key={p.id} className="flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            id={`azdo-boards-p-${p.id}`}
+                            checked={azdoBoardsSelectedForAdd.has(p.name)}
+                            disabled={p.already_added}
+                            onChange={() => toggleAzdoBoardsProjectForAdd(p.name)}
+                          />
+                          <label htmlFor={`azdo-boards-p-${p.id}`} className="text-sm flex-1">
+                            {p.name}
+                            {p.already_added && <span className="ml-2 text-xs text-gray-500">(already added)</span>}
+                          </label>
+                        </li>
+                      ))}
+                      {azdoBoardsDiscoveredProjects.length === 0 && (
+                        <li className="text-sm text-gray-500">No projects in this org</li>
+                      )}
+                    </ul>
+                  )}
+                  <div className="flex justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setAddingAzdoBoardsToConn(null)}
+                      className="px-3 py-1.5 text-sm bg-gray-100 rounded hover:bg-gray-200"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleAddAzdoBoardsProjects}
+                      disabled={azdoBoardsAdding || azdoBoardsSelectedForAdd.size === 0}
+                      className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
+                    >
+                      {azdoBoardsAdding ? 'Adding...' : `Add ${azdoBoardsSelectedForAdd.size} project(s)`}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* Outlook Section */}
             <div className="bg-white rounded-lg border shadow-sm">
