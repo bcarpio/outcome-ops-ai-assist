@@ -97,6 +97,13 @@ module "mcp_outcomeops_secondary" {
     AUDIT_TABLE        = module.audit_logs_table_secondary[0].dynamodb_table_id
     SYMBOL_GRAPH_TABLE = module.symbol_graph_table_secondary[0].dynamodb_table_id
     CODE_MAPS_TABLE    = module.code_maps_table_secondary[0].dynamodb_table_id
+    # ADR-030 v1.1 (HA parity): ADO branch of read_source needs the
+    # same env plumbing on the secondary. Region-neutral values flow
+    # from the same tfvars as the primary.
+    AZURE_DEVOPS_TENANT_ID               = var.azure_devops_tenant_id
+    AZURE_DEVOPS_CLIENT_ID               = var.azure_devops_client_id
+    AZURE_DEVOPS_CLIENT_SECRET_SSM_PARAM = var.azure_devops_client_secret_ssm_param
+    OAUTH_KMS_KEY_ARN                    = var.enable_workspaces ? try(aws_kms_replica_key.oauth_tokens_secondary[0].arn, "") : ""
     },
     # HA dual-write: emit to the SECONDARY region's replication bus when
     # this region is active post-failover.
@@ -121,6 +128,31 @@ module "mcp_outcomeops_secondary" {
   allowed_security_group_ids = {
     ui_alb = module.ui_alb_sg_secondary.security_group_id
   }
+}
+
+# ADR-030 v1.1 (HA parity): KMS decrypt on the OAuth-tokens replica CMK
+# so the ADO branch of read_source can unwrap the refresh_token from DDB
+# after failover. Separate policy so it only exists when the replica key
+# exists (var.enable_workspaces + secondary_region set).
+resource "aws_iam_role_policy" "mcp_outcomeops_secondary_ado_kms" {
+  count = local.deploy_ui_secondary && var.mcp_server_enabled && var.enable_workspaces ? 1 : 0
+
+  provider = aws.secondary
+
+  name = "${var.environment}-${var.app_name}-mcp-outcomeops-ado-kms"
+  role = module.mcp_outcomeops_secondary[0].task_role_name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "KMSDecryptOAuthTokensSecondary"
+        Effect   = "Allow"
+        Action   = ["kms:Decrypt"]
+        Resource = [try(aws_kms_replica_key.oauth_tokens_secondary[0].arn, "")]
+      }
+    ]
+  })
 }
 
 resource "aws_iam_role_policy" "mcp_outcomeops_secondary" {
@@ -189,12 +221,29 @@ resource "aws_iam_role_policy" "mcp_outcomeops_secondary" {
           "ssm:GetParameter",
           "ssm:GetParameters",
         ]
+        Resource = concat(
+          [
+            "arn:aws:ssm:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/mcp/*",
+            # read_source mints GitHub App installation tokens at request
+            # time (mirrors the primary grant per CLAUDE.md HA-parity).
+            "arn:aws:ssm:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/github/app-id",
+            "arn:aws:ssm:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/github/private-key",
+          ],
+          # ADR-030 v1.1 (HA parity): ADO branch client-secret SSM read.
+          var.azure_devops_client_secret_ssm_param != "" ? [
+            "arn:aws:ssm:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:parameter${var.azure_devops_client_secret_ssm_param}"
+          ] : [],
+        )
+      },
+      # ADR-030 v1.1 (HA parity): KMS decrypt for the SecureString.
+      {
+        Sid    = "KMSDecryptSSMDefaultAliasSecondary"
+        Effect = "Allow"
+        Action = [
+          "kms:Decrypt"
+        ]
         Resource = [
-          "arn:aws:ssm:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/mcp/*",
-          # read_source mints GitHub App installation tokens at request
-          # time (mirrors the primary grant per CLAUDE.md HA-parity).
-          "arn:aws:ssm:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/github/app-id",
-          "arn:aws:ssm:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/github/private-key",
+          "arn:aws:kms:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:alias/aws/ssm"
         ]
       },
       {

@@ -149,3 +149,62 @@ code-map appear to disagree.
   `access_tokens` call + one Contents API call. Heavy use under a
   single installation could trigger throttling; if observed, the
   follow-up is a short-TTL installation-token cache.
+
+## v1.1: Platform-agnostic dispatch (Azure DevOps parity)
+
+`read_source` is platform-agnostic. The workspace's connected
+code-hosting platform decides which side the fetch runs on:
+
+- **GitHub-connected workspace** (has a `GITHUB_INSTALLATION#` row):
+  fetch via `api.github.com/repos/{owner}/{name}/contents/{path}`
+  using an installation access token minted from the GitHub App
+  JWT.
+- **Azure DevOps-connected workspace** (has an `AZDO_REPO#` row
+  whose `connection_id` points at an `AZDO_CONNECTION#` OAuth
+  connection): fetch via
+  `dev.azure.com/{org}/{project}/_apis/git/repositories/{repo}/items?path=...&$format=text`
+  using an OAuth access token refreshed through the customer's
+  Entra ID tenant.
+
+The `repo` parameter shape identifies the platform:
+- `owner/name` (1 slash) — GitHub.
+- `org/project/repo` (2 slashes) — Azure DevOps.
+
+The router cross-checks the shape against the workspace's actual
+connection and rejects mismatches with a routing error rather than
+silently trying the wrong fetcher.
+
+The response payload carries a `platform: "github" | "azure_devops"`
+field so external agents can log which side served the read.
+
+`at_graph_sha` behavior is identical across platforms: the symbol
+graph's `graph_sha` is a Git-style 40-char commit SHA on both
+sides. On the ADO branch the SHA is passed to the items API as
+`versionDescriptor.version=<sha>` +
+`versionDescriptor.versionType=commit`.
+
+### v1.1 Consequences
+
+- **A workspace connected via Azure DevOps can now use
+  `read_source`.** Prior to this change, ADO workspaces got
+  "no GitHub App installation linked" regardless of what they
+  connected. This closed a completeness gap in ADR-030 relative
+  to the ADO parity work in ADR-018 (ADO ingestion) and the ADO
+  PR-analysis pipeline.
+- **IAM addition (ADO branch).** The MCP server's task role now
+  needs `ssm:GetParameter` on the parameter named in
+  `AZURE_DEVOPS_CLIENT_SECRET_SSM_PARAM` plus `kms:Decrypt` on
+  that SecureString's KMS key. `dynamodb:GetItem` on the
+  workspaces table already covers the `AZDO_CONNECTION#` and
+  `AZDO_REPO#` reads.
+- **Rate-limiting (ADO branch).** ADO has separate throttling
+  thresholds from GitHub. The tool's per-call cost is one
+  `refresh_access_token` call + one items API call. Heavy use
+  under a single tenant could trigger throttling; if observed,
+  the follow-up is a short-TTL OAuth-token cache.
+- **Mixed-connection workspaces (both GitHub AND ADO on one
+  workspace) are not supported today.** The resolver
+  short-circuits to GitHub; the router's cross-shape check will
+  reject an ADO-shaped repo against such a workspace. Deferred
+  until a customer surfaces the requirement — no in-product
+  design for this yet.

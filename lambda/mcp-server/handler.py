@@ -1861,6 +1861,233 @@ def _read_source_resolve_installation_id(workspace_id):
     return items[0].get("installation_id")
 
 
+# ---------------------------------------------------------------------------
+# ADR-030 v1.1 -- platform-agnostic dispatch for read_source. GitHub and
+# Azure DevOps have symmetric responsibilities (resolve where the code
+# lives, mint a token, fetch a file window) but very different plumbing:
+#
+#   - GitHub: one GITHUB_INSTALLATION# row per workspace; token minted via
+#     App JWT -> installation access-token exchange.
+#   - Azure DevOps: one AZDO_CONNECTION# row per OAuth flow (org-agnostic)
+#     plus one AZDO_REPO#{org/project/repo} row per connected repo. Each
+#     AZDO_REPO row carries its OWN connection_id, because a single
+#     workspace may span multiple ADO connections and each repo tracks
+#     which one to mint from.
+#
+# The resolver keys on (workspace_id, repo_hint) instead of just
+# workspace_id so it can find the right ADO connection when the caller
+# already knows the target repo. When repo_hint is None the resolver
+# falls back to any GitHub installation on the workspace -- callers must
+# still validate that the eventual repo matches the connection.
+# ---------------------------------------------------------------------------
+
+
+AZDO_ENTRA_RESOURCE_ID = "499b84ac-1321-427f-aa17-267ca6975798"
+AZDO_ENTRA_SCOPES = (
+    f"{AZDO_ENTRA_RESOURCE_ID}/.default offline_access openid profile"
+)
+AZDO_TOKEN_PK_PREFIX = "AZDO_TOKEN#"
+
+_ado_client_secret_cache = None
+
+
+def _read_source_ado_client_secret():
+    """One-shot SSM read of the ADO Entra ID app's client secret.
+
+    Cached at module scope like the GitHub App config so subsequent
+    reads stay in memory across MCP requests within the same Fargate
+    task lifetime. The MCP task role must have ``ssm:GetParameter``
+    on the parameter named in ``AZURE_DEVOPS_CLIENT_SECRET_SSM_PARAM``
+    plus ``kms:Decrypt`` on the SecureString's KMS key.
+    """
+    global _ado_client_secret_cache
+    if _ado_client_secret_cache is not None:
+        return _ado_client_secret_cache
+    param_name = os.environ.get("AZURE_DEVOPS_CLIENT_SECRET_SSM_PARAM", "")
+    if not param_name:
+        raise RuntimeError(
+            "AZURE_DEVOPS_CLIENT_SECRET_SSM_PARAM not configured; "
+            "read_source cannot mint Azure DevOps tokens"
+        )
+    ssm = boto3.client("ssm")
+    resp = ssm.get_parameter(Name=param_name, WithDecryption=True)
+    _ado_client_secret_cache = resp["Parameter"]["Value"]
+    return _ado_client_secret_cache
+
+
+def _read_source_ado_access_token(connection_id):
+    """Refresh the ADO OAuth access token for a workspace connection.
+
+    Uses the same shared.entra_id_oauth primitive that the analyze-pr
+    and process-pr-check handlers use -- the wrapper is inline here
+    rather than imported from ``lambda/analyze-pr/`` because that path
+    isn't part of the MCP-server Fargate image (only ``shared/`` is).
+
+    Raises ``RuntimeError`` on any missing prereq or refresh failure --
+    callers surface a clean tool-facing error to the LLM.
+    """
+    if not connection_id:
+        raise ValueError("connection_id required for ADO token refresh")
+
+    tenant_id = os.environ.get("AZURE_DEVOPS_TENANT_ID", "")
+    client_id = os.environ.get("AZURE_DEVOPS_CLIENT_ID", "")
+    if not (tenant_id and client_id):
+        raise RuntimeError(
+            "Azure DevOps OAuth app not configured "
+            "(AZURE_DEVOPS_TENANT_ID / AZURE_DEVOPS_CLIENT_ID env vars missing)"
+        )
+
+    from shared.entra_id_oauth import refresh_access_token  # noqa: WPS433
+    client_secret = _read_source_ado_client_secret()
+    access_token = refresh_access_token(
+        workspaces_table=DYNAMODB_TABLE,
+        kms_key_arn=os.environ.get("OAUTH_KMS_KEY_ARN"),
+        pk_prefix=AZDO_TOKEN_PK_PREFIX,
+        connection_id=connection_id,
+        client_id=client_id,
+        client_secret=client_secret,
+        scopes=AZDO_ENTRA_SCOPES,
+        tenant_id=tenant_id,
+    )
+    if not access_token:
+        raise RuntimeError(
+            "Failed to refresh Azure DevOps access token; the workspace's "
+            "ADO OAuth connection may need to be reauthorized"
+        )
+    return access_token
+
+
+def _read_source_resolve_full_ado_triplet(workspace_id, bare_repo):
+    """Find the full ``org/project/repo`` triplet for a bare repo name.
+
+    Mirrors ``_read_source_resolve_full_repo_name`` for the ADO side.
+    The symbol graph stores ``repo`` as the bare name so the code-maps
+    pointer key matches; the ADO items API needs the full triplet.
+
+    Returns the ``org/project/repo`` string, None if no row matches or
+    if multiple rows in the workspace share the bare name (ambiguous).
+    """
+    from boto3.dynamodb.conditions import Key  # noqa: WPS433
+    if not bare_repo:
+        return None
+    if bare_repo.count("/") == 2:
+        return bare_repo
+    table = _get_dynamodb().Table(DYNAMODB_TABLE)
+    resp = table.query(
+        KeyConditionExpression=Key("PK").eq(f"WS#{workspace_id}")
+        & Key("SK").begins_with("AZDO_REPO#"),
+    )
+    matches = []
+    for item in resp.get("Items", []):
+        if item.get("repo") == bare_repo:
+            matches.append(item)
+    if len(matches) != 1:
+        return None
+    m = matches[0]
+    org = m.get("org")
+    project = m.get("project")
+    repo = m.get("repo")
+    if not (org and project and repo):
+        return None
+    return f"{org}/{project}/{repo}"
+
+
+def _read_source_resolve_platform(workspace_id, repo_hint=None):
+    """Return the workspace's connected code-hosting platform.
+
+    Result shape:
+      {"platform": "github", "installation_id": "..."}
+      {"platform": "azure_devops",
+       "connection_id": "...", "org": "...", "project": "...", "repo": "..."}
+      None  # no connection linked
+
+    ``repo_hint`` is either a full slug/owner-name string (``owner/name``
+    or ``org/project/repo``) or None. When present, the ADO branch does
+    a direct ``get_item`` on ``AZDO_REPO#{repo_hint}``. That's the fast
+    path used by the explicit-anchor mode (chunk 04 caller has repo
+    already). For the ``at_graph_sha`` path the caller resolves the
+    triplet via ``_read_source_resolve_full_ado_triplet`` first, then
+    calls this with the full triplet.
+
+    Order of resolution:
+      1. GitHub short-circuit -- if any GITHUB_INSTALLATION# row exists,
+         return GitHub. Matches the pre-1.1 behavior for workspaces
+         that only have GitHub.
+      2. ADO fallback -- look for an AZDO_REPO# row matching the hint,
+         or (if no hint) any AZDO_REPO# row on the workspace, and
+         return its embedded connection_id + triplet.
+      3. None otherwise.
+
+    Fail-soft on DDB error: returns None so the caller emits the same
+    clear "no code-hosting integration linked" error rather than
+    routing to a partial-state fetch path.
+    """
+    from boto3.dynamodb.conditions import Key  # noqa: WPS433
+
+    try:
+        table = _get_dynamodb().Table(DYNAMODB_TABLE)
+        gh_resp = table.query(
+            KeyConditionExpression=Key("PK").eq(f"WS#{workspace_id}")
+            & Key("SK").begins_with("GITHUB_INSTALLATION#"),
+            Limit=1,
+        )
+        gh_items = gh_resp.get("Items", [])
+        if gh_items:
+            installation_id = gh_items[0].get("installation_id")
+            if installation_id:
+                return {
+                    "platform": "github",
+                    "installation_id": installation_id,
+                }
+
+        # ADO branch. Direct-key path when repo_hint is a full triplet.
+        if repo_hint and repo_hint.count("/") == 2:
+            repo_resp = table.get_item(
+                Key={
+                    "PK": f"WS#{workspace_id}",
+                    "SK": f"AZDO_REPO#{repo_hint}",
+                }
+            )
+            item = repo_resp.get("Item")
+            if item:
+                return _ado_platform_result(item)
+
+        # Scan/query fallback: no direct hint, or the direct-key miss.
+        # Query all AZDO_REPO# rows on the workspace; return the first
+        # one that has a connection_id. (No hint = caller only wants to
+        # know the workspace has SOME ADO connection; router will reject
+        # a repo-shape mismatch later.)
+        ado_resp = table.query(
+            KeyConditionExpression=Key("PK").eq(f"WS#{workspace_id}")
+            & Key("SK").begins_with("AZDO_REPO#"),
+            Limit=1,
+        )
+        ado_items = ado_resp.get("Items", [])
+        if ado_items:
+            return _ado_platform_result(ado_items[0])
+
+        return None
+    except ClientError:
+        return None
+
+
+def _ado_platform_result(item):
+    """Build the ADO branch's platform_info dict from an AZDO_REPO# item."""
+    connection_id = item.get("connection_id")
+    org = item.get("org")
+    project = item.get("project")
+    repo = item.get("repo")
+    if not (connection_id and org and project and repo):
+        return None
+    return {
+        "platform": "azure_devops",
+        "connection_id": connection_id,
+        "org": org,
+        "project": project,
+        "repo": repo,
+    }
+
+
 def _read_source_bare_name(symbol_id):
     """Strip a canonical symbol id down to its bare tail.
 
@@ -1921,7 +2148,28 @@ def _read_source_resolve_full_repo_name(workspace_id, bare_repo):
     return None
 
 
-def _read_source_resolve_via_graph(workspace_id, symbol):
+def _read_source_platform_from_repo(repo):
+    """Auto-detect code-hosting platform from the ``repo`` param shape.
+
+    - ``owner/name`` (1 slash) -> ``github``
+    - ``org/project/repo`` (2 slashes) -> ``azure_devops``
+    - anything else -> ``None`` (caller returns a validation error)
+
+    ADO project names in practice never contain ``/`` -- ADO's own web
+    routing (``dev.azure.com/{org}/{project}/_git/{repo}``) enforces
+    path-safe segments -- so a 2-slash triplet is unambiguous.
+    """
+    if not repo:
+        return None
+    parts = repo.split("/")
+    if len(parts) == 2 and all(parts):
+        return "github"
+    if len(parts) == 3 and all(parts):
+        return "azure_devops"
+    return None
+
+
+def _read_source_resolve_via_graph(workspace_id, symbol, platform="github"):
     """Resolve a canonical symbol id to ``(repo, file_path, line, graph_sha)``
     using the symbol graph + the code-maps SHA-truth pointer.
 
@@ -1933,7 +2181,14 @@ def _read_source_resolve_via_graph(workspace_id, symbol):
 
     Pinning ``ref`` to the pointer's ``graph_sha`` eliminates the
     file:line skew that exists between the graph's pinned SHA and the
-    repo's HEAD."""
+    repo's HEAD.
+
+    The symbol graph stores ``repo`` as the bare name so the pointer
+    key matches across platforms. The final fetcher needs the
+    platform-specific full form: ``owner/name`` for GitHub or
+    ``org/project/repo`` for ADO. ``platform`` selects which resolver
+    to use.
+    """
     from boto3.dynamodb.conditions import Key  # noqa: WPS433
     from shared import symbol_graph_reader  # type: ignore  # noqa: WPS433
 
@@ -1960,32 +2215,48 @@ def _read_source_resolve_via_graph(workspace_id, symbol):
         }
     site = sites[0]
 
-    # The graph stores `repo` as the bare name (no owner) so the pointer
-    # key matches. GitHub's Contents API needs the owner-prefixed form,
-    # so resolve to the full 'owner/<bare>' via the workspaces table when
-    # the graph row was bare.
+    # Resolve the graph's bare repo to a platform-specific full form.
+    repo_bare_for_pointer = site.repo.rsplit("/", 1)[-1]
     repo_full = site.repo
-    if "/" not in repo_full:
-        looked_up = _read_source_resolve_full_repo_name(workspace_id, site.repo)
-        if not looked_up:
-            return {
-                "error": (
-                    f"workspace has no GitHub repo row matching bare name "
-                    f"{site.repo!r}; cannot derive owner for the GitHub fetch"
-                )
-            }
-        repo_full = looked_up
+    if platform == "azure_devops":
+        if repo_full.count("/") != 2:
+            looked_up = _read_source_resolve_full_ado_triplet(
+                workspace_id, repo_bare_for_pointer,
+            )
+            if not looked_up:
+                return {
+                    "error": (
+                        f"workspace has no Azure DevOps repo row matching "
+                        f"bare name {site.repo!r}; cannot derive "
+                        "org/project for the ADO fetch"
+                    )
+                }
+            repo_full = looked_up
+    else:  # github (default)
+        if "/" not in repo_full:
+            looked_up = _read_source_resolve_full_repo_name(
+                workspace_id, site.repo,
+            )
+            if not looked_up:
+                return {
+                    "error": (
+                        f"workspace has no GitHub repo row matching bare "
+                        f"name {site.repo!r}; cannot derive owner for the "
+                        "GitHub fetch"
+                    )
+                }
+            repo_full = looked_up
 
-    # SHA-truth pointer lookup keyed on the BARE repo name (no owner).
+    # SHA-truth pointer lookup keyed on the BARE repo name (same on both
+    # platforms -- the pointer PK doesn't know about owners/orgs).
     code_maps_table = os.environ.get("CODE_MAPS_TABLE")
     graph_sha = None
     if code_maps_table:
         try:
-            repo_bare = repo_full.rsplit("/", 1)[-1]
             table = _get_dynamodb().Table(code_maps_table)
             resp = table.get_item(
                 Key={
-                    "PK": f"SYMBOL_GRAPH#{workspace_id}#{repo_bare}",
+                    "PK": f"SYMBOL_GRAPH#{workspace_id}#{repo_bare_for_pointer}",
                     "SK": "POINTER",
                 }
             )
@@ -1999,6 +2270,63 @@ def _read_source_resolve_via_graph(workspace_id, symbol):
         "line": site.line,
         "graph_sha": graph_sha,
     }
+
+
+def _read_source_fetch_file_ado(org, project, repo, file_path, token, ref=None):
+    """Fetch the raw bytes of a file from Azure DevOps.
+
+    Uses the ``/_apis/git/repositories/{repo}/items`` endpoint at
+    ``dev.azure.com`` with ``api-version=7.1`` and ``$format=text``.
+    When ``ref`` is provided it's sent as a commit SHA via
+    ``versionDescriptor.version=<sha>`` +
+    ``versionDescriptor.versionType=commit`` -- matching the GitHub
+    path where ``ref`` is likewise a commit SHA in the
+    ``at_graph_sha`` flow.
+
+    Caps the read at ``_READ_SOURCE_MAX_FILE_BYTES``; over-cap raises
+    ``ValueError`` so the caller surfaces the limit rather than
+    return a silently-truncated window.
+
+    Pre-flight guard: if ADO returns a JSON envelope (starts with
+    ``{"``) instead of raw text, the URL builder or ``$format`` param
+    dropped somewhere -- raise a distinct error rather than let
+    ``splitlines()`` treat the envelope as one giant line.
+    """
+    params = {
+        "path": file_path,
+        "api-version": "7.1",
+        "$format": "text",
+    }
+    if ref:
+        params["versionDescriptor.version"] = ref
+        params["versionDescriptor.versionType"] = "commit"
+    query = urllib.parse.urlencode(params)
+    url = (
+        f"https://dev.azure.com/{urllib.parse.quote(org, safe='')}"
+        f"/{urllib.parse.quote(project, safe='')}"
+        f"/_apis/git/repositories/{urllib.parse.quote(repo, safe='')}/items?{query}"
+    )
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "text/plain",
+            "User-Agent": "outcomeops-mcp/read_source",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        raw = resp.read(_READ_SOURCE_MAX_FILE_BYTES + 1)
+    if len(raw) > _READ_SOURCE_MAX_FILE_BYTES:
+        raise ValueError(
+            f"file {file_path} exceeds {_READ_SOURCE_MAX_FILE_BYTES}-byte "
+            "read-source cap"
+        )
+    if raw.startswith(b'{"'):
+        raise ValueError(
+            "Azure DevOps returned a JSON envelope instead of raw file "
+            "content; the $format=text query param may have been dropped"
+        )
+    return raw
 
 
 def _read_source_fetch_file(repo, file_path, token, ref=None):
@@ -2038,12 +2366,13 @@ def handle_read_source(params, email):
     2. Check workspace access (same gate as the symbol-graph tools).
     3. If ``at_graph_sha`` is set, resolve ``repo`` + ``file_path`` +
        ``line`` from ``symbol`` via the symbol graph and pin ``ref`` to
-       the workspace's current graph_sha. This eliminates the
-       graph_sha-vs-HEAD skew (chunk 02). Otherwise read the
-       caller-specified file:line at the caller-specified ref (default
-       HEAD).
-    4. Resolve the workspace's GitHub App installation id.
-    5. Mint an installation token + fetch the file from GitHub Contents API.
+       the workspace's current graph_sha. Otherwise read the
+       caller-specified file:line at the caller-specified ref
+       (default HEAD).
+    4. Resolve the workspace's code-hosting platform (ADR-030 v1.1:
+       GitHub OR Azure DevOps).
+    5. Mint a platform-specific token + fetch the file (GitHub Contents
+       API or ADO items API).
     6. Slice a window of size 2*context+1 around the anchor line.
     7. If a ``symbol`` was supplied, search the window for its bare
        name and report ``relocated_to_line`` so a stale anchor
@@ -2063,13 +2392,12 @@ def handle_read_source(params, email):
     if at_graph_sha and not symbol:
         return {"error": "at_graph_sha requires a symbol to resolve"}
 
-    # In the explicit-anchor mode (no graph resolution), the caller must
-    # supply repo/file_path/line up front. In graph-resolution mode they
-    # are filled in below from the symbol-graph lookup.
+    # In the explicit-anchor mode (no graph resolution), the caller
+    # must supply repo/file_path/line up front. In graph-resolution
+    # mode they are filled in below from the symbol-graph lookup.
     if not at_graph_sha:
         if not repo or not file_path or line_raw in (None, ""):
             return {"error": "workspace_id, repo, file_path, and line are required"}
-        # Basic shape validation that doesn't depend on graph resolution.
         try:
             int(line_raw)
         except (TypeError, ValueError):
@@ -2083,16 +2411,38 @@ def handle_read_source(params, email):
             return {"error": "context_lines must be an integer"}
         if ctx < 0 or ctx > _READ_SOURCE_MAX_CONTEXT:
             return {"error": f"context_lines must be 0-{_READ_SOURCE_MAX_CONTEXT}"}
-        if "/" not in repo:
-            return {"error": "repo must be in 'owner/name' form"}
+        if _read_source_platform_from_repo(repo) is None:
+            return {
+                "error": (
+                    "repo must be in 'owner/name' (GitHub) or "
+                    "'org/project/repo' (Azure DevOps) form"
+                )
+            }
 
     deny = _check_symbol_graph_workspace_access(workspace_id, email)
     if deny is not None:
         return deny
 
+    # Resolve the workspace's connected platform BEFORE symbol-graph
+    # resolution: the graph resolver needs to know which full-name
+    # resolver to use when the graph row was bare.
+    repo_hint = repo if not at_graph_sha else None
+    platform_info = _read_source_resolve_platform(workspace_id, repo_hint=repo_hint)
+    if platform_info is None:
+        return {
+            "error": (
+                f"no code-hosting integration linked to workspace "
+                f"{workspace_id}; connect a repo via the UI to enable "
+                "read_source"
+            )
+        }
+    platform = platform_info["platform"]
+
     resolved_graph_sha = None
     if at_graph_sha:
-        resolved = _read_source_resolve_via_graph(workspace_id, symbol)
+        resolved = _read_source_resolve_via_graph(
+            workspace_id, symbol, platform=platform,
+        )
         if resolved.get("error") == "missing":
             return {"error": f"no definition found for {symbol!r} in workspace"}
         if resolved.get("error") == "ambiguous":
@@ -2112,7 +2462,7 @@ def handle_read_source(params, email):
         line_raw = resolved["line"]
         resolved_graph_sha = resolved.get("graph_sha")
         # Pin ref to graph_sha when we have one. A workspace without a
-        # pointer still gets the resolved file:line but reads HEAD; the
+        # pointer still gets the resolved file:line but reads HEAD;
         # response's ``graph_sha`` field is None to signal that.
         ref = resolved_graph_sha or ref
 
@@ -2133,26 +2483,58 @@ def handle_read_source(params, email):
     if context_lines < 0 or context_lines > _READ_SOURCE_MAX_CONTEXT:
         return {"error": f"context_lines must be 0-{_READ_SOURCE_MAX_CONTEXT}"}
 
-    if "/" not in repo:
-        return {"error": "repo must be in 'owner/name' form"}
-
-    installation_id = _read_source_resolve_installation_id(workspace_id)
-    if not installation_id:
+    detected_platform = _read_source_platform_from_repo(repo)
+    if detected_platform is None:
         return {
             "error": (
-                f"no GitHub App installation linked to workspace {workspace_id}; "
-                "connect a repo via the UI to enable read_source"
+                "repo must be in 'owner/name' (GitHub) or "
+                "'org/project/repo' (Azure DevOps) form"
+            )
+        }
+    if detected_platform != platform:
+        return {
+            "error": (
+                f"workspace {workspace_id} is connected via {platform} but "
+                f"repo shape indicates {detected_platform}"
             )
         }
 
     try:
-        token = _read_source_installation_token(installation_id)
-        raw = _read_source_fetch_file(repo, file_path, token, ref=ref)
+        if platform == "github":
+            token = _read_source_installation_token(
+                platform_info["installation_id"],
+            )
+            raw = _read_source_fetch_file(repo, file_path, token, ref=ref)
+        else:  # azure_devops
+            org, project, repo_bare = repo.split("/")
+            token = _read_source_ado_access_token(
+                platform_info["connection_id"],
+            )
+            raw = _read_source_fetch_file_ado(
+                org, project, repo_bare, file_path, token, ref=ref,
+            )
     except urllib.error.HTTPError as exc:
-        return {"error": f"GitHub returned {exc.code} for {repo}:{file_path}"}
+        if platform == "github":
+            return {"error": f"GitHub returned {exc.code} for {repo}:{file_path}"}
+        return {
+            "error": f"Azure DevOps returned {exc.code} for {repo}:{file_path}"
+        }
     except urllib.error.URLError as exc:
-        return {"error": f"GitHub fetch failed for {repo}:{file_path}: {exc.reason}"}
+        if platform == "github":
+            return {
+                "error": (
+                    f"GitHub fetch failed for {repo}:{file_path}: {exc.reason}"
+                )
+            }
+        return {
+            "error": (
+                f"Azure DevOps fetch failed for {repo}:{file_path}: "
+                f"{exc.reason}"
+            )
+        }
     except ValueError as exc:
+        return {"error": str(exc)}
+    except RuntimeError as exc:
         return {"error": str(exc)}
     except Exception as exc:  # noqa: BLE001
         logger.error("read_source unexpected error: %s", exc, exc_info=True)
@@ -2165,11 +2547,6 @@ def handle_read_source(params, email):
     end = min(total, line + context_lines)
     window = [{"line": i, "text": lines[i - 1]} for i in range(start, end + 1)]
 
-    # SHA-skew handling: when a symbol was supplied, find its actual
-    # position inside the window and report it. The original anchor
-    # stays in ``anchor_line`` so the caller can see the drift; a
-    # caller that only trusts the relocated position can read
-    # ``relocated_to_line`` and ignore the anchor.
     relocated_to_line = None
     if symbol:
         relocated_to_line = _read_source_relocate(window, _read_source_bare_name(symbol))
@@ -2192,6 +2569,7 @@ def handle_read_source(params, email):
                 relocated_to_line is not None and relocated_to_line != line
             ),
             "graph_sha": resolved_graph_sha,
+            "platform": platform,
         })
     }
 

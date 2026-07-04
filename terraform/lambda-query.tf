@@ -163,7 +163,7 @@ module "query_kb_lambda" {
     # Workspace metadata table for chunk-05 source-workspace name
     # resolution. Empty when the deploy has enable_workspaces=false;
     # the resolver treats missing as "no lookup available".
-    WORKSPACES_TABLE               = var.enable_workspaces ? module.workspaces_table[0].dynamodb_table_id : ""
+    WORKSPACES_TABLE = var.enable_workspaces ? module.workspaces_table[0].dynamodb_table_id : ""
   }
 
   # IAM permissions

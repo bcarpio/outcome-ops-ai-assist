@@ -358,13 +358,23 @@ Fetch a bounded window of **real source** at `(repo, file, line)`, optionally pi
 symbol graph's commit so the read is consistent with graph answers. Use this to verify
 exact literals/values the code-map summaries deliberately omit.
 
+**Platform coverage (ADR-030 v1.1):** works against GitHub AND Azure DevOps. The workspace's
+connected code-hosting platform determines which side the fetch runs on. The `repo` param
+shape identifies the platform:
+
+- `owner/name` (1 slash) — GitHub
+- `org/project/repo` (2 slashes) — Azure DevOps
+
+If the shape doesn't match the workspace's actual connection, the tool returns a routing
+error rather than silently dispatching to the wrong side.
+
 **Input**
 
 | Param | Type | Required | Notes |
 |---|---|---|---|
 | `resource_type` | `"source"` | yes | — |
 | `workspace_id` | string | yes | — |
-| `repo` | string | cond. | `owner/name`; required unless `at_graph_sha` |
+| `repo` | string | cond. | `owner/name` (GitHub) or `org/project/repo` (Azure DevOps); required unless `at_graph_sha` |
 | `file_path` | string | cond. | repo-relative; required unless `at_graph_sha` |
 | `line` | integer | cond. | 1-indexed anchor; required unless `at_graph_sha` |
 | `context_lines` | integer | no | default 20, max 200 (window ≤ `2*context+1` lines) |
@@ -381,13 +391,19 @@ exact literals/values the code-map summaries deliberately omit.
   "lines": [ { "line": 579, "text": "def validate_api_key(raw_key):" } ],
   "total_lines": 2400, "window_start": 559, "window_end": 599,
   "clipped_to_file_bounds": false, "symbol": "python:…::validate_api_key",
-  "relocated_to_line": null, "relocated": false, "graph_sha": "a1b2c3d"
+  "relocated_to_line": null, "relocated": false, "graph_sha": "a1b2c3d",
+  "platform": "github"
 }
 ```
 
-*Backing:* `handle_read_source` → `lambda/mcp-server/handler.py:1941` (reads via the
-GitHub Contents API under the installation token; graph-anchored mode resolves through
-`find_definitions` + the code-maps pointer).
+`platform` is `"github"` or `"azure_devops"` — set on every response so external agents can
+log which side served the read.
+
+*Backing:* `handle_read_source` → `lambda/mcp-server/handler.py::handle_read_source`
+(GitHub Contents API under an installation token OR ADO
+`/_apis/git/repositories/{repo}/items` under an Entra ID OAuth token; graph-anchored mode
+resolves through `find_definitions` + the code-maps pointer, using the platform-appropriate
+bare-name resolver).
 
 ### 7.4 `resource_type: "blast_radius"`  🟡 Roadmap
 

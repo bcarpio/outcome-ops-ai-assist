@@ -73,6 +73,16 @@ module "mcp_outcomeops" {
     BEDROCK_RERANK_MODEL_ID = var.bedrock_rerank_model_id
     RERANK_ENABLED          = tostring(var.bedrock_rerank_enabled)
     RERANK_MAX_FETCH        = tostring(var.rerank_max_fetch)
+    # ADR-030 v1.1: read_source is platform-agnostic. When the
+    # workspace's connection is Azure DevOps, the tool refreshes an
+    # Entra ID OAuth access token via shared.entra_id_oauth. The
+    # tenant + client id + client-secret param name flow through
+    # env; the client secret itself is read from SSM at request time
+    # (cached at the task lifetime).
+    AZURE_DEVOPS_TENANT_ID               = var.azure_devops_tenant_id
+    AZURE_DEVOPS_CLIENT_ID               = var.azure_devops_client_id
+    AZURE_DEVOPS_CLIENT_SECRET_SSM_PARAM = var.azure_devops_client_secret_ssm_param
+    OAUTH_KMS_KEY_ARN                    = var.enable_workspaces ? aws_kms_key.oauth_tokens[0].arn : ""
     },
     # HA dual-write: the MCP server routes its api-key last_used_at
     # write through shared.dual_write; these env vars make it emit a
@@ -189,13 +199,37 @@ resource "aws_iam_role_policy" "mcp_outcomeops" {
           "ssm:GetParameter",
           "ssm:GetParameters"
         ]
+        Resource = concat(
+          [
+            "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/mcp/*",
+            # read_source mints GitHub App installation tokens at request
+            # time; needs the app id + private key (SecureString -- KMS
+            # grant covered by the default-ssm-alias decrypt allowance).
+            "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/github/app-id",
+            "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/github/private-key"
+          ],
+          # ADR-030 v1.1: ADO branch of read_source needs the Entra ID
+          # OAuth client secret from SSM to refresh access tokens. The
+          # param name is customer-configured; empty tfvars means the
+          # ADO code path returns a clean not-configured error rather
+          # than crash on init. Only add the ARN when set.
+          var.azure_devops_client_secret_ssm_param != "" ? [
+            "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${var.azure_devops_client_secret_ssm_param}"
+          ] : [],
+        )
+      },
+      # KMS decrypt on the default aws/ssm alias so the SSM
+      # SecureString GetParameter (ADO client secret) succeeds. Same
+      # pattern as the analyze-pr Lambda; scoped to the region's
+      # default SSM alias.
+      {
+        Sid    = "KMSDecryptSSMDefaultAlias"
+        Effect = "Allow"
+        Action = [
+          "kms:Decrypt"
+        ]
         Resource = [
-          "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/mcp/*",
-          # read_source mints GitHub App installation tokens at request
-          # time; needs the app id + private key (SecureString -- KMS
-          # grant covered by the default-ssm-alias decrypt allowance).
-          "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/github/app-id",
-          "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/github/private-key"
+          "arn:aws:kms:${var.aws_region}:${data.aws_caller_identity.current.account_id}:alias/aws/ssm"
         ]
       },
       {
@@ -209,6 +243,31 @@ resource "aws_iam_role_policy" "mcp_outcomeops" {
         Resource = [
           module.audit_logs_table.dynamodb_table_arn
         ]
+      }
+    ]
+  })
+}
+
+# ADR-030 v1.1: KMS decrypt on the OAuth-tokens CMK so the ADO branch
+# of read_source can unwrap the refresh_token stored encrypted in DDB
+# (shared.entra_id_oauth). Kept as a separate policy so it only exists
+# when the OAuth-tokens key exists (var.enable_workspaces=true) — a
+# missing OAUTH_KMS_KEY_ARN env var in the task then makes read_source's
+# ADO path fail cleanly rather than crash on init.
+resource "aws_iam_role_policy" "mcp_outcomeops_ado_kms" {
+  count = var.mcp_server_enabled && var.enable_workspaces ? 1 : 0
+
+  name = "${var.environment}-${var.app_name}-mcp-outcomeops-ado-kms"
+  role = module.mcp_outcomeops[0].task_role_name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "KMSDecryptOAuthTokens"
+        Effect   = "Allow"
+        Action   = ["kms:Decrypt"]
+        Resource = [aws_kms_key.oauth_tokens[0].arn]
       }
     ]
   })

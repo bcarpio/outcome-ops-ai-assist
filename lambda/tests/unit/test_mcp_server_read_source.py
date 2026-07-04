@@ -275,7 +275,7 @@ class TestAccessGating:
                 USER_EMAIL,
             )
         assert "error" in result
-        assert "installation" in result["error"]
+        assert "code-hosting integration" in result["error"]
 
 
 # ---------------------------------------------------------------------------
@@ -511,8 +511,12 @@ class TestAtGraphShaResolution:
         contents = [u for u in call_log if "/contents/" in u]
         assert contents and f"ref={graph_sha}" in contents[-1]
 
-    def test_at_graph_sha_missing_symbol_in_graph_errors(self, graph_tables):
+    def test_at_graph_sha_missing_symbol_in_graph_errors(
+        self, workspaces_table, graph_tables,
+    ):
         # Tables exist but no defines row for this symbol -> "missing".
+        # workspaces_table seeds a GitHub installation so platform-resolve
+        # (which now runs before graph-resolve) doesn't short-circuit.
         with _patch_user_workspaces([WORKSPACE_ID]):
             result = mcp_module.handle_read_source(
                 {
@@ -909,3 +913,550 @@ class TestIsGlobalPassThrough:
                 {"workspace_id": "ws-doc-private"}, USER_EMAIL,
             )
         assert result == {"error": "You do not have access to this workspace"}
+
+
+# ===========================================================================
+# ADR-030 v1.1 -- platform-agnostic dispatch. read_source works against
+# Azure DevOps as well as GitHub, driven by the workspace's connection.
+# ===========================================================================
+
+
+ADO_ORG = "contoso"
+ADO_PROJECT = "Platform"
+ADO_REPO_BARE = "Signatures"
+ADO_TRIPLET = f"{ADO_ORG}/{ADO_PROJECT}/{ADO_REPO_BARE}"
+ADO_CONNECTION_ID = "conn-ado-abc123"
+
+
+def _seed_azdo_repo_row(
+    table, workspace_id, org=ADO_ORG, project=ADO_PROJECT,
+    repo=ADO_REPO_BARE, connection_id=ADO_CONNECTION_ID,
+):
+    slug = f"{org}/{project}/{repo}"
+    table.put_item(Item={
+        "PK": f"WS#{workspace_id}",
+        "SK": f"AZDO_REPO#{slug}",
+        "workspace_id": workspace_id,
+        "provider": "azure_devops",
+        "org": org,
+        "project": project,
+        "repo": repo,
+        "slug": slug,
+        "connection_id": connection_id,
+        "default_branch": "main",
+        "last_commit_sha": "d" * 40,
+        "enabled": True,
+    })
+
+
+def _seed_github_installation_row(
+    table, workspace_id, installation_id=INSTALLATION_ID,
+):
+    table.put_item(Item={
+        "PK": f"WS#{workspace_id}",
+        "SK": f"GITHUB_INSTALLATION#{installation_id}",
+        "installation_id": installation_id,
+    })
+
+
+ADO_WORKSPACE_ID = "ws-rs-ado-test"
+
+
+class TestReadSourceResolvePlatform:
+    """Chunk 02: platform resolver picks the right connection.
+
+    Uses ``ADO_WORKSPACE_ID`` for ADO-only cases so the fixture-seeded
+    GitHub row on ``WORKSPACE_ID`` doesn't shadow the ADO branch.
+    """
+
+    def test_github_short_circuit_when_only_github_row_present(
+        self, workspaces_table,
+    ):
+        # workspaces_table fixture already seeded GITHUB_INSTALLATION# on
+        # WORKSPACE_ID; the resolver must find it.
+        info = mcp_module._read_source_resolve_platform(WORKSPACE_ID)
+        assert info == {
+            "platform": "github",
+            "installation_id": INSTALLATION_ID,
+        }
+
+    def test_ado_row_direct_key_when_repo_hint_is_triplet(
+        self, workspaces_table,
+    ):
+        _seed_azdo_repo_row(workspaces_table, ADO_WORKSPACE_ID)
+        info = mcp_module._read_source_resolve_platform(
+            ADO_WORKSPACE_ID, repo_hint=ADO_TRIPLET,
+        )
+        assert info == {
+            "platform": "azure_devops",
+            "connection_id": ADO_CONNECTION_ID,
+            "org": ADO_ORG,
+            "project": ADO_PROJECT,
+            "repo": ADO_REPO_BARE,
+        }
+
+    def test_ado_query_fallback_when_no_repo_hint(
+        self, workspaces_table,
+    ):
+        _seed_azdo_repo_row(workspaces_table, ADO_WORKSPACE_ID)
+        info = mcp_module._read_source_resolve_platform(ADO_WORKSPACE_ID)
+        assert info["platform"] == "azure_devops"
+        assert info["connection_id"] == ADO_CONNECTION_ID
+
+    def test_github_wins_when_both_present(self, workspaces_table):
+        """Documented behavior: GitHub short-circuits ADO. A workspace
+        with both connections isn't supported today; the router will
+        cross-check the repo shape and route accordingly."""
+        # WORKSPACE_ID already has GITHUB_INSTALLATION# from fixture.
+        _seed_azdo_repo_row(workspaces_table, WORKSPACE_ID)
+        info = mcp_module._read_source_resolve_platform(WORKSPACE_ID)
+        assert info["platform"] == "github"
+
+    def test_none_when_neither_row_present(self, workspaces_table):
+        assert mcp_module._read_source_resolve_platform(
+            "ws-empty-neither-connection",
+        ) is None
+
+    def test_returns_none_on_ddb_error(self, workspaces_table):
+        stub_table = MagicMock()
+        stub_table.query.side_effect = _client_error("InternalServerError")
+        stub_ddb = MagicMock()
+        stub_ddb.Table.return_value = stub_table
+        with patch.object(mcp_module, "_get_dynamodb", return_value=stub_ddb):
+            assert mcp_module._read_source_resolve_platform(WORKSPACE_ID) is None
+
+    def test_direct_key_miss_falls_through_to_query(self, workspaces_table):
+        """A wrong-triplet hint shouldn't hide an existing ADO row --
+        the fallback query still finds it. Guards against a router-caller
+        bug where the LLM sent the wrong triplet shape."""
+        _seed_azdo_repo_row(workspaces_table, ADO_WORKSPACE_ID)
+        info = mcp_module._read_source_resolve_platform(
+            ADO_WORKSPACE_ID, repo_hint="wrong-org/wrong-project/wrong-repo",
+        )
+        assert info["platform"] == "azure_devops"
+
+
+class TestReadSourceResolveFullAdoTriplet:
+    """Chunk 02: bare-name -> full triplet resolver for at_graph_sha path."""
+
+    def test_passthrough_when_already_triplet(self, workspaces_table):
+        result = mcp_module._read_source_resolve_full_ado_triplet(
+            WORKSPACE_ID, ADO_TRIPLET,
+        )
+        assert result == ADO_TRIPLET
+
+    def test_resolves_bare_repo_to_triplet(self, workspaces_table):
+        _seed_azdo_repo_row(workspaces_table, WORKSPACE_ID)
+        result = mcp_module._read_source_resolve_full_ado_triplet(
+            WORKSPACE_ID, ADO_REPO_BARE,
+        )
+        assert result == ADO_TRIPLET
+
+    def test_returns_none_when_bare_missing(self, workspaces_table):
+        result = mcp_module._read_source_resolve_full_ado_triplet(
+            WORKSPACE_ID, "does-not-exist",
+        )
+        assert result is None
+
+    def test_returns_none_when_ambiguous(self, workspaces_table):
+        """Two ADO repos with the same bare name in different orgs must
+        NOT silently resolve to one of them. Better to fail loudly than
+        fetch from the wrong project."""
+        _seed_azdo_repo_row(
+            workspaces_table, WORKSPACE_ID, org="org-a", project="proj",
+            repo=ADO_REPO_BARE,
+        )
+        _seed_azdo_repo_row(
+            workspaces_table, WORKSPACE_ID, org="org-b", project="proj",
+            repo=ADO_REPO_BARE, connection_id="conn-other",
+        )
+        result = mcp_module._read_source_resolve_full_ado_triplet(
+            WORKSPACE_ID, ADO_REPO_BARE,
+        )
+        assert result is None
+
+    def test_returns_none_on_empty_input(self, workspaces_table):
+        assert mcp_module._read_source_resolve_full_ado_triplet(
+            WORKSPACE_ID, "",
+        ) is None
+
+
+class TestReadSourceAdoAccessToken:
+    """Chunk 02: token-mint wrapper reaches shared.entra_id_oauth with
+    the right constants and error surface."""
+
+    def test_missing_connection_id_raises(self, monkeypatch):
+        with pytest.raises(ValueError):
+            mcp_module._read_source_ado_access_token("")
+
+    def test_missing_env_vars_raises_runtime(self, monkeypatch):
+        monkeypatch.delenv("AZURE_DEVOPS_TENANT_ID", raising=False)
+        monkeypatch.delenv("AZURE_DEVOPS_CLIENT_ID", raising=False)
+        mcp_module._ado_client_secret_cache = None
+        with pytest.raises(RuntimeError, match="AZURE_DEVOPS"):
+            mcp_module._read_source_ado_access_token(ADO_CONNECTION_ID)
+
+    def test_missing_ssm_param_raises_runtime(self, monkeypatch):
+        monkeypatch.setenv("AZURE_DEVOPS_TENANT_ID", "tenant-abc")
+        monkeypatch.setenv("AZURE_DEVOPS_CLIENT_ID", "client-abc")
+        monkeypatch.delenv("AZURE_DEVOPS_CLIENT_SECRET_SSM_PARAM", raising=False)
+        mcp_module._ado_client_secret_cache = None
+        with pytest.raises(RuntimeError, match="SSM_PARAM"):
+            mcp_module._read_source_ado_access_token(ADO_CONNECTION_ID)
+
+    def test_returns_token_from_shared_oauth_helper(self, monkeypatch):
+        monkeypatch.setenv("AZURE_DEVOPS_TENANT_ID", "tenant-abc")
+        monkeypatch.setenv("AZURE_DEVOPS_CLIENT_ID", "client-abc")
+        monkeypatch.setenv("AZURE_DEVOPS_CLIENT_SECRET_SSM_PARAM", "/prd/ado/secret")
+        mcp_module._ado_client_secret_cache = None
+
+        fake_ssm = MagicMock()
+        fake_ssm.get_parameter.return_value = {
+            "Parameter": {"Value": "super-secret"},
+        }
+
+        # Import target for the wrapper's deferred import so the patch
+        # lands on the right module reference.
+        import shared.entra_id_oauth  # noqa: WPS433
+        captured = {}
+
+        def _fake_refresh(**kwargs):
+            captured.update(kwargs)
+            return "azdo-access-token-value"
+
+        with patch("boto3.client", return_value=fake_ssm), \
+             patch.object(shared.entra_id_oauth, "refresh_access_token",
+                          side_effect=_fake_refresh):
+            token = mcp_module._read_source_ado_access_token(ADO_CONNECTION_ID)
+
+        assert token == "azdo-access-token-value"
+        assert captured["connection_id"] == ADO_CONNECTION_ID
+        assert captured["client_id"] == "client-abc"
+        assert captured["client_secret"] == "super-secret"
+        assert captured["tenant_id"] == "tenant-abc"
+        assert captured["pk_prefix"] == "AZDO_TOKEN#"
+        assert captured["scopes"].startswith(
+            "499b84ac-1321-427f-aa17-267ca6975798/.default"
+        )
+
+    def test_refresh_failure_raises_runtime(self, monkeypatch):
+        monkeypatch.setenv("AZURE_DEVOPS_TENANT_ID", "tenant-abc")
+        monkeypatch.setenv("AZURE_DEVOPS_CLIENT_ID", "client-abc")
+        monkeypatch.setenv("AZURE_DEVOPS_CLIENT_SECRET_SSM_PARAM", "/prd/ado/secret")
+        mcp_module._ado_client_secret_cache = None
+
+        fake_ssm = MagicMock()
+        fake_ssm.get_parameter.return_value = {
+            "Parameter": {"Value": "super-secret"},
+        }
+        import shared.entra_id_oauth  # noqa: WPS433
+        with patch("boto3.client", return_value=fake_ssm), \
+             patch.object(shared.entra_id_oauth, "refresh_access_token",
+                          return_value=None):
+            with pytest.raises(RuntimeError, match="reauth"):
+                mcp_module._read_source_ado_access_token(ADO_CONNECTION_ID)
+
+
+def _client_error(code):
+    from botocore.exceptions import ClientError  # noqa: WPS433
+    return ClientError({"Error": {"Code": code, "Message": ""}}, "operation")
+
+
+class TestReadSourceFetchFileAdo:
+    """Chunk 03: ADO items API fetcher.
+
+    Mocks urlopen; asserts the URL shape and cap enforcement.
+    """
+
+    def _stub_urlopen(self, body_bytes):
+        calls = []
+
+        def _fake(req, timeout=None):  # noqa: ARG002
+            url = req.full_url if hasattr(req, "full_url") else str(req)
+            calls.append(url)
+            resp = MagicMock()
+            resp.read.return_value = body_bytes
+            resp.__enter__ = lambda s: s
+            resp.__exit__ = lambda s, *a: None
+            return resp
+
+        return _fake, calls
+
+    def test_url_contains_required_params(self):
+        fake, calls = self._stub_urlopen(b"line-a\nline-b\n")
+        with patch("urllib.request.urlopen", side_effect=fake):
+            mcp_module._read_source_fetch_file_ado(
+                ADO_ORG, ADO_PROJECT, ADO_REPO_BARE,
+                "src/Foo.cs", "azdo-token", ref=None,
+            )
+        assert len(calls) == 1
+        url = calls[0]
+        assert url.startswith(
+            f"https://dev.azure.com/{ADO_ORG}/{ADO_PROJECT}"
+            f"/_apis/git/repositories/{ADO_REPO_BARE}/items?"
+        )
+        # Order-insensitive param assertions:
+        assert "path=src%2FFoo.cs" in url
+        assert "api-version=7.1" in url
+        # $ is quoted as %24; either representation is acceptable.
+        assert ("%24format=text" in url) or ("$format=text" in url)
+
+    def test_ref_passed_through_as_version_descriptor(self):
+        fake, calls = self._stub_urlopen(b"x\n")
+        sha = "deadbeef" * 5
+        with patch("urllib.request.urlopen", side_effect=fake):
+            mcp_module._read_source_fetch_file_ado(
+                ADO_ORG, ADO_PROJECT, ADO_REPO_BARE,
+                "src/Foo.cs", "azdo-token", ref=sha,
+            )
+        url = calls[0]
+        assert f"versionDescriptor.version={sha}" in url
+        assert "versionDescriptor.versionType=commit" in url
+
+    def test_no_ref_omits_version_descriptor(self):
+        fake, calls = self._stub_urlopen(b"x\n")
+        with patch("urllib.request.urlopen", side_effect=fake):
+            mcp_module._read_source_fetch_file_ado(
+                ADO_ORG, ADO_PROJECT, ADO_REPO_BARE,
+                "src/Foo.cs", "azdo-token", ref=None,
+            )
+        url = calls[0]
+        assert "versionDescriptor.version=" not in url
+        assert "versionDescriptor.versionType=" not in url
+
+    def test_returns_raw_bytes(self):
+        payload = b"one\ntwo\nthree\n"
+        fake, _ = self._stub_urlopen(payload)
+        with patch("urllib.request.urlopen", side_effect=fake):
+            got = mcp_module._read_source_fetch_file_ado(
+                ADO_ORG, ADO_PROJECT, ADO_REPO_BARE,
+                "src/Foo.cs", "azdo-token",
+            )
+        assert got == payload
+
+    def test_over_cap_raises_valueerror(self):
+        oversize = b"x" * (mcp_module._READ_SOURCE_MAX_FILE_BYTES + 100)
+        fake, _ = self._stub_urlopen(oversize)
+        with patch("urllib.request.urlopen", side_effect=fake):
+            with pytest.raises(ValueError, match="read-source cap"):
+                mcp_module._read_source_fetch_file_ado(
+                    ADO_ORG, ADO_PROJECT, ADO_REPO_BARE,
+                    "src/Big.cs", "azdo-token",
+                )
+
+    def test_json_envelope_response_raises_valueerror(self):
+        """If ADO returns a JSON envelope, the URL builder dropped
+        $format=text or picked the wrong Accept header. Better to
+        surface it as a distinct error than let splitlines see one
+        giant line."""
+        envelope = b'{"objectId": "..."}'
+        fake, _ = self._stub_urlopen(envelope)
+        with patch("urllib.request.urlopen", side_effect=fake):
+            with pytest.raises(ValueError, match="JSON envelope"):
+                mcp_module._read_source_fetch_file_ado(
+                    ADO_ORG, ADO_PROJECT, ADO_REPO_BARE,
+                    "src/Foo.cs", "azdo-token",
+                )
+
+    def test_authorization_header_set(self):
+        captured_headers = {}
+
+        def _fake(req, timeout=None):  # noqa: ARG002
+            captured_headers.update(dict(req.header_items()))
+            resp = MagicMock()
+            resp.read.return_value = b"x\n"
+            resp.__enter__ = lambda s: s
+            resp.__exit__ = lambda s, *a: None
+            return resp
+
+        with patch("urllib.request.urlopen", side_effect=_fake):
+            mcp_module._read_source_fetch_file_ado(
+                ADO_ORG, ADO_PROJECT, ADO_REPO_BARE,
+                "src/Foo.cs", "the-token",
+            )
+        # urllib normalizes header names to Title-Case.
+        assert captured_headers.get("Authorization") == "Bearer the-token"
+        assert captured_headers.get("Accept") == "text/plain"
+
+
+class TestReadSourceRouter:
+    """Chunk 04: platform dispatch in handle_read_source.
+
+    Verifies the auto-detected repo shape lines up with the workspace's
+    connection, and that the platform field lands in every response.
+    """
+
+    def test_platform_from_repo_owner_name_is_github(self):
+        assert mcp_module._read_source_platform_from_repo("owner/name") == "github"
+
+    def test_platform_from_repo_triplet_is_ado(self):
+        assert (
+            mcp_module._read_source_platform_from_repo("org/project/repo")
+            == "azure_devops"
+        )
+
+    def test_platform_from_repo_rejects_wrong_shape(self):
+        assert mcp_module._read_source_platform_from_repo("noslash") is None
+        assert mcp_module._read_source_platform_from_repo("a/b/c/d") is None
+        assert mcp_module._read_source_platform_from_repo("") is None
+        assert mcp_module._read_source_platform_from_repo("a//b") is None
+
+    def test_github_workspace_owner_name_repo_dispatches_to_github(
+        self, workspaces_table,
+    ):
+        file_text = "\n".join(f"line-{i}" for i in range(1, 21))
+        patches, _ = _stub_github_success(file_text)
+        _enter(patches)
+        try:
+            with _patch_user_workspaces([WORKSPACE_ID]):
+                result = mcp_module.handle_read_source(
+                    {"workspace_id": WORKSPACE_ID, "repo": REPO,
+                     "file_path": FILE_PATH, "line": 10, "context_lines": 2},
+                    USER_EMAIL,
+                )
+        finally:
+            _exit(patches)
+        assert "text" in result, f"expected success, got {result}"
+        payload = json.loads(result["text"])
+        assert payload["platform"] == "github"
+        assert payload["anchor_line"] == 10
+
+    def test_ado_workspace_triplet_repo_dispatches_to_ado(
+        self, workspaces_table,
+    ):
+        _seed_azdo_repo_row(workspaces_table, ADO_WORKSPACE_ID)
+        file_text = "\n".join(f"line-{i}" for i in range(1, 21))
+
+        def _fake_urlopen(req, timeout=None):  # noqa: ARG002
+            resp = MagicMock()
+            resp.read.return_value = file_text.encode()
+            resp.__enter__ = lambda s: s
+            resp.__exit__ = lambda s, *a: None
+            return resp
+
+        with patch("urllib.request.urlopen", side_effect=_fake_urlopen), \
+             patch.object(mcp_module, "_read_source_ado_access_token",
+                          return_value="azdo-token"), \
+             _patch_user_workspaces([ADO_WORKSPACE_ID]):
+            result = mcp_module.handle_read_source(
+                {"workspace_id": ADO_WORKSPACE_ID, "repo": ADO_TRIPLET,
+                 "file_path": "src/Foo.cs", "line": 10, "context_lines": 2},
+                USER_EMAIL,
+            )
+        assert "text" in result, f"expected success, got {result}"
+        payload = json.loads(result["text"])
+        assert payload["platform"] == "azure_devops"
+        assert payload["repo"] == ADO_TRIPLET
+        assert payload["anchor_line"] == 10
+
+    def test_github_workspace_ado_shape_repo_errors(self, workspaces_table):
+        """Cross-platform sanity: an ADO-shaped repo on a GitHub-only
+        workspace must NOT silently route to the GitHub fetcher."""
+        with _patch_user_workspaces([WORKSPACE_ID]):
+            result = mcp_module.handle_read_source(
+                {"workspace_id": WORKSPACE_ID, "repo": ADO_TRIPLET,
+                 "file_path": "src/Foo.cs", "line": 10},
+                USER_EMAIL,
+            )
+        assert "error" in result
+        # Platform resolver sees GITHUB_INSTALLATION# (fixture seeded)
+        # and returns platform=github; router then rejects the triplet.
+        assert "azure_devops" in result["error"] and "github" in result["error"]
+
+    def test_ado_workspace_github_shape_repo_errors(self, workspaces_table):
+        _seed_azdo_repo_row(workspaces_table, ADO_WORKSPACE_ID)
+        with _patch_user_workspaces([ADO_WORKSPACE_ID]):
+            result = mcp_module.handle_read_source(
+                {"workspace_id": ADO_WORKSPACE_ID, "repo": REPO,
+                 "file_path": "src/Foo.cs", "line": 10},
+                USER_EMAIL,
+            )
+        assert "error" in result
+        assert "github" in result["error"] and "azure_devops" in result["error"]
+
+    def test_invalid_repo_shape_rejected_before_platform_lookup(
+        self, workspaces_table,
+    ):
+        with _patch_user_workspaces([WORKSPACE_ID]):
+            result = mcp_module.handle_read_source(
+                {"workspace_id": WORKSPACE_ID, "repo": "noslashhere",
+                 "file_path": "src/Foo.cs", "line": 10},
+                USER_EMAIL,
+            )
+        assert "error" in result
+        # Message advertises both accepted shapes.
+        assert "owner/name" in result["error"]
+        assert "org/project/repo" in result["error"]
+
+    def test_no_connection_returns_platform_agnostic_error(self):
+        """A workspace with neither GitHub nor ADO rows returns the
+        code-hosting-not-linked error, not the GitHub-specific one."""
+        # Fresh table with no rows.
+        client = boto3.client("dynamodb", region_name="us-west-2")
+        client.create_table(
+            TableName=WORKSPACES_TABLE,
+            AttributeDefinitions=[
+                {"AttributeName": "PK", "AttributeType": "S"},
+                {"AttributeName": "SK", "AttributeType": "S"},
+            ],
+            KeySchema=[
+                {"AttributeName": "PK", "KeyType": "HASH"},
+                {"AttributeName": "SK", "KeyType": "RANGE"},
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        with _patch_user_workspaces(["ws-no-connections"]):
+            result = mcp_module.handle_read_source(
+                {"workspace_id": "ws-no-connections", "repo": REPO,
+                 "file_path": FILE_PATH, "line": 10},
+                USER_EMAIL,
+            )
+        assert "code-hosting integration" in result["error"]
+
+    def test_ado_at_graph_sha_resolves_bare_to_triplet(
+        self, workspaces_table, graph_tables,
+    ):
+        """Chunk 04 + chunk 02 integration: at_graph_sha on an ADO
+        workspace must use the ADO triplet resolver, not the GitHub
+        owner resolver, when the graph row is a bare repo name."""
+        _seed_azdo_repo_row(workspaces_table, ADO_WORKSPACE_ID)
+        graph_sha = "c" * 40
+        sym = "csharp:sig::Sig::Do"
+        _seed_defines_bare_repo(
+            graph_tables, ADO_WORKSPACE_ID, ADO_REPO_BARE, sym,
+            "src/Sig.cs", 5, graph_sha,
+        )
+
+        captured_urls = []
+
+        def _fake_urlopen(req, timeout=None):  # noqa: ARG002
+            url = req.full_url if hasattr(req, "full_url") else str(req)
+            captured_urls.append(url)
+            resp = MagicMock()
+            resp.read.return_value = b"1\n2\n3\n4\n5\n6\n7\n"
+            resp.__enter__ = lambda s: s
+            resp.__exit__ = lambda s, *a: None
+            return resp
+
+        with patch("urllib.request.urlopen", side_effect=_fake_urlopen), \
+             patch.object(mcp_module, "_read_source_ado_access_token",
+                          return_value="azdo-token"), \
+             _patch_user_workspaces([ADO_WORKSPACE_ID]):
+            result = mcp_module.handle_read_source(
+                {
+                    "workspace_id": ADO_WORKSPACE_ID,
+                    "symbol": sym,
+                    "at_graph_sha": True,
+                    "context_lines": 2,
+                },
+                USER_EMAIL,
+            )
+        assert "text" in result, f"expected success, got {result}"
+        payload = json.loads(result["text"])
+        assert payload["platform"] == "azure_devops"
+        assert payload["repo"] == ADO_TRIPLET
+        # graph_sha pinned to the ADO items URL as a commit versionType.
+        contents = [u for u in captured_urls if "/_apis/git/" in u]
+        assert contents
+        assert f"versionDescriptor.version={graph_sha}" in contents[-1]
+        assert "versionDescriptor.versionType=commit" in contents[-1]
