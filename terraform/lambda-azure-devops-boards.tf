@@ -254,3 +254,156 @@ resource "aws_sqs_queue" "azure_devops_boards_sync_dlq" {
     Purpose = "azure-devops-boards-sync-dlq"
   }
 }
+
+# ============================================================================
+# Boards Sync Worker Lambda (chunk 05)
+# ============================================================================
+
+module "azure_devops_boards_sync_lambda" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "8.1.2"
+
+  count = var.enable_workspaces ? 1 : 0
+
+  function_name = "${var.environment}-${var.app_name}-azure-devops-boards-sync"
+  description   = "Per-project WIQL fetch + work-item ingest for OutcomeOps AI Assist"
+  handler       = "handler.lambda_handler"
+  runtime       = "python3.12"
+  timeout       = 900 # 15 minutes -- initial sync of up to 5000 work items
+  memory_size   = 1024
+
+  source_path = [
+    {
+      path             = "${path.module}/../lambda/azure-devops-boards-sync"
+      pip_requirements = true
+      patterns = [
+        "!tests/.*",
+        "!__pycache__/.*",
+        "!\\.venv/.*",
+        "!requirements-dev\\.txt",
+        "!.*\\.pyc",
+        "!\\.pytest_cache/.*",
+      ]
+    },
+    {
+      path          = "${path.module}/../lambda/shared"
+      prefix_in_zip = "shared"
+    },
+  ]
+
+  cloudwatch_logs_retention_in_days = 7
+  cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs.arn
+  quiet_archive_local_exec          = true
+
+  layers = [
+    var.outcomeops_license_layer_arn,
+  ]
+
+  environment_variables = merge(
+    {
+      ENV              = var.environment
+      APP_NAME         = var.app_name
+      WORKSPACES_TABLE = module.workspaces_table[0].dynamodb_table_id
+
+      OAUTH_KMS_KEY_ARN = aws_kms_key.oauth_tokens[0].arn
+
+      AZURE_DEVOPS_TENANT_ID               = var.azure_devops_tenant_id
+      AZURE_DEVOPS_CLIENT_ID               = var.azure_devops_client_id
+      AZURE_DEVOPS_CLIENT_SECRET_SSM_PARAM = var.azure_devops_client_secret_ssm_param
+
+      FILE_INGESTION_QUEUE = aws_sqs_queue.file_ingestion[0].url
+      AUDIT_TABLE          = module.audit_logs_table.dynamodb_table_id
+    },
+    local.outcomeops_license_env,
+    local.ha_writer_env,
+    local.ha_scheduler_env,
+  )
+
+  attach_policy_statements = true
+  policy_statements = merge(
+    {
+      dynamodb = {
+        effect = "Allow"
+        actions = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:Query"
+        ]
+        resources = [
+          module.workspaces_table[0].dynamodb_table_arn,
+          "${module.workspaces_table[0].dynamodb_table_arn}/index/*"
+        ]
+      }
+
+      ssm_secret = {
+        effect  = "Allow"
+        actions = ["ssm:GetParameter"]
+        resources = [
+          "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${var.azure_devops_client_secret_ssm_param}",
+        ]
+      }
+
+      # KMS on both primary + secondary replica ARNs (multi-region
+      # key material shared, but IAM permissions are ARN-specific --
+      # same pattern as commit 389c1e7).
+      kms_oauth = {
+        effect  = "Allow"
+        actions = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
+        resources = concat(
+          [aws_kms_key.oauth_tokens[0].arn],
+          var.secondary_region != "" ? [aws_kms_replica_key.oauth_tokens_secondary[0].arn] : []
+        )
+      }
+
+      kms_ssm = {
+        effect  = "Allow"
+        actions = ["kms:Decrypt"]
+        resources = [
+          "arn:aws:kms:${var.aws_region}:${data.aws_caller_identity.current.account_id}:alias/aws/ssm"
+        ]
+      }
+
+      sqs_receive = {
+        effect = "Allow"
+        actions = [
+          "sqs:ReceiveMessage",
+          "sqs:DeleteMessage",
+          "sqs:GetQueueAttributes",
+        ]
+        resources = [aws_sqs_queue.azure_devops_boards_sync[0].arn]
+      }
+
+      sqs_send = {
+        effect    = "Allow"
+        actions   = ["sqs:SendMessage"]
+        resources = [aws_sqs_queue.file_ingestion[0].arn]
+      }
+
+      dynamodb_audit = {
+        effect    = "Allow"
+        actions   = ["dynamodb:PutItem"]
+        resources = [module.audit_logs_table.dynamodb_table_arn]
+      }
+    },
+    local.outcomeops_license_iam,
+    local.ha_writer_events_iam,
+    local.ha_scheduler_iam,
+  )
+
+  tags = {
+    Purpose = "azure-devops-boards-sync"
+  }
+}
+
+resource "aws_lambda_event_source_mapping" "azure_devops_boards_sync" {
+  count = var.enable_workspaces ? 1 : 0
+
+  event_source_arn = aws_sqs_queue.azure_devops_boards_sync[0].arn
+  function_name    = module.azure_devops_boards_sync_lambda[0].lambda_function_name
+
+  # Batch size 1 -- one project sync per invocation. Mirrors jira-sync.
+  batch_size = 1
+
+  function_response_types = ["ReportBatchItemFailures"]
+}

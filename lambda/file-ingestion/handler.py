@@ -589,6 +589,201 @@ def process_jira_issue(
         return None
 
 
+# ============================================================================
+# Azure DevOps Boards handler
+# ============================================================================
+
+
+def process_azure_devops_boards_work_item(
+    workspace_id: str,
+    connection_id: str,
+    file_info: Dict[str, Any],
+    sync_id: Optional[str] = None,
+) -> Optional[str]:
+    """Process an Azure DevOps Boards work item and upload to S3.
+
+    The work-item data is already in ``file_info`` (fetched by the
+    azure-devops-boards-sync worker) as a flat structure -- no ADO
+    envelope parsing required here. Sections with no content
+    (empty description, no comments) are omitted from the rendered
+    document to keep the output concise.
+
+    Deterministic S3 key
+    (``workspaces/{ws}/azure_devops_boards/{org}/{project}/WI-{id}.html``)
+    so a re-sync updates the existing object rather than duplicating.
+    """
+    org = file_info.get("org", "")
+    project = file_info.get("project", "")
+    wi_id = file_info.get("id")
+    if wi_id is None:
+        logger.error("Boards work item missing id; skipping")
+        return None
+    title = file_info.get("title", "")
+    work_item_type = file_info.get("work_item_type", "Unknown")
+    state = file_info.get("state", "Unknown")
+    reason = file_info.get("reason")
+    assigned_to = file_info.get("assigned_to")
+    created_date = file_info.get("created_date", "")
+    changed_date = file_info.get("changed_date", "")
+    priority = file_info.get("priority")
+    severity = file_info.get("severity")
+    tags = file_info.get("tags")
+    area_path = file_info.get("area_path")
+    iteration_path = file_info.get("iteration_path")
+    description = file_info.get("description")
+    repro_steps = file_info.get("repro_steps")
+    acceptance_criteria = file_info.get("acceptance_criteria")
+    url = file_info.get("url")
+    comments = file_info.get("comments") or []
+
+    logger.info(f"Processing ADO Boards work item {org}/{project}/{wi_id}: {title}")
+
+    try:
+        # Metadata rows -- only render fields with a value so the doc
+        # doesn't fill up with "None" placeholders.
+        meta_items = []
+        if state:
+            state_line = html.escape(state)
+            if reason:
+                state_line += f" ({html.escape(reason)})"
+            meta_items.append(f"<li><strong>State:</strong> {state_line}</li>")
+        if work_item_type:
+            meta_items.append(
+                f"<li><strong>Type:</strong> {html.escape(work_item_type)}</li>"
+            )
+        if priority is not None:
+            meta_items.append(
+                f"<li><strong>Priority:</strong> {html.escape(str(priority))}</li>"
+            )
+        if severity:
+            meta_items.append(
+                f"<li><strong>Severity:</strong> {html.escape(str(severity))}</li>"
+            )
+        if assigned_to:
+            meta_items.append(
+                f"<li><strong>Assigned To:</strong> {html.escape(str(assigned_to))}</li>"
+            )
+        if tags:
+            meta_items.append(
+                f"<li><strong>Tags:</strong> {html.escape(str(tags))}</li>"
+            )
+        if area_path:
+            meta_items.append(
+                f"<li><strong>Area:</strong> {html.escape(str(area_path))}</li>"
+            )
+        if iteration_path:
+            meta_items.append(
+                f"<li><strong>Iteration:</strong> {html.escape(str(iteration_path))}</li>"
+            )
+        if created_date:
+            meta_items.append(
+                f"<li><strong>Created:</strong> {html.escape(created_date)}</li>"
+            )
+        if changed_date:
+            meta_items.append(
+                f"<li><strong>Changed:</strong> {html.escape(changed_date)}</li>"
+            )
+        if url:
+            meta_items.append(
+                f'<li><strong>URL:</strong> <a href="{html.escape(url)}">'
+                f'{html.escape(url)}</a></li>'
+            )
+
+        meta_html = f"<ul>{''.join(meta_items)}</ul>" if meta_items else ""
+
+        # ADO rich-text fields come through as HTML; pass through directly.
+        # Empty fields skip their whole section to keep the doc tight.
+        sections_html = ""
+        if description:
+            sections_html += (
+                "<h2>Description</h2>"
+                f'<div class="description">{description}</div>'
+            )
+        if repro_steps:
+            sections_html += (
+                "<h2>Repro Steps</h2>"
+                f'<div class="repro-steps">{repro_steps}</div>'
+            )
+        if acceptance_criteria:
+            sections_html += (
+                "<h2>Acceptance Criteria</h2>"
+                f'<div class="acceptance-criteria">{acceptance_criteria}</div>'
+            )
+
+        comments_html = ""
+        if comments:
+            comments_html = "<h2>Comments</h2>"
+            for comment in comments:
+                created_by = comment.get("createdBy") or {}
+                author = (
+                    created_by.get("displayName")
+                    if isinstance(created_by, dict)
+                    else str(created_by)
+                ) or "Unknown"
+                created = comment.get("createdDate", "")
+                text = comment.get("text") or ""
+                comments_html += (
+                    '<div class="comment">'
+                    f'<div class="comment-author"><strong>{html.escape(str(author))}</strong> '
+                    f'- {html.escape(str(created))}</div>'
+                    f'<div class="comment-body">{text}</div>'
+                    '</div>'
+                )
+
+        full_html = f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>WI-{html.escape(str(wi_id))}: {html.escape(title)}</title>
+</head>
+<body>
+<h1>[WI-{html.escape(str(wi_id))}] {html.escape(title)}</h1>
+<div class="work-item-meta">
+{meta_html}
+</div>
+{sections_html}
+{comments_html}
+</body>
+</html>"""
+
+        safe_org = sanitize_filename(org)
+        safe_project = sanitize_filename(project)
+        s3_key = (
+            f"workspaces/{workspace_id}/azure_devops_boards/"
+            f"{safe_org}/{safe_project}/WI-{wi_id}.html"
+        )
+
+        metadata = {
+            "source": "azure_devops_boards",
+            "workspace_id": workspace_id,
+            "connection_id": connection_id,
+            "azdo_boards_org": org[:128],
+            "azdo_boards_project": project[:128],
+            "azdo_boards_work_item_id": str(wi_id),
+        }
+        if sync_id:
+            metadata["sync_id"] = sync_id
+
+        dual_write.s3_put_object(
+            Bucket=KB_BUCKET,
+            Key=s3_key,
+            Body=full_html.encode("utf-8"),
+            ContentType="text/html",
+            Metadata=metadata,
+            ExpectedBucketOwner=_get_account_id(),
+        )
+
+        logger.info(f"Uploaded ADO Boards work item to s3://{KB_BUCKET}/{s3_key}")
+        return s3_key
+
+    except ClientError as e:
+        logger.error(f"S3 error uploading work item {wi_id}: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"Error processing work item {wi_id}: {e}")
+        return None
+
+
 def process_jira_attachment(
     workspace_id: str,
     connection_id: str,
@@ -1678,6 +1873,13 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
                     workspace_id=workspace_id,
                     connection_id=connection_id,
                     cloud_id=cloud_id,
+                    file_info=file_info,
+                    sync_id=sync_id,
+                )
+            elif source == "azure_devops_boards":
+                s3_key = process_azure_devops_boards_work_item(
+                    workspace_id=workspace_id,
+                    connection_id=connection_id,
                     file_info=file_info,
                     sync_id=sync_id,
                 )
