@@ -315,6 +315,11 @@ def queue_file_ingestion(
             "download_url": download_url,
             "mime_type": file_item.get("file", {}).get("mimeType", "application/octet-stream"),
             "size": file_item.get("size", 0),
+            # Chunk 03: threaded through to file-ingestion's etag
+            # safety net. Empty when Graph didn't return an eTag on the
+            # delta item -- the safety net skips the check and takes
+            # the download+put path in that case.
+            "etag": file_item.get("eTag", ""),
         },
         "sync_id": sync_id,
     }

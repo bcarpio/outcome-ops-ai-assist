@@ -937,6 +937,32 @@ def process_teams_message(
         return None
 
 
+def _teams_file_unchanged(s3_key: str, graph_etag: str) -> bool:
+    """head_object + teams_etag metadata check.
+
+    Fail-safe contract: return False on any error path so the caller
+    falls through to the download+put flow. Never silently drop a
+    real change on a broken check. Only 404 (NoSuchKey / NotFound)
+    is treated as "not yet uploaded, proceed with put"; other
+    error codes get a warning log and still proceed.
+    """
+    try:
+        resp = s3_client.head_object(
+            Bucket=KB_BUCKET, Key=s3_key,
+            ExpectedBucketOwner=_get_account_id(),
+        )
+        stored_etag = (resp.get("Metadata") or {}).get("teams_etag")
+        return bool(stored_etag) and stored_etag == graph_etag
+    except ClientError as e:
+        code = e.response.get("Error", {}).get("Code", "")
+        if code not in ("404", "NoSuchKey", "NotFound"):
+            logger.warning(
+                f"[teams-file-skip] head_object failed for {s3_key}: "
+                f"{code}; falling through to put"
+            )
+        return False
+
+
 def process_teams_file(
     workspace_id: str,
     connection_id: str,
@@ -947,6 +973,12 @@ def process_teams_file(
     Process a Teams channel file and upload to S3.
 
     Downloads from pre-authenticated URL provided in file_info.
+
+    Chunk 03: etag safety net. When the SQS body carries a Graph
+    ``etag`` and the existing S3 object's ``teams_etag`` metadata
+    matches, skip the download + put + downstream re-embedding.
+    Fail-safe on any head_object error (falls through to the
+    existing download+put path).
     """
     import urllib.error
     import urllib.request
@@ -956,6 +988,7 @@ def process_teams_file(
     download_url = file_info.get("download_url", "")
     mime_type = file_info.get("mime_type", "application/octet-stream")
     item_id = file_info.get("item_id", "")
+    graph_etag = file_info.get("etag", "") or ""
 
     logger.info(f"Processing Teams file: {channel_name}/{filename}")
 
@@ -963,14 +996,24 @@ def process_teams_file(
         logger.error(f"No download URL for Teams file {filename}")
         return None
 
+    safe_channel = sanitize_filename(channel_name)
+    safe_filename = sanitize_filename(filename)
+    s3_key = f"workspaces/{workspace_id}/teams/{safe_channel}/files/{safe_filename}"
+
+    # Etag pre-flight (chunk 03). Only runs when Graph gave us an etag
+    # to compare against; empty means "we can't prove no change" and
+    # we take the download+put path.
+    if graph_etag and _teams_file_unchanged(s3_key, graph_etag):
+        logger.info(
+            f"[teams-file-skip] {s3_key} unchanged "
+            f"(etag={graph_etag[:12]}...); short-circuiting"
+        )
+        return s3_key
+
     try:
         request = urllib.request.Request(download_url)
         with urllib.request.urlopen(request, timeout=300) as response:
             content = response.read()
-
-        safe_channel = sanitize_filename(channel_name)
-        safe_filename = sanitize_filename(filename)
-        s3_key = f"workspaces/{workspace_id}/teams/{safe_channel}/files/{safe_filename}"
 
         metadata = {
             "source": "teams_file",
@@ -979,6 +1022,9 @@ def process_teams_file(
             "teams_channel": channel_name,
             "teams_item_id": item_id[:128] if item_id else "",
         }
+
+        if graph_etag:
+            metadata["teams_etag"] = graph_etag[:256]
 
         if sync_id:
             metadata["sync_id"] = sync_id
@@ -992,7 +1038,11 @@ def process_teams_file(
             ExpectedBucketOwner=_get_account_id(),
         )
 
-        logger.info(f"Uploaded Teams file to s3://{KB_BUCKET}/{s3_key}")
+        logger.info(
+            f"[teams-file-put] {s3_key} uploaded "
+            f"(etag={graph_etag[:12] if graph_etag else 'none'}...); "
+            f"size={len(content)}"
+        )
         return s3_key
 
     except urllib.error.HTTPError as e:
