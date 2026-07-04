@@ -773,6 +773,10 @@ module "ui_ecs" {
                 value = aws_lambda_function_url.azure_devops_integration[0].function_url
               },
               {
+                name  = "AZURE_DEVOPS_BOARDS_LAMBDA_URL"
+                value = aws_lambda_function_url.azure_devops_boards_integration[0].function_url
+              },
+              {
                 name  = "OUTLOOK_LAMBDA_URL"
                 value = aws_lambda_function_url.outlook_integration[0].function_url
               },
