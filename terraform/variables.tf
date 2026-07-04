@@ -144,6 +144,12 @@ variable "azure_devops_boards_integration_enabled" {
   default     = false
 }
 
+variable "azure_devops_boards_redirect_uri" {
+  type        = string
+  description = "OAuth callback URI for the Boards integration. Must match the path /api/azure-devops-boards/callback on the deploy's FQDN AND be registered as a second redirect URI on the same Entra ID app registration used for Repos. Customer runbook §12 covers the setup."
+  default     = ""
+}
+
 variable "github_app_slug" {
   type        = string
   description = "GitHub App URL slug (from the App settings page URL, e.g., 'my-company-ai-assist')"
