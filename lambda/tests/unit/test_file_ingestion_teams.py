@@ -275,3 +275,71 @@ class TestProcessTeamsFileBaseFlow:
             sync_id="s",
         )
         assert result is None
+
+
+class TestTwoLayerDefensePayoff:
+    """Chunk 04 integration: exercises chunks 02 and 03 together across
+    the SQS boundary. Proves the pattern the whole plan was designed to
+    close -- even when Graph's delta returns an unchanged item on a
+    subsequent cycle (metadata-only save, permission edit, etc.), the
+    etag safety net catches it and short-circuits before the S3 put and
+    downstream process-documents re-embedding fire."""
+
+    @patch("urllib.request.urlopen")
+    def test_second_cycle_with_same_etag_skips_upload(self, mock_urlopen, caplog):
+        """Cycle 1: 404 -> put with teams_etag stored.
+        Cycle 2: head_object returns same etag -> short-circuit."""
+        import logging
+        caplog.set_level(logging.INFO)
+        mock_urlopen.return_value = _make_urlopen_response(b"body-v1")
+
+        # Cycle 1: first upload.
+        mock_s3_client.head_object.side_effect = _not_found_error()
+        s3_key_1 = process_teams_file(
+            workspace_id="ws", connection_id="c1",
+            file_info=_sample_file_info(etag='"cycle-etag"'),
+            sync_id="cycle-1",
+        )
+        assert s3_key_1 is not None
+        assert mock_s3_client.put_object.call_count == 1
+        stored_etag = mock_s3_client.put_object.call_args[1]["Metadata"]["teams_etag"]
+        assert stored_etag == '"cycle-etag"'
+
+        # Cycle 2: same file, same etag. head_object now returns a match.
+        mock_s3_client.reset_mock()
+        mock_urlopen.reset_mock()
+        mock_s3_client.head_object.side_effect = None
+        mock_s3_client.head_object.return_value = {
+            "Metadata": {"teams_etag": stored_etag},
+        }
+        s3_key_2 = process_teams_file(
+            workspace_id="ws", connection_id="c1",
+            file_info=_sample_file_info(etag='"cycle-etag"'),
+            sync_id="cycle-2",
+        )
+        assert s3_key_2 == s3_key_1
+        mock_urlopen.assert_not_called()
+        mock_s3_client.put_object.assert_not_called()
+        assert any("[teams-file-skip]" in rec.message for rec in caplog.records)
+
+    @patch("urllib.request.urlopen")
+    def test_second_cycle_with_new_etag_re_uploads(self, mock_urlopen):
+        """The safety net does NOT short-circuit a real change -- if
+        Graph reports a new etag, the file gets downloaded and the S3
+        metadata is updated with the new etag."""
+        mock_urlopen.return_value = _make_urlopen_response(b"body-v2")
+
+        # Old etag stored from a prior cycle.
+        mock_s3_client.head_object.return_value = {
+            "Metadata": {"teams_etag": '"cycle-etag-v1"'},
+        }
+        process_teams_file(
+            workspace_id="ws", connection_id="c1",
+            file_info=_sample_file_info(etag='"cycle-etag-v2"'),
+            sync_id="cycle-2",
+        )
+
+        mock_s3_client.put_object.assert_called_once()
+        put_kwargs = mock_s3_client.put_object.call_args[1]
+        assert put_kwargs["Body"] == b"body-v2"
+        assert put_kwargs["Metadata"]["teams_etag"] == '"cycle-etag-v2"'
