@@ -3252,22 +3252,34 @@ export default function WorkspaceSettings() {
                     <path d="M0 8.877L2.247 5.91l8.405-3.416v-2.32l7.37 5.416L2.187 8.404v8.35L0 15.559zm24-4.792v14.665l-5.68 4.75-9.184-3.02V24l-6.928-8.514 15.744 1.242V5.303z"/>
                   </svg>
                   <div>
-                    <h3 className="text-lg font-semibold">Azure DevOps (Boards)</h3>
+                    <h3 className="font-medium">Azure DevOps (Boards)</h3>
                     <p className="text-sm text-gray-500">Ingest work items (bugs, user stories, tasks) as chat context</p>
                   </div>
                 </div>
-                {azdoBoardsConnections.length === 0 && (
-                  <button
-                    type="button"
+                {isAdmin && azdoBoardsConnections.length === 0 && (
+                  <MutationButton
                     onClick={handleConnectAzdoBoards}
                     disabled={connectingAzdoBoards}
-                    className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
+                    className="flex items-center gap-2 px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
                   >
-                    {connectingAzdoBoards ? 'Connecting...' : 'Connect Azure DevOps Boards'}
-                  </button>
+                    {connectingAzdoBoards ? (
+                      <Loader2 size={16} className="animate-spin" />
+                    ) : (
+                      <Plus size={16} />
+                    )}
+                    Connect
+                  </MutationButton>
                 )}
               </div>
-              {azdoBoardsConnections.length > 0 && (
+              {loadingConnections ? (
+                <div className="p-8 flex items-center justify-center">
+                  <Loader2 className="animate-spin text-gray-400" size={24} />
+                </div>
+              ) : azdoBoardsConnections.length === 0 ? (
+                <div className="p-8 text-center text-gray-500">
+                  No Azure DevOps Boards connections yet
+                </div>
+              ) : (
                 <div className="p-4 space-y-3">
                   {azdoBoardsConnections.map(conn => {
                     const projects = azdoBoardsProjects.filter(p => p.connection_id === conn.connection_id)
