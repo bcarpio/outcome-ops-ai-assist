@@ -73,11 +73,6 @@ module "azure_devops_boards_integration_lambda_secondary" {
       path          = "${path.module}/../lambda/shared"
       prefix_in_zip = "shared"
     },
-    {
-      path          = "${path.module}/../lambda/azure-devops-sync"
-      prefix_in_zip = "azure-devops-sync"
-      patterns      = ["!.*", "azure_devops_api\\.py"]
-    },
   ]
 
   cloudwatch_logs_retention_in_days = 7

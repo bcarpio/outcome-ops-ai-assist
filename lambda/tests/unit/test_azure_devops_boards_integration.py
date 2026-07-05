@@ -70,13 +70,12 @@ api_module = _load_module(
     "../../azure-devops-boards-integration",
     also_register_as="azure_devops_work_items_api",
 )
-# The handler also imports azure_devops_api (vssps list_accessible_orgs)
-# from azure-devops-sync. Register the Repos client under that name so
-# the import resolves without loading a second copy.
+# The handler imports azure_devops_api (vssps list_accessible_orgs) --
+# an in-directory copy of the Repos client (self-contained deploy zip).
 repos_api = _load_module(
     "azdo_repos_api_for_boards",
     "azure_devops_api.py",
-    "../../azure-devops-sync",
+    "../../azure-devops-boards-integration",
     also_register_as="azure_devops_api",
 )
 handler = _load_module(

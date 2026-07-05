@@ -53,17 +53,6 @@ module "azure_devops_boards_integration_lambda" {
       path          = "${path.module}/../lambda/shared"
       prefix_in_zip = "shared"
     },
-    # Boards' handle_list_orgs reuses the vssps list_accessible_orgs
-    # helper from the Repos client. Bundle azure_devops_api.py (and only
-    # that file) so the import works at runtime.
-    {
-      path          = "${path.module}/../lambda/azure-devops-sync"
-      prefix_in_zip = "azure-devops-sync"
-      patterns = [
-        "!.*",
-        "azure_devops_api\\.py",
-      ]
-    },
   ]
 
   cloudwatch_logs_retention_in_days = 7

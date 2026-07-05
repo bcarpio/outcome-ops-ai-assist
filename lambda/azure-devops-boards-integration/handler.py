@@ -79,18 +79,10 @@ from azure_devops_work_items_api import (  # noqa: E402
     AzureDevOpsBoardsNotFoundError,
     list_projects as ado_list_projects,
 )
-# The Repos ADO API has the vssps ``list_accessible_orgs`` helper --
-# we import from THAT module because vssps is integration-agnostic
-# (both Repos and Boards need to enumerate the same "orgs the user
-# can see"). Keeping one module owning that endpoint avoids a
-# duplicated implementation.
-sys.path.insert(
-    0,
-    os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "azure-devops-sync",
-    ),
-)
+# The vssps ``list_accessible_orgs`` helper is integration-agnostic
+# (Repos + Boards both need to enumerate the same "orgs the user
+# can see"). Shipped as an in-directory copy of the Repos client for
+# deploy-zip self-containment -- each Lambda ships its own deps.
 from azure_devops_api import list_accessible_orgs  # noqa: E402
 
 from token_manager import (  # noqa: E402
