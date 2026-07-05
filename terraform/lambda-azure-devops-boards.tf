@@ -77,8 +77,10 @@ module "azure_devops_boards_integration_lambda" {
       AZURE_DEVOPS_CLIENT_ID               = var.azure_devops_client_id
       AZURE_DEVOPS_CLIENT_SECRET_SSM_PARAM = var.azure_devops_client_secret_ssm_param
 
-      # Boards-specific.
-      AZURE_DEVOPS_BOARDS_REDIRECT_URI        = var.azure_devops_boards_redirect_uri
+      # Boards-specific. Redirect URI derived from the deploy's FQDN
+      # -- customer registers the same value in Entra ID (see runbook
+      # §12.2) but doesn't type it in tfvars twice.
+      AZURE_DEVOPS_BOARDS_REDIRECT_URI        = "https://${local.fqdn}/api/azure-devops-boards/callback"
       AZURE_DEVOPS_BOARDS_INTEGRATION_ENABLED = tostring(var.azure_devops_boards_integration_enabled)
 
       AZURE_DEVOPS_BOARDS_SYNC_QUEUE = aws_sqs_queue.azure_devops_boards_sync[0].url

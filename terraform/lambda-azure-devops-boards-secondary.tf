@@ -90,10 +90,12 @@ module "azure_devops_boards_integration_lambda_secondary" {
       # OAuth token encryption via the secondary MRK replica.
       OAUTH_KMS_KEY_ARN = aws_kms_replica_key.oauth_tokens_secondary[0].arn
 
-      AZURE_DEVOPS_TENANT_ID                  = var.azure_devops_tenant_id
-      AZURE_DEVOPS_CLIENT_ID                  = var.azure_devops_client_id
-      AZURE_DEVOPS_CLIENT_SECRET_SSM_PARAM    = var.azure_devops_client_secret_ssm_param
-      AZURE_DEVOPS_BOARDS_REDIRECT_URI        = var.azure_devops_boards_redirect_uri
+      AZURE_DEVOPS_TENANT_ID               = var.azure_devops_tenant_id
+      AZURE_DEVOPS_CLIENT_ID               = var.azure_devops_client_id
+      AZURE_DEVOPS_CLIENT_SECRET_SSM_PARAM = var.azure_devops_client_secret_ssm_param
+      # Same derived value as the primary (see the primary TF for the
+      # rationale).
+      AZURE_DEVOPS_BOARDS_REDIRECT_URI        = "https://${local.fqdn}/api/azure-devops-boards/callback"
       AZURE_DEVOPS_BOARDS_INTEGRATION_ENABLED = tostring(var.azure_devops_boards_integration_enabled)
 
       AZURE_DEVOPS_BOARDS_SYNC_QUEUE = aws_sqs_queue.azure_devops_boards_sync_secondary[0].url

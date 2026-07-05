@@ -394,11 +394,14 @@ In `terraform/prd.tfvars` (or your equivalent):
 
 ```hcl
 azure_devops_boards_integration_enabled = true
-azure_devops_boards_redirect_uri        = "https://{your-app-fqdn}/api/azure-devops-boards/callback"
 ```
 
-The tenant / client-id / client-secret-SSM-param values from Repos
-are reused. Don't duplicate them.
+That's the only new line. Tenant / client-id / client-secret-SSM-param
+are reused from the Repos block. The redirect URI env var the Lambda
+consumes is derived from your deploy's FQDN in the terraform module —
+you don't type it in tfvars. The value the customer registers in
+Entra ID (step 12.2 above) has to match exactly:
+`https://{your-app-fqdn}/api/azure-devops-boards/callback`.
 
 ### 12.4 Deploy
 
