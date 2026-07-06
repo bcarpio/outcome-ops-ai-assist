@@ -95,6 +95,7 @@ vi.mock('../../../src/lib/api', () => ({
   addAzureDevOpsBoardsProjects: vi.fn(),
   listWorkspaceAzureDevOpsBoardsProjects: vi.fn(),
   removeAzureDevOpsBoardsProject: vi.fn(),
+  updateAzureDevOpsBoardsProject: vi.fn(),
   triggerAzureDevOpsBoardsSync: vi.fn(),
   disconnectAzureDevOpsBoards: vi.fn(),
 }))

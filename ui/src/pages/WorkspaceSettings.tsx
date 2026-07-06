@@ -58,6 +58,7 @@ import {
   addAzureDevOpsBoardsProjects,
   listWorkspaceAzureDevOpsBoardsProjects,
   removeAzureDevOpsBoardsProject,
+  updateAzureDevOpsBoardsProject,
   triggerAzureDevOpsBoardsSync,
   disconnectAzureDevOpsBoards,
   getSearchAccess,
@@ -1271,6 +1272,20 @@ export default function WorkspaceSettings() {
       setSuccess('Boards project removed')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to remove project')
+    }
+  }
+
+  async function handleToggleAzdoBoardsProject(slug: string, enabled: boolean) {
+    if (!workspaceId) return
+    setError(null)
+    try {
+      await updateAzureDevOpsBoardsProject(workspaceId, slug, enabled)
+      setAzdoBoardsProjects(prev =>
+        prev.map(p => (p.slug === slug ? { ...p, enabled } : p)),
+      )
+      setSuccess(enabled ? 'Boards project enabled' : 'Boards project disabled')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update project')
     }
   }
 
@@ -3359,19 +3374,31 @@ export default function WorkspaceSettings() {
                             {projects.map(p => (
                               <li key={p.slug} className="flex items-center justify-between text-sm">
                                 <div>
-                                  <span className="font-mono">{p.slug}</span>
+                                  <span className={`font-mono ${p.enabled === false ? 'text-gray-400 line-through' : ''}`}>{p.slug}</span>
                                   <span className={`ml-2 text-xs ${p.sync_status === 'success' ? 'text-green-600' : p.sync_status === 'failed' ? 'text-red-600' : 'text-gray-500'}`}>
                                     {p.sync_status}
                                   </span>
+                                  {p.enabled === false && (
+                                    <span className="ml-2 text-xs text-gray-500">(disabled)</span>
+                                  )}
                                   {p.last_sync_error && (
                                     <span className="ml-2 text-xs text-red-600">({p.last_sync_error})</span>
                                   )}
                                 </div>
                                 <div className="flex gap-2">
+                                  <label className="flex items-center gap-1 text-xs text-gray-600 cursor-pointer">
+                                    <input
+                                      type="checkbox"
+                                      checked={p.enabled !== false}
+                                      onChange={e => handleToggleAzdoBoardsProject(p.slug, e.target.checked)}
+                                      aria-label={p.enabled === false ? `Enable ${p.slug}` : `Disable ${p.slug}`}
+                                    />
+                                    Enabled
+                                  </label>
                                   <button
                                     type="button"
                                     onClick={() => handleTriggerAzdoBoardsSync(p.slug)}
-                                    disabled={syncingAzdoBoards === p.slug}
+                                    disabled={syncingAzdoBoards === p.slug || p.enabled === false}
                                     className="px-2 py-0.5 text-xs bg-blue-50 text-blue-700 rounded hover:bg-blue-100 disabled:opacity-50"
                                   >
                                     {syncingAzdoBoards === p.slug ? 'Syncing...' : 'Sync'}

@@ -1282,6 +1282,35 @@ export async function removeAzureDevOpsBoardsProject(
   }
 }
 
+// PUT /workspaces/{ws}/azure-devops-boards/projects/{slug} -- flips the
+// `enabled` flag on a workspace's Boards project. The scheduler skips
+// disabled projects on its next hourly tick.
+//
+// Slug is `org/project` and the literal `/` must round-trip through the
+// Express wildcard route + FastAPI `{slug:path}` decoder -- encodeURIComponent
+// each segment separately, then rejoin. Same pattern as
+// removeAzureDevOpsBoardsProject above.
+export async function updateAzureDevOpsBoardsProject(
+  workspaceId: string,
+  slug: string,
+  enabled: boolean,
+): Promise<void> {
+  const response = await fetch(
+    `${API_BASE}/workspaces/${workspaceId}/azure-devops-boards/projects/${slug.split('/').map(encodeURIComponent).join('/')}`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled }),
+    },
+  )
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error(
+      (data?.error as string) || `Failed to update Boards project: ${response.status}`,
+    )
+  }
+}
+
 export async function triggerAzureDevOpsBoardsSync(
   workspaceId: string,
   slug?: string,
