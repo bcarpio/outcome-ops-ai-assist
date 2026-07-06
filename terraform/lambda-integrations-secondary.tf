@@ -399,7 +399,7 @@ module "outlook_integration_lambda_secondary" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "8.1.2"
 
-  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count = var.enable_workspaces && var.enable_outlook_integration && var.secondary_region != "" ? 1 : 0
 
   providers = {
     aws = aws.secondary
@@ -484,7 +484,7 @@ module "outlook_integration_lambda_secondary" {
 }
 
 resource "aws_lambda_function_url" "outlook_integration_secondary" {
-  count    = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count    = var.enable_workspaces && var.enable_outlook_integration && var.secondary_region != "" ? 1 : 0
   provider = aws.secondary
 
   function_name      = module.outlook_integration_lambda_secondary[0].lambda_function_name
@@ -500,7 +500,7 @@ resource "aws_lambda_function_url" "outlook_integration_secondary" {
 }
 
 resource "aws_ssm_parameter" "outlook_integration_url_secondary" {
-  count    = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count    = var.enable_workspaces && var.enable_outlook_integration && var.secondary_region != "" ? 1 : 0
   provider = aws.secondary
 
   name        = "/${var.environment}/${var.app_name}/api/outlook-integration-url"
@@ -519,7 +519,7 @@ module "teams_integration_lambda_secondary" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "8.1.2"
 
-  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count = var.enable_workspaces && var.enable_teams_integration && var.secondary_region != "" ? 1 : 0
 
   providers = {
     aws = aws.secondary
@@ -604,7 +604,7 @@ module "teams_integration_lambda_secondary" {
 }
 
 resource "aws_lambda_function_url" "teams_integration_secondary" {
-  count    = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count    = var.enable_workspaces && var.enable_teams_integration && var.secondary_region != "" ? 1 : 0
   provider = aws.secondary
 
   function_name      = module.teams_integration_lambda_secondary[0].lambda_function_name
@@ -620,7 +620,7 @@ resource "aws_lambda_function_url" "teams_integration_secondary" {
 }
 
 resource "aws_ssm_parameter" "teams_integration_url_secondary" {
-  count    = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count    = var.enable_workspaces && var.enable_teams_integration && var.secondary_region != "" ? 1 : 0
   provider = aws.secondary
 
   name        = "/${var.environment}/${var.app_name}/api/teams-integration-url"
@@ -639,7 +639,7 @@ module "sharepoint_integration_lambda_secondary" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "8.1.2"
 
-  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count = var.enable_workspaces && var.enable_sharepoint_integration && var.secondary_region != "" ? 1 : 0
 
   providers = {
     aws = aws.secondary
@@ -724,7 +724,7 @@ module "sharepoint_integration_lambda_secondary" {
 }
 
 resource "aws_lambda_function_url" "sharepoint_integration_secondary" {
-  count    = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count    = var.enable_workspaces && var.enable_sharepoint_integration && var.secondary_region != "" ? 1 : 0
   provider = aws.secondary
 
   function_name      = module.sharepoint_integration_lambda_secondary[0].lambda_function_name
@@ -740,7 +740,7 @@ resource "aws_lambda_function_url" "sharepoint_integration_secondary" {
 }
 
 resource "aws_ssm_parameter" "sharepoint_integration_url_secondary" {
-  count    = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count    = var.enable_workspaces && var.enable_sharepoint_integration && var.secondary_region != "" ? 1 : 0
   provider = aws.secondary
 
   name        = "/${var.environment}/${var.app_name}/api/sharepoint-integration-url"
@@ -759,7 +759,7 @@ module "onedrive_integration_lambda_secondary" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "8.1.2"
 
-  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count = var.enable_workspaces && var.enable_onedrive_integration && var.secondary_region != "" ? 1 : 0
 
   providers = {
     aws = aws.secondary
@@ -844,7 +844,7 @@ module "onedrive_integration_lambda_secondary" {
 }
 
 resource "aws_lambda_function_url" "onedrive_integration_secondary" {
-  count    = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count    = var.enable_workspaces && var.enable_onedrive_integration && var.secondary_region != "" ? 1 : 0
   provider = aws.secondary
 
   function_name      = module.onedrive_integration_lambda_secondary[0].lambda_function_name
@@ -860,7 +860,7 @@ resource "aws_lambda_function_url" "onedrive_integration_secondary" {
 }
 
 resource "aws_ssm_parameter" "onedrive_integration_url_secondary" {
-  count    = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count    = var.enable_workspaces && var.enable_onedrive_integration && var.secondary_region != "" ? 1 : 0
   provider = aws.secondary
 
   name        = "/${var.environment}/${var.app_name}/api/onedrive-integration-url"
@@ -879,7 +879,7 @@ module "onenote_integration_lambda_secondary" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "8.1.2"
 
-  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count = var.enable_workspaces && var.enable_onenote_integration && var.secondary_region != "" ? 1 : 0
 
   providers = {
     aws = aws.secondary
@@ -964,7 +964,7 @@ module "onenote_integration_lambda_secondary" {
 }
 
 resource "aws_lambda_function_url" "onenote_integration_secondary" {
-  count    = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count    = var.enable_workspaces && var.enable_onenote_integration && var.secondary_region != "" ? 1 : 0
   provider = aws.secondary
 
   function_name      = module.onenote_integration_lambda_secondary[0].lambda_function_name
@@ -980,7 +980,7 @@ resource "aws_lambda_function_url" "onenote_integration_secondary" {
 }
 
 resource "aws_ssm_parameter" "onenote_integration_url_secondary" {
-  count    = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count    = var.enable_workspaces && var.enable_onenote_integration && var.secondary_region != "" ? 1 : 0
   provider = aws.secondary
 
   name        = "/${var.environment}/${var.app_name}/api/onenote-integration-url"

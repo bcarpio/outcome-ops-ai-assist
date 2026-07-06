@@ -112,7 +112,7 @@ resource "aws_sqs_queue" "confluence_sync_dlq_secondary" {
 # ----------------------------------------------------------------------------
 
 resource "aws_sqs_queue" "onedrive_sync_secondary" {
-  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count = var.enable_workspaces && var.enable_onedrive_integration && var.secondary_region != "" ? 1 : 0
 
   provider = aws.secondary
 
@@ -135,7 +135,7 @@ resource "aws_sqs_queue" "onedrive_sync_secondary" {
 }
 
 resource "aws_sqs_queue" "onedrive_sync_dlq_secondary" {
-  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count = var.enable_workspaces && var.enable_onedrive_integration && var.secondary_region != "" ? 1 : 0
 
   provider = aws.secondary
 
@@ -155,7 +155,7 @@ resource "aws_sqs_queue" "onedrive_sync_dlq_secondary" {
 # ----------------------------------------------------------------------------
 
 resource "aws_sqs_queue" "onenote_sync_secondary" {
-  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count = var.enable_workspaces && var.enable_onenote_integration && var.secondary_region != "" ? 1 : 0
 
   provider = aws.secondary
 
@@ -178,7 +178,7 @@ resource "aws_sqs_queue" "onenote_sync_secondary" {
 }
 
 resource "aws_sqs_queue" "onenote_sync_dlq_secondary" {
-  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count = var.enable_workspaces && var.enable_onenote_integration && var.secondary_region != "" ? 1 : 0
 
   provider = aws.secondary
 
@@ -241,7 +241,7 @@ resource "aws_sqs_queue" "jira_sync_dlq_secondary" {
 # ----------------------------------------------------------------------------
 
 resource "aws_sqs_queue" "teams_sync_secondary" {
-  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count = var.enable_workspaces && var.enable_teams_integration && var.secondary_region != "" ? 1 : 0
 
   provider = aws.secondary
 
@@ -264,7 +264,7 @@ resource "aws_sqs_queue" "teams_sync_secondary" {
 }
 
 resource "aws_sqs_queue" "teams_sync_dlq_secondary" {
-  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count = var.enable_workspaces && var.enable_teams_integration && var.secondary_region != "" ? 1 : 0
 
   provider = aws.secondary
 
@@ -284,7 +284,7 @@ resource "aws_sqs_queue" "teams_sync_dlq_secondary" {
 # ----------------------------------------------------------------------------
 
 resource "aws_sqs_queue" "outlook_sync_secondary" {
-  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count = var.enable_workspaces && var.enable_outlook_integration && var.secondary_region != "" ? 1 : 0
 
   provider = aws.secondary
 
@@ -307,7 +307,7 @@ resource "aws_sqs_queue" "outlook_sync_secondary" {
 }
 
 resource "aws_sqs_queue" "outlook_sync_dlq_secondary" {
-  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count = var.enable_workspaces && var.enable_outlook_integration && var.secondary_region != "" ? 1 : 0
 
   provider = aws.secondary
 
@@ -327,7 +327,7 @@ resource "aws_sqs_queue" "outlook_sync_dlq_secondary" {
 # ----------------------------------------------------------------------------
 
 resource "aws_sqs_queue" "sharepoint_sync_secondary" {
-  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count = var.enable_workspaces && var.enable_sharepoint_integration && var.secondary_region != "" ? 1 : 0
 
   provider = aws.secondary
 
@@ -350,7 +350,7 @@ resource "aws_sqs_queue" "sharepoint_sync_secondary" {
 }
 
 resource "aws_sqs_queue" "sharepoint_sync_dlq_secondary" {
-  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count = var.enable_workspaces && var.enable_sharepoint_integration && var.secondary_region != "" ? 1 : 0
 
   provider = aws.secondary
 

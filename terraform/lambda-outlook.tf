@@ -7,7 +7,7 @@ module "outlook_integration_lambda" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "8.1.2"
 
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_outlook_integration ? 1 : 0
 
   function_name = "${var.environment}-${var.app_name}-outlook-integration"
   description   = "Microsoft Outlook OAuth and connection management for OutcomeOps AI Assist"
@@ -155,7 +155,7 @@ module "outlook_integration_lambda" {
 
 # Lambda Function URL with IAM auth
 resource "aws_lambda_function_url" "outlook_integration" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_outlook_integration ? 1 : 0
 
   function_name      = module.outlook_integration_lambda[0].lambda_function_name
   authorization_type = "AWS_IAM"
@@ -171,7 +171,7 @@ resource "aws_lambda_function_url" "outlook_integration" {
 
 # Store URL in SSM for Fargate proxy
 resource "aws_ssm_parameter" "outlook_integration_url" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_outlook_integration ? 1 : 0
 
   name        = "/${var.environment}/${var.app_name}/api/outlook-integration-url"
   description = "Lambda Function URL for Outlook integration (IAM auth required)"
@@ -188,7 +188,7 @@ resource "aws_ssm_parameter" "outlook_integration_url" {
 # ============================================================================
 
 resource "aws_sqs_queue" "outlook_sync" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_outlook_integration ? 1 : 0
 
   name                       = "${var.environment}-${var.app_name}-outlook-sync"
   visibility_timeout_seconds = 900   # 15 minutes for long-running syncs
@@ -211,7 +211,7 @@ resource "aws_sqs_queue" "outlook_sync" {
 }
 
 resource "aws_sqs_queue" "outlook_sync_dlq" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_outlook_integration ? 1 : 0
 
   name                      = "${var.environment}-${var.app_name}-outlook-sync-dlq"
   message_retention_seconds = 1209600 # 14 days
@@ -233,7 +233,7 @@ module "outlook_sync_lambda" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "8.1.2"
 
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_outlook_integration ? 1 : 0
 
   function_name = "${var.environment}-${var.app_name}-outlook-sync"
   description   = "Syncs Outlook emails to knowledge base for OutcomeOps AI Assist"
@@ -398,7 +398,7 @@ module "outlook_sync_lambda" {
 
 # SQS trigger for sync Lambda
 resource "aws_lambda_event_source_mapping" "outlook_sync" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_outlook_integration ? 1 : 0
 
   event_source_arn = aws_sqs_queue.outlook_sync[0].arn
   function_name    = module.outlook_sync_lambda[0].lambda_function_name
@@ -420,7 +420,7 @@ module "outlook_scheduler_lambda" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "8.1.2"
 
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_outlook_integration ? 1 : 0
 
   function_name = "${var.environment}-${var.app_name}-outlook-scheduler"
   description   = "Hourly scheduler for Outlook sync jobs"
@@ -510,7 +510,7 @@ module "outlook_scheduler_lambda" {
 
 # EventBridge rule for hourly sync
 resource "aws_cloudwatch_event_rule" "outlook_hourly_sync" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_outlook_integration ? 1 : 0
 
   name                = "${var.environment}-${var.app_name}-outlook-hourly-sync"
   description         = "Trigger Outlook sync scheduler every hour"
@@ -522,7 +522,7 @@ resource "aws_cloudwatch_event_rule" "outlook_hourly_sync" {
 }
 
 resource "aws_cloudwatch_event_target" "outlook_scheduler" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_outlook_integration ? 1 : 0
 
   rule      = aws_cloudwatch_event_rule.outlook_hourly_sync[0].name
   target_id = "outlook-scheduler"
@@ -530,7 +530,7 @@ resource "aws_cloudwatch_event_target" "outlook_scheduler" {
 }
 
 resource "aws_lambda_permission" "outlook_scheduler_eventbridge" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_outlook_integration ? 1 : 0
 
   statement_id  = "AllowEventBridgeInvoke"
   action        = "lambda:InvokeFunction"
@@ -545,7 +545,7 @@ resource "aws_lambda_permission" "outlook_scheduler_eventbridge" {
 # ============================================================================
 
 resource "aws_ssm_parameter" "microsoft_client_id" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && (var.enable_outlook_integration || var.enable_teams_integration || var.enable_sharepoint_integration || var.enable_onedrive_integration || var.enable_onenote_integration) ? 1 : 0
 
   name        = "/${var.environment}/${var.app_name}/oauth/microsoft/client-id"
   description = "Microsoft OAuth App Client ID"
@@ -558,7 +558,7 @@ resource "aws_ssm_parameter" "microsoft_client_id" {
 }
 
 resource "aws_ssm_parameter" "microsoft_client_secret" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && (var.enable_outlook_integration || var.enable_teams_integration || var.enable_sharepoint_integration || var.enable_onedrive_integration || var.enable_onenote_integration) ? 1 : 0
 
   name        = "/${var.environment}/${var.app_name}/oauth/microsoft/client-secret"
   description = "Microsoft OAuth App Client Secret - customer must configure"
@@ -575,7 +575,7 @@ resource "aws_ssm_parameter" "microsoft_client_secret" {
 }
 
 resource "aws_ssm_parameter" "microsoft_callback_url" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_outlook_integration ? 1 : 0
 
   name        = "/${var.environment}/${var.app_name}/oauth/microsoft/callback-url"
   description = "OAuth callback URL for Outlook. Register this in your Azure AD app registration after local.fqdn resolves to the UI ALB (whether via terraform-managed Route53 or external DNS - see docs/byo-cert-and-dns.md)."
@@ -640,7 +640,7 @@ output "outlook_scheduler_lambda_arn" {
 # ============================================================================
 
 resource "aws_ssm_parameter" "microsoft_client_id_secondary" {
-  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count = var.enable_workspaces && (var.enable_outlook_integration || var.enable_teams_integration || var.enable_sharepoint_integration || var.enable_onedrive_integration || var.enable_onenote_integration) && var.secondary_region != "" ? 1 : 0
 
   provider = aws.secondary
 
@@ -655,7 +655,7 @@ resource "aws_ssm_parameter" "microsoft_client_id_secondary" {
 }
 
 resource "aws_ssm_parameter" "microsoft_client_secret_secondary" {
-  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count = var.enable_workspaces && (var.enable_outlook_integration || var.enable_teams_integration || var.enable_sharepoint_integration || var.enable_onedrive_integration || var.enable_onenote_integration) && var.secondary_region != "" ? 1 : 0
 
   provider = aws.secondary
 
@@ -674,7 +674,7 @@ resource "aws_ssm_parameter" "microsoft_client_secret_secondary" {
 }
 
 resource "aws_ssm_parameter" "microsoft_callback_url_secondary" {
-  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count = var.enable_workspaces && var.enable_outlook_integration && var.secondary_region != "" ? 1 : 0
 
   provider = aws.secondary
 

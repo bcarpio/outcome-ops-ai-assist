@@ -7,7 +7,7 @@ module "onenote_integration_lambda" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "8.1.2"
 
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_onenote_integration ? 1 : 0
 
   function_name = "${var.environment}-${var.app_name}-onenote-integration"
   description   = "Microsoft OneNote OAuth and connection management for OutcomeOps AI Assist"
@@ -155,7 +155,7 @@ module "onenote_integration_lambda" {
 
 # Lambda Function URL with IAM auth
 resource "aws_lambda_function_url" "onenote_integration" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_onenote_integration ? 1 : 0
 
   function_name      = module.onenote_integration_lambda[0].lambda_function_name
   authorization_type = "AWS_IAM"
@@ -171,7 +171,7 @@ resource "aws_lambda_function_url" "onenote_integration" {
 
 # Store URL in SSM for Fargate proxy
 resource "aws_ssm_parameter" "onenote_integration_url" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_onenote_integration ? 1 : 0
 
   name        = "/${var.environment}/${var.app_name}/api/onenote-integration-url"
   description = "Lambda Function URL for OneNote integration (IAM auth required)"
@@ -188,7 +188,7 @@ resource "aws_ssm_parameter" "onenote_integration_url" {
 # ============================================================================
 
 resource "aws_sqs_queue" "onenote_sync" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_onenote_integration ? 1 : 0
 
   name                       = "${var.environment}-${var.app_name}-onenote-sync"
   visibility_timeout_seconds = 900   # 15 minutes for long-running syncs
@@ -211,7 +211,7 @@ resource "aws_sqs_queue" "onenote_sync" {
 }
 
 resource "aws_sqs_queue" "onenote_sync_dlq" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_onenote_integration ? 1 : 0
 
   name                      = "${var.environment}-${var.app_name}-onenote-sync-dlq"
   message_retention_seconds = 1209600 # 14 days
@@ -233,7 +233,7 @@ module "onenote_sync_lambda" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "8.1.2"
 
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_onenote_integration ? 1 : 0
 
   function_name = "${var.environment}-${var.app_name}-onenote-sync"
   description   = "Syncs OneNote files to knowledge base for OutcomeOps AI Assist"
@@ -398,7 +398,7 @@ module "onenote_sync_lambda" {
 
 # SQS trigger for sync Lambda
 resource "aws_lambda_event_source_mapping" "onenote_sync" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_onenote_integration ? 1 : 0
 
   event_source_arn = aws_sqs_queue.onenote_sync[0].arn
   function_name    = module.onenote_sync_lambda[0].lambda_function_name
@@ -420,7 +420,7 @@ module "onenote_scheduler_lambda" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "8.1.2"
 
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_onenote_integration ? 1 : 0
 
   function_name = "${var.environment}-${var.app_name}-onenote-scheduler"
   description   = "Hourly scheduler for OneNote sync jobs"
@@ -498,7 +498,7 @@ module "onenote_scheduler_lambda" {
 
 # EventBridge rule for hourly sync
 resource "aws_cloudwatch_event_rule" "onenote_hourly_sync" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_onenote_integration ? 1 : 0
 
   name                = "${var.environment}-${var.app_name}-onenote-hourly-sync"
   description         = "Trigger OneNote sync scheduler every hour"
@@ -510,7 +510,7 @@ resource "aws_cloudwatch_event_rule" "onenote_hourly_sync" {
 }
 
 resource "aws_cloudwatch_event_target" "onenote_scheduler" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_onenote_integration ? 1 : 0
 
   rule      = aws_cloudwatch_event_rule.onenote_hourly_sync[0].name
   target_id = "onenote-scheduler"
@@ -518,7 +518,7 @@ resource "aws_cloudwatch_event_target" "onenote_scheduler" {
 }
 
 resource "aws_lambda_permission" "onenote_scheduler_eventbridge" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_onenote_integration ? 1 : 0
 
   statement_id  = "AllowEventBridgeInvoke"
   action        = "lambda:InvokeFunction"
@@ -532,7 +532,7 @@ resource "aws_lambda_permission" "onenote_scheduler_eventbridge" {
 # ============================================================================
 
 resource "aws_ssm_parameter" "microsoft_onenote_callback_url" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_onenote_integration ? 1 : 0
 
   name        = "/${var.environment}/${var.app_name}/oauth/microsoft/onenote-callback-url"
   description = "OAuth callback URL for OneNote. Register this in your Azure AD app registration after local.fqdn resolves to the UI ALB (whether via terraform-managed Route53 or external DNS - see docs/byo-cert-and-dns.md)."

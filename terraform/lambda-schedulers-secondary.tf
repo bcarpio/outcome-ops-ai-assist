@@ -381,7 +381,7 @@ module "outlook_scheduler_lambda_secondary" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "8.1.2"
 
-  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count = var.enable_workspaces && var.enable_outlook_integration && var.secondary_region != "" ? 1 : 0
 
   providers = {
     aws = aws.secondary
@@ -439,7 +439,7 @@ module "outlook_scheduler_lambda_secondary" {
 }
 
 resource "aws_cloudwatch_event_rule" "outlook_hourly_sync_secondary" {
-  count    = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count    = var.enable_workspaces && var.enable_outlook_integration && var.secondary_region != "" ? 1 : 0
   provider = aws.secondary
 
   name                = "${var.environment}-${var.app_name}-outlook-hourly-sync"
@@ -449,7 +449,7 @@ resource "aws_cloudwatch_event_rule" "outlook_hourly_sync_secondary" {
 }
 
 resource "aws_cloudwatch_event_target" "outlook_scheduler_secondary" {
-  count    = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count    = var.enable_workspaces && var.enable_outlook_integration && var.secondary_region != "" ? 1 : 0
   provider = aws.secondary
 
   rule      = aws_cloudwatch_event_rule.outlook_hourly_sync_secondary[0].name
@@ -458,7 +458,7 @@ resource "aws_cloudwatch_event_target" "outlook_scheduler_secondary" {
 }
 
 resource "aws_lambda_permission" "outlook_scheduler_eventbridge_secondary" {
-  count    = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count    = var.enable_workspaces && var.enable_outlook_integration && var.secondary_region != "" ? 1 : 0
   provider = aws.secondary
 
   statement_id  = "AllowEventBridgeInvoke"
@@ -472,7 +472,7 @@ module "teams_scheduler_lambda_secondary" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "8.1.2"
 
-  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count = var.enable_workspaces && var.enable_teams_integration && var.secondary_region != "" ? 1 : 0
 
   providers = {
     aws = aws.secondary
@@ -524,7 +524,7 @@ module "teams_scheduler_lambda_secondary" {
 }
 
 resource "aws_cloudwatch_event_rule" "teams_hourly_sync_secondary" {
-  count    = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count    = var.enable_workspaces && var.enable_teams_integration && var.secondary_region != "" ? 1 : 0
   provider = aws.secondary
 
   name                = "${var.environment}-${var.app_name}-teams-hourly-sync"
@@ -534,7 +534,7 @@ resource "aws_cloudwatch_event_rule" "teams_hourly_sync_secondary" {
 }
 
 resource "aws_cloudwatch_event_target" "teams_scheduler_secondary" {
-  count    = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count    = var.enable_workspaces && var.enable_teams_integration && var.secondary_region != "" ? 1 : 0
   provider = aws.secondary
 
   rule      = aws_cloudwatch_event_rule.teams_hourly_sync_secondary[0].name
@@ -543,7 +543,7 @@ resource "aws_cloudwatch_event_target" "teams_scheduler_secondary" {
 }
 
 resource "aws_lambda_permission" "teams_scheduler_eventbridge_secondary" {
-  count    = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count    = var.enable_workspaces && var.enable_teams_integration && var.secondary_region != "" ? 1 : 0
   provider = aws.secondary
 
   statement_id  = "AllowEventBridgeInvoke"
@@ -557,7 +557,7 @@ module "sharepoint_scheduler_lambda_secondary" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "8.1.2"
 
-  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count = var.enable_workspaces && var.enable_sharepoint_integration && var.secondary_region != "" ? 1 : 0
 
   providers = {
     aws = aws.secondary
@@ -609,7 +609,7 @@ module "sharepoint_scheduler_lambda_secondary" {
 }
 
 resource "aws_cloudwatch_event_rule" "sharepoint_hourly_sync_secondary" {
-  count    = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count    = var.enable_workspaces && var.enable_sharepoint_integration && var.secondary_region != "" ? 1 : 0
   provider = aws.secondary
 
   name                = "${var.environment}-${var.app_name}-sharepoint-hourly-sync"
@@ -619,7 +619,7 @@ resource "aws_cloudwatch_event_rule" "sharepoint_hourly_sync_secondary" {
 }
 
 resource "aws_cloudwatch_event_target" "sharepoint_scheduler_secondary" {
-  count    = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count    = var.enable_workspaces && var.enable_sharepoint_integration && var.secondary_region != "" ? 1 : 0
   provider = aws.secondary
 
   rule      = aws_cloudwatch_event_rule.sharepoint_hourly_sync_secondary[0].name
@@ -628,7 +628,7 @@ resource "aws_cloudwatch_event_target" "sharepoint_scheduler_secondary" {
 }
 
 resource "aws_lambda_permission" "sharepoint_scheduler_eventbridge_secondary" {
-  count    = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count    = var.enable_workspaces && var.enable_sharepoint_integration && var.secondary_region != "" ? 1 : 0
   provider = aws.secondary
 
   statement_id  = "AllowEventBridgeInvoke"
@@ -642,7 +642,7 @@ module "onedrive_scheduler_lambda_secondary" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "8.1.2"
 
-  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count = var.enable_workspaces && var.enable_onedrive_integration && var.secondary_region != "" ? 1 : 0
 
   providers = {
     aws = aws.secondary
@@ -694,7 +694,7 @@ module "onedrive_scheduler_lambda_secondary" {
 }
 
 resource "aws_cloudwatch_event_rule" "onedrive_hourly_sync_secondary" {
-  count    = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count    = var.enable_workspaces && var.enable_onedrive_integration && var.secondary_region != "" ? 1 : 0
   provider = aws.secondary
 
   name                = "${var.environment}-${var.app_name}-onedrive-hourly-sync"
@@ -704,7 +704,7 @@ resource "aws_cloudwatch_event_rule" "onedrive_hourly_sync_secondary" {
 }
 
 resource "aws_cloudwatch_event_target" "onedrive_scheduler_secondary" {
-  count    = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count    = var.enable_workspaces && var.enable_onedrive_integration && var.secondary_region != "" ? 1 : 0
   provider = aws.secondary
 
   rule      = aws_cloudwatch_event_rule.onedrive_hourly_sync_secondary[0].name
@@ -713,7 +713,7 @@ resource "aws_cloudwatch_event_target" "onedrive_scheduler_secondary" {
 }
 
 resource "aws_lambda_permission" "onedrive_scheduler_eventbridge_secondary" {
-  count    = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count    = var.enable_workspaces && var.enable_onedrive_integration && var.secondary_region != "" ? 1 : 0
   provider = aws.secondary
 
   statement_id  = "AllowEventBridgeInvoke"
@@ -727,7 +727,7 @@ module "onenote_scheduler_lambda_secondary" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "8.1.2"
 
-  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count = var.enable_workspaces && var.enable_onenote_integration && var.secondary_region != "" ? 1 : 0
 
   providers = {
     aws = aws.secondary
@@ -779,7 +779,7 @@ module "onenote_scheduler_lambda_secondary" {
 }
 
 resource "aws_cloudwatch_event_rule" "onenote_hourly_sync_secondary" {
-  count    = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count    = var.enable_workspaces && var.enable_onenote_integration && var.secondary_region != "" ? 1 : 0
   provider = aws.secondary
 
   name                = "${var.environment}-${var.app_name}-onenote-hourly-sync"
@@ -789,7 +789,7 @@ resource "aws_cloudwatch_event_rule" "onenote_hourly_sync_secondary" {
 }
 
 resource "aws_cloudwatch_event_target" "onenote_scheduler_secondary" {
-  count    = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count    = var.enable_workspaces && var.enable_onenote_integration && var.secondary_region != "" ? 1 : 0
   provider = aws.secondary
 
   rule      = aws_cloudwatch_event_rule.onenote_hourly_sync_secondary[0].name
@@ -798,7 +798,7 @@ resource "aws_cloudwatch_event_target" "onenote_scheduler_secondary" {
 }
 
 resource "aws_lambda_permission" "onenote_scheduler_eventbridge_secondary" {
-  count    = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count    = var.enable_workspaces && var.enable_onenote_integration && var.secondary_region != "" ? 1 : 0
   provider = aws.secondary
 
   statement_id  = "AllowEventBridgeInvoke"

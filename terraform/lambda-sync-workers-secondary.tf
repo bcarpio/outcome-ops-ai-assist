@@ -378,7 +378,7 @@ module "outlook_sync_lambda_secondary" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "8.1.2"
 
-  count     = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count     = var.enable_workspaces && var.enable_outlook_integration && var.secondary_region != "" ? 1 : 0
   providers = { aws = aws.secondary }
 
   function_name = "${var.environment}-${var.app_name}-outlook-sync"
@@ -471,7 +471,7 @@ module "outlook_sync_lambda_secondary" {
 }
 
 resource "aws_lambda_event_source_mapping" "outlook_sync_secondary" {
-  count            = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count            = var.enable_workspaces && var.enable_outlook_integration && var.secondary_region != "" ? 1 : 0
   provider         = aws.secondary
   event_source_arn = aws_sqs_queue.outlook_sync_secondary[0].arn
   function_name    = module.outlook_sync_lambda_secondary[0].lambda_function_name
@@ -486,7 +486,7 @@ module "teams_sync_lambda_secondary" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "8.1.2"
 
-  count     = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count     = var.enable_workspaces && var.enable_teams_integration && var.secondary_region != "" ? 1 : 0
   providers = { aws = aws.secondary }
 
   function_name = "${var.environment}-${var.app_name}-teams-sync"
@@ -579,7 +579,7 @@ module "teams_sync_lambda_secondary" {
 }
 
 resource "aws_lambda_event_source_mapping" "teams_sync_secondary" {
-  count            = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count            = var.enable_workspaces && var.enable_teams_integration && var.secondary_region != "" ? 1 : 0
   provider         = aws.secondary
   event_source_arn = aws_sqs_queue.teams_sync_secondary[0].arn
   function_name    = module.teams_sync_lambda_secondary[0].lambda_function_name
@@ -594,7 +594,7 @@ module "sharepoint_sync_lambda_secondary" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "8.1.2"
 
-  count     = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count     = var.enable_workspaces && var.enable_sharepoint_integration && var.secondary_region != "" ? 1 : 0
   providers = { aws = aws.secondary }
 
   function_name = "${var.environment}-${var.app_name}-sharepoint-sync"
@@ -687,7 +687,7 @@ module "sharepoint_sync_lambda_secondary" {
 }
 
 resource "aws_lambda_event_source_mapping" "sharepoint_sync_secondary" {
-  count            = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count            = var.enable_workspaces && var.enable_sharepoint_integration && var.secondary_region != "" ? 1 : 0
   provider         = aws.secondary
   event_source_arn = aws_sqs_queue.sharepoint_sync_secondary[0].arn
   function_name    = module.sharepoint_sync_lambda_secondary[0].lambda_function_name
@@ -702,7 +702,7 @@ module "onedrive_sync_lambda_secondary" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "8.1.2"
 
-  count     = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count     = var.enable_workspaces && var.enable_onedrive_integration && var.secondary_region != "" ? 1 : 0
   providers = { aws = aws.secondary }
 
   function_name = "${var.environment}-${var.app_name}-onedrive-sync"
@@ -795,7 +795,7 @@ module "onedrive_sync_lambda_secondary" {
 }
 
 resource "aws_lambda_event_source_mapping" "onedrive_sync_secondary" {
-  count            = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count            = var.enable_workspaces && var.enable_onedrive_integration && var.secondary_region != "" ? 1 : 0
   provider         = aws.secondary
   event_source_arn = aws_sqs_queue.onedrive_sync_secondary[0].arn
   function_name    = module.onedrive_sync_lambda_secondary[0].lambda_function_name
@@ -810,7 +810,7 @@ module "onenote_sync_lambda_secondary" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "8.1.2"
 
-  count     = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count     = var.enable_workspaces && var.enable_onenote_integration && var.secondary_region != "" ? 1 : 0
   providers = { aws = aws.secondary }
 
   function_name = "${var.environment}-${var.app_name}-onenote-sync"
@@ -903,7 +903,7 @@ module "onenote_sync_lambda_secondary" {
 }
 
 resource "aws_lambda_event_source_mapping" "onenote_sync_secondary" {
-  count            = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count            = var.enable_workspaces && var.enable_onenote_integration && var.secondary_region != "" ? 1 : 0
   provider         = aws.secondary
   event_source_arn = aws_sqs_queue.onenote_sync_secondary[0].arn
   function_name    = module.onenote_sync_lambda_secondary[0].lambda_function_name

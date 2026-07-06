@@ -7,7 +7,7 @@ module "teams_integration_lambda" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "8.1.2"
 
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_teams_integration ? 1 : 0
 
   function_name = "${var.environment}-${var.app_name}-teams-integration"
   description   = "Microsoft Teams OAuth and connection management for OutcomeOps AI Assist"
@@ -155,7 +155,7 @@ module "teams_integration_lambda" {
 
 # Lambda Function URL with IAM auth
 resource "aws_lambda_function_url" "teams_integration" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_teams_integration ? 1 : 0
 
   function_name      = module.teams_integration_lambda[0].lambda_function_name
   authorization_type = "AWS_IAM"
@@ -171,7 +171,7 @@ resource "aws_lambda_function_url" "teams_integration" {
 
 # Store URL in SSM for Fargate proxy
 resource "aws_ssm_parameter" "teams_integration_url" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_teams_integration ? 1 : 0
 
   name        = "/${var.environment}/${var.app_name}/api/teams-integration-url"
   description = "Lambda Function URL for Teams integration (IAM auth required)"
@@ -188,7 +188,7 @@ resource "aws_ssm_parameter" "teams_integration_url" {
 # ============================================================================
 
 resource "aws_sqs_queue" "teams_sync" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_teams_integration ? 1 : 0
 
   name                       = "${var.environment}-${var.app_name}-teams-sync"
   visibility_timeout_seconds = 900   # 15 minutes for long-running syncs
@@ -211,7 +211,7 @@ resource "aws_sqs_queue" "teams_sync" {
 }
 
 resource "aws_sqs_queue" "teams_sync_dlq" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_teams_integration ? 1 : 0
 
   name                      = "${var.environment}-${var.app_name}-teams-sync-dlq"
   message_retention_seconds = 1209600 # 14 days
@@ -233,7 +233,7 @@ module "teams_sync_lambda" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "8.1.2"
 
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_teams_integration ? 1 : 0
 
   function_name = "${var.environment}-${var.app_name}-teams-sync"
   description   = "Syncs Teams messages to knowledge base for OutcomeOps AI Assist"
@@ -398,7 +398,7 @@ module "teams_sync_lambda" {
 
 # SQS trigger for sync Lambda
 resource "aws_lambda_event_source_mapping" "teams_sync" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_teams_integration ? 1 : 0
 
   event_source_arn = aws_sqs_queue.teams_sync[0].arn
   function_name    = module.teams_sync_lambda[0].lambda_function_name
@@ -420,7 +420,7 @@ module "teams_scheduler_lambda" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "8.1.2"
 
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_teams_integration ? 1 : 0
 
   function_name = "${var.environment}-${var.app_name}-teams-scheduler"
   description   = "Hourly scheduler for Teams sync jobs"
@@ -498,7 +498,7 @@ module "teams_scheduler_lambda" {
 
 # EventBridge rule for hourly sync
 resource "aws_cloudwatch_event_rule" "teams_hourly_sync" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_teams_integration ? 1 : 0
 
   name                = "${var.environment}-${var.app_name}-teams-hourly-sync"
   description         = "Trigger Teams sync scheduler every hour"
@@ -510,7 +510,7 @@ resource "aws_cloudwatch_event_rule" "teams_hourly_sync" {
 }
 
 resource "aws_cloudwatch_event_target" "teams_scheduler" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_teams_integration ? 1 : 0
 
   rule      = aws_cloudwatch_event_rule.teams_hourly_sync[0].name
   target_id = "teams-scheduler"
@@ -518,7 +518,7 @@ resource "aws_cloudwatch_event_target" "teams_scheduler" {
 }
 
 resource "aws_lambda_permission" "teams_scheduler_eventbridge" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_teams_integration ? 1 : 0
 
   statement_id  = "AllowEventBridgeInvoke"
   action        = "lambda:InvokeFunction"
@@ -532,7 +532,7 @@ resource "aws_lambda_permission" "teams_scheduler_eventbridge" {
 # ============================================================================
 
 resource "aws_ssm_parameter" "microsoft_teams_callback_url" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_teams_integration ? 1 : 0
 
   name        = "/${var.environment}/${var.app_name}/oauth/microsoft/teams-callback-url"
   description = "OAuth callback URL for Teams. Register this in your Azure AD app registration after local.fqdn resolves to the UI ALB (whether via terraform-managed Route53 or external DNS - see docs/byo-cert-and-dns.md)."
