@@ -193,10 +193,18 @@ github_usernames_to_tag = "yourusername"
 # ui_private_subnet_ids = ["subnet-xxxxxxxx", "subnet-yyyyyyyy"]
 # ui_container_image    = "123456789012.dkr.ecr.us-west-2.amazonaws.com/outcome-ops-ai-assist-ui:latest"
 
-# ALB Access Mode:
-#   true  = Internal ALB (default) - customer provides VPC/TGW/DX/VPN access
-#   false = Public ALB - secured by Azure AD OIDC
-# ui_alb_internal = false
+# ALB Access Mode (see docs/adr/ADR-042 for the design rationale):
+#   true  = Internal ALB. RECOMMENDED for customer / enterprise deploys.
+#          The ALB has no public IP; customers route traffic to it via
+#          their existing enterprise ingress (Direct Connect, Transit
+#          Gateway, VPN, on-VPC compute). This is the SOC 2 / HIPAA /
+#          FedRAMP-friendly posture the product is designed around.
+#   false = Public ALB, guarded solely by Azure AD OIDC at the Express
+#          layer. Intended for the OutcomeOps maintainer's sandbox and
+#          low-stakes PoCs. The variable default is `false` for backwards
+#          compatibility with initial sandbox deploys; customer deploys
+#          should explicitly set this to `true`.
+# ui_alb_internal = true
 
 # Assign public IP to Fargate tasks. Default: false.
 # Set true for public subnets without NAT; false for private subnets with

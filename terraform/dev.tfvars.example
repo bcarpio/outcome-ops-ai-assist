@@ -173,9 +173,10 @@ github_usernames_to_tag = "yourusername"
 # ui_private_subnet_ids = ["subnet-xxxxxxxx", "subnet-yyyyyyyy"]
 # ui_container_image    = "123456789012.dkr.ecr.us-west-2.amazonaws.com/outcome-ops-ai-assist-ui:latest"
 
-# ALB Access Mode:
-#   true  = Internal ALB (default) - customer provides VPC/TGW/DX/VPN access
-#   false = Public ALB - secured by Azure AD OIDC
+# ALB Access Mode (see docs/adr/ADR-042 for the design rationale):
+#   true  = Internal ALB. Customer / enterprise recommendation.
+#   false = Public ALB, guarded solely by Azure AD OIDC. Fine for dev
+#          / sandbox use where public reachability is convenient.
 # ui_alb_internal = false
 
 # Assign public IP to Fargate tasks. Default: false.
