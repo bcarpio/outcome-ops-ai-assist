@@ -7,7 +7,7 @@ module "jira_integration_lambda" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "8.1.2"
 
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_jira_integration ? 1 : 0
 
   function_name = "${var.environment}-${var.app_name}-jira-integration"
   description   = "Jira OAuth and connection management for OutcomeOps AI Assist"
@@ -149,7 +149,7 @@ module "jira_integration_lambda" {
 
 # Lambda Function URL with IAM auth
 resource "aws_lambda_function_url" "jira_integration" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_jira_integration ? 1 : 0
 
   function_name      = module.jira_integration_lambda[0].lambda_function_name
   authorization_type = "AWS_IAM"
@@ -165,7 +165,7 @@ resource "aws_lambda_function_url" "jira_integration" {
 
 # Store URL in SSM for Fargate proxy
 resource "aws_ssm_parameter" "jira_integration_url" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_jira_integration ? 1 : 0
 
   name        = "/${var.environment}/${var.app_name}/api/jira-integration-url"
   description = "Lambda Function URL for Jira integration (IAM auth required)"
@@ -182,7 +182,7 @@ resource "aws_ssm_parameter" "jira_integration_url" {
 # ============================================================================
 
 resource "aws_sqs_queue" "jira_sync" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_jira_integration ? 1 : 0
 
   name                       = "${var.environment}-${var.app_name}-jira-sync"
   visibility_timeout_seconds = 900   # 15 minutes for long-running syncs
@@ -205,7 +205,7 @@ resource "aws_sqs_queue" "jira_sync" {
 }
 
 resource "aws_sqs_queue" "jira_sync_dlq" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_jira_integration ? 1 : 0
 
   name                      = "${var.environment}-${var.app_name}-jira-sync-dlq"
   message_retention_seconds = 1209600 # 14 days
@@ -227,7 +227,7 @@ module "jira_sync_lambda" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "8.1.2"
 
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_jira_integration ? 1 : 0
 
   function_name = "${var.environment}-${var.app_name}-jira-sync"
   description   = "Syncs Jira issues to vector store for OutcomeOps AI Assist"
@@ -384,7 +384,7 @@ module "jira_sync_lambda" {
 
 # SQS trigger for sync Lambda
 resource "aws_lambda_event_source_mapping" "jira_sync" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_jira_integration ? 1 : 0
 
   event_source_arn = aws_sqs_queue.jira_sync[0].arn
   function_name    = module.jira_sync_lambda[0].lambda_function_name
@@ -406,7 +406,7 @@ module "jira_scheduler_lambda" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "8.1.2"
 
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_jira_integration ? 1 : 0
 
   function_name = "${var.environment}-${var.app_name}-jira-scheduler"
   description   = "Hourly scheduler for Jira sync jobs"
@@ -484,7 +484,7 @@ module "jira_scheduler_lambda" {
 
 # EventBridge rule for hourly sync
 resource "aws_cloudwatch_event_rule" "jira_hourly_sync" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_jira_integration ? 1 : 0
 
   name                = "${var.environment}-${var.app_name}-jira-hourly-sync"
   description         = "Trigger Jira sync scheduler every hour"
@@ -496,7 +496,7 @@ resource "aws_cloudwatch_event_rule" "jira_hourly_sync" {
 }
 
 resource "aws_cloudwatch_event_target" "jira_scheduler" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_jira_integration ? 1 : 0
 
   rule      = aws_cloudwatch_event_rule.jira_hourly_sync[0].name
   target_id = "jira-scheduler"
@@ -504,7 +504,7 @@ resource "aws_cloudwatch_event_target" "jira_scheduler" {
 }
 
 resource "aws_lambda_permission" "jira_scheduler_eventbridge" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_jira_integration ? 1 : 0
 
   statement_id  = "AllowEventBridgeInvoke"
   action        = "lambda:InvokeFunction"
@@ -519,7 +519,7 @@ resource "aws_lambda_permission" "jira_scheduler_eventbridge" {
 # ============================================================================
 
 resource "aws_ssm_parameter" "atlassian_jira_callback_url" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_jira_integration ? 1 : 0
 
   name        = "/${var.environment}/${var.app_name}/oauth/atlassian/jira-callback-url"
   description = "OAuth callback URL for Jira. Register this in your Atlassian OAuth app config after local.fqdn resolves to the UI ALB (whether via terraform-managed Route53 or external DNS - see docs/byo-cert-and-dns.md)."
