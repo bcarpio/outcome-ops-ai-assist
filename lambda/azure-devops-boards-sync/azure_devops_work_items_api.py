@@ -321,8 +321,18 @@ def build_incremental_wiql(
         )
         conditions.append(f"[System.State] NOT IN ({quoted})")
     if changed_since:
+        # WIQL treats [System.ChangedDate] as date-precision: passing
+        # a time component ("2026-04-07T08:04:35Z") triggers
+        # TF-style parser error "You cannot supply a time with the
+        # date when running a query using date precision." Strip to
+        # YYYY-MM-DD and use >= (inclusive) instead of >, so items
+        # that changed later on the watermark day still come along.
+        # Sub-day accuracy is a nice-to-have; deterministic
+        # document_id + idempotent S3 puts absorb the re-fetch cost
+        # of items that were already ingested earlier the same day.
+        date_only = changed_since.split("T", 1)[0]
         conditions.append(
-            f"[System.ChangedDate] > '{_escape_wiql_string(changed_since)}'"
+            f"[System.ChangedDate] >= '{_escape_wiql_string(date_only)}'"
         )
     where_clause = "\n  AND ".join(conditions)
     return (

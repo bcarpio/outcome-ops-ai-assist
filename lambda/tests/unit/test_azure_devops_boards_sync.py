@@ -211,7 +211,10 @@ class TestIncrementalSync:
             handler.process_sync_request(_sync_message())
 
         wiql_query = mock_wiql.call_args.args[3]
-        assert "'2026-07-01T00:00:00Z'" in wiql_query
+        # Watermark stripped to YYYY-MM-DD for ADO's WIQL date-precision
+        # requirement; operator is >= (inclusive) so items later in the
+        # watermark day still come along.
+        assert "[System.ChangedDate] >= '2026-07-01'" in wiql_query
 
     def test_empty_result_returns_success_and_advances_no_watermark(self, mock_table):
         mock_table.get_item.return_value = {

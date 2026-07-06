@@ -235,11 +235,19 @@ class TestBuildIncrementalWIQL:
         assert "[System.ChangedDate] >" not in query
         assert "ORDER BY [System.ChangedDate] DESC, [System.Id] DESC" in query
 
-    def test_watermark_becomes_where_clause(self):
+    def test_watermark_stripped_to_date_only(self):
+        # WIQL [System.ChangedDate] is date-precision; passing a time
+        # component triggers a TF-style parser error. Regression guard:
+        # only the YYYY-MM-DD substring lands in the WHERE clause, and
+        # the operator is >= so items later in the watermark day still
+        # come along.
         query = api.build_incremental_wiql(
             project="p1", changed_since="2026-07-04T12:00:00Z",
         )
-        assert "[System.ChangedDate] > '2026-07-04T12:00:00Z'" in query
+        assert "[System.ChangedDate] >= '2026-07-04'" in query
+        # No time component or Z in the emitted WHERE clause.
+        assert "T12:00:00" not in query
+        assert "> '2026-07-04'" not in query
 
     def test_open_only_false_drops_state_filter(self):
         query = api.build_incremental_wiql(
