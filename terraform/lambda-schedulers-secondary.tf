@@ -23,7 +23,7 @@ module "github_scheduler_lambda_secondary" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "8.1.2"
 
-  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count = var.enable_workspaces && var.enable_github_integration && var.secondary_region != "" ? 1 : 0
 
   providers = {
     aws = aws.secondary
@@ -75,7 +75,7 @@ module "github_scheduler_lambda_secondary" {
 }
 
 resource "aws_cloudwatch_event_rule" "github_hourly_sync_secondary" {
-  count    = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count    = var.enable_workspaces && var.enable_github_integration && var.secondary_region != "" ? 1 : 0
   provider = aws.secondary
 
   name                = "${var.environment}-${var.app_name}-github-hourly-sync"
@@ -85,7 +85,7 @@ resource "aws_cloudwatch_event_rule" "github_hourly_sync_secondary" {
 }
 
 resource "aws_cloudwatch_event_target" "github_scheduler_secondary" {
-  count    = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count    = var.enable_workspaces && var.enable_github_integration && var.secondary_region != "" ? 1 : 0
   provider = aws.secondary
 
   rule      = aws_cloudwatch_event_rule.github_hourly_sync_secondary[0].name
@@ -94,7 +94,7 @@ resource "aws_cloudwatch_event_target" "github_scheduler_secondary" {
 }
 
 resource "aws_lambda_permission" "github_scheduler_eventbridge_secondary" {
-  count    = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count    = var.enable_workspaces && var.enable_github_integration && var.secondary_region != "" ? 1 : 0
   provider = aws.secondary
 
   statement_id  = "AllowEventBridgeInvoke"

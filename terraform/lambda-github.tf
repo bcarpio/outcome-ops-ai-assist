@@ -7,7 +7,7 @@ module "github_integration_lambda" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "8.1.2"
 
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_github_integration ? 1 : 0
 
   function_name = "${var.environment}-${var.app_name}-github-integration"
   description   = "GitHub App OAuth and connection management for OutcomeOps AI Assist"
@@ -141,7 +141,7 @@ module "github_integration_lambda" {
 
 # Lambda Function URL with IAM auth
 resource "aws_lambda_function_url" "github_integration" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_github_integration ? 1 : 0
 
   function_name      = module.github_integration_lambda[0].lambda_function_name
   authorization_type = "AWS_IAM"
@@ -157,7 +157,7 @@ resource "aws_lambda_function_url" "github_integration" {
 
 # Store URL in SSM for Fargate proxy
 resource "aws_ssm_parameter" "github_integration_url" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_github_integration ? 1 : 0
 
   name        = "/${var.environment}/${var.app_name}/api/github-integration-url"
   description = "Lambda Function URL for GitHub integration (IAM auth required)"
@@ -174,7 +174,7 @@ resource "aws_ssm_parameter" "github_integration_url" {
 # ============================================================================
 
 resource "aws_sqs_queue" "github_sync" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_github_integration ? 1 : 0
 
   name                       = "${var.environment}-${var.app_name}-github-sync"
   visibility_timeout_seconds = 900   # 15 minutes for long-running syncs
@@ -197,7 +197,7 @@ resource "aws_sqs_queue" "github_sync" {
 }
 
 resource "aws_sqs_queue" "github_sync_dlq" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_github_integration ? 1 : 0
 
   name                      = "${var.environment}-${var.app_name}-github-sync-dlq"
   message_retention_seconds = 1209600 # 14 days
@@ -219,7 +219,7 @@ module "github_sync_lambda" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "8.1.2"
 
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_github_integration ? 1 : 0
 
   function_name = "${var.environment}-${var.app_name}-github-sync"
   description   = "Syncs GitHub repos for code-map generation for OutcomeOps AI Assist"
@@ -393,7 +393,7 @@ module "github_sync_lambda" {
 
 # SQS trigger for sync Lambda
 resource "aws_lambda_event_source_mapping" "github_sync" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_github_integration ? 1 : 0
 
   event_source_arn = aws_sqs_queue.github_sync[0].arn
   function_name    = module.github_sync_lambda[0].lambda_function_name
@@ -415,7 +415,7 @@ module "github_scheduler_lambda" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "8.1.2"
 
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_github_integration ? 1 : 0
 
   function_name = "${var.environment}-${var.app_name}-github-scheduler"
   description   = "Hourly scheduler for GitHub sync jobs"
@@ -493,7 +493,7 @@ module "github_scheduler_lambda" {
 
 # EventBridge rule for hourly sync
 resource "aws_cloudwatch_event_rule" "github_hourly_sync" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_github_integration ? 1 : 0
 
   name                = "${var.environment}-${var.app_name}-github-hourly-sync"
   description         = "Trigger GitHub sync scheduler every hour"
@@ -505,7 +505,7 @@ resource "aws_cloudwatch_event_rule" "github_hourly_sync" {
 }
 
 resource "aws_cloudwatch_event_target" "github_scheduler" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_github_integration ? 1 : 0
 
   rule      = aws_cloudwatch_event_rule.github_hourly_sync[0].name
   target_id = "github-scheduler"
@@ -513,7 +513,7 @@ resource "aws_cloudwatch_event_target" "github_scheduler" {
 }
 
 resource "aws_lambda_permission" "github_scheduler_eventbridge" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_github_integration ? 1 : 0
 
   statement_id  = "AllowEventBridgeInvoke"
   action        = "lambda:InvokeFunction"
@@ -528,7 +528,7 @@ resource "aws_lambda_permission" "github_scheduler_eventbridge" {
 # ============================================================================
 
 resource "aws_ssm_parameter" "github_app_id" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_github_integration ? 1 : 0
 
   name        = "/${var.environment}/${var.app_name}/github/app-id"
   description = "GitHub App ID"
@@ -542,7 +542,7 @@ resource "aws_ssm_parameter" "github_app_id" {
 }
 
 resource "aws_ssm_parameter" "github_private_key" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_github_integration ? 1 : 0
 
   name        = "/${var.environment}/${var.app_name}/github/private-key"
   description = "GitHub App private key (PEM format)"
@@ -560,7 +560,7 @@ resource "aws_ssm_parameter" "github_private_key" {
 }
 
 resource "aws_ssm_parameter" "github_client_id" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_github_integration ? 1 : 0
 
   name        = "/${var.environment}/${var.app_name}/github/client-id"
   description = "GitHub App OAuth client ID"
@@ -574,7 +574,7 @@ resource "aws_ssm_parameter" "github_client_id" {
 }
 
 resource "aws_ssm_parameter" "github_client_secret" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_github_integration ? 1 : 0
 
   name        = "/${var.environment}/${var.app_name}/github/client-secret"
   description = "GitHub App OAuth client secret"
@@ -592,7 +592,7 @@ resource "aws_ssm_parameter" "github_client_secret" {
 }
 
 resource "aws_ssm_parameter" "github_webhook_secret" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_github_integration ? 1 : 0
 
   name        = "/${var.environment}/${var.app_name}/github/webhook-secret"
   description = "GitHub App webhook secret"
@@ -610,7 +610,7 @@ resource "aws_ssm_parameter" "github_webhook_secret" {
 }
 
 resource "aws_ssm_parameter" "github_callback_url" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_github_integration ? 1 : 0
 
   name        = "/${var.environment}/${var.app_name}/github/callback-url"
   description = "OAuth callback URL for GitHub. Register this in your GitHub App config after local.fqdn resolves to the UI ALB (whether via terraform-managed Route53 or external DNS - see docs/byo-cert-and-dns.md)."
@@ -624,7 +624,7 @@ resource "aws_ssm_parameter" "github_callback_url" {
 }
 
 resource "aws_ssm_parameter" "github_app_slug" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_github_integration ? 1 : 0
 
   name        = "/${var.environment}/${var.app_name}/github/app-slug"
   description = "GitHub App URL slug (from GitHub App settings page URL)"
@@ -690,7 +690,7 @@ output "github_scheduler_lambda_arn" {
 # ============================================================================
 
 resource "aws_ssm_parameter" "github_private_key_secondary" {
-  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count = var.enable_workspaces && var.enable_github_integration && var.secondary_region != "" ? 1 : 0
 
   provider = aws.secondary
 
@@ -710,7 +710,7 @@ resource "aws_ssm_parameter" "github_private_key_secondary" {
 }
 
 resource "aws_ssm_parameter" "github_client_id_secondary" {
-  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count = var.enable_workspaces && var.enable_github_integration && var.secondary_region != "" ? 1 : 0
 
   provider = aws.secondary
 
@@ -726,7 +726,7 @@ resource "aws_ssm_parameter" "github_client_id_secondary" {
 }
 
 resource "aws_ssm_parameter" "github_client_secret_secondary" {
-  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count = var.enable_workspaces && var.enable_github_integration && var.secondary_region != "" ? 1 : 0
 
   provider = aws.secondary
 
@@ -746,7 +746,7 @@ resource "aws_ssm_parameter" "github_client_secret_secondary" {
 }
 
 resource "aws_ssm_parameter" "github_webhook_secret_secondary" {
-  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count = var.enable_workspaces && var.enable_github_integration && var.secondary_region != "" ? 1 : 0
 
   provider = aws.secondary
 
@@ -766,7 +766,7 @@ resource "aws_ssm_parameter" "github_webhook_secret_secondary" {
 }
 
 resource "aws_ssm_parameter" "github_callback_url_secondary" {
-  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count = var.enable_workspaces && var.enable_github_integration && var.secondary_region != "" ? 1 : 0
 
   provider = aws.secondary
 
@@ -782,7 +782,7 @@ resource "aws_ssm_parameter" "github_callback_url_secondary" {
 }
 
 resource "aws_ssm_parameter" "github_app_slug_secondary" {
-  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count = var.enable_workspaces && var.enable_github_integration && var.secondary_region != "" ? 1 : 0
 
   provider = aws.secondary
 
@@ -808,7 +808,7 @@ resource "aws_ssm_parameter" "github_app_slug_secondary" {
 # secret), so terraform manages it directly here — not via
 # ha-sync-secrets, which only carries SecureStrings.
 resource "aws_ssm_parameter" "github_app_id_secondary" {
-  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count = var.enable_workspaces && var.enable_github_integration && var.secondary_region != "" ? 1 : 0
 
   provider = aws.secondary
 

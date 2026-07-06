@@ -26,7 +26,7 @@
 # ----------------------------------------------------------------------------
 
 resource "aws_sqs_queue" "github_sync_secondary" {
-  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count = var.enable_workspaces && var.enable_github_integration && var.secondary_region != "" ? 1 : 0
 
   provider = aws.secondary
 
@@ -49,7 +49,7 @@ resource "aws_sqs_queue" "github_sync_secondary" {
 }
 
 resource "aws_sqs_queue" "github_sync_dlq_secondary" {
-  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count = var.enable_workspaces && var.enable_github_integration && var.secondary_region != "" ? 1 : 0
 
   provider = aws.secondary
 

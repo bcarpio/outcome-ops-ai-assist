@@ -28,7 +28,7 @@ module "github_integration_lambda_secondary" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "8.1.2"
 
-  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count = var.enable_workspaces && var.enable_github_integration && var.secondary_region != "" ? 1 : 0
 
   providers = {
     aws = aws.secondary
@@ -118,7 +118,7 @@ module "github_integration_lambda_secondary" {
 }
 
 resource "aws_lambda_function_url" "github_integration_secondary" {
-  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count = var.enable_workspaces && var.enable_github_integration && var.secondary_region != "" ? 1 : 0
 
   provider = aws.secondary
 
@@ -135,7 +135,7 @@ resource "aws_lambda_function_url" "github_integration_secondary" {
 }
 
 resource "aws_ssm_parameter" "github_integration_url_secondary" {
-  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count = var.enable_workspaces && var.enable_github_integration && var.secondary_region != "" ? 1 : 0
 
   provider = aws.secondary
 
@@ -1114,48 +1114,48 @@ resource "aws_ssm_parameter" "database_integration_url_secondary" {
 # ============================================================================
 
 output "github_integration_url_secondary" {
-  description = "Lambda Function URL for GitHub integration in secondary region (null when HA disabled)"
-  value       = (var.enable_workspaces && var.secondary_region != "") ? aws_lambda_function_url.github_integration_secondary[0].function_url : null
+  description = "Lambda Function URL for GitHub integration in secondary region (null when HA disabled or gate off)"
+  value       = try(aws_lambda_function_url.github_integration_secondary[0].function_url, null)
 }
 
 output "confluence_integration_url_secondary" {
   description = "Lambda Function URL for Confluence integration in secondary region (null when HA disabled)"
-  value       = (var.enable_workspaces && var.secondary_region != "") ? aws_lambda_function_url.confluence_integration_secondary[0].function_url : null
+  value       = try(aws_lambda_function_url.confluence_integration_secondary[0].function_url, null)
 }
 
 output "jira_integration_url_secondary" {
   description = "Lambda Function URL for Jira integration in secondary region (null when HA disabled)"
-  value       = (var.enable_workspaces && var.secondary_region != "") ? aws_lambda_function_url.jira_integration_secondary[0].function_url : null
+  value       = try(aws_lambda_function_url.jira_integration_secondary[0].function_url, null)
 }
 
 output "outlook_integration_url_secondary" {
   description = "Lambda Function URL for Outlook integration in secondary region (null when HA disabled)"
-  value       = (var.enable_workspaces && var.secondary_region != "") ? aws_lambda_function_url.outlook_integration_secondary[0].function_url : null
+  value       = try(aws_lambda_function_url.outlook_integration_secondary[0].function_url, null)
 }
 
 output "teams_integration_url_secondary" {
   description = "Lambda Function URL for Teams integration in secondary region (null when HA disabled)"
-  value       = (var.enable_workspaces && var.secondary_region != "") ? aws_lambda_function_url.teams_integration_secondary[0].function_url : null
+  value       = try(aws_lambda_function_url.teams_integration_secondary[0].function_url, null)
 }
 
 output "sharepoint_integration_url_secondary" {
   description = "Lambda Function URL for SharePoint integration in secondary region (null when HA disabled)"
-  value       = (var.enable_workspaces && var.secondary_region != "") ? aws_lambda_function_url.sharepoint_integration_secondary[0].function_url : null
+  value       = try(aws_lambda_function_url.sharepoint_integration_secondary[0].function_url, null)
 }
 
 output "onedrive_integration_url_secondary" {
   description = "Lambda Function URL for OneDrive integration in secondary region (null when HA disabled)"
-  value       = (var.enable_workspaces && var.secondary_region != "") ? aws_lambda_function_url.onedrive_integration_secondary[0].function_url : null
+  value       = try(aws_lambda_function_url.onedrive_integration_secondary[0].function_url, null)
 }
 
 output "onenote_integration_url_secondary" {
   description = "Lambda Function URL for OneNote integration in secondary region (null when HA disabled)"
-  value       = (var.enable_workspaces && var.secondary_region != "") ? aws_lambda_function_url.onenote_integration_secondary[0].function_url : null
+  value       = try(aws_lambda_function_url.onenote_integration_secondary[0].function_url, null)
 }
 
 output "database_integration_url_secondary" {
   description = "Lambda Function URL for Database integration in secondary region (null when HA disabled)"
-  value       = (var.enable_workspaces && var.secondary_region != "") ? aws_lambda_function_url.database_integration_secondary[0].function_url : null
+  value       = try(aws_lambda_function_url.database_integration_secondary[0].function_url, null)
 }
 
 # ----------------------------------------------------------------------------
@@ -1326,5 +1326,5 @@ resource "aws_ssm_parameter" "azure_devops_integration_url_secondary" {
 
 output "azure_devops_integration_url_secondary" {
   description = "Lambda Function URL for Azure DevOps integration in secondary region (null when HA disabled)"
-  value       = (var.enable_workspaces && var.secondary_region != "") ? aws_lambda_function_url.azure_devops_integration_secondary[0].function_url : null
+  value       = try(aws_lambda_function_url.azure_devops_integration_secondary[0].function_url, null)
 }
