@@ -1166,7 +1166,7 @@ module "azure_devops_integration_lambda_secondary" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "8.1.2"
 
-  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count = var.enable_workspaces && var.enable_azure_devops_integration && var.secondary_region != "" ? 1 : 0
 
   providers = {
     aws = aws.secondary
@@ -1222,7 +1222,6 @@ module "azure_devops_integration_lambda_secondary" {
       AZURE_DEVOPS_CLIENT_ID               = var.azure_devops_client_id
       AZURE_DEVOPS_CLIENT_SECRET_SSM_PARAM = var.azure_devops_client_secret_ssm_param
       AZURE_DEVOPS_REDIRECT_URI            = var.azure_devops_redirect_uri
-      AZURE_DEVOPS_INTEGRATION_ENABLED     = tostring(var.enable_azure_devops_integration)
 
       AZURE_DEVOPS_SYNC_QUEUE = aws_sqs_queue.azure_devops_sync_secondary[0].url
       DELETE_QUEUE            = aws_sqs_queue.delete_queue_secondary[0].url
@@ -1296,7 +1295,7 @@ module "azure_devops_integration_lambda_secondary" {
 }
 
 resource "aws_lambda_function_url" "azure_devops_integration_secondary" {
-  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count = var.enable_workspaces && var.enable_azure_devops_integration && var.secondary_region != "" ? 1 : 0
 
   provider = aws.secondary
 
@@ -1313,7 +1312,7 @@ resource "aws_lambda_function_url" "azure_devops_integration_secondary" {
 }
 
 resource "aws_ssm_parameter" "azure_devops_integration_url_secondary" {
-  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count = var.enable_workspaces && var.enable_azure_devops_integration && var.secondary_region != "" ? 1 : 0
 
   provider = aws.secondary
 

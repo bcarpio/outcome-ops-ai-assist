@@ -116,11 +116,6 @@ AZURE_DEVOPS_CLIENT_SECRET_SSM_PARAM = os.environ.get(
 AZURE_DEVOPS_BOARDS_REDIRECT_URI = os.environ.get(
     "AZURE_DEVOPS_BOARDS_REDIRECT_URI", ""
 )
-AZURE_DEVOPS_BOARDS_INTEGRATION_ENABLED = (
-    os.environ.get(
-        "AZURE_DEVOPS_BOARDS_INTEGRATION_ENABLED", "false"
-    ).lower() == "true"
-)
 
 _dynamodb = None
 _ssm = None
@@ -294,9 +289,6 @@ def _microsoft_authorize_url() -> str:
 
 def handle_authorize(event: Dict) -> Dict:
     """GET /azure-devops-boards/authorize?workspace_id=..."""
-    if not AZURE_DEVOPS_BOARDS_INTEGRATION_ENABLED:
-        return _error(404, "Azure DevOps Boards integration not enabled")
-
     user_email = _get_user_from_request(event)
     if not user_email:
         return _error(401, "User email not provided")
@@ -334,9 +326,6 @@ def handle_authorize(event: Dict) -> Dict:
 
 def handle_callback(event: Dict) -> Dict:
     """GET /azure-devops-boards/callback"""
-    if not AZURE_DEVOPS_BOARDS_INTEGRATION_ENABLED:
-        return _error(404, "Azure DevOps Boards integration not enabled")
-
     query_params = event.get("queryStringParameters") or {}
     body_params: Dict[str, Any] = {}
     if event.get("body"):

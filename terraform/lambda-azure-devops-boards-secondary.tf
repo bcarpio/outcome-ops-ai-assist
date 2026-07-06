@@ -16,7 +16,7 @@
 # ---------------------------------------------------------------------------
 
 resource "aws_sqs_queue" "azure_devops_boards_sync_secondary" {
-  count    = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count    = var.enable_workspaces && var.enable_azure_devops_boards_integration && var.secondary_region != "" ? 1 : 0
   provider = aws.secondary
 
   name                              = "${var.environment}-${var.app_name}-azure-devops-boards-sync"
@@ -33,7 +33,7 @@ resource "aws_sqs_queue" "azure_devops_boards_sync_secondary" {
 }
 
 resource "aws_sqs_queue" "azure_devops_boards_sync_dlq_secondary" {
-  count    = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count    = var.enable_workspaces && var.enable_azure_devops_boards_integration && var.secondary_region != "" ? 1 : 0
   provider = aws.secondary
 
   name                              = "${var.environment}-${var.app_name}-azure-devops-boards-sync-dlq"
@@ -52,7 +52,7 @@ module "azure_devops_boards_integration_lambda_secondary" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "8.1.2"
 
-  count     = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count     = var.enable_workspaces && var.enable_azure_devops_boards_integration && var.secondary_region != "" ? 1 : 0
   providers = { aws = aws.secondary }
 
   function_name = "${var.environment}-${var.app_name}-azure-devops-boards-integration"
@@ -95,8 +95,7 @@ module "azure_devops_boards_integration_lambda_secondary" {
       AZURE_DEVOPS_CLIENT_SECRET_SSM_PARAM = var.azure_devops_client_secret_ssm_param
       # Same derived value as the primary (see the primary TF for the
       # rationale).
-      AZURE_DEVOPS_BOARDS_REDIRECT_URI        = "https://${local.fqdn}/api/azure-devops-boards/callback"
-      AZURE_DEVOPS_BOARDS_INTEGRATION_ENABLED = tostring(var.enable_azure_devops_boards_integration)
+      AZURE_DEVOPS_BOARDS_REDIRECT_URI = "https://${local.fqdn}/api/azure-devops-boards/callback"
 
       AZURE_DEVOPS_BOARDS_SYNC_QUEUE = aws_sqs_queue.azure_devops_boards_sync_secondary[0].url
       DELETE_QUEUE                   = aws_sqs_queue.delete_queue_secondary[0].url
@@ -160,7 +159,7 @@ module "azure_devops_boards_integration_lambda_secondary" {
 }
 
 resource "aws_lambda_function_url" "azure_devops_boards_integration_secondary" {
-  count    = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count    = var.enable_workspaces && var.enable_azure_devops_boards_integration && var.secondary_region != "" ? 1 : 0
   provider = aws.secondary
 
   function_name      = module.azure_devops_boards_integration_lambda_secondary[0].lambda_function_name
@@ -176,7 +175,7 @@ resource "aws_lambda_function_url" "azure_devops_boards_integration_secondary" {
 }
 
 resource "aws_ssm_parameter" "azure_devops_boards_integration_url_secondary" {
-  count    = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count    = var.enable_workspaces && var.enable_azure_devops_boards_integration && var.secondary_region != "" ? 1 : 0
   provider = aws.secondary
 
   name        = "/${var.environment}/${var.app_name}/api/azure-devops-boards-integration-url"
@@ -200,7 +199,7 @@ module "azure_devops_boards_sync_lambda_secondary" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "8.1.2"
 
-  count     = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count     = var.enable_workspaces && var.enable_azure_devops_boards_integration && var.secondary_region != "" ? 1 : 0
   providers = { aws = aws.secondary }
 
   function_name = "${var.environment}-${var.app_name}-azure-devops-boards-sync"
@@ -294,7 +293,7 @@ module "azure_devops_boards_sync_lambda_secondary" {
 }
 
 resource "aws_lambda_event_source_mapping" "azure_devops_boards_sync_secondary" {
-  count                   = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count                   = var.enable_workspaces && var.enable_azure_devops_boards_integration && var.secondary_region != "" ? 1 : 0
   provider                = aws.secondary
   event_source_arn        = aws_sqs_queue.azure_devops_boards_sync_secondary[0].arn
   function_name           = module.azure_devops_boards_sync_lambda_secondary[0].lambda_function_name
@@ -314,7 +313,7 @@ module "azure_devops_boards_scheduler_lambda_secondary" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "8.1.2"
 
-  count     = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count     = var.enable_workspaces && var.enable_azure_devops_boards_integration && var.secondary_region != "" ? 1 : 0
   providers = { aws = aws.secondary }
 
   function_name = "${var.environment}-${var.app_name}-azure-devops-boards-scheduler"
@@ -366,7 +365,7 @@ module "azure_devops_boards_scheduler_lambda_secondary" {
 }
 
 resource "aws_cloudwatch_event_rule" "azure_devops_boards_hourly_sync_secondary" {
-  count    = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count    = var.enable_workspaces && var.enable_azure_devops_boards_integration && var.secondary_region != "" ? 1 : 0
   provider = aws.secondary
 
   name                = "${var.environment}-${var.app_name}-azure-devops-boards-hourly-sync"
@@ -377,7 +376,7 @@ resource "aws_cloudwatch_event_rule" "azure_devops_boards_hourly_sync_secondary"
 }
 
 resource "aws_cloudwatch_event_target" "azure_devops_boards_scheduler_secondary" {
-  count    = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count    = var.enable_workspaces && var.enable_azure_devops_boards_integration && var.secondary_region != "" ? 1 : 0
   provider = aws.secondary
 
   rule = aws_cloudwatch_event_rule.azure_devops_boards_hourly_sync_secondary[0].name
@@ -385,7 +384,7 @@ resource "aws_cloudwatch_event_target" "azure_devops_boards_scheduler_secondary"
 }
 
 resource "aws_lambda_permission" "azure_devops_boards_scheduler_eventbridge_secondary" {
-  count    = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count    = var.enable_workspaces && var.enable_azure_devops_boards_integration && var.secondary_region != "" ? 1 : 0
   provider = aws.secondary
 
   statement_id  = "AllowEventBridgeInvoke"

@@ -61,7 +61,6 @@ _HANDLER_LOAD_ENV = {
     "AZURE_DEVOPS_CLIENT_ID": "client-uuid",
     "AZURE_DEVOPS_CLIENT_SECRET_SSM_PARAM": "/dev/oo/azure-devops/client-secret",
     "AZURE_DEVOPS_REDIRECT_URI": "https://example.com/api/azure-devops/callback",
-    "AZURE_DEVOPS_INTEGRATION_ENABLED": "true",
     "WORKSPACES_TABLE": "test-workspaces",
     "AZURE_DEVOPS_SYNC_QUEUE": "https://sqs.us-west-2.amazonaws.com/123/azure-devops-sync",
     "DELETE_QUEUE": "https://sqs.us-west-2.amazonaws.com/123/delete",
@@ -219,15 +218,6 @@ class TestAuthorize:
         )
         result = handler.lambda_handler(event, None)
         assert result["statusCode"] == 403
-
-    def test_returns_404_when_integration_disabled(self, mock_table):
-        _admin_user(mock_table)
-        with patch.object(handler, "AZURE_DEVOPS_INTEGRATION_ENABLED", False):
-            event = _make_event(
-                "GET", "/azure-devops/authorize", query={"workspace_id": "w1"},
-            )
-            result = handler.lambda_handler(event, None)
-            assert result["statusCode"] == 404
 
     def test_returns_500_when_oauth_app_unconfigured(self, mock_table):
         _admin_user(mock_table)

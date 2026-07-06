@@ -8,8 +8,9 @@
 # Notes worth keeping in mind when editing this file:
 #
 # 1. The integration is OFF by default. ``var.enable_azure_devops_boards_integration``
-#    plus all config values populated is required for the Lambda to do anything
-#    useful; the handler short-circuits with 404 when the flag is false.
+#    gates the ENTIRE terraform surface -- integration Lambda + Function URL
+#    + sync + scheduler + SQS + DLQ + EventBridge + IAM. Customers without
+#    Boards leave the flag false and provision none of it.
 #
 # 2. Reuses the Repos integration's tenant/client-id/client-secret tfvars.
 #    Customer registers ONE Entra ID app for both integrations; the app must
@@ -27,7 +28,7 @@ module "azure_devops_boards_integration_lambda" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "8.1.2"
 
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_azure_devops_boards_integration ? 1 : 0
 
   function_name = "${var.environment}-${var.app_name}-azure-devops-boards-integration"
   description   = "Azure DevOps Boards (work items) OAuth and connection management for OutcomeOps AI Assist"
@@ -80,8 +81,7 @@ module "azure_devops_boards_integration_lambda" {
       # Boards-specific. Redirect URI derived from the deploy's FQDN
       # -- customer registers the same value in Entra ID (see runbook
       # §12.2) but doesn't type it in tfvars twice.
-      AZURE_DEVOPS_BOARDS_REDIRECT_URI        = "https://${local.fqdn}/api/azure-devops-boards/callback"
-      AZURE_DEVOPS_BOARDS_INTEGRATION_ENABLED = tostring(var.enable_azure_devops_boards_integration)
+      AZURE_DEVOPS_BOARDS_REDIRECT_URI = "https://${local.fqdn}/api/azure-devops-boards/callback"
 
       AZURE_DEVOPS_BOARDS_SYNC_QUEUE = aws_sqs_queue.azure_devops_boards_sync[0].url
       DELETE_QUEUE                   = aws_sqs_queue.delete_queue[0].url
@@ -181,7 +181,7 @@ module "azure_devops_boards_integration_lambda" {
 }
 
 resource "aws_lambda_function_url" "azure_devops_boards_integration" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_azure_devops_boards_integration ? 1 : 0
 
   function_name      = module.azure_devops_boards_integration_lambda[0].lambda_function_name
   authorization_type = "AWS_IAM"
@@ -196,7 +196,7 @@ resource "aws_lambda_function_url" "azure_devops_boards_integration" {
 }
 
 resource "aws_ssm_parameter" "azure_devops_boards_integration_url" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_azure_devops_boards_integration ? 1 : 0
 
   name        = "/${var.environment}/${var.app_name}/api/azure-devops-boards-integration-url"
   description = "Lambda Function URL for Azure DevOps Boards integration (IAM auth required)"
@@ -216,7 +216,7 @@ resource "aws_ssm_parameter" "azure_devops_boards_integration_url" {
 # ============================================================================
 
 resource "aws_sqs_queue" "azure_devops_boards_sync" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_azure_devops_boards_integration ? 1 : 0
 
   name                       = "${var.environment}-${var.app_name}-azure-devops-boards-sync"
   visibility_timeout_seconds = 960
@@ -234,7 +234,7 @@ resource "aws_sqs_queue" "azure_devops_boards_sync" {
 }
 
 resource "aws_sqs_queue" "azure_devops_boards_sync_dlq" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_azure_devops_boards_integration ? 1 : 0
 
   name                              = "${var.environment}-${var.app_name}-azure-devops-boards-sync-dlq"
   message_retention_seconds         = 1209600
@@ -254,7 +254,7 @@ module "azure_devops_boards_sync_lambda" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "8.1.2"
 
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_azure_devops_boards_integration ? 1 : 0
 
   function_name = "${var.environment}-${var.app_name}-azure-devops-boards-sync"
   description   = "Per-project WIQL fetch + work-item ingest for OutcomeOps AI Assist"
@@ -388,7 +388,7 @@ module "azure_devops_boards_sync_lambda" {
 }
 
 resource "aws_lambda_event_source_mapping" "azure_devops_boards_sync" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_azure_devops_boards_integration ? 1 : 0
 
   event_source_arn = aws_sqs_queue.azure_devops_boards_sync[0].arn
   function_name    = module.azure_devops_boards_sync_lambda[0].lambda_function_name
@@ -411,7 +411,7 @@ module "azure_devops_boards_scheduler_lambda" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "8.1.2"
 
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_azure_devops_boards_integration ? 1 : 0
 
   function_name = "${var.environment}-${var.app_name}-azure-devops-boards-scheduler"
   description   = "Hourly scan-and-enqueue of Boards sync jobs for OutcomeOps AI Assist"
@@ -477,7 +477,7 @@ module "azure_devops_boards_scheduler_lambda" {
 }
 
 resource "aws_cloudwatch_event_rule" "azure_devops_boards_hourly_sync" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_azure_devops_boards_integration ? 1 : 0
 
   name                = "${var.environment}-${var.app_name}-azure-devops-boards-hourly-sync"
   description         = "Hourly Boards sync scheduler trigger"
@@ -489,14 +489,14 @@ resource "aws_cloudwatch_event_rule" "azure_devops_boards_hourly_sync" {
 }
 
 resource "aws_cloudwatch_event_target" "azure_devops_boards_scheduler" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_azure_devops_boards_integration ? 1 : 0
 
   rule = aws_cloudwatch_event_rule.azure_devops_boards_hourly_sync[0].name
   arn  = module.azure_devops_boards_scheduler_lambda[0].lambda_function_arn
 }
 
 resource "aws_lambda_permission" "azure_devops_boards_scheduler_eventbridge" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_azure_devops_boards_integration ? 1 : 0
 
   statement_id  = "AllowEventBridgeInvoke"
   action        = "lambda:InvokeFunction"

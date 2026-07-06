@@ -107,9 +107,6 @@ AZURE_DEVOPS_CLIENT_SECRET_SSM_PARAM = os.environ.get(
     "AZURE_DEVOPS_CLIENT_SECRET_SSM_PARAM", ""
 )
 AZURE_DEVOPS_REDIRECT_URI = os.environ.get("AZURE_DEVOPS_REDIRECT_URI", "")
-AZURE_DEVOPS_INTEGRATION_ENABLED = (
-    os.environ.get("AZURE_DEVOPS_INTEGRATION_ENABLED", "false").lower() == "true"
-)
 
 # Cached clients
 _dynamodb = None
@@ -277,9 +274,6 @@ def _microsoft_authorize_url() -> str:
 
 def handle_authorize(event: Dict) -> Dict:
     """GET /azure-devops/authorize?workspace_id=..."""
-    if not AZURE_DEVOPS_INTEGRATION_ENABLED:
-        return _error(404, "Azure DevOps integration not enabled")
-
     user_email = _get_user_from_request(event)
     if not user_email:
         return _error(401, "User email not provided")
@@ -317,9 +311,6 @@ def handle_authorize(event: Dict) -> Dict:
 
 def handle_callback(event: Dict) -> Dict:
     """GET /azure-devops/callback - Entra ID OAuth callback."""
-    if not AZURE_DEVOPS_INTEGRATION_ENABLED:
-        return _error(404, "Azure DevOps integration not enabled")
-
     query_params = event.get("queryStringParameters") or {}
     body_params: Dict[str, Any] = {}
     if event.get("body"):

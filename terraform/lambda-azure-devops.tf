@@ -8,10 +8,9 @@
 # Two notes worth keeping in mind when editing this file:
 #
 # 1. The integration is OFF by default. ``var.enable_azure_devops_integration``
-#    plus all four config values being populated is required for the Lambda
-#    to do anything useful at runtime; the handler short-circuits with 404
-#    if the flag is false. Customers without ADO leave the flag false and
-#    pay no operational tax.
+#    gates the ENTIRE terraform surface -- integration Lambda + Function URL
+#    + sync + scheduler + SQS + DLQ + EventBridge + IAM. Customers without
+#    ADO leave the flag false and provision none of it.
 #
 # 2. Single-tenant Entra ID. ``var.azure_devops_tenant_id`` is the customer's
 #    tenant. The handler builds the authorize URL with that tenant -- NOT
@@ -27,7 +26,7 @@ module "azure_devops_integration_lambda" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "8.1.2"
 
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_azure_devops_integration ? 1 : 0
 
   function_name = "${var.environment}-${var.app_name}-azure-devops-integration"
   description   = "Azure DevOps OAuth and connection management for OutcomeOps AI Assist"
@@ -77,7 +76,6 @@ module "azure_devops_integration_lambda" {
       AZURE_DEVOPS_CLIENT_ID               = var.azure_devops_client_id
       AZURE_DEVOPS_CLIENT_SECRET_SSM_PARAM = var.azure_devops_client_secret_ssm_param
       AZURE_DEVOPS_REDIRECT_URI            = var.azure_devops_redirect_uri
-      AZURE_DEVOPS_INTEGRATION_ENABLED     = tostring(var.enable_azure_devops_integration)
 
       AZURE_DEVOPS_SYNC_QUEUE = aws_sqs_queue.azure_devops_sync[0].url
       DELETE_QUEUE            = aws_sqs_queue.delete_queue[0].url
@@ -175,7 +173,7 @@ module "azure_devops_integration_lambda" {
 }
 
 resource "aws_lambda_function_url" "azure_devops_integration" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_azure_devops_integration ? 1 : 0
 
   function_name      = module.azure_devops_integration_lambda[0].lambda_function_name
   authorization_type = "AWS_IAM"
@@ -190,7 +188,7 @@ resource "aws_lambda_function_url" "azure_devops_integration" {
 }
 
 resource "aws_ssm_parameter" "azure_devops_integration_url" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_azure_devops_integration ? 1 : 0
 
   name        = "/${var.environment}/${var.app_name}/api/azure-devops-integration-url"
   description = "Lambda Function URL for Azure DevOps integration (IAM auth required)"
@@ -211,7 +209,7 @@ resource "aws_ssm_parameter" "azure_devops_integration_url" {
 # ============================================================================
 
 resource "aws_sqs_queue" "azure_devops_sync" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_azure_devops_integration ? 1 : 0
 
   name                       = "${var.environment}-${var.app_name}-azure-devops-sync"
   visibility_timeout_seconds = 900   # 15 minutes for long-running syncs
@@ -232,7 +230,7 @@ resource "aws_sqs_queue" "azure_devops_sync" {
 }
 
 resource "aws_sqs_queue" "azure_devops_sync_dlq" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_azure_devops_integration ? 1 : 0
 
   name                      = "${var.environment}-${var.app_name}-azure-devops-sync-dlq"
   message_retention_seconds = 1209600 # 14 days
@@ -285,7 +283,7 @@ module "azure_devops_scheduler_lambda" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "8.1.2"
 
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_azure_devops_integration ? 1 : 0
 
   function_name = "${var.environment}-${var.app_name}-azure-devops-scheduler"
   description   = "Hourly scheduler for Azure DevOps sync jobs"
@@ -349,7 +347,7 @@ module "azure_devops_scheduler_lambda" {
 }
 
 resource "aws_cloudwatch_event_rule" "azure_devops_hourly_sync" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_azure_devops_integration ? 1 : 0
 
   name                = "${var.environment}-${var.app_name}-azure-devops-hourly-sync"
   description         = "Trigger Azure DevOps sync scheduler every hour"
@@ -361,7 +359,7 @@ resource "aws_cloudwatch_event_rule" "azure_devops_hourly_sync" {
 }
 
 resource "aws_cloudwatch_event_target" "azure_devops_scheduler" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_azure_devops_integration ? 1 : 0
 
   rule      = aws_cloudwatch_event_rule.azure_devops_hourly_sync[0].name
   target_id = "azure-devops-scheduler"
@@ -369,7 +367,7 @@ resource "aws_cloudwatch_event_target" "azure_devops_scheduler" {
 }
 
 resource "aws_lambda_permission" "azure_devops_scheduler_eventbridge" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_azure_devops_integration ? 1 : 0
 
   statement_id  = "AllowEventBridgeInvoke"
   action        = "lambda:InvokeFunction"
@@ -388,7 +386,7 @@ module "azure_devops_sync_lambda" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "8.1.2"
 
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_azure_devops_integration ? 1 : 0
 
   function_name = "${var.environment}-${var.app_name}-azure-devops-sync"
   description   = "Pulls Azure DevOps repo content + fans out to downstream KB workers"
@@ -533,7 +531,7 @@ module "azure_devops_sync_lambda" {
 }
 
 resource "aws_lambda_event_source_mapping" "azure_devops_sync" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_azure_devops_integration ? 1 : 0
 
   event_source_arn = aws_sqs_queue.azure_devops_sync[0].arn
   function_name    = module.azure_devops_sync_lambda[0].lambda_function_name

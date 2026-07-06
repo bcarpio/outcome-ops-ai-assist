@@ -48,7 +48,6 @@ _HANDLER_LOAD_ENV = {
     "AZURE_DEVOPS_CLIENT_ID": "client-uuid",
     "AZURE_DEVOPS_CLIENT_SECRET_SSM_PARAM": "/dev/oo/azure-devops/client-secret",
     "AZURE_DEVOPS_BOARDS_REDIRECT_URI": "https://example.com/api/azure-devops-boards/callback",
-    "AZURE_DEVOPS_BOARDS_INTEGRATION_ENABLED": "true",
     "WORKSPACES_TABLE": "test-workspaces",
     "AZURE_DEVOPS_BOARDS_SYNC_QUEUE": "https://sqs.us-west-2.amazonaws.com/123/azure-devops-boards-sync",
     "DELETE_QUEUE": "https://sqs.us-west-2.amazonaws.com/123/delete",
@@ -170,12 +169,11 @@ class TestAuthorize:
 
     def test_admin_gets_auth_url(self, mock_table):
         _admin_user(mock_table)
-        with patch.object(handler, "AZURE_DEVOPS_BOARDS_INTEGRATION_ENABLED", True):
-            event = _make_event(
-                "GET", "/azure-devops-boards/authorize",
-                query={"workspace_id": "ws1"},
-            )
-            result = handler.lambda_handler(event, None)
+        event = _make_event(
+            "GET", "/azure-devops-boards/authorize",
+            query={"workspace_id": "ws1"},
+        )
+        result = handler.lambda_handler(event, None)
         assert result["statusCode"] == 200
         body = json.loads(result["body"])
         assert "auth_url" in body
@@ -184,29 +182,18 @@ class TestAuthorize:
         # Uses the Boards redirect URI, not the Repos one.
         assert "azure-devops-boards" in body["auth_url"]
 
-    def test_disabled_flag_returns_404(self, mock_table):
-        with patch.object(handler, "AZURE_DEVOPS_BOARDS_INTEGRATION_ENABLED", False):
-            event = _make_event(
-                "GET", "/azure-devops-boards/authorize",
-                query={"workspace_id": "ws1"},
-            )
-            result = handler.lambda_handler(event, None)
-        assert result["statusCode"] == 404
-
     def test_member_not_admin_gets_403(self, mock_table):
         _member_user(mock_table)
-        with patch.object(handler, "AZURE_DEVOPS_BOARDS_INTEGRATION_ENABLED", True):
-            event = _make_event(
-                "GET", "/azure-devops-boards/authorize",
-                query={"workspace_id": "ws1"},
-            )
-            result = handler.lambda_handler(event, None)
+        event = _make_event(
+            "GET", "/azure-devops-boards/authorize",
+            query={"workspace_id": "ws1"},
+        )
+        result = handler.lambda_handler(event, None)
         assert result["statusCode"] == 403
 
     def test_missing_workspace_id_gets_400(self, mock_table):
-        with patch.object(handler, "AZURE_DEVOPS_BOARDS_INTEGRATION_ENABLED", True):
-            event = _make_event("GET", "/azure-devops-boards/authorize")
-            result = handler.lambda_handler(event, None)
+        event = _make_event("GET", "/azure-devops-boards/authorize")
+        result = handler.lambda_handler(event, None)
         assert result["statusCode"] == 400
 
 
@@ -218,31 +205,28 @@ class TestAuthorize:
 class TestCallback:
 
     def test_invalid_state_redirects_with_error(self, mock_table):
-        with patch.object(handler, "AZURE_DEVOPS_BOARDS_INTEGRATION_ENABLED", True):
-            event = _make_event(
-                "GET", "/azure-devops-boards/callback",
-                user_email=None,
-                query={"code": "auth-code", "state": "not-valid-json"},
-            )
-            result = handler.lambda_handler(event, None)
+        event = _make_event(
+            "GET", "/azure-devops-boards/callback",
+            user_email=None,
+            query={"code": "auth-code", "state": "not-valid-json"},
+        )
+        result = handler.lambda_handler(event, None)
         assert result["statusCode"] == 302
         assert "invalid_state" in result["headers"]["Location"]
 
     def test_oauth_error_redirects(self, mock_table):
-        with patch.object(handler, "AZURE_DEVOPS_BOARDS_INTEGRATION_ENABLED", True):
-            event = _make_event(
-                "GET", "/azure-devops-boards/callback",
-                user_email=None,
-                query={"error": "consent_required"},
-            )
-            result = handler.lambda_handler(event, None)
+        event = _make_event(
+            "GET", "/azure-devops-boards/callback",
+            user_email=None,
+            query={"error": "consent_required"},
+        )
+        result = handler.lambda_handler(event, None)
         assert result["statusCode"] == 302
         assert "oauth_denied" in result["headers"]["Location"]
 
     def test_happy_path_writes_connection_and_redirects(self, mock_table):
         state = json.dumps({"workspace_id": "ws1", "user_email": "admin@example.com"})
-        with patch.object(handler, "AZURE_DEVOPS_BOARDS_INTEGRATION_ENABLED", True), \
-             patch.object(handler, "_get_client_secret", return_value="sec"), \
+        with patch.object(handler, "_get_client_secret", return_value="sec"), \
              patch.object(
                  handler, "exchange_code_for_tokens",
                  return_value=("access-x", "refresh-x", 3600),
