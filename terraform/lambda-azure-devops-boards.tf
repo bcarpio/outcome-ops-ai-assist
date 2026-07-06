@@ -7,7 +7,7 @@
 #
 # Notes worth keeping in mind when editing this file:
 #
-# 1. The integration is OFF by default. ``var.azure_devops_boards_integration_enabled``
+# 1. The integration is OFF by default. ``var.enable_azure_devops_boards_integration``
 #    plus all config values populated is required for the Lambda to do anything
 #    useful; the handler short-circuits with 404 when the flag is false.
 #
@@ -81,7 +81,7 @@ module "azure_devops_boards_integration_lambda" {
       # -- customer registers the same value in Entra ID (see runbook
       # §12.2) but doesn't type it in tfvars twice.
       AZURE_DEVOPS_BOARDS_REDIRECT_URI        = "https://${local.fqdn}/api/azure-devops-boards/callback"
-      AZURE_DEVOPS_BOARDS_INTEGRATION_ENABLED = tostring(var.azure_devops_boards_integration_enabled)
+      AZURE_DEVOPS_BOARDS_INTEGRATION_ENABLED = tostring(var.enable_azure_devops_boards_integration)
 
       AZURE_DEVOPS_BOARDS_SYNC_QUEUE = aws_sqs_queue.azure_devops_boards_sync[0].url
       DELETE_QUEUE                   = aws_sqs_queue.delete_queue[0].url

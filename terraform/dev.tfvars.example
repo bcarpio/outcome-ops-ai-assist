@@ -331,7 +331,7 @@ github_usernames_to_tag = "yourusername"
 # Master switch. When false, the azure-devops Lambdas deploy but UI / OAuth
 # endpoints return 404. Leave false until the four config values below are
 # populated AND verified end-to-end against your Entra ID app registration.
-# azure_devops_integration_enabled = false
+# enable_azure_devops_integration = false
 
 # Master switch for the Azure DevOps Boards (work items) integration.
 # Reuses the same tenant / client-id / client-secret above; requires
@@ -339,7 +339,7 @@ github_usernames_to_tag = "yourusername"
 # https://{fqdn}/api/azure-devops-boards/callback URI registered as a
 # second redirect URI on the same app. The Lambda derives the callback
 # from local.fqdn; you don't type it in tfvars.
-# azure_devops_boards_integration_enabled = false
+# enable_azure_devops_boards_integration = false
 
 # Entra ID tenant ID hosting your Azure DevOps OAuth app registration.
 # azure_devops_tenant_id = ""

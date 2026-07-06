@@ -1222,7 +1222,7 @@ module "azure_devops_integration_lambda_secondary" {
       AZURE_DEVOPS_CLIENT_ID               = var.azure_devops_client_id
       AZURE_DEVOPS_CLIENT_SECRET_SSM_PARAM = var.azure_devops_client_secret_ssm_param
       AZURE_DEVOPS_REDIRECT_URI            = var.azure_devops_redirect_uri
-      AZURE_DEVOPS_INTEGRATION_ENABLED     = tostring(var.azure_devops_integration_enabled)
+      AZURE_DEVOPS_INTEGRATION_ENABLED     = tostring(var.enable_azure_devops_integration)
 
       AZURE_DEVOPS_SYNC_QUEUE = aws_sqs_queue.azure_devops_sync_secondary[0].url
       DELETE_QUEUE            = aws_sqs_queue.delete_queue_secondary[0].url

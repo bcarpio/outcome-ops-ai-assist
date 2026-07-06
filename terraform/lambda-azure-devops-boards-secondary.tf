@@ -96,7 +96,7 @@ module "azure_devops_boards_integration_lambda_secondary" {
       # Same derived value as the primary (see the primary TF for the
       # rationale).
       AZURE_DEVOPS_BOARDS_REDIRECT_URI        = "https://${local.fqdn}/api/azure-devops-boards/callback"
-      AZURE_DEVOPS_BOARDS_INTEGRATION_ENABLED = tostring(var.azure_devops_boards_integration_enabled)
+      AZURE_DEVOPS_BOARDS_INTEGRATION_ENABLED = tostring(var.enable_azure_devops_boards_integration)
 
       AZURE_DEVOPS_BOARDS_SYNC_QUEUE = aws_sqs_queue.azure_devops_boards_sync_secondary[0].url
       DELETE_QUEUE                   = aws_sqs_queue.delete_queue_secondary[0].url

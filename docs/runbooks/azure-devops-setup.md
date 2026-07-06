@@ -149,7 +149,7 @@ The operator populates the tfvars in the appropriate `tfvars` file
 file; never committed to git per CLAUDE.md). They also set:
 
 ```hcl
-azure_devops_integration_enabled = true
+enable_azure_devops_integration = true
 azure_devops_client_secret_ssm_param = "/prd/outcome-ops-ai-assist/azure-devops/client-secret"
 ```
 
@@ -393,7 +393,7 @@ lands on a different path than Repos.
 In `terraform/prd.tfvars` (or your equivalent):
 
 ```hcl
-azure_devops_boards_integration_enabled = true
+enable_azure_devops_boards_integration = true
 ```
 
 That's the only new line. Tenant / client-id / client-secret-SSM-param

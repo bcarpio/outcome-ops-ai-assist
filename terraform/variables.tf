@@ -105,7 +105,7 @@ variable "microsoft_oauth_client_id" {
 # All five variables default to empty so the integration is OFF by default;
 # customers without ADO pay no operational tax. The integration enables
 # itself only when all four config values are populated AND
-# azure_devops_integration_enabled is true.
+# enable_azure_devops_integration is true.
 # ============================================================================
 
 variable "azure_devops_tenant_id" {
@@ -132,13 +132,13 @@ variable "azure_devops_redirect_uri" {
   default     = ""
 }
 
-variable "azure_devops_integration_enabled" {
+variable "enable_azure_devops_integration" {
   type        = bool
   description = "Master switch. When false, the azure-devops Lambdas are still deployed but the UI tab and OAuth endpoints return 404. Customers without ADO leave this false."
   default     = false
 }
 
-variable "azure_devops_boards_integration_enabled" {
+variable "enable_azure_devops_boards_integration" {
   type        = bool
   description = "Enable the Azure DevOps Boards (work items) integration. Reuses the same Entra ID app + tenant + client-secret config as the Repos integration; requires the vso.work API permission granted on that app registration. When false, the Boards Lambdas are still deployed but the UI tab and OAuth endpoints return 404."
   default     = false

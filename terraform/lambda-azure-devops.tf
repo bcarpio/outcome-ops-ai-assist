@@ -7,7 +7,7 @@
 #
 # Two notes worth keeping in mind when editing this file:
 #
-# 1. The integration is OFF by default. ``var.azure_devops_integration_enabled``
+# 1. The integration is OFF by default. ``var.enable_azure_devops_integration``
 #    plus all four config values being populated is required for the Lambda
 #    to do anything useful at runtime; the handler short-circuits with 404
 #    if the flag is false. Customers without ADO leave the flag false and
@@ -77,7 +77,7 @@ module "azure_devops_integration_lambda" {
       AZURE_DEVOPS_CLIENT_ID               = var.azure_devops_client_id
       AZURE_DEVOPS_CLIENT_SECRET_SSM_PARAM = var.azure_devops_client_secret_ssm_param
       AZURE_DEVOPS_REDIRECT_URI            = var.azure_devops_redirect_uri
-      AZURE_DEVOPS_INTEGRATION_ENABLED     = tostring(var.azure_devops_integration_enabled)
+      AZURE_DEVOPS_INTEGRATION_ENABLED     = tostring(var.enable_azure_devops_integration)
 
       AZURE_DEVOPS_SYNC_QUEUE = aws_sqs_queue.azure_devops_sync[0].url
       DELETE_QUEUE            = aws_sqs_queue.delete_queue[0].url
