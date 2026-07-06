@@ -1,0 +1,24 @@
+# Schema introspection engine + DB drivers, shared by both database
+# integration container images (database-integration + database-sync).
+#
+# DATABAO-SPECIFIC: the upstream library is JetBrains' Databao Context
+# Engine (Apache 2.0). The pip package name 'databao-context-engine'
+# below is the literal upstream artifact - leave it as-is.
+#
+# Kept at the lambda/ root rather than per-Lambda so the dependency set
+# stays consistent across the two images and a single bump propagates.
+#
+# Exact pins throughout: installed inside container images with
+# --only-binary=:all:, and unpinned ranges make the two image builds
+# drift apart over time (SonarQube docker:S8544). Bump deliberately.
+databao-context-engine==0.7.2
+
+# Database drivers for the MVP-supported engines
+asyncpg==0.31.0   # Postgres (incl. Aurora Postgres, RDS Postgres, Redshift)
+pymysql==1.2.0    # MySQL (incl. Aurora MySQL, RDS MySQL, MariaDB)
+mssql-python==1.6.0   # MS SQL Server (Microsoft's new driver). Pinned early because pre-1.x to 1.x shipped 6 minor releases in 5 months; needs libtool-ltdl + krb5-libs at runtime (installed in both Dockerfiles).
+
+# boto3 and yaml come pre-installed in the AWS-published lambda/python:3.12
+# image, but pinning here as a defense against image regressions.
+boto3==1.43.40
+PyYAML==6.0.3

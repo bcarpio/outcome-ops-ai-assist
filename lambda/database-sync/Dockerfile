@@ -57,12 +57,14 @@ RUN update-ca-trust
 COPY lambda/.ca-bundles-staging/ /etc/pki/ca-trust/source/anchors/
 RUN update-ca-trust
 
-# Install the introspection engine + DB drivers (shared requirements with
-# database-integration). --only-binary=:all: forbids sdists so pip can
-# never execute a package's setup.py at build time; the requirements file
-# pins exact versions.
+# Install the introspection engine + DB drivers (shared lockfile with
+# database-integration; generated from db-introspection-requirements.in
+# via `pip-compile --generate-hashes` — regenerate there, don't hand-edit).
+# --require-hashes verifies every wheel against the lock;
+# --only-binary=:all: forbids sdists so pip can never execute a package's
+# setup.py at build time.
 COPY lambda/db-introspection-requirements.txt /tmp/requirements.txt
-RUN pip install --no-cache-dir --only-binary=:all: -r /tmp/requirements.txt && \
+RUN pip install --no-cache-dir --only-binary=:all: --require-hashes -r /tmp/requirements.txt && \
     find /var/lang/lib/python3.12/site-packages -name "tests" -type d -prune -exec rm -rf {} + 2>/dev/null || true && \
     find /var/lang/lib/python3.12/site-packages -name "__pycache__" -type d -prune -exec rm -rf {} + 2>/dev/null || true && \
     rm /tmp/requirements.txt

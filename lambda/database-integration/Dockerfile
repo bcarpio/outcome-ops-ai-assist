@@ -58,10 +58,13 @@ RUN update-ca-trust
 # Install the schema introspection engine plus the DB driver set the MVP
 # supports. Drivers bring native components that the AWS-published
 # Lambda Python image will compile against the runtime ABI.
-# --only-binary=:all: forbids sdists so pip can never execute a package's
-# setup.py at build time; the requirements file pins exact versions.
+# db-introspection-requirements.txt is a hash-locked lockfile generated
+# from db-introspection-requirements.in via `pip-compile --generate-hashes`
+# (regenerate it there, don't hand-edit). --require-hashes verifies every
+# wheel against the lock; --only-binary=:all: forbids sdists so pip can
+# never execute a package's setup.py at build time.
 COPY lambda/db-introspection-requirements.txt /tmp/requirements.txt
-RUN pip install --no-cache-dir --only-binary=:all: -r /tmp/requirements.txt && \
+RUN pip install --no-cache-dir --only-binary=:all: --require-hashes -r /tmp/requirements.txt && \
     find /var/lang/lib/python3.12/site-packages -name "tests" -type d -prune -exec rm -rf {} + 2>/dev/null || true && \
     find /var/lang/lib/python3.12/site-packages -name "__pycache__" -type d -prune -exec rm -rf {} + 2>/dev/null || true && \
     rm /tmp/requirements.txt

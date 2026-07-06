@@ -53,13 +53,30 @@ Exception: the AWS RDS global CA bundle
 stable hash; it is fetched over TLS from an AWS-operated host and left
 unpinned deliberately.
 
-### 3. Exact-pin Python dependencies installed into images
+### 3. Hash-locked lockfiles for Python dependencies installed into images
 
-Requirements files consumed by a `RUN pip install` inside a Dockerfile
-(`lambda/run-tests/requirements.txt`, `lambda/mcp-server/requirements.txt`,
-`lambda/db-introspection-requirements.txt`) use `==` pins for every
-entry. This scopes to container images only — zip-Lambda requirements
-keep the ADR-034 `>=` floor policy, because their resolved versions are
+Each image dependency set is maintained as a pair:
+
+- `requirements.in` — the human-edited manifest of direct dependencies,
+  exact-pinned (`==`).
+- `requirements.txt` — the generated lockfile: the full transitive
+  closure with per-artifact SHA256 hashes, produced by
+  `pip-compile --generate-hashes --strip-extras -o requirements.txt requirements.in`
+  (pip-tools). Never hand-edit the lockfile; change the `.in` and
+  regenerate.
+
+The Dockerfile installs with `--require-hashes`, so pip verifies every
+downloaded wheel against the lock and refuses anything unlisted. Direct
+`==` pins alone are NOT sufficient: transitive dependencies would still
+float (SonarQube docker:S8544), and nothing would verify artifact
+integrity.
+
+Current pairs: `lambda/run-tests/requirements.{in,txt}`,
+`lambda/mcp-server/requirements.{in,txt}`,
+`lambda/db-introspection-requirements.{in,txt}`.
+
+This scopes to container images only — zip-Lambda requirements keep the
+ADR-034 `>=` floor policy, because their resolved versions are
 controlled by the layer build, not by an unattended image rebuild.
 
 ### 4. Wheels only
@@ -68,6 +85,15 @@ Image `pip install` commands pass `--only-binary=:all:` so pip can
 never execute a package's `setup.py` at build time. If a future
 dependency has no wheel, build it in a separate builder stage and COPY
 the result — do not drop the flag globally.
+
+The same rule applies to npm: global installs pass `--ignore-scripts`
+so package lifecycle scripts cannot execute during image builds
+(docker:S6505).
+
+### 4a. HTTPS-only fetches
+
+`curl` invocations pass `--proto "=https" --tlsv1.2` so a redirect can
+never downgrade a build-input download to plain HTTP (docker:S6506).
 
 ### 5. Non-root USER
 
@@ -93,3 +119,8 @@ substantive change.
 - v1.0 (2026-07-06): Initial version, prompted by SonarCloud security
   review (1 blocker, 9 major findings, 2 root-user hotspots across the
   four container images).
+- v1.1 (2026-07-06): Direct `==` pins upgraded to pip-compile
+  hash-locked lockfiles + `--require-hashes` (docker:S8544 requires
+  transitive locking, not just direct pins); added npm
+  `--ignore-scripts` and curl `--proto "=https"` rules from the
+  follow-up scan.

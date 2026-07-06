@@ -1,0 +1,9 @@
+# Exact pins: this file is installed inside the run-tests container image
+# with --only-binary=:all:, and unpinned ranges make image builds
+# non-reproducible (SonarQube docker:S8544). Bump versions deliberately.
+boto3==1.43.40
+openai==2.44.0  # ADR-035: Mantle Responses-API client
+pydantic==2.13.4
+pyyaml==6.0.3
+requests==2.34.2
+urllib3==2.7.0
