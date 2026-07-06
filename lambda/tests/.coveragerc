@@ -1,0 +1,22 @@
+# Coverage configuration for local runs from lambda/tests (make test-coverage).
+# CI (.github/workflows/cicd.yml) passes the equivalent --source/--omit flags
+# explicitly since it runs coverage from the repo root.
+#
+# Measure ALL of lambda/ rather than an explicit directory allowlist: a
+# hardcoded list silently drifts as new Lambda families are added, which
+# made handlers with passing tests report 0% coverage in SonarCloud.
+[run]
+source = ..
+omit =
+    ../tests/*
+    ../runtime-layer/*
+    ../terraform-layer/*
+    ../.venv/*
+    ../.ca-bundles-staging/*
+    ../.license-layer-staging/*
+    */venv/*
+
+[report]
+precision = 2
+show_missing = True
+skip_covered = False

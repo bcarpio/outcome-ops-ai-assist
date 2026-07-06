@@ -183,8 +183,19 @@ jobs:
           # instrumentation on GH Actions runners, blows past the
           # 60s pytest-timeout. The test still runs locally for
           # benchmark dev (`pytest -m slow` or unfiltered).
+          # Measure ALL of lambda/ instead of a hardcoded directory
+          # allowlist. The old explicit --source list silently drifted:
+          # every Lambda family added after it was written (azure-devops-*,
+          # database-*, onedrive-*, onenote-*, analytics-*,
+          # replication-applier, ...) had passing tests in this job but
+          # was absent from coverage.xml, so SonarCloud reported those
+          # handlers at 0% and failed the coverage gate. Files that truly
+          # have no tests stay absent from coverage.xml and SonarCloud
+          # still counts them as 0% — the aggregate remains honest.
+          # Non-runtime dirs are omitted.
           coverage run \
-            --source=lambda/analyze-pr,lambda/ask-claude,lambda/audit-alert,lambda/chat,lambda/confluence-integration,lambda/confluence-scheduler,lambda/confluence-sync,lambda/delete-worker,lambda/file-ingestion,lambda/generate-code,lambda/github-integration,lambda/github-scheduler,lambda/github-sync,lambda/handle-command,lambda/jira-integration,lambda/jira-scheduler,lambda/jira-sync,lambda/mcp-server,lambda/outlook-integration,lambda/outlook-scheduler,lambda/outlook-sync,lambda/process-batch-summary,lambda/process-documents,lambda/process-pr-check,lambda/process-repo-summary,lambda/query-kb,lambda/run-tests,lambda/security-scanner,lambda/shared,lambda/sharepoint-integration,lambda/sharepoint-scheduler,lambda/sharepoint-sync,lambda/teams-integration,lambda/teams-scheduler,lambda/teams-sync,lambda/vector-query,lambda/workspace-management \
+            --source=lambda \
+            --omit='lambda/tests/*,lambda/runtime-layer/*,lambda/terraform-layer/*,lambda/.venv/*,lambda/.ca-bundles-staging/*,lambda/.license-layer-staging/*' \
             -m pytest lambda/tests/unit/ \
             -m "not slow" \
             --junitxml=lambda/junit.xml \
