@@ -76,6 +76,23 @@ module "workspace_management_lambda" {
     # UI knows whether to render the toggle). plan/ chunk 07.
     PII_REDACTION_ENABLED = tostring(var.pii_redaction_enabled)
 
+    # Per-integration enablement manifest surfaced at
+    # GET /api/config/integrations for the UI to decide which
+    # integration sections to render. Each integration's TF file
+    # gates its actual resources on the same var (chunks 02-11).
+    INTEGRATION_AZURE_DEVOPS_ENABLED        = tostring(var.enable_azure_devops_integration)
+    INTEGRATION_AZURE_DEVOPS_BOARDS_ENABLED = tostring(var.enable_azure_devops_boards_integration)
+    INTEGRATION_GITHUB_ENABLED              = tostring(var.enable_github_integration)
+    INTEGRATION_GITHUB_ISSUES_ENABLED       = tostring(var.enable_github_issue_integration)
+    INTEGRATION_CONFLUENCE_ENABLED          = tostring(var.enable_confluence_integration)
+    INTEGRATION_JIRA_ENABLED                = tostring(var.enable_jira_integration)
+    INTEGRATION_OUTLOOK_ENABLED             = tostring(var.enable_outlook_integration)
+    INTEGRATION_TEAMS_ENABLED               = tostring(var.enable_teams_integration)
+    INTEGRATION_SHAREPOINT_ENABLED          = tostring(var.enable_sharepoint_integration)
+    INTEGRATION_ONEDRIVE_ENABLED            = tostring(var.enable_onedrive_integration)
+    INTEGRATION_ONENOTE_ENABLED             = tostring(var.enable_onenote_integration)
+    INTEGRATION_DATABASE_ENABLED            = tostring(var.enable_database_integration)
+
     # Point requests / urllib3 / httpx / stdlib ssl + urllib.request at
     # the merged PEM shipped in the platform-CA layer so BYO-internal-CA
     # MCP listeners are trusted. Both env vars are needed because

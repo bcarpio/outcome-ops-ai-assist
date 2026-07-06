@@ -95,6 +95,20 @@ async def get_region_role_endpoint(request: Request):
     return _parse_response(result)
 
 
+@app.get("/api/config/integrations")
+async def get_integrations_config_endpoint(request: Request):
+    """Return the enabled-integrations manifest. Public — no auth required.
+
+    UI's WorkspaceSettings fetches this on mount to decide which
+    integration sections to render.
+    """
+    from handler import lambda_handler
+
+    event = _build_event(request, "GET", "/api/config/integrations")
+    result = lambda_handler(event, None)
+    return _parse_response(result)
+
+
 # ============================================================================
 # Workspace Routes
 # ============================================================================

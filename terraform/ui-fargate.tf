@@ -756,49 +756,54 @@ module "ui_ecs" {
                 name  = "WORKSPACE_LAMBDA_URL"
                 value = aws_lambda_function_url.workspace_management[0].function_url
               },
+              # try(...) wraps every per-integration Function URL so a
+              # disabled integration's absent aws_lambda_function_url[0]
+              # doesn't blow up plan. The Express proxy skips routes
+              # whose URL is empty; the UI's /api/config/integrations
+              # manifest is the source of truth for section visibility.
               {
                 name  = "CONFLUENCE_LAMBDA_URL"
-                value = aws_lambda_function_url.confluence_integration[0].function_url
+                value = try(aws_lambda_function_url.confluence_integration[0].function_url, "")
               },
               {
                 name  = "JIRA_LAMBDA_URL"
-                value = aws_lambda_function_url.jira_integration[0].function_url
+                value = try(aws_lambda_function_url.jira_integration[0].function_url, "")
               },
               {
                 name  = "GITHUB_LAMBDA_URL"
-                value = aws_lambda_function_url.github_integration[0].function_url
+                value = try(aws_lambda_function_url.github_integration[0].function_url, "")
               },
               {
                 name  = "AZURE_DEVOPS_LAMBDA_URL"
-                value = aws_lambda_function_url.azure_devops_integration[0].function_url
+                value = try(aws_lambda_function_url.azure_devops_integration[0].function_url, "")
               },
               {
                 name  = "AZURE_DEVOPS_BOARDS_LAMBDA_URL"
-                value = aws_lambda_function_url.azure_devops_boards_integration[0].function_url
+                value = try(aws_lambda_function_url.azure_devops_boards_integration[0].function_url, "")
               },
               {
                 name  = "OUTLOOK_LAMBDA_URL"
-                value = aws_lambda_function_url.outlook_integration[0].function_url
+                value = try(aws_lambda_function_url.outlook_integration[0].function_url, "")
               },
               {
                 name  = "TEAMS_LAMBDA_URL"
-                value = aws_lambda_function_url.teams_integration[0].function_url
+                value = try(aws_lambda_function_url.teams_integration[0].function_url, "")
               },
               {
                 name  = "SHAREPOINT_LAMBDA_URL"
-                value = aws_lambda_function_url.sharepoint_integration[0].function_url
+                value = try(aws_lambda_function_url.sharepoint_integration[0].function_url, "")
               },
               {
                 name  = "ONEDRIVE_LAMBDA_URL"
-                value = aws_lambda_function_url.onedrive_integration[0].function_url
+                value = try(aws_lambda_function_url.onedrive_integration[0].function_url, "")
               },
               {
                 name  = "ONENOTE_LAMBDA_URL"
-                value = aws_lambda_function_url.onenote_integration[0].function_url
+                value = try(aws_lambda_function_url.onenote_integration[0].function_url, "")
               },
               {
                 name  = "DATABASE_LAMBDA_URL"
-                value = aws_lambda_function_url.database_integration[0].function_url
+                value = try(aws_lambda_function_url.database_integration[0].function_url, "")
               }
             ] : [],
             # Add scanner JWT secret SSM path when security scanner is enabled

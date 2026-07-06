@@ -87,6 +87,7 @@ vi.mock('../../../src/lib/api', () => ({
   resetWorkspaceSystemPrompt: vi.fn(),
   getWorkspacePrivacy: vi.fn(),
   updateWorkspacePrivacy: vi.fn(),
+  getEnabledIntegrations: vi.fn(),
   getAzureDevOpsBoardsAuthUrl: vi.fn(),
   listAzureDevOpsBoardsConnections: vi.fn(),
   listAzureDevOpsBoardsOrgs: vi.fn(),
@@ -122,6 +123,7 @@ import {
   searchUsers,
   getWorkspaceSystemPrompt, updateWorkspaceSystemPrompt, resetWorkspaceSystemPrompt,
   getWorkspacePrivacy, updateWorkspacePrivacy,
+  getEnabledIntegrations,
   listAzureDevOpsBoardsConnections,
   listWorkspaceAzureDevOpsBoardsProjects,
 } from '../../../src/lib/api'
@@ -185,6 +187,7 @@ const mockUpdateWorkspaceSystemPrompt = vi.mocked(updateWorkspaceSystemPrompt)
 const mockResetWorkspaceSystemPrompt = vi.mocked(resetWorkspaceSystemPrompt)
 const mockGetWorkspacePrivacy = vi.mocked(getWorkspacePrivacy)
 const mockUpdateWorkspacePrivacy = vi.mocked(updateWorkspacePrivacy)
+const mockGetEnabledIntegrations = vi.mocked(getEnabledIntegrations)
 const mockListAzureDevOpsBoardsConnections = vi.mocked(listAzureDevOpsBoardsConnections)
 const mockListWorkspaceAzureDevOpsBoardsProjects = vi.mocked(listWorkspaceAzureDevOpsBoardsProjects)
 
@@ -207,6 +210,20 @@ function setupDefaultMocks() {
   mockListDatabaseConnections.mockResolvedValue([])
   mockListAzureDevOpsBoardsConnections.mockResolvedValue([])
   mockListWorkspaceAzureDevOpsBoardsProjects.mockResolvedValue([])
+  mockGetEnabledIntegrations.mockResolvedValue({
+    azure_devops: true,
+    azure_devops_boards: true,
+    github: true,
+    github_issues: true,
+    confluence: true,
+    jira: true,
+    outlook: true,
+    teams: true,
+    sharepoint: true,
+    onedrive: true,
+    onenote: true,
+    database: true,
+  })
   mockGetWorkspacePrivacy.mockResolvedValue({
     workspace_id: 'ws-1',
     privacy_mode: 'STRICT',

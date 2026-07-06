@@ -134,13 +134,61 @@ variable "azure_devops_redirect_uri" {
 
 variable "enable_azure_devops_integration" {
   type        = bool
-  description = "Master switch. When false, the azure-devops Lambdas are still deployed but the UI tab and OAuth endpoints return 404. Customers without ADO leave this false."
+  description = "Provision the workspace Azure DevOps (Repos) integration surface: integration Lambda + Function URL + sync + scheduler + SQS + DLQ + EventBridge rule + secondary-region mirror. Default false. Customers without ADO leave this false and pay zero footprint."
   default     = false
 }
 
 variable "enable_azure_devops_boards_integration" {
   type        = bool
-  description = "Enable the Azure DevOps Boards (work items) integration. Reuses the same Entra ID app + tenant + client-secret config as the Repos integration; requires the vso.work API permission granted on that app registration. When false, the Boards Lambdas are still deployed but the UI tab and OAuth endpoints return 404."
+  description = "Provision the workspace Azure DevOps Boards (work items) integration surface. Reuses the same Entra ID app + tenant + client-secret config as the Repos integration; requires the vso.work API permission granted on that app registration. Default false."
+  default     = false
+}
+
+variable "enable_github_integration" {
+  type        = bool
+  description = "Provision the workspace GitHub App integration surface (integration Lambda + Function URL + sync + scheduler + SQS + DLQ + SSM parameters for App credentials). Distinct from enable_github_issue_integration, which gates the code-generation API Gateway. Default false."
+  default     = false
+}
+
+variable "enable_confluence_integration" {
+  type        = bool
+  description = "Provision the workspace Confluence integration surface (integration Lambda + Function URL + sync + scheduler + SQS + DLQ). Shares Atlassian OAuth SSM parameters with the Jira integration -- either flag being true keeps those SSM parameters. Default false."
+  default     = false
+}
+
+variable "enable_outlook_integration" {
+  type        = bool
+  description = "Provision the workspace Outlook (Microsoft 365) integration surface. Shares Microsoft OAuth SSM parameters with Teams/SharePoint/OneDrive/OneNote -- any of those flags being true keeps the shared parameters. Default false."
+  default     = false
+}
+
+variable "enable_teams_integration" {
+  type        = bool
+  description = "Provision the workspace Microsoft Teams integration surface. Shares Microsoft OAuth SSM parameters with Outlook/SharePoint/OneDrive/OneNote. Default false."
+  default     = false
+}
+
+variable "enable_sharepoint_integration" {
+  type        = bool
+  description = "Provision the workspace SharePoint integration surface. Shares Microsoft OAuth SSM parameters with Outlook/Teams/OneDrive/OneNote. Default false."
+  default     = false
+}
+
+variable "enable_onedrive_integration" {
+  type        = bool
+  description = "Provision the workspace OneDrive integration surface. Shares Microsoft OAuth SSM parameters with Outlook/Teams/SharePoint/OneNote. Default false."
+  default     = false
+}
+
+variable "enable_onenote_integration" {
+  type        = bool
+  description = "Provision the workspace OneNote integration surface. Shares Microsoft OAuth SSM parameters with Outlook/Teams/SharePoint/OneDrive. Default false."
+  default     = false
+}
+
+variable "enable_database_integration" {
+  type        = bool
+  description = "Provision the workspace Database integration surface (integration Lambda + Function URL + sync + scheduler + SQS + DLQ + drift-notification SNS topic). Default false."
   default     = false
 }
 
@@ -170,7 +218,7 @@ variable "enable_github_issue_integration" {
 
 variable "enable_jira_integration" {
   type        = bool
-  description = "Enable Jira Automation integration via SSM Document"
+  description = "Provision the Jira integration surface -- BOTH the workspace-level Jira Lambdas (integration + sync + scheduler + SQS + DLQ) AND the SSM Automation cross-account document + IAM role that let Jira Automation trigger code generation. Shares Atlassian OAuth SSM parameters with Confluence. Default false."
   default     = false
 }
 

@@ -2962,6 +2962,31 @@ export async function getWorkspacePrivacy(
   return (await response.json()) as WorkspacePrivacy
 }
 
+export type EnabledIntegrations = {
+  azure_devops: boolean
+  azure_devops_boards: boolean
+  github: boolean
+  github_issues: boolean
+  confluence: boolean
+  jira: boolean
+  outlook: boolean
+  teams: boolean
+  sharepoint: boolean
+  onedrive: boolean
+  onenote: boolean
+  database: boolean
+}
+
+export async function getEnabledIntegrations(): Promise<EnabledIntegrations> {
+  const response = await fetch(`${API_BASE}/config/integrations`)
+  if (!response.ok) {
+    throw new Error(
+      `Failed to fetch integrations config: ${response.status}`,
+    )
+  }
+  return (await response.json()) as EnabledIntegrations
+}
+
 export async function updateWorkspacePrivacy(
   workspaceId: string,
   privacy_mode: PrivacyMode,

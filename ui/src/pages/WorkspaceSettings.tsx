@@ -179,6 +179,8 @@ import {
   updateWorkspacePrivacy,
   type WorkspacePrivacy,
   type PrivacyMode,
+  getEnabledIntegrations,
+  type EnabledIntegrations,
 } from '../lib/api'
 import AdminNav from '../components/AdminNav'
 import MutationButton from '../components/MutationButton'
@@ -202,6 +204,41 @@ export default function WorkspaceSettings() {
   // Renders a friendly "This is a Global workspace, contact these
   // admins" panel instead of a bare "Workspace not found."
   const [globalPublicView, setGlobalPublicView] = useState<WorkspacePublicView | null>(null)
+
+  // Enabled-integrations manifest. Each terraform integration file
+  // passes an INTEGRATION_<NAME>_ENABLED env var to the
+  // workspace-management Lambda; the manifest reads them and returns a
+  // bool per integration. Sections whose flag is false are omitted
+  // from the Integrations tab entirely. Fetched once on mount from
+  // /api/config/integrations (unauthenticated). Default assumes
+  // everything is enabled until the fetch resolves so we don't briefly
+  // hide sections on first paint.
+  const [enabledIntegrations, setEnabledIntegrations] = useState<
+    Partial<EnabledIntegrations>
+  >({
+    azure_devops: true,
+    azure_devops_boards: true,
+    github: true,
+    github_issues: true,
+    confluence: true,
+    jira: true,
+    outlook: true,
+    teams: true,
+    sharepoint: true,
+    onedrive: true,
+    onenote: true,
+    database: true,
+  })
+
+  useEffect(() => {
+    getEnabledIntegrations()
+      .then(setEnabledIntegrations)
+      .catch(() => {
+        // If the manifest fetch fails, keep the default "everything
+        // enabled" so the UI degrades to the previous behavior rather
+        // than hiding every integration section.
+      })
+  }, [])
 
   // Auto-clear success banners after 3 seconds. Owned by a useEffect
   // with a cleanup so when the component unmounts (or success changes
@@ -2706,6 +2743,7 @@ export default function WorkspaceSettings() {
         {activeTab === 'integrations' && (
           <div className="space-y-6">
             {/* GitHub App Integration Section */}
+            {enabledIntegrations.github && (
             <div className="bg-white rounded-lg border shadow-sm">
               <div className="p-4 border-b flex items-center justify-between">
                 <div className="flex items-center gap-3">
@@ -2869,8 +2907,10 @@ export default function WorkspaceSettings() {
                 </div>
               )}
             </div>
+            )}
 
             {/* Azure DevOps Integration Section (chunk 08) */}
+            {enabledIntegrations.azure_devops && (
             <div className="bg-white rounded-lg border shadow-sm">
               <div className="p-4 border-b flex items-center justify-between">
                 <div className="flex items-center gap-3">
@@ -3016,8 +3056,10 @@ export default function WorkspaceSettings() {
                 </div>
               )}
             </div>
+            )}
 
             {/* Confluence Section */}
+            {enabledIntegrations.confluence && (
             <div className="bg-white rounded-lg border shadow-sm">
               <div className="p-4 border-b flex items-center justify-between">
                 <div className="flex items-center gap-3">
@@ -3127,8 +3169,10 @@ export default function WorkspaceSettings() {
                 </ul>
               )}
             </div>
+            )}
 
             {/* Jira Section */}
+            {enabledIntegrations.jira && (
             <div className="bg-white rounded-lg border shadow-sm">
               <div className="p-4 border-b flex items-center justify-between">
                 <div className="flex items-center gap-3">
@@ -3243,8 +3287,11 @@ export default function WorkspaceSettings() {
                 </ul>
               )}
             </div>
+            )}
 
             {/* Azure DevOps Boards Section */}
+            {enabledIntegrations.azure_devops_boards && (
+            <>
             <div className="bg-white rounded-lg border shadow-sm">
               <div className="p-4 border-b flex items-center justify-between">
                 <div className="flex items-center gap-3">
@@ -3413,8 +3460,11 @@ export default function WorkspaceSettings() {
                 </div>
               </div>
             )}
+            </>
+            )}
 
             {/* Outlook Section */}
+            {enabledIntegrations.outlook && (
             <div className="bg-white rounded-lg border shadow-sm">
               <div className="p-4 border-b flex items-center justify-between">
                 <div className="flex items-center gap-3">
@@ -3522,8 +3572,10 @@ export default function WorkspaceSettings() {
                 </ul>
               )}
             </div>
+            )}
 
             {/* Teams Section */}
+            {enabledIntegrations.teams && (
             <div className="bg-white rounded-lg border shadow-sm">
               <div className="p-4 border-b flex items-center justify-between">
                 <div className="flex items-center gap-3">
@@ -3632,8 +3684,10 @@ export default function WorkspaceSettings() {
                 </ul>
               )}
             </div>
+            )}
 
             {/* SharePoint Section */}
+            {enabledIntegrations.sharepoint && (
             <div className="bg-white rounded-lg border shadow-sm">
               <div className="p-4 border-b flex items-center justify-between">
                 <div className="flex items-center gap-3">
@@ -3742,8 +3796,10 @@ export default function WorkspaceSettings() {
                 </ul>
               )}
             </div>
+            )}
 
             {/* OneDrive Section */}
+            {enabledIntegrations.onedrive && (
             <div className="bg-white rounded-lg border shadow-sm">
               <div className="p-4 border-b flex items-center justify-between">
                 <div className="flex items-center gap-3">
@@ -3851,8 +3907,10 @@ export default function WorkspaceSettings() {
                 </ul>
               )}
             </div>
+            )}
 
             {/* OneNote Section */}
+            {enabledIntegrations.onenote && (
             <div className="bg-white rounded-lg border shadow-sm">
               <div className="p-4 border-b flex items-center justify-between">
                 <div className="flex items-center gap-3">
@@ -3960,8 +4018,10 @@ export default function WorkspaceSettings() {
                 </ul>
               )}
             </div>
+            )}
 
             {/* Database Section */}
+            {enabledIntegrations.database && (
             <div className="bg-white rounded-lg border shadow-sm">
               <div className="p-4 border-b flex items-center justify-between">
                 <div className="flex items-center gap-3">
@@ -4088,6 +4148,7 @@ export default function WorkspaceSettings() {
                 </ul>
               )}
             </div>
+            )}
           </div>
         )}
 

@@ -132,49 +132,53 @@ module "ui_ecs_secondary" {
                 name  = "WORKSPACE_LAMBDA_URL"
                 value = aws_lambda_function_url.workspace_management_secondary[0].function_url
               },
+              # try(...) wraps every per-integration Function URL so a
+              # disabled integration's absent aws_lambda_function_url[0]
+              # doesn't blow up plan (see the primary-region file for
+              # the fuller comment).
               {
                 name  = "CONFLUENCE_LAMBDA_URL"
-                value = aws_lambda_function_url.confluence_integration_secondary[0].function_url
+                value = try(aws_lambda_function_url.confluence_integration_secondary[0].function_url, "")
               },
               {
                 name  = "JIRA_LAMBDA_URL"
-                value = aws_lambda_function_url.jira_integration_secondary[0].function_url
+                value = try(aws_lambda_function_url.jira_integration_secondary[0].function_url, "")
               },
               {
                 name  = "GITHUB_LAMBDA_URL"
-                value = aws_lambda_function_url.github_integration_secondary[0].function_url
+                value = try(aws_lambda_function_url.github_integration_secondary[0].function_url, "")
               },
               {
                 name  = "AZURE_DEVOPS_LAMBDA_URL"
-                value = aws_lambda_function_url.azure_devops_integration_secondary[0].function_url
+                value = try(aws_lambda_function_url.azure_devops_integration_secondary[0].function_url, "")
               },
               {
                 name  = "AZURE_DEVOPS_BOARDS_LAMBDA_URL"
-                value = aws_lambda_function_url.azure_devops_boards_integration_secondary[0].function_url
+                value = try(aws_lambda_function_url.azure_devops_boards_integration_secondary[0].function_url, "")
               },
               {
                 name  = "OUTLOOK_LAMBDA_URL"
-                value = aws_lambda_function_url.outlook_integration_secondary[0].function_url
+                value = try(aws_lambda_function_url.outlook_integration_secondary[0].function_url, "")
               },
               {
                 name  = "TEAMS_LAMBDA_URL"
-                value = aws_lambda_function_url.teams_integration_secondary[0].function_url
+                value = try(aws_lambda_function_url.teams_integration_secondary[0].function_url, "")
               },
               {
                 name  = "SHAREPOINT_LAMBDA_URL"
-                value = aws_lambda_function_url.sharepoint_integration_secondary[0].function_url
+                value = try(aws_lambda_function_url.sharepoint_integration_secondary[0].function_url, "")
               },
               {
                 name  = "ONEDRIVE_LAMBDA_URL"
-                value = aws_lambda_function_url.onedrive_integration_secondary[0].function_url
+                value = try(aws_lambda_function_url.onedrive_integration_secondary[0].function_url, "")
               },
               {
                 name  = "ONENOTE_LAMBDA_URL"
-                value = aws_lambda_function_url.onenote_integration_secondary[0].function_url
+                value = try(aws_lambda_function_url.onenote_integration_secondary[0].function_url, "")
               },
               {
                 name  = "DATABASE_LAMBDA_URL"
-                value = aws_lambda_function_url.database_integration_secondary[0].function_url
+                value = try(aws_lambda_function_url.database_integration_secondary[0].function_url, "")
               }
             ] : [],
             # Scanner secondary lands in chunk 9i; SSM path stays the

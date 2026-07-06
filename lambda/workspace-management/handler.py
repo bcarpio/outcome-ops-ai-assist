@@ -539,6 +539,38 @@ def _parse_path(path: str) -> Tuple[str, ...]:
     return tuple(parts)
 
 
+_INTEGRATION_ENV_VARS = (
+    ("azure_devops", "INTEGRATION_AZURE_DEVOPS_ENABLED"),
+    ("azure_devops_boards", "INTEGRATION_AZURE_DEVOPS_BOARDS_ENABLED"),
+    ("github", "INTEGRATION_GITHUB_ENABLED"),
+    ("github_issues", "INTEGRATION_GITHUB_ISSUES_ENABLED"),
+    ("confluence", "INTEGRATION_CONFLUENCE_ENABLED"),
+    ("jira", "INTEGRATION_JIRA_ENABLED"),
+    ("outlook", "INTEGRATION_OUTLOOK_ENABLED"),
+    ("teams", "INTEGRATION_TEAMS_ENABLED"),
+    ("sharepoint", "INTEGRATION_SHAREPOINT_ENABLED"),
+    ("onedrive", "INTEGRATION_ONEDRIVE_ENABLED"),
+    ("onenote", "INTEGRATION_ONENOTE_ENABLED"),
+    ("database", "INTEGRATION_DATABASE_ENABLED"),
+)
+
+
+def get_integrations_config_response() -> Dict:
+    """Return the enabled-integrations manifest.
+
+    Consumed by the UI's WorkspaceSettings to decide which integration
+    sections to render. Populated from INTEGRATION_<NAME>_ENABLED env
+    vars set at deploy time by each integration's terraform module.
+    Unauthenticated because the manifest is not user-scoped and the UI
+    fetches it early in the load cycle.
+    """
+    manifest = {
+        name: os.environ.get(env_var, "false").lower() == "true"
+        for name, env_var in _INTEGRATION_ENV_VARS
+    }
+    return _response(200, manifest)
+
+
 def get_region_role_response() -> Dict:
     """Return the local region's HA role and a few diagnostic fields.
 
@@ -5229,6 +5261,15 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         )
     ):
         return get_region_role_response()
+
+    if (
+        _parse_path(path) == ("api", "config", "integrations")
+        and (
+            event.get("httpMethod") == "GET"
+            or event.get("requestContext", {}).get("http", {}).get("method") == "GET"
+        )
+    ):
+        return get_integrations_config_response()
 
     # Get user email from header
     user_email = _get_user_from_request(event)

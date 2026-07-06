@@ -304,6 +304,19 @@ module "workspace_management_lambda_secondary" {
       PII_REDACTION_ENABLED        = tostring(var.pii_redaction_enabled)
       REQUESTS_CA_BUNDLE           = "/opt/ca-bundle.pem"
       SSL_CERT_FILE                = "/opt/ca-bundle.pem"
+
+      INTEGRATION_AZURE_DEVOPS_ENABLED        = tostring(var.enable_azure_devops_integration)
+      INTEGRATION_AZURE_DEVOPS_BOARDS_ENABLED = tostring(var.enable_azure_devops_boards_integration)
+      INTEGRATION_GITHUB_ENABLED              = tostring(var.enable_github_integration)
+      INTEGRATION_GITHUB_ISSUES_ENABLED       = tostring(var.enable_github_issue_integration)
+      INTEGRATION_CONFLUENCE_ENABLED          = tostring(var.enable_confluence_integration)
+      INTEGRATION_JIRA_ENABLED                = tostring(var.enable_jira_integration)
+      INTEGRATION_OUTLOOK_ENABLED             = tostring(var.enable_outlook_integration)
+      INTEGRATION_TEAMS_ENABLED               = tostring(var.enable_teams_integration)
+      INTEGRATION_SHAREPOINT_ENABLED          = tostring(var.enable_sharepoint_integration)
+      INTEGRATION_ONEDRIVE_ENABLED            = tostring(var.enable_onedrive_integration)
+      INTEGRATION_ONENOTE_ENABLED             = tostring(var.enable_onenote_integration)
+      INTEGRATION_DATABASE_ENABLED            = tostring(var.enable_database_integration)
     },
     local.ha_writer_env_secondary,
     local.ha_scheduler_env_secondary,
