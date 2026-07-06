@@ -13,8 +13,9 @@
 # docs/symbol-graph-validation.md for the runbook.
 #
 # Deliberately does NOT add chat-end-to-end or analyze-pr-end-to-end
-# alarms here -- those are covered by the feature-agnostic Lambda
-# duration alarms each Lambda module already owns. This file is
+# duration alarms here. Duration coverage remains a gap; error-count
+# alarms for chat / analyze-pr / etc. live in cloudwatch_alarms.tf
+# (chunk 12 of the fable-code-review remediation). This file is
 # graph-only.
 #
 # Notification routing: alarms route to the existing
