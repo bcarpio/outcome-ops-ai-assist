@@ -320,13 +320,14 @@ class TestSPSyncProcessRequest:
 
 
 class TestSPSyncLambdaHandler:
+    """Chunk 02: SQS partial-batch-failure contract."""
 
     @patch.object(handler_module, "process_sync_request")
     def test_handler_success(self, mock_process):
         mock_process.return_value = {"status": "success"}
-        event = {"Records": [{"body": json.dumps({"workspace_id": "ws1", "connection_id": "c1"})}]}
+        event = {"Records": [{"messageId": "m1", "body": json.dumps({"workspace_id": "ws1", "connection_id": "c1"})}]}
         result = handler_module.lambda_handler(event, None)
-        assert result["statusCode"] == 200
+        assert result == {"batchItemFailures": []}
 
     def test_handler_no_records(self):
         result = handler_module.lambda_handler({}, None)
@@ -334,26 +335,25 @@ class TestSPSyncLambdaHandler:
 
     @patch.object(handler_module, "process_sync_request")
     def test_handler_invalid_json(self, mock_process):
-        event = {"Records": [{"body": "bad{{{"}]}
+        event = {"Records": [{"messageId": "bad", "body": "bad{{{"}]}
         result = handler_module.lambda_handler(event, None)
-        body = json.loads(result["body"])
-        assert body["results"][0]["status"] == "error"
+        assert result == {"batchItemFailures": [{"itemIdentifier": "bad"}]}
 
     @patch.object(handler_module, "process_sync_request")
     def test_handler_multiple_records(self, mock_process):
+        """Only the failed record is redelivered; success is ack'd."""
         mock_process.side_effect = [
             {"status": "success"},
             {"status": "error", "error": "fail"},
         ]
         event = {
             "Records": [
-                {"body": json.dumps({"workspace_id": "ws1", "connection_id": "c1"})},
-                {"body": json.dumps({"workspace_id": "ws2", "connection_id": "c2"})},
+                {"messageId": "m1", "body": json.dumps({"workspace_id": "ws1", "connection_id": "c1"})},
+                {"messageId": "m2", "body": json.dumps({"workspace_id": "ws2", "connection_id": "c2"})},
             ]
         }
         result = handler_module.lambda_handler(event, None)
-        body = json.loads(result["body"])
-        assert len(body["results"]) == 2
+        assert result == {"batchItemFailures": [{"itemIdentifier": "m2"}]}
 
 
 # ============================================================================
@@ -375,7 +375,7 @@ class TestSPSyncLicenseEnforcement:
                 ]
             }
             result = handler_module.lambda_handler(event, None)
-            assert result["statusCode"] == 200
+            assert result == {"batchItemFailures": []}
             mock_validate.assert_called_once()
 
     def test_lambda_handler_license_import_error(self, monkeypatch):

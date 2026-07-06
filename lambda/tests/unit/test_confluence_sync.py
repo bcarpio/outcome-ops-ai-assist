@@ -1277,92 +1277,79 @@ class TestProcessSyncRequest:
 # ============================================================================
 
 class TestLambdaHandler:
-    """Test main Lambda handler."""
+    """Test main Lambda handler -- Chunk 02: SQS partial-batch-failure
+    contract. Handler must return {"batchItemFailures": [...]} so SQS
+    redelivers only the failed records instead of silently deleting on 200."""
 
     @patch.object(handler_module, 'process_sync_request')
     def test_processes_sqs_records(self, mock_process):
-        """Test handler processes SQS records."""
+        """Success record -> empty batchItemFailures (ack all)."""
         mock_process.return_value = {"status": "success", "pages_queued": 5}
 
         event = {
             "Records": [
-                {"body": json.dumps({"workspace_id": "ws_test", "connection_id": "conn_test"})}
+                {"messageId": "msg-1", "body": json.dumps({"workspace_id": "ws_test", "connection_id": "conn_test"})}
             ]
         }
 
         result = lambda_handler(event, None)
-
-        assert result["statusCode"] == 200
-        body = json.loads(result["body"])
-        assert len(body["results"]) == 1
-        assert body["results"][0]["status"] == "success"
+        assert result == {"batchItemFailures": []}
 
     @patch.object(handler_module, 'process_sync_request')
     def test_handles_multiple_records(self, mock_process):
-        """Test handler processes multiple SQS records."""
+        """All-success batch -> empty batchItemFailures."""
         mock_process.return_value = {"status": "success"}
 
         event = {
             "Records": [
-                {"body": json.dumps({"workspace_id": "ws1", "connection_id": "c1"})},
-                {"body": json.dumps({"workspace_id": "ws2", "connection_id": "c2"})},
+                {"messageId": "msg-1", "body": json.dumps({"workspace_id": "ws1", "connection_id": "c1"})},
+                {"messageId": "msg-2", "body": json.dumps({"workspace_id": "ws2", "connection_id": "c2"})},
             ]
         }
 
         result = lambda_handler(event, None)
-
-        body = json.loads(result["body"])
-        assert len(body["results"]) == 2
+        assert result == {"batchItemFailures": []}
         assert mock_process.call_count == 2
 
     def test_handles_invalid_json(self):
-        """Test handler handles invalid JSON gracefully."""
-        event = {"Records": [{"body": "not valid json at all"}]}
+        """Poison-pill message -> batchItemFailures so SQS routes to DLQ."""
+        event = {"Records": [{"messageId": "msg-bad", "body": "not valid json at all"}]}
 
         result = lambda_handler(event, None)
-
-        assert result["statusCode"] == 200
-        body = json.loads(result["body"])
-        assert body["results"][0]["status"] == "error"
-        assert "Invalid JSON" in body["results"][0]["error"]
+        assert result == {"batchItemFailures": [{"itemIdentifier": "msg-bad"}]}
 
     def test_handles_missing_records(self):
-        """Test handler handles missing Records key."""
+        """Missing Records key: still statusCode 400 (early-return guard)."""
         result = lambda_handler({}, None)
 
         assert result["statusCode"] == 400
         assert "Invalid event" in result["body"]
 
     def test_handles_empty_records(self):
-        """Test handler handles empty Records list."""
+        """Empty Records -> empty batchItemFailures."""
         event = {"Records": []}
 
         result = lambda_handler(event, None)
-
-        assert result["statusCode"] == 200
-        body = json.loads(result["body"])
-        assert body["results"] == []
+        assert result == {"batchItemFailures": []}
 
     @patch.object(handler_module, 'process_sync_request')
     def test_handles_processing_exception(self, mock_process):
-        """Test handler catches processing exceptions."""
+        """Exception during processing -> batchItemFailures for that record."""
         mock_process.side_effect = Exception("Unexpected error")
 
         event = {
             "Records": [
-                {"body": json.dumps({"workspace_id": "ws_test", "connection_id": "conn_test"})}
+                {"messageId": "msg-boom", "body": json.dumps({"workspace_id": "ws_test", "connection_id": "conn_test"})}
             ]
         }
 
         result = lambda_handler(event, None)
-
-        body = json.loads(result["body"])
-        assert body["results"][0]["status"] == "error"
-        assert "Unexpected error" in body["results"][0]["error"]
+        assert result == {"batchItemFailures": [{"itemIdentifier": "msg-boom"}]}
 
     @patch.object(handler_module, 'process_sync_request')
     def test_mixed_success_and_failure(self, mock_process):
-        """Test handler counts successful and failed records."""
+        """Only failed record itemIdentifier lands in batchItemFailures --
+        the two success records are ack'd (SQS deletes them)."""
         mock_process.side_effect = [
             {"status": "success", "pages_queued": 5},
             {"status": "error", "error": "Connection not found"},
@@ -1371,36 +1358,14 @@ class TestLambdaHandler:
 
         event = {
             "Records": [
-                {"body": json.dumps({"workspace_id": "ws1", "connection_id": "c1"})},
-                {"body": json.dumps({"workspace_id": "ws2", "connection_id": "c2"})},
-                {"body": json.dumps({"workspace_id": "ws3", "connection_id": "c3"})},
+                {"messageId": "msg-1", "body": json.dumps({"workspace_id": "ws1", "connection_id": "c1"})},
+                {"messageId": "msg-2", "body": json.dumps({"workspace_id": "ws2", "connection_id": "c2"})},
+                {"messageId": "msg-3", "body": json.dumps({"workspace_id": "ws3", "connection_id": "c3"})},
             ]
         }
 
         result = lambda_handler(event, None)
-
-        body = json.loads(result["body"])
-        assert len(body["results"]) == 3
-        successful = [r for r in body["results"] if r.get("status") == "success"]
-        assert len(successful) == 2
-
-    @patch.object(handler_module, 'process_sync_request')
-    def test_response_body_is_valid_json(self, mock_process):
-        """Test response body is always valid JSON."""
-        mock_process.return_value = {"status": "success"}
-
-        event = {
-            "Records": [
-                {"body": json.dumps({"workspace_id": "ws_test", "connection_id": "conn_test"})}
-            ]
-        }
-
-        result = lambda_handler(event, None)
-
-        # Should not raise
-        body = json.loads(result["body"])
-        assert "message" in body
-        assert "results" in body
+        assert result == {"batchItemFailures": [{"itemIdentifier": "msg-2"}]}
 
 
 # ============================================================================
@@ -1439,9 +1404,7 @@ class TestLicenseValidation:
         }
         result = lambda_handler(event, None)
 
-        assert result["statusCode"] == 200
-        body = json.loads(result["body"])
-        assert "results" in body
+        assert result == {"batchItemFailures": []}
 
     def test_lambda_handler_license_import_error(self, monkeypatch):
         """Missing layer (ImportError) emits LICENSE_FAIL_OPEN and re-raises."""

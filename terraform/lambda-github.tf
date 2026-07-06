@@ -409,6 +409,12 @@ resource "aws_lambda_event_source_mapping" "github_sync" {
   batch_size                         = 1 # Process one sync at a time
   maximum_batching_window_in_seconds = 0 # Process immediately
 
+  # Chunk 02: partial-batch-failure. Handler returns batchItemFailures for
+  # records that failed; without this, ReportBatchItemFailures is disabled
+  # and SQS deletes every record on 200 (silent KB data loss). Also matches
+  # the ADR-030/ADR-032 retry contract for sync workers.
+  function_response_types = ["ReportBatchItemFailures"]
+
   scaling_config {
     maximum_concurrency = 5 # Limit concurrent syncs
   }

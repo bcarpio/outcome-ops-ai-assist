@@ -1748,43 +1748,44 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
 
     logger.info(f"GitHub sync handler invoked with {len(event.get('Records', []))} records")
 
-    results = []
+    # Chunk 02: partial-batch-failure semantics. Previously per-record
+    # exceptions were caught and the batch returned 200, so SQS
+    # deleted every message even ones that failed. Failed records
+    # never retried and never reached the DLQ -- silent KB data loss
+    # under transient upstream 5xx. Now failed records land in
+    # batchItemFailures so SQS re-delivers them for retry (bounded by
+    # the queue's maxReceiveCount before landing in the DLQ).
+    #
+    # Idempotency: sync writes are S3 put + DDB upsert, both idempotent
+    # under re-delivery. No counter/append side effects to guard.
+    batch_item_failures: List[Dict[str, str]] = []
+    successes = 0
+    failures = 0
     for record in event.get("Records", []):
         try:
             message = json.loads(record["body"])
             logger.info(f"Processing message: {json.dumps(message)}")
 
             result = process_sync_request(message)
-            results.append({
-                "message_id": record.get("messageId"),
-                "result": result,
-            })
+            if result.get("status") in ("success", "no_changes", "skipped"):
+                successes += 1
+            else:
+                # Business-logic failure surface -- treat as retry too
+                # so the DLQ builds an inspectable inventory.
+                logger.error(
+                    f"[github-sync] non-success result for {record.get('messageId')}: {result}"
+                )
+                batch_item_failures.append({"itemIdentifier": record["messageId"]})
+                failures += 1
 
-        except json.JSONDecodeError as e:
-            logger.error(f"Invalid JSON in message: {e}")
-            results.append({
-                "message_id": record.get("messageId"),
-                "result": {"status": "error", "error": "Invalid JSON"},
-            })
         except Exception as e:
-            logger.exception(f"Error processing message")
-            results.append({
-                "message_id": record.get("messageId"),
-                "result": {"status": "error", "error": str(e)},
-            })
+            logger.exception(f"Error processing message {record.get('messageId')}: {e}")
+            batch_item_failures.append({"itemIdentifier": record["messageId"]})
+            failures += 1
 
-    # Count successes and failures
-    successes = sum(1 for r in results if r["result"].get("status") in ("success", "no_changes", "skipped"))
-    failures = len(results) - successes
+    logger.info(
+        f"Sync complete: {successes} succeeded, {failures} failed, "
+        f"{len(batch_item_failures)} re-delivered"
+    )
 
-    logger.info(f"Sync complete: {successes} succeeded, {failures} failed")
-
-    return {
-        "statusCode": 200,
-        "body": json.dumps({
-            "processed": len(results),
-            "successes": successes,
-            "failures": failures,
-            "results": results,
-        }),
-    }
+    return {"batchItemFailures": batch_item_failures}

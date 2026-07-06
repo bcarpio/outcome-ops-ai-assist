@@ -1001,33 +1001,33 @@ class TestLambdaHandlerLicenseLayer:
 
 
 class TestLambdaHandlerDispatch:
+    """Chunk 02: SQS partial-batch-failure contract."""
 
     @patch.object(handler_module, "process_sync_request")
     def test_processes_sqs_records(self, mock_process):
         mock_process.return_value = {"status": "success", "tables_queued": 5}
         event = {
             "Records": [
-                {"body": json.dumps({"workspace_id": "ws", "connection_id": "c1"})},
-                {"body": json.dumps({"workspace_id": "ws", "connection_id": "c2"})},
+                {"messageId": "m1", "body": json.dumps({"workspace_id": "ws", "connection_id": "c1"})},
+                {"messageId": "m2", "body": json.dumps({"workspace_id": "ws", "connection_id": "c2"})},
             ]
         }
         result = handler_module.lambda_handler(event, None)
-        assert result["statusCode"] == 200
+        assert result == {"batchItemFailures": []}
         assert mock_process.call_count == 2
 
     @patch.object(handler_module, "process_sync_request")
     def test_invalid_json_records_continue(self, mock_process):
+        """Poison-pill routes to DLQ; sibling success message ack'd."""
         mock_process.return_value = {"status": "success"}
         event = {
             "Records": [
-                {"body": "{not valid json"},
-                {"body": json.dumps({"workspace_id": "ws", "connection_id": "c"})},
+                {"messageId": "bad", "body": "{not valid json"},
+                {"messageId": "good", "body": json.dumps({"workspace_id": "ws", "connection_id": "c"})},
             ]
         }
         result = handler_module.lambda_handler(event, None)
-        body = json.loads(result["body"])
-        assert any(r.get("status") == "error" for r in body["results"])
-        assert any(r.get("status") == "success" for r in body["results"])
+        assert result == {"batchItemFailures": [{"itemIdentifier": "bad"}]}
 
 
 # ============================================================================

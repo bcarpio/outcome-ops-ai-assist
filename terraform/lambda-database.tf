@@ -340,6 +340,9 @@ resource "aws_lambda_event_source_mapping" "database_sync" {
   batch_size                         = 1
   maximum_batching_window_in_seconds = 0
 
+  # Chunk 02: partial-batch-failure. See lambda-github.tf for rationale.
+  function_response_types = ["ReportBatchItemFailures"]
+
   scaling_config {
     maximum_concurrency = 5
   }

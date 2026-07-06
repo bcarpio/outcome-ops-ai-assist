@@ -1783,13 +1783,8 @@ class TestLambdaHandler:
 
         result = lambda_handler(event, None)
 
-        assert result["statusCode"] == 200
-        body = json.loads(result["body"])
-        assert body["processed"] == 1
-        assert body["successes"] == 1
-        assert body["failures"] == 0
-        assert len(body["results"]) == 1
-        assert body["results"][0]["message_id"] == "msg-001"
+        # Chunk 02: handler now returns SQS partial-batch-failure envelope.
+        assert result == {"batchItemFailures": []}
 
     @patch.object(handler_module, "process_sync_request")
     def test_processes_multiple_sqs_records(self, mock_process):
@@ -1818,13 +1813,11 @@ class TestLambdaHandler:
         }
 
         result = lambda_handler(event, None)
-        body = json.loads(result["body"])
-        assert body["processed"] == 2
-        assert body["successes"] == 2
-        assert body["failures"] == 0
+        assert result == {"batchItemFailures": []}
 
     def test_handles_invalid_json_in_record(self):
-        """Test handler handles invalid JSON in SQS message body."""
+        """Invalid JSON messages must land in batchItemFailures so SQS
+        redelivers -> DLQ instead of silently deleting the poison pill."""
         event = {
             "Records": [
                 {"messageId": "msg-bad", "body": "not-json!!!"}
@@ -1832,33 +1825,24 @@ class TestLambdaHandler:
         }
 
         result = lambda_handler(event, None)
-        assert result["statusCode"] == 200
-        body = json.loads(result["body"])
-        assert body["failures"] == 1
-        assert body["results"][0]["result"]["status"] == "error"
-        assert "Invalid JSON" in body["results"][0]["result"]["error"]
+        assert result == {"batchItemFailures": [{"itemIdentifier": "msg-bad"}]}
 
     def test_handles_empty_records(self):
         """Test handler handles empty Records list."""
         event = {"Records": []}
 
         result = lambda_handler(event, None)
-        assert result["statusCode"] == 200
-        body = json.loads(result["body"])
-        assert body["processed"] == 0
-        assert body["successes"] == 0
-        assert body["failures"] == 0
+        assert result == {"batchItemFailures": []}
 
     def test_handles_missing_records_key(self):
         """Test handler handles missing Records key gracefully."""
         result = lambda_handler({}, None)
-        assert result["statusCode"] == 200
-        body = json.loads(result["body"])
-        assert body["processed"] == 0
+        assert result == {"batchItemFailures": []}
 
     @patch.object(handler_module, "process_sync_request")
     def test_handles_processing_exception(self, mock_process):
-        """Test handler catches unexpected processing exceptions."""
+        """Processing exceptions must land in batchItemFailures so SQS
+        redelivers instead of silently deleting the message on 200."""
         mock_process.side_effect = Exception("Unexpected boom")
 
         event = {
@@ -1875,14 +1859,11 @@ class TestLambdaHandler:
         }
 
         result = lambda_handler(event, None)
-        body = json.loads(result["body"])
-        assert body["failures"] == 1
-        assert body["results"][0]["result"]["status"] == "error"
-        assert "Unexpected boom" in body["results"][0]["result"]["error"]
+        assert result == {"batchItemFailures": [{"itemIdentifier": "msg-001"}]}
 
     @patch.object(handler_module, "process_sync_request")
     def test_counts_no_changes_as_success(self, mock_process):
-        """Test no_changes status is counted as success."""
+        """Test no_changes status is counted as success (no retry)."""
         mock_process.return_value = {"status": "no_changes", "commit_sha": "abc"}
 
         event = {
@@ -1899,13 +1880,11 @@ class TestLambdaHandler:
         }
 
         result = lambda_handler(event, None)
-        body = json.loads(result["body"])
-        assert body["successes"] == 1
-        assert body["failures"] == 0
+        assert result == {"batchItemFailures": []}
 
     @patch.object(handler_module, "process_sync_request")
     def test_counts_skipped_as_success(self, mock_process):
-        """Test skipped status is counted as success."""
+        """Test skipped status is counted as success (no retry)."""
         mock_process.return_value = {"status": "skipped", "reason": "Code maps disabled"}
 
         event = {
@@ -1922,13 +1901,13 @@ class TestLambdaHandler:
         }
 
         result = lambda_handler(event, None)
-        body = json.loads(result["body"])
-        assert body["successes"] == 1
-        assert body["failures"] == 0
+        assert result == {"batchItemFailures": []}
 
     @patch.object(handler_module, "process_sync_request")
     def test_mixed_success_and_failure(self, mock_process):
-        """Test correct counting with mixed results."""
+        """Chunk 02: only failed records land in batchItemFailures; success
+        + no_changes are ack'd. Reference-implementation test for the
+        partial-batch-failure contract."""
         mock_process.side_effect = [
             {"status": "success"},
             {"status": "error", "error": "Failed"},
@@ -1944,32 +1923,29 @@ class TestLambdaHandler:
         }
 
         result = lambda_handler(event, None)
-        body = json.loads(result["body"])
-        assert body["processed"] == 3
-        assert body["successes"] == 2
-        assert body["failures"] == 1
+        assert result == {"batchItemFailures": [{"itemIdentifier": "msg-2"}]}
 
     @patch.object(handler_module, "process_sync_request")
-    def test_message_id_preserved_in_results(self, mock_process):
-        """Test message IDs are preserved in results."""
-        mock_process.return_value = {"status": "success"}
+    def test_only_failed_record_retried(self, mock_process):
+        """Middle record raises -> only that itemIdentifier is retried,
+        surrounding records are ack'd (SQS deletes them)."""
+        def side_effect(msg):
+            if msg.get("repo_name") == "o/r2":
+                raise RuntimeError("upstream 503")
+            return {"status": "success"}
+
+        mock_process.side_effect = side_effect
 
         event = {
             "Records": [
-                {
-                    "messageId": "unique-msg-id-abc",
-                    "body": json.dumps({
-                        "workspace_id": "ws_test",
-                        "repo_name": "acme/repo",
-                        "installation_id": "123",
-                    }),
-                }
+                {"messageId": "msg-1", "body": json.dumps({"workspace_id": "w1", "repo_name": "o/r1", "installation_id": "1"})},
+                {"messageId": "msg-2", "body": json.dumps({"workspace_id": "w2", "repo_name": "o/r2", "installation_id": "2"})},
+                {"messageId": "msg-3", "body": json.dumps({"workspace_id": "w3", "repo_name": "o/r3", "installation_id": "3"})},
             ]
         }
 
         result = lambda_handler(event, None)
-        body = json.loads(result["body"])
-        assert body["results"][0]["message_id"] == "unique-msg-id-abc"
+        assert result == {"batchItemFailures": [{"itemIdentifier": "msg-2"}]}
 
 
 # ============================================================================
@@ -2114,9 +2090,7 @@ class TestLicenseValidation:
         }
         result = handler_module.lambda_handler(event, None)
 
-        assert result["statusCode"] == 200
-        body = json.loads(result["body"])
-        assert body["successes"] == 1
+        assert result == {"batchItemFailures": []}
 
     def test_lambda_handler_license_import_error(self, monkeypatch):
         """Missing layer (ImportError) emits LICENSE_FAIL_OPEN and re-raises."""

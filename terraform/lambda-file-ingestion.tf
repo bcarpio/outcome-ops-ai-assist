@@ -278,6 +278,12 @@ resource "aws_lambda_event_source_mapping" "file_ingestion" {
 
   batch_size = 10 # Process multiple files concurrently
 
+  # Chunk 02: partial-batch-failure. Ingestion writes are idempotent
+  # (S3 put + DDB upsert on stable key), so redelivery of failed items
+  # is safe. Without this the batch returns 200 on any failure and every
+  # message is deleted -- permanent KB gap.
+  function_response_types = ["ReportBatchItemFailures"]
+
   scaling_config {
     maximum_concurrency = 10 # Limit concurrent invocations
   }

@@ -135,6 +135,10 @@ resource "aws_lambda_event_source_mapping" "github_sync_secondary" {
   batch_size                         = 1
   maximum_batching_window_in_seconds = 0
 
+  # Chunk 02: partial-batch-failure. See lambda-github.tf primary
+  # ESM for rationale (handler returns batchItemFailures for failures).
+  function_response_types = ["ReportBatchItemFailures"]
+
   scaling_config {
     maximum_concurrency = 5
   }
@@ -252,6 +256,11 @@ resource "aws_lambda_event_source_mapping" "confluence_sync_secondary" {
   event_source_arn = aws_sqs_queue.confluence_sync_secondary[0].arn
   function_name    = module.confluence_sync_lambda_secondary[0].lambda_function_name
   batch_size       = 1
+
+  # Chunk 02: partial-batch-failure. See lambda-github.tf primary
+  # ESM for rationale (handler returns batchItemFailures for failures).
+  function_response_types = ["ReportBatchItemFailures"]
+
   scaling_config {
     maximum_concurrency = 5
   }
@@ -363,6 +372,11 @@ resource "aws_lambda_event_source_mapping" "jira_sync_secondary" {
   event_source_arn = aws_sqs_queue.jira_sync_secondary[0].arn
   function_name    = module.jira_sync_lambda_secondary[0].lambda_function_name
   batch_size       = 1
+
+  # Chunk 02: partial-batch-failure. See lambda-github.tf primary
+  # ESM for rationale (handler returns batchItemFailures for failures).
+  function_response_types = ["ReportBatchItemFailures"]
+
   scaling_config {
     maximum_concurrency = 5
   }
@@ -476,6 +490,11 @@ resource "aws_lambda_event_source_mapping" "outlook_sync_secondary" {
   event_source_arn = aws_sqs_queue.outlook_sync_secondary[0].arn
   function_name    = module.outlook_sync_lambda_secondary[0].lambda_function_name
   batch_size       = 1
+
+  # Chunk 02: partial-batch-failure. See lambda-github.tf primary
+  # ESM for rationale (handler returns batchItemFailures for failures).
+  function_response_types = ["ReportBatchItemFailures"]
+
   scaling_config {
     maximum_concurrency = 5
   }
@@ -584,6 +603,11 @@ resource "aws_lambda_event_source_mapping" "teams_sync_secondary" {
   event_source_arn = aws_sqs_queue.teams_sync_secondary[0].arn
   function_name    = module.teams_sync_lambda_secondary[0].lambda_function_name
   batch_size       = 1
+
+  # Chunk 02: partial-batch-failure. See lambda-github.tf primary
+  # ESM for rationale (handler returns batchItemFailures for failures).
+  function_response_types = ["ReportBatchItemFailures"]
+
   scaling_config {
     maximum_concurrency = 5
   }
@@ -692,6 +716,11 @@ resource "aws_lambda_event_source_mapping" "sharepoint_sync_secondary" {
   event_source_arn = aws_sqs_queue.sharepoint_sync_secondary[0].arn
   function_name    = module.sharepoint_sync_lambda_secondary[0].lambda_function_name
   batch_size       = 1
+
+  # Chunk 02: partial-batch-failure. See lambda-github.tf primary
+  # ESM for rationale (handler returns batchItemFailures for failures).
+  function_response_types = ["ReportBatchItemFailures"]
+
   scaling_config {
     maximum_concurrency = 5
   }
@@ -800,6 +829,11 @@ resource "aws_lambda_event_source_mapping" "onedrive_sync_secondary" {
   event_source_arn = aws_sqs_queue.onedrive_sync_secondary[0].arn
   function_name    = module.onedrive_sync_lambda_secondary[0].lambda_function_name
   batch_size       = 1
+
+  # Chunk 02: partial-batch-failure. See lambda-github.tf primary
+  # ESM for rationale (handler returns batchItemFailures for failures).
+  function_response_types = ["ReportBatchItemFailures"]
+
   scaling_config {
     maximum_concurrency = 5
   }
@@ -908,6 +942,11 @@ resource "aws_lambda_event_source_mapping" "onenote_sync_secondary" {
   event_source_arn = aws_sqs_queue.onenote_sync_secondary[0].arn
   function_name    = module.onenote_sync_lambda_secondary[0].lambda_function_name
   batch_size       = 1
+
+  # Chunk 02: partial-batch-failure. See lambda-github.tf primary
+  # ESM for rationale (handler returns batchItemFailures for failures).
+  function_response_types = ["ReportBatchItemFailures"]
+
   scaling_config {
     maximum_concurrency = 5
   }
@@ -1006,6 +1045,11 @@ resource "aws_lambda_event_source_mapping" "database_sync_secondary" {
   event_source_arn = aws_sqs_queue.database_sync_secondary[0].arn
   function_name    = module.database_sync_lambda_secondary[0].lambda_function_name
   batch_size       = 1
+
+  # Chunk 02: partial-batch-failure. See lambda-github.tf primary
+  # ESM for rationale (handler returns batchItemFailures for failures).
+  function_response_types = ["ReportBatchItemFailures"]
+
   scaling_config {
     maximum_concurrency = 5
   }

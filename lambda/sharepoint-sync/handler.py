@@ -495,28 +495,34 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         logger.error("No SQS records in event")
         return {"statusCode": 400, "body": "Invalid event"}
 
-    results = []
+    # Chunk 02: partial-batch-failure semantics -- see github-sync
+    # for the same conversion + rationale (silent KB data loss under
+    # transient upstream failures).
+    batch_item_failures: List[Dict[str, str]] = []
+    successful = 0
+    failed = 0
 
     for record in event["Records"]:
         try:
             message = json.loads(record["body"])
             result = process_sync_request(message)
-            results.append(result)
+            if result.get("status") == "success":
+                successful += 1
+            else:
+                logger.error(
+                    f"[sharepoint-sync] non-success result for {record.get('messageId')}: {result}"
+                )
+                batch_item_failures.append({"itemIdentifier": record["messageId"]})
+                failed += 1
 
-        except json.JSONDecodeError as e:
-            logger.error(f"Invalid JSON in SQS message: {e}")
-            results.append({"status": "error", "error": "Invalid JSON"})
         except Exception as e:
-            logger.error(f"Error processing sync request: {e}")
-            results.append({"status": "error", "error": str(e)})
+            logger.exception(f"Error processing sync request {record.get('messageId')}: {e}")
+            batch_item_failures.append({"itemIdentifier": record["messageId"]})
+            failed += 1
 
-    successful = sum(1 for r in results if r.get("status") == "success")
-    logger.info(f"SharePoint sync completed: {successful}/{len(results)} successful")
+    logger.info(
+        f"SharePoint sync completed: {successful} successful, {failed} failed, "
+        f"{len(batch_item_failures)} re-delivered"
+    )
 
-    return {
-        "statusCode": 200,
-        "body": json.dumps({
-            "message": "SharePoint sync completed",
-            "results": results,
-        }),
-    }
+    return {"batchItemFailures": batch_item_failures}

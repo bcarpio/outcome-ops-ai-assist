@@ -125,6 +125,12 @@ resource "aws_lambda_event_source_mapping" "file_ingestion_secondary" {
   function_name    = module.file_ingestion_lambda_secondary[0].lambda_function_name
 
   batch_size = 10
+
+  # Chunk 02: partial-batch-failure. See lambda-file-ingestion.tf primary
+  # ESM for rationale (ingestion writes are idempotent; failed items must
+  # redeliver + DLQ instead of silent 200/delete).
+  function_response_types = ["ReportBatchItemFailures"]
+
   scaling_config {
     maximum_concurrency = 10
   }

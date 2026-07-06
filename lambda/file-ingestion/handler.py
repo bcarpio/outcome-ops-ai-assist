@@ -30,7 +30,7 @@ import os
 import re
 import sys
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import boto3
 import yaml
@@ -1780,9 +1780,18 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         logger.error("No SQS records in event")
         return {"statusCode": 400, "body": "Invalid event"}
 
+    # Chunk 02: partial-batch-failure semantics. Previously every record
+    # was catch-all appended to `results` and the batch returned 200,
+    # so SQS deleted messages that never actually ingested -- a hard KB
+    # gap (file simply missing from the source, no retry, no DLQ). Now
+    # failed records land in batchItemFailures for redelivery, and terminal
+    # failures reach the DLQ after MaxReceiveCount so we can inspect them.
+    # Ingestion writes are idempotent (S3 put on stable key + DDB upsert).
+    batch_item_failures: List[Dict[str, str]] = []
     results = []
 
     for record in event["Records"]:
+        message_id = record.get("messageId", "")
         try:
             body = json.loads(record["body"])
             source = body.get("source")
@@ -1800,8 +1809,12 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             logger.info(f"{log_prefix} Processing file ingestion message")
 
             if not source or not workspace_id:
+                # Malformed message -- retry won't help, but let SQS
+                # route to DLQ so we can inspect. batchItemFailures is the
+                # right lever for that (returning success would delete).
                 logger.error(f"Invalid message - missing source or workspace_id")
                 results.append({"status": "error", "error": "Invalid message"})
+                batch_item_failures.append({"itemIdentifier": message_id})
                 continue
 
             # ADR-019 per-source repo-limit enforcement. Composite avoids
@@ -1963,19 +1976,28 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             if s3_key:
                 results.append({"status": "success", "source": source, "s3_key": s3_key})
             else:
+                logger.error(
+                    f"[file-ingestion] Processing failed for {source}/{message_id}"
+                )
                 results.append({"status": "error", "source": source, "error": "Processing failed"})
+                batch_item_failures.append({"itemIdentifier": message_id})
 
-        except json.JSONDecodeError as e:
-            logger.error(f"Invalid JSON in SQS message: {e}")
-            results.append({"status": "error", "error": "Invalid JSON"})
         except Exception as e:
-            logger.error(f"Error processing message: {e}")
+            logger.exception(f"[file-ingestion] Error processing message {message_id}: {e}")
             results.append({"status": "error", "error": str(e)})
+            batch_item_failures.append({"itemIdentifier": message_id})
 
     successful = sum(1 for r in results if r.get("status") == "success")
-    logger.info(f"File ingestion completed: {successful}/{len(results)} successful")
+    logger.info(
+        f"File ingestion completed: {successful}/{len(results)} successful, "
+        f"{len(batch_item_failures)} re-delivered"
+    )
 
+    # SQS only reads `batchItemFailures` from the return; the extra keys
+    # are for CloudWatch log observability and unit-test introspection of
+    # per-record routing outcomes.
     return {
+        "batchItemFailures": batch_item_failures,
         "statusCode": 200,
         "body": json.dumps({
             "message": "File ingestion completed",

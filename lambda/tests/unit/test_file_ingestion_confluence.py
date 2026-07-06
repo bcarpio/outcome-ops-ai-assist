@@ -1891,6 +1891,45 @@ class TestLambdaHandlerConfluenceJiraRouting:
         body = json.loads(result["body"])
         assert body["results"][0]["status"] == "success"
 
+    @patch.object(handler_module, 'process_confluence_page')
+    @patch.object(handler_module, 'process_jira_issue')
+    def test_partial_batch_failure_only_failed_record_retried(
+        self, mock_jira, mock_confluence
+    ):
+        """Chunk 02 contract: mid-batch failure -> only that itemIdentifier
+        lands in batchItemFailures. Previously the whole batch returned
+        200 and every message was silently deleted, causing permanent KB gaps."""
+        mock_confluence.return_value = "workspaces/ws_test/confluence/page.html"
+        mock_jira.return_value = None  # processing failure
+
+        event = {
+            "Records": [
+                {
+                    "messageId": "msg-conf",
+                    "body": json.dumps({
+                        "source": "confluence",
+                        "workspace_id": "ws_test",
+                        "connection_id": "conn_test",
+                        "cloud_id": "cloud_123",
+                        "file": {"page_id": "123"},
+                    }),
+                },
+                {
+                    "messageId": "msg-jira",
+                    "body": json.dumps({
+                        "source": "jira",
+                        "workspace_id": "ws_test",
+                        "connection_id": "conn_test",
+                        "cloud_id": "cloud_123",
+                        "file": {"issue_id": "10001"},
+                    }),
+                },
+            ]
+        }
+
+        result = lambda_handler(event, None)
+        assert result["batchItemFailures"] == [{"itemIdentifier": "msg-jira"}]
+
 
 # ============================================================================
 # License layer enforcement (ADR-019, plan/license-layer-rollout chunk 04)
