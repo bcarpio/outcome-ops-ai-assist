@@ -87,6 +87,15 @@ vi.mock('../../../src/lib/api', () => ({
   resetWorkspaceSystemPrompt: vi.fn(),
   getWorkspacePrivacy: vi.fn(),
   updateWorkspacePrivacy: vi.fn(),
+  getAzureDevOpsBoardsAuthUrl: vi.fn(),
+  listAzureDevOpsBoardsConnections: vi.fn(),
+  listAzureDevOpsBoardsOrgs: vi.fn(),
+  listAzureDevOpsBoardsDiscoveryProjects: vi.fn(),
+  addAzureDevOpsBoardsProjects: vi.fn(),
+  listWorkspaceAzureDevOpsBoardsProjects: vi.fn(),
+  removeAzureDevOpsBoardsProject: vi.fn(),
+  triggerAzureDevOpsBoardsSync: vi.fn(),
+  disconnectAzureDevOpsBoards: vi.fn(),
 }))
 
 import {
@@ -113,6 +122,8 @@ import {
   searchUsers,
   getWorkspaceSystemPrompt, updateWorkspaceSystemPrompt, resetWorkspaceSystemPrompt,
   getWorkspacePrivacy, updateWorkspacePrivacy,
+  listAzureDevOpsBoardsConnections,
+  listWorkspaceAzureDevOpsBoardsProjects,
 } from '../../../src/lib/api'
 
 const mockGetWorkspace = vi.mocked(getWorkspace)
@@ -174,6 +185,8 @@ const mockUpdateWorkspaceSystemPrompt = vi.mocked(updateWorkspaceSystemPrompt)
 const mockResetWorkspaceSystemPrompt = vi.mocked(resetWorkspaceSystemPrompt)
 const mockGetWorkspacePrivacy = vi.mocked(getWorkspacePrivacy)
 const mockUpdateWorkspacePrivacy = vi.mocked(updateWorkspacePrivacy)
+const mockListAzureDevOpsBoardsConnections = vi.mocked(listAzureDevOpsBoardsConnections)
+const mockListWorkspaceAzureDevOpsBoardsProjects = vi.mocked(listWorkspaceAzureDevOpsBoardsProjects)
 
 function setupDefaultMocks() {
   const ws = createWorkspace({ workspace_id: 'ws-1', name: 'Test WS', role: 'workspace_admin' })
@@ -192,6 +205,8 @@ function setupDefaultMocks() {
   mockListOneDriveConnections.mockResolvedValue([])
   mockListOneNoteConnections.mockResolvedValue([])
   mockListDatabaseConnections.mockResolvedValue([])
+  mockListAzureDevOpsBoardsConnections.mockResolvedValue([])
+  mockListWorkspaceAzureDevOpsBoardsProjects.mockResolvedValue([])
   mockGetWorkspacePrivacy.mockResolvedValue({
     workspace_id: 'ws-1',
     privacy_mode: 'STRICT',
@@ -383,9 +398,9 @@ describe('WorkspaceSettings', () => {
     })
 
     const user = userEvent.setup()
-    // Connect buttons: Confluence(0), Jira(1), Outlook(2), Teams(3), SharePoint(4)
+    // Connect buttons: Confluence(0), Jira(1), Boards(2), Outlook(3), Teams(4), SharePoint(5)
     const connectButtons = screen.getAllByText('Connect')
-    await user.click(connectButtons[3])
+    await user.click(connectButtons[4])
 
     await waitFor(() => {
       expect(mockGetTeamsAuthUrl).toHaveBeenCalledWith('ws-1')
@@ -403,9 +418,9 @@ describe('WorkspaceSettings', () => {
     })
 
     const user = userEvent.setup()
-    // Connect buttons: Confluence(0), Jira(1), Outlook(2), Teams(3), SharePoint(4)
+    // Connect buttons: Confluence(0), Jira(1), Boards(2), Outlook(3), Teams(4), SharePoint(5)
     const connectButtons = screen.getAllByText('Connect')
-    await user.click(connectButtons[4])
+    await user.click(connectButtons[5])
 
     await waitFor(() => {
       expect(mockGetSharePointAuthUrl).toHaveBeenCalledWith('ws-1')
@@ -2201,8 +2216,8 @@ describe('WorkspaceSettings', () => {
 
     const user = userEvent.setup()
     const connectButtons = screen.getAllByText('Connect')
-    // Click Outlook connect (third Connect button)
-    await user.click(connectButtons[2])
+    // Connect buttons: Confluence(0), Jira(1), Boards(2), Outlook(3), Teams(4), SharePoint(5)
+    await user.click(connectButtons[3])
 
     await waitFor(() => {
       expect(mockGetOutlookAuthUrl).toHaveBeenCalledWith('ws-1')
