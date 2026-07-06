@@ -20,6 +20,13 @@ import { defaultProvider } from "@aws-sdk/credential-provider-node";
 import { SSMClient, GetParameterCommand } from "@aws-sdk/client-ssm";
 import { readFileSync, existsSync } from "fs";
 import { join, extname } from "path";
+import {
+  AUTH_EXEMPT_PATHS as MW_AUTH_EXEMPT_PATHS, // eslint-disable-line no-unused-vars
+  makeExtractUser,
+  makeApiAuthGate,
+  apiNotFound,
+  jsonErrorMiddleware,
+} from "./middleware.js";
 
 const app = express();
 // Trust the ALB in front of us so req.ip is the original client IP from
@@ -92,20 +99,9 @@ const signer = new SignatureV4({
 app.use(express.json({ limit: "1mb" }));
 app.use(cookieParser());
 
-// Require authentication and JSON content type for all API routes
-app.use("/api", (req, res, next) => {
-  const user = extractUser(req);
-  if (user.email === "anonymous") {
-    return res.status(401).json({ error: "Authentication required" });
-  }
-  // Reject non-JSON content types on requests with bodies
-  const ct = req.headers["content-type"] || "";
-  if (req.method !== "GET" && req.method !== "DELETE" && ct && !ct.includes("application/json")) {
-    return res.status(415).json({ error: "Unsupported Media Type. Use application/json" });
-  }
-  req.user = user;
-  next();
-});
+// Chunk 13: auth + content-type gate factored to ./middleware.js so
+// vitest can exercise it without loading this launcher.
+app.use("/api", makeApiAuthGate({ extractUser: (req) => extractUser(req) }));
 
 // Health check endpoint
 app.get("/health", (req, res) => {
@@ -197,11 +193,21 @@ function userHeaders(req, user) {
   };
 }
 
+// Chunk 13: default JSON-proxy timeout. Bare fetch() has no timeout; a
+// hung Lambda would hold the request until undici's ~300s default while
+// the ALB idle timeout (~60s) already killed the browser side with an
+// HTML 504. 30s is a comfortable ceiling for every non-streaming JSON
+// proxy in this file. The chat stream helper below opts out.
+const DEFAULT_UPSTREAM_TIMEOUT_MS = 30_000;
+
 /**
  * Sign and send a request to a Lambda Function URL.
  * Returns the fetch Response object.
+ *
+ * `signal` — pass to disable the default timeout (chat stream uses this;
+ * see signedChatStreamFetch). All JSON proxies use the default.
  */
-async function signedFetch(lambdaUrl, method, path, { body, extraHeaders } = {}) {
+async function signedFetch(lambdaUrl, method, path, { body, extraHeaders, signal } = {}) {
   const url = new URL(lambdaUrl);
 
   // Parse path and query string separately for proper SigV4 signing
@@ -251,6 +257,7 @@ async function signedFetch(lambdaUrl, method, path, { body, extraHeaders } = {})
     headers: signedRequest.headers,
     body: body || undefined,
     redirect: "manual",
+    signal: signal ?? AbortSignal.timeout(DEFAULT_UPSTREAM_TIMEOUT_MS),
   });
 }
 
@@ -351,12 +358,26 @@ app.post("/api/chat", async (req, res) => {
   console.log(`[proxy] User: ${user.email}`);
   console.log(`[proxy] Chat request: ${JSON.stringify(req.body).slice(0, 200)}...`);
 
+  // Chunk 13: abort the upstream fetch when the client disconnects. Without
+  // this, closing the tab mid-stream left the chat Lambda draining tokens
+  // (and billing) to nowhere. The controller is separate from the JSON-proxy
+  // default timeout because the chat stream is intentionally long-lived.
+  const abortController = new AbortController();
+  const onClientClose = () => {
+    if (!abortController.signal.aborted) {
+      console.log("[proxy] Client disconnected, aborting upstream stream");
+      abortController.abort();
+    }
+  };
+  req.on("close", onClientClose);
+
   try {
     const body = JSON.stringify({ ...req.body, user });
 
     const response = await signedChatFetch("POST", "/", {
       body,
       extraHeaders: userHeaders(req, user),
+      signal: abortController.signal,
     });
 
     if (!response.ok) {
@@ -385,6 +406,13 @@ app.post("/api/chat", async (req, res) => {
     res.end();
     console.log("[proxy] Stream completed");
   } catch (error) {
+    // Client-disconnect abort is expected and quiet -- the noisy error case
+    // is a real upstream failure.
+    if (error.name === "AbortError" && abortController.signal.aborted) {
+      console.log("[proxy] Stream aborted (client disconnect)");
+      if (!res.writableEnded) res.end();
+      return;
+    }
     console.error(`[proxy] Error: ${error.message}`);
 
     // If headers not sent, send error response
@@ -395,6 +423,8 @@ app.post("/api/chat", async (req, res) => {
       res.write(JSON.stringify({ type: "error", error: error.message }) + "\n");
       res.end();
     }
+  } finally {
+    req.off("close", onClientClose);
   }
 });
 
@@ -2564,6 +2594,11 @@ app.post("/api/logout", (req, res) => {
   clearSessionCookies(res);
   res.status(200).json({ message: "Logged out" });
 });
+
+// Chunk 13: /api 404 guard + terminal JSON error middleware. See
+// ./middleware.js for rationale.
+app.use("/api", apiNotFound);
+app.use(jsonErrorMiddleware);
 
 // Serve static files with SPA fallback
 app.use((req, res) => {
