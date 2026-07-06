@@ -33,8 +33,13 @@ export default function ShareDialog({ conversationId, workspaces, onClose, onSha
         const ids = new Set(data?.conversation?.shared_workspace_ids || [])
         setSharedWorkspaceIds(ids)
         setSelectedWorkspaceIds(new Set(ids))
-      } catch {
-        // Not shared yet - that's fine
+      } catch (err) {
+        // Chunk 15: getConversation now throws instead of returning null.
+        // For this dialog, both "not shared yet" (404 semantically) and a
+        // legitimate server error land here; log so genuine failures
+        // aren't silently swallowed. Empty shared_workspace_ids is the
+        // safe default in either case.
+        console.error('ShareDialog: failed to load share status', err)
       } finally {
         setLoading(false)
       }

@@ -15,6 +15,7 @@ export default function AllChatsModal({ onClose, onSelect, onDelete }: AllChatsM
   const [loadingMore, setLoadingMore] = useState(false)
   const [nextCursor, setNextCursor] = useState<string | undefined>()
   const [hasMore, setHasMore] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
 
   useEffect(() => {
     loadInitial()
@@ -22,21 +23,32 @@ export default function AllChatsModal({ onClose, onSelect, onDelete }: AllChatsM
 
   async function loadInitial() {
     setLoading(true)
-    const result = await listConversations(50)
-    setAllConversations(result.conversations)
-    setNextCursor(result.next_cursor)
-    setHasMore(result.has_more)
-    setLoading(false)
+    setLoadError(null)
+    try {
+      const result = await listConversations(50)
+      setAllConversations(result.conversations)
+      setNextCursor(result.next_cursor)
+      setHasMore(result.has_more)
+    } catch (err) {
+      setLoadError(err instanceof Error ? err.message : 'Failed to load conversations')
+    } finally {
+      setLoading(false)
+    }
   }
 
   async function loadMore() {
     if (!nextCursor || loadingMore) return
     setLoadingMore(true)
-    const result = await listConversations(50, nextCursor)
-    setAllConversations(prev => [...prev, ...result.conversations])
-    setNextCursor(result.next_cursor)
-    setHasMore(result.has_more)
-    setLoadingMore(false)
+    try {
+      const result = await listConversations(50, nextCursor)
+      setAllConversations(prev => [...prev, ...result.conversations])
+      setNextCursor(result.next_cursor)
+      setHasMore(result.has_more)
+    } catch (err) {
+      setLoadError(err instanceof Error ? err.message : 'Failed to load more conversations')
+    } finally {
+      setLoadingMore(false)
+    }
   }
 
   const filtered = useMemo(() => {
@@ -49,9 +61,13 @@ export default function AllChatsModal({ onClose, onSelect, onDelete }: AllChatsM
 
   async function handleDelete(e: React.MouseEvent, convId: string) {
     e.stopPropagation()
-    await deleteConversation(convId)
-    setAllConversations(prev => prev.filter(c => c.conversation_id !== convId))
-    onDelete(convId)
+    try {
+      await deleteConversation(convId)
+      setAllConversations(prev => prev.filter(c => c.conversation_id !== convId))
+      onDelete(convId)
+    } catch (err) {
+      setLoadError(err instanceof Error ? err.message : 'Failed to delete conversation')
+    }
   }
 
   return (
@@ -88,13 +104,26 @@ export default function AllChatsModal({ onClose, onSelect, onDelete }: AllChatsM
 
         {/* Conversation list */}
         <div className="flex-1 overflow-y-auto">
+          {loadError && (
+            <div className="mx-4 my-3 px-3 py-2 bg-red-50 border border-red-200 text-red-800 text-sm rounded">
+              <div className="font-medium">Couldn't load conversations</div>
+              <div className="mt-1 text-red-600">{loadError}</div>
+              <button
+                type="button"
+                onClick={() => loadInitial()}
+                className="mt-1 text-red-700 hover:text-red-900 underline text-xs"
+              >
+                Retry
+              </button>
+            </div>
+          )}
           {loading ? (
             <div className="flex items-center justify-center py-12">
               <Loader2 className="animate-spin text-gray-400" size={24} />
             </div>
           ) : filtered.length === 0 ? (
             <div className="text-center py-12 text-gray-500 text-sm">
-              {searchQuery ? 'No matching conversations' : 'No conversations yet'}
+              {searchQuery ? 'No matching conversations' : loadError ? 'Load failed above' : 'No conversations yet'}
             </div>
           ) : (
             <>

@@ -593,38 +593,46 @@ export default function WorkspaceSettings() {
   async function loadConnections() {
     if (!workspaceId) return
     setLoadingConnections(true)
-    try {
-      const [
-        confluenceData, jiraData, outlookData, teamsData, sharePointData,
-        oneDriveData, oneNoteData, databaseData,
-        azdoBoardsConns, azdoBoardsProjs,
-      ] = await Promise.all([
-        listConfluenceConnections(workspaceId),
-        listJiraConnections(workspaceId),
-        listOutlookConnections(workspaceId).catch(() => []),
-        listTeamsConnections(workspaceId).catch(() => []),
-        listSharePointConnections(workspaceId).catch(() => []),
-        listOneDriveConnections(workspaceId).catch(() => []),
-        listOneNoteConnections(workspaceId).catch(() => []),
-        listDatabaseConnections(workspaceId).catch(() => []),
-        listAzureDevOpsBoardsConnections(workspaceId).catch(() => []),
-        listWorkspaceAzureDevOpsBoardsProjects(workspaceId).catch(() => []),
-      ])
-      setConfluenceConnections(confluenceData)
-      setJiraConnections(jiraData)
-      setOutlookConnections(outlookData)
-      setTeamsConnections(teamsData)
-      setSharePointConnections(sharePointData)
-      setOneDriveConnections(oneDriveData)
-      setOneNoteConnections(oneNoteData)
-      setDatabaseConnections(databaseData)
-      setAzdoBoardsConnections(azdoBoardsConns)
-      setAzdoBoardsProjects(azdoBoardsProjs)
-    } catch (err) {
-      console.error('Failed to load connections:', err)
-    } finally {
-      setLoadingConnections(false)
+    // Chunk 15: previously each of these 8 lists had `.catch(() => [])`,
+    // which turned a Lambda outage into a silent "not connected" state
+    // and invited users to duplicate-reconnect. Now each failure is
+    // routed into the existing `setError` pipe (same behavior as
+    // Confluence + Jira already had). Batching them so one bad
+    // integration doesn't hide the rest.
+    const results = await Promise.all([
+      listConfluenceConnections(workspaceId).then(d => ({ ok: true as const, key: 'Confluence', data: d })).catch(e => ({ ok: false as const, key: 'Confluence', err: e })),
+      listJiraConnections(workspaceId).then(d => ({ ok: true as const, key: 'Jira', data: d })).catch(e => ({ ok: false as const, key: 'Jira', err: e })),
+      listOutlookConnections(workspaceId).then(d => ({ ok: true as const, key: 'Outlook', data: d })).catch(e => ({ ok: false as const, key: 'Outlook', err: e })),
+      listTeamsConnections(workspaceId).then(d => ({ ok: true as const, key: 'Teams', data: d })).catch(e => ({ ok: false as const, key: 'Teams', err: e })),
+      listSharePointConnections(workspaceId).then(d => ({ ok: true as const, key: 'SharePoint', data: d })).catch(e => ({ ok: false as const, key: 'SharePoint', err: e })),
+      listOneDriveConnections(workspaceId).then(d => ({ ok: true as const, key: 'OneDrive', data: d })).catch(e => ({ ok: false as const, key: 'OneDrive', err: e })),
+      listOneNoteConnections(workspaceId).then(d => ({ ok: true as const, key: 'OneNote', data: d })).catch(e => ({ ok: false as const, key: 'OneNote', err: e })),
+      listDatabaseConnections(workspaceId).then(d => ({ ok: true as const, key: 'Database', data: d })).catch(e => ({ ok: false as const, key: 'Database', err: e })),
+      listAzureDevOpsBoardsConnections(workspaceId).then(d => ({ ok: true as const, key: 'Boards connections', data: d })).catch(e => ({ ok: false as const, key: 'Boards connections', err: e })),
+      listWorkspaceAzureDevOpsBoardsProjects(workspaceId).then(d => ({ ok: true as const, key: 'Boards projects', data: d })).catch(e => ({ ok: false as const, key: 'Boards projects', err: e })),
+    ] as const)
+
+    const setters = [
+      setConfluenceConnections, setJiraConnections, setOutlookConnections,
+      setTeamsConnections, setSharePointConnections, setOneDriveConnections,
+      setOneNoteConnections, setDatabaseConnections,
+      setAzdoBoardsConnections, setAzdoBoardsProjects,
+    ] as const
+
+    const failed: string[] = []
+    results.forEach((r, i) => {
+      if (r.ok) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ;(setters[i] as (data: any) => void)(r.data)
+      } else {
+        failed.push(r.key)
+        console.error(`Failed to load ${r.key} connections:`, r.err)
+      }
+    })
+    if (failed.length > 0) {
+      setError(`Failed to load: ${failed.join(', ')}. Reload to retry.`)
     }
+    setLoadingConnections(false)
   }
 
   async function loadGitHubData() {

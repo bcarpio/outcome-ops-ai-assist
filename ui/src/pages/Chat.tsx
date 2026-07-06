@@ -66,6 +66,10 @@ export default function Chat() {
 
   // State
   const [conversations, setConversations] = useState<Conversation[]>([])
+  // Chunk 15: error states so chat Lambda failures render visibly
+  // instead of silently returning empty data.
+  const [conversationsError, setConversationsError] = useState<string | null>(null)
+  const [loadConversationError, setLoadConversationError] = useState<string | null>(null)
   const [messages, setMessages] = useState<DisplayMessage[]>([])
   const [input, setInput] = useState('')
   const [status, setStatus] = useState<Status>('idle')
@@ -238,16 +242,27 @@ export default function Chat() {
         setCurrentTitle('Chat')
       }
       // Load messages from server
-      getConversation(conversationId).then(data => {
-        if (data?.messages) {
-          setMessages(data.messages.map(m => ({ ...m, isStreaming: false })))
-        } else {
+      getConversation(conversationId)
+        .then(data => {
+          if (data?.messages) {
+            setMessages(data.messages.map(m => ({ ...m, isStreaming: false })))
+          } else {
+            setMessages([])
+          }
+          // Set ownership state from backend response
+          setIsOwner(data?.conversation?.is_owner !== false)
+          setOwnerEmail(data?.conversation?.owner_email || null)
+        })
+        .catch(err => {
+          console.error('Failed to load conversation:', err)
           setMessages([])
-        }
-        // Set ownership state from backend response
-        setIsOwner(data?.conversation?.is_owner !== false)
-        setOwnerEmail(data?.conversation?.owner_email || null)
-      })
+          // Chunk 15: chat Lambda failures used to render as an empty
+          // conversation with no error message. Surface a real error
+          // now so the user knows to reload or contact support.
+          setLoadConversationError(
+            err instanceof Error ? err.message : 'Failed to load conversation',
+          )
+        })
     }
   }, [conversationId, conversations])
 
@@ -257,9 +272,21 @@ export default function Chat() {
   }, [messages])
 
   async function loadConversations() {
-    const result = await listConversations(15)
-    setConversations(result.conversations)
-    setHasMoreConversations(result.has_more)
+    try {
+      const result = await listConversations(15)
+      setConversations(result.conversations)
+      setHasMoreConversations(result.has_more)
+      setConversationsError(null)
+    } catch (err) {
+      // Chunk 15: chat Lambda failures used to render as "you have no
+      // conversations." Surface a real error instead so the user can
+      // see something is wrong with the platform rather than assuming
+      // their history was lost.
+      console.error('Failed to load conversations:', err)
+      setConversationsError(
+        err instanceof Error ? err.message : 'Failed to load conversations',
+      )
+    }
   }
 
   // Start new chat
@@ -281,10 +308,17 @@ export default function Chat() {
   // Delete conversation
   async function handleDeleteConversation(convId: string, e: React.MouseEvent) {
     e.stopPropagation()
-    await deleteConversation(convId)
-    setConversations(prev => prev.filter(c => c.conversation_id !== convId))
-    if (currentConversationId === convId) {
-      handleNewChat()
+    try {
+      await deleteConversation(convId)
+      setConversations(prev => prev.filter(c => c.conversation_id !== convId))
+      if (currentConversationId === convId) {
+        handleNewChat()
+      }
+    } catch (err) {
+      console.error('Failed to delete conversation:', err)
+      setConversationsError(
+        err instanceof Error ? err.message : 'Failed to delete conversation',
+      )
     }
   }
 
@@ -529,6 +563,25 @@ export default function Chat() {
         </div>
 
         <div className="flex-1 overflow-y-auto">
+          {conversationsError && (
+            <div className="mx-4 my-2 px-3 py-2 bg-red-900/40 border border-red-800 text-red-200 text-xs rounded">
+              <div className="font-medium">Couldn't load conversations</div>
+              <div className="mt-1 text-red-300/80">{conversationsError}</div>
+              <button
+                type="button"
+                onClick={() => { setConversationsError(null); loadConversations() }}
+                className="mt-1 text-red-100 hover:text-white underline"
+              >
+                Retry
+              </button>
+            </div>
+          )}
+          {loadConversationError && (
+            <div className="mx-4 my-2 px-3 py-2 bg-red-900/40 border border-red-800 text-red-200 text-xs rounded">
+              <div className="font-medium">Couldn't load this conversation</div>
+              <div className="mt-1 text-red-300/80">{loadConversationError}</div>
+            </div>
+          )}
           {conversations.map(conv => (
             <div
               key={conv.conversation_id}

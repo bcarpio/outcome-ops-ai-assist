@@ -1,4 +1,4 @@
-.PHONY: test test-unit test-integration test-coverage clean help
+.PHONY: test test-unit test-coverage clean help
 
 # Python executable - use venv if available, otherwise use system python
 VENV_PYTHON := ../../venv/bin/python3.12
@@ -10,7 +10,6 @@ help:
 	@echo "Available commands:"
 	@echo "  make test              - Run all tests"
 	@echo "  make test-unit         - Run only unit tests"
-	@echo "  make test-integration  - Run only integration tests"
 	@echo "  make test-coverage     - Run tests with coverage report"
 	@echo "  make test-verbose      - Run tests with verbose output"
 	@echo "  make clean             - Clean test artifacts"
@@ -22,10 +21,6 @@ test:
 test-unit:
 	@echo "Running unit tests..."
 	$(PYTHON) -m pytest unit/ -v
-
-test-integration:
-	@echo "Running integration tests..."
-	$(PYTHON) -m pytest integration/ -v
 
 test-coverage:
 	@echo "Running tests with coverage..."

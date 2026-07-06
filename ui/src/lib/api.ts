@@ -178,68 +178,75 @@ export interface ConversationListResponse {
 }
 
 /**
- * List conversations from server with pagination support
+ * List conversations from server with pagination support.
+ *
+ * Throws on non-OK response so the caller (Chat.tsx) can render an
+ * error banner. The previous "return empty list on error" behavior
+ * rendered chat Lambda outages as "you have no conversations" -- a
+ * silent outage the user could not diagnose. Chunk 15 fix; consistent
+ * with the 143 other exported api.ts functions that throw.
  */
 export async function listConversations(
   limit: number = 20,
   cursor?: string
 ): Promise<ConversationListResponse> {
-  try {
-    const params = new URLSearchParams({ limit: String(limit) })
-    if (cursor) params.set('cursor', cursor)
+  const params = new URLSearchParams({ limit: String(limit) })
+  if (cursor) params.set('cursor', cursor)
 
-    const response = await fetch(`${API_BASE}/conversations?${params}`)
-    if (!response.ok) {
-      console.error('Failed to list conversations:', response.status)
-      return { conversations: [], has_more: false }
-    }
-    const data = await response.json()
-    return {
-      conversations: (data.conversations || []).map((c: Record<string, unknown>) => ({
-        conversation_id: c.conversation_id as string,
-        title: (c.title as string) || 'Untitled',
-        message_count: (c.message_count as number) || 0,
-        created_at: c.created_at as string,
-        updated_at: c.updated_at as string,
-      })),
-      next_cursor: data.next_cursor,
-      has_more: data.has_more ?? false,
-    }
-  } catch (error) {
-    console.error('Error listing conversations:', error)
-    return { conversations: [], has_more: false }
+  const response = await fetch(`${API_BASE}/conversations?${params}`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error(
+      (data?.error as string) || `Failed to list conversations: ${response.status}`,
+    )
+  }
+  const data = await response.json()
+  return {
+    conversations: (data.conversations || []).map((c: Record<string, unknown>) => ({
+      conversation_id: c.conversation_id as string,
+      title: (c.title as string) || 'Untitled',
+      message_count: (c.message_count as number) || 0,
+      created_at: c.created_at as string,
+      updated_at: c.updated_at as string,
+    })),
+    next_cursor: data.next_cursor,
+    has_more: data.has_more ?? false,
   }
 }
 
 /**
- * Get a conversation with its messages from server
+ * Get a conversation with its messages from server. Throws on non-OK
+ * (see listConversations for the rationale). A missing conversation is
+ * a 404 from the server -- callers should catch and render a
+ * "conversation not found" state; other errors bubble up.
  */
-export async function getConversation(conversationId: string): Promise<{ conversation: Conversation; messages: Message[] } | null> {
-  try {
-    const response = await fetch(`${API_BASE}/conversations/${conversationId}`)
-    if (!response.ok) {
-      console.error('Failed to get conversation:', response.status)
-      return null
-    }
-    return await response.json()
-  } catch (error) {
-    console.error('Error getting conversation:', error)
-    return null
+export async function getConversation(
+  conversationId: string,
+): Promise<{ conversation: Conversation; messages: Message[] }> {
+  const response = await fetch(`${API_BASE}/conversations/${conversationId}`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error(
+      (data?.error as string) || `Failed to get conversation: ${response.status}`,
+    )
   }
+  return await response.json()
 }
 
 /**
- * Delete a conversation on the server
+ * Delete a conversation on the server. Throws on non-OK (see
+ * listConversations for the rationale). Return type is void on success
+ * because the caller only needs the throw / no-throw distinction.
  */
-export async function deleteConversation(conversationId: string): Promise<boolean> {
-  try {
-    const response = await fetch(`${API_BASE}/conversations/${conversationId}`, {
-      method: 'DELETE',
-    })
-    return response.ok
-  } catch (error) {
-    console.error('Error deleting conversation:', error)
-    return false
+export async function deleteConversation(conversationId: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/conversations/${conversationId}`, {
+    method: 'DELETE',
+  })
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error(
+      (data?.error as string) || `Failed to delete conversation: ${response.status}`,
+    )
   }
 }
 

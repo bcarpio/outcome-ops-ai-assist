@@ -169,14 +169,22 @@ jobs:
           if [ -f lambda/db-introspection-requirements.txt ]; then
             pip install -r lambda/db-introspection-requirements.txt
           fi
-          # Install test dependencies
-          pip install pytest pytest-cov pytest-asyncio boto3 moto requests httpx
+          # Install test dependencies. pytest-timeout is required by
+          # `timeout = 60` in lambda/tests/pytest.ini (ADR-013 backstop
+          # against unbounded pagination-mock loops). Without it pinned
+          # explicitly here, `pytest-timeout` only arrived transitively
+          # via per-Lambda requirements -- if any of those pins drop it,
+          # pytest silently ignores the timeout option and the ADR-013
+          # backstop vanishes in CI.
+          pip install pytest pytest-cov pytest-asyncio pytest-timeout boto3 moto requests httpx
 
       - name: Run tests with coverage
         run: |
           # Run pytest from project root for correct coverage paths
           # Using coverage run to track dynamically loaded modules
-          # Note: Only unit tests run in CI - integration tests run locally
+          # Note: unit tests are the only Lambda test suite in the repo
+          # today. An integration/ subdir used to exist as a placeholder
+          # but was removed 2026-07-06 (no e2e tests were ever seeded).
           # Deselect @pytest.mark.slow tests in CI. The symbol-graph
           # perf regression-guard at 10k edges stages a lot of items
           # through moto's serializer and, under coverage

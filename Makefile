@@ -1,4 +1,4 @@
-.PHONY: help setup install fmt lint validate test test-unit test-integration test-coverage test-ui audit build-run-tests-image build-ui-image build-mcp-server-image build-snyk-image build-database-images build-runtime-layer build-terraform-layer build-all-layers build-platform-layer build-all-images pre-deploy clean all ha-status ha-replay-dlq ha-list-secrets ha-sync-secrets ha-bootstrap ha-kms-migrate _ha-env-check
+.PHONY: help setup install fmt lint validate test test-unit test-coverage test-ui audit build-run-tests-image build-ui-image build-mcp-server-image build-snyk-image build-database-images build-runtime-layer build-terraform-layer build-all-layers build-platform-layer build-all-images pre-deploy clean all ha-status ha-replay-dlq ha-list-secrets ha-sync-secrets ha-bootstrap ha-kms-migrate _ha-env-check
 
 APP_NAME ?= outcome-ops-ai-assist
 AWS_REGION ?= us-west-2
@@ -21,7 +21,6 @@ help:
 	@echo "Testing (Lambda Functions):"
 	@echo "  make test             Run all Lambda function tests"
 	@echo "  make test-unit        Run only unit tests"
-	@echo "  make test-integration Run only integration tests"
 	@echo "  make test-coverage    Run tests with coverage report"
 	@echo "  make test-ui          Run UI tests (React/Vitest)"
 	@echo ""
@@ -156,16 +155,12 @@ validate-docs:
 # - Functional tests: slowest, limited scope
 # ============================================================================
 
-test: test-unit test-integration
+test: test-unit
 	@echo "All Lambda tests completed successfully"
 
 test-unit:
 	@echo "Running unit tests..."
 	$(MAKE) -C lambda/tests test-unit
-
-test-integration:
-	@echo "Running integration tests..."
-	$(MAKE) -C lambda/tests test-integration
 
 test-coverage:
 	@echo "Running tests with coverage report..."
