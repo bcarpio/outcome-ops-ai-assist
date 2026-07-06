@@ -107,6 +107,20 @@ THIS_REGION = os.environ.get(
 _dynamodb = None
 _s3 = None
 _s3vectors = None
+_account_id = None
+
+
+def _get_account_id() -> str:
+    """Return the AWS account ID (cached after first call).
+
+    Used as ExpectedBucketOwner on cross-region S3 reads so a re-created
+    or hijacked bucket name in the source region can never feed data into
+    the local mirror.
+    """
+    global _account_id
+    if _account_id is None:
+        _account_id = boto3.client("sts").get_caller_identity()["Account"]
+    return _account_id
 
 
 def _ddb():
@@ -131,22 +145,25 @@ def _s3vectors_client():
 
 
 def _set_clients_for_tests(
-    *, dynamodb=None, s3=None, s3vectors=None
+    *, dynamodb=None, s3=None, s3vectors=None, account_id=None
 ) -> None:
-    global _dynamodb, _s3, _s3vectors
+    global _dynamodb, _s3, _s3vectors, _account_id
     if dynamodb is not None:
         _dynamodb = dynamodb
     if s3 is not None:
         _s3 = s3
     if s3vectors is not None:
         _s3vectors = s3vectors
+    if account_id is not None:
+        _account_id = account_id
 
 
 def _reset_clients_for_tests() -> None:
-    global _dynamodb, _s3, _s3vectors
+    global _dynamodb, _s3, _s3vectors, _account_id
     _dynamodb = None
     _s3 = None
     _s3vectors = None
+    _account_id = None
 
 
 def lambda_handler(event: dict, context: Any) -> dict:
@@ -273,19 +290,27 @@ def _apply_s3_put_object(detail: dict) -> None:
 
     # Cross-region GetObject from the SOURCE region's bucket. Note: the
     # source bucket name in the event is the SOURCE-region bucket name,
-    # which (per chunk 02e) differs from this region's bucket name by a
-    # "-secondary" suffix on whichever is the secondary. The emitter
+    # which differs from this region's bucket name by a "-secondary"
+    # suffix on whichever is the secondary (ADR-022 naming). The emitter
     # records its own region's bucket name in `bucket`; the local
     # mirror is resolved from the env-var SSM path.
     source_s3 = boto3.client("s3", region_name=source_region)
-    body = source_s3.get_object(Bucket=bucket, Key=key)["Body"].read()
+    body = source_s3.get_object(
+        Bucket=bucket, Key=key, ExpectedBucketOwner=_get_account_id()
+    )["Body"].read()
 
     local_bucket = os.environ.get("LOCAL_KB_BUCKET", "")
     if not local_bucket:
         raise RuntimeError("LOCAL_KB_BUCKET env var not configured")
 
     args = {k: v for k, v in (detail.get("args") or {}).items() if k != "Body"}
-    _s3_client().put_object(Bucket=local_bucket, Key=key, Body=body, **args)
+    _s3_client().put_object(
+        Bucket=local_bucket,
+        Key=key,
+        Body=body,
+        ExpectedBucketOwner=_get_account_id(),
+        **args,
+    )
 
 
 def _apply_s3vectors_put_vectors(detail: dict) -> None:
@@ -293,8 +318,8 @@ def _apply_s3vectors_put_vectors(detail: dict) -> None:
     index = detail["index"]
     args = detail.get("args") or {}
     # The emitter's bucket name is regional, but s3vectors bucket names
-    # are unique PER REGION and identical across our regions (per chunk
-    # 02e), so we can use the source bucket name as the local bucket
+    # are unique PER REGION and identical across our regions (ADR-022
+    # naming), so we can use the source bucket name as the local bucket
     # name directly.
     _s3vectors_client().put_vectors(
         vectorBucketName=bucket,

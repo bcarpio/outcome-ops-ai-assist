@@ -25,6 +25,7 @@ _APPLIER_PATH = _LAMBDA_ROOT / "replication-applier" / "handler.py"
 
 THIS_REGION = "us-west-2"
 OTHER_REGION = "us-east-1"
+TEST_ACCOUNT_ID = "123456789012"
 
 
 def _load_applier_module():
@@ -52,6 +53,9 @@ def _applier(monkeypatch):
 
     module = _load_applier_module()
     module._reset_clients_for_tests()
+    # Pre-seed the cached account id so no test can reach real STS
+    # (ADR-012: AWS mocks must apply to every test automatically).
+    module._set_clients_for_tests(account_id=TEST_ACCOUNT_ID)
     yield module
     module._reset_clients_for_tests()
 
@@ -229,11 +233,14 @@ def test_s3_put_object_fetches_from_source_region_and_puts_locally(_applier, mon
         None,
     )
 
-    source_s3.get_object.assert_called_once_with(Bucket="dev-app-kb", Key="doc/path.md")
+    source_s3.get_object.assert_called_once_with(
+        Bucket="dev-app-kb", Key="doc/path.md", ExpectedBucketOwner=TEST_ACCOUNT_ID
+    )
     local_s3.put_object.assert_called_once_with(
         Bucket="dev-app-kb-secondary",
         Key="doc/path.md",
         Body=b"hello",
+        ExpectedBucketOwner=TEST_ACCOUNT_ID,
         ContentType="text/markdown",
     )
     assert result["status"] == "applied"
