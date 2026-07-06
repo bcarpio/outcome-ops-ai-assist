@@ -97,6 +97,12 @@ module "mcp_outcomeops_secondary" {
     AUDIT_TABLE        = module.audit_logs_table_secondary[0].dynamodb_table_id
     SYMBOL_GRAPH_TABLE = module.symbol_graph_table_secondary[0].dynamodb_table_id
     CODE_MAPS_TABLE    = module.code_maps_table_secondary[0].dynamodb_table_id
+    # chunk 09 (HA parity, ADR-033): mirror primary rerank env. Without
+    # these three the secondary silently drops the per-lane rerank
+    # (retrieval quality drops exactly when everything else is on fire).
+    BEDROCK_RERANK_MODEL_ID = var.bedrock_rerank_model_id
+    RERANK_ENABLED          = tostring(var.bedrock_rerank_enabled)
+    RERANK_MAX_FETCH        = tostring(var.rerank_max_fetch)
     # ADR-030 v1.1 (HA parity): ADO branch of read_source needs the
     # same env plumbing on the secondary. Region-neutral values flow
     # from the same tfvars as the primary.

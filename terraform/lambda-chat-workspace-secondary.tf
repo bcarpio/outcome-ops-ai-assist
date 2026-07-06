@@ -153,8 +153,13 @@ module "chat_streaming_lambda_secondary" {
       resources = [module.audit_logs_table_secondary[0].dynamodb_table_arn]
     }
     workspaces_table_read = {
-      effect  = "Allow"
-      actions = ["dynamodb:GetItem", "dynamodb:Query"]
+      effect = "Allow"
+      # chunk 09 (HA parity): dynamodb:Scan was missing on secondary. The
+      # global-workspace broaden branch of resolve_chat_workspace_scope
+      # (ADR-037) uses Scan to enumerate is_global workspaces; without
+      # this grant chat returns AccessDenied for any global-scope query
+      # post-failover.
+      actions = ["dynamodb:GetItem", "dynamodb:Query", "dynamodb:Scan"]
       resources = [
         module.workspaces_table_secondary[0].dynamodb_table_arn,
         "${module.workspaces_table_secondary[0].dynamodb_table_arn}/index/*",

@@ -16,8 +16,12 @@ module "process_batch_summary_lambda" {
   description   = "Process code map batch summaries from SQS queue"
   handler       = "handler.handler"
   runtime       = "python3.12"
-  timeout       = 900  # 15 minutes for processing large batches
-  memory_size   = 1024 # Higher memory for Bedrock API calls
+  timeout       = 900 # 15 minutes for processing large batches
+  # chunk 09 (HA alignment): raised from 1024 to 2048 to match the
+  # secondary. The secondary already ran at 2048; primary at 1024 was
+  # the divergence, and symbol-graph extraction on large batches was
+  # near-OOM under coverage instrumentation.
+  memory_size = 2048
 
   # CloudWatch Logs retention and encryption
   cloudwatch_logs_retention_in_days = 7
@@ -52,9 +56,12 @@ module "process_batch_summary_lambda" {
 
   # Environment variables
   environment_variables = merge({
-    ENV                                = var.environment
-    APP_NAME                           = var.app_name
-    EVENT_BUS_NAME                     = aws_cloudwatch_event_bus.automation.name
+    ENV      = var.environment
+    APP_NAME = var.app_name
+    # chunk 09 (HA cleanup): EVENT_BUS_NAME removed. shared.dual_write
+    # only reads REPLICATION_EVENT_BUS_NAME; EVENT_BUS_NAME had no
+    # consumer and its value diverged primary vs secondary (automation
+    # bus here, replication bus there) -- silent semantic mismatch.
     ENABLE_BEDROCK_COOLDOWN            = tostring(var.enable_bedrock_cooldown)
     AUDIT_TABLE                        = module.audit_logs_table.dynamodb_table_id
     WORKSPACES_TABLE                   = module.workspaces_table[0].dynamodb_table_id
@@ -298,8 +305,12 @@ module "process_repo_summary_lambda" {
   description   = "Process repository architectural summaries from SQS queue"
   handler       = "handler.handler"
   runtime       = "python3.12"
-  timeout       = 300  # 5 minutes for generating architectural summary
-  memory_size   = 1024 # Higher memory for Bedrock API calls
+  # chunk 09 (HA alignment): bumped 300->600 and 1024->2048 to match
+  # the secondary. Large repos were pushing the 5-minute wall + memory
+  # ceiling; secondary values have been safe in prd and are the
+  # correct-sized ones.
+  timeout     = 600
+  memory_size = 2048
 
   # CloudWatch Logs retention and encryption
   cloudwatch_logs_retention_in_days = 7

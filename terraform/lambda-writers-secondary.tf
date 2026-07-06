@@ -416,9 +416,10 @@ module "process_batch_summary_lambda_secondary" {
 
   environment_variables = merge(
     {
-      ENV                                = var.environment
-      APP_NAME                           = var.app_name
-      EVENT_BUS_NAME                     = aws_cloudwatch_event_bus.replication_secondary[0].name
+      ENV      = var.environment
+      APP_NAME = var.app_name
+      # chunk 09 (HA cleanup): EVENT_BUS_NAME removed (dead env). See
+      # primary lambda-knowledge-base.tf.
       ENABLE_BEDROCK_COOLDOWN            = tostring(var.enable_bedrock_cooldown)
       AUDIT_TABLE                        = module.audit_logs_table_secondary[0].dynamodb_table_id
       WORKSPACES_TABLE                   = module.workspaces_table_secondary[0].dynamodb_table_id
@@ -440,6 +441,12 @@ module "process_batch_summary_lambda_secondary" {
       CODE_MAPS_TABLE                    = module.code_maps_table_secondary[0].dynamodb_table_id
       PENDING_WORK_TABLE                 = module.code_map_pending_work_table_secondary[0].dynamodb_table_id
       FAILED_FILES_TABLE                 = module.code_map_failed_files_table_secondary[0].dynamodb_table_id
+      # chunk 09 (HA parity, chunk-08a mirror): fetch_file_content(provider=
+      # azure_devops) reads from the S3 mirror at workspaces/{ws}/
+      # azure_devops/{slug}/{path} that azure-devops-sync wrote in this
+      # region. Without KB_BUCKET + s3_kb_read below, ADO content fetch
+      # fails in the secondary post-failover.
+      KB_BUCKET = module.knowledge_base_bucket_secondary.s3_bucket_id
     },
     local.outcomeops_license_env,
     local.ha_writer_env_secondary,
@@ -457,6 +464,14 @@ module "process_batch_summary_lambda_secondary" {
         effect    = "Allow"
         actions   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"]
         resources = local.sha_truth_table_arns_secondary
+      }
+      # chunk 09 (HA parity, chunk-08a mirror): read the ADO S3 mirror
+      # so fetch_file_content(provider=azure_devops) resolves without a
+      # live ADO API call. Scoped to workspaces/* per primary.
+      s3_kb_read = {
+        effect    = "Allow"
+        actions   = ["s3:GetObject"]
+        resources = ["${module.knowledge_base_bucket_secondary.s3_bucket_arn}/workspaces/*"]
       }
       # Mirrors primary's workspaces_read. read_workspace_mode() in the
       # PII path GetItems the workspace row to look up privacy_mode; this
@@ -499,9 +514,16 @@ module "process_batch_summary_lambda_secondary" {
         ]
       }
       s3vectors = {
-        effect    = "Allow"
-        actions   = ["s3vectors:PutVectors"]
-        resources = ["arn:aws:s3vectors:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:bucket/${var.environment}-${var.app_name}-vectors/*"]
+        effect = "Allow"
+        # chunk 09 (HA parity): mirror primary. DeleteVectors was missing
+        # -- orphan-vector cleanup broken post-failover. Also widened
+        # resources to include both the bucket ARN and bucket/* per
+        # primary, because bucket-level actions need the naked bucket ARN.
+        actions = ["s3vectors:PutVectors", "s3vectors:DeleteVectors"]
+        resources = [
+          "arn:aws:s3vectors:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:bucket/${var.environment}-${var.app_name}-vectors",
+          "arn:aws:s3vectors:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:bucket/${var.environment}-${var.app_name}-vectors/*",
+        ]
       }
       sqs_receive = {
         effect    = "Allow"
@@ -594,8 +616,10 @@ module "process_repo_summary_lambda_secondary" {
       PII_REDACTION_SKIP_TYPES           = join(",", var.pii_redaction_skip_types)
       PENDING_WORK_TABLE                 = module.code_map_pending_work_table_secondary[0].dynamodb_table_id
       FAILED_FILES_TABLE                 = module.code_map_failed_files_table_secondary[0].dynamodb_table_id
-      CODE_MAPS_QUEUE_URL                = module.code_maps_queue_secondary.queue_url
-      KB_BUCKET                          = module.knowledge_base_bucket_secondary.s3_bucket_id
+      # chunk 09 (HA cleanup): CODE_MAPS_QUEUE_URL and KB_BUCKET removed.
+      # Handler discovers both via SSM (/env/app/sqs/code-maps-queue-url and
+      # /env/app/s3/knowledge-base-bucket) -- these envs had no consumer
+      # and existed only on the secondary. Primary side never had them.
     },
     local.outcomeops_license_env,
     local.ha_writer_env_secondary,
@@ -652,9 +676,15 @@ module "process_repo_summary_lambda_secondary" {
         ]
       }
       s3vectors = {
-        effect    = "Allow"
-        actions   = ["s3vectors:PutVectors"]
-        resources = ["arn:aws:s3vectors:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:bucket/${var.environment}-${var.app_name}-vectors/*"]
+        effect = "Allow"
+        # chunk 09 (HA parity): mirror primary. DeleteVectors was missing
+        # -- orphan-vector cleanup broken post-failover. Also widened
+        # resources to include the naked bucket ARN.
+        actions = ["s3vectors:PutVectors", "s3vectors:DeleteVectors"]
+        resources = [
+          "arn:aws:s3vectors:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:bucket/${var.environment}-${var.app_name}-vectors",
+          "arn:aws:s3vectors:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:bucket/${var.environment}-${var.app_name}-vectors/*",
+        ]
       }
       sqs_receive_repo = {
         effect    = "Allow"
