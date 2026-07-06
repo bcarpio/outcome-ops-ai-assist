@@ -309,6 +309,35 @@ runtime resource.
   emails reconfigured by terraform — operators will see double-sub
   confirmations during initial apply.
 
+### What is intentionally primary-only (ADR-043)
+
+The **codegen / PR / query family** is not mirrored. This is a
+deliberate scope decision, not a gap:
+
+- `generate-code`, `run-tests`, `handle-command`, `generate-code-dlq`
+  Lambdas (`lambda-code-generation.tf`).
+- `analyze-pr`, `process-pr-check` Lambdas (`lambda-pr-analysis.tf`).
+- `ask-claude`, `query-kb` Lambdas (`lambda-query.tf`).
+- `outcome_ops_api` API Gateway v2 — the GitHub-webhook entry
+  (`api_gateway.tf`).
+- `mcp_snyk` Fargate (`mcp-snyk.tf`) — kept consistent with the
+  excluded plane.
+- `runtime_tools_layer` + `terraform_tools_layer` (`lambda-layers.tf`)
+  — consumed only by the codegen family.
+
+**Failover behavior for this plane:** GitHub webhooks pointed at the
+primary API Gateway retry 3× over ~30 min, then drop. Jira Automation
+→ SSM invokes fail during the primary-outage window. Customer CI
+`lambda:InvokeFunction` calls against `analyze-pr` fail similarly.
+Humans keep pushing code and reviewing PRs directly on GitHub. On
+failback, everything resumes and any queued triggers can be re-fired
+manually.
+
+**Queue-topology rule (ADR-043):** no secondary queue without a
+secondary consumer. Four orphan queues that violated this rule
+(`pr_checks_queue_secondary` + DLQ, `code_generation_queue_secondary`
++ DLQ) have been removed.
+
 ### Passive-mode gating
 
 The secondary region's resources EXIST and serve traffic, but
