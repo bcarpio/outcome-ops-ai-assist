@@ -22,7 +22,7 @@ import os
 import sys
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Literal, Optional, Set
 from enum import Enum
 
@@ -507,7 +507,7 @@ def _store_comment_row(
     item: Dict[str, Any] = {
         "PK": pk,
         "SK": sk,
-        "updatedAt": datetime.utcnow().isoformat() + "Z",
+        "updatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
     }
     if provider_comment_id is not None:
         item["providerCommentId"] = int(provider_comment_id)
@@ -969,7 +969,7 @@ def queue_check_jobs(
         # Message group ensures ordered processing per PR
         message_group_id = f"pr-{repository.replace('/', '-')}-{pr_number}"
         # Deduplication ID prevents duplicate processing
-        message_deduplication_id = f"{message_group_id}-{check_type}-{int(datetime.utcnow().timestamp() * 1000)}"
+        message_deduplication_id = f"{message_group_id}-{check_type}-{int(datetime.now(timezone.utc).timestamp() * 1000)}"
 
         try:
             sqs_client.send_message(

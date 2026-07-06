@@ -212,9 +212,12 @@ def test_s3_put_object_fetches_from_source_region_and_puts_locally(_applier, mon
     source_s3 = MagicMock()
     source_s3.get_object.return_value = {"Body": io.BytesIO(b"hello")}
 
-    def _fake_client(name, region_name=None):
+    def _fake_client(name, region_name=None, config=None):
         assert name == "s3"
         assert region_name == OTHER_REGION
+        # Cross-region client must carry the shared timeout config
+        # (python:S7618) — a wedged remote read can't hang the Lambda.
+        assert config is _applier._BOTO_CONFIG
         return source_s3
 
     monkeypatch.setattr(_applier.boto3, "client", _fake_client)

@@ -10,8 +10,8 @@ writer used. Most platform writers go through helpers that already
 include attribute_exists / attribute_not_exists guards (see
 ``shared.sha_truth``); those naturally dedupe on EventBridge retry.
 For writers that don't have a natural guard (audit-log put-items),
-chunk 06 adds a synthetic guard via emitted_at on the SK so replays
-collide on uniqueness.
+a synthetic guard via emitted_at on the SK makes replays collide on
+uniqueness.
 
 Failure modes:
 - ConditionalCheckFailedException -> already applied or superseded; OK,
@@ -31,6 +31,7 @@ import re
 from typing import Any, Callable, Dict
 
 import boto3
+from botocore.config import Config
 from botocore.exceptions import ClientError
 
 logger = logging.getLogger()
@@ -109,6 +110,10 @@ _s3 = None
 _s3vectors = None
 _account_id = None
 
+# Explicit timeouts so a wedged network call can't hang the Lambda until
+# its function timeout (python:S7618).
+_BOTO_CONFIG = Config(connect_timeout=10, read_timeout=60, retries={"max_attempts": 3})
+
 
 def _get_account_id() -> str:
     """Return the AWS account ID (cached after first call).
@@ -119,28 +124,28 @@ def _get_account_id() -> str:
     """
     global _account_id
     if _account_id is None:
-        _account_id = boto3.client("sts").get_caller_identity()["Account"]
+        _account_id = boto3.client("sts", config=_BOTO_CONFIG).get_caller_identity()["Account"]
     return _account_id
 
 
 def _ddb():
     global _dynamodb
     if _dynamodb is None:
-        _dynamodb = boto3.resource("dynamodb")
+        _dynamodb = boto3.resource("dynamodb", config=_BOTO_CONFIG)
     return _dynamodb
 
 
 def _s3_client():
     global _s3
     if _s3 is None:
-        _s3 = boto3.client("s3")
+        _s3 = boto3.client("s3", config=_BOTO_CONFIG)
     return _s3
 
 
 def _s3vectors_client():
     global _s3vectors
     if _s3vectors is None:
-        _s3vectors = boto3.client("s3vectors")
+        _s3vectors = boto3.client("s3vectors", config=_BOTO_CONFIG)
     return _s3vectors
 
 
@@ -294,7 +299,7 @@ def _apply_s3_put_object(detail: dict) -> None:
     # suffix on whichever is the secondary (ADR-022 naming). The emitter
     # records its own region's bucket name in `bucket`; the local
     # mirror is resolved from the env-var SSM path.
-    source_s3 = boto3.client("s3", region_name=source_region)
+    source_s3 = boto3.client("s3", region_name=source_region, config=_BOTO_CONFIG)
     body = source_s3.get_object(
         Bucket=bucket, Key=key, ExpectedBucketOwner=_get_account_id()
     )["Body"].read()

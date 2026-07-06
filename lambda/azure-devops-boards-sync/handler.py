@@ -34,7 +34,13 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 import boto3
+from botocore.config import Config
 from botocore.exceptions import ClientError
+
+# Explicit timeouts so a wedged network call can't hang the Lambda until
+# its function timeout (python:S7618).
+_BOTO_CONFIG = Config(connect_timeout=10, read_timeout=60, retries={"max_attempts": 3})
+
 
 # Make shared/ importable; deploy package bundles lambda/shared/.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -93,9 +99,9 @@ INITIAL_SYNC_LOOKBACK_DAYS = int(
 )
 
 # AWS clients
-dynamodb = boto3.resource("dynamodb")
-sqs_client = boto3.client("sqs")
-ssm_client = boto3.client("ssm")
+dynamodb = boto3.resource("dynamodb", config=_BOTO_CONFIG)
+sqs_client = boto3.client("sqs", config=_BOTO_CONFIG)
+ssm_client = boto3.client("ssm", config=_BOTO_CONFIG)
 
 _client_secret: Optional[str] = None
 

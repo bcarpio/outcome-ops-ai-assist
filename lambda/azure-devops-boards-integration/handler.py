@@ -45,7 +45,13 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 import boto3
+from botocore.config import Config
 from botocore.exceptions import ClientError
+
+# Explicit timeouts so a wedged network call can't hang the Lambda until
+# its function timeout (python:S7618).
+_BOTO_CONFIG = Config(connect_timeout=10, read_timeout=60, retries={"max_attempts": 3})
+
 
 # Make shared/ importable; deploy package bundles lambda/shared/.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -131,21 +137,21 @@ _client_secret: Optional[str] = None
 def _get_dynamodb():
     global _dynamodb
     if _dynamodb is None:
-        _dynamodb = boto3.resource("dynamodb")
+        _dynamodb = boto3.resource("dynamodb", config=_BOTO_CONFIG)
     return _dynamodb
 
 
 def _get_ssm():
     global _ssm
     if _ssm is None:
-        _ssm = boto3.client("ssm")
+        _ssm = boto3.client("ssm", config=_BOTO_CONFIG)
     return _ssm
 
 
 def _get_sqs():
     global _sqs
     if _sqs is None:
-        _sqs = boto3.client("sqs")
+        _sqs = boto3.client("sqs", config=_BOTO_CONFIG)
     return _sqs
 
 

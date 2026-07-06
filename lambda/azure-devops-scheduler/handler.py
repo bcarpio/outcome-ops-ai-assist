@@ -36,7 +36,13 @@ import uuid
 from typing import Any, Dict, Iterator, List
 
 import boto3
+from botocore.config import Config
 from botocore.exceptions import ClientError
+
+# Explicit timeouts so a wedged network call can't hang the Lambda until
+# its function timeout (python:S7618).
+_BOTO_CONFIG = Config(connect_timeout=10, read_timeout=60, retries={"max_attempts": 3})
+
 
 
 logger = logging.getLogger()
@@ -49,8 +55,8 @@ WORKSPACES_TABLE = os.environ.get("WORKSPACES_TABLE")
 AZURE_DEVOPS_SYNC_QUEUE = os.environ.get("AZURE_DEVOPS_SYNC_QUEUE")
 
 
-dynamodb = boto3.resource("dynamodb")
-sqs = boto3.client("sqs")
+dynamodb = boto3.resource("dynamodb", config=_BOTO_CONFIG)
+sqs = boto3.client("sqs", config=_BOTO_CONFIG)
 
 
 def _scan_azdo_repos() -> Iterator[Dict[str, Any]]:
