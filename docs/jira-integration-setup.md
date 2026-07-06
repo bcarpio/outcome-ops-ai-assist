@@ -14,6 +14,10 @@ The Jira integration allows you to:
 
 Before starting, ensure you have:
 - OutcomeOps AI Assist deployed with `enable_jira_integration = true`
+  (post-ADR-040 this flag ALSO provisions the workspace-level Jira
+  Lambdas that ingest Jira issues as chat context. If you only want
+  the Automation flow described in this runbook and not workspace-
+  level Jira ingest, note that today they ship together.)
 - Admin access to your Jira project
 - AWS CLI configured with appropriate permissions
 

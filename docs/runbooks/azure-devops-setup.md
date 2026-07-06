@@ -149,6 +149,10 @@ The operator populates the tfvars in the appropriate `tfvars` file
 file; never committed to git per CLAUDE.md). They also set:
 
 ```hcl
+# Per ADR-040, this flag gates the ENTIRE Azure DevOps Repos terraform
+# footprint. Setting it true provisions the integration Lambda, sync
+# Lambda, scheduler Lambda, SQS + DLQ, EventBridge rule, and the Function
+# URL. Leaving it false (the default) means none of it is provisioned.
 enable_azure_devops_integration = true
 azure_devops_client_secret_ssm_param = "/prd/outcome-ops-ai-assist/azure-devops/client-secret"
 ```
