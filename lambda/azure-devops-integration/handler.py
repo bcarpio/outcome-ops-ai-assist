@@ -74,7 +74,7 @@ try:
 except ImportError:  # pragma: no cover - deploy bug path
     report_repos_snapshot = None  # type: ignore[assignment]
 
-from azure_devops_api import (  # noqa: E402
+from shared.azure_devops_api import (  # noqa: E402
     AzureDevOpsAPIError,
     AzureDevOpsAuthError,
     AzureDevOpsNotFoundError,
@@ -87,7 +87,7 @@ from azure_devops_api import (  # noqa: E402
     list_projects as ado_list_projects,
     list_repos as ado_list_repos,
 )
-from token_manager import (  # noqa: E402
+from shared.oauth.azure_devops import (  # noqa: E402
     AZDO_SCOPES,
     delete_tokens,
     exchange_code_for_tokens,

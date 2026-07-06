@@ -87,7 +87,7 @@ def refresh_ado_token(connection_id: str) -> str:
             "(AZURE_DEVOPS_TENANT_ID / AZURE_DEVOPS_CLIENT_ID env vars missing)"
         )
 
-    from azure_devops_token_manager import (  # noqa: E402
+    from shared.oauth.azure_devops import (  # noqa: E402
         refresh_access_token as _refresh,
     )
 

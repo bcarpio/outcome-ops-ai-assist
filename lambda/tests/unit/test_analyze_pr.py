@@ -446,7 +446,7 @@ class TestAnalyzePrUpsertHelpers:
     def test_upsert_ado_first_run_posts(self, mock_store, _mock_exist):
         # First-run POST populates thread + comment IDs from response.
         with patch.dict(sys.modules, {
-            'azure_devops_api': Mock(
+            'shared.azure_devops_api': Mock(
                 post_pull_request_thread=Mock(return_value={
                     "id": 88, "comments": [{"id": 1, "content": "x"}],
                 }),
@@ -476,7 +476,7 @@ class TestAnalyzePrUpsertHelpers:
         patch_mock = Mock(return_value={"id": 1})
         post_mock = Mock()
         with patch.dict(sys.modules, {
-            'azure_devops_api': Mock(
+            'shared.azure_devops_api': Mock(
                 post_pull_request_thread=post_mock,
                 update_pull_request_thread_comment=patch_mock,
                 AzureDevOpsAPIError=Exception,

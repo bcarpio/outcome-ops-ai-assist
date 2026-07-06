@@ -69,19 +69,19 @@ _HANDLER_LOAD_ENV = {
 _orig_env = {k: os.environ.get(k) for k in _HANDLER_LOAD_ENV}
 os.environ.update(_HANDLER_LOAD_ENV)
 
-# Load token_manager + azure_devops_api so the handler's imports resolve.
-token_module = _load_module(
-    "azdo_int_token_manager",
-    "token_manager.py",
-    "../../azure-devops-integration",
-    also_register_as="token_manager",
-)
-api_module = _load_module(
-    "azdo_int_api",
-    "azure_devops_api.py",
-    "../../azure-devops-integration",
-    also_register_as="azure_devops_api",
-)
+# Chunk 16: token_manager + azure_devops_api consolidated to
+# lambda/shared/oauth/azure_devops.py + lambda/shared/azure_devops_api.py.
+# For the shared modules we import via the ordinary package path so all
+# handlers share the SAME module object -- double-loading via _load_module
+# gives distinct class identities and breaks except-clauses across handlers.
+_LAMBDA_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
+if _LAMBDA_ROOT not in sys.path:
+    sys.path.insert(0, _LAMBDA_ROOT)
+import shared.oauth.azure_devops as token_module  # noqa: E402
+import shared.azure_devops_api as api_module  # noqa: E402
+# Legacy aliases for lingering @patch("token_manager.X") targets.
+sys.modules["token_manager"] = token_module
+sys.modules["azure_devops_api"] = api_module
 handler = _load_module(
     "azdo_int_handler",
     "handler.py",

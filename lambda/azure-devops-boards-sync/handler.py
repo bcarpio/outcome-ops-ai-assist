@@ -67,7 +67,7 @@ from azure_devops_work_items_api import (  # noqa: E402
     MAX_WORK_ITEMS_PER_BATCH,
     STANDARD_WORK_ITEM_FIELDS,
 )
-from token_manager import refresh_access_token  # noqa: E402
+from shared.oauth.azure_devops_boards import refresh_access_token  # noqa: E402
 
 
 logger = logging.getLogger()

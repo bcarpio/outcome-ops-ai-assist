@@ -312,7 +312,7 @@ class TestS3Upload:
         self, mock_tree, mock_tok, mock_sha, mock_branch,
         mock_table, _mock_dual_write,
     ):
-        from azure_devops_api import AzureDevOpsNotFoundError
+        from shared.azure_devops_api import AzureDevOpsNotFoundError
         # First file vanished between tree-walk + fetch; second succeeds.
         with patch.object(handler, "get_file_content", side_effect=[
             AzureDevOpsNotFoundError("404 on /a.py"),
@@ -355,7 +355,7 @@ class TestFailures:
         self, mock_tree, mock_tok, mock_sha, mock_branch,
         mock_table, _mock_dual_write,
     ):
-        from azure_devops_api import AzureDevOpsAuthError
+        from shared.azure_devops_api import AzureDevOpsAuthError
         mock_tree.side_effect = AzureDevOpsAuthError("401")
         mock_table.get_item.return_value = {"Item": _repo_row(last_commit_sha="sha-A")}
         with pytest.raises(AzureDevOpsAuthError):

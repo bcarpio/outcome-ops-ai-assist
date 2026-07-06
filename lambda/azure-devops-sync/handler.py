@@ -76,7 +76,7 @@ _BOTO_CONFIG = Config(connect_timeout=10, read_timeout=60, retries={"max_attempt
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from shared import dual_write  # noqa: E402
 
-from azure_devops_api import (  # noqa: E402
+from shared.azure_devops_api import (  # noqa: E402
     AzureDevOpsAPIError,
     AzureDevOpsAuthError,
     AzureDevOpsNotFoundError,
@@ -85,7 +85,7 @@ from azure_devops_api import (  # noqa: E402
     get_latest_commit_sha,
     get_tree_recursive,
 )
-from token_manager import refresh_access_token  # noqa: E402
+from shared.oauth.azure_devops import refresh_access_token  # noqa: E402
 
 
 logger = logging.getLogger()

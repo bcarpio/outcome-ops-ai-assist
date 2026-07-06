@@ -596,7 +596,7 @@ def _upsert_ado_comment(
 
     if existing_thread is not None and existing_comment is not None:
         try:
-            from azure_devops_api import update_pull_request_thread_comment
+            from shared.azure_devops_api import update_pull_request_thread_comment
             update_pull_request_thread_comment(
                 access_token=access_token,
                 org=ado_org, project=ado_project, repo=ado_repo,
@@ -620,7 +620,7 @@ def _upsert_ado_comment(
             )
 
     try:
-        from azure_devops_api import (
+        from shared.azure_devops_api import (
             AzureDevOpsAPIError, post_pull_request_thread,
         )
         response = post_pull_request_thread(
@@ -1198,7 +1198,7 @@ def _refresh_ado_access_token(connection_id: str) -> str:
     ssm_response = ssm_client.get_parameter(Name=param_name, WithDecryption=True)
     client_secret = ssm_response["Parameter"]["Value"]
 
-    from azure_devops_token_manager import refresh_access_token as _refresh  # noqa: E402
+    from shared.oauth.azure_devops import refresh_access_token as _refresh  # noqa: E402
 
     access_token = _refresh(
         connection_id=connection_id,
@@ -1229,7 +1229,7 @@ def _post_ado_initial_comment(
     Errors are logged and swallowed -- the check-execution pipeline
     still runs even if the initial-comment post fails.
     """
-    from azure_devops_api import (  # noqa: E402
+    from shared.azure_devops_api import (  # noqa: E402
         AzureDevOpsAPIError,
         post_pull_request_thread,
     )

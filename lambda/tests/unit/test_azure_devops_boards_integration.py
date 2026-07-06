@@ -56,26 +56,24 @@ _HANDLER_LOAD_ENV = {
 _orig_env = {k: os.environ.get(k) for k in _HANDLER_LOAD_ENV}
 os.environ.update(_HANDLER_LOAD_ENV)
 
-# Load dependencies + handler.
-token_module = _load_module(
-    "azdo_boards_int_token_manager",
-    "token_manager.py",
-    "../../azure-devops-boards-integration",
-    also_register_as="token_manager",
-)
+# Chunk 16: consolidated. token_manager -> shared/oauth/azure_devops_boards.py.
+# The Repos client (azure_devops_api) -> shared/azure_devops_api.py. Import
+# the shared modules via the ordinary package path so all consumers share
+# the SAME module object -- double-loading via _load_module gives distinct
+# class identities AND breaks the normal `shared.oauth` package registration.
+_LAMBDA_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
+if _LAMBDA_ROOT not in sys.path:
+    sys.path.insert(0, _LAMBDA_ROOT)
+import shared.oauth.azure_devops_boards as token_module  # noqa: E402
+import shared.azure_devops_api as repos_api  # noqa: E402
+# Legacy aliases for lingering @patch("token_manager.X") / @patch("azure_devops_api.X") targets.
+sys.modules["token_manager"] = token_module
+sys.modules["azure_devops_api"] = repos_api
 api_module = _load_module(
     "azdo_boards_work_items_api",
     "azure_devops_work_items_api.py",
     "../../azure-devops-boards-integration",
     also_register_as="azure_devops_work_items_api",
-)
-# The handler imports azure_devops_api (vssps list_accessible_orgs) --
-# an in-directory copy of the Repos client (self-contained deploy zip).
-repos_api = _load_module(
-    "azdo_repos_api_for_boards",
-    "azure_devops_api.py",
-    "../../azure-devops-boards-integration",
-    also_register_as="azure_devops_api",
 )
 handler = _load_module(
     "azdo_boards_int_handler",

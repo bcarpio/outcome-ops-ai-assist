@@ -46,23 +46,19 @@ def _load_module(mod_name, filename, directory):
     return module
 
 
-api = _load_module(
-    "azdo_int_api",
-    "azure_devops_api.py",
-    "../../azure-devops-integration",
-)
+# Chunk 16: consolidated to lambda/shared/azure_devops_api.py. Import via
+# the ordinary package path so all consumers share the same module object.
+_LAMBDA_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
+if _LAMBDA_ROOT not in sys.path:
+    sys.path.insert(0, _LAMBDA_ROOT)
+import shared.azure_devops_api as api  # noqa: E402
+# Legacy alias so pre-consolidation ``patch("azdo_int_api.X")`` targets
+# still resolve to the canonical shared module (same object identity, so
+# `except X` clauses in handlers still catch what tests raise).
+sys.modules["azdo_int_api"] = api
 
-# The module under test is vendored per-Lambda (each function dir bundles
-# its own copy; there is no shared layer for it). Re-run this whole suite
-# against every copy so none can drift or sit untested: the autouse
-# fixture below rebinds the module-global (and the sys.modules entry that
-# @patch targets) once per vendored copy.
 _VENDORED_COPY_DIRS = [
-    "../../azure-devops-integration",
-    "../../azure-devops-sync",
-    "../../azure-devops-boards-integration",
-    "../../analyze-pr",
-    "../../process-pr-check",
+    "../../shared",
 ]
 
 
@@ -73,8 +69,11 @@ _VENDORED_COPY_DIRS = [
     ids=[d.rsplit("/", 1)[-1] for d in _VENDORED_COPY_DIRS],
 )
 def _vendored_copy(request):
-    global api
-    api = _load_module("azdo_int_api", "azure_devops_api.py", request.param)
+    # Chunk 16: only one copy now (the shared module). Nothing to rebind --
+    # the module-level `import shared.azure_devops_api as api` above already
+    # points at the single canonical module. Kept as a no-op fixture so the
+    # per-copy parametrize test IDs stay stable in the coverage report.
+    yield
 
 
 # ---------------------------------------------------------------------------

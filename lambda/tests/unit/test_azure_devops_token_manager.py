@@ -41,21 +41,19 @@ def _load_module(mod_name, filename, directory):
     return module
 
 
-token_module = _load_module(
-    "azdo_int_token_manager",
-    "token_manager.py",
-    "../../azure-devops-integration",
-)
+# Chunk 16: consolidated to lambda/shared/oauth/azure_devops.py. Import
+# via the ordinary package path so all consumers share the same module
+# object (double-loading via _load_module creates distinct class identities
+# and breaks except-clauses across handlers).
+_LAMBDA_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
+if _LAMBDA_ROOT not in sys.path:
+    sys.path.insert(0, _LAMBDA_ROOT)
+import shared.oauth.azure_devops as token_module  # noqa: E402
+# Legacy alias so pre-consolidation @patch targets still resolve.
+sys.modules["azdo_int_token_manager"] = token_module
 
-# The module under test is vendored per-Lambda (each function dir bundles
-# its own copy; there is no shared layer for it). Re-run this whole suite
-# against every copy so none can drift or sit untested: the autouse
-# fixture below rebinds the module-global (and the sys.modules entry that
-# @patch targets) once per vendored copy.
 _VENDORED_COPIES = [
-    ("../../azure-devops-integration", "token_manager.py"),
-    ("../../analyze-pr", "azure_devops_token_manager.py"),
-    ("../../process-pr-check", "azure_devops_token_manager.py"),
+    ("../../shared/oauth", "azure_devops.py"),
 ]
 
 
@@ -66,9 +64,9 @@ _VENDORED_COPIES = [
     ids=[d.rsplit("/", 1)[-1] for d, _ in _VENDORED_COPIES],
 )
 def _vendored_copy(request):
-    global token_module
-    directory, filename = request.param
-    token_module = _load_module("azdo_int_token_manager", filename, directory)
+    # Chunk 16: only one copy now (the shared module). No-op fixture --
+    # the module-level import above already points at the canonical module.
+    yield
 
 # Shared Entra ID OAuth helper (ADR-035 chunk 01a):
 # token_manager.py is a thin wrapper. Tests assert that wrapper

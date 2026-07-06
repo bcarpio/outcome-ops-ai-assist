@@ -89,9 +89,9 @@ from azure_devops_work_items_api import (  # noqa: E402
 # (Repos + Boards both need to enumerate the same "orgs the user
 # can see"). Shipped as an in-directory copy of the Repos client for
 # deploy-zip self-containment -- each Lambda ships its own deps.
-from azure_devops_api import list_accessible_orgs  # noqa: E402
+from shared.azure_devops_api import list_accessible_orgs  # noqa: E402
 
-from token_manager import (  # noqa: E402
+from shared.oauth.azure_devops_boards import (  # noqa: E402
     AZDO_BOARDS_SCOPES,
     delete_tokens,
     exchange_code_for_tokens,

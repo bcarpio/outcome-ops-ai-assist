@@ -47,8 +47,8 @@ from check_handlers import (
 # the consumer). The handler stays GitHub-default; the ADO branch
 # only kicks in when CheckJob carries provider="azure_devops".
 try:
-    from azure_devops_token_manager import refresh_access_token as _ado_refresh_access_token  # noqa: E402
-    from azure_devops_api import (  # noqa: E402
+    from shared.oauth.azure_devops import refresh_access_token as _ado_refresh_access_token  # noqa: E402
+    from shared.azure_devops_api import (  # noqa: E402
         AzureDevOpsAPIError,
         post_pull_request_thread,
     )
@@ -427,7 +427,7 @@ def _try_patch_ado_comment(
     if thread_id is None or thread_comment_id is None:
         return None
     try:
-        from azure_devops_api import update_pull_request_thread_comment
+        from shared.azure_devops_api import update_pull_request_thread_comment
         access_token = _ado_refresh_access_token(
             connection_id=connection_id,
             tenant_id=AZURE_DEVOPS_TENANT_ID,
