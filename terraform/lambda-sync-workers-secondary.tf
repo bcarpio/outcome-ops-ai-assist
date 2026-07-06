@@ -929,7 +929,7 @@ module "database_sync_lambda_secondary" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "8.1.2"
 
-  count     = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count     = var.enable_workspaces && var.enable_database_integration && var.secondary_region != "" ? 1 : 0
   providers = { aws = aws.secondary }
 
   function_name = "${var.environment}-${var.app_name}-database-sync"
@@ -1001,7 +1001,7 @@ module "database_sync_lambda_secondary" {
 }
 
 resource "aws_lambda_event_source_mapping" "database_sync_secondary" {
-  count            = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count            = var.enable_workspaces && var.enable_database_integration && var.secondary_region != "" ? 1 : 0
   provider         = aws.secondary
   event_source_arn = aws_sqs_queue.database_sync_secondary[0].arn
   function_name    = module.database_sync_lambda_secondary[0].lambda_function_name

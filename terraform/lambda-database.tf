@@ -21,12 +21,12 @@
 
 # Read image tags from SSM (set by build-database-images.sh)
 data "aws_ssm_parameter" "database_integration_image_tag" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_database_integration ? 1 : 0
   name  = "/${var.environment}/${var.app_name}/database-integration/image-tag"
 }
 
 data "aws_ssm_parameter" "database_sync_image_tag" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_database_integration ? 1 : 0
   name  = "/${var.environment}/${var.app_name}/database-sync/image-tag"
 }
 
@@ -38,7 +38,7 @@ module "database_integration_lambda" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "8.1.2"
 
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_database_integration ? 1 : 0
 
   function_name = "${var.environment}-${var.app_name}-database-integration"
   description   = "Database connection management + introspection picker for OutcomeOps AI Assist"
@@ -132,7 +132,7 @@ module "database_integration_lambda" {
 }
 
 resource "aws_lambda_function_url" "database_integration" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_database_integration ? 1 : 0
 
   function_name      = module.database_integration_lambda[0].lambda_function_name
   authorization_type = "AWS_IAM"
@@ -147,7 +147,7 @@ resource "aws_lambda_function_url" "database_integration" {
 }
 
 resource "aws_ssm_parameter" "database_integration_url" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_database_integration ? 1 : 0
 
   name        = "/${var.environment}/${var.app_name}/api/database-integration-url"
   description = "Lambda Function URL for database integration (IAM auth required)"
@@ -164,7 +164,7 @@ resource "aws_ssm_parameter" "database_integration_url" {
 # ============================================================================
 
 resource "aws_sqs_queue" "database_sync" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_database_integration ? 1 : 0
 
   name                       = "${var.environment}-${var.app_name}-database-sync"
   visibility_timeout_seconds = 900
@@ -185,7 +185,7 @@ resource "aws_sqs_queue" "database_sync" {
 }
 
 resource "aws_sqs_queue" "database_sync_dlq" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_database_integration ? 1 : 0
 
   name                      = "${var.environment}-${var.app_name}-database-sync-dlq"
   message_retention_seconds = 1209600
@@ -213,7 +213,7 @@ module "database_sync_lambda" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "8.1.2"
 
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_database_integration ? 1 : 0
 
   function_name = "${var.environment}-${var.app_name}-database-sync"
   description   = "Schema introspection sync for OutcomeOps AI Assist"
@@ -332,7 +332,7 @@ module "database_sync_lambda" {
 }
 
 resource "aws_lambda_event_source_mapping" "database_sync" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_database_integration ? 1 : 0
 
   event_source_arn = aws_sqs_queue.database_sync[0].arn
   function_name    = module.database_sync_lambda[0].lambda_function_name
@@ -353,7 +353,7 @@ module "database_scheduler_lambda" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "8.1.2"
 
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_database_integration ? 1 : 0
 
   function_name = "${var.environment}-${var.app_name}-database-scheduler"
   description   = "Hourly scheduler for database sync jobs"
@@ -424,7 +424,7 @@ module "database_scheduler_lambda" {
 }
 
 resource "aws_cloudwatch_event_rule" "database_hourly_sync" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_database_integration ? 1 : 0
 
   name                = "${var.environment}-${var.app_name}-database-hourly-sync"
   description         = "Trigger database sync scheduler every hour"
@@ -436,7 +436,7 @@ resource "aws_cloudwatch_event_rule" "database_hourly_sync" {
 }
 
 resource "aws_cloudwatch_event_target" "database_scheduler" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_database_integration ? 1 : 0
 
   rule      = aws_cloudwatch_event_rule.database_hourly_sync[0].name
   target_id = "database-scheduler"
@@ -444,7 +444,7 @@ resource "aws_cloudwatch_event_target" "database_scheduler" {
 }
 
 resource "aws_lambda_permission" "database_scheduler_eventbridge" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_database_integration ? 1 : 0
 
   statement_id  = "AllowEventBridgeInvoke"
   action        = "lambda:InvokeFunction"

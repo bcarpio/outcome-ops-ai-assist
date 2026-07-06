@@ -370,7 +370,7 @@ resource "aws_sqs_queue" "sharepoint_sync_dlq_secondary" {
 # ----------------------------------------------------------------------------
 
 resource "aws_sqs_queue" "database_sync_secondary" {
-  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count = var.enable_workspaces && var.enable_database_integration && var.secondary_region != "" ? 1 : 0
 
   provider = aws.secondary
 
@@ -393,7 +393,7 @@ resource "aws_sqs_queue" "database_sync_secondary" {
 }
 
 resource "aws_sqs_queue" "database_sync_dlq_secondary" {
-  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count = var.enable_workspaces && var.enable_database_integration && var.secondary_region != "" ? 1 : 0
 
   provider = aws.secondary
 
