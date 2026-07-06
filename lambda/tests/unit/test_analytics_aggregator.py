@@ -279,6 +279,9 @@ class TestAggregateItem:
 
 
 class TestHandler:
+    """Chunk 10: handler returns DDB-Streams partial-batch-failure envelope
+    so a poison record is retried instead of silently dropped on 200."""
+
     @patch.object(handler_module, "_get_table")
     def test_handler_processes_batch(self, mock_get_table):
         table = MagicMock()
@@ -291,32 +294,30 @@ class TestHandler:
             ]
         }
         result = handler(event, None)
-        assert result["statusCode"] == 200
+        assert result == {"batchItemFailures": []}
         # 2 records x 3 rollups each = 6 update_item calls
         assert table.update_item.call_count == 6
 
     @patch.object(handler_module, "_get_table")
     def test_handler_continues_on_record_failure(self, mock_get_table):
+        """First record's first update raises -> record 1 lands in
+        batchItemFailures with its eventID; record 2 processes normally."""
         table = MagicMock()
-        # First record: all three updates raise an unexpected error
         table.update_item.side_effect = [
             RuntimeError("boom"),
             None, None, None,
         ]
         mock_get_table.return_value = table
 
-        event = {
-            "Records": [
-                _make_record(request_id="r1"),
-                _make_record(request_id="r2"),
-            ]
-        }
-        # Must not raise
+        r1 = _make_record(request_id="r1")
+        r1["eventID"] = "evt-1"
+        r2 = _make_record(request_id="r2")
+        r2["eventID"] = "evt-2"
+        event = {"Records": [r1, r2]}
         result = handler(event, None)
-        assert result["statusCode"] == 200
+        assert result == {"batchItemFailures": [{"itemIdentifier": "evt-1"}]}
 
     def test_handler_without_table_env(self):
         with patch.object(handler_module, "ANALYTICS_TABLE", ""):
             result = handler({"Records": []}, None)
-            assert result["statusCode"] == 200
-            assert "No analytics table" in result["body"]
+            assert result == {"batchItemFailures": []}

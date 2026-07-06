@@ -205,11 +205,12 @@ module "analytics_aggregator_lambda_secondary" {
   cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs_secondary[0].arn
   quiet_archive_local_exec          = true
 
+  # chunk 10 (HA cleanup): AUDIT_TABLE removed (dead -- handler doesn't
+  # reference it; it consumes the audit-logs stream, not the table).
   environment_variables = {
     ENV             = var.environment
     APP_NAME        = var.app_name
     ANALYTICS_TABLE = module.analytics_table_secondary[0].dynamodb_table_id
-    AUDIT_TABLE     = module.audit_logs_table_secondary[0].dynamodb_table_id
   }
 
   attach_policy_statements = true
@@ -220,8 +221,12 @@ module "analytics_aggregator_lambda_secondary" {
       resources = [module.audit_logs_table_secondary[0].dynamodb_table_stream_arn]
     }
     analytics_write = {
-      effect    = "Allow"
-      actions   = ["dynamodb:GetItem", "dynamodb:UpdateItem"]
+      effect = "Allow"
+      # chunk 10 (HA parity): add PutItem to match primary. UpdateItem-only
+      # was tight but incomplete -- initial-row inserts (no prior row to
+      # ADD-attribute against) fell through to a fresh row via PutItem in
+      # the handler's fallback path.
+      actions   = ["dynamodb:GetItem", "dynamodb:UpdateItem", "dynamodb:PutItem"]
       resources = [module.analytics_table_secondary[0].dynamodb_table_arn]
     }
   }
@@ -240,10 +245,25 @@ resource "aws_lambda_event_source_mapping" "analytics_aggregator_stream_secondar
   enabled                 = true
   function_response_types = ["ReportBatchItemFailures"]
 
+  # chunk 10 (HA parity): mirror primary retry bounds. Without these a
+  # poison record could stall the shard forever.
+  maximum_retry_attempts        = 3
+  maximum_record_age_in_seconds = 3600
+
+  # chunk 10 (HA parity): mirror primary's SYSTEM-exclusion filter so
+  # system-level audit rows (workspace_id="" or "SYSTEM") don't get
+  # aggregated as if they were tenant traffic.
   filter_criteria {
     filter {
       pattern = jsonencode({
         eventName = ["INSERT"]
+        dynamodb = {
+          NewImage = {
+            workspace_id = {
+              S = [{ "anything-but" = ["", "SYSTEM"] }]
+            }
+          }
+        }
       })
     }
   }
@@ -302,8 +322,11 @@ module "analytics_cost_alert_lambda_secondary" {
       resources = [module.cost_alerts_sns_secondary[0].topic_arn]
     }
     analytics_read = {
-      effect    = "Allow"
-      actions   = ["dynamodb:Query", "dynamodb:GetItem", "dynamodb:Scan"]
+      effect = "Allow"
+      # chunk 10 (HA alignment): drop Scan (handler doesn't scan
+      # analytics), add PutItem (matches handler's alert-fired
+      # bookkeeping). Now converges with primary.
+      actions   = ["dynamodb:Query", "dynamodb:GetItem", "dynamodb:PutItem"]
       resources = [module.analytics_table_secondary[0].dynamodb_table_arn]
     }
     workspaces_read = {
@@ -327,9 +350,11 @@ resource "aws_cloudwatch_event_rule" "analytics_cost_alert_daily_secondary" {
   count    = var.secondary_region != "" && var.cost_alert_enabled ? 1 : 0
   provider = aws.secondary
 
-  name                = "${var.environment}-${var.app_name}-analytics-cost-alert-daily"
-  description         = "Daily roll-up cost-threshold check (secondary region)"
-  schedule_expression = "rate(24 hours)"
+  name        = "${var.environment}-${var.app_name}-analytics-cost-alert-daily"
+  description = "Daily roll-up cost-threshold check (secondary region)"
+  # chunk 10 (HA alignment): use the same tfvar-driven schedule as the
+  # primary; the hardcoded rate(24 hours) was a silent drift.
+  schedule_expression = var.cost_alert_schedule_expression
   tags                = { Purpose = "analytics-cost-alert" }
 }
 

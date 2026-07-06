@@ -67,7 +67,13 @@ module "github_integration_lambda_secondary" {
       WORKSPACES_TABLE  = module.workspaces_table_secondary[0].dynamodb_table_id
       GITHUB_SYNC_QUEUE = aws_sqs_queue.github_sync_secondary[0].url
       DELETE_QUEUE      = aws_sqs_queue.delete_queue_secondary[0].url
-      AUDIT_TABLE       = module.audit_logs_table_secondary[0].dynamodb_table_id
+      # chunk 10 (HA parity): reverse pointer to the primary delete
+      # queue so disconnect-cleanup issued while secondary is active
+      # also purges primary-region KB/vectors. Handler reads
+      # DELETE_QUEUE_SECONDARY (name is region-neutral; on the primary
+      # side it points to the secondary queue).
+      DELETE_QUEUE_SECONDARY = aws_sqs_queue.delete_queue[0].url
+      AUDIT_TABLE            = module.audit_logs_table_secondary[0].dynamodb_table_id
     },
     local.outcomeops_license_env,
     local.ha_writer_env_secondary,
@@ -98,9 +104,12 @@ module "github_integration_lambda_secondary" {
       sqs_send = {
         effect  = "Allow"
         actions = ["sqs:SendMessage"]
+        # chunk 10 (HA parity): also grant SendMessage on the primary
+        # delete queue for cross-region cleanup.
         resources = [
           aws_sqs_queue.github_sync_secondary[0].arn,
           aws_sqs_queue.delete_queue_secondary[0].arn,
+          aws_sqs_queue.delete_queue[0].arn,
         ]
       }
       dynamodb_audit = {
@@ -220,7 +229,7 @@ module "confluence_integration_lambda_secondary" {
       }
       kms_oauth = {
         effect    = "Allow"
-        actions   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey"]
+        actions   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
         resources = [aws_kms_replica_key.oauth_tokens_secondary[0].arn]
       }
       sqs_send = {
@@ -345,7 +354,7 @@ module "jira_integration_lambda_secondary" {
       }
       kms_oauth = {
         effect    = "Allow"
-        actions   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey"]
+        actions   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
         resources = [aws_kms_replica_key.oauth_tokens_secondary[0].arn]
       }
       sqs_send = {
@@ -470,7 +479,7 @@ module "outlook_integration_lambda_secondary" {
       }
       kms_oauth = {
         effect    = "Allow"
-        actions   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey"]
+        actions   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
         resources = [aws_kms_replica_key.oauth_tokens_secondary[0].arn]
       }
       sqs_send = {
@@ -593,7 +602,7 @@ module "teams_integration_lambda_secondary" {
       }
       kms_oauth = {
         effect    = "Allow"
-        actions   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey"]
+        actions   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
         resources = [aws_kms_replica_key.oauth_tokens_secondary[0].arn]
       }
       sqs_send = {
@@ -716,7 +725,7 @@ module "sharepoint_integration_lambda_secondary" {
       }
       kms_oauth = {
         effect    = "Allow"
-        actions   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey"]
+        actions   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
         resources = [aws_kms_replica_key.oauth_tokens_secondary[0].arn]
       }
       sqs_send = {
@@ -839,7 +848,7 @@ module "onedrive_integration_lambda_secondary" {
       }
       kms_oauth = {
         effect    = "Allow"
-        actions   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey"]
+        actions   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
         resources = [aws_kms_replica_key.oauth_tokens_secondary[0].arn]
       }
       sqs_send = {
@@ -962,7 +971,7 @@ module "onenote_integration_lambda_secondary" {
       }
       kms_oauth = {
         effect    = "Allow"
-        actions   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey"]
+        actions   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
         resources = [aws_kms_replica_key.oauth_tokens_secondary[0].arn]
       }
       sqs_send = {
@@ -1083,7 +1092,7 @@ module "database_integration_lambda_secondary" {
       }
       kms_credentials = {
         effect    = "Allow"
-        actions   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey"]
+        actions   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
         resources = [aws_kms_replica_key.db_credentials_secondary[0].arn]
       }
       sqs_send = {

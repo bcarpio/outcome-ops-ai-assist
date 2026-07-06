@@ -1076,7 +1076,7 @@ module "database_sync_lambda_secondary" {
       }
       kms_credentials = {
         effect    = "Allow"
-        actions   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey"]
+        actions   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
         resources = [aws_kms_replica_key.db_credentials_secondary[0].arn]
       }
       sqs_receive = {

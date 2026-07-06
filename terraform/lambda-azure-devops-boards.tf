@@ -397,6 +397,14 @@ resource "aws_lambda_event_source_mapping" "azure_devops_boards_sync" {
   batch_size = 1
 
   function_response_types = ["ReportBatchItemFailures"]
+
+  # chunk 10 (HA parity): mirror secondary's maximum_concurrency = 5.
+  # Without a cap, a scheduler-driven backlog would burst-invoke against
+  # Boards' per-project ADO API rate limit -- primary was unbounded, the
+  # secondary was already correct.
+  scaling_config {
+    maximum_concurrency = 5
+  }
 }
 
 # ============================================================================

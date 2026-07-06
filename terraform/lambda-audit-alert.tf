@@ -36,40 +36,54 @@ module "audit_alert_lambda" {
   quiet_archive_local_exec = true
 
   # Environment variables
-  environment_variables = {
-    ENV           = var.environment
-    APP_NAME      = var.app_name
-    SNS_TOPIC_ARN = module.audit_alerts_sns.topic_arn
-  }
+  # chunk 10 (HA parity): merge ha_scheduler_env so is_active_region()
+  # reads the local-region AppConfig. Without this the primary alert
+  # Lambda no-ops the gate (returns True unconditionally), which under
+  # a demoted-but-alive primary means duplicate SNS alerts alongside
+  # the promoted secondary -- the exact "double email" scenario the
+  # gate exists to prevent (see docs/HA.md).
+  environment_variables = merge(
+    {
+      ENV           = var.environment
+      APP_NAME      = var.app_name
+      SNS_TOPIC_ARN = module.audit_alerts_sns.topic_arn
+    },
+    local.ha_scheduler_env,
+  )
 
   # IAM permissions
   attach_policy_statements = true
-  policy_statements = {
-    # Publish to SNS audit alerts topic
-    sns_publish = {
-      effect = "Allow"
-      actions = [
-        "sns:Publish"
-      ]
-      resources = [
-        module.audit_alerts_sns.topic_arn
-      ]
-    }
+  policy_statements = merge(
+    {
+      # Publish to SNS audit alerts topic
+      sns_publish = {
+        effect = "Allow"
+        actions = [
+          "sns:Publish"
+        ]
+        resources = [
+          module.audit_alerts_sns.topic_arn
+        ]
+      }
 
-    # DynamoDB Streams read (required for event source mapping)
-    dynamodb_stream = {
-      effect = "Allow"
-      actions = [
-        "dynamodb:GetRecords",
-        "dynamodb:GetShardIterator",
-        "dynamodb:DescribeStream",
-        "dynamodb:ListStreams"
-      ]
-      resources = [
-        module.audit_logs_table.dynamodb_table_stream_arn
-      ]
-    }
-  }
+      # DynamoDB Streams read (required for event source mapping)
+      dynamodb_stream = {
+        effect = "Allow"
+        actions = [
+          "dynamodb:GetRecords",
+          "dynamodb:GetShardIterator",
+          "dynamodb:DescribeStream",
+          "dynamodb:ListStreams"
+        ]
+        resources = [
+          module.audit_logs_table.dynamodb_table_stream_arn
+        ]
+      }
+    },
+    # chunk 10 (HA parity): appconfig:GetLatestConfiguration on the
+    # primary-region config so is_active_region() can gate SNS publishes.
+    local.ha_scheduler_iam,
+  )
 
   tags = {
     Purpose = "audit-alert"

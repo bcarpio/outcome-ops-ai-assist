@@ -374,11 +374,18 @@ resource "aws_lambda_event_source_mapping" "delete_worker_secondary" {
 
   event_source_arn = aws_sqs_queue.delete_queue_secondary[0].arn
   function_name    = module.delete_worker_lambda_secondary[0].lambda_function_name
-  batch_size       = 10
+
+  batch_size                         = 10
+  maximum_batching_window_in_seconds = 5 # chunk 10 (HA parity): mirror primary
 
   # Per-record partial-batch failures so a failed delete retries / DLQs
   # instead of being silently dropped (delete-bug 4b).
   function_response_types = ["ReportBatchItemFailures"]
+
+  # chunk 10 (HA parity): mirror primary maximum_concurrency = 5.
+  scaling_config {
+    maximum_concurrency = 5
+  }
 }
 
 # ----------------------------------------------------------------------------
@@ -558,6 +565,13 @@ resource "aws_lambda_event_source_mapping" "code_maps_queue_to_lambda_secondary"
   batch_size              = 1
   enabled                 = true
   function_response_types = ["ReportBatchItemFailures"]
+
+  # chunk 10 (HA parity): mirror primary maximum_concurrency = 20 so a
+  # post-failover backlog doesn't drown the region with unlimited fan-out
+  # (Bedrock throttling + DDB write-capacity blowout).
+  scaling_config {
+    maximum_concurrency = 20
+  }
 }
 
 # ----------------------------------------------------------------------------
@@ -729,4 +743,9 @@ resource "aws_lambda_event_source_mapping" "repo_summaries_queue_to_lambda_secon
   batch_size              = 1
   enabled                 = true
   function_response_types = ["ReportBatchItemFailures"]
+
+  # chunk 10 (HA parity): mirror primary maximum_concurrency = 20.
+  scaling_config {
+    maximum_concurrency = 20
+  }
 }

@@ -303,12 +303,18 @@ module "workspace_management_lambda_secondary" {
       PORT                         = "8000"
       KB_BUCKET                    = module.knowledge_base_bucket_secondary.s3_bucket_id
       DELETE_QUEUE_URL             = aws_sqs_queue.delete_queue_secondary[0].url
-      OAUTH_KMS_KEY_ARN            = aws_kms_replica_key.oauth_tokens_secondary[0].arn
-      AUDIT_TABLE                  = module.audit_logs_table_secondary[0].dynamodb_table_id
-      ANALYTICS_TABLE              = module.analytics_table_secondary[0].dynamodb_table_id
-      PII_REDACTION_ENABLED        = tostring(var.pii_redaction_enabled)
-      REQUESTS_CA_BUNDLE           = "/opt/ca-bundle.pem"
-      SSL_CERT_FILE                = "/opt/ca-bundle.pem"
+      # chunk 10 (HA parity): reverse pointer to the primary delete queue
+      # so deletes issued while secondary is active also purge the
+      # primary-region KB/vectors (ADR-029 deletion contract requires
+      # both regions to converge). Cross-region SQS SendMessage is
+      # region-inferred from the URL.
+      DELETE_QUEUE_URL_SECONDARY = aws_sqs_queue.delete_queue[0].url
+      OAUTH_KMS_KEY_ARN          = aws_kms_replica_key.oauth_tokens_secondary[0].arn
+      AUDIT_TABLE                = module.audit_logs_table_secondary[0].dynamodb_table_id
+      ANALYTICS_TABLE            = module.analytics_table_secondary[0].dynamodb_table_id
+      PII_REDACTION_ENABLED      = tostring(var.pii_redaction_enabled)
+      REQUESTS_CA_BUNDLE         = "/opt/ca-bundle.pem"
+      SSL_CERT_FILE              = "/opt/ca-bundle.pem"
 
       INTEGRATION_AZURE_DEVOPS_ENABLED        = tostring(var.enable_azure_devops_integration)
       INTEGRATION_AZURE_DEVOPS_BOARDS_ENABLED = tostring(var.enable_azure_devops_boards_integration)
@@ -375,9 +381,14 @@ module "workspace_management_lambda_secondary" {
         resources = [aws_kms_replica_key.oauth_tokens_secondary[0].arn]
       }
       sqs_send = {
-        effect    = "Allow"
-        actions   = ["sqs:SendMessage"]
-        resources = [aws_sqs_queue.delete_queue_secondary[0].arn]
+        effect  = "Allow"
+        actions = ["sqs:SendMessage"]
+        # chunk 10 (HA parity): grant SendMessage on BOTH regions'
+        # delete queues so cross-region cleanup works both ways.
+        resources = [
+          aws_sqs_queue.delete_queue_secondary[0].arn,
+          aws_sqs_queue.delete_queue[0].arn,
+        ]
       }
     },
     local.ha_writer_events_iam_secondary,

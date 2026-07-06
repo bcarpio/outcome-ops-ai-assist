@@ -27,7 +27,7 @@ import logging
 import os
 import time
 from decimal import Decimal
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import boto3
 from botocore.exceptions import ClientError
@@ -452,11 +452,18 @@ def _process_record(record: Dict[str, Any]) -> None:
 
 
 def handler(event, context):
-    """Process DynamoDB Stream records and update aggregate rollups."""
+    """Process DynamoDB Stream records and update aggregate rollups.
+
+    Chunk 10: return batchItemFailures so a poison record is retried
+    (up to the ESM's maximum_retry_attempts) instead of silently
+    dropped on 200. Analytics roll-ups are UpdateItem ADDs on
+    idempotent-per-record keys so replay is safe.
+    """
     if not ANALYTICS_TABLE:
         logger.warning("[analytics-aggregator] ANALYTICS_TABLE not configured")
-        return {"statusCode": 200, "body": "No analytics table configured"}
+        return {"batchItemFailures": []}
 
+    batch_item_failures: List[Dict[str, str]] = []
     processed = 0
     failed = 0
     for record in event.get("Records", []):
@@ -466,8 +473,12 @@ def handler(event, context):
         except Exception as e:
             failed += 1
             logger.error(f"[analytics-aggregator] Failed to process record: {e}", exc_info=True)
+            item_id = record.get("eventID") or record.get("messageId")
+            if item_id:
+                batch_item_failures.append({"itemIdentifier": item_id})
 
     logger.info(
-        f"[analytics-aggregator] processed={processed} failed={failed}"
+        f"[analytics-aggregator] processed={processed} failed={failed} "
+        f"re-delivered={len(batch_item_failures)}"
     )
-    return {"statusCode": 200, "body": f"processed={processed} failed={failed}"}
+    return {"batchItemFailures": batch_item_failures}

@@ -19,8 +19,11 @@ module "analytics_cost_alert_lambda" {
   description   = "Publish cost-alert SNS notifications when workspace/org budgets are crossed"
   handler       = "handler.handler"
   runtime       = "python3.12"
-  timeout       = 60
-  memory_size   = 256
+  # chunk 10 (HA alignment): bumped 60->120 to match secondary. Cost
+  # aggregation across a full month of analytics rows can push past 60s
+  # at enterprise scale.
+  timeout     = 120
+  memory_size = 256
 
   cloudwatch_logs_retention_in_days = 7
   cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs.arn
@@ -38,63 +41,81 @@ module "analytics_cost_alert_lambda" {
 
   quiet_archive_local_exec = true
 
-  environment_variables = {
-    ENV                   = var.environment
-    APP_NAME              = var.app_name
-    ANALYTICS_TABLE       = module.analytics_table.dynamodb_table_id
-    WORKSPACES_TABLE      = var.enable_workspaces ? module.workspaces_table[0].dynamodb_table_id : ""
-    SNS_TOPIC_ARN         = module.cost_alerts_sns[0].topic_arn
-    ORG_MONTHLY_USD       = tostring(var.cost_alert_org_monthly_usd)
-    WORKSPACE_MONTHLY_USD = tostring(var.cost_alert_workspace_monthly_usd)
-    AUDIT_TABLE           = module.audit_logs_table.dynamodb_table_id
-  }
+  # chunk 10 (HA parity): merge ha_scheduler_env so is_active_region()
+  # gates SNS publishes on the primary too. Without it a demoted-but-
+  # alive primary + promoted secondary both publish cost-threshold
+  # alerts (double-email scenario the gate exists to prevent).
+  environment_variables = merge(
+    {
+      ENV                   = var.environment
+      APP_NAME              = var.app_name
+      ANALYTICS_TABLE       = module.analytics_table.dynamodb_table_id
+      WORKSPACES_TABLE      = var.enable_workspaces ? module.workspaces_table[0].dynamodb_table_id : ""
+      SNS_TOPIC_ARN         = module.cost_alerts_sns[0].topic_arn
+      ORG_MONTHLY_USD       = tostring(var.cost_alert_org_monthly_usd)
+      WORKSPACE_MONTHLY_USD = tostring(var.cost_alert_workspace_monthly_usd)
+      AUDIT_TABLE           = module.audit_logs_table.dynamodb_table_id
+    },
+    local.ha_scheduler_env,
+  )
 
   attach_policy_statements = true
-  policy_statements = {
-    dynamodb_analytics = {
-      effect = "Allow"
-      actions = [
-        "dynamodb:Query",
-        "dynamodb:GetItem",
-        "dynamodb:PutItem"
-      ]
-      resources = [
-        module.analytics_table.dynamodb_table_arn
-      ]
-    }
+  policy_statements = merge(
+    {
+      dynamodb_analytics = {
+        effect = "Allow"
+        # chunk 10 (HA alignment): grant the union of what the handler
+        # actually uses (query + put_item on analytics; scan + get_item
+        # on workspaces). Primary was PutItem-only for analytics; adding
+        # Scan is a no-op for analytics since the handler doesn't scan
+        # it -- kept out. Secondary had Scan on analytics erroneously;
+        # chunk 10 drops it there.
+        actions = [
+          "dynamodb:Query",
+          "dynamodb:GetItem",
+          "dynamodb:PutItem"
+        ]
+        resources = [
+          module.analytics_table.dynamodb_table_arn
+        ]
+      }
 
-    dynamodb_workspaces = {
-      effect = "Allow"
-      actions = [
-        "dynamodb:Scan",
-        "dynamodb:GetItem"
-      ]
-      resources = var.enable_workspaces ? [
-        module.workspaces_table[0].dynamodb_table_arn
-      ] : []
-    }
+      dynamodb_workspaces = {
+        effect = "Allow"
+        actions = [
+          "dynamodb:Scan",
+          "dynamodb:GetItem"
+        ]
+        resources = var.enable_workspaces ? [
+          module.workspaces_table[0].dynamodb_table_arn
+        ] : []
+      }
 
-    sns_publish = {
-      effect = "Allow"
-      actions = [
-        "sns:Publish"
-      ]
-      resources = [
-        module.cost_alerts_sns[0].topic_arn
-      ]
-    }
+      sns_publish = {
+        effect = "Allow"
+        actions = [
+          "sns:Publish"
+        ]
+        resources = [
+          module.cost_alerts_sns[0].topic_arn
+        ]
+      }
 
-    # DynamoDB audit log writes (plan/audit-completeness)
-    dynamodb_audit = {
-      effect = "Allow"
-      actions = [
-        "dynamodb:PutItem"
-      ]
-      resources = [
-        module.audit_logs_table.dynamodb_table_arn
-      ]
-    }
-  }
+      # DynamoDB audit log writes (plan/audit-completeness)
+      dynamodb_audit = {
+        effect = "Allow"
+        actions = [
+          "dynamodb:PutItem"
+        ]
+        resources = [
+          module.audit_logs_table.dynamodb_table_arn
+        ]
+      }
+    },
+    # chunk 10 (HA parity): appconfig:GetLatestConfiguration on the
+    # primary AppConfig so is_active_region() can gate SNS publishes.
+    local.ha_scheduler_iam,
+  )
 
   # Permission for EventBridge to invoke the Lambda. The module's
   # allowed_triggers shortcut only works when the function is published as a
