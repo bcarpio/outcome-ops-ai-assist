@@ -694,6 +694,37 @@ class TestListMembers:
         # Assert
         assert result["statusCode"] == 403
 
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_list_members_paginates(self, mock_dynamodb, mock_get_table):
+        """Chunk 05: single-shot .query() truncates at 1MB, silently
+        dropping members from the workspace UI. Confirm the loop walks
+        LastEvaluatedKey so page-2 members appear in the response."""
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+
+        mock_table.get_item.side_effect = [
+            {},  # org_admin check
+            {"Item": {"role": "member"}},  # membership
+        ]
+
+        page1 = {
+            "Items": [{"user_email": "alice@example.com", "role": "workspace_admin"}],
+            "LastEvaluatedKey": {"PK": "USER#alice@example.com"},
+        }
+        page2 = {
+            "Items": [{"user_email": "bob@example.com", "role": "member"}],
+        }
+        mock_table.query.side_effect = [page1, page2]
+
+        result = list_members("alice@example.com", "ws1")
+
+        assert result["statusCode"] == 200
+        body = json.loads(result["body"])
+        emails = {m["user_email"] for m in body["members"]}
+        assert emails == {"alice@example.com", "bob@example.com"}
+
 
 class TestRemoveMember:
     """Test removing members from workspace."""
@@ -1223,6 +1254,49 @@ class TestDeleteWorkspace:
 
         assert result["statusCode"] == 403
 
+    @patch("workspace_management_handler.dual_write.ddb_delete_item")
+    @patch("workspace_management_handler._is_workspace_admin", return_value=True)
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_delete_workspace_paginates_partition_and_gsi(
+        self, mock_dynamodb, mock_get_table, mock_ws_admin, mock_delete
+    ):
+        """Chunk 05: single-shot query truncates at 1MB. delete_workspace
+        must paginate BOTH the workspace-partition query and the GSI
+        member enumeration so items on page 2 aren't orphaned after
+        the audit row says 'deleted'."""
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+
+        page1 = {
+            "Items": [{"PK": "WS#ws1", "SK": "METADATA", "name": "big"}],
+            "LastEvaluatedKey": {"PK": "WS#ws1", "SK": "METADATA"},
+        }
+        page2 = {
+            "Items": [{"PK": "WS#ws1", "SK": "REPO#huge/repo"}],
+        }
+        member_page1 = {
+            "Items": [{"PK": "USER#alice", "SK": "WS_MEMBER#ws1"}],
+            "LastEvaluatedKey": {"PK": "USER#alice"},
+        }
+        member_page2 = {
+            "Items": [{"PK": "USER#bob", "SK": "WS_MEMBER#ws1"}],
+        }
+        mock_table.query.side_effect = [page1, page2, member_page1, member_page2]
+
+        result = delete_workspace("admin@example.com", "ws1")
+
+        assert result["statusCode"] == 200
+        # Items across BOTH pages of BOTH queries must be deleted
+        deleted_keys = [
+            call.args[1] for call in mock_delete.call_args_list
+        ]
+        assert {"PK": "WS#ws1", "SK": "METADATA"} in deleted_keys
+        assert {"PK": "WS#ws1", "SK": "REPO#huge/repo"} in deleted_keys
+        assert {"PK": "USER#alice", "SK": "WS_MEMBER#ws1"} in deleted_keys
+        assert {"PK": "USER#bob", "SK": "WS_MEMBER#ws1"} in deleted_keys
+
 
 class TestUpdateMember:
     """Test member role updates."""
@@ -1314,6 +1388,41 @@ class TestUpdateMember:
         result = update_member("user@example.com", "ws1", "other@example.com", request)
 
         assert result["statusCode"] == 403
+
+    @patch("workspace_management_handler.dual_write.ddb_update_item")
+    @patch("workspace_management_handler._is_workspace_admin", return_value=True)
+    @patch("workspace_management_handler._is_org_admin", return_value=True)
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_update_member_last_admin_check_paginates(
+        self, mock_dynamodb, mock_get_table, mock_org_admin, mock_ws_admin, mock_update
+    ):
+        """Chunk 05: the last-admin check must paginate. If the second
+        remaining admin lives on page 2 of the members query, a single-
+        shot .query() would truncate to page 1 (only one admin), wrongly
+        blocking the demotion. With pagination, the second admin is seen
+        and the demotion is allowed."""
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+
+        # get_item for _get_membership: target IS a workspace_admin
+        mock_table.get_item.return_value = {"Item": {"role": "workspace_admin"}}
+
+        page1 = {
+            "Items": [{"role": "workspace_admin", "user_email": "target@example.com"}],
+            "LastEvaluatedKey": {"PK": "USER#target"},
+        }
+        page2 = {
+            "Items": [{"role": "workspace_admin", "user_email": "other-admin@example.com"}],
+        }
+        mock_table.query.side_effect = [page1, page2]
+
+        request = UpdateMemberRequest(role="member")
+        result = update_member("admin@example.com", "ws1", "target@example.com", request)
+
+        # Demotion succeeds because pagination revealed the second admin
+        assert result["statusCode"] == 200
 
 
 class TestRemoveMemberLastAdmin:
@@ -1759,6 +1868,36 @@ class TestOrgMembers:
         result = list_org_members("user@example.com")
 
         assert result["statusCode"] == 403
+
+    @patch("workspace_management_handler._is_org_admin", return_value=True)
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_list_org_members_paginates_gsi_query(
+        self, mock_dynamodb, mock_get_table, mock_org_admin
+    ):
+        """Chunk 05: ORG#default GSI query paginates. Members on page 2
+        would silently disappear from the org admin UI otherwise."""
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+
+        page1 = {
+            "Items": [{"user_email": "admin@example.com", "org_role": "org_admin"}],
+            "LastEvaluatedKey": {"PK": "USER#admin@example.com"},
+        }
+        page2 = {
+            "Items": [{"user_email": "alice@example.com", "org_role": "member"}],
+        }
+        mock_table.query.side_effect = [page1, page2]
+        mock_table.scan.return_value = {"Items": []}
+
+        result = list_org_members("admin@example.com")
+
+        assert result["statusCode"] == 200
+        body = json.loads(result["body"])
+        emails = {m["user_email"] for m in body["members"]}
+        assert "admin@example.com" in emails
+        assert "alice@example.com" in emails
 
     @patch("workspace_management_handler._is_org_admin", return_value=True)
     @patch("workspace_management_handler._get_org_membership", return_value=None)

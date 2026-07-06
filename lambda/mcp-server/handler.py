@@ -22,6 +22,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from typing import List
 
 import boto3
 from botocore.exceptions import ClientError
@@ -871,19 +872,26 @@ def get_user_workspace_ids(email):
                 scan_kwargs["ExclusiveStartKey"] = last_key
             return workspace_ids
 
-        # Regular user: direct memberships
-        response = table.query(
-            KeyConditionExpression="PK = :pk AND begins_with(SK, :sk)",
-            ExpressionAttributeValues={
+        # Regular user: direct memberships (paginated -- Chunk 05, single-shot
+        # query truncates at 1MB and the user silently loses workspace access
+        # in MCP results).
+        direct_ids: List[str] = []
+        query_kwargs = {
+            "KeyConditionExpression": "PK = :pk AND begins_with(SK, :sk)",
+            "ExpressionAttributeValues": {
                 ":pk": f"USER#{email}",
                 ":sk": "WS_MEMBER#",
             },
-        )
-        direct_ids = [
-            item.get("workspace_id")
-            for item in response.get("Items", [])
-            if item.get("workspace_id")
-        ]
+        }
+        while True:
+            response = table.query(**query_kwargs)
+            for item in response.get("Items", []) or []:
+                ws = item.get("workspace_id")
+                if ws:
+                    direct_ids.append(ws)
+            if "LastEvaluatedKey" not in response:
+                break
+            query_kwargs["ExclusiveStartKey"] = response["LastEvaluatedKey"]
 
         if not direct_ids:
             return []

@@ -998,38 +998,47 @@ def delete_workspace(
         if not _is_workspace_admin(table, user_email, workspace_id):
             return _error(403, "Only workspace admins can delete workspace")
 
-        # Get all items for this workspace (metadata, repos, connections)
-        ws_items = table.query(
-            KeyConditionExpression="PK = :pk",
-            ExpressionAttributeValues={":pk": f"WS#{workspace_id}"},
-        ).get("Items", [])
-
-        # Capture the workspace name before deletion so the audit row carries
-        # something human-readable.
+        # Chunk 05: paginate BOTH the partition query and the GSI member
+        # enumeration. Single-shot .query() silently truncates at 1MB, so
+        # for a large workspace the delete "succeeded" while orphan repos
+        # / connections / members remained -- a data-retention bug (the
+        # workspace is gone from the UI but customer data lingers, which
+        # matters for the regulated ICP). Delete per-page rather than
+        # accumulating the entire partition in memory.
         workspace_name = ""
-        for item in ws_items:
-            if item.get("SK") == "METADATA":
-                workspace_name = item.get("name", "")
+
+        query_kwargs = {
+            "KeyConditionExpression": "PK = :pk",
+            "ExpressionAttributeValues": {":pk": f"WS#{workspace_id}"},
+        }
+        while True:
+            page = table.query(**query_kwargs)
+            for item in page.get("Items", []) or []:
+                if not workspace_name and item.get("SK") == "METADATA":
+                    workspace_name = item.get("name", "")
+                dual_write.ddb_delete_item(
+                    _get_workspaces_table(),
+                    {"PK": item["PK"], "SK": item["SK"]},
+                )
+            if "LastEvaluatedKey" not in page:
                 break
+            query_kwargs["ExclusiveStartKey"] = page["LastEvaluatedKey"]
 
-        # Get all membership items via GSI
-        member_items = table.query(
-            IndexName="GSI1",
-            KeyConditionExpression="GSI1PK = :gsi1pk",
-            ExpressionAttributeValues={":gsi1pk": f"WS#{workspace_id}"},
-        ).get("Items", [])
-
-        # Delete all items
-        for item in ws_items:
-            dual_write.ddb_delete_item(
-                _get_workspaces_table(),
-                {"PK": item["PK"], "SK": item["SK"]},
-            )
-        for item in member_items:
-            dual_write.ddb_delete_item(
-                _get_workspaces_table(),
-                {"PK": item["PK"], "SK": item["SK"]},
-            )
+        member_kwargs = {
+            "IndexName": "GSI1",
+            "KeyConditionExpression": "GSI1PK = :gsi1pk",
+            "ExpressionAttributeValues": {":gsi1pk": f"WS#{workspace_id}"},
+        }
+        while True:
+            page = table.query(**member_kwargs)
+            for item in page.get("Items", []) or []:
+                dual_write.ddb_delete_item(
+                    _get_workspaces_table(),
+                    {"PK": item["PK"], "SK": item["SK"]},
+                )
+            if "LastEvaluatedKey" not in page:
+                break
+            member_kwargs["ExclusiveStartKey"] = page["LastEvaluatedKey"]
 
         ctx = audit_ctx or {}
         log_admin_action(
@@ -1175,17 +1184,23 @@ def list_members(user_email: str, workspace_id: str) -> Dict:
         if not _can_access_workspace(table, user_email, workspace_id):
             return _error(403, "Not a member of this workspace")
 
-        # Query members via GSI
-        response = table.query(
-            IndexName="GSI1",
-            KeyConditionExpression="GSI1PK = :gsi1pk AND begins_with(GSI1SK, :sk)",
-            ExpressionAttributeValues={
+        # Chunk 05: paginate. Single-shot .query() truncates at 1MB;
+        # for a large workspace this silently drops members from the UI.
+        members: List[Dict] = []
+        query_kwargs = {
+            "IndexName": "GSI1",
+            "KeyConditionExpression": "GSI1PK = :gsi1pk AND begins_with(GSI1SK, :sk)",
+            "ExpressionAttributeValues": {
                 ":gsi1pk": f"WS#{workspace_id}",
                 ":sk": "USER#",
             },
-        )
-
-        members = response.get("Items", [])
+        }
+        while True:
+            page = table.query(**query_kwargs)
+            members.extend(page.get("Items", []) or [])
+            if "LastEvaluatedKey" not in page:
+                break
+            query_kwargs["ExclusiveStartKey"] = page["LastEvaluatedKey"]
 
         # Sort by role (admins first) then by email
         members.sort(key=lambda x: (x.get("role") != "workspace_admin", x.get("user_email", "")))
@@ -1221,15 +1236,29 @@ def update_member(
 
         # Can't demote the last admin
         if target_is_admin and demoting:
-            members_response = table.query(
-                IndexName="GSI1",
-                KeyConditionExpression="GSI1PK = :gsi1pk",
-                ExpressionAttributeValues={":gsi1pk": f"WS#{workspace_id}"},
-            )
-            admin_count = sum(
-                1 for m in members_response.get("Items", [])
-                if m.get("role") == "workspace_admin"
-            )
+            # Chunk 05: paginate. Single-shot query would silently drop
+            # admins beyond the 1MB boundary; if the *only* remaining
+            # admin happened to live on page 2 we'd wrongly allow the
+            # demotion and lock the workspace out. Count across pages,
+            # but short-circuit as soon as we're sure there's another
+            # admin (>=2) so large workspaces don't scan the world.
+            member_kwargs = {
+                "IndexName": "GSI1",
+                "KeyConditionExpression": "GSI1PK = :gsi1pk",
+                "ExpressionAttributeValues": {":gsi1pk": f"WS#{workspace_id}"},
+            }
+            admin_count = 0
+            while True:
+                page = table.query(**member_kwargs)
+                admin_count += sum(
+                    1 for m in page.get("Items", []) or []
+                    if m.get("role") == "workspace_admin"
+                )
+                if admin_count >= 2:
+                    break
+                if "LastEvaluatedKey" not in page:
+                    break
+                member_kwargs["ExclusiveStartKey"] = page["LastEvaluatedKey"]
             if admin_count <= 1:
                 return _error(400, "Cannot demote the last admin of a workspace")
 
@@ -1272,15 +1301,26 @@ def remove_member(
 
         # Can't remove the last admin from a workspace
         if existing.get("role") == "workspace_admin":
-            members_response = table.query(
-                IndexName="GSI1",
-                KeyConditionExpression="GSI1PK = :gsi1pk",
-                ExpressionAttributeValues={":gsi1pk": f"WS#{workspace_id}"},
-            )
-            admin_count = sum(
-                1 for m in members_response.get("Items", [])
-                if m.get("role") == "workspace_admin"
-            )
+            # Chunk 05: paginate so the count is honest on large workspaces
+            # (single-shot query truncates at 1MB). Short-circuit as soon
+            # as >=2 admins are seen.
+            member_kwargs = {
+                "IndexName": "GSI1",
+                "KeyConditionExpression": "GSI1PK = :gsi1pk",
+                "ExpressionAttributeValues": {":gsi1pk": f"WS#{workspace_id}"},
+            }
+            admin_count = 0
+            while True:
+                page = table.query(**member_kwargs)
+                admin_count += sum(
+                    1 for m in page.get("Items", []) or []
+                    if m.get("role") == "workspace_admin"
+                )
+                if admin_count >= 2:
+                    break
+                if "LastEvaluatedKey" not in page:
+                    break
+                member_kwargs["ExclusiveStartKey"] = page["LastEvaluatedKey"]
             if admin_count <= 1:
                 return _error(400, "Cannot remove the last admin from a workspace")
 
@@ -1733,28 +1773,32 @@ def list_org_members(user_email: str) -> Dict:
         if not _is_org_admin(table, user_email):
             return _error(403, "Only org admins can list org members")
 
-        # Source 1: Explicit org membership records
-        org_response = table.query(
-            IndexName="GSI1",
-            KeyConditionExpression="GSI1PK = :gsi1pk AND begins_with(GSI1SK, :user_prefix)",
-            ExpressionAttributeValues={
+        # Source 1: Explicit org membership records (paginated -- Chunk 05,
+        # 1MB truncation would silently hide members from the org admin UI).
+        members_by_email: Dict[str, Dict] = {}
+        org_kwargs = {
+            "IndexName": "GSI1",
+            "KeyConditionExpression": "GSI1PK = :gsi1pk AND begins_with(GSI1SK, :user_prefix)",
+            "ExpressionAttributeValues": {
                 ":gsi1pk": "ORG#default",
                 ":user_prefix": "USER#",
             },
-        )
-
-        # Build lookup by email from org records
-        members_by_email = {}
-        for item in org_response.get("Items", []):
-            email = item.get("user_email", "")
-            if email:
-                members_by_email[email] = {
-                    "user_email": email,
-                    "org_role": item.get("org_role", "member"),
-                    "joined_at": item.get("joined_at", ""),
-                    "is_service_account": item.get("is_service_account", False),
-                    "workspaces": [],
-                }
+        }
+        while True:
+            org_response = table.query(**org_kwargs)
+            for item in org_response.get("Items", []) or []:
+                email = item.get("user_email", "")
+                if email:
+                    members_by_email[email] = {
+                        "user_email": email,
+                        "org_role": item.get("org_role", "member"),
+                        "joined_at": item.get("joined_at", ""),
+                        "is_service_account": item.get("is_service_account", False),
+                        "workspaces": [],
+                    }
+            if "LastEvaluatedKey" not in org_response:
+                break
+            org_kwargs["ExclusiveStartKey"] = org_response["LastEvaluatedKey"]
 
         # Source 2: All workspace membership records
         scan_kwargs = {

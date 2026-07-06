@@ -1075,6 +1075,28 @@ class TestGetUserWorkspaceIds:
         assert result == []
 
     @patch.object(mcp_module, "_get_dynamodb")
+    def test_regular_user_paginates_membership_query(self, mock_get_ddb):
+        """Chunk 05: the WS_MEMBER# partition query must paginate. If a
+        heavy-membership user has any workspaces on page 2 of the query,
+        a single-shot .query() would silently truncate them out of the
+        MCP tools' workspace list."""
+        table = MagicMock()
+        mock_get_ddb.return_value.Table.return_value = table
+        table.get_item.return_value = {"Item": {"org_role": "member"}}
+        table.query.side_effect = [
+            {
+                "Items": [{"workspace_id": "ws-page1"}],
+                "LastEvaluatedKey": {"PK": "USER#u", "SK": "WS_MEMBER#ws-page1"},
+            },
+            {"Items": [{"workspace_id": "ws-page2"}]},
+        ]
+        table.scan.return_value = {"Items": []}
+
+        result = mcp_module.get_user_workspace_ids("heavy@example.com")
+        assert "ws-page1" in result
+        assert "ws-page2" in result
+
+    @patch.object(mcp_module, "_get_dynamodb")
     def test_shared_workspaces_included(self, mock_get_ddb):
         """Shared workspaces are included in user's workspace list."""
         table = MagicMock()
