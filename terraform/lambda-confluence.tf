@@ -7,7 +7,7 @@ module "confluence_integration_lambda" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "8.1.2"
 
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_confluence_integration ? 1 : 0
 
   function_name = "${var.environment}-${var.app_name}-confluence-integration"
   description   = "Confluence OAuth and connection management for OutcomeOps AI Assist"
@@ -149,7 +149,7 @@ module "confluence_integration_lambda" {
 
 # Lambda Function URL with IAM auth
 resource "aws_lambda_function_url" "confluence_integration" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_confluence_integration ? 1 : 0
 
   function_name      = module.confluence_integration_lambda[0].lambda_function_name
   authorization_type = "AWS_IAM"
@@ -165,7 +165,7 @@ resource "aws_lambda_function_url" "confluence_integration" {
 
 # Store URL in SSM for Fargate proxy
 resource "aws_ssm_parameter" "confluence_integration_url" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_confluence_integration ? 1 : 0
 
   name        = "/${var.environment}/${var.app_name}/api/confluence-integration-url"
   description = "Lambda Function URL for Confluence integration (IAM auth required)"
@@ -182,7 +182,7 @@ resource "aws_ssm_parameter" "confluence_integration_url" {
 # ============================================================================
 
 resource "aws_sqs_queue" "confluence_sync" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_confluence_integration ? 1 : 0
 
   name                       = "${var.environment}-${var.app_name}-confluence-sync"
   visibility_timeout_seconds = 900   # 15 minutes for long-running syncs
@@ -205,7 +205,7 @@ resource "aws_sqs_queue" "confluence_sync" {
 }
 
 resource "aws_sqs_queue" "confluence_sync_dlq" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_confluence_integration ? 1 : 0
 
   name                      = "${var.environment}-${var.app_name}-confluence-sync-dlq"
   message_retention_seconds = 1209600 # 14 days
@@ -227,7 +227,7 @@ module "confluence_sync_lambda" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "8.1.2"
 
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_confluence_integration ? 1 : 0
 
   function_name = "${var.environment}-${var.app_name}-confluence-sync"
   description   = "Syncs Confluence pages to vector store for OutcomeOps AI Assist"
@@ -384,7 +384,7 @@ module "confluence_sync_lambda" {
 
 # SQS trigger for sync Lambda
 resource "aws_lambda_event_source_mapping" "confluence_sync" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_confluence_integration ? 1 : 0
 
   event_source_arn = aws_sqs_queue.confluence_sync[0].arn
   function_name    = module.confluence_sync_lambda[0].lambda_function_name
@@ -406,7 +406,7 @@ module "confluence_scheduler_lambda" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "8.1.2"
 
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_confluence_integration ? 1 : 0
 
   function_name = "${var.environment}-${var.app_name}-confluence-scheduler"
   description   = "Hourly scheduler for Confluence sync jobs"
@@ -484,7 +484,7 @@ module "confluence_scheduler_lambda" {
 
 # EventBridge rule for hourly sync
 resource "aws_cloudwatch_event_rule" "confluence_hourly_sync" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_confluence_integration ? 1 : 0
 
   name                = "${var.environment}-${var.app_name}-confluence-hourly-sync"
   description         = "Trigger Confluence sync scheduler every hour"
@@ -496,7 +496,7 @@ resource "aws_cloudwatch_event_rule" "confluence_hourly_sync" {
 }
 
 resource "aws_cloudwatch_event_target" "confluence_scheduler" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_confluence_integration ? 1 : 0
 
   rule      = aws_cloudwatch_event_rule.confluence_hourly_sync[0].name
   target_id = "confluence-scheduler"
@@ -504,7 +504,7 @@ resource "aws_cloudwatch_event_target" "confluence_scheduler" {
 }
 
 resource "aws_lambda_permission" "confluence_scheduler_eventbridge" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_confluence_integration ? 1 : 0
 
   statement_id  = "AllowEventBridgeInvoke"
   action        = "lambda:InvokeFunction"
@@ -519,7 +519,7 @@ resource "aws_lambda_permission" "confluence_scheduler_eventbridge" {
 # ============================================================================
 
 resource "aws_ssm_parameter" "atlassian_client_id" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && (var.enable_confluence_integration || var.enable_jira_integration) ? 1 : 0
 
   name        = "/${var.environment}/${var.app_name}/oauth/atlassian/client-id"
   description = "Atlassian OAuth App Client ID"
@@ -532,7 +532,7 @@ resource "aws_ssm_parameter" "atlassian_client_id" {
 }
 
 resource "aws_ssm_parameter" "atlassian_client_secret" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && (var.enable_confluence_integration || var.enable_jira_integration) ? 1 : 0
 
   name        = "/${var.environment}/${var.app_name}/oauth/atlassian/client-secret"
   description = "Atlassian OAuth App Client Secret - customer must configure"
@@ -549,7 +549,7 @@ resource "aws_ssm_parameter" "atlassian_client_secret" {
 }
 
 resource "aws_ssm_parameter" "atlassian_callback_url" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_confluence_integration ? 1 : 0
 
   name        = "/${var.environment}/${var.app_name}/oauth/atlassian/callback-url"
   description = "OAuth callback URL for Confluence. Register this in your Atlassian OAuth app config after local.fqdn resolves to the UI ALB (whether via terraform-managed Route53 or external DNS - see docs/byo-cert-and-dns.md)."
@@ -614,7 +614,7 @@ output "confluence_scheduler_lambda_arn" {
 # ============================================================================
 
 resource "aws_ssm_parameter" "atlassian_client_id_secondary" {
-  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count = var.enable_workspaces && (var.enable_confluence_integration || var.enable_jira_integration) && var.secondary_region != "" ? 1 : 0
 
   provider = aws.secondary
 
@@ -629,7 +629,7 @@ resource "aws_ssm_parameter" "atlassian_client_id_secondary" {
 }
 
 resource "aws_ssm_parameter" "atlassian_client_secret_secondary" {
-  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count = var.enable_workspaces && (var.enable_confluence_integration || var.enable_jira_integration) && var.secondary_region != "" ? 1 : 0
 
   provider = aws.secondary
 
@@ -648,7 +648,7 @@ resource "aws_ssm_parameter" "atlassian_client_secret_secondary" {
 }
 
 resource "aws_ssm_parameter" "atlassian_callback_url_secondary" {
-  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count = var.enable_workspaces && var.enable_confluence_integration && var.secondary_region != "" ? 1 : 0
 
   provider = aws.secondary
 

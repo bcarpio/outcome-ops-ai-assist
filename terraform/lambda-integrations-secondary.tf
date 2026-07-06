@@ -155,7 +155,7 @@ module "confluence_integration_lambda_secondary" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "8.1.2"
 
-  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count = var.enable_workspaces && var.enable_confluence_integration && var.secondary_region != "" ? 1 : 0
 
   providers = {
     aws = aws.secondary
@@ -240,7 +240,7 @@ module "confluence_integration_lambda_secondary" {
 }
 
 resource "aws_lambda_function_url" "confluence_integration_secondary" {
-  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count = var.enable_workspaces && var.enable_confluence_integration && var.secondary_region != "" ? 1 : 0
 
   provider = aws.secondary
 
@@ -257,7 +257,7 @@ resource "aws_lambda_function_url" "confluence_integration_secondary" {
 }
 
 resource "aws_ssm_parameter" "confluence_integration_url_secondary" {
-  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count = var.enable_workspaces && var.enable_confluence_integration && var.secondary_region != "" ? 1 : 0
 
   provider = aws.secondary
 
