@@ -49,6 +49,29 @@ token_module = _load_module(
     "../../azure-devops-boards-integration",
 )
 
+# The module under test is vendored per-Lambda (each function dir bundles
+# its own copy; there is no shared layer for it). Re-run this whole suite
+# against every copy so none can drift or sit untested: the autouse
+# fixture below rebinds the module-global (and the sys.modules entry that
+# @patch targets) once per vendored copy.
+_VENDORED_COPY_DIRS = [
+    "../../azure-devops-boards-integration",
+    "../../azure-devops-boards-sync",
+]
+
+
+@pytest.fixture(
+    scope="module",
+    autouse=True,
+    params=_VENDORED_COPY_DIRS,
+    ids=[d.rsplit("/", 1)[-1] for d in _VENDORED_COPY_DIRS],
+)
+def _vendored_copy(request):
+    global token_module
+    token_module = _load_module(
+        "azdo_boards_int_token_manager", "token_manager.py", request.param
+    )
+
 # Shared Entra ID OAuth helper. Tests assert wrapper delegations pass
 # the right Boards-specific params (scopes, tenant_id, pk_prefix) into
 # the shared module.
@@ -108,7 +131,7 @@ class TestAzdoBoardsConstants:
 
 class TestSaveTokensDelegation:
 
-    @patch.object(token_module, "_save_tokens")
+    @patch("azdo_boards_int_token_manager._save_tokens")
     def test_passes_boards_pk_prefix_and_env_args(self, mock_shared):
         mock_shared.return_value = True
         result = token_module.save_tokens("conn1", "access_x", "refresh_x", 1800)
@@ -120,7 +143,7 @@ class TestSaveTokensDelegation:
         assert kw["refresh_token"] == "refresh_x"
         assert kw["expires_in"] == 1800
 
-    @patch.object(token_module, "_save_tokens")
+    @patch("azdo_boards_int_token_manager._save_tokens")
     def test_default_expires_in_is_3600(self, mock_shared):
         mock_shared.return_value = True
         token_module.save_tokens("conn1", "a", "r")
@@ -129,7 +152,7 @@ class TestSaveTokensDelegation:
 
 class TestGetRefreshTokenDelegation:
 
-    @patch.object(token_module, "_get_refresh_token")
+    @patch("azdo_boards_int_token_manager._get_refresh_token")
     def test_passes_boards_pk_prefix(self, mock_shared):
         mock_shared.return_value = "decrypted-refresh"
         result = token_module.get_refresh_token("conn1")
@@ -141,7 +164,7 @@ class TestGetRefreshTokenDelegation:
 
 class TestRefreshAccessTokenDelegation:
 
-    @patch.object(token_module, "_refresh_access_token")
+    @patch("azdo_boards_int_token_manager._refresh_access_token")
     def test_passes_boards_scopes_and_tenant_id(self, mock_shared):
         mock_shared.return_value = "new-access-token"
         result = token_module.refresh_access_token(
@@ -160,7 +183,7 @@ class TestRefreshAccessTokenDelegation:
         assert kw["client_id"] == "cid"
         assert kw["client_secret"] == "csecret"
 
-    @patch.object(token_module, "_refresh_access_token")
+    @patch("azdo_boards_int_token_manager._refresh_access_token")
     def test_does_not_hardcode_common(self, mock_shared):
         """Regression guard: if a future contributor adds a default
         tenant_id="common" to the wrapper, ADO connections break
@@ -179,7 +202,7 @@ class TestRefreshAccessTokenDelegation:
 
 class TestDeleteTokensDelegation:
 
-    @patch.object(token_module, "_delete_tokens")
+    @patch("azdo_boards_int_token_manager._delete_tokens")
     def test_passes_boards_pk_prefix(self, mock_shared):
         mock_shared.return_value = True
         result = token_module.delete_tokens("conn1")
@@ -191,7 +214,7 @@ class TestDeleteTokensDelegation:
 
 class TestExchangeCodeForTokensDelegation:
 
-    @patch.object(token_module, "_exchange_code_for_tokens")
+    @patch("azdo_boards_int_token_manager._exchange_code_for_tokens")
     def test_passes_boards_scopes_and_tenant_id(self, mock_shared):
         mock_shared.return_value = ("access_x", "refresh_x", 3600)
         result = token_module.exchange_code_for_tokens(

@@ -52,6 +52,30 @@ api = _load_module(
     "../../azure-devops-integration",
 )
 
+# The module under test is vendored per-Lambda (each function dir bundles
+# its own copy; there is no shared layer for it). Re-run this whole suite
+# against every copy so none can drift or sit untested: the autouse
+# fixture below rebinds the module-global (and the sys.modules entry that
+# @patch targets) once per vendored copy.
+_VENDORED_COPY_DIRS = [
+    "../../azure-devops-integration",
+    "../../azure-devops-sync",
+    "../../azure-devops-boards-integration",
+    "../../analyze-pr",
+    "../../process-pr-check",
+]
+
+
+@pytest.fixture(
+    scope="module",
+    autouse=True,
+    params=_VENDORED_COPY_DIRS,
+    ids=[d.rsplit("/", 1)[-1] for d in _VENDORED_COPY_DIRS],
+)
+def _vendored_copy(request):
+    global api
+    api = _load_module("azdo_int_api", "azure_devops_api.py", request.param)
+
 
 # ---------------------------------------------------------------------------
 # urlopen response builder
@@ -354,6 +378,13 @@ class TestUpdatePullRequestThreadComment:
     Used by the update-in-place PR-check UX so subsequent runs edit
     the existing comment rather than posting a new one.
     """
+
+    @pytest.fixture(autouse=True)
+    def _requires_patch_helper(self):
+        if not hasattr(api, "update_pull_request_thread_comment"):
+            pytest.skip(
+                "update_pull_request_thread_comment not in this vendored copy"
+            )
 
     @patch("azdo_int_api.urllib.request.urlopen")
     def test_patch_uses_correct_url_and_method(self, mock_urlopen):

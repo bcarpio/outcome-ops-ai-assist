@@ -48,6 +48,31 @@ api = _load_module(
     "../../azure-devops-boards-integration",
 )
 
+# The module under test is vendored per-Lambda (each function dir bundles
+# its own copy; there is no shared layer for it). Re-run this whole suite
+# against every copy so none can drift or sit untested: the autouse
+# fixture below rebinds the module-global (and the sys.modules entry that
+# @patch targets) once per vendored copy.
+_VENDORED_COPY_DIRS = [
+    "../../azure-devops-boards-integration",
+    "../../azure-devops-boards-sync",
+]
+
+
+@pytest.fixture(
+    scope="module",
+    autouse=True,
+    params=_VENDORED_COPY_DIRS,
+    ids=[d.rsplit("/", 1)[-1] for d in _VENDORED_COPY_DIRS],
+)
+def _vendored_copy(request):
+    global api
+    api = _load_module(
+        "azdo_boards_work_items_api",
+        "azure_devops_work_items_api.py",
+        request.param,
+    )
+
 
 # ---------------------------------------------------------------------------
 # urlopen response builder
