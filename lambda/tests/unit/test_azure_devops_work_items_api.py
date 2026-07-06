@@ -256,6 +256,67 @@ class TestBuildIncrementalWIQL:
         assert "'John's Project'" not in query
 
 
+class TestURLEncoding:
+    """Regression: ADO org / project names can contain spaces. urllib
+    refuses to open a URL with control characters, so every path
+    segment gets quoted before it lands in the URL."""
+
+    @patch("azdo_boards_work_items_api.urllib.request.urlopen")
+    def test_run_wiql_encodes_project_with_spaces(self, mock_urlopen):
+        mock_urlopen.return_value = _make_response({"workItems": []})
+        api.run_wiql("tok", "example-org", "Agile Project for OutcomeOps", "SELECT ...")
+        url = mock_urlopen.call_args.args[0].full_url
+        # Spaces become %20 (or +); no raw spaces in the URL.
+        assert " " not in url
+        assert "Agile%20Project%20for%20OutcomeOps" in url
+
+    @patch("azdo_boards_work_items_api.urllib.request.urlopen")
+    def test_get_work_item_comments_encodes_project(self, mock_urlopen):
+        mock_urlopen.return_value = _make_response({"comments": []})
+        api.get_work_item_comments(
+            "tok", "example-org", "Agile Project for OutcomeOps", 42,
+        )
+        url = mock_urlopen.call_args.args[0].full_url
+        assert " " not in url
+        assert "Agile%20Project%20for%20OutcomeOps" in url
+
+
+class TestErrorMessageExtraction:
+    """ADO errors carry a JSON body with a ``message`` field. We surface
+    that so the caller sees the actual ADO complaint, not just an HTTP
+    code."""
+
+    @patch("azdo_boards_work_items_api.urllib.request.urlopen")
+    def test_400_error_includes_ado_message_in_exception(self, mock_urlopen):
+        body = json.dumps({
+            "message": "TF400898: An Internal Error Occurred.",
+            "typeName": "Microsoft.TeamFoundation...",
+        })
+        mock_urlopen.side_effect = _http_error(400, "Bad Request", body)
+        with pytest.raises(api.AzureDevOpsBoardsAPIError) as exc:
+            api._request("POST", "https://dev.azure.com/x/y/_apis/wit/wiql", "tok")
+        assert "TF400898" in str(exc.value)
+
+    @patch("azdo_boards_work_items_api.urllib.request.urlopen")
+    def test_404_error_includes_ado_message(self, mock_urlopen):
+        body = json.dumps({"message": "Project 'RetrieveIT' was not found."})
+        mock_urlopen.side_effect = _http_error(404, "Not Found", body)
+        with pytest.raises(api.AzureDevOpsBoardsNotFoundError) as exc:
+            api._request("GET", "https://dev.azure.com/x/y/_apis/wit/wiql", "tok")
+        assert "not found" in str(exc.value).lower()
+
+    def test_extract_returns_empty_on_non_json_body(self):
+        assert api._extract_ado_error_message("") == ""
+        assert api._extract_ado_error_message("<html>oops</html>") == "<html>oops</html>"
+
+    def test_extract_pulls_inner_exception_message(self):
+        body = json.dumps({
+            "message": "Outer",
+            "innerException": {"message": "Inner detail"},
+        })
+        assert "Inner detail" in api._extract_ado_error_message(body)
+
+
 class TestRunWIQL:
 
     @patch("azdo_boards_work_items_api.urllib.request.urlopen")

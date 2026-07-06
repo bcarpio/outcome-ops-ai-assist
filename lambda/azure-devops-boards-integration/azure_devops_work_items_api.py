@@ -164,17 +164,27 @@ def _request(
         logger.error(
             f"ADO Boards API {method} {path_for_log} -> {e.code}: {error_body}"
         )
+        # ADO returns JSON errors like
+        # {"message": "TF...: friendly text", "typeName": "..."}.
+        # Bubble the ``message`` field up in the exception string so
+        # the caller (sync worker) can render something diagnostic
+        # instead of just "400 on {path}".
+        ado_msg = _extract_ado_error_message(error_body)
+        suffix = f": {ado_msg}" if ado_msg else ""
         if e.code == 401:
             raise AzureDevOpsBoardsAuthError(
-                f"401 on {path_for_log}", status_code=401, response=error_body,
+                f"401 on {path_for_log}{suffix}",
+                status_code=401, response=error_body,
             )
         if e.code == 403:
             raise AzureDevOpsBoardsScopeError(
-                f"403 on {path_for_log}", status_code=403, response=error_body,
+                f"403 on {path_for_log}{suffix}",
+                status_code=403, response=error_body,
             )
         if e.code == 404:
             raise AzureDevOpsBoardsNotFoundError(
-                f"404 on {path_for_log}", status_code=404, response=error_body,
+                f"404 on {path_for_log}{suffix}",
+                status_code=404, response=error_body,
             )
         if 500 <= e.code < 600:
             raise AzureDevOpsBoardsServerError(
@@ -182,11 +192,36 @@ def _request(
                 status_code=e.code, response=error_body,
             )
         raise AzureDevOpsBoardsAPIError(
-            f"{e.code} on {path_for_log}",
+            f"{e.code} on {path_for_log}{suffix}",
             status_code=e.code, response=error_body,
         )
     except urllib.error.URLError as e:
         raise AzureDevOpsBoardsAPIError(f"Network error on {url}: {e.reason}")
+
+
+def _extract_ado_error_message(error_body: str) -> str:
+    """Pull the human-readable message field out of ADO's JSON error body.
+
+    ADO returns errors as
+    ``{"message": "TF...: ...", "typeName": "...", "typeKey": "...",
+    "innerException": null|{...}, ...}``. We surface ``message`` (and
+    inner ``message`` if present) so the caller sees exactly what ADO
+    complained about instead of just an HTTP code.
+    """
+    if not error_body:
+        return ""
+    try:
+        parsed = json.loads(error_body)
+    except (ValueError, TypeError):
+        # Non-JSON body -- return the first line, capped.
+        return error_body.strip().splitlines()[0][:400]
+    if not isinstance(parsed, dict):
+        return ""
+    msg = parsed.get("message") or ""
+    inner = parsed.get("innerException")
+    if isinstance(inner, dict) and inner.get("message"):
+        msg = f"{msg} -- {inner['message']}" if msg else inner["message"]
+    return str(msg)[:400] if msg else ""
 
 
 def _add_query(url: str, params: Dict[str, Any]) -> str:
@@ -209,12 +244,22 @@ def _add_query(url: str, params: Dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _q(segment: str) -> str:
+    """URL-encode a path segment. ADO org / project names can contain
+    spaces and other reserved characters -- urllib.request rejects a
+    URL with control chars, so every user-supplied path segment gets
+    quoted before it lands in the URL. ``safe=''`` is intentional: no
+    reserved characters are allowed to pass through raw.
+    """
+    return urllib.parse.quote(segment, safe="")
+
+
 def list_projects(access_token: str, org: str) -> List[Dict[str, Any]]:
     """List projects in an org. Same endpoint as the Repos client, but
     kept local so Boards doesn't depend on the Repos module's import path.
     """
     url = _add_query(
-        f"{DEV_AZURE_HOST}/{org}/_apis/projects",
+        f"{DEV_AZURE_HOST}/{_q(org)}/_apis/projects",
         {"api-version": API_VERSION},
     )
     body, _ = _request("GET", url, access_token)
@@ -230,7 +275,7 @@ def list_teams(
     v1 syncs whole projects and does not consume this endpoint yet.
     """
     url = _add_query(
-        f"{DEV_AZURE_HOST}/{org}/_apis/projects/{project}/teams",
+        f"{DEV_AZURE_HOST}/{_q(org)}/_apis/projects/{_q(project)}/teams",
         {"api-version": API_VERSION},
     )
     body, _ = _request("GET", url, access_token)
@@ -314,7 +359,7 @@ def run_wiql(
     always be tight (project + changed-since + open-only).
     """
     url = _add_query(
-        f"{DEV_AZURE_HOST}/{org}/{project}/_apis/wit/wiql",
+        f"{DEV_AZURE_HOST}/{_q(org)}/{_q(project)}/_apis/wit/wiql",
         {"api-version": API_VERSION},
     )
     body, _ = _request("POST", url, access_token, body={"query": wiql_query})
@@ -356,7 +401,7 @@ def get_work_items(
         )
     fields_list = fields if fields is not None else STANDARD_WORK_ITEM_FIELDS
     url = _add_query(
-        f"{DEV_AZURE_HOST}/{org}/_apis/wit/workitems",
+        f"{DEV_AZURE_HOST}/{_q(org)}/_apis/wit/workitems",
         {
             "ids": ",".join(str(i) for i in id_list),
             "fields": ",".join(fields_list),
@@ -381,7 +426,7 @@ def get_work_item_comments(
     returns comment metadata only.
     """
     url = _add_query(
-        f"{DEV_AZURE_HOST}/{org}/{project}/_apis/wit/workitems/{work_item_id}/comments",
+        f"{DEV_AZURE_HOST}/{_q(org)}/{_q(project)}/_apis/wit/workitems/{work_item_id}/comments",
         {"api-version": COMMENTS_API_VERSION},
     )
     body, _ = _request("GET", url, access_token)
