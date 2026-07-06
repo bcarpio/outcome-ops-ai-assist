@@ -550,40 +550,40 @@ resource "aws_ssm_parameter" "microsoft_sharepoint_callback_url" {
 
 output "sharepoint_integration_lambda_name" {
   description = "Name of the SharePoint integration Lambda function"
-  value       = var.enable_workspaces ? module.sharepoint_integration_lambda[0].lambda_function_name : null
+  value       = try(module.sharepoint_integration_lambda[0].lambda_function_name, null)
 }
 
 output "sharepoint_integration_lambda_arn" {
   description = "ARN of the SharePoint integration Lambda function"
-  value       = var.enable_workspaces ? module.sharepoint_integration_lambda[0].lambda_function_arn : null
+  value       = try(module.sharepoint_integration_lambda[0].lambda_function_arn, null)
 }
 
 output "sharepoint_integration_url" {
   description = "Lambda Function URL for SharePoint integration"
-  value       = var.enable_workspaces ? aws_lambda_function_url.sharepoint_integration[0].function_url : null
+  value       = try(aws_lambda_function_url.sharepoint_integration[0].function_url, null)
 }
 
 output "sharepoint_sync_queue_url" {
   description = "SQS queue URL for SharePoint sync jobs"
-  value       = var.enable_workspaces ? aws_sqs_queue.sharepoint_sync[0].url : null
+  value       = try(aws_sqs_queue.sharepoint_sync[0].url, null)
 }
 
 output "sharepoint_sync_lambda_name" {
   description = "Name of the SharePoint sync Lambda function"
-  value       = var.enable_workspaces ? module.sharepoint_sync_lambda[0].lambda_function_name : null
+  value       = try(module.sharepoint_sync_lambda[0].lambda_function_name, null)
 }
 
 output "sharepoint_sync_lambda_arn" {
   description = "ARN of the SharePoint sync Lambda function"
-  value       = var.enable_workspaces ? module.sharepoint_sync_lambda[0].lambda_function_arn : null
+  value       = try(module.sharepoint_sync_lambda[0].lambda_function_arn, null)
 }
 
 output "sharepoint_scheduler_lambda_name" {
   description = "Name of the SharePoint scheduler Lambda function"
-  value       = var.enable_workspaces ? module.sharepoint_scheduler_lambda[0].lambda_function_name : null
+  value       = try(module.sharepoint_scheduler_lambda[0].lambda_function_name, null)
 }
 
 output "sharepoint_scheduler_lambda_arn" {
   description = "ARN of the SharePoint scheduler Lambda function"
-  value       = var.enable_workspaces ? module.sharepoint_scheduler_lambda[0].lambda_function_arn : null
+  value       = try(module.sharepoint_scheduler_lambda[0].lambda_function_arn, null)
 }

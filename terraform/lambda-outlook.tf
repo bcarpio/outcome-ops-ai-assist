@@ -593,42 +593,42 @@ resource "aws_ssm_parameter" "microsoft_callback_url" {
 
 output "outlook_integration_lambda_name" {
   description = "Name of the Outlook integration Lambda function"
-  value       = var.enable_workspaces ? module.outlook_integration_lambda[0].lambda_function_name : null
+  value       = try(module.outlook_integration_lambda[0].lambda_function_name, null)
 }
 
 output "outlook_integration_lambda_arn" {
   description = "ARN of the Outlook integration Lambda function"
-  value       = var.enable_workspaces ? module.outlook_integration_lambda[0].lambda_function_arn : null
+  value       = try(module.outlook_integration_lambda[0].lambda_function_arn, null)
 }
 
 output "outlook_integration_url" {
   description = "Lambda Function URL for Outlook integration"
-  value       = var.enable_workspaces ? aws_lambda_function_url.outlook_integration[0].function_url : null
+  value       = try(aws_lambda_function_url.outlook_integration[0].function_url, null)
 }
 
 output "outlook_sync_queue_url" {
   description = "SQS queue URL for Outlook sync jobs"
-  value       = var.enable_workspaces ? aws_sqs_queue.outlook_sync[0].url : null
+  value       = try(aws_sqs_queue.outlook_sync[0].url, null)
 }
 
 output "outlook_sync_lambda_name" {
   description = "Name of the Outlook sync Lambda function"
-  value       = var.enable_workspaces ? module.outlook_sync_lambda[0].lambda_function_name : null
+  value       = try(module.outlook_sync_lambda[0].lambda_function_name, null)
 }
 
 output "outlook_sync_lambda_arn" {
   description = "ARN of the Outlook sync Lambda function"
-  value       = var.enable_workspaces ? module.outlook_sync_lambda[0].lambda_function_arn : null
+  value       = try(module.outlook_sync_lambda[0].lambda_function_arn, null)
 }
 
 output "outlook_scheduler_lambda_name" {
   description = "Name of the Outlook scheduler Lambda function"
-  value       = var.enable_workspaces ? module.outlook_scheduler_lambda[0].lambda_function_name : null
+  value       = try(module.outlook_scheduler_lambda[0].lambda_function_name, null)
 }
 
 output "outlook_scheduler_lambda_arn" {
   description = "ARN of the Outlook scheduler Lambda function"
-  value       = var.enable_workspaces ? module.outlook_scheduler_lambda[0].lambda_function_arn : null
+  value       = try(module.outlook_scheduler_lambda[0].lambda_function_arn, null)
 }
 
 # ============================================================================

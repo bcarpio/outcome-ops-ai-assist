@@ -550,40 +550,40 @@ resource "aws_ssm_parameter" "microsoft_onedrive_callback_url" {
 
 output "onedrive_integration_lambda_name" {
   description = "Name of the OneDrive integration Lambda function"
-  value       = var.enable_workspaces ? module.onedrive_integration_lambda[0].lambda_function_name : null
+  value       = try(module.onedrive_integration_lambda[0].lambda_function_name, null)
 }
 
 output "onedrive_integration_lambda_arn" {
   description = "ARN of the OneDrive integration Lambda function"
-  value       = var.enable_workspaces ? module.onedrive_integration_lambda[0].lambda_function_arn : null
+  value       = try(module.onedrive_integration_lambda[0].lambda_function_arn, null)
 }
 
 output "onedrive_integration_url" {
   description = "Lambda Function URL for OneDrive integration"
-  value       = var.enable_workspaces ? aws_lambda_function_url.onedrive_integration[0].function_url : null
+  value       = try(aws_lambda_function_url.onedrive_integration[0].function_url, null)
 }
 
 output "onedrive_sync_queue_url" {
   description = "SQS queue URL for OneDrive sync jobs"
-  value       = var.enable_workspaces ? aws_sqs_queue.onedrive_sync[0].url : null
+  value       = try(aws_sqs_queue.onedrive_sync[0].url, null)
 }
 
 output "onedrive_sync_lambda_name" {
   description = "Name of the OneDrive sync Lambda function"
-  value       = var.enable_workspaces ? module.onedrive_sync_lambda[0].lambda_function_name : null
+  value       = try(module.onedrive_sync_lambda[0].lambda_function_name, null)
 }
 
 output "onedrive_sync_lambda_arn" {
   description = "ARN of the OneDrive sync Lambda function"
-  value       = var.enable_workspaces ? module.onedrive_sync_lambda[0].lambda_function_arn : null
+  value       = try(module.onedrive_sync_lambda[0].lambda_function_arn, null)
 }
 
 output "onedrive_scheduler_lambda_name" {
   description = "Name of the OneDrive scheduler Lambda function"
-  value       = var.enable_workspaces ? module.onedrive_scheduler_lambda[0].lambda_function_name : null
+  value       = try(module.onedrive_scheduler_lambda[0].lambda_function_name, null)
 }
 
 output "onedrive_scheduler_lambda_arn" {
   description = "ARN of the OneDrive scheduler Lambda function"
-  value       = var.enable_workspaces ? module.onedrive_scheduler_lambda[0].lambda_function_arn : null
+  value       = try(module.onedrive_scheduler_lambda[0].lambda_function_arn, null)
 }

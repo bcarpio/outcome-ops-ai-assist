@@ -249,27 +249,27 @@ resource "aws_sqs_queue" "azure_devops_sync_dlq" {
 
 output "azure_devops_integration_lambda_name" {
   description = "Name of the Azure DevOps integration Lambda function"
-  value       = var.enable_workspaces ? module.azure_devops_integration_lambda[0].lambda_function_name : null
+  value       = try(module.azure_devops_integration_lambda[0].lambda_function_name, null)
 }
 
 output "azure_devops_integration_lambda_arn" {
   description = "ARN of the Azure DevOps integration Lambda function"
-  value       = var.enable_workspaces ? module.azure_devops_integration_lambda[0].lambda_function_arn : null
+  value       = try(module.azure_devops_integration_lambda[0].lambda_function_arn, null)
 }
 
 output "azure_devops_integration_url" {
   description = "Lambda Function URL for Azure DevOps integration"
-  value       = var.enable_workspaces ? aws_lambda_function_url.azure_devops_integration[0].function_url : null
+  value       = try(aws_lambda_function_url.azure_devops_integration[0].function_url, null)
 }
 
 output "azure_devops_sync_queue_url" {
   description = "SQS queue URL for Azure DevOps sync jobs"
-  value       = var.enable_workspaces ? aws_sqs_queue.azure_devops_sync[0].url : null
+  value       = try(aws_sqs_queue.azure_devops_sync[0].url, null)
 }
 
 output "azure_devops_sync_queue_arn" {
   description = "SQS queue ARN for Azure DevOps sync jobs (consumed in a subsequent commit)"
-  value       = var.enable_workspaces ? aws_sqs_queue.azure_devops_sync[0].arn : null
+  value       = try(aws_sqs_queue.azure_devops_sync[0].arn, null)
 }
 
 # ============================================================================
@@ -547,20 +547,20 @@ resource "aws_lambda_event_source_mapping" "azure_devops_sync" {
 
 output "azure_devops_sync_lambda_name" {
   description = "Name of the Azure DevOps sync Lambda function"
-  value       = var.enable_workspaces ? module.azure_devops_sync_lambda[0].lambda_function_name : null
+  value       = try(module.azure_devops_sync_lambda[0].lambda_function_name, null)
 }
 
 output "azure_devops_sync_lambda_arn" {
   description = "ARN of the Azure DevOps sync Lambda function"
-  value       = var.enable_workspaces ? module.azure_devops_sync_lambda[0].lambda_function_arn : null
+  value       = try(module.azure_devops_sync_lambda[0].lambda_function_arn, null)
 }
 
 output "azure_devops_scheduler_lambda_name" {
   description = "Name of the Azure DevOps scheduler Lambda function"
-  value       = var.enable_workspaces ? module.azure_devops_scheduler_lambda[0].lambda_function_name : null
+  value       = try(module.azure_devops_scheduler_lambda[0].lambda_function_name, null)
 }
 
 output "azure_devops_scheduler_lambda_arn" {
   description = "ARN of the Azure DevOps scheduler Lambda function"
-  value       = var.enable_workspaces ? module.azure_devops_scheduler_lambda[0].lambda_function_arn : null
+  value       = try(module.azure_devops_scheduler_lambda[0].lambda_function_arn, null)
 }

@@ -459,40 +459,40 @@ resource "aws_lambda_permission" "database_scheduler_eventbridge" {
 
 output "database_integration_lambda_name" {
   description = "Name of the database integration Lambda function"
-  value       = var.enable_workspaces ? module.database_integration_lambda[0].lambda_function_name : null
+  value       = try(module.database_integration_lambda[0].lambda_function_name, null)
 }
 
 output "database_integration_lambda_arn" {
   description = "ARN of the database integration Lambda function"
-  value       = var.enable_workspaces ? module.database_integration_lambda[0].lambda_function_arn : null
+  value       = try(module.database_integration_lambda[0].lambda_function_arn, null)
 }
 
 output "database_integration_url" {
   description = "Lambda Function URL for database integration"
-  value       = var.enable_workspaces ? aws_lambda_function_url.database_integration[0].function_url : null
+  value       = try(aws_lambda_function_url.database_integration[0].function_url, null)
 }
 
 output "database_sync_queue_url" {
   description = "SQS queue URL for database sync jobs"
-  value       = var.enable_workspaces ? aws_sqs_queue.database_sync[0].url : null
+  value       = try(aws_sqs_queue.database_sync[0].url, null)
 }
 
 output "database_sync_lambda_name" {
   description = "Name of the database sync Lambda function"
-  value       = var.enable_workspaces ? module.database_sync_lambda[0].lambda_function_name : null
+  value       = try(module.database_sync_lambda[0].lambda_function_name, null)
 }
 
 output "database_sync_lambda_arn" {
   description = "ARN of the database sync Lambda function"
-  value       = var.enable_workspaces ? module.database_sync_lambda[0].lambda_function_arn : null
+  value       = try(module.database_sync_lambda[0].lambda_function_arn, null)
 }
 
 output "database_scheduler_lambda_name" {
   description = "Name of the database scheduler Lambda function"
-  value       = var.enable_workspaces ? module.database_scheduler_lambda[0].lambda_function_name : null
+  value       = try(module.database_scheduler_lambda[0].lambda_function_name, null)
 }
 
 output "database_scheduler_lambda_arn" {
   description = "ARN of the database scheduler Lambda function"
-  value       = var.enable_workspaces ? module.database_scheduler_lambda[0].lambda_function_arn : null
+  value       = try(module.database_scheduler_lambda[0].lambda_function_arn, null)
 }

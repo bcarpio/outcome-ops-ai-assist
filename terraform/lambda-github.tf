@@ -643,42 +643,42 @@ resource "aws_ssm_parameter" "github_app_slug" {
 
 output "github_integration_lambda_name" {
   description = "Name of the GitHub integration Lambda function"
-  value       = var.enable_workspaces ? module.github_integration_lambda[0].lambda_function_name : null
+  value       = try(module.github_integration_lambda[0].lambda_function_name, null)
 }
 
 output "github_integration_lambda_arn" {
   description = "ARN of the GitHub integration Lambda function"
-  value       = var.enable_workspaces ? module.github_integration_lambda[0].lambda_function_arn : null
+  value       = try(module.github_integration_lambda[0].lambda_function_arn, null)
 }
 
 output "github_integration_url" {
   description = "Lambda Function URL for GitHub integration"
-  value       = var.enable_workspaces ? aws_lambda_function_url.github_integration[0].function_url : null
+  value       = try(aws_lambda_function_url.github_integration[0].function_url, null)
 }
 
 output "github_sync_queue_url" {
   description = "SQS queue URL for GitHub sync jobs"
-  value       = var.enable_workspaces ? aws_sqs_queue.github_sync[0].url : null
+  value       = try(aws_sqs_queue.github_sync[0].url, null)
 }
 
 output "github_sync_lambda_name" {
   description = "Name of the GitHub sync Lambda function"
-  value       = var.enable_workspaces ? module.github_sync_lambda[0].lambda_function_name : null
+  value       = try(module.github_sync_lambda[0].lambda_function_name, null)
 }
 
 output "github_sync_lambda_arn" {
   description = "ARN of the GitHub sync Lambda function"
-  value       = var.enable_workspaces ? module.github_sync_lambda[0].lambda_function_arn : null
+  value       = try(module.github_sync_lambda[0].lambda_function_arn, null)
 }
 
 output "github_scheduler_lambda_name" {
   description = "Name of the GitHub scheduler Lambda function"
-  value       = var.enable_workspaces ? module.github_scheduler_lambda[0].lambda_function_name : null
+  value       = try(module.github_scheduler_lambda[0].lambda_function_name, null)
 }
 
 output "github_scheduler_lambda_arn" {
   description = "ARN of the GitHub scheduler Lambda function"
-  value       = var.enable_workspaces ? module.github_scheduler_lambda[0].lambda_function_arn : null
+  value       = try(module.github_scheduler_lambda[0].lambda_function_arn, null)
 }
 
 # ============================================================================

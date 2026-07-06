@@ -550,40 +550,40 @@ resource "aws_ssm_parameter" "microsoft_teams_callback_url" {
 
 output "teams_integration_lambda_name" {
   description = "Name of the Teams integration Lambda function"
-  value       = var.enable_workspaces ? module.teams_integration_lambda[0].lambda_function_name : null
+  value       = try(module.teams_integration_lambda[0].lambda_function_name, null)
 }
 
 output "teams_integration_lambda_arn" {
   description = "ARN of the Teams integration Lambda function"
-  value       = var.enable_workspaces ? module.teams_integration_lambda[0].lambda_function_arn : null
+  value       = try(module.teams_integration_lambda[0].lambda_function_arn, null)
 }
 
 output "teams_integration_url" {
   description = "Lambda Function URL for Teams integration"
-  value       = var.enable_workspaces ? aws_lambda_function_url.teams_integration[0].function_url : null
+  value       = try(aws_lambda_function_url.teams_integration[0].function_url, null)
 }
 
 output "teams_sync_queue_url" {
   description = "SQS queue URL for Teams sync jobs"
-  value       = var.enable_workspaces ? aws_sqs_queue.teams_sync[0].url : null
+  value       = try(aws_sqs_queue.teams_sync[0].url, null)
 }
 
 output "teams_sync_lambda_name" {
   description = "Name of the Teams sync Lambda function"
-  value       = var.enable_workspaces ? module.teams_sync_lambda[0].lambda_function_name : null
+  value       = try(module.teams_sync_lambda[0].lambda_function_name, null)
 }
 
 output "teams_sync_lambda_arn" {
   description = "ARN of the Teams sync Lambda function"
-  value       = var.enable_workspaces ? module.teams_sync_lambda[0].lambda_function_arn : null
+  value       = try(module.teams_sync_lambda[0].lambda_function_arn, null)
 }
 
 output "teams_scheduler_lambda_name" {
   description = "Name of the Teams scheduler Lambda function"
-  value       = var.enable_workspaces ? module.teams_scheduler_lambda[0].lambda_function_name : null
+  value       = try(module.teams_scheduler_lambda[0].lambda_function_name, null)
 }
 
 output "teams_scheduler_lambda_arn" {
   description = "ARN of the Teams scheduler Lambda function"
-  value       = var.enable_workspaces ? module.teams_scheduler_lambda[0].lambda_function_arn : null
+  value       = try(module.teams_scheduler_lambda[0].lambda_function_arn, null)
 }

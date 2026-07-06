@@ -550,40 +550,40 @@ resource "aws_ssm_parameter" "microsoft_onenote_callback_url" {
 
 output "onenote_integration_lambda_name" {
   description = "Name of the OneNote integration Lambda function"
-  value       = var.enable_workspaces ? module.onenote_integration_lambda[0].lambda_function_name : null
+  value       = try(module.onenote_integration_lambda[0].lambda_function_name, null)
 }
 
 output "onenote_integration_lambda_arn" {
   description = "ARN of the OneNote integration Lambda function"
-  value       = var.enable_workspaces ? module.onenote_integration_lambda[0].lambda_function_arn : null
+  value       = try(module.onenote_integration_lambda[0].lambda_function_arn, null)
 }
 
 output "onenote_integration_url" {
   description = "Lambda Function URL for OneNote integration"
-  value       = var.enable_workspaces ? aws_lambda_function_url.onenote_integration[0].function_url : null
+  value       = try(aws_lambda_function_url.onenote_integration[0].function_url, null)
 }
 
 output "onenote_sync_queue_url" {
   description = "SQS queue URL for OneNote sync jobs"
-  value       = var.enable_workspaces ? aws_sqs_queue.onenote_sync[0].url : null
+  value       = try(aws_sqs_queue.onenote_sync[0].url, null)
 }
 
 output "onenote_sync_lambda_name" {
   description = "Name of the OneNote sync Lambda function"
-  value       = var.enable_workspaces ? module.onenote_sync_lambda[0].lambda_function_name : null
+  value       = try(module.onenote_sync_lambda[0].lambda_function_name, null)
 }
 
 output "onenote_sync_lambda_arn" {
   description = "ARN of the OneNote sync Lambda function"
-  value       = var.enable_workspaces ? module.onenote_sync_lambda[0].lambda_function_arn : null
+  value       = try(module.onenote_sync_lambda[0].lambda_function_arn, null)
 }
 
 output "onenote_scheduler_lambda_name" {
   description = "Name of the OneNote scheduler Lambda function"
-  value       = var.enable_workspaces ? module.onenote_scheduler_lambda[0].lambda_function_name : null
+  value       = try(module.onenote_scheduler_lambda[0].lambda_function_name, null)
 }
 
 output "onenote_scheduler_lambda_arn" {
   description = "ARN of the OneNote scheduler Lambda function"
-  value       = var.enable_workspaces ? module.onenote_scheduler_lambda[0].lambda_function_arn : null
+  value       = try(module.onenote_scheduler_lambda[0].lambda_function_arn, null)
 }
