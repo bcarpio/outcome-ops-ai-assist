@@ -186,8 +186,11 @@ module "confluence_integration_lambda_secondary" {
       APP_NAME              = var.app_name
       WORKSPACES_TABLE      = module.workspaces_table_secondary[0].dynamodb_table_id
       CONFLUENCE_SYNC_QUEUE = aws_sqs_queue.confluence_sync_secondary[0].url
-      AUDIT_TABLE           = module.audit_logs_table_secondary[0].dynamodb_table_id
-      OAUTH_KMS_KEY_ARN     = aws_kms_replica_key.oauth_tokens_secondary[0].arn
+      # chunk 08 (HA parity): mirror primary DELETE_QUEUE so disconnect-
+      # cleanup enqueues delete jobs after failover (silent no-op otherwise).
+      DELETE_QUEUE      = aws_sqs_queue.delete_queue_secondary[0].url
+      AUDIT_TABLE       = module.audit_logs_table_secondary[0].dynamodb_table_id
+      OAUTH_KMS_KEY_ARN = aws_kms_replica_key.oauth_tokens_secondary[0].arn
     },
     local.outcomeops_license_env,
     local.ha_writer_env_secondary,
@@ -223,7 +226,7 @@ module "confluence_integration_lambda_secondary" {
       sqs_send = {
         effect    = "Allow"
         actions   = ["sqs:SendMessage"]
-        resources = [aws_sqs_queue.confluence_sync_secondary[0].arn]
+        resources = [aws_sqs_queue.confluence_sync_secondary[0].arn, aws_sqs_queue.delete_queue_secondary[0].arn]
       }
       dynamodb_audit = {
         effect    = "Allow"
@@ -304,10 +307,13 @@ module "jira_integration_lambda_secondary" {
 
   environment_variables = merge(
     {
-      ENV               = var.environment
-      APP_NAME          = var.app_name
-      WORKSPACES_TABLE  = module.workspaces_table_secondary[0].dynamodb_table_id
-      JIRA_SYNC_QUEUE   = aws_sqs_queue.jira_sync_secondary[0].url
+      ENV              = var.environment
+      APP_NAME         = var.app_name
+      WORKSPACES_TABLE = module.workspaces_table_secondary[0].dynamodb_table_id
+      JIRA_SYNC_QUEUE  = aws_sqs_queue.jira_sync_secondary[0].url
+      # chunk 08 (HA parity): mirror primary DELETE_QUEUE so disconnect-
+      # cleanup enqueues delete jobs after failover (silent no-op otherwise).
+      DELETE_QUEUE      = aws_sqs_queue.delete_queue_secondary[0].url
       AUDIT_TABLE       = module.audit_logs_table_secondary[0].dynamodb_table_id
       OAUTH_KMS_KEY_ARN = aws_kms_replica_key.oauth_tokens_secondary[0].arn
     },
@@ -345,7 +351,7 @@ module "jira_integration_lambda_secondary" {
       sqs_send = {
         effect    = "Allow"
         actions   = ["sqs:SendMessage"]
-        resources = [aws_sqs_queue.jira_sync_secondary[0].arn]
+        resources = [aws_sqs_queue.jira_sync_secondary[0].arn, aws_sqs_queue.delete_queue_secondary[0].arn]
       }
       dynamodb_audit = {
         effect    = "Allow"
@@ -430,8 +436,11 @@ module "outlook_integration_lambda_secondary" {
       APP_NAME           = var.app_name
       WORKSPACES_TABLE   = module.workspaces_table_secondary[0].dynamodb_table_id
       OUTLOOK_SYNC_QUEUE = aws_sqs_queue.outlook_sync_secondary[0].url
-      AUDIT_TABLE        = module.audit_logs_table_secondary[0].dynamodb_table_id
-      OAUTH_KMS_KEY_ARN  = aws_kms_replica_key.oauth_tokens_secondary[0].arn
+      # chunk 08 (HA parity): mirror primary DELETE_QUEUE so disconnect-
+      # cleanup enqueues delete jobs after failover (silent no-op otherwise).
+      DELETE_QUEUE      = aws_sqs_queue.delete_queue_secondary[0].url
+      AUDIT_TABLE       = module.audit_logs_table_secondary[0].dynamodb_table_id
+      OAUTH_KMS_KEY_ARN = aws_kms_replica_key.oauth_tokens_secondary[0].arn
     },
     local.outcomeops_license_env,
     local.ha_writer_env_secondary,
@@ -467,7 +476,7 @@ module "outlook_integration_lambda_secondary" {
       sqs_send = {
         effect    = "Allow"
         actions   = ["sqs:SendMessage"]
-        resources = [aws_sqs_queue.outlook_sync_secondary[0].arn]
+        resources = [aws_sqs_queue.outlook_sync_secondary[0].arn, aws_sqs_queue.delete_queue_secondary[0].arn]
       }
       dynamodb_audit = {
         effect    = "Allow"
@@ -546,10 +555,13 @@ module "teams_integration_lambda_secondary" {
 
   environment_variables = merge(
     {
-      ENV               = var.environment
-      APP_NAME          = var.app_name
-      WORKSPACES_TABLE  = module.workspaces_table_secondary[0].dynamodb_table_id
-      TEAMS_SYNC_QUEUE  = aws_sqs_queue.teams_sync_secondary[0].url
+      ENV              = var.environment
+      APP_NAME         = var.app_name
+      WORKSPACES_TABLE = module.workspaces_table_secondary[0].dynamodb_table_id
+      TEAMS_SYNC_QUEUE = aws_sqs_queue.teams_sync_secondary[0].url
+      # chunk 08 (HA parity): mirror primary DELETE_QUEUE so disconnect-
+      # cleanup enqueues delete jobs after failover (silent no-op otherwise).
+      DELETE_QUEUE      = aws_sqs_queue.delete_queue_secondary[0].url
       AUDIT_TABLE       = module.audit_logs_table_secondary[0].dynamodb_table_id
       OAUTH_KMS_KEY_ARN = aws_kms_replica_key.oauth_tokens_secondary[0].arn
     },
@@ -587,7 +599,7 @@ module "teams_integration_lambda_secondary" {
       sqs_send = {
         effect    = "Allow"
         actions   = ["sqs:SendMessage"]
-        resources = [aws_sqs_queue.teams_sync_secondary[0].arn]
+        resources = [aws_sqs_queue.teams_sync_secondary[0].arn, aws_sqs_queue.delete_queue_secondary[0].arn]
       }
       dynamodb_audit = {
         effect    = "Allow"
@@ -670,8 +682,11 @@ module "sharepoint_integration_lambda_secondary" {
       APP_NAME              = var.app_name
       WORKSPACES_TABLE      = module.workspaces_table_secondary[0].dynamodb_table_id
       SHAREPOINT_SYNC_QUEUE = aws_sqs_queue.sharepoint_sync_secondary[0].url
-      AUDIT_TABLE           = module.audit_logs_table_secondary[0].dynamodb_table_id
-      OAUTH_KMS_KEY_ARN     = aws_kms_replica_key.oauth_tokens_secondary[0].arn
+      # chunk 08 (HA parity): mirror primary DELETE_QUEUE so disconnect-
+      # cleanup enqueues delete jobs after failover (silent no-op otherwise).
+      DELETE_QUEUE      = aws_sqs_queue.delete_queue_secondary[0].url
+      AUDIT_TABLE       = module.audit_logs_table_secondary[0].dynamodb_table_id
+      OAUTH_KMS_KEY_ARN = aws_kms_replica_key.oauth_tokens_secondary[0].arn
     },
     local.outcomeops_license_env,
     local.ha_writer_env_secondary,
@@ -707,7 +722,7 @@ module "sharepoint_integration_lambda_secondary" {
       sqs_send = {
         effect    = "Allow"
         actions   = ["sqs:SendMessage"]
-        resources = [aws_sqs_queue.sharepoint_sync_secondary[0].arn]
+        resources = [aws_sqs_queue.sharepoint_sync_secondary[0].arn, aws_sqs_queue.delete_queue_secondary[0].arn]
       }
       dynamodb_audit = {
         effect    = "Allow"
@@ -790,8 +805,11 @@ module "onedrive_integration_lambda_secondary" {
       APP_NAME            = var.app_name
       WORKSPACES_TABLE    = module.workspaces_table_secondary[0].dynamodb_table_id
       ONEDRIVE_SYNC_QUEUE = aws_sqs_queue.onedrive_sync_secondary[0].url
-      AUDIT_TABLE         = module.audit_logs_table_secondary[0].dynamodb_table_id
-      OAUTH_KMS_KEY_ARN   = aws_kms_replica_key.oauth_tokens_secondary[0].arn
+      # chunk 08 (HA parity): mirror primary DELETE_QUEUE so disconnect-
+      # cleanup enqueues delete jobs after failover (silent no-op otherwise).
+      DELETE_QUEUE      = aws_sqs_queue.delete_queue_secondary[0].url
+      AUDIT_TABLE       = module.audit_logs_table_secondary[0].dynamodb_table_id
+      OAUTH_KMS_KEY_ARN = aws_kms_replica_key.oauth_tokens_secondary[0].arn
     },
     local.outcomeops_license_env,
     local.ha_writer_env_secondary,
@@ -827,7 +845,7 @@ module "onedrive_integration_lambda_secondary" {
       sqs_send = {
         effect    = "Allow"
         actions   = ["sqs:SendMessage"]
-        resources = [aws_sqs_queue.onedrive_sync_secondary[0].arn]
+        resources = [aws_sqs_queue.onedrive_sync_secondary[0].arn, aws_sqs_queue.delete_queue_secondary[0].arn]
       }
       dynamodb_audit = {
         effect    = "Allow"
@@ -910,8 +928,11 @@ module "onenote_integration_lambda_secondary" {
       APP_NAME           = var.app_name
       WORKSPACES_TABLE   = module.workspaces_table_secondary[0].dynamodb_table_id
       ONENOTE_SYNC_QUEUE = aws_sqs_queue.onenote_sync_secondary[0].url
-      AUDIT_TABLE        = module.audit_logs_table_secondary[0].dynamodb_table_id
-      OAUTH_KMS_KEY_ARN  = aws_kms_replica_key.oauth_tokens_secondary[0].arn
+      # chunk 08 (HA parity): mirror primary DELETE_QUEUE so disconnect-
+      # cleanup enqueues delete jobs after failover (silent no-op otherwise).
+      DELETE_QUEUE      = aws_sqs_queue.delete_queue_secondary[0].url
+      AUDIT_TABLE       = module.audit_logs_table_secondary[0].dynamodb_table_id
+      OAUTH_KMS_KEY_ARN = aws_kms_replica_key.oauth_tokens_secondary[0].arn
     },
     local.outcomeops_license_env,
     local.ha_writer_env_secondary,
@@ -947,7 +968,7 @@ module "onenote_integration_lambda_secondary" {
       sqs_send = {
         effect    = "Allow"
         actions   = ["sqs:SendMessage"]
-        resources = [aws_sqs_queue.onenote_sync_secondary[0].arn]
+        resources = [aws_sqs_queue.onenote_sync_secondary[0].arn, aws_sqs_queue.delete_queue_secondary[0].arn]
       }
       dynamodb_audit = {
         effect    = "Allow"
@@ -1034,10 +1055,13 @@ module "database_integration_lambda_secondary" {
 
   environment_variables = merge(
     {
-      ENV                       = var.environment
-      APP_NAME                  = var.app_name
-      WORKSPACES_TABLE          = module.workspaces_table_secondary[0].dynamodb_table_id
-      DATABASE_SYNC_QUEUE       = aws_sqs_queue.database_sync_secondary[0].url
+      ENV                 = var.environment
+      APP_NAME            = var.app_name
+      WORKSPACES_TABLE    = module.workspaces_table_secondary[0].dynamodb_table_id
+      DATABASE_SYNC_QUEUE = aws_sqs_queue.database_sync_secondary[0].url
+      # chunk 08 (HA parity): mirror primary DELETE_QUEUE so disconnect-
+      # cleanup enqueues delete jobs after failover (silent no-op otherwise).
+      DELETE_QUEUE              = aws_sqs_queue.delete_queue_secondary[0].url
       AUDIT_TABLE               = module.audit_logs_table_secondary[0].dynamodb_table_id
       DB_CREDENTIAL_KMS_KEY_ARN = aws_kms_replica_key.db_credentials_secondary[0].arn
     },
@@ -1065,7 +1089,7 @@ module "database_integration_lambda_secondary" {
       sqs_send = {
         effect    = "Allow"
         actions   = ["sqs:SendMessage"]
-        resources = [aws_sqs_queue.database_sync_secondary[0].arn]
+        resources = [aws_sqs_queue.database_sync_secondary[0].arn, aws_sqs_queue.delete_queue_secondary[0].arn]
       }
       dynamodb_audit = {
         effect    = "Allow"

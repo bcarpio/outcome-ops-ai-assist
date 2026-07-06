@@ -422,7 +422,12 @@ module "outlook_sync_lambda_secondary" {
       OAUTH_KMS_KEY_ARN    = aws_kms_replica_key.oauth_tokens_secondary[0].arn
       FILE_INGESTION_QUEUE = aws_sqs_queue.file_ingestion_secondary[0].url
       DELETE_QUEUE         = aws_sqs_queue.delete_queue_secondary[0].url
-      AUDIT_TABLE          = module.audit_logs_table_secondary[0].dynamodb_table_id
+      # chunk 08 (HA parity): mirror primary continuation env. Without
+      # this, the handler's continuation branch logs "not configured for
+      # continuation" and stops, silently truncating large mailbox syncs
+      # in the secondary region post-failover.
+      OUTLOOK_SYNC_QUEUE = aws_sqs_queue.outlook_sync_secondary[0].url
+      AUDIT_TABLE        = module.audit_logs_table_secondary[0].dynamodb_table_id
     },
     local.outcomeops_license_env,
     local.ha_writer_env_secondary,
@@ -467,9 +472,15 @@ module "outlook_sync_lambda_secondary" {
         resources = [aws_sqs_queue.outlook_sync_secondary[0].arn]
       }
       sqs_send = {
-        effect    = "Allow"
-        actions   = ["sqs:SendMessage"]
-        resources = [aws_sqs_queue.file_ingestion_secondary[0].arn, aws_sqs_queue.delete_queue_secondary[0].arn]
+        effect  = "Allow"
+        actions = ["sqs:SendMessage"]
+        # chunk 08 (HA parity): grant continuation SendMessage on OWN queue
+        # so paginated syncs self-requeue after failover.
+        resources = [
+          aws_sqs_queue.file_ingestion_secondary[0].arn,
+          aws_sqs_queue.delete_queue_secondary[0].arn,
+          aws_sqs_queue.outlook_sync_secondary[0].arn,
+        ]
       }
       dynamodb_audit = {
         effect    = "Allow"
@@ -535,7 +546,12 @@ module "teams_sync_lambda_secondary" {
       OAUTH_KMS_KEY_ARN    = aws_kms_replica_key.oauth_tokens_secondary[0].arn
       FILE_INGESTION_QUEUE = aws_sqs_queue.file_ingestion_secondary[0].url
       DELETE_QUEUE         = aws_sqs_queue.delete_queue_secondary[0].url
-      AUDIT_TABLE          = module.audit_logs_table_secondary[0].dynamodb_table_id
+      # chunk 08 (HA parity): mirror primary continuation env. Without
+      # this, the handler's continuation branch logs "not configured for
+      # continuation" and stops -- large syncs silently truncate in the
+      # secondary region post-failover.
+      TEAMS_SYNC_QUEUE = aws_sqs_queue.teams_sync_secondary[0].url
+      AUDIT_TABLE      = module.audit_logs_table_secondary[0].dynamodb_table_id
     },
     local.outcomeops_license_env,
     local.ha_writer_env_secondary,
@@ -580,9 +596,15 @@ module "teams_sync_lambda_secondary" {
         resources = [aws_sqs_queue.teams_sync_secondary[0].arn]
       }
       sqs_send = {
-        effect    = "Allow"
-        actions   = ["sqs:SendMessage"]
-        resources = [aws_sqs_queue.file_ingestion_secondary[0].arn, aws_sqs_queue.delete_queue_secondary[0].arn]
+        effect  = "Allow"
+        actions = ["sqs:SendMessage"]
+        # chunk 08 (HA parity): grant continuation SendMessage on OWN queue
+        # so paginated syncs self-requeue after failover.
+        resources = [
+          aws_sqs_queue.file_ingestion_secondary[0].arn,
+          aws_sqs_queue.delete_queue_secondary[0].arn,
+          aws_sqs_queue.teams_sync_secondary[0].arn,
+        ]
       }
       dynamodb_audit = {
         effect    = "Allow"
@@ -648,7 +670,12 @@ module "sharepoint_sync_lambda_secondary" {
       OAUTH_KMS_KEY_ARN    = aws_kms_replica_key.oauth_tokens_secondary[0].arn
       FILE_INGESTION_QUEUE = aws_sqs_queue.file_ingestion_secondary[0].url
       DELETE_QUEUE         = aws_sqs_queue.delete_queue_secondary[0].url
-      AUDIT_TABLE          = module.audit_logs_table_secondary[0].dynamodb_table_id
+      # chunk 08 (HA parity): mirror primary continuation env. Without
+      # this, the handler's continuation branch logs "not configured for
+      # continuation" and stops -- large syncs silently truncate in the
+      # secondary region post-failover.
+      SHAREPOINT_SYNC_QUEUE = aws_sqs_queue.sharepoint_sync_secondary[0].url
+      AUDIT_TABLE           = module.audit_logs_table_secondary[0].dynamodb_table_id
     },
     local.outcomeops_license_env,
     local.ha_writer_env_secondary,
@@ -693,9 +720,15 @@ module "sharepoint_sync_lambda_secondary" {
         resources = [aws_sqs_queue.sharepoint_sync_secondary[0].arn]
       }
       sqs_send = {
-        effect    = "Allow"
-        actions   = ["sqs:SendMessage"]
-        resources = [aws_sqs_queue.file_ingestion_secondary[0].arn, aws_sqs_queue.delete_queue_secondary[0].arn]
+        effect  = "Allow"
+        actions = ["sqs:SendMessage"]
+        # chunk 08 (HA parity): grant continuation SendMessage on OWN queue
+        # so paginated syncs self-requeue after failover.
+        resources = [
+          aws_sqs_queue.file_ingestion_secondary[0].arn,
+          aws_sqs_queue.delete_queue_secondary[0].arn,
+          aws_sqs_queue.sharepoint_sync_secondary[0].arn,
+        ]
       }
       dynamodb_audit = {
         effect    = "Allow"
@@ -761,7 +794,12 @@ module "onedrive_sync_lambda_secondary" {
       OAUTH_KMS_KEY_ARN    = aws_kms_replica_key.oauth_tokens_secondary[0].arn
       FILE_INGESTION_QUEUE = aws_sqs_queue.file_ingestion_secondary[0].url
       DELETE_QUEUE         = aws_sqs_queue.delete_queue_secondary[0].url
-      AUDIT_TABLE          = module.audit_logs_table_secondary[0].dynamodb_table_id
+      # chunk 08 (HA parity): mirror primary continuation env. Without
+      # this, the handler's continuation branch logs "not configured for
+      # continuation" and stops -- large syncs silently truncate in the
+      # secondary region post-failover.
+      ONEDRIVE_SYNC_QUEUE = aws_sqs_queue.onedrive_sync_secondary[0].url
+      AUDIT_TABLE         = module.audit_logs_table_secondary[0].dynamodb_table_id
     },
     local.outcomeops_license_env,
     local.ha_writer_env_secondary,
@@ -806,9 +844,15 @@ module "onedrive_sync_lambda_secondary" {
         resources = [aws_sqs_queue.onedrive_sync_secondary[0].arn]
       }
       sqs_send = {
-        effect    = "Allow"
-        actions   = ["sqs:SendMessage"]
-        resources = [aws_sqs_queue.file_ingestion_secondary[0].arn, aws_sqs_queue.delete_queue_secondary[0].arn]
+        effect  = "Allow"
+        actions = ["sqs:SendMessage"]
+        # chunk 08 (HA parity): grant continuation SendMessage on OWN queue
+        # so paginated syncs self-requeue after failover.
+        resources = [
+          aws_sqs_queue.file_ingestion_secondary[0].arn,
+          aws_sqs_queue.delete_queue_secondary[0].arn,
+          aws_sqs_queue.onedrive_sync_secondary[0].arn,
+        ]
       }
       dynamodb_audit = {
         effect    = "Allow"
@@ -874,7 +918,12 @@ module "onenote_sync_lambda_secondary" {
       OAUTH_KMS_KEY_ARN    = aws_kms_replica_key.oauth_tokens_secondary[0].arn
       FILE_INGESTION_QUEUE = aws_sqs_queue.file_ingestion_secondary[0].url
       DELETE_QUEUE         = aws_sqs_queue.delete_queue_secondary[0].url
-      AUDIT_TABLE          = module.audit_logs_table_secondary[0].dynamodb_table_id
+      # chunk 08 (HA parity): mirror primary continuation env. Without
+      # this, the handler's continuation branch logs "not configured for
+      # continuation" and stops -- large syncs silently truncate in the
+      # secondary region post-failover.
+      ONENOTE_SYNC_QUEUE = aws_sqs_queue.onenote_sync_secondary[0].url
+      AUDIT_TABLE        = module.audit_logs_table_secondary[0].dynamodb_table_id
     },
     local.outcomeops_license_env,
     local.ha_writer_env_secondary,
@@ -919,9 +968,15 @@ module "onenote_sync_lambda_secondary" {
         resources = [aws_sqs_queue.onenote_sync_secondary[0].arn]
       }
       sqs_send = {
-        effect    = "Allow"
-        actions   = ["sqs:SendMessage"]
-        resources = [aws_sqs_queue.file_ingestion_secondary[0].arn, aws_sqs_queue.delete_queue_secondary[0].arn]
+        effect  = "Allow"
+        actions = ["sqs:SendMessage"]
+        # chunk 08 (HA parity): grant continuation SendMessage on OWN queue
+        # so paginated syncs self-requeue after failover.
+        resources = [
+          aws_sqs_queue.file_ingestion_secondary[0].arn,
+          aws_sqs_queue.delete_queue_secondary[0].arn,
+          aws_sqs_queue.onenote_sync_secondary[0].arn,
+        ]
       }
       dynamodb_audit = {
         effect    = "Allow"
@@ -975,8 +1030,10 @@ module "database_sync_lambda_secondary" {
   role_name     = "${var.environment}-${var.app_name}-database-sync-secondary"
   description   = "Database sync (secondary region)"
   timeout       = 900
-  memory_size   = 1024
-  publish       = true
+  # chunk 08 (HA parity): bumped 1024 -> 2048 to match primary. Introspection
+  # against a large schema was OOMing here post-failover.
+  memory_size = 2048
+  publish     = true
 
   create_package = false
   package_type   = "Image"
@@ -993,8 +1050,14 @@ module "database_sync_lambda_secondary" {
       WORKSPACES_TABLE          = module.workspaces_table_secondary[0].dynamodb_table_id
       DB_CREDENTIAL_KMS_KEY_ARN = aws_kms_replica_key.db_credentials_secondary[0].arn
       FILE_INGESTION_QUEUE      = aws_sqs_queue.file_ingestion_secondary[0].url
-      DELETE_QUEUE              = aws_sqs_queue.delete_queue_secondary[0].url
-      AUDIT_TABLE               = module.audit_logs_table_secondary[0].dynamodb_table_id
+      # chunk 08 (HA parity): mirror primary continuation env
+      # (self-requeue after per-page ingestion) + schema-drift SNS topic.
+      # Without these two, database syncs silently truncate in the
+      # secondary region and drift alerts stop firing post-failover.
+      DATABASE_SYNC_QUEUE      = aws_sqs_queue.database_sync_secondary[0].url
+      DELETE_QUEUE             = aws_sqs_queue.delete_queue_secondary[0].url
+      DATABASE_DRIFT_TOPIC_ARN = length(aws_sns_topic.database_drift_secondary) > 0 ? aws_sns_topic.database_drift_secondary[0].arn : ""
+      AUDIT_TABLE              = module.audit_logs_table_secondary[0].dynamodb_table_id
     },
     local.outcomeops_license_env,
     local.ha_writer_env_secondary,
@@ -1022,14 +1085,28 @@ module "database_sync_lambda_secondary" {
         resources = [aws_sqs_queue.database_sync_secondary[0].arn]
       }
       sqs_send = {
-        effect    = "Allow"
-        actions   = ["sqs:SendMessage"]
-        resources = [aws_sqs_queue.file_ingestion_secondary[0].arn, aws_sqs_queue.delete_queue_secondary[0].arn]
+        effect  = "Allow"
+        actions = ["sqs:SendMessage"]
+        # chunk 08 (HA parity): grant SendMessage on OWN queue for
+        # continuation self-requeue.
+        resources = [
+          aws_sqs_queue.file_ingestion_secondary[0].arn,
+          aws_sqs_queue.database_sync_secondary[0].arn,
+          aws_sqs_queue.delete_queue_secondary[0].arn,
+        ]
       }
       dynamodb_audit = {
         effect    = "Allow"
         actions   = ["dynamodb:PutItem"]
         resources = [module.audit_logs_table_secondary[0].dynamodb_table_arn]
+      }
+      # chunk 08 (HA parity): publish-grant on the secondary drift
+      # topic. Same nonexistent-arn fallback pattern as primary so the
+      # policy stays well-formed when no subscribers are configured.
+      publish_drift = {
+        effect    = "Allow"
+        actions   = ["sns:Publish"]
+        resources = length(aws_sns_topic.database_drift_secondary) > 0 ? [aws_sns_topic.database_drift_secondary[0].arn] : ["arn:aws:sns:*:*:nonexistent"]
       }
     },
     local.outcomeops_license_iam,
@@ -1106,7 +1183,12 @@ module "azure_devops_sync_lambda_secondary" {
       # contaminate the github-shaped consumers' DLQs.
       KB_BUCKET               = module.knowledge_base_bucket_secondary.s3_bucket_id
       AZURE_DEVOPS_SYNC_QUEUE = aws_sqs_queue.azure_devops_sync_secondary[0].url
-      AUDIT_TABLE             = module.audit_logs_table_secondary[0].dynamodb_table_id
+      # chunk 08 (HA parity): mirror primary chunk-08a. Without this env
+      # var + the sqs_send_repo_summaries grant below, ADO syncs in the
+      # secondary region never enqueue repo-summary jobs post-failover,
+      # so code-map + symbol-graph regen silently stops for ADO repos.
+      REPO_SUMMARIES_QUEUE = module.repo_summaries_queue_secondary.queue_url
+      AUDIT_TABLE          = module.audit_logs_table_secondary[0].dynamodb_table_id
     },
     local.outcomeops_license_env,
     local.ha_writer_env_secondary,
@@ -1151,12 +1233,22 @@ module "azure_devops_sync_lambda_secondary" {
         resources = [aws_sqs_queue.azure_devops_sync_secondary[0].arn]
       }
       # chunk 05a: write blobs directly to the secondary-region KB
-      # bucket. Scoped to workspaces/* per the sharepoint-sync
-      # secondary precedent.
+      # bucket. Chunk 08 (HA parity): widened to bucket-root (${bucket}/*)
+      # to match the primary. The old workspaces/* prefix scoping was the
+      # exact anti-pattern CLAUDE.md warns about -- generic-feeling but
+      # silently divergent from primary, invisible until failover.
       s3_kb_write = {
         effect    = "Allow"
         actions   = ["s3:PutObject", "s3:PutObjectAcl"]
-        resources = ["${module.knowledge_base_bucket_secondary.s3_bucket_arn}/workspaces/*"]
+        resources = ["${module.knowledge_base_bucket_secondary.s3_bucket_arn}/*"]
+      }
+      # chunk 08 (HA parity, chunk-08a mirror): grant SendMessage on the
+      # secondary repo-summaries queue so post-failover ADO syncs fan
+      # into the same code-map + symbol-graph pipeline.
+      sqs_send_repo_summaries = {
+        effect    = "Allow"
+        actions   = ["sqs:SendMessage"]
+        resources = [module.repo_summaries_queue_secondary.queue_arn]
       }
       dynamodb_audit = {
         effect    = "Allow"

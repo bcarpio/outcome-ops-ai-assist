@@ -64,3 +64,40 @@ output "database_drift_topic_arn" {
   description = "Database-drift SNS topic ARN; empty string when no subscribers configured."
   value       = length(aws_sns_topic.database_drift) > 0 ? aws_sns_topic.database_drift[0].arn : ""
 }
+
+# ============================================================================
+# Secondary-region drift topic (chunk 08 HA parity)
+#
+# Without this, database-sync in the secondary region has no drift topic
+# to publish to post-failover -- notifications silently stop. Mirrors the
+# same subscribers as the primary so operators see drift alerts regardless
+# of which region is active.
+# ============================================================================
+
+# trivy:ignore:AVD-AWS-0136 -- KMS-encrypted via the AWS-managed alias/aws/sns
+resource "aws_sns_topic" "database_drift_secondary" {
+  count    = length(var.database_drift_notification_emails) > 0 && var.secondary_region != "" ? 1 : 0
+  provider = aws.secondary
+
+  name              = "${var.environment}-${var.app_name}-database-drift"
+  kms_master_key_id = "alias/aws/sns"
+
+  tags = {
+    Environment = var.environment
+    Purpose     = "database-drift-notifications"
+  }
+}
+
+resource "aws_sns_topic_subscription" "database_drift_emails_secondary" {
+  for_each = length(aws_sns_topic.database_drift_secondary) > 0 ? toset(var.database_drift_notification_emails) : toset([])
+  provider = aws.secondary
+
+  topic_arn = aws_sns_topic.database_drift_secondary[0].arn
+  protocol  = "email"
+  endpoint  = each.value
+}
+
+output "database_drift_topic_arn_secondary" {
+  description = "Secondary-region database-drift SNS topic ARN; empty string when no subscribers configured or no secondary region."
+  value       = length(aws_sns_topic.database_drift_secondary) > 0 ? aws_sns_topic.database_drift_secondary[0].arn : ""
+}

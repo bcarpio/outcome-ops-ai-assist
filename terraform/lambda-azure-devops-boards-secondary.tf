@@ -287,6 +287,12 @@ module "azure_devops_boards_sync_lambda_secondary" {
     },
     local.outcomeops_license_iam,
     local.ha_writer_events_iam_secondary,
+    # chunk 08 (HA parity): the env-merge above already includes
+    # local.ha_scheduler_env_secondary (APPCONFIG_APP_ID / etc.), but the
+    # IAM merge was missing local.ha_scheduler_iam_secondary. Result:
+    # is_active_region() got AccessDenied on appconfig:GetLatestConfiguration
+    # at runtime -- the primary merges both (see lambda-azure-devops-boards.tf).
+    local.ha_scheduler_iam_secondary,
   )
 
   tags = { Purpose = "azure-devops-boards-sync" }
