@@ -5407,3 +5407,45 @@ class TestAuditEventDetail:
         with patch.object(handler_module, "AUDIT_TABLE", "test-audit"):
             result = get_audit_event("user@x", "ws-1", "abc")
         assert result["statusCode"] == 403
+
+    @patch("workspace_management_handler._is_workspace_admin", return_value=True)
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_match_on_second_page(self, mock_dynamodb, mock_get_table, mock_admin):
+        """Regression: with the Limit=1 bug, a partition whose first page's
+        newest row wasn't the target request_id returned 404. Now the query
+        walks pages until the filter matches. ADR-013: the final mock page
+        has no LastEvaluatedKey so the mock reflects real pagination."""
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+
+        # Two pages: first empty-after-filter but has LastEvaluatedKey;
+        # second has the matching row and no LastEvaluatedKey.
+        mock_table.query.side_effect = [
+            {"Items": [], "LastEvaluatedKey": {"PK": "WS#ws-1", "SK": "2026-05-01T12:00:00+00:00#other"}},
+            {
+                "Items": [{
+                    "request_id": "target-rid",
+                    "timestamp": "2026-04-15T09:00:00+00:00",
+                    "category": "admin",
+                    "action": "WORKSPACE_UPDATED",
+                    "workspace_id": "ws-1",
+                    "user_email": "brian@example.com",
+                    "source_ip": "203.0.113.7",
+                    "user_agent": "ua",
+                    "details": {"name": "New Name"},
+                }],
+            },
+        ]
+
+        with patch.object(handler_module, "AUDIT_TABLE", "test-audit"):
+            result = get_audit_event("admin@example.com", "ws-1", "target-rid")
+        assert result["statusCode"] == 200
+        body = json.loads(result["body"])
+        assert body["event"]["request_id"] == "target-rid"
+        # Verify the second call carried ExclusiveStartKey (pagination
+        # actually happened, we didn't short-circuit).
+        second_call_kwargs = mock_table.query.call_args_list[1].kwargs
+        assert "ExclusiveStartKey" in second_call_kwargs
+        assert mock_table.query.call_count == 2

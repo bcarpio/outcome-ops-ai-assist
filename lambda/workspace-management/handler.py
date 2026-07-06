@@ -5196,8 +5196,14 @@ def get_audit_event(user_email: str, workspace_id: str, request_id: str) -> Dict
     """Single-event detail fetch for the dashboard drawer.
 
     The audit SK is `<iso_timestamp>#<request_id>`, so we don't have the
-    timestamp from the URL - query the row by PK + ends-with via Query and
-    surface the matching item.
+    timestamp from the URL -- we walk the partition with a FilterExpression
+    on ``request_id`` and early-exit on the first match.
+
+    The prior implementation used ``Limit=1`` combined with the filter,
+    which is a DDB anti-pattern: ``Limit`` is applied BEFORE the filter,
+    so the call read exactly one item and then filtered it, returning
+    404 for every audit event except the partition's oldest row. See
+    plan chunk 03 for the incident context.
     """
     audit_table_name = _get_audit_table()
     if not audit_table_name:
@@ -5211,22 +5217,27 @@ def get_audit_event(user_email: str, workspace_id: str, request_id: str) -> Dict
         if not _is_workspace_admin(ws_table, user_email, workspace_id):
             return _error(403, "Workspace admin access required")
 
-        # SK has the request_id as a suffix; we Query by PK and filter.
-        response = audit_table.query(
-            KeyConditionExpression="PK = :pk",
-            FilterExpression="request_id = :rid",
-            ExpressionAttributeValues={
+        # Walk the partition newest-first (matches list_audit_events'
+        # default ScanIndexForward=False so the drawer's typical
+        # recent-event lookup finds its match on page 1).
+        query_kwargs: Dict[str, Any] = {
+            "KeyConditionExpression": "PK = :pk",
+            "FilterExpression": "request_id = :rid",
+            "ExpressionAttributeValues": {
                 ":pk": f"WS#{workspace_id}",
                 ":rid": request_id,
             },
-            Limit=1,
-        )
-        items = response.get("Items", []) or []
-        if not items:
-            return _error(404, "Audit event not found")
-
-        event = _audit_event_from_item(items[0])
-        return _response(200, {"event": event})
+            "ScanIndexForward": False,
+        }
+        while True:
+            response = audit_table.query(**query_kwargs)
+            items = response.get("Items", []) or []
+            if items:
+                event = _audit_event_from_item(items[0])
+                return _response(200, {"event": event})
+            if "LastEvaluatedKey" not in response:
+                return _error(404, "Audit event not found")
+            query_kwargs["ExclusiveStartKey"] = response["LastEvaluatedKey"]
     except ClientError as e:
         logger.error(f"[workspace-management] Error in audit event detail: {e}", exc_info=True)
         return _error(500, "Failed to get audit event")
