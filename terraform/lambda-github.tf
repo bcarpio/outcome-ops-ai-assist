@@ -43,6 +43,14 @@ module "github_integration_lambda" {
   # Suppress verbose archive output
   quiet_archive_local_exec = true
 
+  # ADR-019: attach OutcomeOps license validator layer so the
+  # ``report_repos_snapshot`` helper the handler imports is available
+  # at cold start (no ImportError fallback that would silently no-op
+  # every connect/disconnect snapshot).
+  layers = [
+    var.outcomeops_license_layer_arn,
+  ]
+
   environment_variables = merge(
     {
       ENV               = var.environment

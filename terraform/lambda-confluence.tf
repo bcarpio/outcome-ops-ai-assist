@@ -43,6 +43,15 @@ module "confluence_integration_lambda" {
   # Suppress verbose archive output
   quiet_archive_local_exec = true
 
+  # ADR-019: attach OutcomeOps license validator layer so the
+  # ``report_repos_snapshot`` helper the handler imports is available
+  # at cold start. Without it, the handler's ImportError guard silently
+  # no-ops every connect/disconnect snapshot and the license server
+  # only catches up on the hourly heartbeat.
+  layers = [
+    var.outcomeops_license_layer_arn,
+  ]
+
   environment_variables = merge(
     {
       ENV                   = var.environment
