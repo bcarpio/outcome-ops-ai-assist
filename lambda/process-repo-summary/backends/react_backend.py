@@ -978,7 +978,7 @@ class ReactBackend(CodeMapBackend):
 
         try:
             request = Request(url, headers=headers)
-            with urlopen(request) as response:
+            with urlopen(request, timeout=30) as response:
                 data = json.loads(response.read().decode("utf-8"))
                 return data.get("default_branch", "main")
         except URLError as e:
@@ -998,7 +998,7 @@ class ReactBackend(CodeMapBackend):
 
         try:
             request = Request(url, headers=headers)
-            with urlopen(request) as response:
+            with urlopen(request, timeout=30) as response:
                 data = json.loads(response.read().decode("utf-8"))
                 return data["commit"]["sha"]
         except URLError as e:
@@ -1019,7 +1019,7 @@ class ReactBackend(CodeMapBackend):
 
         try:
             request = Request(url, headers=headers)
-            with urlopen(request) as response:
+            with urlopen(request, timeout=30) as response:
                 data = json.loads(response.read().decode("utf-8"))
                 files = data.get("files", [])
 

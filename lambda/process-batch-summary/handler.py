@@ -159,7 +159,7 @@ def get_default_branch(repo: str) -> str:
 
     try:
         request = Request(url, headers=headers)
-        with urlopen(request) as response:
+        with urlopen(request, timeout=30) as response:
             data = json.loads(response.read().decode("utf-8"))
             default_branch = data.get("default_branch", "main")
             _default_branch_cache[repo] = default_branch

@@ -324,7 +324,7 @@ class ABAPBackend(CodeMapBackend):
 
         try:
             request = Request(url, headers=headers)
-            with urlopen(request) as response:
+            with urlopen(request, timeout=30) as response:
                 data = json.loads(response.read().decode("utf-8"))
                 default_branch = data.get("default_branch", "main")
                 logger.info(f"Default branch for {repo_project}: {default_branch}")
@@ -346,7 +346,7 @@ class ABAPBackend(CodeMapBackend):
 
         try:
             request = Request(url, headers=headers)
-            with urlopen(request) as response:
+            with urlopen(request, timeout=30) as response:
                 data = json.loads(response.read().decode("utf-8"))
                 return data["commit"]["sha"]
         except URLError as e:
@@ -377,7 +377,7 @@ class ABAPBackend(CodeMapBackend):
 
         try:
             request = Request(url, headers=headers)
-            with urlopen(request) as response:
+            with urlopen(request, timeout=30) as response:
                 data = json.loads(response.read().decode("utf-8"))
                 files = data.get("files", [])
 

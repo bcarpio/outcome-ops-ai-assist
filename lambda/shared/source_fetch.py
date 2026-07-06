@@ -167,7 +167,7 @@ def _fetch_from_raw_github(
     }
     request = Request(url, headers=headers)
     try:
-        with urlopen(request) as response:
+        with urlopen(request, timeout=30) as response:
             return response.read().decode("utf-8")
     except Exception as e:
         raise SourceFetchError(
