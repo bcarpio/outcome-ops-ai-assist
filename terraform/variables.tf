@@ -297,6 +297,18 @@ variable "enable_bedrock_cooldown" {
   default     = true
 }
 
+variable "code_map_target_shard_tokens" {
+  type        = number
+  description = "Soft cap the code-map splitter (process-repo-summary) aims for when packing files into shards. Default 120000; leaves ~30k tokens of headroom under code_map_max_prompt_tokens for prompt template + merge instructions + output tokens. Tunable without redeploy -- new value picks up on next Lambda cold start."
+  default     = 120000
+}
+
+variable "code_map_max_prompt_tokens" {
+  type        = number
+  description = "Hard ceiling for one Bedrock summarize call. Default 150000 (Bedrock limit is 200K; reserve 50K for output + safety). Consumer (process-batch-summary) reads this so an oversize shard fails loudly rather than triggering the slow K+1 sub-batch path."
+  default     = 150000
+}
+
 # ============================================================================
 # Bedrock Model Configuration
 # ============================================================================

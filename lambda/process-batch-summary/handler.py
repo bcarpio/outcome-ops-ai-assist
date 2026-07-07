@@ -20,7 +20,7 @@ import os
 import sys
 import time
 from datetime import datetime
-from typing import Any, Dict, Iterable, Iterator, List
+from typing import Any, Dict, Iterable, Iterator, List, Optional
 from urllib.request import Request, urlopen
 from urllib.error import URLError
 from urllib.parse import quote
@@ -83,6 +83,21 @@ dynamodb_resource = boto3.resource("dynamodb")
 bedrock_client = boto3.client("bedrock-runtime", config=bedrock_config)
 ssm_client = boto3.client("ssm")
 s3vectors_client = boto3.client("s3vectors")
+
+# Chunk 05: SQS client for merge-message requeue-with-delay. Queue URL
+# comes from CODE_MAPS_QUEUE_URL env var (set by terraform chunk 06).
+# Fallback: if missing, merge handler logs a warning and processes as
+# if shards are complete (worst case: merge fires early and produces
+# a partial merged summary rather than blocking sha-truth advance).
+sqs_client = boto3.client("sqs")
+CODE_MAPS_QUEUE_URL = os.environ.get("CODE_MAPS_QUEUE_URL", "")
+
+# Chunk 05: how many merge-requeue-with-delay attempts before we give
+# up and mark the merge failed. 10 attempts x 60s delay = ~10 minutes
+# of grace for the last shard to land, which is generous even for
+# slow-tokenizing runs.
+_MAX_MERGE_ATTEMPTS = 10
+_MERGE_REQUEUE_DELAY_SECONDS = 60
 
 
 def _get_workspaces_table():
@@ -1435,18 +1450,13 @@ def process_batch_record(record: Dict[str, Any]) -> None:
     # they still process end-to-end via the existing summarize path.
     message_type = batch.get("message_type", "shard")
     if message_type == "merge":
-        # Chunk 05 fills in the actual merge fan-in body. Until then,
-        # the merge message still marks the ledger complete so
-        # try_advance_sha can fire on the LAST message of a sharded
-        # unit (process-repo-summary's expected_count counts N shards
-        # + 1 merge per sharded unit). Skipping the ledger update here
-        # would leave completed_count = expected_count - 1 for every
-        # sharded unit until chunk 05 ships.
-        logger.info(
-            "[merge] chunk 05 pending; marking ledger + skipping "
-            f"summary for {batch.get('parent_storage_key', '<unknown>')}"
-        )
-        _mark_code_map_unit_done(batch, status="ok")
+        # Chunk 05: fan-in merge. Reads N shard summaries by key,
+        # generates one unified summary via Bedrock, stores at parent
+        # vector key. Requeue-with-delay when shards not yet complete.
+        # Marks ledger on the final iteration (success OR max-attempts
+        # give-up); the requeue path does NOT mark so the ledger tracks
+        # the merge as still pending.
+        handle_merge_message(batch)
         return
 
     shard_index = batch.get("shard_index", 0)
@@ -1658,6 +1668,249 @@ def process_batch_record(record: Dict[str, Any]) -> None:
         cooldown_seconds = 10
         logger.info(f"Waiting {cooldown_seconds}s cooldown before next message...")
         time.sleep(cooldown_seconds)
+
+
+# ============================================================================
+# Chunk 05: ledger-driven fan-in merge
+# ============================================================================
+#
+# When a code unit is split into N shards, the splitter (chunk 03) also
+# emits a companion merge message. The merge handler below reads the N
+# shard summaries by their known vector keys, produces one unified
+# summary via a single Bedrock call, and stores it at the parent vector
+# key so downstream retrieval sees a single coherent summary per code
+# unit -- not N partial ones.
+#
+# Merge messages may arrive before all shard summaries have landed
+# (SQS delivery order is best-effort). The handler handles that by
+# requeue-with-delay up to _MAX_MERGE_ATTEMPTS. If shards still haven't
+# landed after the max attempts, the merge marks the ledger failed and
+# gives up; the per-shard summaries still exist at their shard keys, so
+# retrieval degrades gracefully to per-shard hits.
+# ============================================================================
+
+
+def _shard_vector_key(
+    workspace_id: Optional[str],
+    provider: str,
+    repo: str,
+    doc_type: str,
+    parent_group_name: str,
+    shard_index: int,
+) -> str:
+    """Compute the vector key for a single shard summary. Must match
+    the key shape that ``store_batch_summary`` writes when it receives
+    a shard message (which uses the shard-suffixed group_name that
+    ``send_code_units_to_sqs`` set on the shard message)."""
+    shard_group_name = f"{parent_group_name}#shard-{shard_index:02d}"
+    if workspace_id:
+        return f"{workspace_id}#{provider}#{repo}#{doc_type}#{shard_group_name}"
+    return f"{repo}#{doc_type}#{shard_group_name}"
+
+
+def _fetch_shard_summaries(shard_keys: List[str]) -> List[Dict[str, Any]]:
+    """Fetch shard summaries from S3 Vectors by known key. Returns a
+    list of {content, file_count, key} dicts for shards that have
+    landed. Missing shards are silently dropped -- caller compares
+    len(returned) to shard_count to decide whether to merge or requeue.
+    """
+    if not shard_keys:
+        return []
+    try:
+        response = s3vectors_client.get_vectors(
+            vectorBucketName=VECTOR_BUCKET,
+            indexName=VECTOR_INDEX,
+            keys=shard_keys,
+            returnMetadata=True,
+        )
+    except ClientError as e:
+        logger.warning(f"[merge] get_vectors failed: {e}")
+        return []
+    shards = []
+    for vector in response.get("vectors", []):
+        metadata = vector.get("metadata", {})
+        content = metadata.get("content", "")
+        if not content:
+            continue
+        try:
+            file_count = int(metadata.get("file_count", "0"))
+        except (TypeError, ValueError):
+            file_count = 0
+        shards.append({
+            "content": content,
+            "file_count": file_count,
+            "key": vector.get("key", ""),
+        })
+    return shards
+
+
+def _build_merge_prompt(
+    shard_summaries: List[Dict[str, Any]],
+    parent_group_name: str,
+    batch_type: str,
+    repo: str,
+) -> str:
+    """Prompt Bedrock to unify N shard summaries into one coherent
+    summary of the whole code unit. Preserves the shard-specific
+    details (function names, file paths) while removing duplication
+    and framing the unit as a single view."""
+    numbered = "\n\n".join(
+        f"[Shard {i + 1} of {len(shard_summaries)}]\n{s['content']}"
+        for i, s in enumerate(shard_summaries)
+    )
+    return (
+        f"The following are {len(shard_summaries)} partial summaries of "
+        f"the {parent_group_name} {batch_type} in {repo}. Each covers a "
+        f"disjoint subset of the code unit's files. Produce ONE unified "
+        f"summary that:\n\n"
+        "1. Captures the overall purpose and structure the shards "
+        "collectively describe.\n"
+        "2. Preserves the specific function names, file paths, and key "
+        "relationships from each shard -- do not paraphrase away the "
+        "concrete anchors.\n"
+        "3. Removes duplication where multiple shards described the "
+        "same convention or pattern.\n"
+        "4. Reads as if authored from a single view of the whole code "
+        "unit, not as concatenated fragments.\n\n"
+        f"{numbered}\n\n"
+        "Unified summary:"
+    )
+
+
+def _requeue_merge_with_delay(batch: Dict[str, Any], merge_attempt: int) -> bool:
+    """Send the merge message back to CODE_MAPS_QUEUE with a delay so
+    shard summaries have time to land. Returns True on success. Used
+    when the merge handler finds fewer than shard_count summaries."""
+    if not CODE_MAPS_QUEUE_URL:
+        logger.warning(
+            "[merge] CODE_MAPS_QUEUE_URL not configured; cannot requeue"
+        )
+        return False
+    requeued = dict(batch)
+    requeued["merge_attempt"] = merge_attempt
+    try:
+        sqs_client.send_message(
+            QueueUrl=CODE_MAPS_QUEUE_URL,
+            MessageBody=json.dumps(requeued),
+            DelaySeconds=_MERGE_REQUEUE_DELAY_SECONDS,
+        )
+        return True
+    except ClientError as e:
+        logger.error(f"[merge] Failed to requeue merge message: {e}")
+        return False
+
+
+def handle_merge_message(batch: Dict[str, Any]) -> None:
+    """Fan-in merge: read N shard summaries, produce one unified
+    summary at the parent vector key.
+
+    Requeue-with-delay when fewer than shard_count summaries have
+    landed. After _MAX_MERGE_ATTEMPTS the merge gives up: per-shard
+    summaries still exist at their shard-suffixed keys, so retrieval
+    degrades to shard-level hits.
+    """
+    parent_group_name = batch.get("parent_group_name") or batch.get("group_name", "")
+    shard_count = int(batch.get("shard_count", 0))
+    workspace_id = batch.get("workspace_id") or ""
+    provider = batch.get("provider", "github")
+    repo = batch["repo"]
+    batch_type = batch["batch_type"]
+    doc_type = f"{batch_type}-summary"
+
+    if shard_count <= 0:
+        logger.warning(
+            f"[merge] shard_count missing or zero on {parent_group_name}; "
+            "nothing to merge -- marking ledger complete"
+        )
+        _mark_code_map_unit_done(batch, status="ok")
+        return
+
+    shard_keys = [
+        _shard_vector_key(
+            workspace_id=workspace_id or None,
+            provider=provider,
+            repo=repo,
+            doc_type=doc_type,
+            parent_group_name=parent_group_name,
+            shard_index=i,
+        )
+        for i in range(shard_count)
+    ]
+    shard_summaries = _fetch_shard_summaries(shard_keys)
+
+    if len(shard_summaries) < shard_count:
+        merge_attempt = int(batch.get("merge_attempt", 0)) + 1
+        missing = shard_count - len(shard_summaries)
+        if merge_attempt >= _MAX_MERGE_ATTEMPTS:
+            logger.error(
+                f"[merge] Merge DLQ'd after {merge_attempt} attempts: "
+                f"{parent_group_name} still missing {missing}/{shard_count} "
+                "shards -- giving up; per-shard summaries remain at their "
+                "shard-suffixed keys"
+            )
+            _mark_code_map_unit_done(
+                batch,
+                status="failed",
+                failure_reason="merge_shards_missing",
+                failure_detail=(
+                    f"still missing {missing}/{shard_count} shards "
+                    f"after {merge_attempt} attempts"
+                ),
+                attempt_count=merge_attempt,
+            )
+            return
+        logger.info(
+            f"[merge] {parent_group_name}: {len(shard_summaries)}/"
+            f"{shard_count} shards ready; requeueing merge with "
+            f"{_MERGE_REQUEUE_DELAY_SECONDS}s delay (attempt {merge_attempt})"
+        )
+        _requeue_merge_with_delay(batch, merge_attempt)
+        # DO NOT mark ledger complete here -- the requeued message will
+        # mark on its final iteration. Marking now would double-count
+        # against expected_count and cause try_advance_sha to fire while
+        # the merge is still pending.
+        return
+
+    # All shards ready -- do the actual merge.
+    logger.info(
+        f"[merge] {parent_group_name}: all {shard_count} shards ready; "
+        "generating unified summary"
+    )
+    prompt = _build_merge_prompt(
+        shard_summaries, parent_group_name, batch_type, repo,
+    )
+    try:
+        merged_summary = _call_bedrock_and_audit(
+            prompt, f"{parent_group_name} (merge of {shard_count} shards)",
+        )
+    except Exception as exc:
+        logger.exception(
+            f"[merge] Bedrock merge call failed for {parent_group_name}: {exc}"
+        )
+        _mark_code_map_unit_done(
+            batch,
+            status="failed",
+            failure_reason="merge_bedrock_failure",
+            failure_detail=str(exc)[:512],
+        )
+        raise
+
+    # Build a merge-scoped batch dict so store_batch_summary writes at
+    # the PARENT vector key (parent_group_name) and reports the union
+    # file count across the shards.
+    merge_batch = dict(batch)
+    merge_batch["group_name"] = parent_group_name
+    merge_batch["file_paths"] = [
+        "*"
+    ] * sum(s["file_count"] for s in shard_summaries)  # sizing hint only
+
+    embedding = generate_embedding(merged_summary)
+    if not store_batch_summary(merge_batch, merged_summary, embedding):
+        raise Exception(
+            f"Failed to store merged summary for {parent_group_name}"
+        )
+
+    _mark_code_map_unit_done(batch, status="ok")
 
 
 def _mark_code_map_unit_done(

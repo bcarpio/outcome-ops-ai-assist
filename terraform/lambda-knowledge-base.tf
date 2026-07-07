@@ -93,6 +93,17 @@ module "process_batch_summary_lambda" {
     # azure-devops-sync wrote (chunk 05a). KB_BUCKET is the same
     # bucket azure-devops-sync writes to.
     KB_BUCKET = module.knowledge_base_bucket.s3_bucket_id
+    # Chunk 05: merge-message requeue-with-delay target. When a merge
+    # message arrives before all shard summaries have landed, the
+    # handler enqueues itself back onto this queue with a delay so
+    # SQS re-delivers once shards are done. Same queue this Lambda
+    # already consumes from (event source mapping below).
+    CODE_MAPS_QUEUE_URL = module.code_maps_queue.queue_url
+    # Chunk 06: token-sizing knobs shared with process-repo-summary.
+    # Change without redeploy by rotating the tfvar; new value picks
+    # up on next Lambda cold start.
+    CODE_MAP_TARGET_SHARD_TOKENS = tostring(var.code_map_target_shard_tokens)
+    CODE_MAP_MAX_PROMPT_TOKENS   = tostring(var.code_map_max_prompt_tokens)
     },
     local.ha_writer_env,
   )
@@ -192,6 +203,20 @@ module "process_batch_summary_lambda" {
         "sqs:ReceiveMessage",
         "sqs:DeleteMessage",
         "sqs:GetQueueAttributes"
+      ]
+      resources = [
+        module.code_maps_queue.queue_arn
+      ]
+    }
+
+    # Chunk 05: merge-message requeue-with-delay writes back to the
+    # same code-maps queue via sqs:SendMessage. Merge messages that
+    # arrive before all shard summaries have landed get re-enqueued
+    # with DelaySeconds so SQS re-delivers when the shards are ready.
+    sqs_send_merge_requeue = {
+      effect = "Allow"
+      actions = [
+        "sqs:SendMessage",
       ]
       resources = [
         module.code_maps_queue.queue_arn
@@ -369,6 +394,11 @@ module "process_repo_summary_lambda" {
       # Wired but not yet imported; chunk 02 lights it up.
       PENDING_WORK_TABLE = module.code_map_pending_work_table.dynamodb_table_id
       FAILED_FILES_TABLE = module.code_map_failed_files_table.dynamodb_table_id
+      # Chunk 06: same token-sizing knobs as process-batch-summary so
+      # the upstream splitter and downstream consumer stay aligned on
+      # "does this fit in one Bedrock call".
+      CODE_MAP_TARGET_SHARD_TOKENS = tostring(var.code_map_target_shard_tokens)
+      CODE_MAP_MAX_PROMPT_TOKENS   = tostring(var.code_map_max_prompt_tokens)
     },
     local.outcomeops_license_env,
     local.ha_writer_env,

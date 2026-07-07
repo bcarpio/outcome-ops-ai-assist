@@ -488,18 +488,16 @@ class TestProcessBatchRecord:
         mock_summary.assert_called_once()
         mock_store.assert_called_once()
 
-    @patch("process_batch_summary_handler._mark_code_map_unit_done")
+    @patch("process_batch_summary_handler.handle_merge_message")
     @patch("process_batch_summary_handler.store_batch_summary")
     @patch("process_batch_summary_handler.generate_embedding")
     @patch("process_batch_summary_handler.generate_batch_summary")
-    def test_process_batch_record_merge_message_stubs_summary_but_marks_ledger(
-        self, mock_summary, mock_embedding, mock_store, mock_mark_done,
+    def test_process_batch_record_merge_message_routes_to_handle_merge(
+        self, mock_summary, mock_embedding, mock_store, mock_handle_merge,
     ):
-        """Chunk 03 emits N shards + 1 merge per sharded unit;
-        process-repo-summary bumps expected_count to N+1. Until chunk
-        05 fills the fan-in body, the merge stub must still call
-        mark_unit_complete or sharded units stall at
-        completed_count = expected_count - 1 forever."""
+        """Chunk 05: process_batch_record delegates merge messages to
+        handle_merge_message; the shard-summary path (Bedrock, embedding,
+        store) is skipped since merge has its own dedicated Bedrock call."""
         record = {
             "body": json.dumps({
                 "message_type": "merge",
@@ -507,6 +505,7 @@ class TestProcessBatchRecord:
                 "repo_project": "o/r",
                 "batch_type": "handler-group",
                 "group_name": "g",
+                "parent_group_name": "g",
                 "file_paths": [],
                 "storage_key": "sk",
                 "parent_storage_key": "sk",
@@ -514,13 +513,11 @@ class TestProcessBatchRecord:
             })
         }
         process_batch_record(record)
-        # No Bedrock / storage work
+        mock_handle_merge.assert_called_once()
+        # Shard-summary path skipped
         mock_summary.assert_not_called()
         mock_embedding.assert_not_called()
         mock_store.assert_not_called()
-        # BUT the ledger closes
-        mock_mark_done.assert_called_once()
-        assert mock_mark_done.call_args.kwargs["status"] == "ok"
 
     @patch("process_batch_summary_handler.store_batch_summary")
     @patch("process_batch_summary_handler.generate_embedding")
@@ -546,6 +543,162 @@ class TestProcessBatchRecord:
         # Act & Assert
         with pytest.raises(Exception, match="Failed to store batch summary"):
             process_batch_record(record)
+
+
+class TestHandleMergeMessage:
+    """Chunk 05 merge fan-in."""
+
+    def _base_batch(self, shard_count=3):
+        return {
+            "message_type": "merge",
+            "repo": "outcome-ops-ai-assist",
+            "repo_project": "bcarpio/outcome-ops-ai-assist",
+            "batch_type": "handler-group",
+            "group_name": "tests",
+            "parent_group_name": "tests",
+            "storage_key": "summary#tests",
+            "parent_storage_key": "summary#tests",
+            "shard_count": shard_count,
+            "workspace_id": "ws-1",
+            "commit_sha": "abc",
+        }
+
+    def _shard_summary(self, index, file_count=10):
+        return {
+            "content": f"partial summary of shard {index}",
+            "file_count": file_count,
+            "key": f"ws-1#github#outcome-ops-ai-assist#handler-group-summary#tests#shard-{index:02d}",
+        }
+
+    def test_shard_vector_key_shape_matches_store_batch_summary(self):
+        """The key the merge handler computes for each shard must
+        match the key store_batch_summary would write when it received
+        that shard message. Otherwise get_vectors will miss."""
+        key = handler_module._shard_vector_key(
+            workspace_id="ws-1", provider="github",
+            repo="outcome-ops-ai-assist", doc_type="handler-group-summary",
+            parent_group_name="tests", shard_index=0,
+        )
+        assert key == "ws-1#github#outcome-ops-ai-assist#handler-group-summary#tests#shard-00"
+
+    def test_shard_vector_key_no_workspace(self):
+        key = handler_module._shard_vector_key(
+            workspace_id=None, provider="github", repo="r",
+            doc_type="ht-summary", parent_group_name="g", shard_index=2,
+        )
+        assert key == "r#ht-summary#g#shard-02"
+
+    @patch("process_batch_summary_handler._mark_code_map_unit_done")
+    @patch("process_batch_summary_handler._call_bedrock_and_audit")
+    @patch("process_batch_summary_handler.generate_embedding")
+    @patch("process_batch_summary_handler.store_batch_summary")
+    @patch("process_batch_summary_handler._fetch_shard_summaries")
+    def test_all_shards_present_generates_merged_summary_at_parent_key(
+        self, mock_fetch, mock_store, mock_embed, mock_bedrock, mock_mark,
+    ):
+        mock_fetch.return_value = [self._shard_summary(i) for i in range(3)]
+        mock_bedrock.return_value = "merged unified summary"
+        mock_embed.return_value = [0.0] * 1024
+        mock_store.return_value = True
+
+        handler_module.handle_merge_message(self._base_batch(shard_count=3))
+
+        # One Bedrock call for the merge
+        mock_bedrock.assert_called_once()
+        # Stored at PARENT group_name (no shard suffix)
+        stored_batch = mock_store.call_args.args[0]
+        assert stored_batch["group_name"] == "tests"
+        # Ledger closes success
+        mock_mark.assert_called_once()
+        assert mock_mark.call_args.kwargs["status"] == "ok"
+
+    @patch("process_batch_summary_handler._mark_code_map_unit_done")
+    @patch("process_batch_summary_handler._requeue_merge_with_delay")
+    @patch("process_batch_summary_handler._fetch_shard_summaries")
+    def test_shards_incomplete_requeues_without_marking_ledger(
+        self, mock_fetch, mock_requeue, mock_mark,
+    ):
+        # Only 1 of 3 shards has landed
+        mock_fetch.return_value = [self._shard_summary(0)]
+        handler_module.handle_merge_message(self._base_batch(shard_count=3))
+
+        mock_requeue.assert_called_once()
+        # merge_attempt starts at 0 in the message; requeue bumps to 1
+        assert mock_requeue.call_args.args[1] == 1
+        # DO NOT mark ledger complete on requeue -- that would double
+        # against expected_count on the next merge attempt
+        mock_mark.assert_not_called()
+
+    @patch("process_batch_summary_handler._mark_code_map_unit_done")
+    @patch("process_batch_summary_handler._requeue_merge_with_delay")
+    @patch("process_batch_summary_handler._fetch_shard_summaries")
+    def test_max_attempts_gives_up_marks_failed_no_requeue(
+        self, mock_fetch, mock_requeue, mock_mark,
+    ):
+        mock_fetch.return_value = [self._shard_summary(0)]  # only 1 of 3
+        batch = self._base_batch(shard_count=3)
+        batch["merge_attempt"] = handler_module._MAX_MERGE_ATTEMPTS - 1
+
+        handler_module.handle_merge_message(batch)
+
+        mock_requeue.assert_not_called()
+        mock_mark.assert_called_once()
+        assert mock_mark.call_args.kwargs["status"] == "failed"
+        assert (
+            "merge_shards_missing"
+            in mock_mark.call_args.kwargs["failure_reason"]
+        )
+
+    @patch("process_batch_summary_handler._mark_code_map_unit_done")
+    def test_zero_shard_count_marks_ledger_and_returns(self, mock_mark):
+        """Defensive: a malformed merge message (shard_count=0) should
+        still close the ledger so sha-truth advance isn't blocked."""
+        batch = self._base_batch(shard_count=0)
+        handler_module.handle_merge_message(batch)
+        mock_mark.assert_called_once()
+        assert mock_mark.call_args.kwargs["status"] == "ok"
+
+
+class TestFetchShardSummaries:
+    def test_empty_input_returns_empty(self):
+        assert handler_module._fetch_shard_summaries([]) == []
+
+    def test_extracts_content_and_file_count(self):
+        mock_client = MagicMock()
+        mock_client.get_vectors.return_value = {
+            "vectors": [
+                {"key": "k1", "metadata": {"content": "shard 1 body", "file_count": "5"}},
+                {"key": "k2", "metadata": {"content": "shard 2 body", "file_count": "3"}},
+            ],
+        }
+        with patch.object(handler_module, "s3vectors_client", mock_client):
+            result = handler_module._fetch_shard_summaries(["k1", "k2"])
+        assert len(result) == 2
+        assert result[0]["file_count"] == 5
+        assert result[1]["content"] == "shard 2 body"
+
+    def test_skips_vectors_with_no_content(self):
+        mock_client = MagicMock()
+        mock_client.get_vectors.return_value = {
+            "vectors": [
+                {"key": "k1", "metadata": {"content": "ok", "file_count": "1"}},
+                {"key": "k2", "metadata": {"file_count": "1"}},  # no content
+            ],
+        }
+        with patch.object(handler_module, "s3vectors_client", mock_client):
+            result = handler_module._fetch_shard_summaries(["k1", "k2"])
+        assert len(result) == 1
+
+    def test_client_error_returns_empty(self):
+        from botocore.exceptions import ClientError
+        mock_client = MagicMock()
+        mock_client.get_vectors.side_effect = ClientError(
+            {"Error": {"Code": "AccessDenied", "Message": "no"}},
+            "GetVectors",
+        )
+        with patch.object(handler_module, "s3vectors_client", mock_client):
+            result = handler_module._fetch_shard_summaries(["k1"])
+        assert result == []
 
 
 class TestSymbolGraphWiring:

@@ -168,6 +168,74 @@ resource "aws_cloudwatch_metric_alarm" "outcome_ops_api_5xx" {
   }
 }
 
+# ----------------------------------------------------------------------------
+# Chunk 06 (code-map splitter): observability for merge fan-in failures.
+#
+# Two failure modes worth alarming on:
+#
+# 1. Merge DLQ'd after max attempts -- means shards never all landed
+#    within the requeue-with-delay window. The Lambda Errors alarm
+#    already covers this Lambda when raises happen, but the max-
+#    attempts give-up path returns clean (marks the ledger failed +
+#    logs error) rather than raising. The Errors alarm doesn't fire on
+#    those; the metric filter below catches them.
+#
+# 2. Splitter drift -- the char/3 token estimator under-sized a shard
+#    and the consumer had to fall back to in-handler sub-batching.
+#    Not fatal but signals the estimator needs tuning.
+# ----------------------------------------------------------------------------
+
+resource "aws_cloudwatch_log_metric_filter" "merge_dlq_give_up" {
+  name           = "${var.environment}-${var.app_name}-merge-dlq-give-up"
+  log_group_name = "/aws/lambda/${var.environment}-${var.app_name}-process-batch-summary"
+  pattern        = "\"Merge DLQ'd after\""
+
+  metric_transformation {
+    name          = "MergeGiveUpCount"
+    namespace     = "OutcomeOps/CodeMap"
+    value         = "1"
+    default_value = "0"
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "merge_dlq_give_up" {
+  alarm_name          = "${var.environment}-${var.app_name}-merge-dlq-give-up"
+  alarm_description   = "Chunk 05 merge fan-in gave up after max requeue attempts -- shard summaries never all landed, sharded code unit lost its unified summary. Per-shard summaries survive at shard-suffixed keys."
+  namespace           = "OutcomeOps/CodeMap"
+  metric_name         = "MergeGiveUpCount"
+  statistic           = "Sum"
+  period              = 900
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+
+  alarm_actions = [module.audit_alerts_sns.topic_arn]
+  ok_actions    = [module.audit_alerts_sns.topic_arn]
+
+  tags = {
+    Purpose = "merge-dlq-give-up-alarm"
+  }
+}
+
+resource "aws_cloudwatch_log_metric_filter" "splitter_drift" {
+  name           = "${var.environment}-${var.app_name}-splitter-drift"
+  log_group_name = "/aws/lambda/${var.environment}-${var.app_name}-process-batch-summary"
+  pattern        = "\"[splitter-drift]\""
+
+  metric_transformation {
+    name          = "SplitterDriftCount"
+    namespace     = "OutcomeOps/CodeMap"
+    value         = "1"
+    default_value = "0"
+  }
+}
+
+# Splitter drift is a warning-level signal; no alarm on it by default.
+# Query CloudWatch metric OutcomeOps/CodeMap/SplitterDriftCount for a
+# dashboard view. Add an alarm here later if the pattern becomes noisy
+# enough to warrant paging.
+
 # UI Fargate service health -- if RunningCount drops below Desired for
 # more than 10 minutes, something has crashed and ECS is not recovering.
 resource "aws_cloudwatch_metric_alarm" "ui_ecs_running_count" {
