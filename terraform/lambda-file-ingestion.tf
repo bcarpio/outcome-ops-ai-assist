@@ -154,6 +154,11 @@ module "file_ingestion_lambda" {
       PENDING_WORK_TABLE = module.code_map_pending_work_table.dynamodb_table_id
       FAILED_FILES_TABLE = module.code_map_failed_files_table.dynamodb_table_id
     },
+    # ServiceNow OAuth env: needed here because process_servicenow_article
+    # and process_servicenow_attachment call refresh_access_token via the
+    # shared/oauth/servicenow module, which reads its instance URL +
+    # client_id + client-secret SSM path from env at module init.
+    local.servicenow_common_env,
     local.outcomeops_license_env,
     local.ha_writer_env,
   )
