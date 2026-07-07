@@ -1010,6 +1010,19 @@ def generate_batch_summary(
     if current_sub:
         sub_batches.append(current_sub)
 
+    # Chunk 04: sub-batching is now a defense-in-depth safety net.
+    # Post-chunk-03 shard messages are pre-sized to fit in one call, so
+    # this branch triggering on a shard indicates the upstream
+    # estimator drifted (e.g., an unusually dense-tokenizing file).
+    # Log loudly so the drift is observable in CloudWatch metrics.
+    shard_count = batch.get("shard_count", 1)
+    if shard_count > 1:
+        logger.warning(
+            f"[splitter-drift] shard message triggered sub-batching: "
+            f"{group_name} ({estimated_tokens} estimated tokens > "
+            f"{MAX_PROMPT_TOKENS} ceiling). Splitter under-sized this "
+            f"shard; investigate token-estimator accuracy."
+        )
     logger.info(
         f"Batch too large ({estimated_tokens} estimated tokens), "
         f"splitting into {len(sub_batches)} sub-batches"
