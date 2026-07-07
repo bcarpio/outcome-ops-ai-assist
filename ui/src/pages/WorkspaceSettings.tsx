@@ -45,6 +45,11 @@ import {
   updateConfluenceSpaces,
   triggerConfluenceSync,
   deleteConfluenceConnection,
+  saveServiceNowSetup,
+  getServiceNowAuthUrl,
+  listServiceNowConnections,
+  syncServiceNowConnection,
+  disconnectServiceNow,
   listJiraConnections,
   getJiraAuthUrl,
   listJiraProjects,
@@ -138,6 +143,7 @@ import {
   type WorkspaceMember,
   type ConfluenceConnection,
   type ConfluenceSpace,
+  type ServiceNowConnection,
   type JiraConnection,
   type JiraProject,
   type AzureDevOpsBoardsConnection,
@@ -229,6 +235,7 @@ export default function WorkspaceSettings() {
     onedrive: true,
     onenote: true,
     database: true,
+    servicenow: true,
   })
 
   useEffect(() => {
@@ -275,6 +282,18 @@ export default function WorkspaceSettings() {
   const [confluenceConnections, setConfluenceConnections] = useState<ConfluenceConnection[]>([])
   const [loadingConnections, setLoadingConnections] = useState(false)
   const [connectingConfluence, setConnectingConfluence] = useState(false)
+
+  // ServiceNow (ADR-044: per-workspace OAuth). Setup form fields live in
+  // component state; not persisted across renders because the callback
+  // navigates the browser away and reloads the workspace.
+  const [servicenowConnections, setServicenowConnections] = useState<ServiceNowConnection[]>([])
+  const [connectingServicenow, setConnectingServicenow] = useState(false)
+  const [showServicenowSetup, setShowServicenowSetup] = useState(false)
+  const [servicenowSetup, setServicenowSetup] = useState<{
+    instance_url: string
+    client_id: string
+    client_secret: string
+  }>({ instance_url: '', client_id: '', client_secret: '' })
 
   // Space configuration modal state
   const [configuringConnection, setConfiguringConnection] = useState<ConfluenceConnection | null>(null)
@@ -610,6 +629,7 @@ export default function WorkspaceSettings() {
       listDatabaseConnections(workspaceId).then(d => ({ ok: true as const, key: 'Database', data: d })).catch(e => ({ ok: false as const, key: 'Database', err: e })),
       listAzureDevOpsBoardsConnections(workspaceId).then(d => ({ ok: true as const, key: 'Boards connections', data: d })).catch(e => ({ ok: false as const, key: 'Boards connections', err: e })),
       listWorkspaceAzureDevOpsBoardsProjects(workspaceId).then(d => ({ ok: true as const, key: 'Boards projects', data: d })).catch(e => ({ ok: false as const, key: 'Boards projects', err: e })),
+      listServiceNowConnections(workspaceId).then(d => ({ ok: true as const, key: 'ServiceNow', data: d })).catch(e => ({ ok: false as const, key: 'ServiceNow', err: e })),
     ] as const)
 
     const setters = [
@@ -617,6 +637,7 @@ export default function WorkspaceSettings() {
       setTeamsConnections, setSharePointConnections, setOneDriveConnections,
       setOneNoteConnections, setDatabaseConnections,
       setAzdoBoardsConnections, setAzdoBoardsProjects,
+      setServicenowConnections,
     ] as const
 
     const failed: string[] = []
@@ -999,6 +1020,56 @@ export default function WorkspaceSettings() {
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to start Confluence connection')
       setConnectingConfluence(false)
+    }
+  }
+
+  // ServiceNow (per-workspace OAuth per ADR-044). Two-step: save creds,
+  // then get authorize URL and redirect.
+  async function handleSaveServiceNowSetup() {
+    if (!workspaceId) return
+    if (!servicenowSetup.instance_url || !servicenowSetup.client_id || !servicenowSetup.client_secret) {
+      setError('ServiceNow: instance URL, client ID, and client secret are all required')
+      return
+    }
+    setConnectingServicenow(true)
+    setError(null)
+    try {
+      const { connection_id } = await saveServiceNowSetup(
+        workspaceId,
+        servicenowSetup.instance_url,
+        servicenowSetup.client_id,
+        servicenowSetup.client_secret,
+      )
+      const authUrl = await getServiceNowAuthUrl(workspaceId, connection_id)
+      window.location.href = authUrl
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save ServiceNow setup')
+      setConnectingServicenow(false)
+    }
+  }
+
+  async function handleSyncServiceNow(connectionId: string) {
+    if (!workspaceId) return
+    setError(null)
+    try {
+      await syncServiceNowConnection(workspaceId, connectionId)
+      const updated = await listServiceNowConnections(workspaceId)
+      setServicenowConnections(updated)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to sync ServiceNow')
+    }
+  }
+
+  async function handleDisconnectServiceNow(connectionId: string) {
+    if (!workspaceId) return
+    if (!confirm('Disconnect this ServiceNow instance? All ingested KB articles will be removed from this workspace.')) return
+    setError(null)
+    try {
+      await disconnectServiceNow(workspaceId, connectionId)
+      const updated = await listServiceNowConnections(workspaceId)
+      setServicenowConnections(updated)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to disconnect ServiceNow')
     }
   }
 
@@ -3184,6 +3255,144 @@ export default function WorkspaceSettings() {
                             >
                               <Trash2 size={16} />
                             </MutationButton>
+                          </div>
+                        )}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            )}
+
+            {/* ServiceNow Section (ADR-044: per-workspace OAuth) */}
+            {enabledIntegrations.servicenow && (
+            <div className="bg-white rounded-lg border shadow-sm">
+              <div className="p-4 border-b flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <svg className="w-6 h-6 text-green-700" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M12 2a10 10 0 100 20 10 10 0 000-20zm0 4a6 6 0 110 12 6 6 0 010-12z"/>
+                  </svg>
+                  <div>
+                    <h3 className="font-medium">ServiceNow Knowledge Base</h3>
+                    <p className="text-sm text-gray-500">Sync published KB articles + attachments from your ServiceNow instance</p>
+                  </div>
+                </div>
+                {isAdmin && servicenowConnections.length === 0 && !showServicenowSetup && (
+                  <MutationButton
+                    onClick={() => setShowServicenowSetup(true)}
+                    className="flex items-center gap-2 px-3 py-1.5 text-sm bg-green-700 text-white rounded-lg hover:bg-green-800 disabled:opacity-50 transition-colors"
+                  >
+                    <Plus size={16} />
+                    Connect
+                  </MutationButton>
+                )}
+              </div>
+              {showServicenowSetup && (
+                <div className="p-4 bg-gray-50 border-b">
+                  <p className="text-sm text-gray-600 mb-3">
+                    Register an OAuth Application Registry entry on your ServiceNow instance,
+                    then paste the details here. Client secret is KMS-encrypted before storage.
+                  </p>
+                  <div className="space-y-3">
+                    <div>
+                      <label className="block text-xs font-medium text-gray-700 mb-1">Instance URL</label>
+                      <input
+                        type="url"
+                        value={servicenowSetup.instance_url}
+                        onChange={(e) => setServicenowSetup(s => ({ ...s, instance_url: e.target.value }))}
+                        placeholder="https://acme.service-now.com"
+                        className="w-full px-3 py-1.5 text-sm border rounded"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-700 mb-1">Client ID</label>
+                      <input
+                        type="text"
+                        value={servicenowSetup.client_id}
+                        onChange={(e) => setServicenowSetup(s => ({ ...s, client_id: e.target.value }))}
+                        className="w-full px-3 py-1.5 text-sm border rounded font-mono"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-700 mb-1">Client Secret</label>
+                      <input
+                        type="password"
+                        value={servicenowSetup.client_secret}
+                        onChange={(e) => setServicenowSetup(s => ({ ...s, client_secret: e.target.value }))}
+                        className="w-full px-3 py-1.5 text-sm border rounded font-mono"
+                      />
+                    </div>
+                    <div className="flex justify-end gap-2 pt-1">
+                      <button
+                        onClick={() => {
+                          setShowServicenowSetup(false)
+                          setServicenowSetup({ instance_url: '', client_id: '', client_secret: '' })
+                        }}
+                        className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 rounded"
+                      >
+                        Cancel
+                      </button>
+                      <MutationButton
+                        onClick={handleSaveServiceNowSetup}
+                        disabled={connectingServicenow}
+                        className="px-3 py-1.5 text-sm bg-green-700 text-white rounded hover:bg-green-800 disabled:opacity-50"
+                      >
+                        {connectingServicenow ? <Loader2 size={14} className="animate-spin" /> : 'Save & Authorize'}
+                      </MutationButton>
+                    </div>
+                  </div>
+                </div>
+              )}
+              {loadingConnections ? (
+                <div className="p-8 flex items-center justify-center">
+                  <Loader2 className="animate-spin text-gray-400" size={24} />
+                </div>
+              ) : servicenowConnections.length === 0 ? (
+                !showServicenowSetup && (
+                  <div className="p-8 text-center text-gray-500">
+                    No ServiceNow connections yet
+                  </div>
+                )
+              ) : (
+                <ul className="divide-y">
+                  {servicenowConnections.map(conn => (
+                    <li key={conn.connection_id} className="p-4">
+                      <div className="flex items-start justify-between">
+                        <div className="flex-1">
+                          <p className="font-medium text-gray-900">{conn.instance_url}</p>
+                          {conn.servicenow_user_login && (
+                            <p className="text-xs text-gray-500 mt-1">
+                              Connected as {conn.servicenow_user_login}
+                            </p>
+                          )}
+                          <p className="text-xs text-gray-400 mt-1">
+                            Status: <span className={
+                              conn.last_sync_status === 'success' ? 'text-green-600' :
+                              conn.last_sync_status === 'failed' ? 'text-red-600' :
+                              conn.last_sync_status === 'in_progress' ? 'text-blue-600' :
+                              conn.last_sync_status === 'reauth_required' ? 'text-amber-600' :
+                              'text-gray-500'
+                            }>{conn.last_sync_status}</span>
+                            {conn.last_sync_error && (
+                              <span className="text-red-600"> — {conn.last_sync_error}</span>
+                            )}
+                          </p>
+                        </div>
+                        {isAdmin && (
+                          <div className="flex items-center gap-2 ml-4">
+                            <button
+                              onClick={() => handleSyncServiceNow(conn.connection_id)}
+                              className="px-3 py-1.5 text-sm text-blue-600 hover:bg-blue-50 rounded"
+                            >
+                              Sync now
+                            </button>
+                            <button
+                              onClick={() => handleDisconnectServiceNow(conn.connection_id)}
+                              className="px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 rounded"
+                            >
+                              Disconnect
+                            </button>
                           </div>
                         )}
                       </div>

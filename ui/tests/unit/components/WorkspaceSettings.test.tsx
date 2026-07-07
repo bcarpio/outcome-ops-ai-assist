@@ -19,6 +19,11 @@ vi.mock('../../../src/lib/api', () => ({
   updateConfluenceSpaces: vi.fn(),
   triggerConfluenceSync: vi.fn(),
   deleteConfluenceConnection: vi.fn(),
+  saveServiceNowSetup: vi.fn(),
+  getServiceNowAuthUrl: vi.fn(),
+  listServiceNowConnections: vi.fn(),
+  syncServiceNowConnection: vi.fn(),
+  disconnectServiceNow: vi.fn(),
   listJiraConnections: vi.fn(),
   getJiraAuthUrl: vi.fn(),
   listJiraProjects: vi.fn(),
@@ -207,6 +212,12 @@ const mockUpdateWorkspacePrivacy = vi.mocked(updateWorkspacePrivacy)
 const mockGetEnabledIntegrations = vi.mocked(getEnabledIntegrations)
 const mockListAzureDevOpsBoardsConnections = vi.mocked(listAzureDevOpsBoardsConnections)
 const mockListWorkspaceAzureDevOpsBoardsProjects = vi.mocked(listWorkspaceAzureDevOpsBoardsProjects)
+// ServiceNow -- chunk 06 UI. Import lazily via dynamic access so a stale
+// snapshot doesn't require importing them into every test file.
+import { listServiceNowConnections, saveServiceNowSetup, getServiceNowAuthUrl } from '../../../src/lib/api'
+const mockListServiceNowConnections = vi.mocked(listServiceNowConnections)
+const mockSaveServiceNowSetup = vi.mocked(saveServiceNowSetup)
+const mockGetServiceNowAuthUrl = vi.mocked(getServiceNowAuthUrl)
 
 function setupDefaultMocks() {
   const ws = createWorkspace({ workspace_id: 'ws-1', name: 'Test WS', role: 'workspace_admin' })
@@ -227,6 +238,7 @@ function setupDefaultMocks() {
   mockListDatabaseConnections.mockResolvedValue([])
   mockListAzureDevOpsBoardsConnections.mockResolvedValue([])
   mockListWorkspaceAzureDevOpsBoardsProjects.mockResolvedValue([])
+  mockListServiceNowConnections.mockResolvedValue([])
   mockGetEnabledIntegrations.mockResolvedValue({
     azure_devops: true,
     azure_devops_boards: true,
@@ -240,6 +252,11 @@ function setupDefaultMocks() {
     onedrive: true,
     onenote: true,
     database: true,
+    // ServiceNow disabled by default so existing tests that grep for
+    // `/connect/i` don't accidentally match the ServiceNow Connect
+    // button. Tests exercising the ServiceNow section explicitly
+    // flip this to true.
+    servicenow: false,
   })
   mockGetWorkspacePrivacy.mockResolvedValue({
     workspace_id: 'ws-1',
@@ -2192,6 +2209,81 @@ describe('WorkspaceSettings', () => {
 
     await waitFor(() => {
       expect(mockListOutlookFolders).toHaveBeenCalledWith('ws-1', 'outlook-1')
+    })
+  })
+
+  // ServiceNow section (ADR-044: per-workspace OAuth)
+  describe('ServiceNow', () => {
+    beforeEach(() => {
+      // Flip the flag on for this suite only.
+      mockGetEnabledIntegrations.mockResolvedValue({
+        azure_devops: false,
+        azure_devops_boards: false,
+        github: false,
+        github_issues: false,
+        confluence: false,
+        jira: false,
+        outlook: false,
+        teams: false,
+        sharepoint: false,
+        onedrive: false,
+        onenote: false,
+        database: false,
+        servicenow: true,
+      })
+    })
+
+    it('renders ServiceNow section with a Connect button when no connections exist', async () => {
+      renderSettings('integrations')
+      await waitFor(() => {
+        expect(screen.getByText('ServiceNow Knowledge Base')).toBeInTheDocument()
+      })
+      expect(screen.getByText(/no ServiceNow connections yet/i)).toBeInTheDocument()
+      // Admin sees the Connect button
+      expect(screen.getByRole('button', { name: /connect/i })).toBeInTheDocument()
+    })
+
+    it('opens setup form on Connect click and requires all three fields', async () => {
+      renderSettings('integrations')
+      await waitFor(() => screen.getByText('ServiceNow Knowledge Base'))
+      const user = userEvent.setup()
+      await user.click(screen.getByRole('button', { name: /connect/i }))
+      // Setup form appears
+      expect(screen.getByPlaceholderText(/acme\.service-now\.com/i)).toBeInTheDocument()
+      // Save without filling anything -> validation error
+      await user.click(screen.getByRole('button', { name: /save & authorize/i }))
+      // saveServiceNowSetup should NOT have been called
+      expect(mockSaveServiceNowSetup).not.toHaveBeenCalled()
+    })
+
+    it('submits setup form -> saveServiceNowSetup -> getServiceNowAuthUrl -> redirect', async () => {
+      mockSaveServiceNowSetup.mockResolvedValue({ connection_id: 'conn-abc', next: 'authorize' })
+      mockGetServiceNowAuthUrl.mockResolvedValue('https://acme.service-now.com/oauth_auth.do?state=XYZ')
+      renderSettings('integrations')
+      await waitFor(() => screen.getByText('ServiceNow Knowledge Base'))
+      const user = userEvent.setup()
+      await user.click(screen.getByRole('button', { name: /connect/i }))
+      await user.type(screen.getByPlaceholderText(/acme\.service-now\.com/i), 'https://acme.service-now.com')
+      // Two remaining fields addressed by label text
+      const inputs = screen.getAllByRole('textbox')
+      // First text input is instance URL (already typed); second is client_id
+      await user.type(inputs[inputs.length - 1], 'cid-1')
+      // client_secret is type="password" so getAllByRole('textbox') skips it;
+      // grab by CSS instead.
+      const secretInput = document.querySelector('input[type="password"]') as HTMLInputElement
+      await user.type(secretInput, 'shhh')
+      await user.click(screen.getByRole('button', { name: /save & authorize/i }))
+      await waitFor(() => {
+        expect(mockSaveServiceNowSetup).toHaveBeenCalledWith(
+          'ws-1',
+          'https://acme.service-now.com',
+          'cid-1',
+          'shhh',
+        )
+      })
+      await waitFor(() => {
+        expect(mockGetServiceNowAuthUrl).toHaveBeenCalledWith('ws-1', 'conn-abc')
+      })
     })
   })
 

@@ -48,6 +48,7 @@ const ONENOTE_LAMBDA_URL = process.env.ONENOTE_LAMBDA_URL;
 const DATABASE_LAMBDA_URL = process.env.DATABASE_LAMBDA_URL;
 const AZURE_DEVOPS_LAMBDA_URL = process.env.AZURE_DEVOPS_LAMBDA_URL;
 const AZURE_DEVOPS_BOARDS_LAMBDA_URL = process.env.AZURE_DEVOPS_BOARDS_LAMBDA_URL;
+const SERVICENOW_LAMBDA_URL = process.env.SERVICENOW_LAMBDA_URL;
 const AWS_REGION = process.env.AWS_REGION || "us-west-2";
 const STATIC_DIR = process.env.STATIC_DIR || "/app/static";
 const LOCAL_DEV_MODE = process.env.LOCAL_DEV_MODE === "true";
@@ -280,6 +281,13 @@ async function signedWorkspaceFetch(method, path, options = {}) {
  */
 async function signedConfluenceFetch(method, path, options = {}) {
   return signedFetch(CONFLUENCE_LAMBDA_URL, method, path, options);
+}
+
+/**
+ * Sign and send a request to the ServiceNow Lambda Function URL.
+ */
+async function signedServiceNowFetch(method, path, options = {}) {
+  return signedFetch(SERVICENOW_LAMBDA_URL, method, path, options);
 }
 
 /**
@@ -1172,6 +1180,120 @@ app.post("/api/workspaces/:id/confluence/connections/:connId/sync", (req, res) =
 // Delete Confluence connection
 app.delete("/api/workspaces/:id/confluence/connections/:connId", (req, res) => {
   proxyConfluenceRequest(req, res, "DELETE", `/workspaces/${req.params.id}/confluence/connections/${req.params.connId}`);
+});
+
+// ============================================================================
+// ServiceNow Knowledge Base Integration Routes
+// ============================================================================
+
+// Per-workspace OAuth credentials (ADR-044): the setup form collects
+// instance_url + client_id + client_secret and POSTs them here BEFORE
+// the OAuth authorize redirect. Unlike Atlassian/Microsoft, there is
+// no env-level OAuth app.
+async function proxyServiceNowRequest(req, res, method, path) {
+  if (!SERVICENOW_LAMBDA_URL) {
+    console.log("[proxy] SERVICENOW_LAMBDA_URL not configured - ServiceNow integration disabled");
+    res.status(404).json({ error: "ServiceNow integration not enabled" });
+    return;
+  }
+
+  const user = extractUser(req);
+  console.log(`[proxy] ServiceNow ${method} ${path} for: ${user.email}`);
+
+  try {
+    const options = {
+      extraHeaders: userHeaders(req, user),
+    };
+    if (req.body && Object.keys(req.body).length > 0) {
+      options.body = JSON.stringify(req.body);
+    }
+
+    const response = await signedServiceNowFetch(method, path, options);
+
+    if (response.status === 302) {
+      const location = response.headers.get("location");
+      return res.redirect(location);
+    }
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`[proxy] ServiceNow Lambda error: ${response.status} - ${errorText}`);
+      res.status(response.status).json({ error: errorText || "ServiceNow request failed" });
+      return;
+    }
+
+    const text = await response.text();
+    if (!text) {
+      res.status(response.status).json({});
+      return;
+    }
+    try {
+      const data = JSON.parse(text);
+      res.status(response.status).json(data);
+    } catch {
+      res.status(500).json({ error: "Invalid response from ServiceNow service" });
+    }
+  } catch (error) {
+    console.error(`[proxy] ServiceNow error: ${error.message}`);
+    res.status(500).json({ error: `Failed to process ServiceNow request: ${error.message}` });
+  }
+}
+
+// Setup form
+app.post("/api/workspaces/:id/servicenow/setup", (req, res) => {
+  proxyServiceNowRequest(req, res, "POST", `/workspaces/${req.params.id}/servicenow/setup`);
+});
+
+// Authorize (build OAuth redirect URL)
+app.get("/api/workspaces/:id/servicenow/authorize", (req, res) => {
+  const connectionId = req.query.connection_id;
+  proxyServiceNowRequest(
+    req, res, "GET",
+    `/workspaces/${req.params.id}/servicenow/authorize?connection_id=${encodeURIComponent(connectionId || "")}`,
+  );
+});
+
+// OAuth callback -- POST to Lambda to avoid SigV4 query-string quirks.
+app.get("/api/servicenow/callback", async (req, res) => {
+  const { code, state, error } = req.query;
+  if (error) {
+    return res.redirect(`/workspaces?servicenow_error=${encodeURIComponent(error)}`);
+  }
+  try {
+    const response = await signedServiceNowFetch("POST", "/servicenow/callback", {
+      body: JSON.stringify({ code, state }),
+    });
+    if (response.status === 302) {
+      const location = response.headers.get("location");
+      return res.redirect(location);
+    }
+    const text = await response.text();
+    try {
+      const data = JSON.parse(text);
+      if (data.redirect) return res.redirect(data.redirect);
+      res.status(response.status).json(data);
+    } catch {
+      res.status(response.status).send(text);
+    }
+  } catch (err) {
+    console.error(`[proxy] ServiceNow callback error: ${err.message}`);
+    res.redirect(`/workspaces?servicenow_error=callback_failed`);
+  }
+});
+
+// Connection list
+app.get("/api/workspaces/:id/servicenow/connections", (req, res) => {
+  proxyServiceNowRequest(req, res, "GET", `/workspaces/${req.params.id}/servicenow/connections`);
+});
+
+// Trigger manual sync
+app.post("/api/workspaces/:id/servicenow/connections/:connId/sync", (req, res) => {
+  proxyServiceNowRequest(req, res, "POST", `/workspaces/${req.params.id}/servicenow/connections/${req.params.connId}/sync`);
+});
+
+// Disconnect
+app.delete("/api/workspaces/:id/servicenow/connections/:connId", (req, res) => {
+  proxyServiceNowRequest(req, res, "DELETE", `/workspaces/${req.params.id}/servicenow/connections/${req.params.connId}`);
 });
 
 // ============================================================================

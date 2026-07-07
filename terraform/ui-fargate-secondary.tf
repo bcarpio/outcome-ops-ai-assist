@@ -180,6 +180,10 @@ module "ui_ecs_secondary" {
                 name  = "DATABASE_LAMBDA_URL"
                 value = try(aws_lambda_function_url.database_integration_secondary[0].function_url, "")
               }
+              # SERVICENOW_LAMBDA_URL lands here in chunk 07 alongside the
+              # servicenow_integration_secondary resource. Adding it now
+              # would fail `terraform validate` because the reference has
+              # to resolve at parse time (try() only handles runtime nil).
             ] : [],
             # Scanner secondary lands in chunk 9i; SSM path stays the
             # same so this env var resolves once 9i populates the param.

@@ -666,6 +666,122 @@ export async function deleteConfluenceConnection(workspaceId: string, connection
 }
 
 // ============================================================================
+// ServiceNow Knowledge Base Integration API (ADR-044: per-workspace OAuth)
+// ============================================================================
+
+export interface ServiceNowConnection {
+  connection_id: string
+  workspace_id: string
+  instance_url: string
+  client_id: string
+  last_sync_status: string
+  last_sync_error?: string
+  last_sync_at?: string
+  servicenow_user_login?: string
+  updated_at?: string
+}
+
+/**
+ * Save per-workspace ServiceNow OAuth credentials. Returns the
+ * connection_id + next-step hint. Idempotent per (workspace, instance_url):
+ * a re-submit for the same instance updates the credentials in place.
+ */
+export async function saveServiceNowSetup(
+  workspaceId: string,
+  instanceUrl: string,
+  clientId: string,
+  clientSecret: string,
+): Promise<{ connection_id: string; next: string }> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/servicenow/setup`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      instance_url: instanceUrl,
+      client_id: clientId,
+      client_secret: clientSecret,
+    }),
+  })
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to save setup: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return {
+    connection_id: data?.connection_id as string,
+    next: (data?.next as string) || 'authorize',
+  }
+}
+
+/**
+ * Get ServiceNow OAuth authorize URL for a connection. Requires setup to
+ * have already run (client_secret is per-connection in DDB).
+ */
+export async function getServiceNowAuthUrl(
+  workspaceId: string,
+  connectionId: string,
+): Promise<string> {
+  const response = await fetch(
+    `${API_BASE}/workspaces/${workspaceId}/servicenow/authorize?connection_id=${encodeURIComponent(connectionId)}`,
+  )
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to get authorize URL: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return data?.authorize_url as string
+}
+
+/**
+ * List ServiceNow connections for a workspace.
+ */
+export async function listServiceNowConnections(
+  workspaceId: string,
+): Promise<ServiceNowConnection[]> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/servicenow/connections`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to list connections: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return (data?.connections as ServiceNowConnection[]) || []
+}
+
+/**
+ * Enqueue an immediate ServiceNow sync for a connection.
+ */
+export async function syncServiceNowConnection(
+  workspaceId: string,
+  connectionId: string,
+): Promise<void> {
+  const response = await fetch(
+    `${API_BASE}/workspaces/${workspaceId}/servicenow/connections/${connectionId}/sync`,
+    { method: 'POST' },
+  )
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to trigger sync: ${response.status}`)
+  }
+}
+
+/**
+ * Disconnect a ServiceNow connection (cascade: connection row, token
+ * row, and downstream KB / vector cleanup).
+ */
+export async function disconnectServiceNow(
+  workspaceId: string,
+  connectionId: string,
+): Promise<void> {
+  const response = await fetch(
+    `${API_BASE}/workspaces/${workspaceId}/servicenow/connections/${connectionId}`,
+    { method: 'DELETE' },
+  )
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to disconnect: ${response.status}`)
+  }
+}
+
+// ============================================================================
 // User Search API
 // ============================================================================
 
@@ -3011,6 +3127,7 @@ export type EnabledIntegrations = {
   onedrive: boolean
   onenote: boolean
   database: boolean
+  servicenow: boolean
 }
 
 export async function getEnabledIntegrations(): Promise<EnabledIntegrations> {
