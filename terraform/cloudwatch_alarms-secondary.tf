@@ -23,6 +23,7 @@ locals {
     "${var.environment}-${var.app_name}-database-sync-dlq",
     "${var.environment}-${var.app_name}-azure-devops-sync-dlq",
     "${var.environment}-${var.app_name}-azure-devops-boards-sync-dlq",
+    "${var.environment}-${var.app_name}-servicenow-sync-dlq",
     "${var.environment}-${var.app_name}-file-ingestion-dlq.fifo",
     "${var.environment}-${var.app_name}-delete-dlq",
     "${var.environment}-${var.app_name}-code-maps-dlq",
@@ -52,6 +53,9 @@ locals {
     "${var.environment}-${var.app_name}-database-sync",
     "${var.environment}-${var.app_name}-azure-devops-sync",
     "${var.environment}-${var.app_name}-azure-devops-boards-sync",
+    "${var.environment}-${var.app_name}-servicenow-integration",
+    "${var.environment}-${var.app_name}-servicenow-sync",
+    "${var.environment}-${var.app_name}-servicenow-scheduler",
   ]
 }
 
