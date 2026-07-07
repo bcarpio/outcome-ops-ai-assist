@@ -48,9 +48,12 @@ WORKDIR /app
 RUN addgroup -g 1001 -S nodejs && \
     adduser -S nodejs -u 1001
 
-# Copy server code and dependencies
+# Copy server code and dependencies. Ship every top-level .js in server/
+# so factored-out modules (chunk 13's middleware.js) aren't left behind
+# on a per-file COPY line -- an ERR_MODULE_NOT_FOUND at container start
+# is the exact failure that surfaced when middleware.js was extracted.
 COPY --from=server-builder /app/server/node_modules ./server/node_modules
-COPY server/index.js ./server/
+COPY server/*.js ./server/
 COPY server/package.json ./server/
 
 # Copy built frontend assets
