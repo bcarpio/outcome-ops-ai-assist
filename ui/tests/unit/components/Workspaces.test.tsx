@@ -132,7 +132,7 @@ describe('Workspaces', () => {
     await waitFor(() => expect(mockListWorkspaces).toHaveBeenCalled())
 
     const user = userEvent.setup()
-    await user.click(screen.getByRole('button', { name: /new workspace/i }))
+    await user.click(await screen.findByRole('button', { name: /new workspace/i }))
 
     expect(screen.getByText('Create Workspace')).toBeInTheDocument()
     expect(screen.getByPlaceholderText('My Workspace')).toBeInTheDocument()
@@ -150,7 +150,7 @@ describe('Workspaces', () => {
     await waitFor(() => expect(mockListWorkspaces).toHaveBeenCalled())
 
     const user = userEvent.setup()
-    await user.click(screen.getByRole('button', { name: /new workspace/i }))
+    await user.click(await screen.findByRole('button', { name: /new workspace/i }))
 
     await user.type(screen.getByPlaceholderText('My Workspace'), 'My WS')
     await user.type(
@@ -233,7 +233,7 @@ describe('Workspaces', () => {
     await waitFor(() => expect(mockListWorkspaces).toHaveBeenCalled())
 
     const user = userEvent.setup()
-    await user.click(screen.getByRole('button', { name: /new workspace/i }))
+    await user.click(await screen.findByRole('button', { name: /new workspace/i }))
     expect(screen.getByText('Create Workspace')).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: /cancel/i }))
@@ -262,7 +262,7 @@ describe('Workspaces', () => {
     await waitFor(() => expect(mockListWorkspaces).toHaveBeenCalled())
 
     const user = userEvent.setup()
-    await user.click(screen.getByRole('button', { name: /new workspace/i }))
+    await user.click(await screen.findByRole('button', { name: /new workspace/i }))
     await user.type(screen.getByPlaceholderText('My Workspace'), 'Dup')
     await user.click(screen.getByRole('button', { name: /^create$/i }))
 

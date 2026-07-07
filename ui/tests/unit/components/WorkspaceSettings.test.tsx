@@ -49,6 +49,22 @@ vi.mock('../../../src/lib/api', () => ({
   triggerGitHubSync: vi.fn(),
   updateAzureDevOpsRepo: vi.fn(),
   listAzureDevOpsRepoBranches: vi.fn(),
+  // Chunk 06 added the Azure DevOps (non-Boards) connection UI to
+  // WorkspaceSettings; the mock was never updated to include those
+  // exports. Locally the `.catch(() => [])` chains hide it, but on
+  // slower CI runners the failed getters leave the page in an
+  // unrendered state and `screen.getByRole("button", /new workspace/i)`
+  // downstream throws TestingLibraryElementError.
+  listAzureDevOpsConnections: vi.fn(),
+  getAzureDevOpsAuthUrl: vi.fn(),
+  listAzureDevOpsOrgs: vi.fn(),
+  listAzureDevOpsProjects: vi.fn(),
+  listAzureDevOpsProjectRepos: vi.fn(),
+  listAzureDevOpsRepos: vi.fn(),
+  addAzureDevOpsRepos: vi.fn(),
+  removeAzureDevOpsRepo: vi.fn(),
+  triggerAzureDevOpsSync: vi.fn(),
+  disconnectAzureDevOps: vi.fn(),
   listTeamsConnections: vi.fn(),
   getTeamsAuthUrl: vi.fn(),
   listTeamsTeams: vi.fn(),
