@@ -358,26 +358,21 @@ app.post("/api/chat", async (req, res) => {
   console.log(`[proxy] User: ${user.email}`);
   console.log(`[proxy] Chat request: ${JSON.stringify(req.body).slice(0, 200)}...`);
 
-  // Chunk 13: abort the upstream fetch when the client disconnects. Without
-  // this, closing the tab mid-stream left the chat Lambda draining tokens
-  // (and billing) to nowhere. The controller is separate from the JSON-proxy
-  // default timeout because the chat stream is intentionally long-lived.
-  const abortController = new AbortController();
-  const onClientClose = () => {
-    if (!abortController.signal.aborted) {
-      console.log("[proxy] Client disconnected, aborting upstream stream");
-      abortController.abort();
-    }
-  };
-  req.on("close", onClientClose);
-
+  // Deliberately NO client-disconnect abort here. The chat Lambda only
+  // persists the assistant reply to DynamoDB AFTER the streaming loop
+  // completes (chat/handler.py save_message() call). Aborting the fetch
+  // on `req.on("close")` would kill the Lambda mid-stream in the exact
+  // scenario the user most wants recovery for -- a browser crash, a
+  // forced OS update, or the tab being closed accidentally. Data-loss
+  // beats the small Bedrock cost of finishing a stream to nowhere; if
+  // wasted-cost becomes material we can add a bounded server-side
+  // timeout or an explicit "Stop generating" button contract later.
   try {
     const body = JSON.stringify({ ...req.body, user });
 
     const response = await signedChatFetch("POST", "/", {
       body,
       extraHeaders: userHeaders(req, user),
-      signal: abortController.signal,
     });
 
     if (!response.ok) {
@@ -400,31 +395,29 @@ app.post("/api/chat", async (req, res) => {
       const { done, value } = await reader.read();
       if (done) break;
       const chunk = decoder.decode(value, { stream: true });
-      res.write(chunk);
+      // If the client dropped mid-stream we'll get a write-after-end
+      // error here. Swallow it and let the Lambda finish + persist.
+      try {
+        res.write(chunk);
+      } catch {
+        // Browser gone; keep reading so the Lambda side runs to
+        // completion and save_message() lands the full answer in DDB.
+      }
     }
 
-    res.end();
+    if (!res.writableEnded) res.end();
     console.log("[proxy] Stream completed");
   } catch (error) {
-    // Client-disconnect abort is expected and quiet -- the noisy error case
-    // is a real upstream failure.
-    if (error.name === "AbortError" && abortController.signal.aborted) {
-      console.log("[proxy] Stream aborted (client disconnect)");
-      if (!res.writableEnded) res.end();
-      return;
-    }
     console.error(`[proxy] Error: ${error.message}`);
 
     // If headers not sent, send error response
     if (!res.headersSent) {
       res.status(500).json({ error: "Failed to process request" });
-    } else {
+    } else if (!res.writableEnded) {
       // If streaming already started, send error as NDJSON
       res.write(JSON.stringify({ type: "error", error: error.message }) + "\n");
       res.end();
     }
-  } finally {
-    req.off("close", onClientClose);
   }
 });
 
