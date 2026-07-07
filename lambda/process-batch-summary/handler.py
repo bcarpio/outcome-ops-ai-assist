@@ -1416,9 +1416,29 @@ def process_batch_record(record: Dict[str, Any]) -> None:
 
     batch = json.loads(record["body"])
 
+    # Chunk 02 schema: messages carry message_type + shard fields.
+    # Old-shape messages (pre-chunk-02 producer or the 10 stuck DLQ
+    # entries from before this migration) default to single-shard --
+    # they still process end-to-end via the existing summarize path.
+    message_type = batch.get("message_type", "shard")
+    if message_type == "merge":
+        # Chunk 05 fills in the merge fan-in body. Until it lands,
+        # merge messages log + return so they get deleted from the
+        # queue without stomping any shard summaries.
+        logger.info(
+            "[merge] chunk 05 pending; dropping merge message for "
+            f"{batch.get('parent_storage_key', '<unknown>')}"
+        )
+        return
+
+    shard_index = batch.get("shard_index", 0)
+    shard_count = batch.get("shard_count", 1)
+    parent_storage_key = batch.get("parent_storage_key") or batch["storage_key"]
+
     logger.info(
         f"Processing {batch['batch_type']} batch: {batch['group_name']} "
-        f"({len(batch['file_paths'])} files)"
+        f"({len(batch['file_paths'])} files) "
+        f"shard={shard_index + 1}/{shard_count} parent={parent_storage_key}"
     )
 
     # Symbol-graph regen context. All three of workspace_id, repo, and

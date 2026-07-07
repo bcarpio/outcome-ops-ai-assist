@@ -463,6 +463,60 @@ class TestProcessBatchRecord:
     @patch("process_batch_summary_handler.store_batch_summary")
     @patch("process_batch_summary_handler.generate_embedding")
     @patch("process_batch_summary_handler.generate_batch_summary")
+    def test_process_batch_record_old_shape_defaults_to_single_shard(
+        self, mock_summary, mock_embedding, mock_store
+    ):
+        """Chunk 02 backwards compat: pre-chunk-02 producer omits
+        message_type + shard fields. Consumer must still process the
+        record end-to-end by defaulting to single-shard."""
+        mock_summary.return_value = "summary"
+        mock_embedding.return_value = [0.0] * 1024
+        mock_store.return_value = True
+
+        record = {
+            "body": json.dumps({
+                "repo": "r",
+                "repo_project": "o/r",
+                "batch_type": "handler-group",
+                "group_name": "g",
+                "file_paths": ["f.py"],
+                "storage_key": "sk",
+                # NO message_type / shard_index / shard_count / parent_storage_key
+            })
+        }
+        process_batch_record(record)
+        mock_summary.assert_called_once()
+        mock_store.assert_called_once()
+
+    @patch("process_batch_summary_handler.store_batch_summary")
+    @patch("process_batch_summary_handler.generate_embedding")
+    @patch("process_batch_summary_handler.generate_batch_summary")
+    def test_process_batch_record_merge_message_is_dropped_before_chunk_05(
+        self, mock_summary, mock_embedding, mock_store
+    ):
+        """Chunk 02 stubs the merge path -- returns early without doing
+        Bedrock work. Chunk 05 fills in the actual merge fan-in body."""
+        record = {
+            "body": json.dumps({
+                "message_type": "merge",
+                "repo": "r",
+                "repo_project": "o/r",
+                "batch_type": "handler-group",
+                "group_name": "g",
+                "file_paths": [],
+                "storage_key": "sk",
+                "parent_storage_key": "sk",
+                "shard_count": 3,
+            })
+        }
+        process_batch_record(record)
+        mock_summary.assert_not_called()
+        mock_embedding.assert_not_called()
+        mock_store.assert_not_called()
+
+    @patch("process_batch_summary_handler.store_batch_summary")
+    @patch("process_batch_summary_handler.generate_embedding")
+    @patch("process_batch_summary_handler.generate_batch_summary")
     def test_process_batch_record_storage_failure(self, mock_summary, mock_embedding, mock_store):
         """Test record processing with storage failure."""
         # Arrange

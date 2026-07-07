@@ -316,6 +316,24 @@ class TestSendCodeUnitsToSqs:
 
     @patch.object(rsh, 'sqs_client')
     @patch.object(rsh, 'CODE_MAPS_QUEUE_URL', 'https://sqs.example.com/queue')
+    def test_message_carries_chunk_02_shard_schema(self, mock_sqs):
+        """Chunk 02: every message carries message_type + shard_index +
+        shard_count + parent_storage_key. Today all messages are
+        single-shard (chunk 03 lands the actual splitter)."""
+        code_units = [
+            {"batch_type": "handler", "group_name": "h1",
+             "file_paths": ["h.py"], "storage_key": "the-key"}
+        ]
+        rsh.send_code_units_to_sqs(code_units, "repo", "owner/repo")
+        body = json.loads(mock_sqs.send_message.call_args.kwargs["MessageBody"])
+        assert body["message_type"] == "shard"
+        assert body["shard_index"] == 0
+        assert body["shard_count"] == 1
+        assert body["parent_storage_key"] == "the-key"
+        assert body["storage_key"] == "the-key"
+
+    @patch.object(rsh, 'sqs_client')
+    @patch.object(rsh, 'CODE_MAPS_QUEUE_URL', 'https://sqs.example.com/queue')
     def test_per_unit_client_error_does_not_abort_batch(self, mock_sqs):
         """plan-git-truth chunk 02b: ClientError on a single code-unit
         dispatch no longer re-raises. The function returns the count

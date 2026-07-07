@@ -914,13 +914,24 @@ def send_code_units_to_sqs(
     sent = 0
     for code_unit in code_units:
         try:
+            # Message schema (chunk 02): every code-map message carries
+            # message_type + shard_index + shard_count +
+            # parent_storage_key so the consumer can route a shard vs. a
+            # merge message. Chunk 03 will start sending shard_count > 1
+            # for oversized units; today all messages are single-shard
+            # so shard_index=0 / shard_count=1 / parent_storage_key
+            # matches storage_key.
             message = {
+                "message_type": "shard",
                 "repo": repo,
                 "repo_project": repo_project,
                 "batch_type": code_unit["batch_type"],
                 "group_name": code_unit["group_name"],
                 "file_paths": code_unit["file_paths"],
                 "storage_key": code_unit["storage_key"],
+                "parent_storage_key": code_unit["storage_key"],
+                "shard_index": 0,
+                "shard_count": 1,
             }
             if workspace_id:
                 message["workspace_id"] = workspace_id
