@@ -188,8 +188,20 @@ variable "enable_onenote_integration" {
 
 variable "enable_servicenow_integration" {
   type        = bool
-  description = "Provision the workspace ServiceNow Knowledge Base integration surface (integration Lambda + Function URL + sync + scheduler + SQS + DLQ). Unlike the other integrations, ServiceNow does NOT share an env-level OAuth app: each customer's ServiceNow instance requires its own Application Registry OAuth app, and the client_id + client_secret + instance_url are collected per-workspace via the UI and stored KMS-encrypted in DDB. See ADR-044. Default false."
+  description = "Provision the workspace ServiceNow Knowledge Base integration surface (integration Lambda + Function URL + sync + scheduler + SQS + DLQ). Requires servicenow_instance_url + servicenow_oauth_client_id populated in tfvars and the /{env}/{app}/oauth/servicenow/client-secret SSM SecureString populated by the operator. Default false."
   default     = false
+}
+
+variable "servicenow_instance_url" {
+  type        = string
+  description = "ServiceNow instance URL (e.g. https://acme.service-now.com). The Application Registry OAuth app must be registered on this instance with a Redirect URL of https://<ui_fqdn>/api/servicenow/callback."
+  default     = ""
+}
+
+variable "servicenow_oauth_client_id" {
+  type        = string
+  description = "OAuth Client ID from the ServiceNow Application Registry entry. Public value, safe in tfvars."
+  default     = ""
 }
 
 variable "enable_database_integration" {

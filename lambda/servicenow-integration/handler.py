@@ -1,18 +1,14 @@
 """
 ServiceNow Integration Lambda for OutcomeOps AI Assist.
 
-Handles per-workspace OAuth setup + connection lifecycle for ServiceNow
-Knowledge Base ingestion. ADR-044 covers the "per-workspace OAuth" deviation:
-each customer's ServiceNow instance requires its own Application Registry
-OAuth app, so instance_url + client_id + client_secret are collected via
-the UI at setup time and stored on DDB (client_secret KMS-encrypted).
+Handles OAuth authorize/callback + connection lifecycle for the deploy's
+configured ServiceNow instance. One OAuth app per deploy: instance URL +
+client_id come from tfvars (env vars on this Lambda) and client_secret
+comes from ``/{env}/{app}/oauth/servicenow/client-secret`` SSM SecureString.
 
-API surface (matches ../app.retrieveit.ai/lambda/servicenow-integration/
-handler.py but scoped to what OutcomeOps exposes -- SigV4-authenticated
-Function URL, x-user-email header for the caller):
+API surface:
 
-    POST   /workspaces/{ws}/servicenow/setup
-    GET    /workspaces/{ws}/servicenow/authorize?connection_id={id}
+    GET    /workspaces/{ws}/servicenow/authorize
     GET    /servicenow/callback              (no workspace auth; state-signed)
     GET    /workspaces/{ws}/servicenow/connections
     POST   /workspaces/{ws}/servicenow/connections/{id}/sync
@@ -24,17 +20,14 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 import secrets
 import sys
-import urllib.parse
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 import boto3
 
-# Make shared/ importable; deploy package bundles lambda/shared/ at zip root.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared import dual_write  # noqa: E402
 from shared.audit_writer import (  # noqa: E402
@@ -53,9 +46,6 @@ from shared.servicenow_api import (  # noqa: E402
     get_current_user,
 )
 
-# ADR-019: license validator layer is the source of truth for repo/source
-# limits. Wrap the import so a missing layer doesn't hard-fail cold start;
-# the heartbeat scheduler backs us up.
 try:
     from outcomeops_license import report_repos_snapshot  # noqa: E402
 except ImportError:  # pragma: no cover
@@ -73,12 +63,6 @@ SERVICENOW_SYNC_QUEUE = os.environ.get("SERVICENOW_SYNC_QUEUE")
 DELETE_QUEUE = os.environ.get("DELETE_QUEUE")
 SERVICENOW_STATE_TTL_SECONDS = int(os.environ.get("SERVICENOW_STATE_TTL_SECONDS", "600"))
 SERVICENOW_CALLBACK_URL = os.environ.get("SERVICENOW_CALLBACK_URL", "")
-
-
-# Instance URL validation. .service-now.com is the standard host; some legacy
-# customers have .servicenow.com without the hyphen -- we warn but accept.
-_INSTANCE_URL_STRICT = re.compile(r"^https://[a-z0-9][a-z0-9-]*\.service-now\.com/?$", re.I)
-_INSTANCE_URL_LEGACY = re.compile(r"^https://[a-z0-9][a-z0-9-]*\.servicenow\.com/?$", re.I)
 
 
 _dynamodb = None
@@ -151,7 +135,6 @@ def _is_workspace_admin(table, user_email: str, workspace_id: str) -> bool:
     m = _get_membership(table, user_email, workspace_id)
     if m and m.get("role") == "workspace_admin":
         return True
-    # Org admins pass too.
     org = table.get_item(
         Key={"PK": f"USER#{user_email}", "SK": "ORG_MEMBER"}
     ).get("Item")
@@ -164,7 +147,9 @@ def _is_workspace_admin(table, user_email: str, workspace_id: str) -> bool:
 
 
 def _put_oauth_state(state: str, payload: Dict[str, Any]) -> None:
-    ttl_epoch = int((datetime.now(timezone.utc) + timedelta(seconds=SERVICENOW_STATE_TTL_SECONDS)).timestamp())
+    ttl_epoch = int(
+        (datetime.now(timezone.utc) + timedelta(seconds=SERVICENOW_STATE_TTL_SECONDS)).timestamp()
+    )
     _get_dynamodb().Table(WORKSPACES_TABLE).put_item(
         Item={
             "PK": f"SERVICENOW_STATE#{state}",
@@ -183,7 +168,6 @@ def _consume_oauth_state(state: str) -> Optional[Dict[str, Any]]:
     item = resp.get("Item")
     if not item:
         return None
-    # One-shot: delete so a stolen code+state can't be replayed.
     try:
         table.delete_item(Key=key)
     except Exception:
@@ -196,67 +180,27 @@ def _consume_oauth_state(state: str) -> Optional[Dict[str, Any]]:
 # ============================================================================
 
 
-def _normalize_instance_url(url: str) -> Optional[str]:
-    """Return the trimmed instance URL if it matches the accepted shape.
-    None if wholly invalid."""
-    if not url:
-        return None
-    trimmed = url.strip().rstrip("/")
-    if _INSTANCE_URL_STRICT.match(trimmed):
-        return trimmed
-    if _INSTANCE_URL_LEGACY.match(trimmed):
-        logger.warning(f"Accepting legacy servicenow.com host: {trimmed}")
-        return trimmed
-    return None
+def handle_authorize(event: Dict, user_email: str, workspace_id: str) -> Dict:
+    """GET /workspaces/{ws}/servicenow/authorize
 
-
-def handle_setup(event: Dict, body: Dict, user_email: str, workspace_id: str) -> Dict:
-    """POST /workspaces/{ws}/servicenow/setup -- collect + persist the
-    per-workspace OAuth credentials + instance URL.
-
-    Idempotent: re-submitting with the same instance_url overwrites the
-    prior credentials but keeps the same connection_id, so an admin can
-    fix a mistyped client_secret without breaking existing state.
+    Creates a pending connection row (or reuses one waiting for OAuth),
+    generates state, returns the ServiceNow authorize URL. Same UX as
+    Confluence/Jira: workspace admin clicks Connect, the browser lands
+    on the OAuth consent screen without an intermediate form.
     """
     table = _get_dynamodb().Table(WORKSPACES_TABLE)
     if not _is_workspace_admin(table, user_email, workspace_id):
         return _error(403, "Only workspace admins can configure integrations")
 
-    instance_url = _normalize_instance_url(body.get("instance_url") or "")
-    client_id = (body.get("client_id") or "").strip()
-    client_secret = body.get("client_secret") or ""
-    if not instance_url:
-        return _error(400, "instance_url must look like https://<subdomain>.service-now.com")
-    if not client_id:
-        return _error(400, "client_id required")
-    if not client_secret:
-        return _error(400, "client_secret required")
+    if not SERVICENOW_CALLBACK_URL:
+        return _error(500, "SERVICENOW_CALLBACK_URL not configured; deploy needs a domain")
+    try:
+        servicenow_oauth.get_instance_url()
+        servicenow_oauth.get_client_id()
+    except ValueError as e:
+        return _error(500, f"ServiceNow integration not fully configured: {e}")
 
-    # Reuse an existing connection for this workspace + instance_url so
-    # re-setup is idempotent. Query the workspace partition looking for a
-    # match; paginated per chunk 05 (though the count of ServiceNow
-    # connections per workspace is tiny in practice).
-    connection_id = None
-    query_kwargs = {
-        "KeyConditionExpression": "PK = :pk AND begins_with(SK, :sk)",
-        "ExpressionAttributeValues": {
-            ":pk": f"WS#{workspace_id}",
-            ":sk": "SERVICENOW_CONNECTION#",
-        },
-    }
-    while True:
-        page = table.query(**query_kwargs)
-        for item in page.get("Items", []) or []:
-            if item.get("instance_url") == instance_url:
-                connection_id = item.get("connection_id")
-                break
-        if connection_id or "LastEvaluatedKey" not in page:
-            break
-        query_kwargs["ExclusiveStartKey"] = page["LastEvaluatedKey"]
-
-    if not connection_id:
-        connection_id = str(uuid.uuid4())
-
+    connection_id = _find_pending_connection(table, workspace_id) or str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
     dual_write.ddb_put_item(
         WORKSPACES_TABLE,
@@ -268,8 +212,6 @@ def handle_setup(event: Dict, body: Dict, user_email: str, workspace_id: str) ->
             "entity_type": "servicenow_connection",
             "workspace_id": workspace_id,
             "connection_id": connection_id,
-            "instance_url": instance_url,
-            "client_id": client_id,
             "last_sync_status": "needs_oauth",
             "config": {"cursor": None},
             "created_at": now,
@@ -277,32 +219,6 @@ def handle_setup(event: Dict, body: Dict, user_email: str, workspace_id: str) ->
             "created_by": user_email,
         },
     )
-    servicenow_oauth.save_client_secret(connection_id, client_secret)
-
-    return _response(200, {"connection_id": connection_id, "next": "authorize"})
-
-
-def handle_authorize(event: Dict, user_email: str, workspace_id: str) -> Dict:
-    """GET /workspaces/{ws}/servicenow/authorize?connection_id={id}"""
-    table = _get_dynamodb().Table(WORKSPACES_TABLE)
-    if not _is_workspace_admin(table, user_email, workspace_id):
-        return _error(403, "Only workspace admins can configure integrations")
-
-    query = event.get("queryStringParameters") or {}
-    connection_id = query.get("connection_id")
-    if not connection_id:
-        return _error(400, "connection_id required")
-    if not SERVICENOW_CALLBACK_URL:
-        return _error(500, "SERVICENOW_CALLBACK_URL not configured; deploy needs a domain")
-
-    conn = table.get_item(
-        Key={
-            "PK": f"WS#{workspace_id}",
-            "SK": f"SERVICENOW_CONNECTION#{connection_id}",
-        }
-    ).get("Item")
-    if not conn:
-        return _error(404, "connection not found; run /setup first")
 
     state = secrets.token_urlsafe(32)
     _put_oauth_state(
@@ -314,19 +230,36 @@ def handle_authorize(event: Dict, user_email: str, workspace_id: str) -> Dict:
         },
     )
     authorize_url = servicenow_oauth.build_authorize_url(
-        instance_url=conn["instance_url"],
-        client_id=conn["client_id"],
         redirect_uri=SERVICENOW_CALLBACK_URL,
         state=state,
     )
-    return _response(200, {"authorize_url": authorize_url})
+    return _response(200, {"authorize_url": authorize_url, "connection_id": connection_id})
+
+
+def _find_pending_connection(table, workspace_id: str) -> Optional[str]:
+    """Look for an existing needs_oauth row so a retried Connect click
+    reuses the same connection_id."""
+    query_kwargs = {
+        "KeyConditionExpression": "PK = :pk AND begins_with(SK, :sk)",
+        "ExpressionAttributeValues": {
+            ":pk": f"WS#{workspace_id}",
+            ":sk": "SERVICENOW_CONNECTION#",
+        },
+    }
+    while True:
+        page = table.query(**query_kwargs)
+        for item in page.get("Items", []) or []:
+            if item.get("last_sync_status") == "needs_oauth":
+                return item.get("connection_id")
+        if "LastEvaluatedKey" not in page:
+            return None
+        query_kwargs["ExclusiveStartKey"] = page["LastEvaluatedKey"]
 
 
 def handle_callback(event: Dict) -> Dict:
     """GET /servicenow/callback?code=...&state=...
 
-    No workspace_id in path -- state row carries it. Deleted after read
-    so codes can't be replayed.
+    No workspace_id in path -- state row carries it.
     """
     query = event.get("queryStringParameters") or {}
     code = query.get("code")
@@ -345,7 +278,6 @@ def handle_callback(event: Dict) -> Dict:
 
     try:
         access_token, refresh_token, expires_in = servicenow_oauth.exchange_code_for_tokens(
-            workspace_id=workspace_id,
             connection_id=connection_id,
             code=code,
             redirect_uri=SERVICENOW_CALLBACK_URL,
@@ -357,16 +289,9 @@ def handle_callback(event: Dict) -> Dict:
     if refresh_token:
         servicenow_oauth.save_refresh_token(connection_id, refresh_token)
 
-    # Multi-instance guard: capture sys_user identity so a subsequent
-    # reconnect against a different user account is detectable.
-    conn = _get_dynamodb().Table(WORKSPACES_TABLE).get_item(
-        Key={
-            "PK": f"WS#{workspace_id}",
-            "SK": f"SERVICENOW_CONNECTION#{connection_id}",
-        }
-    ).get("Item") or {}
+    instance_url = servicenow_oauth.get_instance_url()
     try:
-        me = get_current_user(conn.get("instance_url", ""), access_token)
+        me = get_current_user(instance_url, access_token)
     except Exception:
         logger.exception("get_current_user failed; continuing without identity capture")
         me = {}
@@ -406,8 +331,6 @@ def handle_callback(event: Dict) -> Dict:
         details={"provider": "servicenow", "connection_id": connection_id},
     )
 
-    # Enqueue an initial sync so the customer sees KB rows appear without
-    # waiting for the next hourly scheduler tick.
     _queue_sync(workspace_id, connection_id)
 
     return _redirect(f"/workspaces/{workspace_id}?tab=integrations&servicenow=connected")
@@ -467,8 +390,6 @@ def delete_connection(user_email: str, workspace_id: str, connection_id: str) ->
     )
     servicenow_oauth.delete_tokens(connection_id)
 
-    # Fan a delete-worker message so KB/vectors under
-    # workspaces/{ws}/servicenow/{conn}/ get purged.
     _get_sqs().send_message(
         QueueUrl=DELETE_QUEUE,
         MessageBody=json.dumps(
@@ -526,11 +447,6 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
 
     parts = _parse_path(path)
 
-    try:
-        body = json.loads(event.get("body") or "{}")
-    except json.JSONDecodeError:
-        body = {}
-
     # /servicenow/callback -- no workspace_id in path, state row carries it.
     if parts == ("servicenow", "callback") and http_method in ("GET", "POST"):
         return handle_callback(event)
@@ -540,20 +456,6 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     if not user_email:
         return _error(401, "User email not provided")
 
-    # POST /workspaces/{ws}/servicenow/setup
-    if (
-        len(parts) == 4
-        and parts[0] == "workspaces"
-        and parts[2] == "servicenow"
-        and parts[3] == "setup"
-        and http_method == "POST"
-    ):
-        try:
-            guard_active("servicenow_setup", user_email=user_email, workspace_id=parts[1])
-        except RegionPassiveError:
-            return passive_response("servicenow_setup")
-        return handle_setup(event, body, user_email, parts[1])
-
     # GET /workspaces/{ws}/servicenow/authorize
     if (
         len(parts) == 4
@@ -562,6 +464,10 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         and parts[3] == "authorize"
         and http_method == "GET"
     ):
+        try:
+            guard_active("servicenow_authorize", user_email=user_email, workspace_id=parts[1])
+        except RegionPassiveError:
+            return passive_response("servicenow_authorize")
         return handle_authorize(event, user_email, parts[1])
 
     # GET /workspaces/{ws}/servicenow/connections

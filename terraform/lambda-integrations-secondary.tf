@@ -1412,6 +1412,7 @@ module "servicenow_integration_lambda_secondary" {
       # set. Empty for early bring-up before a custom domain exists.
       SERVICENOW_CALLBACK_URL = var.domain != "" ? "https://${local.fqdn}/api/servicenow/callback" : ""
     },
+    local.servicenow_common_env,
     local.outcomeops_license_env,
     local.ha_writer_env_secondary,
     local.ha_scheduler_env_secondary,
@@ -1432,6 +1433,14 @@ module "servicenow_integration_lambda_secondary" {
         effect    = "Allow"
         actions   = ["kms:Decrypt"]
         resources = ["arn:aws:kms:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:alias/aws/ssm"]
+      }
+      # ServiceNow client_secret SSM param is replicated into the secondary
+      # region by scripts/ha-sync-secrets; grant read there too so the
+      # Lambda can source credentials post-failover.
+      ssm_read = {
+        effect    = "Allow"
+        actions   = ["ssm:GetParameter", "ssm:GetParameters"]
+        resources = ["arn:aws:ssm:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/oauth/servicenow/*"]
       }
       # Both regions' oauth_tokens CMKs -- a token minted against the
       # primary KMS key is still decryptable after failover routes the

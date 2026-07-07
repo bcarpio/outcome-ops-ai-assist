@@ -1239,17 +1239,12 @@ async function proxyServiceNowRequest(req, res, method, path) {
   }
 }
 
-// Setup form
-app.post("/api/workspaces/:id/servicenow/setup", (req, res) => {
-  proxyServiceNowRequest(req, res, "POST", `/workspaces/${req.params.id}/servicenow/setup`);
-});
-
-// Authorize (build OAuth redirect URL)
+// Authorize (build OAuth redirect URL). Env-level OAuth: no connection_id
+// on the request; the integration Lambda creates or reuses a pending row.
 app.get("/api/workspaces/:id/servicenow/authorize", (req, res) => {
-  const connectionId = req.query.connection_id;
   proxyServiceNowRequest(
     req, res, "GET",
-    `/workspaces/${req.params.id}/servicenow/authorize?connection_id=${encodeURIComponent(connectionId || "")}`,
+    `/workspaces/${req.params.id}/servicenow/authorize`,
   );
 });
 

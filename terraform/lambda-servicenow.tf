@@ -1,8 +1,17 @@
 # ============================================================================
 # ServiceNow Knowledge Base Integration Lambda
-# Handles OAuth flow (per-workspace credentials, see ADR-044) and connection
-# management for ServiceNow instances.
+# Handles OAuth flow (env-level SSM credentials, one OAuth app per deploy)
+# and connection management for the configured ServiceNow instance.
 # ============================================================================
+
+locals {
+  servicenow_client_secret_ssm_name = "/${var.environment}/${var.app_name}/oauth/servicenow/client-secret"
+  servicenow_common_env = {
+    SERVICENOW_INSTANCE_URL            = var.servicenow_instance_url
+    SERVICENOW_CLIENT_ID               = var.servicenow_oauth_client_id
+    SERVICENOW_CLIENT_SECRET_SSM_PARAM = local.servicenow_client_secret_ssm_name
+  }
+}
 
 module "servicenow_integration_lambda" {
   source  = "terraform-aws-modules/lambda/aws"
@@ -48,19 +57,13 @@ module "servicenow_integration_lambda" {
 
   environment_variables = merge(
     {
-      ENV               = var.environment
-      APP_NAME          = var.app_name
-      WORKSPACES_TABLE  = module.workspaces_table[0].dynamodb_table_id
-      OAUTH_KMS_KEY_ARN = aws_kms_key.oauth_tokens[0].arn
-      # ADR-044: per-workspace OAuth. instance_url + client_id + client_secret
-      # come from the connection row, not from env-level SSM. Only the queue
-      # URLs and the callback-URL are env-scoped.
-      SERVICENOW_SYNC_QUEUE = aws_sqs_queue.servicenow_sync[0].url
-      DELETE_QUEUE          = aws_sqs_queue.delete_queue[0].url
-      AUDIT_TABLE           = module.audit_logs_table.dynamodb_table_id
-      # OAuth state cache TTL (seconds). Matches RetrieveIT's default; long
-      # enough for slow-network callbacks, short enough that abandoned
-      # authorize flows don't accumulate garbage.
+      ENV                          = var.environment
+      APP_NAME                     = var.app_name
+      WORKSPACES_TABLE             = module.workspaces_table[0].dynamodb_table_id
+      OAUTH_KMS_KEY_ARN            = aws_kms_key.oauth_tokens[0].arn
+      SERVICENOW_SYNC_QUEUE        = aws_sqs_queue.servicenow_sync[0].url
+      DELETE_QUEUE                 = aws_sqs_queue.delete_queue[0].url
+      AUDIT_TABLE                  = module.audit_logs_table.dynamodb_table_id
       SERVICENOW_STATE_TTL_SECONDS = "600"
       # UI-facing callback URL used to build the ServiceNow authorize
       # redirect. Empty when the deploy has no custom domain configured yet
@@ -68,6 +71,7 @@ module "servicenow_integration_lambda" {
       # returns a 500 with a diagnostic message.
       SERVICENOW_CALLBACK_URL = var.domain != "" ? "https://${local.fqdn}/api/servicenow/callback" : ""
     },
+    local.servicenow_common_env,
     local.outcomeops_license_env,
     local.ha_writer_env,
     local.ha_scheduler_env,
@@ -104,6 +108,14 @@ module "servicenow_integration_lambda" {
         actions = ["kms:Decrypt"]
         resources = [
           "arn:aws:kms:${var.aws_region}:${data.aws_caller_identity.current.account_id}:alias/aws/ssm"
+        ]
+      }
+
+      ssm_read = {
+        effect  = "Allow"
+        actions = ["ssm:GetParameter", "ssm:GetParameters"]
+        resources = [
+          "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/oauth/servicenow/*"
         ]
       }
 
@@ -262,6 +274,7 @@ module "servicenow_sync_lambda" {
       KB_BUCKET             = module.knowledge_base_bucket.s3_bucket_id
       AUDIT_TABLE           = module.audit_logs_table.dynamodb_table_id
     },
+    local.servicenow_common_env,
     local.outcomeops_license_env,
     local.ha_writer_env,
   )
@@ -290,6 +303,12 @@ module "servicenow_sync_lambda" {
         effect    = "Allow"
         actions   = ["kms:Decrypt"]
         resources = ["arn:aws:kms:${var.aws_region}:${data.aws_caller_identity.current.account_id}:alias/aws/ssm"]
+      }
+
+      ssm_read = {
+        effect    = "Allow"
+        actions   = ["ssm:GetParameter", "ssm:GetParameters"]
+        resources = ["arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/oauth/servicenow/*"]
       }
 
       sqs_receive = {
@@ -458,11 +477,28 @@ resource "aws_lambda_permission" "servicenow_scheduler_eventbridge" {
 }
 
 # ============================================================================
-# NOTE: No aws_ssm_parameter blocks here. ServiceNow uses per-workspace
-# OAuth apps (Application Registry entries on the customer's own instance);
-# instance_url + client_id + client_secret are collected via the UI at
-# connection time and stored KMS-encrypted in DDB. See ADR-044.
+# SSM Parameter Placeholder for OAuth client_secret.
+# Operator must populate this out-of-band (aws ssm put-parameter --overwrite).
+# terraform creates a placeholder value on first apply and then ignores
+# subsequent value changes so re-applies don't stomp the real credential.
 # ============================================================================
+
+resource "aws_ssm_parameter" "servicenow_client_secret" {
+  count = var.enable_workspaces && var.enable_servicenow_integration ? 1 : 0
+
+  name        = local.servicenow_client_secret_ssm_name
+  description = "ServiceNow OAuth Application Registry client_secret. Operator populates via aws ssm put-parameter --overwrite; terraform ignores value changes."
+  type        = "SecureString"
+  value       = "PLACEHOLDER_CONFIGURE_ME"
+
+  lifecycle {
+    ignore_changes = [value]
+  }
+
+  tags = {
+    Purpose = "servicenow-oauth"
+  }
+}
 
 # ============================================================================
 # Outputs

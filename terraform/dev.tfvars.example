@@ -361,21 +361,29 @@ github_usernames_to_tag = "yourusername"
 # azure_devops_redirect_uri = ""
 
 # ============================================================================
-# ServiceNow Knowledge Base integration (chunk 01 of the servicenow plan)
+# ServiceNow Knowledge Base integration
 # ============================================================================
 #
 # Provisions the workspace ServiceNow KB integration surface: integration
 # Lambda + Function URL + sync worker + hourly scheduler + SQS + DLQ.
 #
-# Unlike the other integrations, ServiceNow does NOT share an env-level OAuth
-# app. Each customer's ServiceNow instance requires its own Application
-# Registry OAuth app registered on that instance. The instance URL + client_id
-# + client_secret are collected per-workspace via the UI at connection time,
-# KMS-encrypted, and stored in DynamoDB. See ADR-044.
+# One OAuth Application Registry entry per deploy. On your ServiceNow
+# instance register an OAuth Authorization Code Grant app with Redirect URL
+# https://<ui_fqdn>/api/servicenow/callback, then populate:
 #
-# Consequences: no ServiceNow OAuth entries in scripts/ha-list-secrets or
-# scripts/ha-sync-secrets, no /{env}/{app}/oauth/servicenow/* SSM params.
+#   - servicenow_instance_url     (tfvars, non-secret)
+#   - servicenow_oauth_client_id  (tfvars, non-secret)
+#   - /dev/outcome-ops-ai-assist/oauth/servicenow/client-secret  (SSM SecureString)
+#
+# The client-secret parameter is populated out-of-band via:
+#   aws ssm put-parameter \
+#     --name /dev/outcome-ops-ai-assist/oauth/servicenow/client-secret \
+#     --value "<from the Application Registry entry>" \
+#     --type SecureString --overwrite
+#
 # enable_servicenow_integration = false
+# servicenow_instance_url       = "https://dev307154.service-now.com"
+# servicenow_oauth_client_id    = ""
 
 # ============================================================================
 # Tags

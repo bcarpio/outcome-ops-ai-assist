@@ -1320,6 +1320,7 @@ module "servicenow_sync_lambda_secondary" {
       KB_BUCKET             = module.knowledge_base_bucket_secondary.s3_bucket_id
       AUDIT_TABLE           = module.audit_logs_table_secondary[0].dynamodb_table_id
     },
+    local.servicenow_common_env,
     local.outcomeops_license_env,
     local.ha_writer_env_secondary,
   )
@@ -1349,6 +1350,13 @@ module "servicenow_sync_lambda_secondary" {
         effect    = "Allow"
         actions   = ["kms:Decrypt"]
         resources = ["arn:aws:kms:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:alias/aws/ssm"]
+      }
+      # ServiceNow client_secret SSM param (replicated to secondary via
+      # scripts/ha-sync-secrets).
+      ssm_read = {
+        effect    = "Allow"
+        actions   = ["ssm:GetParameter", "ssm:GetParameters"]
+        resources = ["arn:aws:ssm:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/oauth/servicenow/*"]
       }
       sqs_receive = {
         effect    = "Allow"

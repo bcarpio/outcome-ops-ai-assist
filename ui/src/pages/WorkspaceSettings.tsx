@@ -45,7 +45,6 @@ import {
   updateConfluenceSpaces,
   triggerConfluenceSync,
   deleteConfluenceConnection,
-  saveServiceNowSetup,
   getServiceNowAuthUrl,
   listServiceNowConnections,
   syncServiceNowConnection,
@@ -283,17 +282,10 @@ export default function WorkspaceSettings() {
   const [loadingConnections, setLoadingConnections] = useState(false)
   const [connectingConfluence, setConnectingConfluence] = useState(false)
 
-  // ServiceNow (ADR-044: per-workspace OAuth). Setup form fields live in
-  // component state; not persisted across renders because the callback
-  // navigates the browser away and reloads the workspace.
+  // ServiceNow: one OAuth app per deploy (env-level SSM); Connect button
+  // goes straight to the authorize URL just like Confluence/Jira.
   const [servicenowConnections, setServicenowConnections] = useState<ServiceNowConnection[]>([])
   const [connectingServicenow, setConnectingServicenow] = useState(false)
-  const [showServicenowSetup, setShowServicenowSetup] = useState(false)
-  const [servicenowSetup, setServicenowSetup] = useState<{
-    instance_url: string
-    client_id: string
-    client_secret: string
-  }>({ instance_url: '', client_id: '', client_secret: '' })
 
   // Space configuration modal state
   const [configuringConnection, setConfiguringConnection] = useState<ConfluenceConnection | null>(null)
@@ -1023,27 +1015,16 @@ export default function WorkspaceSettings() {
     }
   }
 
-  // ServiceNow (per-workspace OAuth per ADR-044). Two-step: save creds,
-  // then get authorize URL and redirect.
-  async function handleSaveServiceNowSetup() {
+  // ServiceNow: env-level OAuth app; Connect goes straight to authorize URL.
+  async function handleConnectServiceNow() {
     if (!workspaceId) return
-    if (!servicenowSetup.instance_url || !servicenowSetup.client_id || !servicenowSetup.client_secret) {
-      setError('ServiceNow: instance URL, client ID, and client secret are all required')
-      return
-    }
     setConnectingServicenow(true)
     setError(null)
     try {
-      const { connection_id } = await saveServiceNowSetup(
-        workspaceId,
-        servicenowSetup.instance_url,
-        servicenowSetup.client_id,
-        servicenowSetup.client_secret,
-      )
-      const authUrl = await getServiceNowAuthUrl(workspaceId, connection_id)
+      const authUrl = await getServiceNowAuthUrl(workspaceId)
       window.location.href = authUrl
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save ServiceNow setup')
+      setError(err instanceof Error ? err.message : 'Failed to start ServiceNow OAuth')
       setConnectingServicenow(false)
     }
   }
@@ -3278,89 +3259,32 @@ export default function WorkspaceSettings() {
                     <p className="text-sm text-gray-500">Sync published KB articles + attachments from your ServiceNow instance</p>
                   </div>
                 </div>
-                {isAdmin && servicenowConnections.length === 0 && !showServicenowSetup && (
+                {isAdmin && servicenowConnections.length === 0 && (
                   <MutationButton
-                    onClick={() => setShowServicenowSetup(true)}
+                    onClick={handleConnectServiceNow}
+                    disabled={connectingServicenow}
                     className="flex items-center gap-2 px-3 py-1.5 text-sm bg-green-700 text-white rounded-lg hover:bg-green-800 disabled:opacity-50 transition-colors"
                   >
-                    <Plus size={16} />
+                    {connectingServicenow ? <Loader2 size={14} className="animate-spin" /> : <Plus size={16} />}
                     Connect
                   </MutationButton>
                 )}
               </div>
-              {showServicenowSetup && (
-                <div className="p-4 bg-gray-50 border-b">
-                  <p className="text-sm text-gray-600 mb-3">
-                    Register an OAuth Application Registry entry on your ServiceNow instance,
-                    then paste the details here. Client secret is KMS-encrypted before storage.
-                  </p>
-                  <div className="space-y-3">
-                    <div>
-                      <label className="block text-xs font-medium text-gray-700 mb-1">Instance URL</label>
-                      <input
-                        type="url"
-                        value={servicenowSetup.instance_url}
-                        onChange={(e) => setServicenowSetup(s => ({ ...s, instance_url: e.target.value }))}
-                        placeholder="https://acme.service-now.com"
-                        className="w-full px-3 py-1.5 text-sm border rounded"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-gray-700 mb-1">Client ID</label>
-                      <input
-                        type="text"
-                        value={servicenowSetup.client_id}
-                        onChange={(e) => setServicenowSetup(s => ({ ...s, client_id: e.target.value }))}
-                        className="w-full px-3 py-1.5 text-sm border rounded font-mono"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-gray-700 mb-1">Client Secret</label>
-                      <input
-                        type="password"
-                        value={servicenowSetup.client_secret}
-                        onChange={(e) => setServicenowSetup(s => ({ ...s, client_secret: e.target.value }))}
-                        className="w-full px-3 py-1.5 text-sm border rounded font-mono"
-                      />
-                    </div>
-                    <div className="flex justify-end gap-2 pt-1">
-                      <button
-                        onClick={() => {
-                          setShowServicenowSetup(false)
-                          setServicenowSetup({ instance_url: '', client_id: '', client_secret: '' })
-                        }}
-                        className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 rounded"
-                      >
-                        Cancel
-                      </button>
-                      <MutationButton
-                        onClick={handleSaveServiceNowSetup}
-                        disabled={connectingServicenow}
-                        className="px-3 py-1.5 text-sm bg-green-700 text-white rounded hover:bg-green-800 disabled:opacity-50"
-                      >
-                        {connectingServicenow ? <Loader2 size={14} className="animate-spin" /> : 'Save & Authorize'}
-                      </MutationButton>
-                    </div>
-                  </div>
-                </div>
-              )}
               {loadingConnections ? (
                 <div className="p-8 flex items-center justify-center">
                   <Loader2 className="animate-spin text-gray-400" size={24} />
                 </div>
               ) : servicenowConnections.length === 0 ? (
-                !showServicenowSetup && (
-                  <div className="p-8 text-center text-gray-500">
-                    No ServiceNow connections yet
-                  </div>
-                )
+                <div className="p-8 text-center text-gray-500">
+                  No ServiceNow connections yet
+                </div>
               ) : (
                 <ul className="divide-y">
                   {servicenowConnections.map(conn => (
                     <li key={conn.connection_id} className="p-4">
                       <div className="flex items-start justify-between">
                         <div className="flex-1">
-                          <p className="font-medium text-gray-900">{conn.instance_url}</p>
+                          <p className="font-medium text-gray-900">ServiceNow Knowledge Base</p>
                           {conn.servicenow_user_login && (
                             <p className="text-xs text-gray-500 mt-1">
                               Connected as {conn.servicenow_user_login}

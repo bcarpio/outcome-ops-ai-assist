@@ -9,6 +9,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
+os.environ.setdefault("SERVICENOW_INSTANCE_URL", "https://acme.service-now.com")
+os.environ.setdefault("SERVICENOW_CLIENT_ID", "test-client-id")
+
 mock_dynamodb_resource = MagicMock()
 mock_s3_client = MagicMock()
 mock_ssm_client = MagicMock()
@@ -94,12 +97,35 @@ class TestProcessArticle:
         )
         assert key is None
 
-    def test_missing_instance_url_returns_none(self):
+    @patch.object(handler_module.dual_write, "s3_put_object")
+    @patch.object(sn_api, "get_article", return_value={
+        "sys_id": "art-1", "number": "KB0001",
+        "short_description": "hi", "text": "<p>x</p>",
+    })
+    @patch.object(sn_oauth, "refresh_access_token", return_value="tok")
+    def test_missing_instance_url_falls_back_to_env(
+        self, mock_refresh, mock_get, mock_put
+    ):
+        # instance_url="" now falls back to SERVICENOW_INSTANCE_URL env var
+        # (deploy-scoped). Upload succeeds.
         key = process_servicenow_article(
             workspace_id="ws1", connection_id="conn-1",
             file_info={"article_sys_id": "art-1"},
             instance_url="",
         )
+        assert key == "workspaces/ws1/servicenow/conn-1/art-1.html"
+
+    def test_missing_instance_url_and_env_unconfigured_returns_none(self):
+        with patch.object(
+            sn_oauth,
+            "get_instance_url",
+            side_effect=ValueError("SERVICENOW_INSTANCE_URL not configured"),
+        ):
+            key = process_servicenow_article(
+                workspace_id="ws1", connection_id="conn-1",
+                file_info={"article_sys_id": "art-1"},
+                instance_url="",
+            )
         assert key is None
 
     @patch.object(sn_oauth, "refresh_access_token", side_effect=ValueError("expired"))

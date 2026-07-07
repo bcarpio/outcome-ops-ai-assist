@@ -30,6 +30,8 @@ os.environ.setdefault("WORKSPACES_TABLE", "test-workspaces")
 os.environ.setdefault("FILE_INGESTION_QUEUE", "https://sqs.us-west-2.amazonaws.com/123/file-ingestion")
 os.environ.setdefault("DELETE_QUEUE", "https://sqs.us-west-2.amazonaws.com/123/delete")
 os.environ.setdefault("KB_BUCKET", "test-kb-bucket")
+os.environ.setdefault("SERVICENOW_INSTANCE_URL", "https://acme.service-now.com")
+os.environ.setdefault("SERVICENOW_CLIENT_ID", "test-client-id")
 
 handler_module = _load_handler_module()
 lambda_handler = handler_module.lambda_handler

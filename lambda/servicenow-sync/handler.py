@@ -268,7 +268,7 @@ def process_sync_message(message: Dict[str, Any]) -> Dict[str, Any]:
     if not conn:
         logger.warning(f"Connection {connection_id} disappeared mid-sync")
         return {"status": "skipped", "reason": "connection_gone"}
-    instance_url = conn["instance_url"]
+    instance_url = servicenow_oauth.get_instance_url()
 
     articles_synced = 0
     attachments_synced = 0

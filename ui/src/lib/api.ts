@@ -666,14 +666,12 @@ export async function deleteConfluenceConnection(workspaceId: string, connection
 }
 
 // ============================================================================
-// ServiceNow Knowledge Base Integration API (ADR-044: per-workspace OAuth)
+// ServiceNow Knowledge Base Integration API
 // ============================================================================
 
 export interface ServiceNowConnection {
   connection_id: string
   workspace_id: string
-  instance_url: string
-  client_id: string
   last_sync_status: string
   last_sync_error?: string
   last_sync_at?: string
@@ -682,46 +680,16 @@ export interface ServiceNowConnection {
 }
 
 /**
- * Save per-workspace ServiceNow OAuth credentials. Returns the
- * connection_id + next-step hint. Idempotent per (workspace, instance_url):
- * a re-submit for the same instance updates the credentials in place.
- */
-export async function saveServiceNowSetup(
-  workspaceId: string,
-  instanceUrl: string,
-  clientId: string,
-  clientSecret: string,
-): Promise<{ connection_id: string; next: string }> {
-  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/servicenow/setup`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      instance_url: instanceUrl,
-      client_id: clientId,
-      client_secret: clientSecret,
-    }),
-  })
-  if (!response.ok) {
-    const data = await safeJson(response)
-    throw new Error((data?.error as string) || `Failed to save setup: ${response.status}`)
-  }
-  const data = await safeJson(response)
-  return {
-    connection_id: data?.connection_id as string,
-    next: (data?.next as string) || 'authorize',
-  }
-}
-
-/**
- * Get ServiceNow OAuth authorize URL for a connection. Requires setup to
- * have already run (client_secret is per-connection in DDB).
+ * Get the ServiceNow OAuth authorize URL for this workspace. The
+ * integration Lambda creates (or reuses) a pending connection row and
+ * returns the URL the browser should follow to hit ServiceNow's consent
+ * screen.
  */
 export async function getServiceNowAuthUrl(
   workspaceId: string,
-  connectionId: string,
 ): Promise<string> {
   const response = await fetch(
-    `${API_BASE}/workspaces/${workspaceId}/servicenow/authorize?connection_id=${encodeURIComponent(connectionId)}`,
+    `${API_BASE}/workspaces/${workspaceId}/servicenow/authorize`,
   )
   if (!response.ok) {
     const data = await safeJson(response)

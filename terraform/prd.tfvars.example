@@ -411,9 +411,19 @@ audit_stream_export_enabled = true
 # ServiceNow Knowledge Base integration
 # ============================================================================
 #
-# Provisions the workspace ServiceNow KB integration surface. Per-workspace
-# OAuth credentials (see ADR-044) -- no env-level SSM params to configure.
+# One OAuth Application Registry entry per deploy. On your ServiceNow instance
+# register an OAuth Authorization Code Grant app with Redirect URL
+# https://<ui_fqdn>/api/servicenow/callback, then set the two tfvars below and
+# populate the SecureString for the client secret:
+#
+#   aws ssm put-parameter \
+#     --name /prd/outcome-ops-ai-assist/oauth/servicenow/client-secret \
+#     --value "<from the Application Registry entry>" \
+#     --type SecureString --overwrite
+#
 # enable_servicenow_integration = false
+# servicenow_instance_url       = "https://acme.service-now.com"
+# servicenow_oauth_client_id    = ""
 
 # ============================================================================
 # Tags

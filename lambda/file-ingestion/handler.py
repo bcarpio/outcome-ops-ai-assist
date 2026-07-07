@@ -1624,6 +1624,11 @@ def process_servicenow_article(
     from shared.servicenow_api import get_article
 
     article_sys_id = file_info.get("article_sys_id")
+    if not instance_url:
+        try:
+            instance_url = servicenow_oauth.get_instance_url()
+        except ValueError:
+            instance_url = ""
     if not article_sys_id or not instance_url:
         logger.error(
             "servicenow_article missing article_sys_id or instance_url"
@@ -1713,6 +1718,11 @@ def process_servicenow_attachment(
     attachment_sys_id = file_info.get("attachment_sys_id")
     article_sys_id = file_info.get("article_sys_id")
     file_name = file_info.get("file_name") or ""
+    if not instance_url:
+        try:
+            instance_url = servicenow_oauth.get_instance_url()
+        except ValueError:
+            instance_url = ""
     if not attachment_sys_id or not article_sys_id or not instance_url:
         logger.error("servicenow_attachment missing required fields")
         return None
