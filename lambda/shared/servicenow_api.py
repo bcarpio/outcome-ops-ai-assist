@@ -15,6 +15,9 @@ CloudWatch metric filter can match on it and alarm.
 
 Ported from ``../app.retrieveit.ai/lambda/servicenow-integration/
 servicenow_api.py`` and adapted to OutcomeOps conventions:
+- Lives under ``shared/`` from day one (chunk 16 convention) so the
+  integration Lambda + sync Lambda + any future consumers share the
+  same canonical module and can't drift.
 - ``urllib.request`` with ``timeout=30`` (chunk 14) instead of ``requests``.
 - Same error/retry contract as the source.
 """

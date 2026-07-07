@@ -48,7 +48,7 @@ from shared.region_guard import (  # noqa: E402
 )
 from shared.oauth import servicenow as servicenow_oauth  # noqa: E402
 
-from servicenow_api import (  # noqa: E402
+from shared.servicenow_api import (  # noqa: E402
     ServiceNowRateLimitedError,
     get_current_user,
 )
