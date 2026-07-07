@@ -157,7 +157,9 @@ whole flow takes about 5 minutes.
 On the ServiceNow instance you want to connect:
 
 1. Navigate to **System OAuth → Application Registry**.
-2. Click **New** → **Create an OAuth API endpoint for external clients**.
+2. Click **New**. ServiceNow shows the **Select your application connection type** picker. Pick **OAuth - Authorization code grant**.
+   - Do NOT pick Client credentials grant or JWT bearer grant. Those are machine-to-machine flows and don't produce a redirect back to the OutcomeOps UI.
+   - Do NOT pick Resource owner password credential grant — ServiceNow itself recommends against it and the platform doesn't implement it.
 3. Fill in:
    - **Name:** anything — e.g. `OutcomeOps AI Assist (prd)`.
    - **Client ID:** ServiceNow generates this.
