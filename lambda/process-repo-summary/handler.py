@@ -46,6 +46,11 @@ if GENERATE_CODE_MAPS_DIR not in sys.path:
     sys.path.insert(0, GENERATE_CODE_MAPS_DIR)
 
 from shared import dual_write
+from shared.code_map_sizing import (
+    TARGET_SHARD_TOKENS,
+    estimate_tokens_from_size,
+    pack_files_into_shards,
+)
 from shared.prompts import CODE_MAP_LITERAL_DISCIPLINE
 from shared.audit import COMPREHEND_MODEL_ID, log_audit_entry
 from shared.model_client import invoke as invoke_model
@@ -873,6 +878,7 @@ def send_code_units_to_sqs(
     *,
     provider: str = "github",
     slug: Optional[str] = None,
+    all_files: Optional[List[Dict[str, Any]]] = None,
 ) -> int:
     """
     Send code units to SQS for detailed batch processing.
@@ -911,58 +917,42 @@ def send_code_units_to_sqs(
     expected_keys reflects every handler that should remain - otherwise
     incremental sync would treat all unchanged handlers as orphans.
     """
+    # Chunk 03: build a path -> byte-size lookup so the splitter can
+    # decide when a code unit is too big for a single Bedrock call. If
+    # all_files isn't threaded through (legacy callers), the map is
+    # empty and every file falls back to a conservative 30k-byte
+    # estimate -- enough to force sharding on large units without
+    # requiring perfect data.
+    file_sizes: Dict[str, int] = {}
+    if all_files:
+        for f in all_files:
+            if f.get("type") == "blob" and f.get("path"):
+                file_sizes[f["path"]] = int(f.get("size") or 0)
+
     sent = 0
     for code_unit in code_units:
         try:
-            # Message schema (chunk 02): every code-map message carries
-            # message_type + shard_index + shard_count +
-            # parent_storage_key so the consumer can route a shard vs. a
-            # merge message. Chunk 03 will start sending shard_count > 1
-            # for oversized units; today all messages are single-shard
-            # so shard_index=0 / shard_count=1 / parent_storage_key
-            # matches storage_key.
-            message = {
-                "message_type": "shard",
-                "repo": repo,
-                "repo_project": repo_project,
-                "batch_type": code_unit["batch_type"],
-                "group_name": code_unit["group_name"],
-                "file_paths": code_unit["file_paths"],
-                "storage_key": code_unit["storage_key"],
-                "parent_storage_key": code_unit["storage_key"],
-                "shard_index": 0,
-                "shard_count": 1,
-            }
-            if workspace_id:
-                message["workspace_id"] = workspace_id
-            if commit_sha:
-                # Symbol-graph regen anchors on this commit SHA.
-                message["commit_sha"] = commit_sha
-            if commit_timestamp is not None:
-                # plan-git-truth chunk 02b: monotonic-advance anchor
-                # for the per-unit ledger increments downstream.
-                message["commit_timestamp"] = commit_timestamp
-            # chunk-08a: process-batch-summary's fetch_file_content
-            # dispatches on `provider`. For azure_devops it reads from
-            # the S3 mirror at workspaces/{ws}/azure_devops/{slug}/.
-            # GitHub default "github" keeps the existing
-            # raw.githubusercontent.com path; no message-shape change
-            # for existing GitHub flows.
-            if provider != "github":
-                message["provider"] = provider
-            if slug:
-                message["slug"] = slug
-
-            message_body = json.dumps(message)
-
-            sqs_client.send_message(
-                QueueUrl=CODE_MAPS_QUEUE_URL,
-                MessageBody=message_body,
+            unit_messages = _build_shard_messages_for_unit(
+                code_unit=code_unit,
+                repo=repo,
+                repo_project=repo_project,
+                workspace_id=workspace_id,
+                commit_sha=commit_sha,
+                commit_timestamp=commit_timestamp,
+                provider=provider,
+                slug=slug,
+                file_sizes=file_sizes,
             )
-
-            sent += 1
-            logger.info(f"Sent code unit to SQS: {code_unit['group_name']}")
-
+            for message in unit_messages:
+                sqs_client.send_message(
+                    QueueUrl=CODE_MAPS_QUEUE_URL,
+                    MessageBody=json.dumps(message),
+                )
+                sent += 1
+            logger.info(
+                f"Sent code unit to SQS: {code_unit['group_name']} "
+                f"({len(unit_messages)} messages)"
+            )
         except ClientError as e:
             # plan-git-truth chunk 02b: per-unit dispatch failure does
             # not abort the batch. Record the failure in the SHA-truth
@@ -983,6 +973,133 @@ def send_code_units_to_sqs(
                     failure_detail=str(e)[:1024],
                 )
     return sent
+
+
+_FALLBACK_FILE_SIZE_BYTES = 30_000
+
+
+def _build_shard_messages_for_unit(
+    *,
+    code_unit: Dict[str, Any],
+    repo: str,
+    repo_project: str,
+    workspace_id: Optional[str],
+    commit_sha: Optional[str],
+    commit_timestamp: Optional[int],
+    provider: str,
+    slug: Optional[str],
+    file_sizes: Dict[str, int],
+) -> List[Dict[str, Any]]:
+    """Produce the SQS messages for one code unit: either one shard
+    message (unit fits in one Bedrock call) or N shard messages + one
+    merge message (unit is too big).
+
+    Falls back to a conservative per-file size estimate when the
+    caller didn't thread ``all_files`` through -- this keeps legacy
+    callers working while still triggering sharding on large units.
+    """
+    file_paths = list(code_unit["file_paths"])
+    parent_storage_key = code_unit["storage_key"]
+    parent_group_name = code_unit["group_name"]
+
+    # Build (path, size) pairs; unknown paths get the fallback.
+    pairs = [
+        (p, file_sizes.get(p, _FALLBACK_FILE_SIZE_BYTES)) for p in file_paths
+    ]
+    estimated_tokens = sum(
+        estimate_tokens_from_size(size) for _, size in pairs
+    ) + 30 * len(pairs)
+
+    shards: List[List[str]]
+    if estimated_tokens <= TARGET_SHARD_TOKENS:
+        # Fits in one message. Keep the historic single-shard shape so
+        # storage_key + group_name remain unchanged for legacy code
+        # units that never needed sharding.
+        shards = [file_paths]
+    else:
+        shards = pack_files_into_shards(pairs, TARGET_SHARD_TOKENS)
+        logger.info(
+            f"[splitter] {parent_group_name} exceeds target "
+            f"({estimated_tokens} > {TARGET_SHARD_TOKENS} tokens); "
+            f"sharded into {len(shards)} messages + 1 merge"
+        )
+
+    messages: List[Dict[str, Any]] = []
+    shard_count = len(shards)
+    for i, shard_file_paths in enumerate(shards):
+        # Shard-suffixed keys only when there's actually more than one
+        # shard -- single-shard units keep their historic keys so the
+        # vector storage schema is unchanged for the common case.
+        if shard_count > 1:
+            shard_storage_key = f"{parent_storage_key}#shard-{i:02d}"
+            shard_group_name = f"{parent_group_name}#shard-{i:02d}"
+        else:
+            shard_storage_key = parent_storage_key
+            shard_group_name = parent_group_name
+        message = {
+            "message_type": "shard",
+            "repo": repo,
+            "repo_project": repo_project,
+            "batch_type": code_unit["batch_type"],
+            "group_name": shard_group_name,
+            "file_paths": shard_file_paths,
+            "storage_key": shard_storage_key,
+            "parent_storage_key": parent_storage_key,
+            "parent_group_name": parent_group_name,
+            "shard_index": i,
+            "shard_count": shard_count,
+        }
+        if workspace_id:
+            message["workspace_id"] = workspace_id
+        if commit_sha:
+            # Symbol-graph regen anchors on this commit SHA.
+            message["commit_sha"] = commit_sha
+        if commit_timestamp is not None:
+            # plan-git-truth chunk 02b: monotonic-advance anchor
+            # for the per-unit ledger increments downstream.
+            message["commit_timestamp"] = commit_timestamp
+        # chunk-08a: process-batch-summary's fetch_file_content
+        # dispatches on `provider`. For azure_devops it reads from
+        # the S3 mirror at workspaces/{ws}/azure_devops/{slug}/.
+        # GitHub default "github" keeps the existing
+        # raw.githubusercontent.com path; no message-shape change
+        # for existing GitHub flows.
+        if provider != "github":
+            message["provider"] = provider
+        if slug:
+            message["slug"] = slug
+        messages.append(message)
+
+    if shard_count > 1:
+        # Companion merge message. Chunk 02's consumer stub drops it
+        # (logs + returns) until chunk 05 fills in the fan-in body.
+        # Storage/group_name stay at the parent so the merged summary
+        # lands where downstream retrieval expects it.
+        merge_message: Dict[str, Any] = {
+            "message_type": "merge",
+            "repo": repo,
+            "repo_project": repo_project,
+            "batch_type": code_unit["batch_type"],
+            "group_name": parent_group_name,
+            "storage_key": parent_storage_key,
+            "parent_storage_key": parent_storage_key,
+            "parent_group_name": parent_group_name,
+            "shard_count": shard_count,
+            "file_paths": [],
+        }
+        if workspace_id:
+            merge_message["workspace_id"] = workspace_id
+        if commit_sha:
+            merge_message["commit_sha"] = commit_sha
+        if commit_timestamp is not None:
+            merge_message["commit_timestamp"] = commit_timestamp
+        if provider != "github":
+            merge_message["provider"] = provider
+        if slug:
+            merge_message["slug"] = slug
+        messages.append(merge_message)
+
+    return messages
 
 
 def handler(event, context):
@@ -1307,6 +1424,9 @@ def handler(event, context):
                     # dispatch to the S3 mirror for non-github providers.
                     provider=provider,
                     slug=slug,
+                    # Chunk 03: thread the tree so the splitter can
+                    # size each code unit against TARGET_SHARD_TOKENS.
+                    all_files=all_files,
                 )
                 logger.info(f"Queued {len(code_units)} code units for {repo}")
 

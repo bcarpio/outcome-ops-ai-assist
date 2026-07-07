@@ -101,3 +101,62 @@ def estimate_batch_tokens(
         total += estimate_tokens(path)
         total += estimate_tokens(content)
     return total
+
+
+def estimate_tokens_from_size(size_bytes: int) -> int:
+    """Estimate token cost from a file's byte size (GitHub tree API's
+    `size` field). For ASCII source code, bytes ~= characters, so the
+    same char/3 heuristic applies. UTF-8 code may be slightly larger
+    than the token estimate suggests; the char/3 divisor is conservative
+    enough to absorb the drift."""
+    return size_bytes // 3
+
+
+def pack_files_into_shards(
+    file_sizes: Iterable[Tuple[str, int]],
+    target_tokens_per_shard: int,
+) -> list[list[str]]:
+    """First-fit-decreasing packing: sort files by estimated tokens
+    descending, then assign each to the first shard that has room.
+
+    Deterministic (sort is stable) so a re-run against the same input
+    produces the same shard boundaries.
+
+    Args:
+        file_sizes: Iterable of (path, size_in_bytes) pairs. Size may be
+            0 (unknown); those files are packed last after the
+            larger-first pass finishes.
+        target_tokens_per_shard: Soft cap per shard. Callers usually
+            pass ``TARGET_SHARD_TOKENS``. First-fit-decreasing may
+            slightly overflow one shard when a single large file
+            exceeds the target -- that file gets its own shard.
+
+    Returns:
+        List of shards; each shard is a list of file paths. Empty
+        input returns an empty list (not a single empty shard).
+    """
+    items = list(file_sizes)
+    if not items:
+        return []
+    # Sort by size descending so the packer places big files first.
+    items.sort(key=lambda pair: pair[1], reverse=True)
+
+    shards: list[list[str]] = []
+    shard_token_totals: list[int] = []
+
+    for path, size in items:
+        cost = estimate_tokens_from_size(size) + _PER_FILE_OVERHEAD_TOKENS
+        placed = False
+        for i, total in enumerate(shard_token_totals):
+            if total + cost <= target_tokens_per_shard:
+                shards[i].append(path)
+                shard_token_totals[i] = total + cost
+                placed = True
+                break
+        if not placed:
+            # Either no existing shard has room, or the file alone
+            # exceeds the target (single huge file). Either way, new
+            # shard.
+            shards.append([path])
+            shard_token_totals.append(_TEMPLATE_OVERHEAD_TOKENS + cost)
+    return shards

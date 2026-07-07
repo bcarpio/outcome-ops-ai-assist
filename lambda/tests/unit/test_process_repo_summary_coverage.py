@@ -316,6 +316,110 @@ class TestSendCodeUnitsToSqs:
 
     @patch.object(rsh, 'sqs_client')
     @patch.object(rsh, 'CODE_MAPS_QUEUE_URL', 'https://sqs.example.com/queue')
+    def test_chunk_03_shards_oversized_unit_and_sends_merge(self, mock_sqs):
+        """Chunk 03: a code unit whose file bytes exceed
+        TARGET_SHARD_TOKENS gets split. Each shard message uses a
+        shard-suffixed storage_key + group_name so the per-shard
+        summaries don't collide on the same vector key. One companion
+        merge message follows (chunk 02 stub drops it until chunk 05
+        fills the fan-in body)."""
+        # 15 files x 40k bytes ~= 200k tokens > TARGET_SHARD_TOKENS (120k)
+        big_files = [(f"lambda/tests/unit/test_x{i}.py", 40_000) for i in range(15)]
+        code_units = [{
+            "batch_type": "handler-group",
+            "group_name": "tests",
+            "file_paths": [p for p, _ in big_files],
+            "storage_key": "summary#tests",
+        }]
+        all_files = [{"path": p, "type": "blob", "size": size} for p, size in big_files]
+
+        rsh.send_code_units_to_sqs(
+            code_units, "repo", "owner/repo", all_files=all_files,
+        )
+
+        bodies = [
+            json.loads(call.kwargs["MessageBody"])
+            for call in mock_sqs.send_message.call_args_list
+        ]
+        # >=2 shards + 1 merge
+        shard_bodies = [b for b in bodies if b["message_type"] == "shard"]
+        merge_bodies = [b for b in bodies if b["message_type"] == "merge"]
+        assert len(shard_bodies) >= 2
+        assert len(merge_bodies) == 1
+        # Each shard has shard-suffixed keys
+        for b in shard_bodies:
+            assert b["shard_count"] == len(shard_bodies)
+            assert b["storage_key"].startswith("summary#tests#shard-")
+            assert b["group_name"].startswith("tests#shard-")
+            assert b["parent_storage_key"] == "summary#tests"
+            assert b["parent_group_name"] == "tests"
+        # Every original path is covered across the shards, exactly once
+        packed = [p for b in shard_bodies for p in b["file_paths"]]
+        assert sorted(packed) == sorted(p for p, _ in big_files)
+        # Merge message uses parent keys (that's where the merged
+        # summary will land in chunk 05)
+        merge = merge_bodies[0]
+        assert merge["storage_key"] == "summary#tests"
+        assert merge["group_name"] == "tests"
+        assert merge["shard_count"] == len(shard_bodies)
+        assert merge["file_paths"] == []
+
+    @patch.object(rsh, 'sqs_client')
+    @patch.object(rsh, 'CODE_MAPS_QUEUE_URL', 'https://sqs.example.com/queue')
+    def test_chunk_03_small_unit_still_single_shard_no_merge(self, mock_sqs):
+        """Small code units keep their historic shape: one shard
+        message with the original storage_key + group_name, no merge
+        companion. Otherwise the vector storage schema would churn for
+        every unit on every deploy."""
+        code_units = [{
+            "batch_type": "handler-group",
+            "group_name": "ingest-docs",
+            "file_paths": ["lambda/ingest-docs/handler.py"],
+            "storage_key": "summary#ingest-docs",
+        }]
+        all_files = [
+            {"path": "lambda/ingest-docs/handler.py", "type": "blob", "size": 5000}
+        ]
+        rsh.send_code_units_to_sqs(
+            code_units, "repo", "owner/repo", all_files=all_files,
+        )
+        bodies = [
+            json.loads(call.kwargs["MessageBody"])
+            for call in mock_sqs.send_message.call_args_list
+        ]
+        assert len(bodies) == 1
+        assert bodies[0]["message_type"] == "shard"
+        assert bodies[0]["shard_count"] == 1
+        assert bodies[0]["storage_key"] == "summary#ingest-docs"
+        assert bodies[0]["group_name"] == "ingest-docs"
+
+    @patch.object(rsh, 'sqs_client')
+    @patch.object(rsh, 'CODE_MAPS_QUEUE_URL', 'https://sqs.example.com/queue')
+    def test_chunk_03_falls_back_to_conservative_estimate_without_all_files(
+        self, mock_sqs
+    ):
+        """Legacy callers that don't pass all_files should still trigger
+        sharding on large file counts via the 30k-byte fallback size."""
+        # 100 files with no size info -> 100 * 30k / 3 = 1M tokens
+        # (well over TARGET_SHARD_TOKENS)
+        code_units = [{
+            "batch_type": "handler-group",
+            "group_name": "tests",
+            "file_paths": [f"tests/t{i}.py" for i in range(100)],
+            "storage_key": "summary#tests",
+        }]
+        rsh.send_code_units_to_sqs(code_units, "repo", "owner/repo")  # no all_files
+        bodies = [
+            json.loads(call.kwargs["MessageBody"])
+            for call in mock_sqs.send_message.call_args_list
+        ]
+        shard_bodies = [b for b in bodies if b["message_type"] == "shard"]
+        merge_bodies = [b for b in bodies if b["message_type"] == "merge"]
+        assert len(shard_bodies) > 1
+        assert len(merge_bodies) == 1
+
+    @patch.object(rsh, 'sqs_client')
+    @patch.object(rsh, 'CODE_MAPS_QUEUE_URL', 'https://sqs.example.com/queue')
     def test_message_carries_chunk_02_shard_schema(self, mock_sqs):
         """Chunk 02: every message carries message_type + shard_index +
         shard_count + parent_storage_key. Today all messages are
