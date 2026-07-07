@@ -186,6 +186,12 @@ variable "enable_onenote_integration" {
   default     = false
 }
 
+variable "enable_servicenow_integration" {
+  type        = bool
+  description = "Provision the workspace ServiceNow Knowledge Base integration surface (integration Lambda + Function URL + sync + scheduler + SQS + DLQ). Unlike the other integrations, ServiceNow does NOT share an env-level OAuth app: each customer's ServiceNow instance requires its own Application Registry OAuth app, and the client_id + client_secret + instance_url are collected per-workspace via the UI and stored KMS-encrypted in DDB. See ADR-044. Default false."
+  default     = false
+}
+
 variable "enable_database_integration" {
   type        = bool
   description = "Provision the workspace Database integration surface (integration Lambda + Function URL + sync + scheduler + SQS + DLQ + drift-notification SNS topic). Default false."

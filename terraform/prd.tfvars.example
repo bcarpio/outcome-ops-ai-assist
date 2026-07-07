@@ -408,6 +408,14 @@ audit_stream_export_enabled = true
 # azure_devops_redirect_uri = ""
 
 # ============================================================================
+# ServiceNow Knowledge Base integration
+# ============================================================================
+#
+# Provisions the workspace ServiceNow KB integration surface. Per-workspace
+# OAuth credentials (see ADR-044) -- no env-level SSM params to configure.
+# enable_servicenow_integration = false
+
+# ============================================================================
 # Tags
 # ============================================================================
 

@@ -250,6 +250,9 @@ append_environment_to_fqdn = false
 # SSM parameter holding the customer's license key.
 # outcomeops_license_ssm_param = "/openai/outcome-ops-ai-assist/license/key"
 
+# ServiceNow Knowledge Base integration (per-workspace OAuth; ADR-044).
+# enable_servicenow_integration = false
+
 # ============================================================================
 # Tags
 # ============================================================================
