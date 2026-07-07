@@ -1361,3 +1361,139 @@ output "azure_devops_integration_url_secondary" {
   description = "Lambda Function URL for Azure DevOps integration in secondary region (null when HA disabled)"
   value       = try(aws_lambda_function_url.azure_devops_integration_secondary[0].function_url, null)
 }
+
+# ----------------------------------------------------------------------------
+# ServiceNow integration (secondary) -- chunk 07 (HA parity, ADR-044)
+#
+# Per-workspace OAuth credentials live in DDB (KMS-encrypted with the
+# oauth_tokens_secondary CMK), so no env-level SSM params to replicate.
+# ----------------------------------------------------------------------------
+
+module "servicenow_integration_lambda_secondary" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "8.1.2"
+
+  count = var.enable_workspaces && var.enable_servicenow_integration && var.secondary_region != "" ? 1 : 0
+
+  providers = {
+    aws = aws.secondary
+  }
+
+  function_name = "${var.environment}-${var.app_name}-servicenow-integration"
+  role_name     = "${var.environment}-${var.app_name}-servicenow-integration-secondary"
+  description   = "ServiceNow OAuth setup + connection management (secondary region)"
+  handler       = "handler.lambda_handler"
+  runtime       = "python3.12"
+  timeout       = 60
+  memory_size   = 512
+
+  source_path = [
+    { path = "${path.module}/../lambda/servicenow-integration", pip_requirements = true, patterns = ["!tests/.*", "!__pycache__/.*", "!\\.venv/.*", "!.*\\.pyc"] },
+    { path = "${path.module}/../lambda/shared", prefix_in_zip = "shared" }
+  ]
+
+  cloudwatch_logs_retention_in_days = 7
+  cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs_secondary[0].arn
+  quiet_archive_local_exec          = true
+
+  layers = [var.outcomeops_license_layer_arn_secondary]
+
+  environment_variables = merge(
+    {
+      ENV                          = var.environment
+      APP_NAME                     = var.app_name
+      WORKSPACES_TABLE             = module.workspaces_table_secondary[0].dynamodb_table_id
+      SERVICENOW_SYNC_QUEUE        = aws_sqs_queue.servicenow_sync_secondary[0].url
+      DELETE_QUEUE                 = aws_sqs_queue.delete_queue_secondary[0].url
+      AUDIT_TABLE                  = module.audit_logs_table_secondary[0].dynamodb_table_id
+      OAUTH_KMS_KEY_ARN            = aws_kms_replica_key.oauth_tokens_secondary[0].arn
+      SERVICENOW_STATE_TTL_SECONDS = "600"
+      # Same callback URL as primary -- resolves against local.fqdn if
+      # set. Empty for early bring-up before a custom domain exists.
+      SERVICENOW_CALLBACK_URL = var.domain != "" ? "https://${local.fqdn}/api/servicenow/callback" : ""
+    },
+    local.outcomeops_license_env,
+    local.ha_writer_env_secondary,
+    local.ha_scheduler_env_secondary,
+  )
+
+  attach_policy_statements = true
+  policy_statements = merge(
+    {
+      dynamodb = {
+        effect  = "Allow"
+        actions = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:Query"]
+        resources = [
+          module.workspaces_table_secondary[0].dynamodb_table_arn,
+          "${module.workspaces_table_secondary[0].dynamodb_table_arn}/index/*",
+        ]
+      }
+      kms_ssm = {
+        effect    = "Allow"
+        actions   = ["kms:Decrypt"]
+        resources = ["arn:aws:kms:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:alias/aws/ssm"]
+      }
+      # Both regions' oauth_tokens CMKs -- a token minted against the
+      # primary KMS key is still decryptable after failover routes the
+      # user to this Lambda.
+      kms_oauth = {
+        effect  = "Allow"
+        actions = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
+        resources = [
+          aws_kms_replica_key.oauth_tokens_secondary[0].arn,
+          aws_kms_key.oauth_tokens[0].arn,
+        ]
+      }
+      sqs_send = {
+        effect    = "Allow"
+        actions   = ["sqs:SendMessage"]
+        resources = [aws_sqs_queue.servicenow_sync_secondary[0].arn, aws_sqs_queue.delete_queue_secondary[0].arn]
+      }
+      dynamodb_audit = {
+        effect    = "Allow"
+        actions   = ["dynamodb:PutItem"]
+        resources = [module.audit_logs_table_secondary[0].dynamodb_table_arn]
+      }
+    },
+    local.outcomeops_license_iam,
+    local.ha_writer_events_iam_secondary,
+    local.ha_scheduler_iam_secondary,
+  )
+
+  tags = { Purpose = "servicenow-integration" }
+}
+
+resource "aws_lambda_function_url" "servicenow_integration_secondary" {
+  count = var.enable_workspaces && var.enable_servicenow_integration && var.secondary_region != "" ? 1 : 0
+
+  provider = aws.secondary
+
+  function_name      = module.servicenow_integration_lambda_secondary[0].lambda_function_name
+  authorization_type = "AWS_IAM"
+
+  cors {
+    allow_origins     = ["*"]
+    allow_methods     = ["GET", "POST", "PUT", "DELETE"]
+    allow_headers     = ["content-type", "authorization", "x-amz-date", "x-amz-security-token", "x-user-email"]
+    allow_credentials = false
+    max_age           = 300
+  }
+}
+
+resource "aws_ssm_parameter" "servicenow_integration_url_secondary" {
+  count = var.enable_workspaces && var.enable_servicenow_integration && var.secondary_region != "" ? 1 : 0
+
+  provider = aws.secondary
+
+  name        = "/${var.environment}/${var.app_name}/api/servicenow-integration-url"
+  description = "Lambda Function URL for ServiceNow integration in secondary region (IAM auth)"
+  type        = "String"
+  value       = aws_lambda_function_url.servicenow_integration_secondary[0].function_url
+
+  tags = { Purpose = "servicenow-integration" }
+}
+
+output "servicenow_integration_url_secondary" {
+  description = "Lambda Function URL for ServiceNow integration in secondary region (null when HA disabled)"
+  value       = try(aws_lambda_function_url.servicenow_integration_secondary[0].function_url, null)
+}
