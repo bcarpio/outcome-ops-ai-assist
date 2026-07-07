@@ -1606,6 +1606,173 @@ def process_database_artifact(
         return None
 
 
+def process_servicenow_article(
+    workspace_id: str,
+    connection_id: str,
+    file_info: Dict[str, Any],
+    sync_id: Optional[str] = None,
+    instance_url: str = "",
+) -> Optional[str]:
+    """Process a ServiceNow KB article and upload to S3.
+
+    S3 key: ``workspaces/{ws}/servicenow/{connection_id}/{sys_id}.html``.
+    Body is ServiceNow's stored HTML wrapped in a minimal document. No
+    HTML sanitization here beyond stripping <script>/<style> at query
+    time -- process-documents does the tokenization pass downstream.
+    """
+    from shared.oauth import servicenow as servicenow_oauth
+    from shared.servicenow_api import get_article
+
+    article_sys_id = file_info.get("article_sys_id")
+    if not article_sys_id or not instance_url:
+        logger.error(
+            "servicenow_article missing article_sys_id or instance_url"
+        )
+        return None
+
+    try:
+        access_token = servicenow_oauth.refresh_access_token(
+            workspace_id, connection_id,
+        )
+    except ValueError as e:
+        logger.error(
+            f"Failed to refresh ServiceNow token for connection {connection_id}: {e}"
+        )
+        return None
+
+    try:
+        article = get_article(instance_url, access_token, article_sys_id)
+    except Exception as e:
+        logger.error(f"Failed to fetch ServiceNow article {article_sys_id}: {e}")
+        return None
+
+    if not article:
+        logger.warning(f"ServiceNow article {article_sys_id} vanished mid-sync")
+        return None
+
+    body_html = article.get("text") or ""
+    number = article.get("number") or file_info.get("number") or article_sys_id
+    short = article.get("short_description") or file_info.get("short_description") or ""
+
+    full_html = (
+        "<!DOCTYPE html>\n<html>\n<head>\n"
+        f"<meta charset=\"utf-8\">\n<title>{html.escape(str(short) or number)}</title>\n"
+        "</head>\n<body>\n"
+        f"<h1>{html.escape(str(short) or number)}</h1>\n"
+        f"<p><strong>KB number:</strong> {html.escape(str(number))}</p>\n"
+        f"{body_html}\n"
+        "</body>\n</html>"
+    )
+
+    s3_key = (
+        f"workspaces/{workspace_id}/servicenow/{connection_id}/"
+        f"{article_sys_id}.html"
+    )
+    metadata = {
+        "source": "servicenow",
+        "workspace_id": workspace_id,
+        "connection_id": connection_id,
+        "servicenow_article_sys_id": article_sys_id,
+        "servicenow_article_number": str(number)[:128],
+        "servicenow_instance": instance_url[:128],
+    }
+    if sync_id:
+        metadata["sync_id"] = sync_id
+
+    try:
+        dual_write.s3_put_object(
+            Bucket=KB_BUCKET,
+            Key=s3_key,
+            Body=full_html.encode("utf-8"),
+            ContentType="text/html",
+            Metadata=metadata,
+            ExpectedBucketOwner=_get_account_id(),
+        )
+        logger.info(f"Uploaded ServiceNow article to s3://{KB_BUCKET}/{s3_key}")
+        return s3_key
+    except ClientError as e:
+        logger.error(f"S3 error uploading ServiceNow article {article_sys_id}: {e}")
+        return None
+
+
+def process_servicenow_attachment(
+    workspace_id: str,
+    connection_id: str,
+    file_info: Dict[str, Any],
+    sync_id: Optional[str] = None,
+    instance_url: str = "",
+) -> Optional[str]:
+    """Process a ServiceNow KB article attachment and upload to S3.
+
+    S3 key: ``workspaces/{ws}/servicenow/{connection_id}/
+              {article_sys_id}/attachments/{safe_filename}``
+    """
+    from shared.oauth import servicenow as servicenow_oauth
+    from shared.servicenow_api import get_attachment_bytes
+
+    attachment_sys_id = file_info.get("attachment_sys_id")
+    article_sys_id = file_info.get("article_sys_id")
+    file_name = file_info.get("file_name") or ""
+    if not attachment_sys_id or not article_sys_id or not instance_url:
+        logger.error("servicenow_attachment missing required fields")
+        return None
+
+    try:
+        access_token = servicenow_oauth.refresh_access_token(
+            workspace_id, connection_id,
+        )
+    except ValueError as e:
+        logger.error(
+            f"Failed to refresh ServiceNow token for connection {connection_id}: {e}"
+        )
+        return None
+
+    try:
+        content = get_attachment_bytes(
+            instance_url, access_token, attachment_sys_id,
+        )
+    except Exception as e:
+        logger.error(
+            f"Failed to fetch ServiceNow attachment {attachment_sys_id}: {e}"
+        )
+        return None
+
+    safe_name = sanitize_filename(file_name) or attachment_sys_id
+    s3_key = (
+        f"workspaces/{workspace_id}/servicenow/{connection_id}/"
+        f"{article_sys_id}/attachments/{safe_name}"
+    )
+    content_type = file_info.get("content_type") or "application/octet-stream"
+
+    metadata = {
+        "source": "servicenow_attachment",
+        "workspace_id": workspace_id,
+        "connection_id": connection_id,
+        "servicenow_article_sys_id": article_sys_id,
+        "servicenow_attachment_sys_id": attachment_sys_id,
+        "servicenow_instance": instance_url[:128],
+    }
+    if sync_id:
+        metadata["sync_id"] = sync_id
+
+    try:
+        dual_write.s3_put_object(
+            Bucket=KB_BUCKET,
+            Key=s3_key,
+            Body=content,
+            ContentType=content_type,
+            Metadata=metadata,
+            ExpectedBucketOwner=_get_account_id(),
+        )
+        logger.info(f"Uploaded ServiceNow attachment to s3://{KB_BUCKET}/{s3_key}")
+        return s3_key
+    except ClientError as e:
+        logger.error(
+            f"S3 error uploading ServiceNow attachment {attachment_sys_id}: {e}"
+        )
+        return None
+
+
 def process_sharepoint_page(
     workspace_id: str,
     connection_id: str,
@@ -1733,6 +1900,13 @@ def _build_repo_identifier(source: str, workspace_id: str, body: Dict, file_info
         engine = file_info.get("engine") or ""
         host_hash = file_info.get("host_hash") or ""
         ident = f"{engine}:{host_hash}" if engine and host_hash else ""
+    elif source in ("servicenow_article", "servicenow_attachment"):
+        # One ServiceNow instance is one licensable repo -- KB, incidents,
+        # etc. all count together against the same license entry. The
+        # instance_url is per-workspace and captured on the sync message
+        # at body-level (not inside file_info) since the sync worker
+        # writes it once per SQS message alongside source/connection_id.
+        ident = body.get("instance_url") or ""
     else:
         ident = ""
     # Strip slashes/colons from ident so the composite stays parseable.
@@ -1967,6 +2141,22 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
                     connection_id=connection_id,
                     file_info=file_info,
                     sync_id=sync_id,
+                )
+            elif source == "servicenow_article":
+                s3_key = process_servicenow_article(
+                    workspace_id=workspace_id,
+                    connection_id=connection_id,
+                    file_info=file_info,
+                    sync_id=sync_id,
+                    instance_url=body.get("instance_url", ""),
+                )
+            elif source == "servicenow_attachment":
+                s3_key = process_servicenow_attachment(
+                    workspace_id=workspace_id,
+                    connection_id=connection_id,
+                    file_info=file_info,
+                    sync_id=sync_id,
+                    instance_url=body.get("instance_url", ""),
                 )
             else:
                 logger.warning(f"Unknown source: {source}")
