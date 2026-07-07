@@ -33,6 +33,7 @@ from botocore.exceptions import ClientError
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared.audit import COMPREHEND_MODEL_ID, log_audit_entry
 from shared.audit_writer import ACTION_DOCUMENT_INGESTED, log_admin_action
+from shared.code_map_sizing import MAX_PROMPT_TOKENS, estimate_tokens
 from shared.model_client import invoke as invoke_model
 from shared.pii import MODE_STRICT, read_workspace_mode, redact
 from shared.prompts import CODE_MAP_LITERAL_DISCIPLINE
@@ -265,13 +266,9 @@ MAX_FILE_SIZE = 50000  # 50K chars - files larger than this get chunked
 CHUNK_SIZE = 40000     # 40K chars per chunk (leaves room for overlap)
 CHUNK_OVERLAP = 2000   # 2K char overlap between chunks for context
 
-# Token limit - leave room for output tokens and template overhead
-MAX_PROMPT_TOKENS = 150_000  # Bedrock limit is 200K; reserve 50K for output + safety
-
-
-def estimate_tokens(text: str) -> int:
-    """Estimate token count. Code averages ~3.5 chars/token; use 3 for safety margin."""
-    return len(text) // 3
+# MAX_PROMPT_TOKENS + estimate_tokens now live in shared.code_map_sizing
+# (imported at the top of the module) so process-repo-summary's upstream
+# splitter uses the same "does this fit in one call" heuristic.
 
 
 def chunk_large_content(content: str, file_path: str) -> List[Dict[str, Any]]:
