@@ -223,12 +223,16 @@ module "process_batch_summary_lambda" {
       ]
     }
 
-    # S3 Vectors write permissions for storing embeddings
+    # S3 Vectors write permissions for storing embeddings + read for
+    # chunk 05 merge fan-in (handle_merge_message calls GetVectors to
+    # fetch N shard summaries by known key so the merge Bedrock call
+    # has the shard content to unify).
     s3_vectors_write = {
       effect = "Allow"
       actions = [
         "s3vectors:PutVectors",
-        "s3vectors:DeleteVectors"
+        "s3vectors:DeleteVectors",
+        "s3vectors:GetVectors",
       ]
       resources = [
         "arn:aws:s3vectors:${var.aws_region}:${data.aws_caller_identity.current.account_id}:bucket/${var.environment}-${var.app_name}-vectors",
