@@ -46,6 +46,8 @@ from shared.servicenow_api import (  # noqa: E402
     get_current_user,
 )
 
+from shared.license_repos import get_active_repos_for_customer  # noqa: E402
+
 try:
     from outcomeops_license import report_repos_snapshot  # noqa: E402
 except ImportError:  # pragma: no cover
@@ -74,6 +76,19 @@ def _get_dynamodb():
     if _dynamodb is None:
         _dynamodb = boto3.resource("dynamodb")
     return _dynamodb
+
+
+def _snapshot_active_repos() -> None:
+    """Refresh the license server's repo-set snapshot after any connect
+    or disconnect. Non-blocking on failure -- the hourly heartbeat
+    scheduler is the safety net."""
+    if report_repos_snapshot is None:
+        return
+    try:
+        active = get_active_repos_for_customer(_get_dynamodb(), WORKSPACES_TABLE)
+        report_repos_snapshot(active_repos=active)
+    except Exception as e:
+        logger.warning(f"[license-snapshot] non-blocking failure: {e}")
 
 
 def _get_sqs():
@@ -326,11 +341,7 @@ def handle_callback(event: Dict) -> Dict:
         },
     )
 
-    if report_repos_snapshot is not None:
-        try:
-            report_repos_snapshot()
-        except Exception:
-            logger.exception("report_repos_snapshot failed (non-fatal)")
+    _snapshot_active_repos()
 
     log_admin_action(
         AUDIT_TABLE,
@@ -410,11 +421,7 @@ def delete_connection(user_email: str, workspace_id: str, connection_id: str) ->
         ),
     )
 
-    if report_repos_snapshot is not None:
-        try:
-            report_repos_snapshot()
-        except Exception:
-            logger.exception("report_repos_snapshot failed (non-fatal)")
+    _snapshot_active_repos()
 
     return _response(200, {"disconnected": True})
 
@@ -433,8 +440,17 @@ def _queue_sync(workspace_id: str, connection_id: str, cursor: Optional[str] = N
 
 
 def _scrub(item: Dict[str, Any]) -> Dict[str, Any]:
-    """Strip DDB internals from a connection row before returning to UI."""
+    """Strip DDB internals from a connection row before returning to UI.
+
+    Legacy rows written before the env-SSM refactor may be missing the
+    connection_id attribute; extract it from the SK so the UI's Disconnect
+    button doesn't fire with an ``undefined`` path segment.
+    """
     view = {k: v for k, v in item.items() if k not in ("PK", "SK", "GSI2PK", "GSI2SK", "entity_type")}
+    if not view.get("connection_id"):
+        sk = item.get("SK", "")
+        if sk.startswith("SERVICENOW_CONNECTION#"):
+            view["connection_id"] = sk[len("SERVICENOW_CONNECTION#"):]
     return view
 
 

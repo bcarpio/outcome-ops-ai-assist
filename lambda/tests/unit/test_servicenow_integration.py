@@ -385,6 +385,34 @@ class TestConnections:
         mock_sqs.send_message.assert_called_once()
 
 
+class TestScrubFallback:
+    """Regression: 2026-07-07 legacy DDB rows written before the env-SSM
+    refactor may lack the connection_id attribute; the UI's Disconnect
+    button then fires against `.../connections/undefined`. _scrub must
+    fall back to extracting connection_id from SK."""
+
+    def test_legacy_row_missing_connection_id_falls_back_to_sk(self):
+        item = {
+            "PK": "WS#ws1",
+            "SK": "SERVICENOW_CONNECTION#75b478b7-a3af",
+            "last_sync_status": "auth_error",
+        }
+        view = handler_module._scrub(item)
+        assert view["connection_id"] == "75b478b7-a3af"
+        assert "PK" not in view
+        assert "SK" not in view
+
+    def test_new_row_preserves_explicit_connection_id(self):
+        item = {
+            "PK": "WS#ws1",
+            "SK": "SERVICENOW_CONNECTION#new-id",
+            "connection_id": "new-id",
+            "last_sync_status": "success",
+        }
+        view = handler_module._scrub(item)
+        assert view["connection_id"] == "new-id"
+
+
 class TestAuthGating:
     def test_missing_email_401(self):
         ev = _event("GET", "/workspaces/ws1/servicenow/connections", user_email=None)
