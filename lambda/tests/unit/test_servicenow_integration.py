@@ -226,6 +226,26 @@ class TestCallback:
             )
         assert resp["statusCode"] == 400
 
+    def test_accepts_post_body_code_and_state(self, mock_table):
+        # Express proxy POSTs code+state in body to avoid SigV4
+        # signature-vs-querystring quirks. Handler must read from body
+        # when querystring is empty.
+        with patch.object(handler_module, "_consume_oauth_state", return_value=None):
+            resp = lambda_handler(
+                _event(
+                    "POST",
+                    "/servicenow/callback",
+                    user_email=None,
+                    body={"code": "c", "state": "s"},
+                ),
+                None,
+            )
+        # State lookup returned None -> 400 "invalid or expired state",
+        # but crucially NOT the earlier "code and state are required"
+        # 400 -- that would mean the body-parsing regressed again.
+        assert resp["statusCode"] == 400
+        assert "invalid or expired state" in json.loads(resp["body"])["error"]
+
     @patch.object(
         handler_module.servicenow_oauth,
         "exchange_code_for_tokens",

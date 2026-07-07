@@ -257,15 +257,24 @@ def _find_pending_connection(table, workspace_id: str) -> Optional[str]:
 
 
 def handle_callback(event: Dict) -> Dict:
-    """GET /servicenow/callback?code=...&state=...
+    """/servicenow/callback
+
+    Accepts code + state from EITHER querystring (GET-direct) or JSON body
+    (POST-via-Express-proxy). The proxy POSTs the params to sidestep
+    SigV4 signature-vs-querystring quirks on the Function URL.
 
     No workspace_id in path -- state row carries it.
     """
     query = event.get("queryStringParameters") or {}
-    code = query.get("code")
-    state = query.get("state")
-    if query.get("error"):
-        logger.warning(f"ServiceNow OAuth error: {query.get('error')}")
+    try:
+        body = json.loads(event.get("body") or "{}")
+    except json.JSONDecodeError:
+        body = {}
+    code = query.get("code") or body.get("code")
+    state = query.get("state") or body.get("state")
+    err = query.get("error") or body.get("error")
+    if err:
+        logger.warning(f"ServiceNow OAuth error: {err}")
         return _redirect("/workspaces?servicenow_error=denied")
     if not code or not state:
         return _error(400, "code and state are required")
