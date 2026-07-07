@@ -252,3 +252,70 @@ class TestSQSEnvelope:
     def test_empty_records(self, mock_table, mock_sqs, mock_s3):
         resp = lambda_handler({"Records": []}, None)
         assert resp == {"batchItemFailures": []}
+
+
+class TestUpdateSyncStatusRegression:
+    """Regression: 2026-07-07 update_item raised
+    ValidationException 'ExpressionAttributeNames unused in expressions:
+    keys: {#err}' because the no-error branch registered #err but never
+    put it in the UpdateExpression. Fix uses REMOVE #err to actually
+    clear the field on success."""
+
+    def test_success_uses_remove_for_last_sync_error(self, mock_table):
+        handler_module._update_sync_status(
+            "ws1", "conn-1", status="success",
+        )
+        mock_table.update_item.assert_called_once()
+        kwargs = mock_table.update_item.call_args.kwargs
+        expr = kwargs["UpdateExpression"]
+        assert "REMOVE #err" in expr
+        assert kwargs["ExpressionAttributeNames"]["#err"] == "last_sync_error"
+
+    def test_failed_with_error_sets_last_sync_error(self, mock_table):
+        handler_module._update_sync_status(
+            "ws1", "conn-1", status="failed", error="oops",
+        )
+        kwargs = mock_table.update_item.call_args.kwargs
+        expr = kwargs["UpdateExpression"]
+        assert "last_sync_error = :e" in expr
+        # No REMOVE clause when we're SETting the field
+        assert "REMOVE" not in expr
+        assert kwargs["ExpressionAttributeValues"][":e"] == "oops"
+
+
+class TestEnqueueIngestionFIFO:
+    """Regression: 2026-07-07 file-ingestion queue is FIFO and requires
+    MessageGroupId + MessageDeduplicationId. Missing them causes
+    MissingParameter on every send_message call."""
+
+    def test_includes_message_group_and_dedup(self, mock_sqs):
+        handler_module._enqueue_ingestion(
+            {
+                "source": "servicenow_article",
+                "workspace_id": "ws1",
+                "connection_id": "conn-1",
+                "file": {"article_sys_id": "art-42"},
+            },
+            sync_id="sync-XYZ",
+        )
+        kwargs = mock_sqs.send_message.call_args.kwargs
+        assert kwargs["MessageGroupId"] == "ws1-conn-1"
+        assert kwargs["MessageDeduplicationId"] == "sync-XYZ-servicenow_article-art-42"
+
+    def test_attachment_dedup_uses_attachment_sys_id(self, mock_sqs):
+        """Article + attachment must not collide on dedup id when both
+        reference the same article_sys_id."""
+        handler_module._enqueue_ingestion(
+            {
+                "source": "servicenow_attachment",
+                "workspace_id": "ws1",
+                "connection_id": "conn-1",
+                "file": {
+                    "attachment_sys_id": "att-99",
+                    "article_sys_id": "art-42",
+                },
+            },
+            sync_id="sync-XYZ",
+        )
+        kwargs = mock_sqs.send_message.call_args.kwargs
+        assert kwargs["MessageDeduplicationId"] == "sync-XYZ-servicenow_attachment-att-99"

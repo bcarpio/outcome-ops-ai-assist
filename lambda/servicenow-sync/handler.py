@@ -27,6 +27,7 @@ import logging
 import os
 import sys
 from datetime import datetime, timezone
+import uuid
 from typing import Any, Dict, List, Set, Tuple
 
 import boto3
@@ -116,27 +117,34 @@ def _update_sync_status(
     """Best-effort status update. Failures are logged and swallowed so the
     ingest side keeps working even if DDB is throttled at write time."""
     try:
-        expr_names = {}
-        expr_values = {
+        expr_names: Dict[str, str] = {}
+        expr_values: Dict[str, Any] = {
             ":s": status,
             ":now": datetime.now(timezone.utc).isoformat(),
         }
         set_parts = ["last_sync_status = :s", "updated_at = :now"]
+        remove_parts: List[str] = []
         if error:
             set_parts.append("last_sync_error = :e")
             expr_values[":e"] = error[:500]
         else:
+            # Clear stale error on success/in-progress. REMOVE (not SET :null)
+            # because that keeps the row shape clean for downstream scans.
             expr_names["#err"] = "last_sync_error"
+            remove_parts.append("#err")
         if cursor:
             set_parts.append("#config = :cfg")
             expr_names["#config"] = "config"
             expr_values[":cfg"] = {"cursor": cursor}
+        update_expr = "SET " + ", ".join(set_parts)
+        if remove_parts:
+            update_expr += " REMOVE " + ", ".join(remove_parts)
         kwargs = {
             "Key": {
                 "PK": f"WS#{workspace_id}",
                 "SK": f"SERVICENOW_CONNECTION#{connection_id}",
             },
-            "UpdateExpression": "SET " + ", ".join(set_parts),
+            "UpdateExpression": update_expr,
             "ExpressionAttributeValues": expr_values,
         }
         if expr_names:
@@ -158,10 +166,32 @@ def _get_connection(workspace_id: str, connection_id: str) -> Dict[str, Any]:
     return resp.get("Item") or {}
 
 
-def _enqueue_ingestion(payload: Dict[str, Any]) -> None:
+def _enqueue_ingestion(payload: Dict[str, Any], *, sync_id: str) -> None:
+    """Enqueue a single article/attachment for file-ingestion.
+
+    file-ingestion queue is FIFO, so MessageGroupId + MessageDeduplicationId
+    are required. Group by (workspace, connection) so a burst of ingest
+    calls from one sync run interleaves cleanly with other connections'
+    traffic. Dedup by sync_id + article/attachment sys_id so an SQS
+    redelivery of THIS servicenow-sync message doesn't re-fan the same
+    ingest twice.
+    """
+    workspace_id = payload["workspace_id"]
+    connection_id = payload["connection_id"]
+    file_info = payload.get("file", {})
+    source = payload.get("source", "servicenow")
+    # Prefer attachment_sys_id over article_sys_id for attachment messages
+    # so an article and its attachment don't collide on the same dedup id.
+    ident = (
+        file_info.get("attachment_sys_id")
+        or file_info.get("article_sys_id")
+        or "unknown"
+    )
     _get_sqs().send_message(
         QueueUrl=FILE_INGESTION_QUEUE,
         MessageBody=json.dumps(payload),
+        MessageGroupId=f"{workspace_id}-{connection_id}",
+        MessageDeduplicationId=f"{sync_id}-{source}-{ident}",
     )
 
 
@@ -233,6 +263,10 @@ def process_sync_message(message: Dict[str, Any]) -> Dict[str, Any]:
     workspace_id = message["workspace_id"]
     connection_id = message["connection_id"]
     cursor_in = message.get("cursor") or ""
+    # sync_id scopes FIFO dedup for the fan-out to file-ingestion; an SQS
+    # redelivery of THIS message uses the same sync_id so the same
+    # article/attachment isn't ingested twice.
+    sync_id = message.get("sync_id") or str(uuid.uuid4())
 
     try:
         guard_active(
@@ -306,7 +340,8 @@ def process_sync_message(message: Dict[str, Any]) -> Dict[str, Any]:
                             "short_description": article.get("short_description"),
                             "sys_updated_on": sys_updated_on,
                         },
-                    }
+                    },
+                    sync_id=sync_id,
                 )
                 articles_synced += 1
 
@@ -339,7 +374,8 @@ def process_sync_message(message: Dict[str, Any]) -> Dict[str, Any]:
                                 "content_type": att.get("content_type"),
                                 "size_bytes": att.get("size_bytes"),
                             },
-                        }
+                        },
+                        sync_id=sync_id,
                     )
                     attachments_synced += 1
 
