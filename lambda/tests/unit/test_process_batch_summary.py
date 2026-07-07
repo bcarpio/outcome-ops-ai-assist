@@ -488,14 +488,18 @@ class TestProcessBatchRecord:
         mock_summary.assert_called_once()
         mock_store.assert_called_once()
 
+    @patch("process_batch_summary_handler._mark_code_map_unit_done")
     @patch("process_batch_summary_handler.store_batch_summary")
     @patch("process_batch_summary_handler.generate_embedding")
     @patch("process_batch_summary_handler.generate_batch_summary")
-    def test_process_batch_record_merge_message_is_dropped_before_chunk_05(
-        self, mock_summary, mock_embedding, mock_store
+    def test_process_batch_record_merge_message_stubs_summary_but_marks_ledger(
+        self, mock_summary, mock_embedding, mock_store, mock_mark_done,
     ):
-        """Chunk 02 stubs the merge path -- returns early without doing
-        Bedrock work. Chunk 05 fills in the actual merge fan-in body."""
+        """Chunk 03 emits N shards + 1 merge per sharded unit;
+        process-repo-summary bumps expected_count to N+1. Until chunk
+        05 fills the fan-in body, the merge stub must still call
+        mark_unit_complete or sharded units stall at
+        completed_count = expected_count - 1 forever."""
         record = {
             "body": json.dumps({
                 "message_type": "merge",
@@ -510,9 +514,13 @@ class TestProcessBatchRecord:
             })
         }
         process_batch_record(record)
+        # No Bedrock / storage work
         mock_summary.assert_not_called()
         mock_embedding.assert_not_called()
         mock_store.assert_not_called()
+        # BUT the ledger closes
+        mock_mark_done.assert_called_once()
+        assert mock_mark_done.call_args.kwargs["status"] == "ok"
 
     @patch("process_batch_summary_handler.store_batch_summary")
     @patch("process_batch_summary_handler.generate_embedding")

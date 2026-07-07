@@ -978,6 +978,47 @@ def send_code_units_to_sqs(
 _FALLBACK_FILE_SIZE_BYTES = 30_000
 
 
+def count_expected_shard_messages(
+    code_units: List[Dict[str, Any]],
+    all_files: Optional[List[Dict[str, Any]]] = None,
+) -> int:
+    """Compute the total number of SQS messages the splitter will emit
+    for the given code_units.
+
+    Used by process-repo-summary at ledger-open time so
+    ``expected_count`` on the ``code_map_units`` row matches the
+    completions the consumer will actually mark. Without this, sharded
+    code units would drive completed_count above expected_count and
+    ``try_advance_sha`` would misfire.
+
+    Returns:
+        Total messages = sum(shard_count) + count(units with shard_count > 1)
+        The trailing +1-per-sharded-unit accounts for the companion
+        merge message.
+    """
+    file_sizes: Dict[str, int] = {}
+    if all_files:
+        for f in all_files:
+            if f.get("type") == "blob" and f.get("path"):
+                file_sizes[f["path"]] = int(f.get("size") or 0)
+
+    total = 0
+    for code_unit in code_units:
+        pairs = [
+            (p, file_sizes.get(p, _FALLBACK_FILE_SIZE_BYTES))
+            for p in code_unit.get("file_paths", [])
+        ]
+        estimated_tokens = sum(
+            estimate_tokens_from_size(size) for _, size in pairs
+        ) + 30 * len(pairs)
+        if estimated_tokens <= TARGET_SHARD_TOKENS:
+            total += 1  # single-shard message
+        else:
+            shards = pack_files_into_shards(pairs, TARGET_SHARD_TOKENS)
+            total += len(shards) + 1  # N shards + 1 merge
+    return total
+
+
 def _build_shard_messages_for_unit(
     *,
     code_unit: Dict[str, Any],
@@ -1400,12 +1441,21 @@ def handler(event, context):
                     and current_commit_sha
                     and current_commit_timestamp is not None
                 ):
+                    # Chunk 03: sharded units emit N shard + 1 merge
+                    # messages each, so expected_count must count total
+                    # SQS messages not just code units. Otherwise the
+                    # consumer's per-message mark_unit_complete drives
+                    # completed_count above expected_count and
+                    # try_advance_sha never fires the SHA advance.
+                    expected_msgs = count_expected_shard_messages(
+                        code_units, all_files=all_files,
+                    )
                     _open_code_map_units_ledger(
                         workspace_id=workspace_id,
                         repo=repo_project,
                         commit_sha=current_commit_sha,
                         commit_timestamp=int(current_commit_timestamp),
-                        expected_count=len(code_units),
+                        expected_count=expected_msgs,
                     )
 
                 send_code_units_to_sqs(

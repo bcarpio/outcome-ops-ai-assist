@@ -1422,13 +1422,18 @@ def process_batch_record(record: Dict[str, Any]) -> None:
     # they still process end-to-end via the existing summarize path.
     message_type = batch.get("message_type", "shard")
     if message_type == "merge":
-        # Chunk 05 fills in the merge fan-in body. Until it lands,
-        # merge messages log + return so they get deleted from the
-        # queue without stomping any shard summaries.
+        # Chunk 05 fills in the actual merge fan-in body. Until then,
+        # the merge message still marks the ledger complete so
+        # try_advance_sha can fire on the LAST message of a sharded
+        # unit (process-repo-summary's expected_count counts N shards
+        # + 1 merge per sharded unit). Skipping the ledger update here
+        # would leave completed_count = expected_count - 1 for every
+        # sharded unit until chunk 05 ships.
         logger.info(
-            "[merge] chunk 05 pending; dropping merge message for "
-            f"{batch.get('parent_storage_key', '<unknown>')}"
+            "[merge] chunk 05 pending; marking ledger + skipping "
+            f"summary for {batch.get('parent_storage_key', '<unknown>')}"
         )
+        _mark_code_map_unit_done(batch, status="ok")
         return
 
     shard_index = batch.get("shard_index", 0)

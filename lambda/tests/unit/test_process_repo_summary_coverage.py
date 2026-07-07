@@ -314,6 +314,46 @@ class TestSendCodeUnitsToSqs:
         body = json.loads(mock_sqs.send_message.call_args.kwargs["MessageBody"])
         assert body["workspace_id"] == "ws-1"
 
+    def test_count_expected_shard_messages_small_units(self):
+        """A small code unit contributes 1 to the expected_count."""
+        code_units = [
+            {"file_paths": ["a.py"], "storage_key": "k", "group_name": "g"}
+        ]
+        all_files = [{"path": "a.py", "type": "blob", "size": 3000}]
+        assert rsh.count_expected_shard_messages(code_units, all_files) == 1
+
+    def test_count_expected_shard_messages_sharded_units(self):
+        """A sharded code unit contributes N + 1 (shards + merge)."""
+        code_units = [{
+            "file_paths": [f"tests/t{i}.py" for i in range(15)],
+            "storage_key": "summary#tests",
+            "group_name": "tests",
+        }]
+        all_files = [
+            {"path": f"tests/t{i}.py", "type": "blob", "size": 40_000}
+            for i in range(15)
+        ]
+        total = rsh.count_expected_shard_messages(code_units, all_files)
+        assert total >= 3  # >= 2 shards + 1 merge
+
+    def test_count_expected_shard_messages_mixed(self):
+        """Mixed small + big units get counted correctly."""
+        code_units = [
+            {"file_paths": ["a.py"], "storage_key": "k1", "group_name": "g1"},
+            {
+                "file_paths": [f"tests/t{i}.py" for i in range(15)],
+                "storage_key": "summary#tests",
+                "group_name": "tests",
+            },
+        ]
+        all_files = [{"path": "a.py", "type": "blob", "size": 3000}] + [
+            {"path": f"tests/t{i}.py", "type": "blob", "size": 40_000}
+            for i in range(15)
+        ]
+        total = rsh.count_expected_shard_messages(code_units, all_files)
+        # 1 for the small unit + (>= 2 shards + 1 merge) for the big one
+        assert total >= 4
+
     @patch.object(rsh, 'sqs_client')
     @patch.object(rsh, 'CODE_MAPS_QUEUE_URL', 'https://sqs.example.com/queue')
     def test_chunk_03_shards_oversized_unit_and_sends_merge(self, mock_sqs):
