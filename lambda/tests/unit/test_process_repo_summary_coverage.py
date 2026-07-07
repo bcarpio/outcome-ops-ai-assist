@@ -314,6 +314,33 @@ class TestSendCodeUnitsToSqs:
         body = json.loads(mock_sqs.send_message.call_args.kwargs["MessageBody"])
         assert body["workspace_id"] == "ws-1"
 
+    @patch.object(rsh, 'sqs_client')
+    @patch.object(rsh, 'CODE_MAPS_QUEUE_URL', 'https://sqs.example.com/queue')
+    def test_all_files_as_list_of_strings_does_not_crash(self, mock_sqs):
+        """Regression: github-sync + azure-devops-sync send all_files as
+        list[str] (flattened paths, no size). The splitter must tolerate
+        that shape rather than crashing on `f.get()`. Falls back to
+        conservative per-file byte estimate."""
+        code_units = [{
+            "batch_type": "handler-group", "group_name": "g",
+            "file_paths": ["a.py"], "storage_key": "k",
+        }]
+        # Realistic github-sync payload -- just paths.
+        all_files = ["a.py", "b.py", "c.py"]
+        rsh.send_code_units_to_sqs(code_units, "repo", "owner/repo", all_files=all_files)
+        assert mock_sqs.send_message.call_count == 1
+
+    def test_count_expected_shard_messages_tolerates_list_of_strings(self):
+        code_units = [{
+            "file_paths": [f"tests/t{i}.py" for i in range(20)],
+            "storage_key": "summary#tests",
+            "group_name": "tests",
+        }]
+        all_files = [f"tests/t{i}.py" for i in range(20)]  # str shape
+        # Should compute using the fallback size, not crash
+        total = rsh.count_expected_shard_messages(code_units, all_files)
+        assert total >= 2  # sharded + merge
+
     def test_count_expected_shard_messages_small_units(self):
         """A small code unit contributes 1 to the expected_count."""
         code_units = [

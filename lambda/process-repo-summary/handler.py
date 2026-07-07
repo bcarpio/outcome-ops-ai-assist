@@ -918,15 +918,20 @@ def send_code_units_to_sqs(
     incremental sync would treat all unchanged handlers as orphans.
     """
     # Chunk 03: build a path -> byte-size lookup so the splitter can
-    # decide when a code unit is too big for a single Bedrock call. If
-    # all_files isn't threaded through (legacy callers), the map is
-    # empty and every file falls back to a conservative 30k-byte
-    # estimate -- enough to force sharding on large units without
-    # requiring perfect data.
+    # decide when a code unit is too big for a single Bedrock call.
+    # Both callers (github-sync + azure-devops-sync) currently flatten
+    # the tree to list[str] paths before enqueuing, so file sizes
+    # aren't available in that shape -- we tolerate both list[str] and
+    # list[{path,type,size}] here, and fall back to the conservative
+    # 30k-byte estimate when sizes are missing.
     file_sizes: Dict[str, int] = {}
     if all_files:
         for f in all_files:
-            if f.get("type") == "blob" and f.get("path"):
+            if isinstance(f, str):
+                # Flattened path list; no size available -- splitter
+                # will use _FALLBACK_FILE_SIZE_BYTES per file.
+                continue
+            if isinstance(f, dict) and f.get("type") == "blob" and f.get("path"):
                 file_sizes[f["path"]] = int(f.get("size") or 0)
 
     sent = 0
@@ -999,7 +1004,11 @@ def count_expected_shard_messages(
     file_sizes: Dict[str, int] = {}
     if all_files:
         for f in all_files:
-            if f.get("type") == "blob" and f.get("path"):
+            if isinstance(f, str):
+                # Flattened path list -- no sizes available; splitter
+                # falls back to _FALLBACK_FILE_SIZE_BYTES per file.
+                continue
+            if isinstance(f, dict) and f.get("type") == "blob" and f.get("path"):
                 file_sizes[f["path"]] = int(f.get("size") or 0)
 
     total = 0
