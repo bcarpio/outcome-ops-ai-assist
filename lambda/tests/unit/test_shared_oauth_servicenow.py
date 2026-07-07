@@ -114,6 +114,19 @@ class TestSaveTokens:
         assert mock_kms.encrypt.call_args.kwargs["Plaintext"] == b"rf-x"
         mock_table.update_item.assert_called_once()
 
+    def test_save_refresh_token_persists_expected_fields(self, mock_kms, mock_table):
+        sn.save_refresh_token("conn-1", "rf-x")
+        kwargs = mock_table.update_item.call_args.kwargs
+        assert kwargs["Key"] == {
+            "PK": "SERVICENOW_TOKEN#conn-1",
+            "SK": "CREDENTIALS",
+        }
+        vals = kwargs["ExpressionAttributeValues"]
+        assert vals[":et"] == "servicenow_token"
+        assert vals[":cid"] == "conn-1"
+        # Encrypted refresh token is base64-encoded
+        assert vals[":rt"]
+
     def test_delete_tokens_removes_row(self, mock_table):
         sn.delete_tokens("conn-1")
         mock_table.delete_item.assert_called_once()
@@ -121,6 +134,13 @@ class TestSaveTokens:
             "PK": "SERVICENOW_TOKEN#conn-1",
             "SK": "CREDENTIALS",
         }
+
+
+class TestMarkReauthRequiredExceptionSwallowed:
+    def test_ddb_error_does_not_raise(self, mock_table):
+        mock_table.update_item.side_effect = RuntimeError("throttled")
+        # Best-effort: exception is caught + logged, not re-raised.
+        sn._mark_connection_reauth_required("ws1", "conn-1")
 
 
 class TestExchange:

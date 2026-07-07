@@ -254,6 +254,49 @@ class TestSQSEnvelope:
         assert resp == {"batchItemFailures": []}
 
 
+class TestAllowedExtension:
+    def test_empty_name_returns_false(self):
+        assert handler_module._has_allowed_extension("") is False
+
+    def test_unsupported_extension_returns_false(self):
+        assert handler_module._has_allowed_extension("payload.exe") is False
+
+    def test_allowed_extension_returns_true(self):
+        assert handler_module._has_allowed_extension("guide.pdf") is True
+
+    def test_case_insensitive(self):
+        assert handler_module._has_allowed_extension("SLIDES.PPTX") is True
+
+
+class TestUpdateSyncStatusExceptionSwallowed:
+    def test_ddb_error_does_not_raise(self, mock_table):
+        mock_table.update_item.side_effect = RuntimeError("throttled")
+        # Best-effort: exception is caught + logged, not re-raised.
+        handler_module._update_sync_status("ws1", "c1", status="success")
+
+
+class TestLambdaHandlerLicenseValidation:
+    """Covers the validate_license branch of the SQS envelope.
+    validate_license is None by default in tests (via reset_globals);
+    setting it to a mock lets us hit the try/except lines."""
+
+    def test_license_ok_dispatches_records(self, mock_table, mock_sqs, mock_s3):
+        handler_module.validate_license = MagicMock()
+        with patch.object(handler_module, "process_sync_message", return_value={"status": "success"}):
+            resp = lambda_handler({
+                "Records": [{"messageId": "m1", "body": json.dumps({"workspace_id": "w", "connection_id": "c"})}]
+            }, None)
+        assert resp == {"batchItemFailures": []}
+        handler_module.validate_license.assert_called_once()
+
+    def test_license_exception_raises(self, mock_table, mock_sqs, mock_s3):
+        handler_module.validate_license = MagicMock(side_effect=RuntimeError("no license"))
+        with pytest.raises(RuntimeError):
+            lambda_handler({
+                "Records": [{"messageId": "m1", "body": json.dumps({"workspace_id": "w", "connection_id": "c"})}]
+            }, None)
+
+
 class TestUpdateSyncStatusRegression:
     """Regression: 2026-07-07 update_item raised
     ValidationException 'ExpressionAttributeNames unused in expressions:

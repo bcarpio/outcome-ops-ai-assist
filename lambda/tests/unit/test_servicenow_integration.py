@@ -385,6 +385,207 @@ class TestConnections:
         mock_sqs.send_message.assert_called_once()
 
 
+class TestOAuthStateCache:
+    """Direct exercises _put_oauth_state + _consume_oauth_state so Sonar
+    counts those lines as covered without relying on handle_authorize +
+    handle_callback mocks to reach them."""
+
+    def test_put_state_writes_ttl_row(self, mock_table):
+        handler_module._put_oauth_state(
+            "state-abc",
+            {"workspace_id": "ws1", "connection_id": "c1", "user_email": "a@x"},
+        )
+        mock_table.put_item.assert_called_once()
+        item = mock_table.put_item.call_args.kwargs["Item"]
+        assert item["PK"] == "SERVICENOW_STATE#state-abc"
+        assert item["entity_type"] == "servicenow_state"
+        assert item["ttl"] > 0
+        assert item["payload"]["workspace_id"] == "ws1"
+
+    def test_consume_state_returns_payload_and_deletes_row(self, mock_table):
+        mock_table.get_item.return_value = {
+            "Item": {
+                "payload": {"workspace_id": "ws1", "connection_id": "c1"},
+            }
+        }
+        payload = handler_module._consume_oauth_state("state-abc")
+        assert payload["workspace_id"] == "ws1"
+        mock_table.delete_item.assert_called_once()
+
+    def test_consume_state_missing_returns_none(self, mock_table):
+        mock_table.get_item.return_value = {}
+        assert handler_module._consume_oauth_state("nope") is None
+        mock_table.delete_item.assert_not_called()
+
+    def test_consume_state_delete_error_swallowed(self, mock_table):
+        mock_table.get_item.return_value = {"Item": {"payload": {"x": 1}}}
+        mock_table.delete_item.side_effect = RuntimeError("ddb hiccup")
+        # Non-fatal -- returns the payload anyway
+        assert handler_module._consume_oauth_state("state") == {"x": 1}
+
+
+class TestIsWorkspaceAdmin:
+    def test_org_admin_passes_when_not_workspace_admin(self, mock_table):
+        def get_item(Key, **_):
+            if Key["SK"].startswith("WS_MEMBER#"):
+                return {"Item": {"role": "workspace_member"}}
+            if Key["SK"] == "ORG_MEMBER":
+                return {"Item": {"org_role": "org_admin"}}
+            return {}
+        mock_table.get_item.side_effect = get_item
+        assert handler_module._is_workspace_admin(
+            mock_table, "admin@example.com", "ws1"
+        ) is True
+
+    def test_empty_email_short_circuits(self, mock_table):
+        assert handler_module._is_workspace_admin(mock_table, "", "ws1") is False
+        mock_table.get_item.assert_not_called()
+
+
+class TestFindPendingConnection:
+    def test_paginates_query_until_match(self, mock_table):
+        # Two-page result: no needs_oauth on page 1, match on page 2.
+        mock_table.query.side_effect = [
+            {
+                "Items": [{"last_sync_status": "success", "connection_id": "c1"}],
+                "LastEvaluatedKey": {"PK": "WS#ws1"},
+            },
+            {
+                "Items": [{"last_sync_status": "needs_oauth", "connection_id": "c-pending"}],
+            },
+        ]
+        found = handler_module._find_pending_connection(mock_table, "ws1")
+        assert found == "c-pending"
+        assert mock_table.query.call_count == 2
+
+
+class TestCallbackErrorPaths:
+    """Cover exchange_code_for_tokens ValueError + get_current_user
+    exception + the passive-region catches so those lines land in the
+    coverage report."""
+
+    @patch.object(
+        handler_module.servicenow_oauth,
+        "exchange_code_for_tokens",
+        side_effect=ValueError("invalid grant"),
+    )
+    def test_exchange_failure_redirects_with_error(self, mock_exch, mock_table):
+        with patch.object(
+            handler_module,
+            "_consume_oauth_state",
+            return_value={
+                "workspace_id": "ws1",
+                "connection_id": "conn-1",
+                "user_email": "a@x",
+            },
+        ):
+            resp = lambda_handler(
+                _event(
+                    "GET",
+                    "/servicenow/callback",
+                    user_email=None,
+                    query={"code": "c", "state": "s"},
+                ),
+                None,
+            )
+        assert resp["statusCode"] == 302
+        assert "exchange_failed" in resp["headers"]["Location"]
+
+    @patch.object(
+        handler_module.servicenow_oauth,
+        "exchange_code_for_tokens",
+        return_value=("access", "refresh", 1800),
+    )
+    @patch.object(handler_module.servicenow_oauth, "save_refresh_token")
+    @patch.object(
+        handler_module.servicenow_oauth,
+        "get_instance_url",
+        return_value="https://x.service-now.com",
+    )
+    @patch.object(handler_module.dual_write, "ddb_update_item")
+    @patch.object(handler_module, "log_admin_action")
+    @patch.object(handler_module, "get_current_user", side_effect=RuntimeError("api down"))
+    def test_get_current_user_exception_still_completes_callback(
+        self, mock_user, mock_audit, mock_upd, mock_url, mock_save, mock_exch,
+        mock_table, mock_sqs,
+    ):
+        with patch.object(
+            handler_module,
+            "_consume_oauth_state",
+            return_value={
+                "workspace_id": "ws1",
+                "connection_id": "conn-1",
+                "user_email": "a@x",
+            },
+        ):
+            resp = lambda_handler(
+                _event(
+                    "GET",
+                    "/servicenow/callback",
+                    user_email=None,
+                    query={"code": "c", "state": "s"},
+                ),
+                None,
+            )
+        # Callback still redirects to success -- identity capture is best-effort
+        assert resp["statusCode"] == 302
+        assert "servicenow=connected" in resp["headers"]["Location"]
+
+
+class TestGateFailures:
+    """Non-admin + passive-region paths for trigger_sync + delete_connection
+    + authorize. Cheap coverage since each test only touches one branch."""
+
+    def test_non_admin_cannot_trigger_sync(self, mock_table):
+        _non_admin(mock_table)
+        resp = lambda_handler(
+            _event("POST", "/workspaces/ws1/servicenow/connections/c1/sync"),
+            None,
+        )
+        assert resp["statusCode"] == 403
+
+    def test_non_admin_cannot_disconnect(self, mock_table):
+        _non_admin(mock_table)
+        resp = lambda_handler(
+            _event("DELETE", "/workspaces/ws1/servicenow/connections/c1"),
+            None,
+        )
+        assert resp["statusCode"] == 403
+
+    def test_passive_region_short_circuits_authorize(self, mock_table):
+        _admin(mock_table)
+        with patch.object(
+            handler_module, "guard_active", side_effect=handler_module.RegionPassiveError
+        ), patch.object(handler_module, "passive_response", return_value={"statusCode": 503, "body": "passive"}):
+            resp = lambda_handler(
+                _event("GET", "/workspaces/ws1/servicenow/authorize"),
+                None,
+            )
+        assert resp["statusCode"] == 503
+
+    def test_passive_region_short_circuits_trigger_sync(self, mock_table):
+        _admin(mock_table)
+        with patch.object(
+            handler_module, "guard_active", side_effect=handler_module.RegionPassiveError
+        ), patch.object(handler_module, "passive_response", return_value={"statusCode": 503, "body": "passive"}):
+            resp = lambda_handler(
+                _event("POST", "/workspaces/ws1/servicenow/connections/c1/sync"),
+                None,
+            )
+        assert resp["statusCode"] == 503
+
+    def test_passive_region_short_circuits_disconnect(self, mock_table):
+        _admin(mock_table)
+        with patch.object(
+            handler_module, "guard_active", side_effect=handler_module.RegionPassiveError
+        ), patch.object(handler_module, "passive_response", return_value={"statusCode": 503, "body": "passive"}):
+            resp = lambda_handler(
+                _event("DELETE", "/workspaces/ws1/servicenow/connections/c1"),
+                None,
+            )
+        assert resp["statusCode"] == 503
+
+
 class TestScrubFallback:
     """Regression: 2026-07-07 legacy DDB rows written before the env-SSM
     refactor may lack the connection_id attribute; the UI's Disconnect
