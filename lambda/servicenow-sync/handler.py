@@ -240,14 +240,21 @@ def _enqueue_orphan_deletes(
         return 0
     sqs = _get_sqs()
     for sys_id in orphan_sys_ids:
+        # delete-worker dispatches on `action`; without it the message
+        # is skipped and the orphaned article + attachments stay in S3
+        # + vectors forever. delete_prefix walks the whole article's
+        # sub-tree (HTML at {sys_id}.html and attachments/*) in one
+        # message.
         sqs.send_message(
             QueueUrl=DELETE_QUEUE,
             MessageBody=json.dumps(
                 {
+                    "action": "delete_prefix",
                     "source": "servicenow",
                     "workspace_id": workspace_id,
                     "connection_id": connection_id,
                     "article_sys_id": sys_id,
+                    "prefix": f"{connection_id}/{sys_id}",
                 }
             ),
         )

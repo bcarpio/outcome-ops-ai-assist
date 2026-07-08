@@ -382,7 +382,15 @@ class TestConnections:
         assert resp["statusCode"] == 200
         mock_del_conn.assert_called_once()
         mock_del_tokens.assert_called_once_with("conn-1")
+        # Regression: delete-worker dispatches on `action` -- prior shape
+        # sent `source` alone and got logged as "Unknown action: None"
+        # then skipped, orphaning every disconnected connection's S3 +
+        # vectors forever.
         mock_sqs.send_message.assert_called_once()
+        body = json.loads(mock_sqs.send_message.call_args.kwargs["MessageBody"])
+        assert body["action"] == "delete_prefix"
+        assert body["source"] == "servicenow"
+        assert body["prefix"] == "conn-1/"
 
 
 class TestOAuthStateCache:

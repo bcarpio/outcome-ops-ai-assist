@@ -410,13 +410,27 @@ def delete_connection(user_email: str, workspace_id: str, connection_id: str) ->
     )
     servicenow_oauth.delete_tokens(connection_id)
 
+    # delete-worker dispatches on the `action` field; without it the
+    # worker logs "Unknown action: None" and skips, leaving orphaned S3
+    # objects + vectors for every disconnected connection. The prefix
+    # matches what the sync worker writes at
+    # workspaces/{ws}/servicenow/{conn}/... so delete_prefix cleans up
+    # both the KB articles AND their attachments in one message.
+    # delete-worker dispatches on the `action` field; without it the
+    # worker logs "Unknown action: None" and skips, leaving orphaned S3
+    # objects + vectors for every disconnected connection. The prefix
+    # is APPENDED to workspaces/{ws}/{source}/ by handle_delete_prefix,
+    # so passing "{conn}/" cleans both articles AND attachments in one
+    # message (they both live under workspaces/{ws}/servicenow/{conn}/).
     _get_sqs().send_message(
         QueueUrl=DELETE_QUEUE,
         MessageBody=json.dumps(
             {
+                "action": "delete_prefix",
                 "source": "servicenow",
                 "workspace_id": workspace_id,
                 "connection_id": connection_id,
+                "prefix": f"{connection_id}/",
             }
         ),
     )

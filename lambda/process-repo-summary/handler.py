@@ -634,50 +634,107 @@ def store_code_map_embedding(
         raise
 
 
+def _build_file_sizes_map(all_files: Optional[List[Any]]) -> Dict[str, int]:
+    """Build path -> byte-size lookup from the tree walk. Handles both
+    list[dict] (GitHub tree API) and list[str] (flattened path list)
+    shapes; the string shape has no sizes and callers use the
+    fallback per-file estimate.
+    """
+    file_sizes: Dict[str, int] = {}
+    if not all_files:
+        return file_sizes
+    for f in all_files:
+        if isinstance(f, str):
+            continue
+        if isinstance(f, dict) and f.get("type") == "blob" and f.get("path"):
+            file_sizes[f["path"]] = int(f.get("size") or 0)
+    return file_sizes
+
+
+def _shard_group_names_for_unit(
+    code_unit: Dict[str, Any],
+    file_sizes: Dict[str, int],
+) -> List[str]:
+    """Return the group_names process-batch-summary will actually store
+    summaries under for one code unit.
+
+    Single-shard units return ``[parent_group_name]`` (unchanged from
+    pre-chunk-03 behavior). Sharded units return ``[parent#shard-00,
+    parent#shard-01, ...]`` matching the shard-suffixed group_name that
+    ``_build_shard_messages_for_unit`` sets on each shard message.
+
+    Used by both the splitter (via ``_build_shard_messages_for_unit``)
+    and the orphan-cleanup expected_keys builder
+    (``_expected_code_map_vector_keys``) so they stay in sync. If the
+    splitter shards a unit and this helper doesn't emit the same
+    shard-suffixed names, the orphan sweep deletes the shard summaries
+    and the merge handler never sees N complete shards.
+    """
+    parent_group_name = code_unit["group_name"]
+    file_paths = list(code_unit.get("file_paths") or [])
+    if not file_paths:
+        return [parent_group_name]
+
+    pairs = [(p, file_sizes.get(p, _FALLBACK_FILE_SIZE_BYTES)) for p in file_paths]
+    estimated_tokens = sum(
+        estimate_tokens_from_size(size) for _, size in pairs
+    ) + 30 * len(pairs)
+    if estimated_tokens <= TARGET_SHARD_TOKENS:
+        return [parent_group_name]
+
+    shards = pack_files_into_shards(pairs, TARGET_SHARD_TOKENS)
+    return [f"{parent_group_name}#shard-{i:02d}" for i in range(len(shards))]
+
+
 def _expected_code_map_vector_keys(
     code_units: List[Dict[str, Any]],
     repo: str,
     workspace_id: Optional[str],
     *,
     provider: str = "github",
+    all_files: Optional[List[Any]] = None,
 ) -> List[str]:
-    """Compute the deterministic vector keys process-batch-summary will write
-    for the given code units. Mirrors process-batch-summary/handler.py:929-938
-    EXACTLY:
+    """Compute the deterministic vector keys process-batch-summary will
+    write for the given code units. Mirrors the writer's key derivation:
 
-        doc_type = f"{batch['batch_type']}-summary"     # appends -summary
-        key      = f"{ws}#github#{repo}#{doc_type}#{group_name}"
+        doc_type = f"{batch['batch_type']}-summary"
+        key      = f"{ws}#{provider}#{repo}#{doc_type}#{group_name}"
 
-    The `-summary` suffix is what differentiates raw batch_types
-    (handler-group, csharp-project, source-module, components, ...) as
-    returned by the per-backend discover_code_units from the doc_type
-    segment that lands in the vector key (handler-group-summary,
-    csharp-project-summary, source-module-summary, components-summary).
-
-    Without this suffix, every expected_key would be off-by-`-summary`
-    and the orphan cleanup would treat every legitimately-stored vector
-    as an orphan and delete it. (This was the bug in the first
-    deployment of this code; tests caught the absence of -summary in
-    the live prd index.)
+    For sharded units (chunk 03 splitter emits N shard messages per
+    oversized unit), the writer stores each shard's summary under a
+    shard-suffixed group_name like ``tests#shard-00``. The orphan
+    cleanup MUST include those shard-suffixed keys in expected_keys or
+    it deletes them (whichever shards happen to land before the sweep
+    disappear silently, breaking merge fan-in and leaving retrieval
+    with per-shard partial summaries at best).
 
     Args:
-        code_units: Output of discover_code_units() - each dict has
-            batch_type (raw, no -summary suffix) and group_name.
+        code_units: Output of discover_code_units().
         repo: Short repo name (matches batch["repo"] in the writer).
         workspace_id: Workspace ID, or None for non-workspace repos.
+        provider: "github" or "azure_devops" -- matches the writer.
+        all_files: Tree walk output. Used to size each unit against
+            TARGET_SHARD_TOKENS and emit shard-suffixed keys for
+            oversized units. Optional for backward compatibility;
+            without it, shard-suffixed keys are absent from
+            expected_keys and the orphan sweep may delete real
+            shard summaries.
 
     Returns:
-        List of expected vector keys (one per unit).
+        List of expected vector keys (>= one per unit; N+1 for
+        multi-shard units when all_files is provided).
     """
+    file_sizes = _build_file_sizes_map(all_files)
     keys = []
     for unit in code_units:
         doc_type = f"{unit['batch_type']}-summary"
-        if workspace_id:
-            keys.append(
-                f"{workspace_id}#{provider}#{repo}#{doc_type}#{unit['group_name']}"
-            )
-        else:
-            keys.append(f"{repo}#{doc_type}#{unit['group_name']}")
+        for group_name in _shard_group_names_for_unit(unit, file_sizes):
+            if workspace_id:
+                keys.append(
+                    f"{workspace_id}#{provider}#{repo}#{doc_type}#{group_name}"
+                )
+            else:
+                keys.append(f"{repo}#{doc_type}#{group_name}")
     return keys
 
 
@@ -1515,8 +1572,14 @@ def handler(event, context):
             # full_code_units is empty defends against wiping a healthy repo
             # if discover_code_units fell over.
             if full_code_units:
+                # all_files threaded through so the expected_keys builder
+                # emits shard-suffixed vector keys for oversized units.
+                # Without it, the chunk-05 orphan cleanup would delete
+                # shard summaries the moment they land (silently
+                # breaking merge fan-in for every regen).
                 expected_keys = _expected_code_map_vector_keys(
                     full_code_units, repo, workspace_id, provider=provider,
+                    all_files=all_files,
                 )
                 _queue_orphan_code_map_cleanup(repo, expected_keys, workspace_id)
 

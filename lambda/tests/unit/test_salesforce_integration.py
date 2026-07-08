@@ -350,7 +350,13 @@ class TestConnections:
         assert resp["statusCode"] == 200
         mock_del_conn.assert_called_once()
         mock_del_tokens.assert_called_once_with("c1")
-        mock_sqs.send_message.assert_called_once()  # DELETE_QUEUE fan-out
+        # delete-worker dispatches on `action` -- without it the message
+        # is skipped as "Unknown action: None" and orphans persist forever.
+        mock_sqs.send_message.assert_called_once()
+        body = json.loads(mock_sqs.send_message.call_args.kwargs["MessageBody"])
+        assert body["action"] == "delete_prefix"
+        assert body["source"] == "salesforce"
+        assert body["prefix"] == "c1/"
 
 
 class TestAuthGating:

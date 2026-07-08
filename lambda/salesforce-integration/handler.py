@@ -458,13 +458,27 @@ def delete_connection(user_email: str, workspace_id: str, connection_id: str) ->
     )
     salesforce_oauth.delete_tokens(connection_id)
 
+    # delete-worker dispatches on the `action` field; without it the
+    # worker logs "Unknown action: None" and skips, leaving orphaned
+    # objects/vectors for every disconnected connection. Matches the
+    # sync worker's write prefix at
+    # workspaces/{ws}/salesforce/{conn}/{object_type}/... so
+    # delete_prefix cleans up records + files in one message.
+    # delete-worker dispatches on the `action` field; without it the
+    # worker logs "Unknown action: None" and skips, leaving orphaned
+    # objects/vectors for every disconnect. The prefix is APPENDED to
+    # workspaces/{ws}/{source}/ by handle_delete_prefix, so passing
+    # "{conn}/" cleans all records + files under the connection in
+    # one message (workspaces/{ws}/salesforce/{conn}/*).
     _get_sqs().send_message(
         QueueUrl=DELETE_QUEUE,
         MessageBody=json.dumps(
             {
+                "action": "delete_prefix",
                 "source": "salesforce",
                 "workspace_id": workspace_id,
                 "connection_id": connection_id,
+                "prefix": f"{connection_id}/",
             }
         ),
     )

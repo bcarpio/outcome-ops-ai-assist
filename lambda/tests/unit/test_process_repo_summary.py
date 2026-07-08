@@ -573,6 +573,91 @@ class TestExpectedCodeMapVectorKeys:
         ]
 
 
+class TestExpectedCodeMapVectorKeysShardAware:
+    """Regression for the 2026-07-08 shard-orphan-cleanup bug: chunk 03's
+    splitter writes shard-suffixed vector keys for oversized units, but
+    the pre-fix _expected_code_map_vector_keys only emitted parent
+    group_names. Result: whichever shard summary landed before the
+    orphan sweep got deleted, breaking merge fan-in silently every run.
+    """
+
+    def test_small_unit_still_single_key_without_all_files(self):
+        """No all_files -> single-shard default. Backward compat."""
+        units = [{
+            "batch_type": "handler-group",
+            "group_name": "chat",
+            "file_paths": ["lambda/chat/handler.py"],
+        }]
+        keys = repo_summary_handler._expected_code_map_vector_keys(
+            units, "myrepo", "ws", all_files=None,
+        )
+        assert keys == ["ws#github#myrepo#handler-group-summary#chat"]
+
+    def test_small_unit_stays_single_key_with_all_files(self):
+        """A unit whose files fit under TARGET_SHARD_TOKENS gets one key."""
+        units = [{
+            "batch_type": "handler-group",
+            "group_name": "chat",
+            "file_paths": ["lambda/chat/handler.py"],
+        }]
+        all_files = [{"path": "lambda/chat/handler.py", "type": "blob", "size": 5000}]
+        keys = repo_summary_handler._expected_code_map_vector_keys(
+            units, "myrepo", "ws", all_files=all_files,
+        )
+        assert keys == ["ws#github#myrepo#handler-group-summary#chat"]
+
+    def test_oversized_unit_emits_shard_suffixed_keys(self):
+        """15 files x 40k bytes overflows TARGET_SHARD_TOKENS. Expected
+        keys must include ALL shard-suffixed group_names so the orphan
+        sweep doesn't delete them when they land."""
+        file_paths = [f"lambda/tests/unit/test_x{i}.py" for i in range(15)]
+        units = [{
+            "batch_type": "handler-group",
+            "group_name": "tests",
+            "file_paths": file_paths,
+        }]
+        all_files = [
+            {"path": p, "type": "blob", "size": 40_000} for p in file_paths
+        ]
+        keys = repo_summary_handler._expected_code_map_vector_keys(
+            units, "myrepo", "ws", all_files=all_files,
+        )
+        # Must have shard-suffixed keys, NOT the parent key
+        assert all(k.startswith("ws#github#myrepo#handler-group-summary#tests#shard-") for k in keys)
+        assert "ws#github#myrepo#handler-group-summary#tests" not in keys
+        # Shard indices 0..N-1
+        assert len(keys) >= 2
+
+    def test_shard_group_names_match_splitter_emissions(self):
+        """The keys emitted here must match what the splitter actually
+        writes -- otherwise the orphan sweep deletes real shard summaries."""
+        file_paths = [f"tests/t{i}.py" for i in range(20)]
+        units = [{
+            "batch_type": "handler-group",
+            "group_name": "tests",
+            "file_paths": file_paths,
+            "storage_key": "summary#tests",
+        }]
+        all_files = [
+            {"path": p, "type": "blob", "size": 40_000} for p in file_paths
+        ]
+        expected = repo_summary_handler._expected_code_map_vector_keys(
+            units, "myrepo", "ws", all_files=all_files,
+        )
+        # Now run the actual splitter helper and check the SHARD messages
+        # write to keys IN the expected set (parent-storage-key-based
+        # merge messages are a separate concern).
+        emitted_names = repo_summary_handler._shard_group_names_for_unit(
+            units[0], repo_summary_handler._build_file_sizes_map(all_files),
+        )
+        for name in emitted_names:
+            key = f"ws#github#myrepo#handler-group-summary#{name}"
+            assert key in expected, (
+                f"Shard key {key} not in expected_keys — orphan sweep "
+                "will delete it. Splitter + expected-keys are out of sync."
+            )
+
+
 class TestQueueOrphanCodeMapCleanup:
     """The producer-side: process-repo-summary queues the cleanup job after
     fan-out so any handler/group dropped from the tree gets cleaned up."""

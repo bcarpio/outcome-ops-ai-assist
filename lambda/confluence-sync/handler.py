@@ -383,7 +383,11 @@ def process_sync_request(message: Dict) -> Dict[str, Any]:
         if not all_pages:
             logger.warning(f"No pages found in any selected space")
             update_connection_status(workspace_id, connection_id, "completed", page_count=0)
-            return {"status": "completed", "pages_queued": 0}
+            # Return "success" NOT "completed" -- the SQS envelope at
+            # handler.py:544 only matches "success" and would otherwise
+            # mark a legitimate empty sync as a batchItemFailure, causing
+            # 3 SQS retries + a DLQ landing every scheduler tick.
+            return {"status": "success", "pages_queued": 0}
 
         # Queue all pages for ingestion
         total_files = len(all_pages)
