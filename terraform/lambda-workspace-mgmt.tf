@@ -93,6 +93,7 @@ module "workspace_management_lambda" {
     INTEGRATION_ONENOTE_ENABLED             = tostring(var.enable_onenote_integration)
     INTEGRATION_DATABASE_ENABLED            = tostring(var.enable_database_integration)
     INTEGRATION_SERVICENOW_ENABLED          = tostring(var.enable_servicenow_integration)
+    INTEGRATION_SALESFORCE_ENABLED          = tostring(var.enable_salesforce_integration)
 
     # Point requests / urllib3 / httpx / stdlib ssl + urllib.request at
     # the merged PEM shipped in the platform-CA layer so BYO-internal-CA

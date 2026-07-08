@@ -386,6 +386,22 @@ github_usernames_to_tag = "yourusername"
 # servicenow_oauth_client_id    = ""
 
 # ============================================================================
+# Salesforce CRM integration
+# ============================================================================
+#
+# One shared Connected App per deploy (same shape as Confluence/Jira/M365).
+# Instance URL is discovered per-workspace at OAuth time; sandbox vs prod
+# is chosen by the workspace admin at connect time.
+#
+#   aws ssm put-parameter \
+#     --name /dev/outcome-ops-ai-assist/oauth/salesforce/client-secret \
+#     --value "<consumer secret from the Connected App>" \
+#     --type SecureString --overwrite
+#
+# enable_salesforce_integration = false
+# salesforce_oauth_client_id    = ""
+
+# ============================================================================
 # Tags
 # ============================================================================
 

@@ -204,6 +204,18 @@ variable "servicenow_oauth_client_id" {
   default     = ""
 }
 
+variable "enable_salesforce_integration" {
+  type        = bool
+  description = "Provision the workspace Salesforce CRM integration surface (integration Lambda + Function URL + sync + scheduler + SQS + DLQ). Ingests Account/Contact/Opportunity + attached files + embedded recent activities. Requires salesforce_oauth_client_id populated in tfvars and the /{env}/{app}/oauth/salesforce/client-secret SSM SecureString populated by the operator. Default false."
+  default     = false
+}
+
+variable "salesforce_oauth_client_id" {
+  type        = string
+  description = "Consumer Key from the Salesforce Connected App. Public value, safe in tfvars. Instance URL is discovered per-workspace at OAuth time -- not a deploy config."
+  default     = ""
+}
+
 variable "enable_database_integration" {
   type        = bool
   description = "Provision the workspace Database integration surface (integration Lambda + Function URL + sync + scheduler + SQS + DLQ + drift-notification SNS topic). Default false."

@@ -44,6 +44,7 @@ locals {
     "${var.environment}-${var.app_name}-azure-devops-sync-dlq",
     "${var.environment}-${var.app_name}-azure-devops-boards-sync-dlq",
     "${var.environment}-${var.app_name}-servicenow-sync-dlq",
+    "${var.environment}-${var.app_name}-salesforce-sync-dlq",
 
     # Cross-family DLQs.
     "${var.environment}-${var.app_name}-file-ingestion-dlq.fifo",
@@ -84,6 +85,9 @@ locals {
     "${var.environment}-${var.app_name}-servicenow-integration",
     "${var.environment}-${var.app_name}-servicenow-sync",
     "${var.environment}-${var.app_name}-servicenow-scheduler",
+    "${var.environment}-${var.app_name}-salesforce-integration",
+    "${var.environment}-${var.app_name}-salesforce-sync",
+    "${var.environment}-${var.app_name}-salesforce-scheduler",
   ]
 }
 

@@ -808,6 +808,10 @@ module "ui_ecs" {
               {
                 name  = "SERVICENOW_LAMBDA_URL"
                 value = try(aws_lambda_function_url.servicenow_integration[0].function_url, "")
+              },
+              {
+                name  = "SALESFORCE_LAMBDA_URL"
+                value = try(aws_lambda_function_url.salesforce_integration[0].function_url, "")
               }
             ] : [],
             # Add scanner JWT secret SSM path when security scanner is enabled

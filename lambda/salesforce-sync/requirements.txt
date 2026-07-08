@@ -1,0 +1,1 @@
+# chunk 03 adds real deps; stub only needs stdlib

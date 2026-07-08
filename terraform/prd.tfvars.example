@@ -426,6 +426,28 @@ audit_stream_export_enabled = true
 # servicenow_oauth_client_id    = ""
 
 # ============================================================================
+# Salesforce CRM integration
+# ============================================================================
+#
+# One shared Connected App per deploy (same shape as Confluence/Jira/M365).
+# Register a Connected App on any Salesforce org, set OAuth policies to
+# "Available for use by all users" and callback URL to
+# https://<ui_fqdn>/api/salesforce/callback. Then set the two tfvars below
+# and populate the SecureString for the consumer secret:
+#
+#   aws ssm put-parameter \
+#     --name /prd/outcome-ops-ai-assist/oauth/salesforce/client-secret \
+#     --value "<consumer secret from the Connected App>" \
+#     --type SecureString --overwrite
+#
+# Instance URL is discovered per-workspace at OAuth time (customer's My
+# Domain from the token response); NOT a deploy config. Sandbox vs prod
+# is chosen by the workspace admin at connect time.
+#
+# enable_salesforce_integration = false
+# salesforce_oauth_client_id    = ""
+
+# ============================================================================
 # Tags
 # ============================================================================
 
