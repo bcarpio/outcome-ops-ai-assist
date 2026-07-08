@@ -23,8 +23,20 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
+_lambda_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
+if _lambda_root not in sys.path:
+    sys.path.insert(0, _lambda_root)
+
+
 # ============================================================================
 # Producer-side handler (process-repo-summary)
+#
+# Load via importlib under a unique module name -- `import handler as rsh`
+# would collide with whatever `handler` module a preceding test file
+# happened to load first (test order in CI put ask-claude's handler
+# first, and its module lacks CODE_MAPS_QUEUE_URL, so patch.object
+# raised AttributeError). Matches the pattern in
+# test_process_repo_summary_coverage.py.
 # ============================================================================
 
 _producer_dir = os.path.join(
@@ -32,11 +44,14 @@ _producer_dir = os.path.join(
 )
 if _producer_dir not in sys.path:
     sys.path.insert(0, _producer_dir)
-_lambda_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
-if _lambda_root not in sys.path:
-    sys.path.insert(0, _lambda_root)
 
-import handler as rsh  # noqa: E402  process-repo-summary/handler.py
+_producer_spec = importlib.util.spec_from_file_location(
+    "process_repo_summary_handler_round_trip",
+    os.path.join(_producer_dir, "handler.py"),
+)
+rsh = importlib.util.module_from_spec(_producer_spec)
+sys.modules["process_repo_summary_handler_round_trip"] = rsh
+_producer_spec.loader.exec_module(rsh)
 
 
 # ============================================================================
