@@ -35,8 +35,8 @@ locals {
   # attribution possible. Match the caller inventory in
   # plan/overview.md (grep-verified 2026-07-08).
   bedrock_workload_models = {
-    chat        = ["haiku", "sonnet", "titan-embed", "cohere-rerank"]
-    code-maps   = ["haiku", "sonnet"]
+    chat      = ["haiku", "sonnet", "titan-embed", "cohere-rerank"]
+    code-maps = ["haiku", "sonnet"]
     # code-gen uses Sonnet for generation + Haiku for PR-comment-command
     # classification (handle-command Lambda).
     code-gen    = ["haiku", "sonnet"]

@@ -817,7 +817,7 @@ variable "audit_stream_export_enabled" {
 # ============================================================================
 
 variable "bedrock_workload_tag_name" {
-  type = string
+  type        = string
   description = <<-EOT
     Tag key used to dimension Bedrock cost by internal workflow (chat /
     code-maps / code-gen / pr-analyzer). The tag VALUE is the workload
