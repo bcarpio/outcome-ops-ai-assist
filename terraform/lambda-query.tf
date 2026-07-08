@@ -36,20 +36,25 @@ module "ask_claude_lambda" {
   quiet_archive_local_exec = true
 
   # Environment variables
-  environment_variables = {
-    ENV                                = var.environment
-    APP_NAME                           = var.app_name
-    AUDIT_TABLE                        = module.audit_logs_table.dynamodb_table_id
-    BEDROCK_ADVANCED_MODEL_ID          = var.bedrock_advanced_model_id
-    BEDROCK_DEFAULT_BACKEND            = var.bedrock_default_backend
-    BEDROCK_RESPONSES_REASONING_EFFORT = var.bedrock_responses_reasoning_effort
-    BEDROCK_MANTLE_API_KEY_PARAM       = "/${var.environment}/${var.app_name}/bedrock/mantle-api-key"
-    BEDROCK_BASIC_MODEL_ID             = var.bedrock_basic_model_id
-    BEDROCK_ADVANCED_INPUT_PRICE       = tostring(var.bedrock_advanced_input_price)
-    BEDROCK_ADVANCED_OUTPUT_PRICE      = tostring(var.bedrock_advanced_output_price)
-    BEDROCK_BASIC_INPUT_PRICE          = tostring(var.bedrock_basic_input_price)
-    BEDROCK_BASIC_OUTPUT_PRICE         = tostring(var.bedrock_basic_output_price)
-  }
+  environment_variables = merge(
+    {
+      ENV                                = var.environment
+      APP_NAME                           = var.app_name
+      AUDIT_TABLE                        = module.audit_logs_table.dynamodb_table_id
+      BEDROCK_ADVANCED_MODEL_ID          = var.bedrock_advanced_model_id
+      BEDROCK_DEFAULT_BACKEND            = var.bedrock_default_backend
+      BEDROCK_RESPONSES_REASONING_EFFORT = var.bedrock_responses_reasoning_effort
+      BEDROCK_MANTLE_API_KEY_PARAM       = "/${var.environment}/${var.app_name}/bedrock/mantle-api-key"
+      BEDROCK_BASIC_MODEL_ID             = var.bedrock_basic_model_id
+      BEDROCK_ADVANCED_INPUT_PRICE       = tostring(var.bedrock_advanced_input_price)
+      BEDROCK_ADVANCED_OUTPUT_PRICE      = tostring(var.bedrock_advanced_output_price)
+      BEDROCK_BASIC_INPUT_PRICE          = tostring(var.bedrock_basic_input_price)
+      BEDROCK_BASIC_OUTPUT_PRICE         = tostring(var.bedrock_basic_output_price)
+    },
+    # ADR-016 v1.2 -- ask-claude serves the same "user Q&A" surface as
+    # chat, so it belongs to the chat workload for cost attribution.
+    local.bedrock_chat_env,
+  )
 
   # IAM permissions
   attach_policy_statements = true
@@ -148,23 +153,27 @@ module "query_kb_lambda" {
   quiet_archive_local_exec = true
 
   # Environment variables
-  environment_variables = {
-    ENV                            = var.environment
-    APP_NAME                       = var.app_name
-    AUDIT_TABLE                    = module.audit_logs_table.dynamodb_table_id
-    BEDROCK_EMBEDDING_MODEL_ID     = var.bedrock_embedding_model_id
-    BEDROCK_EMBEDDING_INPUT_PRICE  = tostring(var.bedrock_embedding_input_price)
-    BEDROCK_EMBEDDING_OUTPUT_PRICE = tostring(var.bedrock_embedding_output_price)
-    BEDROCK_RERANK_MODEL_ID        = var.bedrock_rerank_model_id
-    BEDROCK_RERANK_PRICE_PER_1K    = tostring(var.bedrock_rerank_price_per_1k)
-    RERANK_ENABLED                 = tostring(var.bedrock_rerank_enabled)
-    RERANK_MAX_FETCH               = tostring(var.rerank_max_fetch)
-    RERANK_MIN_SCORE               = tostring(var.rerank_min_score)
-    # Workspace metadata table for chunk-05 source-workspace name
-    # resolution. Empty when the deploy has enable_workspaces=false;
-    # the resolver treats missing as "no lookup available".
-    WORKSPACES_TABLE = var.enable_workspaces ? module.workspaces_table[0].dynamodb_table_id : ""
-  }
+  environment_variables = merge(
+    {
+      ENV                            = var.environment
+      APP_NAME                       = var.app_name
+      AUDIT_TABLE                    = module.audit_logs_table.dynamodb_table_id
+      BEDROCK_EMBEDDING_MODEL_ID     = var.bedrock_embedding_model_id
+      BEDROCK_EMBEDDING_INPUT_PRICE  = tostring(var.bedrock_embedding_input_price)
+      BEDROCK_EMBEDDING_OUTPUT_PRICE = tostring(var.bedrock_embedding_output_price)
+      BEDROCK_RERANK_MODEL_ID        = var.bedrock_rerank_model_id
+      BEDROCK_RERANK_PRICE_PER_1K    = tostring(var.bedrock_rerank_price_per_1k)
+      RERANK_ENABLED                 = tostring(var.bedrock_rerank_enabled)
+      RERANK_MAX_FETCH               = tostring(var.rerank_max_fetch)
+      RERANK_MIN_SCORE               = tostring(var.rerank_min_score)
+      # Workspace metadata table for chunk-05 source-workspace name
+      # resolution. Empty when the deploy has enable_workspaces=false;
+      # the resolver treats missing as "no lookup available".
+      WORKSPACES_TABLE = var.enable_workspaces ? module.workspaces_table[0].dynamodb_table_id : ""
+    },
+    # ADR-016 v1.2 -- query-kb is chat's retrieval endpoint (embed + rerank).
+    local.bedrock_chat_env,
+  )
 
   # IAM permissions
   attach_policy_statements = true

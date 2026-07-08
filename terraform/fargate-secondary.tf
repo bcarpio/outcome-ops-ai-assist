@@ -114,6 +114,8 @@ module "mcp_outcomeops_secondary" {
     # HA dual-write: emit to the SECONDARY region's replication bus when
     # this region is active post-failover.
     local.ha_writer_env_secondary,
+    # ADR-016 v1.2 -- MCP tool retrieval (chat workload), secondary parity.
+    local.bedrock_chat_env_secondary,
   )
 
   ecs_cluster_arn    = try(module.ui_ecs_secondary[0].cluster_arn, "")
@@ -216,8 +218,13 @@ resource "aws_iam_role_policy" "mcp_outcomeops_secondary" {
         Action = [
           "bedrock:InvokeModel",
         ]
+        # foundation-model grant stays -- ADR-016 section 5: application
+        # inference profiles require BOTH the profile ARN and the
+        # underlying model ARN. inference-profile/* covers the profiles
+        # in bedrock-inference-profiles-secondary.tf.
         Resource = [
           "arn:aws:bedrock:*::foundation-model/*",
+          "arn:aws:bedrock:*:${data.aws_caller_identity.current.account_id}:inference-profile/*",
         ]
       },
       {

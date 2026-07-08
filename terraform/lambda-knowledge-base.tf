@@ -106,6 +106,8 @@ module "process_batch_summary_lambda" {
     CODE_MAP_MAX_PROMPT_TOKENS   = tostring(var.code_map_max_prompt_tokens)
     },
     local.ha_writer_env,
+    # ADR-016 v1.2 -- code-maps workload (batch summaries use Haiku).
+    local.bedrock_code_maps_env,
   )
 
   # IAM permissions
@@ -406,6 +408,8 @@ module "process_repo_summary_lambda" {
     },
     local.outcomeops_license_env,
     local.ha_writer_env,
+    # ADR-016 v1.2 -- code-maps workload (repo summaries use both tiers).
+    local.bedrock_code_maps_env,
   )
 
   # IAM permissions

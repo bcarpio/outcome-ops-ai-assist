@@ -371,6 +371,11 @@ module "process_documents_lambda" {
     },
     local.outcomeops_license_env,
     local.ha_writer_env,
+    # ADR-016 v1.2 -- process-documents (called via file-ingestion) embeds
+    # every ingested doc via Titan. Attribute under chat workload since
+    # every retrieval consumer (chat, ask-claude, query-kb, mcp-server)
+    # reads the resulting vectors.
+    local.bedrock_chat_env,
   )
 
   # IAM permissions
@@ -427,8 +432,15 @@ module "process_documents_lambda" {
       actions = [
         "bedrock:InvokeModel"
       ]
+      # foundation-model grant is required regardless (ADR-016 section 5:
+      # the underlying model must be grantable even when the profile ARN
+      # is passed as modelId). inference-profile/* covers application
+      # inference profiles created in bedrock-inference-profiles.tf so
+      # process-documents can attribute Titan-embed spend under the
+      # chat workload once chunk 03/04 land.
       resources = [
-        "arn:aws:bedrock:*::foundation-model/*"
+        "arn:aws:bedrock:*::foundation-model/*",
+        "arn:aws:bedrock:*:${data.aws_caller_identity.current.account_id}:inference-profile/*",
       ]
     }
 

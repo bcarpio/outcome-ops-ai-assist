@@ -194,6 +194,8 @@ module "process_documents_lambda_secondary" {
     },
     local.outcomeops_license_env,
     local.ha_writer_env_secondary,
+    # ADR-016 v1.2 -- chat workload (embed), secondary parity.
+    local.bedrock_chat_env_secondary,
   )
 
   attach_policy_statements = true
@@ -220,9 +222,15 @@ module "process_documents_lambda_secondary" {
         resources = ["arn:aws:ssm:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/s3vectors/*"]
       }
       bedrock = {
-        effect    = "Allow"
-        actions   = ["bedrock:InvokeModel"]
-        resources = ["arn:aws:bedrock:*::foundation-model/*"]
+        effect  = "Allow"
+        actions = ["bedrock:InvokeModel"]
+        # ADR-016 section 5: application inference profiles require BOTH
+        # the profile ARN and the underlying foundation-model ARN. Matches
+        # primary lambda-file-ingestion.tf; HA parity.
+        resources = [
+          "arn:aws:bedrock:*::foundation-model/*",
+          "arn:aws:bedrock:*:${data.aws_caller_identity.current.account_id}:inference-profile/*",
+        ]
       }
       s3vectors = {
         effect    = "Allow"
@@ -464,6 +472,8 @@ module "process_batch_summary_lambda_secondary" {
     },
     local.outcomeops_license_env,
     local.ha_writer_env_secondary,
+    # ADR-016 v1.2 -- code-maps workload (batch summaries), secondary parity.
+    local.bedrock_code_maps_env_secondary,
   )
 
   attach_policy_statements = true
@@ -644,6 +654,8 @@ module "process_repo_summary_lambda_secondary" {
     },
     local.outcomeops_license_env,
     local.ha_writer_env_secondary,
+    # ADR-016 v1.2 -- code-maps workload (repo summaries), secondary parity.
+    local.bedrock_code_maps_env_secondary,
   )
 
   attach_policy_statements = true

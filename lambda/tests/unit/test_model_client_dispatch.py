@@ -233,3 +233,183 @@ def test_stream_event_subclasses_are_instances_of_streamevent():
         Metadata(usage=Usage(input_tokens=1, output_tokens=2)),
         StreamEvent,
     )
+
+
+# ---------------------------------------------------------------------------
+# ADR-016 v1.2 -- workload-aware profile ARN resolution (chunk 03)
+# ---------------------------------------------------------------------------
+
+
+class TestApplicationInferenceProfileArnBackendDispatch:
+    """Profile ARNs must route to converse (Anthropic-only wrapping)."""
+
+    def test_profile_arn_routes_to_converse(self):
+        arn = (
+            "arn:aws:bedrock:us-west-2:123456789012:inference-profile/"
+            "abc123def456"
+        )
+        assert model_client._resolve_backend(arn) == "converse"
+
+    def test_profile_arn_routes_to_converse_regardless_of_region(self):
+        assert (
+            model_client._resolve_backend(
+                "arn:aws:bedrock:us-east-2:123456789012:inference-profile/xyz"
+            )
+            == "converse"
+        )
+
+    def test_non_profile_arn_still_hits_prefix_dispatch(self):
+        # A foundation-model ARN (no /inference-profile/ segment) should
+        # NOT get the profile shortcut -- it would silently misroute.
+        with pytest.raises(UnsupportedModelError):
+            model_client._resolve_backend(
+                "arn:aws:bedrock:us-west-2::foundation-model/some-mystery-model"
+            )
+
+
+class TestProfileArnEnvVarResolution:
+    """resolve_profile_arn maps (workload, tier) to env var value."""
+
+    def test_env_var_name_shape(self):
+        # sanity: the private helper name shape is what terraform will
+        # write. If this changes, terraform/bedrock-inference-profiles.tf
+        # must change too.
+        assert (
+            model_client._profile_env_var_name("chat", "advanced")
+            == "BEDROCK_CHAT_ADVANCED_PROFILE_ARN"
+        )
+        assert (
+            model_client._profile_env_var_name("code-maps", "basic")
+            == "BEDROCK_CODE_MAPS_BASIC_PROFILE_ARN"
+        )
+        assert (
+            model_client._profile_env_var_name("chat", "titan-embed")
+            == "BEDROCK_CHAT_TITAN_EMBED_PROFILE_ARN"
+        )
+        assert (
+            model_client._profile_env_var_name("chat", "cohere-rerank")
+            == "BEDROCK_CHAT_COHERE_RERANK_PROFILE_ARN"
+        )
+
+    def test_resolves_when_env_var_set(self, monkeypatch):
+        monkeypatch.setenv(
+            "BEDROCK_CHAT_ADVANCED_PROFILE_ARN",
+            "arn:aws:bedrock:us-west-2:1:inference-profile/x",
+        )
+        assert (
+            model_client.resolve_profile_arn("chat", "advanced")
+            == "arn:aws:bedrock:us-west-2:1:inference-profile/x"
+        )
+
+    def test_returns_none_when_env_var_unset(self, monkeypatch):
+        monkeypatch.delenv(
+            "BEDROCK_CODE_MAPS_BASIC_PROFILE_ARN", raising=False,
+        )
+        assert model_client.resolve_profile_arn("code-maps", "basic") is None
+
+    def test_unknown_workload_raises_value_error(self):
+        with pytest.raises(ValueError, match="Unknown workload"):
+            model_client.resolve_profile_arn("marketing", "advanced")
+
+    def test_unknown_tier_raises_value_error(self):
+        with pytest.raises(ValueError, match="Unknown tier"):
+            model_client.resolve_profile_arn("chat", "premium")
+
+
+class TestInvokeWithWorkloadTier:
+    """The workload+tier dispatch path (chunk 03 API)."""
+
+    def _fake_converse(self, captured):
+        def fake_invoke(req):
+            captured["model_id"] = req.model_id
+            from shared.model_client_types import Response, StopReason, Usage
+            return Response(
+                text="ok", content_blocks=[{"text": "ok"}],
+                usage=Usage(input_tokens=1, output_tokens=1),
+                stop_reason=StopReason.END_TURN,
+            )
+        return fake_invoke
+
+    def test_workload_tier_uses_profile_arn_env(self, monkeypatch):
+        profile_arn = "arn:aws:bedrock:us-west-2:1:inference-profile/chat-adv"
+        monkeypatch.setenv("BEDROCK_CHAT_ADVANCED_PROFILE_ARN", profile_arn)
+        captured = {}
+        with patch(
+            "shared._converse_backend.invoke",
+            side_effect=self._fake_converse(captured),
+        ):
+            model_client.invoke(
+                workload="chat", tier="advanced",
+                messages=[{"role": "user", "content": [{"text": "hi"}]}],
+            )
+        assert captured["model_id"] == profile_arn
+
+    def test_workload_tier_falls_back_to_legacy_model_id_env(
+        self, monkeypatch, caplog,
+    ):
+        # Post-chunk-04 rollout in flight: env var isn't wired for this
+        # Lambda yet, so we fall back to BEDROCK_ADVANCED_MODEL_ID with
+        # a WARN log so the attribution gap is visible in CloudWatch.
+        monkeypatch.delenv("BEDROCK_CODE_MAPS_ADVANCED_PROFILE_ARN", raising=False)
+        monkeypatch.setenv("BEDROCK_ADVANCED_MODEL_ID", "us.anthropic.claude-sonnet-4-6")
+        captured = {}
+        import logging
+        with caplog.at_level(logging.WARNING):
+            with patch(
+                "shared._converse_backend.invoke",
+                side_effect=self._fake_converse(captured),
+            ):
+                model_client.invoke(
+                    workload="code-maps", tier="advanced",
+                    messages=[{"role": "user", "content": [{"text": "hi"}]}],
+                )
+        assert captured["model_id"] == "us.anthropic.claude-sonnet-4-6"
+        assert any(
+            "falling back to untagged" in rec.message
+            for rec in caplog.records
+        )
+
+    def test_workload_tier_neither_env_raises_backend_config_error(
+        self, monkeypatch,
+    ):
+        monkeypatch.delenv(
+            "BEDROCK_PR_ANALYZER_BASIC_PROFILE_ARN", raising=False,
+        )
+        monkeypatch.delenv("BEDROCK_BASIC_MODEL_ID", raising=False)
+        with pytest.raises(BackendConfigError):
+            model_client.invoke(
+                workload="pr-analyzer", tier="basic",
+                messages=[{"role": "user", "content": [{"text": "hi"}]}],
+            )
+
+    def test_workload_without_tier_raises_value_error(self):
+        with pytest.raises(ValueError, match="workload and tier"):
+            model_client.invoke(
+                workload="chat",
+                messages=[{"role": "user", "content": [{"text": "hi"}]}],
+            )
+
+    def test_tier_without_workload_raises_value_error(self):
+        with pytest.raises(ValueError, match="workload and tier"):
+            model_client.invoke(
+                tier="advanced",
+                messages=[{"role": "user", "content": [{"text": "hi"}]}],
+            )
+
+    def test_neither_workload_nor_model_id_raises_value_error(self):
+        with pytest.raises(ValueError, match="Either model_id"):
+            model_client.invoke(
+                messages=[{"role": "user", "content": [{"text": "hi"}]}],
+            )
+
+    def test_legacy_model_id_path_still_works(self):
+        captured = {}
+        with patch(
+            "shared._converse_backend.invoke",
+            side_effect=self._fake_converse(captured),
+        ):
+            model_client.invoke(
+                model_id="us.anthropic.claude-sonnet-4-6",
+                messages=[{"role": "user", "content": [{"text": "hi"}]}],
+            )
+        assert captured["model_id"] == "us.anthropic.claude-sonnet-4-6"

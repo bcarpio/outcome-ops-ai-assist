@@ -105,6 +105,20 @@ github_usernames_to_tag = "yourusername"
 # Default: true. Disable for enterprise accounts with high quotas.
 # enable_bedrock_cooldown = true
 
+# ADR-016 v1.2 cost-attribution tag for the within-app workflow
+# dimension (chat / code-maps / code-gen / pr-analyzer). Value is
+# always the workload slug; the tag NAME defers to your org's
+# approved cost allocation tag vocabulary so this platform never
+# forces you to activate a platform-specific tag.
+#
+# Default is "Purpose" (Application / Environment / Project / Purpose
+# is the maintainer's convention). Common enterprise alternatives:
+# "Component", "Function", "Workload", "Service".
+#
+# Whatever you pick MUST be activated in Billing > Cost Allocation
+# Tags for Cost Explorer to split spend by workload.
+# bedrock_workload_tag_name = "Purpose"
+
 # ============================================================================
 # Bedrock Reranking
 # ============================================================================

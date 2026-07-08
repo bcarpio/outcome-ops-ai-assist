@@ -811,3 +811,38 @@ variable "audit_stream_export_enabled" {
   EOT
   default     = false
 }
+
+# ============================================================================
+# Bedrock cost-attribution tag (ADR-016 v1.2 / v1.3)
+# ============================================================================
+
+variable "bedrock_workload_tag_name" {
+  type = string
+  description = <<-EOT
+    Tag key used to dimension Bedrock cost by internal workflow (chat /
+    code-maps / code-gen / pr-analyzer). The tag VALUE is the workload
+    slug; the tag NAME defers to your org's approved cost allocation
+    tag vocabulary so this platform never asks a customer to modify
+    their AWS tag strategy (which is typically locked down at the
+    payer/org level, backed by Config rules and Service Control
+    Policies, and painful to change).
+
+    Default is "Purpose" because that's the maintainer's deploy
+    convention (Application / Environment / Project / Purpose is the
+    approved vocabulary here). Enterprises pick from their own vocab:
+    common alternatives are "Purpose", "Component", "Function",
+    "Workload", "Service", or "CostCenter" for org-specific chargeback
+    dimensions.
+
+    Whatever value is chosen, the tag MUST be activated in Billing >
+    Cost Allocation Tags for the split to appear in Cost Explorer.
+
+    See ADR-016 v1.2 (outcomeops-adrs) for the org-wide standard.
+  EOT
+  default     = "Purpose"
+
+  validation {
+    condition     = length(trimspace(var.bedrock_workload_tag_name)) > 0
+    error_message = "bedrock_workload_tag_name must not be empty."
+  }
+}

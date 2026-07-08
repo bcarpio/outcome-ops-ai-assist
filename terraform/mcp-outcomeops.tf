@@ -88,6 +88,12 @@ module "mcp_outcomeops" {
     # write through shared.dual_write; these env vars make it emit a
     # replication event. Empty in single-region mode.
     local.ha_writer_env,
+    # ADR-016 v1.2 -- MCP tool retrieval (embed + rerank; no LLM synthesis
+    # on our side -- client does that). Attribute under chat workload
+    # since MCP tool queries and chat UI queries hit the same vector
+    # index. Split into an mcp workload later if Cost Explorer shows
+    # retrieval spend is a meaningful share of chat.
+    local.bedrock_chat_env,
   )
 
   ecs_cluster_arn    = module.ui_ecs.cluster_arn
@@ -175,8 +181,14 @@ resource "aws_iam_role_policy" "mcp_outcomeops" {
         Action = [
           "bedrock:InvokeModel"
         ]
+        # foundation-model grant stays -- ADR-016 section 5: application
+        # inference profiles require BOTH the profile ARN and the
+        # underlying model ARN. inference-profile/* covers the profiles
+        # in bedrock-inference-profiles.tf (Titan embed under chat
+        # workload for MCP retrieval).
         Resource = [
-          "arn:aws:bedrock:*::foundation-model/*"
+          "arn:aws:bedrock:*::foundation-model/*",
+          "arn:aws:bedrock:*:${data.aws_caller_identity.current.account_id}:inference-profile/*",
         ]
       },
       {

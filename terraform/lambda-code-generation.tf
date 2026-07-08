@@ -85,6 +85,8 @@ module "generate_code_lambda" {
       GRAPH_RETRIEVAL_ENABLED = "true"
     },
     local.outcomeops_license_env,
+    # ADR-016 v1.2 -- generate-code is the code-gen workload.
+    local.bedrock_code_gen_env,
   )
 
   # API Gateway trigger permission (only when GitHub Issue integration is enabled)
@@ -517,28 +519,32 @@ module "run_tests_lambda" {
   ephemeral_storage_size = 2048 # 2GB for large repos/dependencies
   architectures          = ["x86_64"]
 
-  environment_variables = {
-    ENV                                = var.environment
-    APP_NAME                           = var.app_name
-    TEST_RESULTS_BUCKET                = module.knowledge_base_bucket.s3_bucket_id
-    TEST_RESULTS_PREFIX                = "test-results"
-    EVENT_BUS_NAME                     = aws_cloudwatch_event_bus.automation.name
-    AUDIT_TABLE                        = module.audit_logs_table.dynamodb_table_id
-    BEDROCK_ADVANCED_MODEL_ID          = var.bedrock_advanced_model_id
-    BEDROCK_DEFAULT_BACKEND            = var.bedrock_default_backend
-    BEDROCK_RESPONSES_REASONING_EFFORT = var.bedrock_responses_reasoning_effort
-    BEDROCK_MANTLE_API_KEY_PARAM       = "/${var.environment}/${var.app_name}/bedrock/mantle-api-key"
-    BEDROCK_ADVANCED_INPUT_PRICE       = tostring(var.bedrock_advanced_input_price)
-    BEDROCK_ADVANCED_OUTPUT_PRICE      = tostring(var.bedrock_advanced_output_price)
-    BEDROCK_BASIC_INPUT_PRICE          = tostring(var.bedrock_basic_input_price)
-    BEDROCK_BASIC_OUTPUT_PRICE         = tostring(var.bedrock_basic_output_price)
-    BEDROCK_EMBEDDING_INPUT_PRICE      = tostring(var.bedrock_embedding_input_price)
-    BEDROCK_EMBEDDING_OUTPUT_PRICE     = tostring(var.bedrock_embedding_output_price)
-    # Git runtime configuration (must match Dockerfile ENV vars)
-    PATH            = "/opt/git/bin:/usr/lib/jvm/java-21-amazon-corretto/bin:/usr/local/bin:/var/lang/bin:/usr/local/bin:/usr/bin/:/bin:/opt/bin"
-    GIT_EXEC_PATH   = "/opt/git/libexec/git-core"
-    LD_LIBRARY_PATH = "/var/lang/lib:/lib64:/usr/lib64:/var/runtime:/var/runtime/lib:/var/task:/var/task/lib:/opt/lib"
-  }
+  environment_variables = merge(
+    {
+      ENV                                = var.environment
+      APP_NAME                           = var.app_name
+      TEST_RESULTS_BUCKET                = module.knowledge_base_bucket.s3_bucket_id
+      TEST_RESULTS_PREFIX                = "test-results"
+      EVENT_BUS_NAME                     = aws_cloudwatch_event_bus.automation.name
+      AUDIT_TABLE                        = module.audit_logs_table.dynamodb_table_id
+      BEDROCK_ADVANCED_MODEL_ID          = var.bedrock_advanced_model_id
+      BEDROCK_DEFAULT_BACKEND            = var.bedrock_default_backend
+      BEDROCK_RESPONSES_REASONING_EFFORT = var.bedrock_responses_reasoning_effort
+      BEDROCK_MANTLE_API_KEY_PARAM       = "/${var.environment}/${var.app_name}/bedrock/mantle-api-key"
+      BEDROCK_ADVANCED_INPUT_PRICE       = tostring(var.bedrock_advanced_input_price)
+      BEDROCK_ADVANCED_OUTPUT_PRICE      = tostring(var.bedrock_advanced_output_price)
+      BEDROCK_BASIC_INPUT_PRICE          = tostring(var.bedrock_basic_input_price)
+      BEDROCK_BASIC_OUTPUT_PRICE         = tostring(var.bedrock_basic_output_price)
+      BEDROCK_EMBEDDING_INPUT_PRICE      = tostring(var.bedrock_embedding_input_price)
+      BEDROCK_EMBEDDING_OUTPUT_PRICE     = tostring(var.bedrock_embedding_output_price)
+      # Git runtime configuration (must match Dockerfile ENV vars)
+      PATH            = "/opt/git/bin:/usr/lib/jvm/java-21-amazon-corretto/bin:/usr/local/bin:/var/lang/bin:/usr/local/bin:/usr/bin/:/bin:/opt/bin"
+      GIT_EXEC_PATH   = "/opt/git/libexec/git-core"
+      LD_LIBRARY_PATH = "/var/lang/lib:/lib64:/usr/lib64:/var/runtime:/var/runtime/lib:/var/task:/var/task/lib:/opt/lib"
+    },
+    # ADR-016 v1.2 -- run-tests auto_fix is part of the code-gen loop.
+    local.bedrock_code_gen_env,
+  )
 
   attach_policy_statements = true
   policy_statements        = local.run_tests_policy_statements
@@ -640,6 +646,10 @@ module "handle_command_lambda" {
       BEDROCK_BASIC_OUTPUT_PRICE         = tostring(var.bedrock_basic_output_price)
     },
     local.outcomeops_license_env,
+    # ADR-016 v1.2 -- handle-command dispatches PR-comment commands
+    # ("fix readme", "fix tests", etc.), classified as code-gen since
+    # the downstream effect is code changes.
+    local.bedrock_code_gen_env,
   )
 
   # IAM permissions

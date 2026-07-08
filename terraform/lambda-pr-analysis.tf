@@ -250,6 +250,8 @@ module "process_pr_check_lambda" {
     },
     # HA dual-write: emit replication events for the check-result row.
     local.ha_writer_env,
+    # ADR-016 v1.2 -- process-pr-check is the pr-analyzer workload.
+    local.bedrock_pr_analyzer_env,
   )
 
   # IAM permissions

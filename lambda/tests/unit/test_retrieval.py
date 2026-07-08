@@ -219,3 +219,58 @@ def test_rerank_empty_docs_noop():
         documents=[],
     ) == []
     client.rerank.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# ADR-016 v1.2 (chunk 03) -- rerank accepts a profile ARN as the model id
+# ---------------------------------------------------------------------------
+
+
+def test_rerank_accepts_application_inference_profile_arn():
+    # Cost-attribution path: caller passes a workload-scoped profile ARN
+    # (from BEDROCK_CHAT_COHERE_RERANK_PROFILE_ARN) and rerank uses it
+    # directly instead of constructing a foundation-model ARN.
+    client = _fake_bedrock()
+    client.rerank.return_value = {
+        "results": [{"index": 0, "relevanceScore": 0.9}],
+    }
+    profile_arn = (
+        "arn:aws:bedrock:us-west-2:123456789012:inference-profile/"
+        "chat-cohere-rerank-abc"
+    )
+    retrieval.rerank(
+        bedrock_agent_runtime_client=client,
+        rerank_model_id=profile_arn,
+        query="q",
+        documents=[{"text": "d"}],
+        lambda_name="test",
+    )
+    call_kwargs = client.rerank.call_args.kwargs
+    model_arn = call_kwargs["rerankingConfiguration"][
+        "bedrockRerankingConfiguration"
+    ]["modelConfiguration"]["modelArn"]
+    # ARN is passed through unchanged -- NOT re-wrapped in a
+    # foundation-model prefix.
+    assert model_arn == profile_arn
+
+
+def test_rerank_bare_model_id_still_wraps_foundation_model_arn():
+    # Legacy path (pre-chunk-04 callers): bare model id -> constructed
+    # arn:aws:bedrock:{region}::foundation-model/{id}. Preserves
+    # backwards compatibility during rollout.
+    client = _fake_bedrock()
+    client.rerank.return_value = {
+        "results": [{"index": 0, "relevanceScore": 0.9}],
+    }
+    retrieval.rerank(
+        bedrock_agent_runtime_client=client,
+        rerank_model_id="cohere.rerank-v3-5:0",
+        query="q",
+        documents=[{"text": "d"}],
+        lambda_name="test",
+    )
+    model_arn = client.rerank.call_args.kwargs["rerankingConfiguration"][
+        "bedrockRerankingConfiguration"
+    ]["modelConfiguration"]["modelArn"]
+    assert model_arn.endswith("::foundation-model/cohere.rerank-v3-5:0")
+    assert model_arn.startswith("arn:aws:bedrock:")

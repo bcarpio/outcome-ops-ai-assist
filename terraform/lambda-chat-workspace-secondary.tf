@@ -117,6 +117,8 @@ module "chat_streaming_lambda_secondary" {
     # rejects). The secondary is passive in steady state, so this is the
     # gate that must fire today.
     local.ha_scheduler_env_secondary,
+    # ADR-016 v1.2 -- chat workload (secondary parity with primary).
+    local.bedrock_chat_env_secondary,
   )
 
   attach_policy_statements = true

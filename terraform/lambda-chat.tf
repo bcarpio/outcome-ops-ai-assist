@@ -121,6 +121,11 @@ module "chat_streaming_lambda" {
     # explicitly rejects. Post-failover this region becomes passive and
     # the gate must fire here too.
     local.ha_scheduler_env,
+    # ADR-016 v1.2 -- chat workload profile ARNs (all 4 models used).
+    # shared.model_client.resolve_profile_arn(workload="chat", tier=...)
+    # reads these. Legacy BEDROCK_*_MODEL_ID env vars stay for the
+    # WARN-fallback path per chunk 03.
+    local.bedrock_chat_env,
   )
 
   # IAM permissions. Merged with the shared license-layer IAM block
