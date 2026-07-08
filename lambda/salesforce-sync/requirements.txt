@@ -1,1 +1,1 @@
-# chunk 03 adds real deps; stub only needs stdlib
+# stdlib only -- urllib.request for HTTP, boto3 comes from Lambda runtime
