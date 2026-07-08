@@ -8,11 +8,12 @@ file-ingestion for S3 upload + downstream vector indexing.
 Cursor shape (persisted on connection row's ``config.cursors``):
 
     {
-      "Account":     "2026-06-01T12:00:00Z",   # parent SystemModstamp
-      "Contact":     "2026-06-01T12:00:00Z",
-      "Opportunity": "2026-06-01T12:00:00Z",
-      "Task":        "2026-06-01T11:00:00Z",   # activity LastModifiedDate
-      "Event":       "2026-06-01T11:00:00Z",
+      "Account":        "2026-06-01T12:00:00Z",   # parent SystemModstamp
+      "Contact":        "2026-06-01T12:00:00Z",
+      "Opportunity":    "2026-06-01T12:00:00Z",
+      "Task":           "2026-06-01T11:00:00Z",   # activity LastModifiedDate
+      "Event":          "2026-06-01T11:00:00Z",
+      "ContentVersion": "2026-06-01T10:00:00Z",   # attachment LastModifiedDate
     }
 
 On full sync (all cursors empty): walk every record the OAuth user
@@ -26,6 +27,11 @@ Incremental (cursors present):
 2. Walk Task + Event changes since their cursors; find parents whose
    own SystemModstamp didn't move but whose activities did; fetch and
    re-enqueue those parents so the activity section stays current.
+3. Walk ContentVersion changes since ``cursor["ContentVersion"]`` and
+   enqueue every attached file for file-ingestion to fetch + persist.
+   Cursor advances to the max LastModifiedDate seen. (Parity with
+   app.retrieveit.ai/lambda/salesforce-integration -- OutcomeOps ported
+   the API helpers but originally forgot the sync-side wiring.)
 
 Rate limit signal: ``Salesforce rate limited`` log phrase from the
 shared API layer -- CloudWatch metric filter alarms on it.
@@ -52,9 +58,11 @@ from shared.region_guard import (  # noqa: E402
 from shared.salesforce_api import (  # noqa: E402
     SalesforceRateLimitedError,
     changed_activity_parent_ids,
+    changed_file_parent_ids,
     fetch_records_by_ids,
     iterate_records,
     latest_modified_date,
+    list_content_versions,
     list_recent_activities,
 )
 from shared.salesforce_render import render_record_markdown, source_for
@@ -76,6 +84,7 @@ FILE_INGESTION_QUEUE = os.environ.get("FILE_INGESTION_QUEUE")
 
 PARENT_OBJECT_TYPES = ("Account", "Contact", "Opportunity")
 ACTIVITY_OBJECT_TYPES = ("Task", "Event")
+ATTACHMENT_CURSOR_KEY = "ContentVersion"
 
 _SF_CONN_SK = "SALESFORCE_CONNECTION#"
 
@@ -186,7 +195,14 @@ def _enqueue_ingestion(
     connection_id = payload["connection_id"]
     source = payload["source"]
     file_info = payload.get("file", {})
-    ident = file_info.get("record_id", "unknown")
+    # ContentVersion messages don't carry record_id -- fall through to
+    # content_version_id so distinct attachments in the same sync don't
+    # collapse into one FIFO dedupe slot.
+    ident = (
+        file_info.get("record_id")
+        or file_info.get("content_version_id")
+        or "unknown"
+    )
     _get_sqs().send_message(
         QueueUrl=FILE_INGESTION_QUEUE,
         MessageBody=json.dumps(payload),
@@ -218,6 +234,42 @@ def _enqueue_record(
             "title": title,
             "markdown": markdown,
             "sys_updated": record.get("SystemModstamp") or "",
+        },
+    }
+    _enqueue_ingestion(payload, sync_id=sync_id)
+
+
+def _enqueue_attachment(
+    *,
+    workspace_id: str,
+    connection_id: str,
+    instance_url: str,
+    parent_id: str,
+    content_version: Dict[str, Any],
+    sync_id: str,
+) -> None:
+    """Enqueue one Salesforce attachment for file-ingestion to fetch.
+
+    file-ingestion downloads the binary via VersionData REST (it holds
+    the source OAuth), so we send only metadata -- matches the
+    ServiceNow attachment path shape.
+    """
+    version_id = content_version.get("Id") or ""
+    document_id = content_version.get("ContentDocumentId") or ""
+    title = content_version.get("Title") or version_id
+    extension = content_version.get("FileExtension") or ""
+    file_name = f"{title}.{extension}" if extension else title
+    payload = {
+        "source": "salesforce_attachment",
+        "workspace_id": workspace_id,
+        "connection_id": connection_id,
+        "instance_url": instance_url,
+        "file": {
+            "content_version_id": version_id,
+            "content_document_id": document_id,
+            "parent_record_id": parent_id,
+            "file_name": file_name,
+            "content_size": content_version.get("ContentSize") or 0,
         },
     }
     _enqueue_ingestion(payload, sync_id=sync_id)
@@ -370,6 +422,68 @@ def _rerender_parents_from_activities(
     return count, new_cursors
 
 
+def _walk_attachments(
+    *,
+    workspace_id: str,
+    connection_id: str,
+    instance_url: str,
+    access_token: str,
+    cursor_in: str,
+    sync_id: str,
+) -> Tuple[int, str]:
+    """Walk ContentVersions changed since ``cursor_in``, enqueue each
+    for file-ingestion to fetch + persist.
+
+    Returns (count_enqueued, new_cursor). The API layer's
+    ``changed_file_parent_ids`` returns (parent_ids, new_cursor) where
+    new_cursor is the max LastModifiedDate seen on any candidate
+    ContentVersion -- that's what we persist so the next incremental
+    picks up only newer changes.
+
+    A single ContentVersion can be linked to multiple parents (rare but
+    real -- ContentDocumentLink is many-to-one). We enqueue one message
+    per (parent, version) so each parent's S3 prefix gets its own copy;
+    file-ingestion dedupes at the S3 level if the same content lands
+    twice.
+    """
+    try:
+        parent_ids, new_cursor = changed_file_parent_ids(
+            instance_url, access_token, cursor_in,
+        )
+    except (SalesforceRateLimitedError, ValueError) as e:
+        logger.warning(f"changed_file_parent_ids failed: {e}")
+        return 0, cursor_in
+
+    if not parent_ids:
+        return 0, new_cursor
+
+    count = 0
+    for parent_id in parent_ids:
+        try:
+            versions = list_content_versions(
+                instance_url, access_token, parent_id,
+            )
+        except (SalesforceRateLimitedError, ValueError) as e:
+            logger.warning(
+                f"list_content_versions failed for parent {parent_id}: {e}"
+            )
+            continue
+        for cv in versions:
+            if not cv.get("Id"):
+                continue
+            _enqueue_attachment(
+                workspace_id=workspace_id,
+                connection_id=connection_id,
+                instance_url=instance_url,
+                parent_id=parent_id,
+                content_version=cv,
+                sync_id=sync_id,
+            )
+            count += 1
+
+    return count, new_cursor
+
+
 # ============================================================================
 # SQS entrypoint
 # ============================================================================
@@ -477,6 +591,20 @@ def process_sync_message(message: Dict[str, Any]) -> Dict[str, Any]:
             )
             total_enqueued += act_count
             new_cursors.update(act_cursors)
+
+        # Attachment walk runs after parent + activity paths on both
+        # full and incremental syncs. cursor_in="" on full drives a
+        # ContentVersion IsLatest=true full inventory scan.
+        att_count, att_cursor = _walk_attachments(
+            workspace_id=workspace_id,
+            connection_id=connection_id,
+            instance_url=instance_url,
+            access_token=access_token,
+            cursor_in=cursors_in.get(ATTACHMENT_CURSOR_KEY, ""),
+            sync_id=sync_id,
+        )
+        total_enqueued += att_count
+        new_cursors[ATTACHMENT_CURSOR_KEY] = att_cursor
 
     except SalesforceRateLimitedError as e:
         logger.warning(f"Salesforce rate limited on {e.endpoint}; partial sync")

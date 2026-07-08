@@ -37,6 +37,7 @@ def _load_handler_module():
 
 handler_module = _load_handler_module()
 process_salesforce_record = handler_module.process_salesforce_record
+process_salesforce_attachment = handler_module.process_salesforce_attachment
 _build_repo_identifier = handler_module._build_repo_identifier
 
 
@@ -124,3 +125,105 @@ class TestRepoIdentifier:
             file_info={},
         )
         assert ident == "ws1:salesforce_opportunity:"
+
+    def test_salesforce_attachment_shares_org_identity(self):
+        # Attachments count against the same license entry as parent records
+        # (per ADR-019, one Salesforce org == one licensable repo).
+        ident = _build_repo_identifier(
+            source="salesforce_attachment",
+            workspace_id="ws1",
+            body={"instance_url": "https://acme.my.salesforce.com"},
+            file_info={"content_version_id": "068AAA"},
+        )
+        assert ident == "ws1:salesforce_attachment:https___acme.my.salesforce.com"
+
+
+class TestProcessAttachment:
+    """Chunk 01 -- file-ingestion side of the ContentVersion port."""
+
+    @patch.object(handler_module.dual_write, "s3_put_object")
+    @patch("shared.salesforce_api.download_content_version",
+           return_value=b"%PDF-1.4\nfake proposal bytes")
+    @patch("shared.oauth.salesforce.refresh_access_token",
+           return_value=("access-tok", "https://acme.my.salesforce.com"))
+    def test_downloads_and_uploads_binary(
+        self, mock_refresh, mock_download, mock_put,
+    ):
+        key = process_salesforce_attachment(
+            workspace_id="ws1",
+            connection_id="conn-1",
+            file_info={
+                "content_version_id": "068AAA",
+                "content_document_id": "069AAA",
+                "parent_record_id": "006OOO",
+                "file_name": "SDS_VT_Industries_SDLC_Modernization_Proposal.pdf",
+            },
+            sync_id="sync-abc",
+            instance_url="https://acme.my.salesforce.com",
+        )
+        assert key == (
+            "workspaces/ws1/salesforce/conn-1/attachments/006OOO/"
+            "SDS_VT_Industries_SDLC_Modernization_Proposal.pdf"
+        )
+        mock_refresh.assert_called_once_with("ws1", "conn-1")
+        mock_download.assert_called_once_with(
+            "https://acme.my.salesforce.com", "access-tok", "068AAA",
+        )
+        kwargs = mock_put.call_args.kwargs
+        assert kwargs["Body"] == b"%PDF-1.4\nfake proposal bytes"
+        assert kwargs["Metadata"]["source"] == "salesforce_attachment"
+        assert kwargs["Metadata"]["salesforce_content_version_id"] == "068AAA"
+        assert kwargs["Metadata"]["salesforce_content_document_id"] == "069AAA"
+        assert kwargs["Metadata"]["salesforce_parent_record_id"] == "006OOO"
+        assert kwargs["Metadata"]["sync_id"] == "sync-abc"
+
+    def test_missing_version_id_returns_none(self):
+        key = process_salesforce_attachment(
+            workspace_id="ws1", connection_id="conn-1",
+            file_info={"parent_record_id": "006", "file_name": "x.pdf"},
+        )
+        assert key is None
+
+    def test_missing_parent_id_returns_none(self):
+        key = process_salesforce_attachment(
+            workspace_id="ws1", connection_id="conn-1",
+            file_info={"content_version_id": "068", "file_name": "x.pdf"},
+        )
+        assert key is None
+
+    def test_missing_file_name_returns_none(self):
+        key = process_salesforce_attachment(
+            workspace_id="ws1", connection_id="conn-1",
+            file_info={"content_version_id": "068", "parent_record_id": "006"},
+        )
+        assert key is None
+
+    @patch("shared.oauth.salesforce.refresh_access_token",
+           side_effect=ValueError("expired"))
+    def test_refresh_failure_returns_none(self, mock_refresh):
+        key = process_salesforce_attachment(
+            workspace_id="ws1", connection_id="conn-1",
+            file_info={
+                "content_version_id": "068",
+                "parent_record_id": "006",
+                "file_name": "x.pdf",
+            },
+            instance_url="https://acme.my.salesforce.com",
+        )
+        assert key is None
+
+    @patch("shared.salesforce_api.download_content_version",
+           side_effect=RuntimeError("network"))
+    @patch("shared.oauth.salesforce.refresh_access_token",
+           return_value=("tok", "https://acme.my.salesforce.com"))
+    def test_download_failure_returns_none(self, mock_refresh, mock_download):
+        key = process_salesforce_attachment(
+            workspace_id="ws1", connection_id="conn-1",
+            file_info={
+                "content_version_id": "068",
+                "parent_record_id": "006",
+                "file_name": "x.pdf",
+            },
+            instance_url="https://acme.my.salesforce.com",
+        )
+        assert key is None

@@ -58,6 +58,13 @@ module "file_ingestion_lambda_secondary" {
       PENDING_WORK_TABLE = module.code_map_pending_work_table_secondary[0].dynamodb_table_id
       FAILED_FILES_TABLE = module.code_map_failed_files_table_secondary[0].dynamodb_table_id
     },
+    # HA parity with primary lambda-file-ingestion.tf: shared/oauth modules
+    # read their env at module init on import, so servicenow_attachment /
+    # salesforce_attachment processing on failover crashes if these are
+    # missing here. Primary carries both; secondary was silently lacking
+    # both until 2026-07-08 attachment-parity work surfaced it.
+    local.servicenow_common_env,
+    local.salesforce_common_env,
     local.outcomeops_license_env,
     local.ha_writer_env_secondary,
   )

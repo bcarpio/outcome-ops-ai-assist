@@ -769,7 +769,10 @@ class TestProcessSyncRequest:
             "connection_id": "conn_test",
         })
 
-        assert result["status"] == "completed"
+        # Empty sync returns "success" so the SQS envelope doesn't DLQ it
+        # (830f4a3 fix). DDB write still uses "completed" as the persisted
+        # last_sync_status vocabulary.
+        assert result["status"] == "success"
         assert result["pages_queued"] == 0
         mock_queue.assert_not_called()
         mock_update.assert_any_call("ws_test", "conn_test", "completed", page_count=0)
@@ -883,8 +886,9 @@ class TestProcessSyncRequest:
 
         # The ConfluenceAuthError is caught inside the for loop by the
         # ConfluenceAPIError handler (since it's a subclass), so it continues.
-        # With only one space, all_pages will be empty -> completed with 0.
-        assert result["status"] == "completed"
+        # With only one space, all_pages will be empty -> empty-sync path
+        # returns "success" (830f4a3 fix).
+        assert result["status"] == "success"
         assert result["pages_queued"] == 0
 
     @patch.object(handler_module, 'queue_orphan_detection')
@@ -1267,7 +1271,8 @@ class TestProcessSyncRequest:
             "connection_id": "conn_test",
         })
 
-        assert result["status"] == "completed"
+        # Empty delta (all filtered out) returns "success" per 830f4a3.
+        assert result["status"] == "success"
         assert result["pages_queued"] == 0
         mock_queue.assert_not_called()
 

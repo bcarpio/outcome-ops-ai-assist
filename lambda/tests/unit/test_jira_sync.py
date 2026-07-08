@@ -720,7 +720,9 @@ class TestProcessSyncRequestFullSync:
             "connection_id": "conn_test",
         })
 
-        assert result["status"] == "completed"
+        # Empty sync returns "success" so SQS envelope doesn't DLQ it
+        # (830f4a3 fix). DDB last_sync_status still uses "success" vocab.
+        assert result["status"] == "success"
         assert result["issues_queued"] == 0
         mock_queue_issue.assert_not_called()
         mock_update.assert_any_call("ws_test", "conn_test", "success", issue_count=0)
@@ -870,7 +872,7 @@ class TestProcessSyncRequestDeltaSync:
             "connection_id": "conn_test",
         })
 
-        assert result["status"] == "completed"
+        assert result["status"] == "success"
         assert result["issues_queued"] == 0
         mock_queue_issue.assert_not_called()
         mock_queue_orphan.assert_not_called()
@@ -972,9 +974,10 @@ class TestProcessSyncRequestErrors:
             "connection_id": "conn_test",
         })
 
-        # Auth error is caught as JiraAPIError at the project level,
-        # so it skips the project and falls through to "no issues" path
-        assert result["status"] == "completed"
+        # Auth error caught as JiraAPIError at project level -> skips
+        # the project -> falls through to empty "no issues" path, which
+        # returns "success" (830f4a3 fix).
+        assert result["status"] == "success"
         assert result["issues_queued"] == 0
         mock_update.assert_any_call("ws_test", "conn_test", "success", issue_count=0)
 

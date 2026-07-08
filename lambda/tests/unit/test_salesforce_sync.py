@@ -30,6 +30,11 @@ def _load_handler_module():
 
 os.environ.setdefault("WORKSPACES_TABLE", "test-workspaces")
 os.environ.setdefault("FILE_INGESTION_QUEUE", "https://sqs.us-west-2.amazonaws.com/123/file-ingestion")
+# shared/oauth/salesforce reads SALESFORCE_CLIENT_ID at module init; if this
+# file collects before test_file_ingestion_salesforce or test_salesforce_
+# integration set the var, the module caches "" and get_client_id() raises
+# in cross-file runs. Set it here too so any collection order is safe.
+os.environ.setdefault("SALESFORCE_CLIENT_ID", "test-client-id")
 
 handler_module = _load_handler_module()
 lambda_handler = handler_module.lambda_handler
@@ -67,8 +72,11 @@ class TestProcessMessage:
     @patch("salesforce_sync_handler.iterate_records")
     @patch("salesforce_sync_handler.list_recent_activities", return_value=[])
     @patch("salesforce_sync_handler.latest_modified_date", return_value="2026-06-01T12:00:00Z")
+    @patch("salesforce_sync_handler.changed_file_parent_ids",
+           return_value=(set(), ""))
+    @patch("salesforce_sync_handler.list_content_versions", return_value=[])
     def test_full_sync_walks_all_object_types(
-        self, mock_baseline, mock_activities, mock_iter,
+        self, mock_versions, mock_files, mock_baseline, mock_activities, mock_iter,
         mock_refresh, mock_table, mock_sqs,
     ):
         mock_iter.side_effect = [
@@ -107,8 +115,12 @@ class TestProcessMessage:
     @patch("salesforce_sync_handler.iterate_records", return_value=iter([]))
     @patch("salesforce_sync_handler.changed_activity_parent_ids",
            return_value=(set(), "2026-06-02T10:00:00Z"))
+    @patch("salesforce_sync_handler.changed_file_parent_ids",
+           return_value=(set(), ""))
+    @patch("salesforce_sync_handler.list_content_versions", return_value=[])
     def test_incremental_sync_walks_activity_changes(
-        self, mock_act, mock_iter, mock_refresh, mock_table, mock_sqs,
+        self, mock_versions, mock_files, mock_act, mock_iter, mock_refresh,
+        mock_table, mock_sqs,
     ):
         mock_table.get_item.return_value = {
             "Item": {"instance_url": "https://acme.my.salesforce.com"}
@@ -201,6 +213,178 @@ class TestEnqueueIngestionFIFO:
         kwargs = mock_sqs.send_message.call_args.kwargs
         assert kwargs["MessageGroupId"] == "ws1-conn-1"
         assert kwargs["MessageDeduplicationId"] == "sync-abc-salesforce_account-001XXX"
+
+    def test_attachment_dedup_uses_content_version_id(self, mock_sqs):
+        # ContentVersion messages have no record_id -- must not collapse
+        # to "unknown" per dedup, or every attachment in a sync becomes
+        # one FIFO slot.
+        handler_module._enqueue_ingestion(
+            {
+                "source": "salesforce_attachment",
+                "workspace_id": "ws1",
+                "connection_id": "conn-1",
+                "file": {
+                    "content_version_id": "068AAA",
+                    "content_document_id": "069AAA",
+                    "parent_record_id": "006OOO",
+                    "file_name": "proposal.pdf",
+                },
+            },
+            sync_id="sync-abc",
+        )
+        kwargs = mock_sqs.send_message.call_args.kwargs
+        assert (
+            kwargs["MessageDeduplicationId"]
+            == "sync-abc-salesforce_attachment-068AAA"
+        )
+
+
+class TestAttachmentWalk:
+    """Chunk 01 -- ContentVersion walk parity with app.retrieveit.ai."""
+
+    @patch.object(
+        handler_module.salesforce_oauth, "refresh_access_token",
+        return_value=("tok", "https://acme.my.salesforce.com"),
+    )
+    @patch("salesforce_sync_handler.iterate_records", return_value=iter([]))
+    @patch("salesforce_sync_handler.changed_activity_parent_ids",
+           return_value=(set(), ""))
+    @patch("salesforce_sync_handler.changed_file_parent_ids",
+           return_value=({"006A", "006B"}, "2026-07-08T14:00:00Z"))
+    @patch("salesforce_sync_handler.list_content_versions")
+    def test_incremental_enqueues_one_message_per_version(
+        self, mock_versions, mock_files, mock_act, mock_iter,
+        mock_refresh, mock_table, mock_sqs,
+    ):
+        mock_versions.side_effect = [
+            [
+                {
+                    "Id": "068A",
+                    "ContentDocumentId": "069A",
+                    "Title": "proposal",
+                    "FileExtension": "pdf",
+                    "ContentSize": 1234,
+                },
+            ],
+            [
+                {
+                    "Id": "068B",
+                    "ContentDocumentId": "069B",
+                    "Title": "sow",
+                    "FileExtension": "docx",
+                    "ContentSize": 5678,
+                },
+            ],
+        ]
+        mock_table.get_item.return_value = {
+            "Item": {"instance_url": "https://acme.my.salesforce.com"}
+        }
+        result = handler_module.process_sync_message({
+            "workspace_id": "ws1",
+            "connection_id": "conn-1",
+            "cursors": {
+                "Account": "2026-07-01T00:00:00Z",
+                "Contact": "2026-07-01T00:00:00Z",
+                "Opportunity": "2026-07-01T00:00:00Z",
+                "Task": "2026-07-01T00:00:00Z",
+                "Event": "2026-07-01T00:00:00Z",
+            },
+        })
+        assert result["status"] == "success"
+        assert result["enqueued"] == 2
+        # Both attachment messages sent
+        attachment_calls = [
+            c for c in mock_sqs.send_message.call_args_list
+            if json.loads(c.kwargs["MessageBody"])["source"] == "salesforce_attachment"
+        ]
+        assert len(attachment_calls) == 2
+        # Both messages carry parent + version metadata
+        bodies = [json.loads(c.kwargs["MessageBody"]) for c in attachment_calls]
+        files = [b["file"] for b in bodies]
+        parent_ids = {f["parent_record_id"] for f in files}
+        assert parent_ids == {"006A", "006B"}
+        # Filename derived from Title.FileExtension
+        names = {f["file_name"] for f in files}
+        assert names == {"proposal.pdf", "sow.docx"}
+        # ContentVersion cursor advanced
+        upd = [c for c in mock_table.update_item.call_args_list
+               if c.kwargs["ExpressionAttributeValues"].get(":cfg")]
+        cursors = upd[-1].kwargs["ExpressionAttributeValues"][":cfg"]["cursors"]
+        assert cursors["ContentVersion"] == "2026-07-08T14:00:00Z"
+
+    @patch.object(
+        handler_module.salesforce_oauth, "refresh_access_token",
+        return_value=("tok", "https://acme.my.salesforce.com"),
+    )
+    @patch("salesforce_sync_handler.iterate_records", return_value=iter([]))
+    @patch("salesforce_sync_handler.changed_activity_parent_ids",
+           return_value=(set(), ""))
+    @patch("salesforce_sync_handler.changed_file_parent_ids",
+           return_value=(set(), "2026-07-01T00:00:00Z"))
+    @patch("salesforce_sync_handler.list_content_versions")
+    def test_no_changed_attachments_advances_cursor_only(
+        self, mock_versions, mock_files, mock_act, mock_iter,
+        mock_refresh, mock_table, mock_sqs,
+    ):
+        mock_table.get_item.return_value = {
+            "Item": {"instance_url": "https://acme.my.salesforce.com"}
+        }
+        result = handler_module.process_sync_message({
+            "workspace_id": "ws1",
+            "connection_id": "conn-1",
+            "cursors": {
+                "Account": "2026-07-01T00:00:00Z",
+                "Contact": "2026-07-01T00:00:00Z",
+                "Opportunity": "2026-07-01T00:00:00Z",
+                "Task": "2026-07-01T00:00:00Z",
+                "Event": "2026-07-01T00:00:00Z",
+                "ContentVersion": "2026-06-01T00:00:00Z",
+            },
+        })
+        assert result["status"] == "success"
+        # No list_content_versions when parent set is empty
+        mock_versions.assert_not_called()
+        # No SQS sends
+        assert mock_sqs.send_message.call_count == 0
+
+    @patch.object(
+        handler_module.salesforce_oauth, "refresh_access_token",
+        return_value=("tok", "https://acme.my.salesforce.com"),
+    )
+    @patch("salesforce_sync_handler.iterate_records", return_value=iter([]))
+    @patch("salesforce_sync_handler.changed_activity_parent_ids",
+           return_value=(set(), ""))
+    @patch(
+        "salesforce_sync_handler.changed_file_parent_ids",
+        side_effect=handler_module.SalesforceRateLimitedError(
+            "content-version", retry_after=1.0,
+        ),
+    )
+    def test_rate_limit_on_attachment_walk_preserves_cursor(
+        self, mock_files, mock_act, mock_iter, mock_refresh,
+        mock_table, mock_sqs,
+    ):
+        mock_table.get_item.return_value = {
+            "Item": {"instance_url": "https://acme.my.salesforce.com"}
+        }
+        result = handler_module.process_sync_message({
+            "workspace_id": "ws1",
+            "connection_id": "conn-1",
+            "cursors": {
+                "Account": "2026-07-01T00:00:00Z",
+                "Contact": "2026-07-01T00:00:00Z",
+                "Opportunity": "2026-07-01T00:00:00Z",
+                "Task": "2026-07-01T00:00:00Z",
+                "Event": "2026-07-01T00:00:00Z",
+                "ContentVersion": "2026-06-01T00:00:00Z",
+            },
+        })
+        assert result["status"] == "success"
+        # Cursor preserved (not blown away)
+        upd = [c for c in mock_table.update_item.call_args_list
+               if c.kwargs["ExpressionAttributeValues"].get(":cfg")]
+        cursors = upd[-1].kwargs["ExpressionAttributeValues"][":cfg"]["cursors"]
+        assert cursors["ContentVersion"] == "2026-06-01T00:00:00Z"
 
 
 class TestSQSEnvelope:

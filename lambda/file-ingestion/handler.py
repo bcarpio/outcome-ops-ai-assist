@@ -1783,6 +1783,99 @@ def process_servicenow_attachment(
         return None
 
 
+def process_salesforce_attachment(
+    workspace_id: str,
+    connection_id: str,
+    file_info: Dict[str, Any],
+    sync_id: Optional[str] = None,
+    instance_url: str = "",
+) -> Optional[str]:
+    """Process a Salesforce ContentVersion attachment and upload to S3.
+
+    Model matches ServiceNow: sync-side only enumerates + enqueues
+    metadata, file-ingestion owns OAuth token refresh + VersionData
+    binary fetch (parity with app.retrieveit.ai).
+
+    S3 key: ``workspaces/{ws}/salesforce/{connection_id}/attachments/{parent_id}/{safe_filename}``
+    """
+    from shared.oauth import salesforce as salesforce_oauth
+    from shared.salesforce_api import download_content_version
+
+    version_id = file_info.get("content_version_id") or ""
+    document_id = file_info.get("content_document_id") or ""
+    parent_id = file_info.get("parent_record_id") or ""
+    file_name = file_info.get("file_name") or ""
+    if not version_id or not parent_id or not file_name:
+        logger.error(
+            "salesforce_attachment missing version_id / parent_id / file_name"
+        )
+        return None
+
+    try:
+        access_token, resolved_instance_url = (
+            salesforce_oauth.refresh_access_token(workspace_id, connection_id)
+        )
+    except ValueError as e:
+        logger.error(
+            f"Failed to refresh Salesforce token for {connection_id}: {e}"
+        )
+        return None
+    if not instance_url:
+        instance_url = resolved_instance_url or ""
+    if not instance_url:
+        logger.error(
+            f"salesforce_attachment missing instance_url for {version_id}"
+        )
+        return None
+
+    try:
+        content = download_content_version(
+            instance_url, access_token, version_id,
+        )
+    except Exception as e:
+        logger.error(
+            f"Failed to download Salesforce ContentVersion {version_id}: {e}"
+        )
+        return None
+
+    safe_name = sanitize_filename(file_name) or version_id
+    s3_key = (
+        f"workspaces/{workspace_id}/salesforce/{connection_id}/"
+        f"attachments/{parent_id}/{safe_name}"
+    )
+
+    metadata = {
+        "source": "salesforce_attachment",
+        "workspace_id": workspace_id,
+        "connection_id": connection_id,
+        "salesforce_content_version_id": version_id,
+        "salesforce_content_document_id": document_id,
+        "salesforce_parent_record_id": parent_id,
+        "salesforce_instance": instance_url[:128],
+    }
+    if sync_id:
+        metadata["sync_id"] = sync_id
+
+    try:
+        dual_write.s3_put_object(
+            Bucket=KB_BUCKET,
+            Key=s3_key,
+            Body=content,
+            ContentType="application/octet-stream",
+            Metadata=metadata,
+            ExpectedBucketOwner=_get_account_id(),
+        )
+        logger.info(
+            f"Uploaded Salesforce attachment to s3://{KB_BUCKET}/{s3_key}"
+        )
+        return s3_key
+    except ClientError as e:
+        logger.error(
+            f"S3 error uploading Salesforce attachment {version_id}: {e}"
+        )
+        return None
+
+
 def process_salesforce_record(
     workspace_id: str,
     connection_id: str,
@@ -1981,10 +2074,12 @@ def _build_repo_identifier(source: str, workspace_id: str, body: Dict, file_info
         "salesforce_account",
         "salesforce_contact",
         "salesforce_opportunity",
+        "salesforce_attachment",
     ):
         # One Salesforce org (identified by instance_url discovered at
         # OAuth time) is one licensable repo -- Account/Contact/Opportunity
-        # + activities all count together against the same license entry.
+        # + activities + attachments all count together against the same
+        # license entry.
         ident = body.get("instance_url") or ""
     else:
         ident = ""
@@ -2252,6 +2347,14 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
                     sync_id=sync_id,
                     instance_url=body.get("instance_url", ""),
                     object_type_hint=object_type_hint,
+                )
+            elif source == "salesforce_attachment":
+                s3_key = process_salesforce_attachment(
+                    workspace_id=workspace_id,
+                    connection_id=connection_id,
+                    file_info=file_info,
+                    sync_id=sync_id,
+                    instance_url=body.get("instance_url", ""),
                 )
             else:
                 logger.warning(f"Unknown source: {source}")
