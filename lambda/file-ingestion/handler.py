@@ -1783,6 +1783,66 @@ def process_servicenow_attachment(
         return None
 
 
+def process_salesforce_record(
+    workspace_id: str,
+    connection_id: str,
+    file_info: Dict[str, Any],
+    sync_id: Optional[str] = None,
+    instance_url: str = "",
+    object_type_hint: str = "",
+) -> Optional[str]:
+    """Process a Salesforce CRM record (Account/Contact/Opportunity).
+
+    Unlike ServiceNow -- where file-ingestion fetches the article body
+    from the source API -- Salesforce records arrive here as already-
+    rendered markdown in the SQS body. The sync worker did the SOQL +
+    activity walk + render. file-ingestion just persists to S3.
+
+    S3 key: ``workspaces/{ws}/salesforce/{connection_id}/{object_type}/{record_id}.md``
+    """
+    record_id = file_info.get("record_id")
+    object_type = file_info.get("object_type") or object_type_hint
+    markdown = file_info.get("markdown") or ""
+    title = file_info.get("title") or record_id or ""
+
+    if not record_id or not object_type or not markdown:
+        logger.error(
+            "salesforce_record missing record_id / object_type / markdown"
+        )
+        return None
+
+    s3_key = (
+        f"workspaces/{workspace_id}/salesforce/{connection_id}/"
+        f"{object_type.lower()}/{record_id}.md"
+    )
+    metadata = {
+        "source": "salesforce",
+        "workspace_id": workspace_id,
+        "connection_id": connection_id,
+        "salesforce_record_id": record_id,
+        "salesforce_object_type": object_type,
+        "salesforce_instance": instance_url[:128],
+        "title": title[:200],
+    }
+    if sync_id:
+        metadata["sync_id"] = sync_id
+
+    try:
+        dual_write.s3_put_object(
+            Bucket=KB_BUCKET,
+            Key=s3_key,
+            Body=markdown.encode("utf-8"),
+            ContentType="text/markdown",
+            Metadata=metadata,
+            ExpectedBucketOwner=_get_account_id(),
+        )
+        logger.info(f"Uploaded Salesforce record to s3://{KB_BUCKET}/{s3_key}")
+        return s3_key
+    except ClientError as e:
+        logger.error(f"S3 error uploading Salesforce record {record_id}: {e}")
+        return None
+
+
 def process_sharepoint_page(
     workspace_id: str,
     connection_id: str,
@@ -1916,6 +1976,15 @@ def _build_repo_identifier(source: str, workspace_id: str, body: Dict, file_info
         # instance_url is per-workspace and captured on the sync message
         # at body-level (not inside file_info) since the sync worker
         # writes it once per SQS message alongside source/connection_id.
+        ident = body.get("instance_url") or ""
+    elif source in (
+        "salesforce_account",
+        "salesforce_contact",
+        "salesforce_opportunity",
+    ):
+        # One Salesforce org (identified by instance_url discovered at
+        # OAuth time) is one licensable repo -- Account/Contact/Opportunity
+        # + activities all count together against the same license entry.
         ident = body.get("instance_url") or ""
     else:
         ident = ""
@@ -2167,6 +2236,22 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
                     file_info=file_info,
                     sync_id=sync_id,
                     instance_url=body.get("instance_url", ""),
+                )
+            elif source in (
+                "salesforce_account",
+                "salesforce_contact",
+                "salesforce_opportunity",
+            ):
+                # Object type hint recovered from source suffix
+                # (salesforce_account -> Account).
+                object_type_hint = source.split("_", 1)[1].capitalize()
+                s3_key = process_salesforce_record(
+                    workspace_id=workspace_id,
+                    connection_id=connection_id,
+                    file_info=file_info,
+                    sync_id=sync_id,
+                    instance_url=body.get("instance_url", ""),
+                    object_type_hint=object_type_hint,
                 )
             else:
                 logger.warning(f"Unknown source: {source}")

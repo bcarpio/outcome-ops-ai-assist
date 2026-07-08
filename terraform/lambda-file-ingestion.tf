@@ -159,6 +159,12 @@ module "file_ingestion_lambda" {
     # shared/oauth/servicenow module, which reads its instance URL +
     # client_id + client-secret SSM path from env at module init.
     local.servicenow_common_env,
+    # Salesforce OAuth env: process_salesforce_record doesn't currently
+    # call refresh_access_token (sync worker embeds pre-rendered markdown
+    # in the SQS body), but shared/oauth/salesforce reads its env at
+    # module init on every import. Thread the vars through so a future
+    # switch to fetch-back-per-record doesn't crash on missing config.
+    local.salesforce_common_env,
     local.outcomeops_license_env,
     local.ha_writer_env,
   )
