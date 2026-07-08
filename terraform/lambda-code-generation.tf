@@ -154,7 +154,8 @@ module "generate_code_lambda" {
         ]
         resources = [
           "arn:aws:bedrock:*::foundation-model/*",
-          "arn:aws:bedrock:*:*:inference-profile/*"
+          "arn:aws:bedrock:*:*:inference-profile/*",
+          "arn:aws:bedrock:*:*:application-inference-profile/*"
         ]
       }
 
@@ -453,7 +454,8 @@ locals {
       ]
       resources = [
         "arn:aws:bedrock:*::foundation-model/*",
-        "arn:aws:bedrock:*:*:inference-profile/*"
+        "arn:aws:bedrock:*:*:inference-profile/*",
+        "arn:aws:bedrock:*:*:application-inference-profile/*"
       ]
     }
 
@@ -684,7 +686,8 @@ module "handle_command_lambda" {
         ]
         resources = [
           "arn:aws:bedrock:*::foundation-model/*",
-          "arn:aws:bedrock:*:*:inference-profile/*"
+          "arn:aws:bedrock:*:*:inference-profile/*",
+          "arn:aws:bedrock:*:*:application-inference-profile/*"
         ]
       }
 

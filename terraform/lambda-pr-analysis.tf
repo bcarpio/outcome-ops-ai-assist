@@ -301,7 +301,8 @@ module "process_pr_check_lambda" {
       ]
       resources = [
         "arn:aws:bedrock:*::foundation-model/*",
-        "arn:aws:bedrock:*:${data.aws_caller_identity.current.account_id}:inference-profile/*"
+        "arn:aws:bedrock:*:${data.aws_caller_identity.current.account_id}:inference-profile/*",
+        "arn:aws:bedrock:*:${data.aws_caller_identity.current.account_id}:application-inference-profile/*"
       ]
     }
 

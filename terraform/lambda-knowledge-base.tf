@@ -184,7 +184,8 @@ module "process_batch_summary_lambda" {
       ]
       resources = [
         "arn:aws:bedrock:*::foundation-model/*",
-        "arn:aws:bedrock:*:${data.aws_caller_identity.current.account_id}:inference-profile/*"
+        "arn:aws:bedrock:*:${data.aws_caller_identity.current.account_id}:inference-profile/*",
+        "arn:aws:bedrock:*:${data.aws_caller_identity.current.account_id}:application-inference-profile/*"
       ]
     }
 
@@ -509,7 +510,8 @@ module "process_repo_summary_lambda" {
       ]
       resources = [
         "arn:aws:bedrock:*::foundation-model/*",
-        "arn:aws:bedrock:*:${data.aws_caller_identity.current.account_id}:inference-profile/*"
+        "arn:aws:bedrock:*:${data.aws_caller_identity.current.account_id}:inference-profile/*",
+        "arn:aws:bedrock:*:${data.aws_caller_identity.current.account_id}:application-inference-profile/*"
       ]
     }
 

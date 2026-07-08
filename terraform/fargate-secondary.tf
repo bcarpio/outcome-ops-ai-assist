@@ -225,6 +225,7 @@ resource "aws_iam_role_policy" "mcp_outcomeops_secondary" {
         Resource = [
           "arn:aws:bedrock:*::foundation-model/*",
           "arn:aws:bedrock:*:${data.aws_caller_identity.current.account_id}:inference-profile/*",
+          "arn:aws:bedrock:*:${data.aws_caller_identity.current.account_id}:application-inference-profile/*",
         ]
       },
       {
