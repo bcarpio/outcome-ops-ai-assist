@@ -1406,3 +1406,128 @@ resource "aws_lambda_event_source_mapping" "servicenow_sync_secondary" {
     maximum_concurrency = 5
   }
 }
+
+# ----------------------------------------------------------------------------
+# salesforce_sync -- HA parity
+# ----------------------------------------------------------------------------
+
+module "salesforce_sync_lambda_secondary" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "8.1.2"
+
+  count = var.enable_workspaces && var.enable_salesforce_integration && var.secondary_region != "" ? 1 : 0
+
+  providers = {
+    aws = aws.secondary
+  }
+
+  function_name = "${var.environment}-${var.app_name}-salesforce-sync"
+  role_name     = "${var.environment}-${var.app_name}-salesforce-sync-secondary"
+  description   = "Salesforce CRM sync (secondary region)"
+  handler       = "handler.lambda_handler"
+  runtime       = "python3.12"
+  timeout       = 900
+  memory_size   = 1024
+
+  source_path = [
+    { path = "${path.module}/../lambda/salesforce-sync", pip_requirements = true, patterns = ["!tests/.*", "!__pycache__/.*", "!\\.venv/.*", "!.*\\.pyc"] },
+    { path = "${path.module}/../lambda/shared", prefix_in_zip = "shared" },
+  ]
+
+  cloudwatch_logs_retention_in_days = 7
+  cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs_secondary[0].arn
+  quiet_archive_local_exec          = true
+
+  layers = [var.outcomeops_license_layer_arn_secondary]
+
+  environment_variables = merge(
+    {
+      ENV                   = var.environment
+      APP_NAME              = var.app_name
+      WORKSPACES_TABLE      = module.workspaces_table_secondary[0].dynamodb_table_id
+      OAUTH_KMS_KEY_ARN     = aws_kms_replica_key.oauth_tokens_secondary[0].arn
+      FILE_INGESTION_QUEUE  = aws_sqs_queue.file_ingestion_secondary[0].url
+      DELETE_QUEUE          = aws_sqs_queue.delete_queue_secondary[0].url
+      SALESFORCE_SYNC_QUEUE = aws_sqs_queue.salesforce_sync_secondary[0].url
+      KB_BUCKET             = module.knowledge_base_bucket_secondary.s3_bucket_id
+      AUDIT_TABLE           = module.audit_logs_table_secondary[0].dynamodb_table_id
+    },
+    local.salesforce_common_env,
+    local.outcomeops_license_env,
+    local.ha_writer_env_secondary,
+  )
+
+  attach_policy_statements = true
+  policy_statements = merge(
+    {
+      dynamodb = {
+        effect  = "Allow"
+        actions = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query"]
+        resources = [
+          module.workspaces_table_secondary[0].dynamodb_table_arn,
+          "${module.workspaces_table_secondary[0].dynamodb_table_arn}/index/*",
+        ]
+      }
+      kms_oauth = {
+        effect  = "Allow"
+        actions = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
+        resources = [
+          aws_kms_replica_key.oauth_tokens_secondary[0].arn,
+          aws_kms_key.oauth_tokens[0].arn,
+        ]
+      }
+      kms_ssm = {
+        effect    = "Allow"
+        actions   = ["kms:Decrypt"]
+        resources = ["arn:aws:kms:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:alias/aws/ssm"]
+      }
+      ssm_read = {
+        effect    = "Allow"
+        actions   = ["ssm:GetParameter", "ssm:GetParameters"]
+        resources = ["arn:aws:ssm:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/oauth/salesforce/*"]
+      }
+      sqs_receive = {
+        effect    = "Allow"
+        actions   = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"]
+        resources = [aws_sqs_queue.salesforce_sync_secondary[0].arn]
+      }
+      sqs_send = {
+        effect  = "Allow"
+        actions = ["sqs:SendMessage"]
+        resources = [
+          aws_sqs_queue.file_ingestion_secondary[0].arn,
+          aws_sqs_queue.delete_queue_secondary[0].arn,
+          aws_sqs_queue.salesforce_sync_secondary[0].arn,
+        ]
+      }
+      s3_kb_list = {
+        effect    = "Allow"
+        actions   = ["s3:ListBucket"]
+        resources = [module.knowledge_base_bucket_secondary.s3_bucket_arn]
+      }
+      dynamodb_audit = {
+        effect    = "Allow"
+        actions   = ["dynamodb:PutItem"]
+        resources = [module.audit_logs_table_secondary[0].dynamodb_table_arn]
+      }
+    },
+    local.outcomeops_license_iam,
+    local.ha_writer_events_iam_secondary,
+  )
+
+  tags = { Purpose = "salesforce-sync" }
+}
+
+resource "aws_lambda_event_source_mapping" "salesforce_sync_secondary" {
+  count            = var.enable_workspaces && var.enable_salesforce_integration && var.secondary_region != "" ? 1 : 0
+  provider         = aws.secondary
+  event_source_arn = aws_sqs_queue.salesforce_sync_secondary[0].arn
+  function_name    = module.salesforce_sync_lambda_secondary[0].lambda_function_name
+  batch_size       = 1
+
+  function_response_types = ["ReportBatchItemFailures"]
+
+  scaling_config {
+    maximum_concurrency = 5
+  }
+}

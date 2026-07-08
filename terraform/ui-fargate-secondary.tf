@@ -183,6 +183,10 @@ module "ui_ecs_secondary" {
               {
                 name  = "SERVICENOW_LAMBDA_URL"
                 value = try(aws_lambda_function_url.servicenow_integration_secondary[0].function_url, "")
+              },
+              {
+                name  = "SALESFORCE_LAMBDA_URL"
+                value = try(aws_lambda_function_url.salesforce_integration_secondary[0].function_url, "")
               }
             ] : [],
             # Scanner secondary lands in chunk 9i; SSM path stays the

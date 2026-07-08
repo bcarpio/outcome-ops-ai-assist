@@ -585,3 +585,46 @@ resource "aws_sqs_queue" "servicenow_sync_dlq_secondary" {
     Purpose = "servicenow-sync-dlq"
   }
 }
+
+# ----------------------------------------------------------------------------
+# salesforce_sync -- HA parity
+# ----------------------------------------------------------------------------
+
+resource "aws_sqs_queue" "salesforce_sync_secondary" {
+  count = var.enable_workspaces && var.enable_salesforce_integration && var.secondary_region != "" ? 1 : 0
+
+  provider = aws.secondary
+
+  name                       = "${var.environment}-${var.app_name}-salesforce-sync"
+  visibility_timeout_seconds = 900
+  message_retention_seconds  = 86400
+  receive_wait_time_seconds  = 20
+
+  redrive_policy = jsonencode({
+    deadLetterTargetArn = aws_sqs_queue.salesforce_sync_dlq_secondary[0].arn
+    maxReceiveCount     = 3
+  })
+
+  sqs_managed_sse_enabled = var.enable_cmk_encryption ? null : true
+  kms_master_key_id       = local.data_cmk_arn_secondary
+
+  tags = {
+    Purpose = "salesforce-sync-queue"
+  }
+}
+
+resource "aws_sqs_queue" "salesforce_sync_dlq_secondary" {
+  count = var.enable_workspaces && var.enable_salesforce_integration && var.secondary_region != "" ? 1 : 0
+
+  provider = aws.secondary
+
+  name                      = "${var.environment}-${var.app_name}-salesforce-sync-dlq"
+  message_retention_seconds = 1209600
+
+  sqs_managed_sse_enabled = var.enable_cmk_encryption ? null : true
+  kms_master_key_id       = local.data_cmk_arn_secondary
+
+  tags = {
+    Purpose = "salesforce-sync-dlq"
+  }
+}

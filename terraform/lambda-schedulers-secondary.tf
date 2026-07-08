@@ -1085,3 +1085,95 @@ resource "aws_lambda_permission" "servicenow_scheduler_eventbridge_secondary" {
   principal     = "events.amazonaws.com"
   source_arn    = aws_cloudwatch_event_rule.servicenow_hourly_sync_secondary[0].arn
 }
+
+# ----------------------------------------------------------------------------
+# salesforce_scheduler -- HA parity
+# ----------------------------------------------------------------------------
+
+module "salesforce_scheduler_lambda_secondary" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "8.1.2"
+
+  count = var.enable_workspaces && var.enable_salesforce_integration && var.secondary_region != "" ? 1 : 0
+
+  providers = {
+    aws = aws.secondary
+  }
+
+  function_name = "${var.environment}-${var.app_name}-salesforce-scheduler"
+  role_name     = "${var.environment}-${var.app_name}-salesforce-scheduler-secondary"
+  description   = "Hourly scheduler for Salesforce sync jobs (secondary region)"
+  handler       = "handler.lambda_handler"
+  runtime       = "python3.12"
+  timeout       = 60
+  memory_size   = 256
+
+  source_path = [
+    { path = "${path.module}/../lambda/salesforce-scheduler", pip_requirements = false, patterns = ["!tests/.*", "!__pycache__/.*", "!\\.venv/.*", "!.*\\.pyc"] },
+    { path = "${path.module}/../lambda/shared", prefix_in_zip = "shared" },
+  ]
+
+  cloudwatch_logs_retention_in_days = 7
+  cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs_secondary[0].arn
+  quiet_archive_local_exec          = true
+
+  environment_variables = merge({
+    ENV                   = var.environment
+    APP_NAME              = var.app_name
+    WORKSPACES_TABLE      = module.workspaces_table_secondary[0].dynamodb_table_id
+    SALESFORCE_SYNC_QUEUE = aws_sqs_queue.salesforce_sync_secondary[0].url
+    },
+    local.ha_scheduler_env_secondary,
+  )
+
+  attach_policy_statements = true
+  policy_statements = merge({
+    dynamodb = {
+      effect  = "Allow"
+      actions = ["dynamodb:Scan", "dynamodb:Query"]
+      resources = [
+        module.workspaces_table_secondary[0].dynamodb_table_arn,
+        "${module.workspaces_table_secondary[0].dynamodb_table_arn}/index/*",
+      ]
+    }
+    sqs_send = {
+      effect    = "Allow"
+      actions   = ["sqs:SendMessage"]
+      resources = [aws_sqs_queue.salesforce_sync_secondary[0].arn]
+    }
+    },
+    local.ha_scheduler_iam_secondary,
+  )
+
+  tags = { Purpose = "salesforce-scheduler" }
+}
+
+resource "aws_cloudwatch_event_rule" "salesforce_hourly_sync_secondary" {
+  count    = var.enable_workspaces && var.enable_salesforce_integration && var.secondary_region != "" ? 1 : 0
+  provider = aws.secondary
+
+  name                = "${var.environment}-${var.app_name}-salesforce-hourly-sync"
+  description         = "Trigger Salesforce sync scheduler hourly at :15 (secondary region)"
+  schedule_expression = "cron(15 * * * ? *)"
+  tags                = { Purpose = "salesforce-scheduler" }
+}
+
+resource "aws_cloudwatch_event_target" "salesforce_scheduler_secondary" {
+  count    = var.enable_workspaces && var.enable_salesforce_integration && var.secondary_region != "" ? 1 : 0
+  provider = aws.secondary
+
+  rule      = aws_cloudwatch_event_rule.salesforce_hourly_sync_secondary[0].name
+  target_id = "salesforce-scheduler"
+  arn       = module.salesforce_scheduler_lambda_secondary[0].lambda_function_arn
+}
+
+resource "aws_lambda_permission" "salesforce_scheduler_eventbridge_secondary" {
+  count    = var.enable_workspaces && var.enable_salesforce_integration && var.secondary_region != "" ? 1 : 0
+  provider = aws.secondary
+
+  statement_id  = "AllowEventBridgeInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = module.salesforce_scheduler_lambda_secondary[0].lambda_function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.salesforce_hourly_sync_secondary[0].arn
+}
