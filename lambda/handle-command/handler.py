@@ -296,8 +296,11 @@ Format your response as markdown with clear headers for each failure type. Be co
 
     try:
         bedrock_start = time.time()
+        # ADR-016 v1.2 -- code-gen workload (PR-comment command dispatch
+        # leads to code changes). Uses Haiku tier for cheap classification.
         resp = invoke_model(
-            model_id=BASIC_MODEL_ID,
+            workload="code-gen",
+            tier="basic",
             messages=[{"role": "user", "content": [{"text": prompt}]}],
             max_tokens=2000,
         )

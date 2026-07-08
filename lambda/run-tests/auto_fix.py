@@ -321,8 +321,10 @@ Be concise and specific about what to change."""
 Provide a concise fix for this error."""
 
     try:
+        # ADR-016 v1.2 -- code-gen workload (auto-fix on test failure).
         resp = invoke_model(
-            model_id=CLAUDE_MODEL_ID,
+            workload="code-gen",
+            tier="advanced",
             messages=[{"role": "user", "content": [{"text": prompt}]}],
             system=system_prompt,
             temperature=0.3,
@@ -443,8 +445,10 @@ For syntax errors: Fix the syntax while preserving the file structure.
 Output the COMPLETE corrected file using the organizational patterns.
 Output ONLY valid {language} code - no markdown, no explanations."""
 
+        # ADR-016 v1.2 -- code-gen workload (full-file rewrite).
         resp = invoke_model(
-            model_id=CLAUDE_MODEL_ID,
+            workload="code-gen",
+            tier="advanced",
             messages=[{"role": "user", "content": [{"text": prompt}]}],
             system=system_prompt,
             temperature=0.2,

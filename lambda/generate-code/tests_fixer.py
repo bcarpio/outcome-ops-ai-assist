@@ -440,8 +440,10 @@ CRITICAL: Output the COMPLETE file content. Do NOT truncate, summarize, or use p
 Preserve ALL existing code and only modify what's needed to fix the failures."""
 
     try:
+        # ADR-016 v1.2 -- code-gen workload attribution.
         resp = invoke_model(
-            model_id=CLAUDE_MODEL_ID,
+            workload="code-gen",
+            tier="advanced",
             messages=[{"role": "user", "content": [{"text": prompt}]}],
             system=system_prompt,
             temperature=0.2,

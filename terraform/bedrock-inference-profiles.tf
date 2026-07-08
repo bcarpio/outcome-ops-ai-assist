@@ -37,7 +37,9 @@ locals {
   bedrock_workload_models = {
     chat        = ["haiku", "sonnet", "titan-embed", "cohere-rerank"]
     code-maps   = ["haiku", "sonnet"]
-    code-gen    = ["sonnet"]
+    # code-gen uses Sonnet for generation + Haiku for PR-comment-command
+    # classification (handle-command Lambda).
+    code-gen    = ["haiku", "sonnet"]
     pr-analyzer = ["haiku", "sonnet"]
   }
 
@@ -153,6 +155,7 @@ locals {
   }
   bedrock_code_gen_env = {
     BEDROCK_CODE_GEN_ADVANCED_PROFILE_ARN = aws_bedrock_inference_profile.workload["code-gen-sonnet"].arn
+    BEDROCK_CODE_GEN_BASIC_PROFILE_ARN    = aws_bedrock_inference_profile.workload["code-gen-haiku"].arn
   }
   bedrock_pr_analyzer_env = {
     BEDROCK_PR_ANALYZER_ADVANCED_PROFILE_ARN = aws_bedrock_inference_profile.workload["pr-analyzer-sonnet"].arn

@@ -2,8 +2,17 @@ terraform {
   required_version = ">= 1.5"
   required_providers {
     aws = {
-      source  = "hashicorp/aws"
-      version = "~> 6.0"
+      source = "hashicorp/aws"
+      # Pinned to 6.36.0 -- the version RetrieveIT ran the ADR-016
+      # inference-profile rollout on. Provider versions 6.53.x (auto-
+      # picked from ~> 6.0 on init day for this repo) regressed
+      # aws_bedrock_inference_profile authentication and made
+      # CreateInferenceProfile expect a Bedrock bearer token; SigV4
+      # credentials that work in the CLI fail with
+      # "Authentication failed: Please make sure your API Key is valid."
+      # Bump both this and RetrieveIT together when a later 6.x release
+      # is confirmed to fix the regression.
+      version = "6.36.0"
     }
   }
 }

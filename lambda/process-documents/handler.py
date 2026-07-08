@@ -40,6 +40,7 @@ from botocore.exceptions import ClientError
 # Add shared module to path for Lambda deployment
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared.audit import COMPREHEND_MODEL_ID, log_audit_entry
+from shared.model_client import resolve_profile_arn
 from shared.audit_writer import (
     ACTION_DOCUMENT_INGESTED,
     log_admin_action,
@@ -578,8 +579,12 @@ def generate_embedding(text: str) -> List[float]:
     """
     try:
         bedrock_start = time.time()
+        # ADR-016 v1.2 -- ingest embed goes under chat workload.
+        embed_model_id = (
+            resolve_profile_arn("chat", "titan-embed") or EMBEDDING_MODEL_ID
+        )
         response = bedrock_client.invoke_model(
-            modelId=EMBEDDING_MODEL_ID,
+            modelId=embed_model_id,
             contentType="application/json",
             accept="application/json",
             body=json.dumps({

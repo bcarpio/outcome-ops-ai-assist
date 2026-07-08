@@ -32,6 +32,7 @@ from botocore.exceptions import ClientError
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from shared import dual_write  # type: ignore  # noqa: E402
 from shared import retrieval as shared_retrieval  # type: ignore  # noqa: E402
+from shared.model_client import resolve_profile_arn  # type: ignore  # noqa: E402
 try:
     from shared.audit_writer import (  # type: ignore
         ACTION_API_KEY_USED,
@@ -727,8 +728,12 @@ def generate_embedding(text):
         "dimensions": 1024,
         "normalize": True,
     }
+    # ADR-016 v1.2 -- MCP retrieval attributes under chat workload.
+    embed_model_id = (
+        resolve_profile_arn("chat", "titan-embed") or EMBEDDING_MODEL_ID
+    )
     response = bedrock.invoke_model(
-        modelId=EMBEDDING_MODEL_ID,
+        modelId=embed_model_id,
         contentType="application/json",
         accept="application/json",
         body=json.dumps(payload),
@@ -779,9 +784,13 @@ def search_knowledge_base(
         return []
 
     if RERANK_ENABLED and len(docs) > 1:
+        # ADR-016 v1.2 -- chat/cohere-rerank profile ARN attribution.
+        rerank_id = (
+            resolve_profile_arn("chat", "cohere-rerank") or RERANK_MODEL_ID
+        )
         docs = shared_retrieval.rerank(
             bedrock_agent_runtime_client=_get_bedrock_agent_runtime_client(),
-            rerank_model_id=RERANK_MODEL_ID,
+            rerank_model_id=rerank_id,
             query=query,
             documents=docs,
             top_n=top_k,

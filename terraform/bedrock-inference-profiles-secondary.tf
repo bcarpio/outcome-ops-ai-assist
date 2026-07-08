@@ -87,6 +87,7 @@ locals {
   } : {}
   bedrock_code_gen_env_secondary = var.secondary_region != "" ? {
     BEDROCK_CODE_GEN_ADVANCED_PROFILE_ARN = aws_bedrock_inference_profile.workload_secondary["code-gen-sonnet"].arn
+    BEDROCK_CODE_GEN_BASIC_PROFILE_ARN    = aws_bedrock_inference_profile.workload_secondary["code-gen-haiku"].arn
   } : {}
   bedrock_pr_analyzer_env_secondary = var.secondary_region != "" ? {
     BEDROCK_PR_ANALYZER_ADVANCED_PROFILE_ARN = aws_bedrock_inference_profile.workload_secondary["pr-analyzer-sonnet"].arn

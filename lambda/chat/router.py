@@ -348,8 +348,13 @@ def classify_intent(
         # patch chat.router.invoke_model without needing the legacy
         # boto3-client injection hook (which is now retained only as a
         # no-op for backward compatibility with other suites).
+        # ADR-016 v1.2 -- router uses Haiku ("basic" tier) under the
+        # chat workload. model_id is kept for the audit log +
+        # RouterDecision return; shared.model_client resolves the
+        # profile ARN from BEDROCK_CHAT_BASIC_PROFILE_ARN.
         response = invoke_model(
-            model_id=model_id,
+            workload="chat",
+            tier="basic",
             system=_router_system_prompt(),
             messages=[{"role": "user", "content": [{"text": question.strip()}]}],
             # Tight cap -- the router output is < 60 tokens.

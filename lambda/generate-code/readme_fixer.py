@@ -217,8 +217,10 @@ Rules:
 - Output raw markdown, no code fences around the entire output"""
 
     try:
+        # ADR-016 v1.2 -- code-gen workload attribution.
         resp = invoke_model(
-            model_id=CLAUDE_MODEL_ID,
+            workload="code-gen",
+            tier="advanced",
             messages=[{"role": "user", "content": [{"text": prompt}]}],
             system=system_prompt,
             temperature=0.2,

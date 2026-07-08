@@ -153,15 +153,17 @@ def invoke_claude_with_retry(prompt: str, model: str = "haiku", max_retries: int
         ClientError: If the Converse backend retries are exhausted.
         Other shared.model_client errors propagate.
     """
-    model_id = ADVANCED_MODEL_ID if model == "sonnet" else BASIC_MODEL_ID
+    # ADR-016 v1.2 -- chat workload (ask-claude is chat-adjacent Q&A).
+    tier = "advanced" if model == "sonnet" else "basic"
     max_tokens = 4000 if model == "sonnet" else 2000  # More tokens for complex reasoning
 
-    logger.info(f"[ask-claude] Using model tier={model} id={model_id}")
+    logger.info(f"[ask-claude] Using workload=chat tier={tier}")
 
     for attempt in range(max_retries):
         try:
             resp = invoke_model(
-                model_id=model_id,
+                workload="chat",
+                tier=tier,
                 messages=[{"role": "user", "content": [{"text": prompt}]}],
                 temperature=0.3,  # Low temperature for factual, grounded responses
                 max_tokens=max_tokens,

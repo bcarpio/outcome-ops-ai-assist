@@ -36,6 +36,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared import dual_write
 from shared.audit import log_audit_entry
+from shared import model_client
 from shared.model_client import invoke_stream as model_invoke_stream
 from shared.model_client_types import (
     Metadata as _ModelMetadata,
@@ -1355,8 +1356,14 @@ def generate_embedding(text: str) -> List[float]:
             "normalize": True,
         }
 
+        # ADR-016 v1.2 -- chat/titan-embed profile ARN attributes query
+        # embed spend under the chat workload; fallback to bare model id.
+        embed_model_id = (
+            model_client.resolve_profile_arn("chat", "titan-embed")
+            or EMBEDDING_MODEL_ID
+        )
         response = bedrock.invoke_model(
-            modelId=EMBEDDING_MODEL_ID,
+            modelId=embed_model_id,
             contentType="application/json",
             accept="application/json",
             body=json.dumps(payload),
@@ -1668,6 +1675,14 @@ def rerank_results(
 
         rerank_start = time.time()
 
+        # ADR-016 v1.2 -- chat/cohere-rerank profile ARN attribution.
+        rerank_profile = model_client.resolve_profile_arn(
+            "chat", "cohere-rerank",
+        )
+        rerank_arn = rerank_profile or (
+            f"arn:aws:bedrock:{client.meta.region_name}"
+            f"::foundation-model/{RERANK_MODEL_ID}"
+        )
         rerank_params = {
             "queries": [{"type": "TEXT", "textQuery": {"text": query}}],
             "sources": sources,
@@ -1675,7 +1690,7 @@ def rerank_results(
                 "type": "BEDROCK_RERANKING_MODEL",
                 "bedrockRerankingConfiguration": {
                     "modelConfiguration": {
-                        "modelArn": f"arn:aws:bedrock:{client.meta.region_name}::foundation-model/{RERANK_MODEL_ID}"
+                        "modelArn": rerank_arn,
                     }
                 }
             }
@@ -2038,7 +2053,13 @@ When the user's question builds on something you said earlier in this conversati
 
     messages.append({"role": "user", "content": [{"text": user_prompt}]})
 
-    model_id = ADVANCED_MODEL_ID if advanced else BASIC_MODEL_ID
+    # ADR-016 v1.2 -- chat workload, tier picked by the caller's
+    # advanced flag. shared.model_client resolves the profile ARN from
+    # BEDROCK_CHAT_ADVANCED_PROFILE_ARN / BEDROCK_CHAT_BASIC_PROFILE_ARN
+    # (chunk-04 wired). Legacy BEDROCK_ADVANCED_MODEL_ID / _BASIC_MODEL_ID
+    # env vars still populate ADVANCED_MODEL_ID/BASIC_MODEL_ID here for
+    # the WARN-log fallback path.
+    tier = "advanced" if advanced else "basic"
     max_iterations = 10
     total_input_tokens = 0
     total_output_tokens = 0
@@ -2067,7 +2088,8 @@ When the user's question builds on something you said earlier in this conversati
             # the same {"type":"tool_use",...} progress payloads regardless
             # of backend.
             stream = model_invoke_stream(
-                model_id=model_id,
+                workload="chat",
+                tier=tier,
                 messages=messages,
                 system=system_prompt,
                 # Low temperature for grounded, reproducible synthesis.

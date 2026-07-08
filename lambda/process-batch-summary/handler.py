@@ -35,6 +35,7 @@ from shared.audit import COMPREHEND_MODEL_ID, log_audit_entry
 from shared.audit_writer import ACTION_DOCUMENT_INGESTED, log_admin_action
 from shared.code_map_sizing import MAX_PROMPT_TOKENS, estimate_tokens
 from shared.model_client import invoke as invoke_model
+from shared.model_client import resolve_profile_arn
 from shared.pii import MODE_STRICT, read_workspace_mode, redact
 from shared.prompts import CODE_MAP_LITERAL_DISCIPLINE
 
@@ -869,8 +870,10 @@ def _call_bedrock_and_audit(prompt: str, group_name: str) -> str:
     artifact).
     """
     def call_model():
+        # ADR-016 v1.2 -- code-maps workload attribution.
         resp = invoke_model(
-            model_id=ADVANCED_MODEL_ID,
+            workload="code-maps",
+            tier="advanced",
             messages=[{"role": "user", "content": [{"text": prompt}]}],
             max_tokens=8192,
             temperature=0.1,
@@ -1116,8 +1119,13 @@ def generate_embedding(text: str) -> List[float]:
             "normalize": True,
         }
 
+        # ADR-016 v1.2 -- chat/titan-embed profile ARN when wired, else
+        # bare foundation model (untagged fallback).
+        embed_model_id = (
+            resolve_profile_arn("chat", "titan-embed") or EMBEDDING_MODEL_ID
+        )
         response = bedrock_client.invoke_model(
-            modelId=EMBEDDING_MODEL_ID,
+            modelId=embed_model_id,
             contentType="application/json",
             accept="application/json",
             body=json.dumps(payload),

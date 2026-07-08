@@ -170,11 +170,16 @@ def call_bedrock(
     Raises:
         Exception: If Bedrock call fails
     """
-    logger.info(f"Calling Bedrock model {model_id}...")
+    # ADR-016 v1.2 -- pr-analyzer workload. Tier derived from the
+    # legacy model_id string so existing callers (call_bedrock(prompt)
+    # / call_bedrock(prompt, HAIKU_MODEL_ID)) don't need to change.
+    tier = "basic" if "haiku" in model_id.lower() else "advanced"
+    logger.info(f"Calling Bedrock workload=pr-analyzer tier={tier}...")
 
     bedrock_start = time.time()
     resp = invoke_model(
-        model_id=model_id,
+        workload="pr-analyzer",
+        tier=tier,
         messages=[{"role": "user", "content": [{"text": prompt}]}],
         max_tokens=max_tokens,
         temperature=temperature,

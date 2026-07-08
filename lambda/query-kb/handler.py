@@ -36,6 +36,7 @@ from botocore.exceptions import ClientError
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared.audit import log_audit_entry
 from shared import retrieval as shared_retrieval
+from shared.model_client import resolve_profile_arn
 
 # Bedrock model configuration
 EMBEDDING_MODEL_ID = os.environ.get(
@@ -116,8 +117,12 @@ def generate_embedding(text: str) -> List[float]:
         }
 
         bedrock_start = time.time()
+        # ADR-016 v1.2 -- chat/titan-embed profile ARN.
+        embed_model_id = (
+            resolve_profile_arn("chat", "titan-embed") or EMBEDDING_MODEL_ID
+        )
         response = bedrock_client.invoke_model(
-            modelId=EMBEDDING_MODEL_ID,
+            modelId=embed_model_id,
             contentType="application/json",
             accept="application/json",
             body=json.dumps(payload),
@@ -376,9 +381,12 @@ def rerank_results(
     # Rerank mechanics live in the shared module (same Cohere call, same
     # graceful cosine-order fallback) so chat and the MCP server share one
     # reranker. lambda_name="query-kb" preserves the audit + log shape.
+    # ADR-016 v1.2: prefer the chat/cohere-rerank profile ARN so rerank
+    # spend attributes to the chat workload; falls back to bare model id.
+    rerank_id = resolve_profile_arn("chat", "cohere-rerank") or RERANK_MODEL_ID
     return shared_retrieval.rerank(
         bedrock_agent_runtime_client=bedrock_agent_runtime_client,
-        rerank_model_id=RERANK_MODEL_ID,
+        rerank_model_id=rerank_id,
         query=query,
         documents=documents,
         top_n=top_n,

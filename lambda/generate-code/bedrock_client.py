@@ -76,8 +76,10 @@ def invoke_claude(
     for attempt in range(MAX_RETRIES):
         try:
             bedrock_start = time.time()
+            # ADR-016 v1.2 -- code-gen workload attribution.
             resp = invoke_model(
-                model_id=CLAUDE_MODEL_ID,
+                workload="code-gen",
+                tier="advanced",
                 messages=[{"role": "user", "content": [{"text": prompt}]}],
                 system=system_prompt if system_prompt else None,
                 temperature=temperature,
