@@ -253,14 +253,19 @@ module "query_kb_lambda" {
       ]
     }
 
-    # Bedrock models for embedding generation
+    # Bedrock models for embedding generation.
+    # ADR-016 v1.2: application inference profiles have a distinct
+    # resource type from system-defined profiles -- both flavors need
+    # explicit grants (per project_bedrock_application_profile_arn_gotcha).
     bedrock_titan = {
       effect = "Allow"
       actions = [
         "bedrock:InvokeModel"
       ]
       resources = [
-        "arn:aws:bedrock:*::foundation-model/*"
+        "arn:aws:bedrock:*::foundation-model/*",
+        "arn:aws:bedrock:*:${data.aws_caller_identity.current.account_id}:inference-profile/*",
+        "arn:aws:bedrock:*:${data.aws_caller_identity.current.account_id}:application-inference-profile/*"
       ]
     }
 
