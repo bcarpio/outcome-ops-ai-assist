@@ -23,6 +23,11 @@ vi.mock('../../../src/lib/api', () => ({
   listServiceNowConnections: vi.fn(),
   syncServiceNowConnection: vi.fn(),
   disconnectServiceNow: vi.fn(),
+  connectSalesforce: vi.fn(),
+  getSalesforceAuthUrl: vi.fn(),
+  listSalesforceConnections: vi.fn(),
+  syncSalesforceConnection: vi.fn(),
+  disconnectSalesforce: vi.fn(),
   listJiraConnections: vi.fn(),
   getJiraAuthUrl: vi.fn(),
   listJiraProjects: vi.fn(),
@@ -213,8 +218,11 @@ const mockListAzureDevOpsBoardsConnections = vi.mocked(listAzureDevOpsBoardsConn
 const mockListWorkspaceAzureDevOpsBoardsProjects = vi.mocked(listWorkspaceAzureDevOpsBoardsProjects)
 // ServiceNow UI. Import lazily via dynamic access so a stale
 // snapshot doesn't require importing them into every test file.
-import { listServiceNowConnections, getServiceNowAuthUrl } from '../../../src/lib/api'
+import { listServiceNowConnections, getServiceNowAuthUrl, listSalesforceConnections, connectSalesforce, getSalesforceAuthUrl } from '../../../src/lib/api'
 const mockListServiceNowConnections = vi.mocked(listServiceNowConnections)
+const mockListSalesforceConnections = vi.mocked(listSalesforceConnections)
+const mockConnectSalesforce = vi.mocked(connectSalesforce)
+const mockGetSalesforceAuthUrl = vi.mocked(getSalesforceAuthUrl)
 const mockGetServiceNowAuthUrl = vi.mocked(getServiceNowAuthUrl)
 
 function setupDefaultMocks() {
@@ -237,6 +245,7 @@ function setupDefaultMocks() {
   mockListAzureDevOpsBoardsConnections.mockResolvedValue([])
   mockListWorkspaceAzureDevOpsBoardsProjects.mockResolvedValue([])
   mockListServiceNowConnections.mockResolvedValue([])
+  mockListSalesforceConnections.mockResolvedValue([])
   mockGetEnabledIntegrations.mockResolvedValue({
     azure_devops: true,
     azure_devops_boards: true,
@@ -250,11 +259,11 @@ function setupDefaultMocks() {
     onedrive: true,
     onenote: true,
     database: true,
-    // ServiceNow disabled by default so existing tests that grep for
-    // `/connect/i` don't accidentally match the ServiceNow Connect
-    // button. Tests exercising the ServiceNow section explicitly
-    // flip this to true.
+    // ServiceNow + Salesforce disabled by default so existing tests
+    // that grep for `/connect/i` don't accidentally match those
+    // Connect buttons. Tests exercising those sections flip explicitly.
     servicenow: false,
+    salesforce: false,
   })
   mockGetWorkspacePrivacy.mockResolvedValue({
     workspace_id: 'ws-1',
@@ -2260,6 +2269,68 @@ describe('WorkspaceSettings', () => {
           expect(window.location.href).toBe(
             'https://dev307154.service-now.com/oauth_auth.do?state=XYZ'
           )
+        })
+      } finally {
+        Object.defineProperty(window, 'location', {
+          writable: true,
+          value: originalLocation,
+        })
+      }
+    })
+  })
+
+  // Salesforce section (env-level shared Connected App, sandbox picker)
+  describe('Salesforce', () => {
+    beforeEach(() => {
+      mockGetEnabledIntegrations.mockResolvedValue({
+        azure_devops: false,
+        azure_devops_boards: false,
+        github: false,
+        github_issues: false,
+        confluence: false,
+        jira: false,
+        outlook: false,
+        teams: false,
+        sharepoint: false,
+        onedrive: false,
+        onenote: false,
+        database: false,
+        servicenow: false,
+        salesforce: true,
+      })
+    })
+
+    it('renders Salesforce section with a Connect button when no connections exist', async () => {
+      renderSettings('integrations')
+      await waitFor(() => {
+        expect(screen.getByText('Salesforce CRM')).toBeInTheDocument()
+      })
+      expect(screen.getByText(/no Salesforce connections yet/i)).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /connect/i })).toBeInTheDocument()
+    })
+
+    it('Connect click opens the env picker; Continue calls connectSalesforce then redirects', async () => {
+      mockConnectSalesforce.mockResolvedValue({ connection_id: 'sf-conn-1', next: 'authorize' })
+      mockGetSalesforceAuthUrl.mockResolvedValue('https://login.salesforce.com/services/oauth2/authorize?state=XYZ')
+      const originalLocation = window.location
+      Object.defineProperty(window, 'location', {
+        writable: true,
+        value: { ...originalLocation, href: '' },
+      })
+      try {
+        renderSettings('integrations')
+        await waitFor(() => screen.getByText('Salesforce CRM'))
+        const user = userEvent.setup()
+        await user.click(screen.getByRole('button', { name: /connect/i }))
+        // Env picker appears
+        expect(screen.getByText(/production \(login.salesforce.com\)/i)).toBeInTheDocument()
+        expect(screen.getByText(/sandbox \(test.salesforce.com\)/i)).toBeInTheDocument()
+        await user.click(screen.getByRole('button', { name: /continue to oauth/i }))
+        await waitFor(() => {
+          expect(mockConnectSalesforce).toHaveBeenCalledWith('ws-1', false)
+        })
+        await waitFor(() => {
+          expect(mockGetSalesforceAuthUrl).toHaveBeenCalledWith('ws-1', 'sf-conn-1')
         })
       } finally {
         Object.defineProperty(window, 'location', {

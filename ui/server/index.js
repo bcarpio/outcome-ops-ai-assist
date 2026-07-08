@@ -49,6 +49,7 @@ const DATABASE_LAMBDA_URL = process.env.DATABASE_LAMBDA_URL;
 const AZURE_DEVOPS_LAMBDA_URL = process.env.AZURE_DEVOPS_LAMBDA_URL;
 const AZURE_DEVOPS_BOARDS_LAMBDA_URL = process.env.AZURE_DEVOPS_BOARDS_LAMBDA_URL;
 const SERVICENOW_LAMBDA_URL = process.env.SERVICENOW_LAMBDA_URL;
+const SALESFORCE_LAMBDA_URL = process.env.SALESFORCE_LAMBDA_URL;
 const AWS_REGION = process.env.AWS_REGION || "us-west-2";
 const STATIC_DIR = process.env.STATIC_DIR || "/app/static";
 const LOCAL_DEV_MODE = process.env.LOCAL_DEV_MODE === "true";
@@ -288,6 +289,13 @@ async function signedConfluenceFetch(method, path, options = {}) {
  */
 async function signedServiceNowFetch(method, path, options = {}) {
   return signedFetch(SERVICENOW_LAMBDA_URL, method, path, options);
+}
+
+/**
+ * Sign and send a request to the Salesforce Lambda Function URL.
+ */
+async function signedSalesforceFetch(method, path, options = {}) {
+  return signedFetch(SALESFORCE_LAMBDA_URL, method, path, options);
 }
 
 /**
@@ -1289,6 +1297,121 @@ app.post("/api/workspaces/:id/servicenow/connections/:connId/sync", (req, res) =
 // Disconnect
 app.delete("/api/workspaces/:id/servicenow/connections/:connId", (req, res) => {
   proxyServiceNowRequest(req, res, "DELETE", `/workspaces/${req.params.id}/servicenow/connections/${req.params.connId}`);
+});
+
+// ============================================================================
+// Salesforce CRM Integration Routes
+// ============================================================================
+//
+// Env-level shared Connected App (same shape as Confluence/Jira). The
+// workspace admin picks sandbox vs prod via POST /connect body, then
+// GET /authorize returns the Salesforce OAuth authorize URL for the
+// chosen environment.
+
+async function proxySalesforceRequest(req, res, method, path) {
+  if (!SALESFORCE_LAMBDA_URL) {
+    console.log("[proxy] SALESFORCE_LAMBDA_URL not configured - Salesforce integration disabled");
+    res.status(404).json({ error: "Salesforce integration not enabled" });
+    return;
+  }
+
+  const user = extractUser(req);
+  console.log(`[proxy] Salesforce ${method} ${path} for: ${user.email}`);
+
+  try {
+    const options = {
+      extraHeaders: userHeaders(req, user),
+    };
+    if (req.body && Object.keys(req.body).length > 0) {
+      options.body = JSON.stringify(req.body);
+    }
+
+    const response = await signedSalesforceFetch(method, path, options);
+
+    if (response.status === 302) {
+      const location = response.headers.get("location");
+      return res.redirect(location);
+    }
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`[proxy] Salesforce Lambda error: ${response.status} - ${errorText}`);
+      res.status(response.status).json({ error: errorText || "Salesforce request failed" });
+      return;
+    }
+
+    const text = await response.text();
+    if (!text) {
+      res.status(response.status).json({});
+      return;
+    }
+    try {
+      const data = JSON.parse(text);
+      res.status(response.status).json(data);
+    } catch {
+      res.status(500).json({ error: "Invalid response from Salesforce service" });
+    }
+  } catch (error) {
+    console.error(`[proxy] Salesforce error: ${error.message}`);
+    res.status(500).json({ error: `Failed to process Salesforce request: ${error.message}` });
+  }
+}
+
+// Connect (picks sandbox flag, creates pending connection row)
+app.post("/api/workspaces/:id/salesforce/connect", (req, res) => {
+  proxySalesforceRequest(req, res, "POST", `/workspaces/${req.params.id}/salesforce/connect`);
+});
+
+// Authorize (returns OAuth authorize URL for the pending connection)
+app.get("/api/workspaces/:id/salesforce/authorize", (req, res) => {
+  const connectionId = req.query.connection_id;
+  proxySalesforceRequest(
+    req, res, "GET",
+    `/workspaces/${req.params.id}/salesforce/authorize?connection_id=${encodeURIComponent(connectionId || "")}`,
+  );
+});
+
+// OAuth callback -- POST to Lambda to avoid SigV4 query-string quirks.
+app.get("/api/salesforce/callback", async (req, res) => {
+  const { code, state, error } = req.query;
+  if (error) {
+    return res.redirect(`/workspaces?salesforce_error=${encodeURIComponent(error)}`);
+  }
+  try {
+    const response = await signedSalesforceFetch("POST", "/salesforce/callback", {
+      body: JSON.stringify({ code, state }),
+    });
+    if (response.status === 302) {
+      const location = response.headers.get("location");
+      return res.redirect(location);
+    }
+    const text = await response.text();
+    try {
+      const data = JSON.parse(text);
+      if (data.redirect) return res.redirect(data.redirect);
+      res.status(response.status).json(data);
+    } catch {
+      res.status(response.status).send(text);
+    }
+  } catch (err) {
+    console.error(`[proxy] Salesforce callback error: ${err.message}`);
+    res.redirect(`/workspaces?salesforce_error=callback_failed`);
+  }
+});
+
+// Connection list
+app.get("/api/workspaces/:id/salesforce/connections", (req, res) => {
+  proxySalesforceRequest(req, res, "GET", `/workspaces/${req.params.id}/salesforce/connections`);
+});
+
+// Trigger manual sync
+app.post("/api/workspaces/:id/salesforce/connections/:connId/sync", (req, res) => {
+  proxySalesforceRequest(req, res, "POST", `/workspaces/${req.params.id}/salesforce/connections/${req.params.connId}/sync`);
+});
+
+// Disconnect
+app.delete("/api/workspaces/:id/salesforce/connections/:connId", (req, res) => {
+  proxySalesforceRequest(req, res, "DELETE", `/workspaces/${req.params.id}/salesforce/connections/${req.params.connId}`);
 });
 
 // ============================================================================

@@ -49,6 +49,11 @@ import {
   listServiceNowConnections,
   syncServiceNowConnection,
   disconnectServiceNow,
+  connectSalesforce,
+  getSalesforceAuthUrl,
+  listSalesforceConnections,
+  syncSalesforceConnection,
+  disconnectSalesforce,
   listJiraConnections,
   getJiraAuthUrl,
   listJiraProjects,
@@ -143,6 +148,7 @@ import {
   type ConfluenceConnection,
   type ConfluenceSpace,
   type ServiceNowConnection,
+  type SalesforceConnection,
   type JiraConnection,
   type JiraProject,
   type AzureDevOpsBoardsConnection,
@@ -235,6 +241,7 @@ export default function WorkspaceSettings() {
     onenote: true,
     database: true,
     servicenow: true,
+    salesforce: true,
   })
 
   useEffect(() => {
@@ -286,6 +293,13 @@ export default function WorkspaceSettings() {
   // goes straight to the authorize URL just like Confluence/Jira.
   const [servicenowConnections, setServicenowConnections] = useState<ServiceNowConnection[]>([])
   const [connectingServicenow, setConnectingServicenow] = useState(false)
+
+  // Salesforce: one shared Connected App per deploy (env-SSM). Two-step
+  // connect: POST /connect with is_sandbox flag, then GET /authorize.
+  const [salesforceConnections, setSalesforceConnections] = useState<SalesforceConnection[]>([])
+  const [connectingSalesforce, setConnectingSalesforce] = useState(false)
+  const [showSalesforceEnvChoice, setShowSalesforceEnvChoice] = useState(false)
+  const [salesforceIsSandbox, setSalesforceIsSandbox] = useState(false)
 
   // Space configuration modal state
   const [configuringConnection, setConfiguringConnection] = useState<ConfluenceConnection | null>(null)
@@ -622,6 +636,7 @@ export default function WorkspaceSettings() {
       listAzureDevOpsBoardsConnections(workspaceId).then(d => ({ ok: true as const, key: 'Boards connections', data: d })).catch(e => ({ ok: false as const, key: 'Boards connections', err: e })),
       listWorkspaceAzureDevOpsBoardsProjects(workspaceId).then(d => ({ ok: true as const, key: 'Boards projects', data: d })).catch(e => ({ ok: false as const, key: 'Boards projects', err: e })),
       listServiceNowConnections(workspaceId).then(d => ({ ok: true as const, key: 'ServiceNow', data: d })).catch(e => ({ ok: false as const, key: 'ServiceNow', err: e })),
+      listSalesforceConnections(workspaceId).then(d => ({ ok: true as const, key: 'Salesforce', data: d })).catch(e => ({ ok: false as const, key: 'Salesforce', err: e })),
     ] as const)
 
     const setters = [
@@ -630,6 +645,7 @@ export default function WorkspaceSettings() {
       setOneNoteConnections, setDatabaseConnections,
       setAzdoBoardsConnections, setAzdoBoardsProjects,
       setServicenowConnections,
+      setSalesforceConnections,
     ] as const
 
     const failed: string[] = []
@@ -1051,6 +1067,46 @@ export default function WorkspaceSettings() {
       setServicenowConnections(updated)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to disconnect ServiceNow')
+    }
+  }
+
+  // Salesforce: two-step connect (pick sandbox flag, then authorize).
+  async function handleConnectSalesforce() {
+    if (!workspaceId) return
+    setConnectingSalesforce(true)
+    setError(null)
+    try {
+      const { connection_id } = await connectSalesforce(workspaceId, salesforceIsSandbox)
+      const authUrl = await getSalesforceAuthUrl(workspaceId, connection_id)
+      window.location.href = authUrl
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to start Salesforce OAuth')
+      setConnectingSalesforce(false)
+    }
+  }
+
+  async function handleSyncSalesforce(connectionId: string) {
+    if (!workspaceId) return
+    setError(null)
+    try {
+      await syncSalesforceConnection(workspaceId, connectionId)
+      const updated = await listSalesforceConnections(workspaceId)
+      setSalesforceConnections(updated)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to sync Salesforce')
+    }
+  }
+
+  async function handleDisconnectSalesforce(connectionId: string) {
+    if (!workspaceId) return
+    if (!confirm('Disconnect this Salesforce org? All ingested records will be removed from this workspace.')) return
+    setError(null)
+    try {
+      await disconnectSalesforce(workspaceId, connectionId)
+      const updated = await listSalesforceConnections(workspaceId)
+      setSalesforceConnections(updated)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to disconnect Salesforce')
     }
   }
 
@@ -3313,6 +3369,133 @@ export default function WorkspaceSettings() {
                             </button>
                             <button
                               onClick={() => handleDisconnectServiceNow(conn.connection_id)}
+                              className="px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 rounded"
+                            >
+                              Disconnect
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            )}
+
+            {/* Salesforce Section */}
+            {enabledIntegrations.salesforce && (
+            <div className="bg-white rounded-lg border shadow-sm">
+              <div className="p-4 border-b flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <svg className="w-6 h-6 text-sky-700" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M12 2a10 10 0 100 20 10 10 0 000-20zm0 4a6 6 0 110 12 6 6 0 010-12z"/>
+                  </svg>
+                  <div>
+                    <h3 className="font-medium">Salesforce CRM</h3>
+                    <p className="text-sm text-gray-500">Sync Account, Contact, and Opportunity records + attached files</p>
+                  </div>
+                </div>
+                {isAdmin && salesforceConnections.length === 0 && !showSalesforceEnvChoice && (
+                  <MutationButton
+                    onClick={() => setShowSalesforceEnvChoice(true)}
+                    disabled={connectingSalesforce}
+                    className="flex items-center gap-2 px-3 py-1.5 text-sm bg-sky-700 text-white rounded-lg hover:bg-sky-800 disabled:opacity-50 transition-colors"
+                  >
+                    <Plus size={16} />
+                    Connect
+                  </MutationButton>
+                )}
+              </div>
+              {showSalesforceEnvChoice && (
+                <div className="p-4 bg-gray-50 border-b">
+                  <p className="text-sm text-gray-600 mb-3">
+                    Which Salesforce environment are you connecting?
+                  </p>
+                  <div className="flex items-center gap-4 mb-3">
+                    <label className="flex items-center gap-2 text-sm">
+                      <input
+                        type="radio"
+                        name="sf-env"
+                        checked={!salesforceIsSandbox}
+                        onChange={() => setSalesforceIsSandbox(false)}
+                      />
+                      Production (login.salesforce.com)
+                    </label>
+                    <label className="flex items-center gap-2 text-sm">
+                      <input
+                        type="radio"
+                        name="sf-env"
+                        checked={salesforceIsSandbox}
+                        onChange={() => setSalesforceIsSandbox(true)}
+                      />
+                      Sandbox (test.salesforce.com)
+                    </label>
+                  </div>
+                  <div className="flex justify-end gap-2">
+                    <button
+                      onClick={() => setShowSalesforceEnvChoice(false)}
+                      className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 rounded"
+                    >
+                      Cancel
+                    </button>
+                    <MutationButton
+                      onClick={handleConnectSalesforce}
+                      disabled={connectingSalesforce}
+                      className="px-3 py-1.5 text-sm bg-sky-700 text-white rounded hover:bg-sky-800 disabled:opacity-50"
+                    >
+                      {connectingSalesforce ? <Loader2 size={14} className="animate-spin" /> : 'Continue to OAuth'}
+                    </MutationButton>
+                  </div>
+                </div>
+              )}
+              {loadingConnections ? (
+                <div className="p-8 flex items-center justify-center">
+                  <Loader2 className="animate-spin text-gray-400" size={24} />
+                </div>
+              ) : salesforceConnections.length === 0 ? (
+                !showSalesforceEnvChoice && (
+                  <div className="p-8 text-center text-gray-500">
+                    No Salesforce connections yet
+                  </div>
+                )
+              ) : (
+                <ul className="divide-y">
+                  {salesforceConnections.map(conn => (
+                    <li key={conn.connection_id} className="p-4">
+                      <div className="flex items-start justify-between">
+                        <div className="flex-1">
+                          <p className="font-medium text-gray-900">
+                            Salesforce {conn.is_sandbox ? '(Sandbox)' : 'CRM'}
+                          </p>
+                          {conn.instance_url && (
+                            <p className="text-xs text-gray-500 mt-1">
+                              {conn.instance_url}
+                            </p>
+                          )}
+                          <p className="text-xs text-gray-400 mt-1">
+                            Status: <span className={
+                              conn.last_sync_status === 'success' ? 'text-green-600' :
+                              conn.last_sync_status === 'failed' ? 'text-red-600' :
+                              conn.last_sync_status === 'in_progress' ? 'text-blue-600' :
+                              conn.last_sync_status === 'reauth_required' ? 'text-amber-600' :
+                              'text-gray-500'
+                            }>{conn.last_sync_status}</span>
+                            {conn.last_sync_error && (
+                              <span className="text-red-600"> — {conn.last_sync_error}</span>
+                            )}
+                          </p>
+                        </div>
+                        {isAdmin && (
+                          <div className="flex items-center gap-2 ml-4">
+                            <button
+                              onClick={() => handleSyncSalesforce(conn.connection_id)}
+                              className="px-3 py-1.5 text-sm text-blue-600 hover:bg-blue-50 rounded"
+                            >
+                              Sync now
+                            </button>
+                            <button
+                              onClick={() => handleDisconnectSalesforce(conn.connection_id)}
                               className="px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 rounded"
                             >
                               Disconnect

@@ -750,6 +750,120 @@ export async function disconnectServiceNow(
 }
 
 // ============================================================================
+// Salesforce CRM Integration API
+// ============================================================================
+
+export interface SalesforceConnection {
+  connection_id: string
+  workspace_id: string
+  last_sync_status: string
+  last_sync_error?: string
+  last_sync_at?: string
+  is_sandbox?: boolean
+  instance_url?: string
+  salesforce_org_id?: string
+  salesforce_user_id?: string
+  updated_at?: string
+}
+
+/**
+ * Start a Salesforce connect flow. Creates a pending connection row
+ * with the workspace admin's chosen sandbox flag; the returned
+ * connection_id feeds into the subsequent authorize call.
+ */
+export async function connectSalesforce(
+  workspaceId: string,
+  isSandbox: boolean,
+): Promise<{ connection_id: string; next: string }> {
+  const response = await fetch(
+    `${API_BASE}/workspaces/${workspaceId}/salesforce/connect`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ is_sandbox: isSandbox }),
+    },
+  )
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to start connect: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return {
+    connection_id: data?.connection_id as string,
+    next: (data?.next as string) || 'authorize',
+  }
+}
+
+/**
+ * Get the Salesforce OAuth authorize URL for a pending connection.
+ * The integration Lambda picks login.salesforce.com or
+ * test.salesforce.com based on the connection's is_sandbox flag.
+ */
+export async function getSalesforceAuthUrl(
+  workspaceId: string,
+  connectionId: string,
+): Promise<string> {
+  const response = await fetch(
+    `${API_BASE}/workspaces/${workspaceId}/salesforce/authorize?connection_id=${encodeURIComponent(connectionId)}`,
+  )
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to get authorize URL: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return data?.authorize_url as string
+}
+
+/**
+ * List Salesforce connections for a workspace.
+ */
+export async function listSalesforceConnections(
+  workspaceId: string,
+): Promise<SalesforceConnection[]> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/salesforce/connections`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to list connections: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return (data?.connections as SalesforceConnection[]) || []
+}
+
+/**
+ * Enqueue an immediate Salesforce sync for a connection.
+ */
+export async function syncSalesforceConnection(
+  workspaceId: string,
+  connectionId: string,
+): Promise<void> {
+  const response = await fetch(
+    `${API_BASE}/workspaces/${workspaceId}/salesforce/connections/${connectionId}/sync`,
+    { method: 'POST' },
+  )
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to trigger sync: ${response.status}`)
+  }
+}
+
+/**
+ * Disconnect a Salesforce connection.
+ */
+export async function disconnectSalesforce(
+  workspaceId: string,
+  connectionId: string,
+): Promise<void> {
+  const response = await fetch(
+    `${API_BASE}/workspaces/${workspaceId}/salesforce/connections/${connectionId}`,
+    { method: 'DELETE' },
+  )
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to disconnect: ${response.status}`)
+  }
+}
+
+// ============================================================================
 // User Search API
 // ============================================================================
 
@@ -3096,6 +3210,7 @@ export type EnabledIntegrations = {
   onenote: boolean
   database: boolean
   servicenow: boolean
+  salesforce: boolean
 }
 
 export async function getEnabledIntegrations(): Promise<EnabledIntegrations> {
