@@ -190,8 +190,23 @@ def _patched_model_invoke_stream(**kwargs):
     # Translate unified kwargs back to Converse-shape so existing
     # tests that assert call_args["modelId"] / ["messages"] / etc. on
     # mock_bedrock_client.converse_stream keep working.
+    #
+    # ADR-016 v1.2: callers now pass workload+tier instead of model_id.
+    # Synthesize a stand-in model_id from the tier so pre-existing
+    # tests that grep the modelId string for "haiku"/"sonnet" keep
+    # asserting the intent. Real callers get an application inference
+    # profile ARN back from shared.model_client; this shim short-
+    # circuits the profile-arn/env-var lookup that isn't wired in
+    # tests.
+    model_id = kwargs.get("model_id")
+    if model_id is None:
+        tier = kwargs.get("tier")
+        if tier == "advanced":
+            model_id = "us.anthropic.claude-sonnet-4-6"
+        elif tier == "basic":
+            model_id = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
     converse_kwargs = {
-        "modelId": kwargs.get("model_id"),
+        "modelId": model_id,
         "messages": kwargs.get("messages"),
         "inferenceConfig": {
             "maxTokens": kwargs.get("max_tokens"),
