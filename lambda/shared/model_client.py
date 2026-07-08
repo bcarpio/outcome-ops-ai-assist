@@ -143,9 +143,21 @@ def _resolve_backend(model_id: str) -> str:
     # (haiku/sonnet). If we ever wrap a Mantle/Responses model behind a
     # profile ARN, extend this to look at the underlying model via
     # bedrock.get-inference-profile (or add a caller-side backend hint).
-    # ARN shape: arn:aws:bedrock:REGION:ACCT:inference-profile/ID -- note
-    # the segment separator before "inference-profile" is ":", not "/".
-    if model_id.startswith("arn:aws:bedrock:") and ":inference-profile/" in model_id:
+    # Two distinct ARN resource types match:
+    #   - :inference-profile/global.<...>            (system-defined)
+    #   - :application-inference-profile/<uuid>      (application, ADR-016)
+    # Matching the "inference-profile/" substring covers both (the
+    # leading "application-" prefix on application profiles still ends
+    # in "inference-profile/"). Anchoring on ":inference-profile/" (with
+    # leading colon) misses application profiles because their delimiter
+    # is "-", not ":" -- caught same-day 2026-07-08 when the code-maps
+    # regen path landed the first application-profile-ARN modelId
+    # against process-repo-summary and blew up here (see
+    # [[project_bedrock_application_profile_arn_gotcha]]).
+    if (
+        model_id.startswith("arn:aws:bedrock:")
+        and "inference-profile/" in model_id
+    ):
         return "converse"
     # Sort by length so longest prefix wins regardless of list order.
     for prefix, name in sorted(_DISPATCH, key=lambda t: -len(t[0])):

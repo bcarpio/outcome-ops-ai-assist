@@ -266,6 +266,20 @@ class TestApplicationInferenceProfileArnBackendDispatch:
                 "arn:aws:bedrock:us-west-2::foundation-model/some-mystery-model"
             )
 
+    def test_application_inference_profile_arn_routes_to_converse(self):
+        # Regression: application profile ARNs have resource type
+        # ":application-inference-profile/", not ":inference-profile/".
+        # The initial chunk 03 check anchored on ":inference-profile/"
+        # (leading colon) and missed application profiles because their
+        # separator is "-", not ":". Landed a real "No backend
+        # registered" DLQ from process-repo-summary against the
+        # code-maps-sonnet profile ARN in prd 2026-07-08.
+        arn = (
+            "arn:aws:bedrock:us-west-2:123456789012:"
+            "application-inference-profile/182i9hm83wov"
+        )
+        assert model_client._resolve_backend(arn) == "converse"
+
 
 class TestProfileArnEnvVarResolution:
     """resolve_profile_arn maps (workload, tier) to env var value."""
