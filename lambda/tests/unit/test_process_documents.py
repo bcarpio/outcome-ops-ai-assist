@@ -725,6 +725,121 @@ class TestExtractTextFromPdf:
         # PyPDF2 result should be returned (40 > 10)
         assert result == "x" * 40
 
+    @patch("PyPDF2.PdfReader")
+    @patch.object(handler_module, "extract_text_from_pdf_textract")
+    @patch.object(handler_module, "extract_text_from_pdf_pypdf2")
+    def test_force_textract_bypasses_density_heuristic(
+        self, mock_pypdf2, mock_textract, mock_reader_cls,
+    ):
+        # PyPDF2 pulls 12,799 chars from 8 pages = 1600/page -- WELL above the
+        # 200 chars/page "sufficient" bar. The current logic would return
+        # PyPDF2 and never Textract. force_textract=True skips the density
+        # check so the visual content (tables, diagrams, signatures) gets
+        # captured too. Mirrors the SDS_VT_Industries proposal that first
+        # surfaced this on live-verify 2026-07-08.
+        mock_pypdf2.return_value = "x" * 12799
+        mock_textract.return_value = "Tables + diagrams + signatures + body text " * 500
+        mock_reader = MagicMock()
+        mock_reader.pages = [MagicMock()] * 8
+        mock_reader_cls.return_value = mock_reader
+
+        result = extract_text_from_pdf(
+            b"pdf content", "bucket", "key.pdf", force_textract=True,
+        )
+        mock_textract.assert_called_once_with("bucket", "key.pdf")
+        assert "Tables + diagrams" in result
+
+    @patch("PyPDF2.PdfReader")
+    @patch.object(handler_module, "extract_text_from_pdf_textract")
+    @patch.object(handler_module, "extract_text_from_pdf_pypdf2")
+    def test_force_textract_falls_back_to_pypdf2_on_textract_failure(
+        self, mock_pypdf2, mock_textract, mock_reader_cls,
+    ):
+        # If forced Textract fails or returns less than PyPDF2, keep PyPDF2 so
+        # we're never worse than the previous behavior.
+        mock_pypdf2.return_value = "PyPDF2 body text " * 200  # ~3400 chars
+        mock_textract.return_value = ""
+        mock_reader = MagicMock()
+        mock_reader.pages = [MagicMock()] * 2
+        mock_reader_cls.return_value = mock_reader
+
+        result = extract_text_from_pdf(
+            b"pdf content", "bucket", "key.pdf", force_textract=True,
+        )
+        assert "PyPDF2 body text" in result
+
+    @patch("PyPDF2.PdfReader")
+    @patch.object(handler_module, "extract_text_from_pdf_textract")
+    @patch.object(handler_module, "extract_text_from_pdf_pypdf2")
+    def test_force_textract_without_s3_falls_through(
+        self, mock_pypdf2, mock_textract, mock_reader_cls,
+    ):
+        # No S3 location + force_textract=True -> Textract can't run;
+        # fall through to the heuristic path (PyPDF2 result or empty).
+        mock_pypdf2.return_value = "x" * 12799
+        mock_reader = MagicMock()
+        mock_reader.pages = [MagicMock()] * 8
+        mock_reader_cls.return_value = mock_reader
+
+        result = extract_text_from_pdf(
+            b"pdf content", force_textract=True,
+        )
+        mock_textract.assert_not_called()
+        assert result == "x" * 12799
+
+
+class TestExtractTextSourceDispatch:
+    """extract_text() forces Textract on *_attachment sources."""
+
+    @patch.object(handler_module, "extract_text_from_pdf")
+    def test_salesforce_attachment_source_forces_textract(self, mock_pdf):
+        mock_pdf.return_value = "extracted text"
+        handler_module.extract_text(
+            "proposal.pdf", b"content",
+            s3_bucket="bucket", s3_key="k",
+            source="salesforce_attachment",
+        )
+        assert mock_pdf.call_args.kwargs["force_textract"] is True
+
+    @patch.object(handler_module, "extract_text_from_pdf")
+    def test_servicenow_attachment_source_forces_textract(self, mock_pdf):
+        mock_pdf.return_value = "extracted text"
+        handler_module.extract_text(
+            "sop.pdf", b"content",
+            s3_bucket="bucket", s3_key="k",
+            source="servicenow_attachment",
+        )
+        assert mock_pdf.call_args.kwargs["force_textract"] is True
+
+    @patch.object(handler_module, "extract_text_from_pdf")
+    def test_confluence_attachment_source_forces_textract(self, mock_pdf):
+        mock_pdf.return_value = "extracted text"
+        handler_module.extract_text(
+            "spec.pdf", b"content",
+            s3_bucket="bucket", s3_key="k",
+            source="confluence_attachment",
+        )
+        assert mock_pdf.call_args.kwargs["force_textract"] is True
+
+    @patch.object(handler_module, "extract_text_from_pdf")
+    def test_github_source_keeps_heuristic(self, mock_pdf):
+        mock_pdf.return_value = "extracted text"
+        handler_module.extract_text(
+            "readme.pdf", b"content",
+            s3_bucket="bucket", s3_key="k",
+            source="github",
+        )
+        assert mock_pdf.call_args.kwargs["force_textract"] is False
+
+    @patch.object(handler_module, "extract_text_from_pdf")
+    def test_missing_source_keeps_heuristic(self, mock_pdf):
+        mock_pdf.return_value = "extracted text"
+        handler_module.extract_text(
+            "unknown.pdf", b"content",
+            s3_bucket="bucket", s3_key="k",
+        )
+        assert mock_pdf.call_args.kwargs["force_textract"] is False
+
 
 # ============================================================================
 # Text Extraction - Office Formats (DOCX, XLSX, PPTX)
@@ -899,7 +1014,9 @@ class TestExtractText:
             "doc.pdf", b"fake", s3_bucket="bucket", s3_key="key"
         )
         assert doc_type == "pdf"
-        mock_pdf.assert_called_once_with(b"fake", "bucket", "key")
+        mock_pdf.assert_called_once_with(
+            b"fake", "bucket", "key", force_textract=False,
+        )
 
     @patch.object(handler_module, "extract_text_from_docx")
     def test_extract_text_docx(self, mock_docx):

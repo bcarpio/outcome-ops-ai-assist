@@ -293,7 +293,12 @@ def extract_text_from_pdf_textract(s3_bucket: str, s3_key: str) -> str:
         return ""
 
 
-def extract_text_from_pdf(content: bytes, s3_bucket: str = None, s3_key: str = None) -> str:
+def extract_text_from_pdf(
+    content: bytes,
+    s3_bucket: str = None,
+    s3_key: str = None,
+    force_textract: bool = False,
+) -> str:
     """Extract text from PDF with OCR fallback for scanned documents.
 
     Tries PyPDF2 first (fast, free). Falls back to AWS Textract OCR
@@ -301,6 +306,13 @@ def extract_text_from_pdf(content: bytes, s3_bucket: str = None, s3_key: str = N
 
     Uses per-page character density to detect image-heavy PDFs (e.g. slide
     decks) where PyPDF2 extracts some text but misses most content.
+
+    ``force_textract`` bypasses the heuristic. Set by the caller for
+    sources where visual content (tables, diagrams, signature pages,
+    screenshots) reliably carries business value that PyPDF2 drops --
+    all ``*_attachment`` sources (Salesforce, ServiceNow, Confluence,
+    Jira user-uploaded PDFs). PyPDF2 still runs as a fallback if
+    Textract fails.
     """
     import io
     from PyPDF2 import PdfReader
@@ -316,6 +328,22 @@ def extract_text_from_pdf(content: bytes, s3_bucket: str = None, s3_key: str = N
         page_count = 1
 
     chars_per_page = extracted_len / max(page_count, 1)
+
+    if force_textract and s3_bucket and s3_key:
+        logger.info(
+            f"Textract forced (attachment source): {s3_key} "
+            f"(PyPDF2 baseline: {extracted_len} chars, {page_count} pages)"
+        )
+        textract_text = extract_text_from_pdf_textract(s3_bucket, s3_key)
+        # Prefer Textract; fall back to PyPDF2 only if Textract yielded
+        # strictly less content (e.g. Textract failed and returned "").
+        if textract_text and len(textract_text.strip()) >= extracted_len:
+            return textract_text
+        logger.warning(
+            f"Textract returned {len(textract_text.strip()) if textract_text else 0} chars vs "
+            f"PyPDF2 {extracted_len}; using PyPDF2 as fallback"
+        )
+        return text or ""
 
     # A normal text page yields 1000-3000+ chars. Slide decks with images
     # yield much less. If density is below 200 chars/page, the PDF is likely
@@ -432,6 +460,7 @@ def extract_text(
     content: bytes,
     s3_bucket: str = None,
     s3_key: str = None,
+    source: str = "",
 ) -> Tuple[str, str]:
     """
     Extract text from file based on extension.
@@ -441,11 +470,17 @@ def extract_text(
         content: File content as bytes
         s3_bucket: S3 bucket name (for Textract OCR fallback on PDFs)
         s3_key: S3 object key (for Textract OCR fallback on PDFs)
+        source: The upstream source (from parse_s3_key). ``*_attachment``
+                sources force Textract on PDFs to catch tables, diagrams,
+                signature pages, and screenshots that PyPDF2 drops. Native
+                code-repo PDFs (source == "github" etc.) keep the fast
+                heuristic path.
 
     Returns:
         Tuple of (extracted_text, doc_type)
     """
     filename_lower = filename.lower()
+    force_textract = bool(source) and source.endswith("_attachment")
 
     if filename_lower.endswith(".html") or filename_lower.endswith(".htm"):
         return extract_text_from_html(content), "html"
@@ -458,7 +493,12 @@ def extract_text(
     elif filename_lower.endswith((".yaml", ".yml")):
         return extract_text_from_yaml(content), "yaml"
     elif filename_lower.endswith(".pdf"):
-        return extract_text_from_pdf(content, s3_bucket, s3_key), "pdf"
+        return (
+            extract_text_from_pdf(
+                content, s3_bucket, s3_key, force_textract=force_textract,
+            ),
+            "pdf",
+        )
     elif filename_lower.endswith(".docx"):
         return extract_text_from_docx(content), "docx"
     elif filename_lower.endswith(".xlsx"):
@@ -884,8 +924,11 @@ def process_document(bucket: str, key: str) -> Dict[str, Any]:
         content = response["Body"].read()
         metadata = response.get("Metadata", {})
 
-        # Extract text (pass S3 location for Textract OCR fallback on PDFs)
-        text, doc_type = extract_text(filename, content, s3_bucket=bucket, s3_key=key)
+        # Extract text (pass S3 location for Textract OCR fallback on PDFs;
+        # source lets extract_text force Textract on *_attachment sources).
+        text, doc_type = extract_text(
+            filename, content, s3_bucket=bucket, s3_key=key, source=source,
+        )
 
         # Use doc type classification from github-sync (set via .outcomeops.yaml config)
         if metadata.get("github_doc_type"):
