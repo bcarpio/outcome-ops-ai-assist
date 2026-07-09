@@ -392,11 +392,25 @@ def resolve_chat_workspace_scope(
        deployment. That's how Security / EA / Compliance members
        get cross-portfolio visibility without hand-shares.
 
-    Rule 3's trigger is "member AND included in the request." A
-    global-workspace member who narrows to just Team A in the picker
-    (excluding their global workspace) does NOT auto-broaden --
-    respect the explicit narrowing. Matches the plan's open-question
-    #4 recommendation.
+    Rule 3's trigger is "member AND included in the request AND the
+    request represents the caller's DEFAULT scope (i.e., contains every
+    workspace the caller is directly a member of)." Any explicit
+    narrowing -- even to just the global workspace, even to global +
+    one team -- is respected as intentional.
+
+    Concrete scenarios:
+    - Default (picker sends all 500 memberships incl. global) -> broaden
+    - Only global picked -> respect, retrieve only global content
+    - Global + 1-2 team workspaces -> respect that subset
+    - Team workspaces without global -> no broaden (Rule 3 didn't fire)
+
+    Rationale: Security / EA members get cross-portfolio visibility by
+    default (they haven't narrowed), but the SAME user narrowing to
+    "just the global workspace" or "global + Team A" for a focused
+    query gets the focus they asked for, not a scope-leak to all 500.
+    A 2026-07-09 UX complaint surfaced the prior over-broad behavior
+    when the org admin selected only the Standards + ADRs global
+    workspace and got results from every workspace in the deployment.
     """
     if not requested_workspace_ids:
         return []
@@ -423,10 +437,16 @@ def resolve_chat_workspace_scope(
         if global_flags.get(ws_id):
             scope.add(ws_id)
 
-    # Rule 3: bidirectional pull. Fires only when the user is a member
-    # of an ``is_global`` workspace that they've included in the request.
+    # Rule 3: bidirectional pull. Fires ONLY when the user is a member
+    # of an ``is_global`` workspace included in the request AND the
+    # request represents the user's default scope (contains every
+    # workspace they're a direct member of). Any subset -- even one
+    # that includes a global workspace they're a member of -- is
+    # treated as an explicit narrowing and respected as-is.
     user_ws_ids = set(_get_user_workspace_ids(user_email))
-    triggers_broaden = any(
+    requested_set = set(requested_workspace_ids)
+    is_default_scope = bool(user_ws_ids) and user_ws_ids.issubset(requested_set)
+    triggers_broaden = is_default_scope and any(
         global_flags.get(ws_id) and ws_id in user_ws_ids
         for ws_id in requested_workspace_ids
     )

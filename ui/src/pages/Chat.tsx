@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -131,6 +131,7 @@ export default function Chat() {
   const [searchableWorkspaces, setSearchableWorkspaces] = useState<SearchableWorkspace[]>([])
   const [selectedWorkspaceIds, setSelectedWorkspaceIds] = useState<Set<string>>(new Set())
   const [showWorkspaceDropdown, setShowWorkspaceDropdown] = useState(false)
+  const [workspaceFilter, setWorkspaceFilter] = useState('')
   const [loadingWorkspaces, setLoadingWorkspaces] = useState(true)
 
   // MCP server selector state
@@ -148,6 +149,12 @@ export default function Chat() {
 
   // Legacy workspace context (stored in localStorage when workspaces feature is enabled)
   const [workspaceName, setWorkspaceName] = useState<string | null>(null)
+
+  // Reset the picker filter each time the dropdown closes so reopening
+  // it always starts from the full list, not a stale filter.
+  useEffect(() => {
+    if (!showWorkspaceDropdown) setWorkspaceFilter('')
+  }, [showWorkspaceDropdown])
 
   // Load searchable workspaces on mount
   useEffect(() => {
@@ -512,9 +519,39 @@ export default function Chat() {
     })
   }
 
-  // Select all workspaces
+  // Filtered + globals-first ordered view of workspaces for the picker.
+  // Globals are pinned to the top even when the filter query would
+  // otherwise exclude them by name -- reinforces "standards + these
+  // specific teams" as an intentional scope. When no filter is set,
+  // this is a stable pass-through preserving is_global-first ordering.
+  const visibleWorkspaces = useMemo(() => {
+    const q = workspaceFilter.trim().toLowerCase()
+    const globals = searchableWorkspaces.filter(ws => ws.is_global)
+    const rest = searchableWorkspaces.filter(ws => !ws.is_global)
+    const matches = q
+      ? rest.filter(ws => ws.name.toLowerCase().includes(q))
+      : rest
+    return [...globals, ...matches]
+  }, [searchableWorkspaces, workspaceFilter])
+
+  // Select-all / Clear-all act on the *visible* rows only. With an
+  // empty filter that's the full list (existing behavior); with a
+  // filter it lets the user "add this batch" or "drop this batch"
+  // without disturbing selections elsewhere.
   function selectAllWorkspaces() {
-    setSelectedWorkspaceIds(new Set(searchableWorkspaces.map(ws => ws.workspace_id)))
+    setSelectedWorkspaceIds(prev => {
+      const next = new Set(prev)
+      visibleWorkspaces.forEach(ws => next.add(ws.workspace_id))
+      return next
+    })
+  }
+
+  function clearVisibleWorkspaces() {
+    setSelectedWorkspaceIds(prev => {
+      const next = new Set(prev)
+      visibleWorkspaces.forEach(ws => next.delete(ws.workspace_id))
+      return next
+    })
   }
 
   // Get workspace selector display text
@@ -695,29 +732,45 @@ export default function Chat() {
                       className="fixed inset-0 z-10"
                       onClick={() => setShowWorkspaceDropdown(false)}
                     />
-                    <div className="absolute right-0 mt-2 w-64 bg-white rounded-lg shadow-lg border z-20 py-2 max-h-80 overflow-y-auto">
-                      <div className="px-3 py-2 border-b">
-                        <div className="flex items-center justify-between">
+                    <div className="absolute right-0 mt-2 w-64 bg-white rounded-lg shadow-lg border z-20 flex flex-col max-h-96">
+                      <div className="px-3 py-2 border-b flex-shrink-0">
+                        <div className="flex items-center justify-between mb-2">
                           <span className="text-xs font-medium text-gray-500 uppercase">Search in</span>
                           <div className="flex gap-2">
                             {selectedWorkspaceIds.size > 0 && (
                               <button
-                                onClick={() => setSelectedWorkspaceIds(new Set())}
+                                onClick={clearVisibleWorkspaces}
                                 className="text-xs text-gray-500 hover:text-gray-700"
+                                title={workspaceFilter ? 'Clear the currently-visible matches' : 'Clear all'}
                               >
-                                Clear all
+                                Clear{workspaceFilter ? ' matches' : ' all'}
                               </button>
                             )}
                             <button
                               onClick={selectAllWorkspaces}
                               className="text-xs text-blue-600 hover:text-blue-700"
+                              title={workspaceFilter ? 'Select the currently-visible matches' : 'Select all'}
                             >
-                              Select all
+                              Select{workspaceFilter ? ' matches' : ' all'}
                             </button>
                           </div>
                         </div>
+                        <input
+                          type="text"
+                          value={workspaceFilter}
+                          onChange={e => setWorkspaceFilter(e.target.value)}
+                          placeholder="Filter workspaces..."
+                          className="w-full px-2 py-1 text-sm border rounded focus:ring-1 focus:ring-blue-500 focus:outline-none"
+                          autoFocus
+                        />
                       </div>
-                      {searchableWorkspaces.map(ws => (
+                      <div className="flex-1 overflow-y-auto py-1">
+                      {visibleWorkspaces.length === 0 && (
+                        <div className="px-3 py-4 text-xs text-gray-500 text-center">
+                          No workspaces match "{workspaceFilter}"
+                        </div>
+                      )}
+                      {visibleWorkspaces.map(ws => (
                         <label
                           key={ws.workspace_id}
                           className="flex items-center gap-3 px-3 py-2 hover:bg-gray-50 cursor-pointer"
@@ -747,6 +800,7 @@ export default function Chat() {
                           </div>
                         </label>
                       ))}
+                      </div>
                     </div>
                   </>
                 )}

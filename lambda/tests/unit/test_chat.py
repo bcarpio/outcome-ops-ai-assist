@@ -456,7 +456,13 @@ class TestResolveChatWorkspaceScope:
     1. Standard access check passes through.
     2. is_global workspaces readable by anyone.
     3. If user is a member of an is_global workspace they've included
-       in the request, broaden to every workspace in the deployment.
+       in the request AND the request represents their default scope
+       (contains every workspace they're a direct member of), broaden
+       to every workspace in the deployment. Any subset -- even one
+       that includes a global they're a member of -- is treated as
+       explicit narrowing and respected. Fixed 2026-07-09 after an
+       org-admin picking only the Standards global saw scope leak
+       to every workspace in the deployment.
     """
 
     def _table_stub(self, ws_meta, all_ws_scan):
@@ -559,6 +565,78 @@ class TestResolveChatWorkspaceScope:
             "user@example.com", [],
         )
         assert result == []
+
+    def test_global_member_narrowing_to_only_global_does_not_broaden(self):
+        # Org admin is a member of {ws-sec (global), ws-eng, ws-payments}
+        # and explicitly narrows to JUST the global workspace. This is
+        # NOT the default scope -- the request omits ws-eng and
+        # ws-payments -- so Rule 3 must NOT fire. Regression for the
+        # 2026-07-09 scope-leak report where selecting only the
+        # "Standards and ADRs" global workspace returned sources from
+        # every workspace in the deployment.
+        result, table = self._call_real(
+            ws_meta={
+                "ws-sec": {"workspace_id": "ws-sec", "is_global": True},
+            },
+            all_ws_scan=[
+                {"workspace_id": "ws-sec"},
+                {"workspace_id": "ws-eng"},
+                {"workspace_id": "ws-payments"},
+            ],
+            authorized=["ws-sec"],
+            user_ws_ids=["ws-sec", "ws-eng", "ws-payments"],
+            request_ids=["ws-sec"],
+        )
+        assert result == ["ws-sec"]
+        table.scan.assert_not_called()
+
+    def test_global_member_narrowing_to_global_plus_one_team_does_not_broaden(self):
+        # Security lead is a member of {ws-sec (global), ws-eng,
+        # ws-payments, ws-mobile} and narrows to "global + one team"
+        # for a focused query. Respect the narrowing.
+        result, table = self._call_real(
+            ws_meta={
+                "ws-sec": {"workspace_id": "ws-sec", "is_global": True},
+                "ws-eng": {"workspace_id": "ws-eng", "is_global": False},
+            },
+            all_ws_scan=[
+                {"workspace_id": "ws-sec"},
+                {"workspace_id": "ws-eng"},
+                {"workspace_id": "ws-payments"},
+                {"workspace_id": "ws-mobile"},
+            ],
+            authorized=["ws-sec", "ws-eng"],
+            user_ws_ids=["ws-sec", "ws-eng", "ws-payments", "ws-mobile"],
+            request_ids=["ws-sec", "ws-eng"],
+        )
+        assert set(result) == {"ws-sec", "ws-eng"}
+        table.scan.assert_not_called()
+
+    def test_default_scope_including_global_still_broadens(self):
+        # Same user as above, but the picker sends the *full*
+        # membership set (default state, no narrowing). Rule 3 still
+        # fires and broadens to every workspace in the deployment.
+        result, _ = self._call_real(
+            ws_meta={
+                "ws-sec": {"workspace_id": "ws-sec", "is_global": True},
+                "ws-eng": {"workspace_id": "ws-eng", "is_global": False},
+                "ws-payments": {"workspace_id": "ws-payments", "is_global": False},
+                "ws-mobile": {"workspace_id": "ws-mobile", "is_global": False},
+            },
+            all_ws_scan=[
+                {"workspace_id": "ws-sec"},
+                {"workspace_id": "ws-eng"},
+                {"workspace_id": "ws-payments"},
+                {"workspace_id": "ws-mobile"},
+                {"workspace_id": "ws-other-team"},
+            ],
+            authorized=["ws-sec", "ws-eng", "ws-payments", "ws-mobile"],
+            user_ws_ids=["ws-sec", "ws-eng", "ws-payments", "ws-mobile"],
+            request_ids=["ws-sec", "ws-eng", "ws-payments", "ws-mobile"],
+        )
+        assert set(result) == {
+            "ws-sec", "ws-eng", "ws-payments", "ws-mobile", "ws-other-team",
+        }
 
 
 # ============================================================================
