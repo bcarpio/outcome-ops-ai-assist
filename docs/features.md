@@ -19,6 +19,31 @@ Keep entries terse — this is the index, not the spec.
 - **Anthropic Sonnet + Haiku via Bedrock** — Sonnet for advanced
   reasoning, Haiku as the RAG default. tfvars-swappable per customer.
   See `lambda/shared/audit.py` for `MODEL_PRICING`.
+- **OpenAI GPT-5.5 / 5.4 / Codex via Bedrock Mantle** — same
+  `shared.model_client.invoke()` entry point routes anthropic prefixes
+  to the Converse API and openai prefixes to the Mantle Responses API
+  (bearer-token-authed, long-lived key from SSM). `_DISPATCH` in
+  `lambda/shared/model_client.py` is the routing table; unknown
+  prefixes raise loudly so silent fallback never invalidates
+  attribution claims. ADR-035.
+- **Line-citation grounding** — `find_symbol_at_line` (MCP + shared)
+  resolves a `file.py:544`-style reference to the enclosing symbol
+  before answering, so citations point at the actually-relevant
+  definition rather than the syntactically-closest one. ADR-031.
+- **List-completeness contract** — chat NEVER fabricates aggregate
+  totals ("N lambdas total") for list-shaped answers. Either every
+  member is enumerated from retrieved chunks or the count is not
+  claimed. Model-authored-aggregates are banned by prompt discipline
+  + response validation. ADR-032.
+- **Dual-channel retrieval + per-lane rerank** — code-map channel and
+  documentation channel retrieve independently, rerank per lane, then
+  merge for synthesis. Prevents doc-drift from dominating grounded
+  code answers. Closes the "the docs say X but the code does Y" moat
+  violation. ADR-033.
+- **read_source adjudicator** — platform-agnostic tool exposing
+  `read_this_file_at_this_SHA` to the model. Any citation the model
+  wants to make can be verified against source-of-truth git state
+  (GitHub + Azure DevOps supported). ADR-030 (v1.1 adds ADO dispatch).
 - **Streaming chat UI** — `lambda/chat` over Lambda Web Adapter,
   NDJSON event stream, citation rendering, file attachments.
 - **Multi-workspace search** — chat can span workspaces the user has
@@ -45,10 +70,35 @@ webhook entry), `*-scheduler` (EventBridge cron driver), `*-sync`
   (`lambda/outlook-integration/token_manager.py`).
 - **Teams** — channel messages via Microsoft Graph. Azure AD OAuth.
 - **SharePoint** — site documents via Microsoft Graph. Azure AD OAuth.
+- **OneDrive** — user drive files via Microsoft Graph. Azure AD OAuth.
+- **OneNote** — notebook pages via Microsoft Graph. Azure AD OAuth.
+- **Azure DevOps (Repos)** — source code + ADRs + docs. Entra ID
+  OAuth via a dedicated app registration (separate from M365 app).
+  Powers ADR-030 v1.1's platform-agnostic `read_source` dispatch.
+- **Azure DevOps Boards** — work items alongside GitHub Issues / Jira.
+  Shares the ADO OAuth config with Repos.
+- **Salesforce** — Account / Contact / Opportunity records +
+  embedded recent Task / Event activity + attached files (Notes and
+  Attachments via ContentVersion). Shared Connected App OAuth per
+  deploy (env-SSM pattern like Confluence / Jira / M365); sandbox
+  vs prod routing selectable at connect time. ADR-044.
+- **ServiceNow** — KB articles + article attachments. Env-SSM
+  shared OAuth (owner-registered app; customers reuse via callback
+  URL registration).
+- **Database** — introspect Postgres, MySQL, MSSQL schemas as
+  workspace context. Schemas-only scope, auto-discover tables, SNS
+  drift notifications on schema change. SSM-backed BYO CA bundles
+  for internal CAs. `docs/database-integration.md`.
 - **Direct file upload** — drag-drop files into a workspace; goes
   through `file-ingestion` → `process-documents` → vector store.
   `delete-worker` cleans up S3 + vectors when files / workspaces
   are removed.
+- **Force-Textract on `*_attachment` sources** — every user-uploaded
+  binary (Salesforce / ServiceNow / Confluence / Jira attachment)
+  gets Textract OCR regardless of the PyPDF2-density heuristic, so
+  proposal PDFs, contracts, SOWs, and image-heavy documents don't
+  lose their tables / signatures / diagrams to naive text extraction.
+  Native code-repo PDFs keep the fast path.
 
 ## Code understanding (code maps)
 
@@ -242,6 +292,14 @@ tests, ADR-aware, with auto-fix retry.
   members, repos, prompt, and MCP assignments.
 - **Workspace sharing** — a workspace can grant search-only
   visibility to another (search-shareable but not editable).
+- **Global workspaces** — org-admin-set bidirectional scope flag
+  (`is_global=true`). Content in a global workspace shows up in
+  every user's chat retrieval + every PR check's standards
+  retrieval, AND global-workspace members get implicit read access
+  on every other workspace when querying from the global one. The
+  same flag applies to MCP servers, mirroring the workspace pattern.
+  Rendered in the workspace-create / MCP-create UI for org admins
+  only.
 - **Per-workspace monthly USD budget** — set by org admins; rolls
   into analytics. Cost-alert Lambda fires on first threshold cross.
 - **Document upload + retention** — files attach to a workspace,
@@ -319,6 +377,18 @@ to the `/audit` page, and ADR-018 for schema design.
   output, Haiku input / output, Embedding, Rerank-per-1k,
   Comprehend-per-1M-chars) is a tfvar so customers on negotiated AWS
   pricing override without a code change.
+- **Bedrock application inference profiles for per-workload cost
+  attribution** — chat / code-maps / code-gen / pr-analyzer each
+  wrap their models (Haiku / Sonnet / Titan-embed / Cohere-rerank)
+  in application inference profiles tagged with a customer-
+  configurable tag key (`bedrock_workload_tag_name`, defaults to
+  `Purpose`). Every Bedrock call routes through the workload profile
+  via `shared.model_client.invoke(workload=..., tier=...)`, so
+  Cost Explorer group-by the workload tag with `Service=Amazon
+  Bedrock` splits spend per workflow. Answers "which internal
+  workflow is driving our Bedrock cost?" natively rather than by
+  guess. ADR-016 v1.2 / v1.3 / v1.4 in outcomeops-adrs;
+  see `terraform/bedrock-inference-profiles.tf`.
 
 ## Security and compliance
 
@@ -423,6 +493,28 @@ to the `/audit` page, and ADR-018 for schema design.
   SQS, SNS, EventBridge, KMS, SSM, ALB, Cognito-free OIDC. No EC2,
   no Kubernetes, no ECS for the data plane (only the UI runs on
   Fargate).
+- **HA active/passive multi-region** — `secondary_region` tfvar
+  provisions every stateful resource in both regions with cross-
+  region replication driven by EventBridge; per-region AppConfig
+  flag chooses which is active. Operators flip via the AppConfig
+  console during failover (no tfvars edit, no terraform apply).
+  Deliberate rejection of DDB global tables after the Oct 2025
+  us-east-1 outage. ADR-022. `docs/HA.md`.
+- **Code-map batch splitter + merge fan-in** — process-repo-summary
+  splits oversized code-map units into shards, dispatches each to
+  process-batch-summary, and merges the results back. Closed the
+  15-minute Lambda timeout crisis on large repos. Shard-suffixed
+  vector keys guard the orphan-cleanup sweep from deleting in-flight
+  shard summaries mid-merge.
+- **License layer v2.0.0 (desired-state snapshot)** — per-Lambda
+  layer that reports `repos-active` via `report_repos_snapshot()`
+  from every integration's connect / disconnect handler + an hourly
+  heartbeat scheduler. Replaces the older `track_repo_active`
+  event-based model (which drifted on missed events). License
+  server sees the ground truth, not a running tally.
+- **AWS Marketplace SaaS listing** — customers can subscribe via
+  AWS Marketplace; metering + entitlement events flow through the
+  standard Marketplace SNS topics (limited release, 2026-05-30).
 
 ## See also
 
