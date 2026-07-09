@@ -383,12 +383,22 @@ app.post("/api/chat", async (req, res) => {
   // beats the small Bedrock cost of finishing a stream to nowhere; if
   // wasted-cost becomes material we can add a bounded server-side
   // timeout or an explicit "Stop generating" button contract later.
+  //
+  // Pass an unbounded AbortController so signedFetch's ??=
+  // AbortSignal.timeout(30_000) default DOESN'T silently apply --
+  // that default was intended for the JSON proxies (see comment at
+  // DEFAULT_UPSTREAM_TIMEOUT_MS declaration) and inadvertently kills
+  // Sonnet chat responses that legitimately run 30-60s, throwing
+  // "The operation was aborted due to timeout" at the user even
+  // though the Lambda has already streamed the answer to DDB.
   try {
     const body = JSON.stringify({ ...req.body, user });
 
+    const chatStreamController = new AbortController();
     const response = await signedChatFetch("POST", "/", {
       body,
       extraHeaders: userHeaders(req, user),
+      signal: chatStreamController.signal,
     });
 
     if (!response.ok) {
