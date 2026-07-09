@@ -218,8 +218,16 @@ make validate-tf
 # 4. Check Python formatting (if any .py files changed)
 cd lambda && find . -name "*.py" -path "*/lambda/*" | head -20 | xargs -I {} python -m py_compile {}
 
-# 5. Run npm audit (if any ui/ files changed)
-make audit
+# 5. Run dependency audits
+make audit         # runs BOTH npm audit (ui/) + pip-audit (lambda/*/requirements.txt)
+
+# If you only touched one side of the tree, save time with:
+#     make audit-ui    # UI only
+#     make audit-py    # Python only (fast: 8-way parallel across 58+ requirements.txt)
+#
+# `for i in $(find . | grep requirements.txt); do pip-audit -r $i; done`
+# is 5-15 minutes SERIAL and re-hits the vuln DB per file.
+# `make audit-py` closes it to <1 minute -- always use it.
 ```
 
 **CI will fail if you skip these steps.** Run them every time before committing.

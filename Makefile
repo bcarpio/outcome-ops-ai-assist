@@ -181,9 +181,33 @@ test-ui:
 # Security: Dependency Auditing
 # ============================================================================
 
-audit:
+# `make audit` runs BOTH the UI + Python audits. Use audit-ui or audit-py
+# to run just one when you only touched one side of the tree.
+audit: audit-ui audit-py
+
+audit-ui:
 	@echo "Running npm audit on UI dependencies..."
 	cd ui && npm audit --audit-level=high
+
+# Fast parallel pip-audit across every lambda/*/requirements.txt.
+# Serial `pip-audit -r <file>` on 58 requirements files takes 5-15
+# minutes (each call resolves deps + hits the OSV DB). 8-way parallel
+# closes it to under a minute. -not paths skip venvs and *-dev.txt
+# to keep the scan on production surfaces only.
+audit-py:
+	@echo "Running pip-audit on lambda/*/requirements.txt (8-way parallel)..."
+	@if ! command -v pip-audit >/dev/null 2>&1; then \
+		echo "ERROR: pip-audit not on PATH. Install with: pip install pip-audit"; \
+		exit 1; \
+	fi
+	@find lambda -name "requirements*.txt" -type f \
+		-not -path "*/.venv/*" \
+		-not -path "*/venv/*" \
+		-not -path "*/__pycache__/*" \
+		-not -name "requirements-dev.txt" \
+	| xargs -P 8 -I {} sh -c \
+	    'echo "=== {} ==="; pip-audit -r {} --strict 2>&1 || echo "FAIL: {}"' \
+	; echo "audit-py done."
 
 # ============================================================================
 # HA Operator Tooling
