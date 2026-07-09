@@ -75,12 +75,16 @@ resource "aws_ssm_parameter" "bedrock_profile_arn_secondary" {
 # Same shape as primary; empty map when HA is off so secondary-region
 # Lambda modules can merge unconditionally without a null check.
 locals {
-  bedrock_chat_env_secondary = var.secondary_region != "" ? {
-    BEDROCK_CHAT_ADVANCED_PROFILE_ARN      = aws_bedrock_inference_profile.workload_secondary["chat-sonnet"].arn
-    BEDROCK_CHAT_BASIC_PROFILE_ARN         = aws_bedrock_inference_profile.workload_secondary["chat-haiku"].arn
-    BEDROCK_CHAT_TITAN_EMBED_PROFILE_ARN   = aws_bedrock_inference_profile.workload_secondary["chat-titan-embed"].arn
-    BEDROCK_CHAT_COHERE_RERANK_PROFILE_ARN = aws_bedrock_inference_profile.workload_secondary["chat-cohere-rerank"].arn
-  } : {}
+  bedrock_chat_env_secondary = var.secondary_region == "" ? {} : merge(
+    {
+      BEDROCK_CHAT_ADVANCED_PROFILE_ARN    = aws_bedrock_inference_profile.workload_secondary["chat-sonnet"].arn
+      BEDROCK_CHAT_BASIC_PROFILE_ARN       = aws_bedrock_inference_profile.workload_secondary["chat-haiku"].arn
+      BEDROCK_CHAT_TITAN_EMBED_PROFILE_ARN = aws_bedrock_inference_profile.workload_secondary["chat-titan-embed"].arn
+    },
+    var.bedrock_rerank_enabled ? {
+      BEDROCK_CHAT_COHERE_RERANK_PROFILE_ARN = aws_bedrock_inference_profile.workload_secondary["chat-cohere-rerank"].arn
+    } : {},
+  )
   bedrock_code_maps_env_secondary = var.secondary_region != "" ? {
     BEDROCK_CODE_MAPS_ADVANCED_PROFILE_ARN = aws_bedrock_inference_profile.workload_secondary["code-maps-sonnet"].arn
     BEDROCK_CODE_MAPS_BASIC_PROFILE_ARN    = aws_bedrock_inference_profile.workload_secondary["code-maps-haiku"].arn

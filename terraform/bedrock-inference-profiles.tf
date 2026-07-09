@@ -34,8 +34,18 @@ locals {
   # are not wrapped for that workload -- no profile created, no
   # attribution possible. Match the caller inventory in
   # plan/overview.md (grep-verified 2026-07-08).
+  #
+  # cohere-rerank is conditional on bedrock_rerank_enabled -- Cohere
+  # Rerank isn't in every Bedrock region (e.g. missing from us-east-2
+  # where the openai workspace runs for GPT-5.5). When rerank is off,
+  # CreateInferenceProfile 404s "Model not found" so we skip the
+  # profile entirely; retrieval callers fall back to cosine ordering
+  # per shared.retrieval.rerank's graceful-degrade path.
   bedrock_workload_models = {
-    chat      = ["haiku", "sonnet", "titan-embed", "cohere-rerank"]
+    chat = concat(
+      ["haiku", "sonnet", "titan-embed"],
+      var.bedrock_rerank_enabled ? ["cohere-rerank"] : [],
+    )
     code-maps = ["haiku", "sonnet"]
     # code-gen uses Sonnet for generation + Haiku for PR-comment-command
     # classification (handle-command Lambda).
@@ -143,12 +153,19 @@ resource "aws_ssm_parameter" "bedrock_profile_arn" {
 #     )
 
 locals {
-  bedrock_chat_env = {
-    BEDROCK_CHAT_ADVANCED_PROFILE_ARN      = aws_bedrock_inference_profile.workload["chat-sonnet"].arn
-    BEDROCK_CHAT_BASIC_PROFILE_ARN         = aws_bedrock_inference_profile.workload["chat-haiku"].arn
-    BEDROCK_CHAT_TITAN_EMBED_PROFILE_ARN   = aws_bedrock_inference_profile.workload["chat-titan-embed"].arn
-    BEDROCK_CHAT_COHERE_RERANK_PROFILE_ARN = aws_bedrock_inference_profile.workload["chat-cohere-rerank"].arn
-  }
+  # Conditionally include the cohere-rerank profile ARN only when
+  # rerank is enabled. Merging an empty map is a no-op; when enabled,
+  # the env var is set for retrieval callers to resolve.
+  bedrock_chat_env = merge(
+    {
+      BEDROCK_CHAT_ADVANCED_PROFILE_ARN    = aws_bedrock_inference_profile.workload["chat-sonnet"].arn
+      BEDROCK_CHAT_BASIC_PROFILE_ARN       = aws_bedrock_inference_profile.workload["chat-haiku"].arn
+      BEDROCK_CHAT_TITAN_EMBED_PROFILE_ARN = aws_bedrock_inference_profile.workload["chat-titan-embed"].arn
+    },
+    var.bedrock_rerank_enabled ? {
+      BEDROCK_CHAT_COHERE_RERANK_PROFILE_ARN = aws_bedrock_inference_profile.workload["chat-cohere-rerank"].arn
+    } : {},
+  )
   bedrock_code_maps_env = {
     BEDROCK_CODE_MAPS_ADVANCED_PROFILE_ARN = aws_bedrock_inference_profile.workload["code-maps-sonnet"].arn
     BEDROCK_CODE_MAPS_BASIC_PROFILE_ARN    = aws_bedrock_inference_profile.workload["code-maps-haiku"].arn
