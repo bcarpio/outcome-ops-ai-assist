@@ -200,13 +200,18 @@ audit-py:
 		echo "ERROR: pip-audit not on PATH. Install with: pip install pip-audit"; \
 		exit 1; \
 	fi
+	@# --strict off: tree-sitter-abap 0.0.1 is installed from a private
+	@# source (git/local), not PyPI, so pip-audit can't look it up. That's
+	@# expected, not a vulnerability. Without --strict, unresolvable deps
+	@# get a warning line instead of failing the whole scan. Real vulns
+	@# still show up as "found N known vulnerabilities" and exit non-zero.
 	@find lambda -name "requirements*.txt" -type f \
 		-not -path "*/.venv/*" \
 		-not -path "*/venv/*" \
 		-not -path "*/__pycache__/*" \
 		-not -name "requirements-dev.txt" \
 	| xargs -P 8 -I {} sh -c \
-	    'echo "=== {} ==="; pip-audit -r {} --strict 2>&1 || echo "FAIL: {}"' \
+	    'echo "=== {} ==="; pip-audit -r {} 2>&1 || echo "FAIL: {}"' \
 	; echo "audit-py done."
 
 # ============================================================================
