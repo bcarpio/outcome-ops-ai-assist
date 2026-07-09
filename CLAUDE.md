@@ -197,6 +197,30 @@ When a problem can be solved by improving an ADR rather than by code, prefer the
 - Use Conventional Commits format
 - **NEVER commit `terraform/prd.tfvars` or `terraform/dev.tfvars`** - These contain environment-specific configuration and must not be committed. Only the `.example` files are committed.
 
+### When You Ship a Feature — Three-Surface Rule
+
+Every feature has three documentation surfaces. When one drifts, sales
+gets "I don't know" answers to customer questions we do have coverage
+on. Keep them in sync — update all three in the same PR / session.
+
+1. **`docs/features.md`** (this repo) — dev/technical reference. ADR
+   numbers, Lambda names, tfvar keys, resource paths. Terse. See file
+   header for the "one line per feature" style.
+2. **`../marketing-for-outcomeops/feature-list.md`** — sales-team-
+   facing mirror. Customer-value framing (not ADR#s), categorized like
+   the Confluence page. Ingested into the marketing.outcomeops.ai
+   chatbot so sales partners can answer prospects.
+3. **Confluence "OutcomeOps AI Assist - Feature List"** page (Space
+   `OutcomeOps`, ID `57835580`) — sales-team + GTM-partner reference.
+   Same content shape as `feature-list.md`, Confluence-formatted.
+
+You can update Confluence via the Atlassian MCP
+(`mcp__claude_ai_Atlassian__updateConfluencePage`, cloudId
+`outcomeops.atlassian.net`, pageId `57835580`) once the local files
+are staged. If a session drops the Confluence update, at minimum
+leave a `TODO(confluence): mirror <what-changed>` line in the commit
+message so the next session can catch up.
+
 ### Before Committing (Required CI Steps)
 
 **ALWAYS run these commands before committing any changes:**
