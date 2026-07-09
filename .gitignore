@@ -98,3 +98,7 @@ lambda/.ca-bundles-staging/*.pem
 # Claude Code working directory - agent worktrees + tooling state.
 # Should never end up in the repo (was added by an over-broad `git add -A`).
 .claude/
+
+# Ad-hoc experiment outputs (Haiku vs Sonnet code-map comparison etc.)
+# Contents are throwaway — regenerate from scripts/*.
+experiment/
