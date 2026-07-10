@@ -9,6 +9,7 @@ Public surface (six helpers):
 - ``ddb_put_item(table_name, item, **kwargs)``
 - ``ddb_update_item(table_name, key, **kwargs)`` -> dict
 - ``ddb_delete_item(table_name, key, **kwargs)``
+- ``ddb_batch_delete_items(table_name, keys)`` -> int
 - ``s3_put_object(bucket, key, body, **kwargs)``
 - ``s3vectors_put_vectors(bucket, index, vectors, **kwargs)``
 - ``s3vectors_delete_vectors(bucket, index, keys)``
@@ -337,6 +338,92 @@ def _emit_batch_for_items(table_name: str, items: list) -> None:
             logger.warning(
                 "[dual_write] batch emit failed for %s: %s "
                 "(local write succeeded; passive region will lag for %d items)",
+                table_name,
+                exc.response.get("Error", {}).get("Code", "unknown"),
+                len(chunk),
+            )
+
+
+def ddb_batch_delete_items(table_name: str, keys: list) -> int:
+    """Batch-delete items by key via DDB BatchWriteItem and emit one
+    ddb_delete_item event per key.
+
+    Symmetric with ``ddb_batch_put_items`` so HA replication converges
+    deletes as well as puts — without this, a caller that batch-puts
+    through this module but deletes through a raw ``batch_writer`` would
+    leave the passive region holding rows the active region removed. Each
+    ``key`` is a primary-key dict (``{"PK": ..., "SK": ...}``). Returns the
+    count of keys deleted.
+    """
+
+    if not keys:
+        return 0
+
+    table = _ddb().Table(table_name)
+    deleted = 0
+    with table.batch_writer() as batch:
+        for key in keys:
+            batch.delete_item(Key=key)
+            deleted += 1
+
+    if REPLICATION_EVENT_BUS_NAME:
+        _emit_batch_delete_for_keys(table_name, keys)
+
+    return deleted
+
+
+def _emit_batch_delete_for_keys(table_name: str, keys: list) -> None:
+    """Helper: PutEvents-batched (10 per call) ddb_delete_item emissions.
+
+    Mirrors ``_emit_batch_for_items`` for the delete path. Each key becomes
+    one ddb_delete_item event. Failures are logged and swallowed — the local
+    deletes already succeeded.
+    """
+
+    if not REPLICATION_EVENT_BUS_NAME or not keys:
+        return
+
+    PUT_EVENTS_BATCH = 10
+    entries: list = []
+    for key in keys:
+        payload = {
+            "version": _EVENT_SCHEMA_VERSION,
+            "operation": "ddb_delete_item",
+            "source_region": THIS_REGION,
+            "emitted_at": int(time.time()),
+            "table": table_name,
+            "key": key,
+        }
+        try:
+            payload_str = json.dumps(payload, default=_json_default)
+        except (TypeError, ValueError):
+            payload_str = json.dumps(
+                {
+                    "version": _EVENT_SCHEMA_VERSION,
+                    "operation": "ddb_delete_item",
+                    "source_region": THIS_REGION,
+                    "emitted_at": int(time.time()),
+                    "unserializable": True,
+                    "table": table_name,
+                }
+            )
+        entries.append(
+            {
+                "Source": f"{ENVIRONMENT}.{APP_NAME}.ha-replication",
+                "DetailType": "ddb_delete_item",
+                "EventBusName": REPLICATION_EVENT_BUS_NAME,
+                "Detail": payload_str,
+            }
+        )
+
+    for chunk_start in range(0, len(entries), PUT_EVENTS_BATCH):
+        chunk = entries[chunk_start : chunk_start + PUT_EVENTS_BATCH]
+        try:
+            _events_client().put_events(Entries=chunk)
+        except ClientError as exc:
+            logger.warning(
+                "[dual_write] batch delete emit failed for %s: %s "
+                "(local deletes succeeded; passive region will lag for %d keys)",
                 table_name,
                 exc.response.get("Error", {}).get("Code", "unknown"),
                 len(chunk),

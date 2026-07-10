@@ -129,6 +129,40 @@ def test_ddb_delete_item_local_write_and_emit(_ha_module):
     assert detail["key"] == {"PK": "X", "SK": "Y"}
 
 
+def test_ddb_batch_delete_items_local_deletes_and_emits(_ha_module):
+    resource, table = _stub_ddb_with_table()
+    batch = table.batch_writer.return_value.__enter__.return_value
+    events = MagicMock()
+    _ha_module._set_clients_for_tests(dynamodb=resource, events=events)
+
+    keys = [{"PK": "P", "SK": "a"}, {"PK": "P", "SK": "b"}]
+    deleted = _ha_module.ddb_batch_delete_items("widgets", keys)
+
+    assert deleted == 2
+    assert batch.delete_item.call_count == 2
+    batch.delete_item.assert_any_call(Key={"PK": "P", "SK": "a"})
+    batch.delete_item.assert_any_call(Key={"PK": "P", "SK": "b"})
+    # One PutEvents call carrying two ddb_delete_item entries (symmetric
+    # with the batch-put replication path).
+    events.put_events.assert_called_once()
+    entries = events.put_events.call_args.kwargs["Entries"]
+    assert len(entries) == 2
+    detail = json.loads(entries[0]["Detail"])
+    assert detail["operation"] == "ddb_delete_item"
+    assert detail["table"] == "widgets"
+    assert detail["key"] in keys
+
+
+def test_ddb_batch_delete_items_empty_is_noop(_ha_module):
+    resource, table = _stub_ddb_with_table()
+    events = MagicMock()
+    _ha_module._set_clients_for_tests(dynamodb=resource, events=events)
+
+    assert _ha_module.ddb_batch_delete_items("widgets", []) == 0
+    table.batch_writer.assert_not_called()
+    events.put_events.assert_not_called()
+
+
 def test_s3_put_object_local_write_and_emit_without_body(_ha_module):
     s3 = MagicMock()
     events = MagicMock()

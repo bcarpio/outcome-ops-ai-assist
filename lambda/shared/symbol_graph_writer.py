@@ -10,10 +10,13 @@ v2 schema (this module):
     staleness display only; correctness is anchored on the SK, which
     already uniquely identifies a fact within a (workspace, repo) via
     ``kind#source#target#file_path#line``.
-  - Reextracting facts under a new commit SHA upserts in place via
-    matching SKs. No delete-old-partition step is needed -- the v1
-    file-scoped-delete workaround (commit 9b09390) was rendered
-    dead-code by this refactor.
+  - Reextracting facts follows per-file replace-on-reextract (ADR-046):
+    before writing a file's facts, the writer deletes that file's
+    existing facts. The SK embeds ``line``, so a same-SK upsert only
+    overwrites facts whose line did not move; any edit that shifts a
+    call/def line would otherwise orphan the old row forever (the
+    accumulation bug root-caused 2026-07-10). The file-scoped delete
+    keeps exactly one generation of facts per file.
   - The pointer module (``shared.symbol_graph_pointer``) is unchanged;
     ``graph_sha`` / ``graph_sha_committed_at`` still drive staleness
     reporting but no longer gate correctness.
@@ -32,6 +35,7 @@ from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Sequence
 
 import boto3
+from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 
 from shared import dual_write
@@ -65,11 +69,10 @@ class WriteResult:
     ``facts_written`` is the number of unique Fact items upserted into the
     (workspace, repo) partition.
 
-    ``facts_deleted`` is retained on the dataclass for back-compat with
-    callers that destructure WriteResult by position or read the field
-    directly. Under the v2 schema it is always 0 -- the writer no longer
-    runs a delete pass. Safe to remove in a follow-up cleanup chunk once
-    no caller reads it.
+    ``facts_deleted`` is the number of prior-generation fact rows removed
+    by the per-file replace pass (ADR-046) before the new generation was
+    written -- the count of stale, line-shifted rows evicted for the files
+    in this batch.
 
     ``previous_commit_sha`` is also retained for back-compat. **Deprecated**
     under v2: there is no per-SHA partition concept anymore, so this field
@@ -358,6 +361,65 @@ def _swap_pointer(
 
 
 # ---------------------------------------------------------------------------
+# Per-file replace (ADR-046)
+# ---------------------------------------------------------------------------
+
+
+def _delete_file_facts(
+    symbol_graph_table_name: str,
+    workspace_id: str,
+    repo: str,
+    file_paths: Sequence[str],
+) -> int:
+    """Delete every existing fact for ``file_paths`` under (workspace, repo).
+
+    Per-file replace-on-reextract (ADR-046): a fact's SK embeds ``line``,
+    so re-extracting an edited file writes new rows for any call/def whose
+    line moved while the old rows survive. Before writing a file's new
+    generation, remove its prior one.
+
+    The SK shape (``kind#source#target#file_path#line``) does not let a
+    single file be range-queried, so this reads the ``{workspace}#{repo}``
+    partition once -- projected to keys plus ``file_path`` (small items) --
+    and deletes the rows whose ``file_path`` is in the batch's file set.
+    One partition read per write batch, not per file (ADR-046 documents the
+    file-delete-GSI escalation if this read cost becomes material).
+
+    Deletes route through ``dual_write.ddb_batch_delete_items`` so the
+    eviction replicates to the passive region under HA, symmetric with the
+    batch-put path. Returns the number of rows deleted.
+    """
+
+    targets = {fp for fp in file_paths if fp}
+    if not targets:
+        return 0
+
+    pk = f"{workspace_id}#{repo}"
+    table = _resource().Table(symbol_graph_table_name)
+
+    keys: List[Dict[str, str]] = []
+    query_kwargs: Dict[str, object] = {
+        "KeyConditionExpression": Key("PK").eq(pk),
+        "ProjectionExpression": "PK, SK, #fp",
+        "ExpressionAttributeNames": {"#fp": "file_path"},
+    }
+    while True:
+        resp = table.query(**query_kwargs)
+        for it in resp.get("Items", []):
+            if it.get("file_path") in targets:
+                keys.append({"PK": it["PK"], "SK": it["SK"]})
+        lek = resp.get("LastEvaluatedKey")
+        if not lek:
+            break
+        query_kwargs["ExclusiveStartKey"] = lek
+
+    if not keys:
+        return 0
+
+    return dual_write.ddb_batch_delete_items(symbol_graph_table_name, keys)
+
+
+# ---------------------------------------------------------------------------
 # Batch helpers
 # ---------------------------------------------------------------------------
 
@@ -420,28 +482,36 @@ def write_facts(
     code_maps_table_name: Optional[str] = None,
     previous_commit_sha: Optional[str] = None,
     skip_pointer_swap: bool = False,
+    extracted_file_paths: Optional[Iterable[str]] = None,
 ) -> WriteResult:
     """Persist a Fact stream for one (workspace, repo, commit_sha) tuple.
 
-    v2 write path:
-      1. Materialize Facts to items with the new PK shape
+    Write path (ADR-046 per-file replace-on-reextract):
+      1. Materialize Facts to items with the PK shape
          (``${workspace_id}#${repo}``).
-      2. Dedupe by (PK, SK) (handled inside ``_write_facts_batched`` --
-         the chunk-01 extractor can emit duplicate Facts per source file
-         and a single batch with a duplicate (PK, SK) is rejected by
+      2. Determine the set of files this batch covers -- the distinct
+         ``file_path`` of the incoming facts, unioned with any
+         ``extracted_file_paths`` the caller supplies (so a file that was
+         re-extracted but emitted zero facts still has its stale rows
+         cleared).
+      3. Delete every existing fact for those files (the prior generation),
+         so line-shifted rows do not accumulate across re-extractions.
+      4. Dedupe by (PK, SK) (handled inside ``_write_facts_batched`` --
+         the extractor can emit duplicate Facts per source file and a
+         single batch with a duplicate (PK, SK) is rejected by
          BatchWriteItem).
-      3. Batch-write upsert. Same-SK rows upsert in place -- no separate
-         delete step. Reextracting facts under a new SHA simply
-         overwrites the rows with the new ``commit_sha`` attribute and
-         updated ``created_at``.
-      4. Optionally swap the legacy ``current_commit_sha`` pointer (when
-         ``skip_pointer_swap=False``). The chunk-03 atomic-swap path in
+      5. Batch-write the new generation.
+      6. Optionally swap the legacy ``current_commit_sha`` pointer (when
+         ``skip_pointer_swap=False``). The atomic-swap path in
          ``shared.symbol_graph_pointer`` owns the modern ``graph_sha`` /
          ``graph_pending_sha`` state machine and passes
          ``skip_pointer_swap=True``.
 
-    If step 3 raises, the pointer is NOT swapped (step 4 only runs after
-    a clean write).
+    Delete precedes write: the delete removes the file's prior rows and the
+    write lays down the current generation. If the delete raises, no write
+    happens; if the write raises after the delete, the SQS retry re-runs
+    both (the delete is idempotent). The pointer swap (step 6) only runs
+    after a clean write.
 
     Args:
         workspace_id: Workspace scope.
@@ -456,20 +526,24 @@ def write_facts(
         code_maps_table_name: Code-maps state-tracking table name (for
             the legacy pointer-swap). Defaults to the ``CODE_MAPS_TABLE``
             environment variable.
-        previous_commit_sha: **Deprecated** under v2. Retained on the
-            signature for back-compat with callers (process-batch-summary
-            passes it from the chunk-03 pointer module). The value is
-            echoed back on the ``WriteResult`` for observability but is
-            no longer used to drive a delete pass -- the v2 schema makes
-            that step unnecessary.
-        skip_pointer_swap: When True, step 4 is skipped. Chunk-03's
-            ``symbol_graph_pointer.commit_swap`` owns pointer state
-            and must not be clobbered by the writer's legacy put_item
-            of ``current_commit_sha``.
+        previous_commit_sha: **Deprecated.** Retained on the signature for
+            back-compat with callers (process-batch-summary passes it from
+            the pointer module). Echoed back on the ``WriteResult`` for
+            observability only; the per-file replace pass (ADR-046) keys on
+            ``file_path``, not on a previous SHA.
+        skip_pointer_swap: When True, the pointer-swap step is skipped.
+            ``symbol_graph_pointer.commit_swap`` owns pointer state and must
+            not be clobbered by the writer's legacy put_item of
+            ``current_commit_sha``.
+        extracted_file_paths: Optional set of files that were re-extracted
+            in this batch. The replace pass already covers every file that
+            produced a fact; pass this to also clear stale rows for a file
+            that was re-extracted but emitted zero facts (e.g. all its
+            symbols were removed). Defaults to the fact-derived set.
 
     Returns:
-        ``WriteResult`` describing the regen outcome. ``facts_deleted``
-        is always 0 under v2.
+        ``WriteResult`` describing the regen outcome. ``facts_deleted`` is
+        the number of prior-generation rows evicted by the replace pass.
 
     Raises:
         ValueError: Required arguments are empty.
@@ -495,19 +569,29 @@ def write_facts(
         "CODE_MAPS_TABLE", ""
     )
 
-    # Step 1: materialize Facts to v2-shaped items.
+    # Step 1: materialize Facts to items.
     items: List[Dict[str, object]] = [
         _build_item(workspace_id, repo, commit_sha, fact) for fact in facts
     ]
 
-    # Step 2-3: dedupe + batch-write upsert. No delete pass: identical
-    # SKs from a previous extraction are overwritten in place with the
-    # new commit_sha attribute.
+    # Step 2: the set of files this batch covers -- every file that
+    # produced a fact, plus any zero-fact files the caller named.
+    file_paths = {str(item["file_path"]) for item in items}
+    if extracted_file_paths is not None:
+        file_paths.update(fp for fp in extracted_file_paths if fp)
+
+    # Step 3: per-file replace (ADR-046). Delete the prior generation for
+    # these files BEFORE writing so line-shifted facts do not accumulate.
+    deleted = _delete_file_facts(
+        table_name, workspace_id, repo, list(file_paths)
+    )
+
+    # Steps 4-5: dedupe + batch-write the new generation.
     written = _write_facts_batched(table_name, items)
 
-    # Step 4: legacy pointer-swap. Skipped when the caller is on the
-    # chunk-03 atomic-swap path (process-batch-summary) which owns the
-    # modern pointer state machine in shared.symbol_graph_pointer.
+    # Step 6: legacy pointer-swap. Skipped when the caller is on the
+    # atomic-swap path (process-batch-summary) which owns the modern
+    # pointer state machine in shared.symbol_graph_pointer.
     if skip_pointer_swap or not code_maps_name:
         swapped = False
     else:
@@ -517,7 +601,7 @@ def write_facts(
 
     return WriteResult(
         facts_written=written,
-        facts_deleted=0,
+        facts_deleted=deleted,
         previous_commit_sha=previous_commit_sha or None,
         new_commit_sha=commit_sha,
         pointer_swapped=swapped,

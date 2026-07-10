@@ -511,10 +511,9 @@ def test_write_facts_large_round_trip(tables):
 
 
 def test_idempotent_rewrite_same_sha_no_duplicates(tables):
-    """v2 schema: SK uniqueness (kind#source#target#file#line) makes
-    every write a pure upsert into the ``(workspace, repo)`` partition.
-    Rewriting the same Facts under the same SHA leaves the item count
-    unchanged -- no delete pass needed.
+    """Per-file replace (ADR-046): rewriting the same Facts deletes the
+    file's prior generation, then rewrites it -- so the item count is
+    unchanged and ``facts_deleted`` equals the prior generation's size.
     """
     from shared.symbol_graph_writer import write_facts  # type: ignore
 
@@ -536,8 +535,9 @@ def test_idempotent_rewrite_same_sha_no_duplicates(tables):
         symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
         code_maps_table_name=CODE_MAPS_TABLE,
     )
-    # v2: facts_deleted is always 0 (no delete pass in the writer).
-    assert result.facts_deleted == 0
+    # Per-file replace: the second write evicts the 100 prior-generation
+    # rows (one per file) before rewriting them; end count is unchanged.
+    assert result.facts_deleted == 100
 
     table = tables.Table(SYMBOL_GRAPH_TABLE)
     response = table.query(
@@ -589,18 +589,17 @@ def test_write_facts_dedupes_identical_facts_within_one_batch(tables):
 
 
 # ===========================================================================
-# Regen: under v2 schema, a second write under NEW_SHA simply upserts
-# overlapping rows in place within the one (workspace, repo) partition.
+# Regen: a second write under NEW_SHA replaces the prior generation for
+# the files it covers, within the one (workspace, repo) partition.
 # ===========================================================================
 
 
-def test_regen_under_new_sha_upserts_in_place(tables):
-    """v2 schema: a second write under NEW_SHA after an OLD_SHA write
-    upserts overlapping rows by SK within the single
-    ``(workspace, repo)`` partition. Overlapping rows reflect NEW_SHA in
-    their ``commit_sha`` attribute; new-to-NEW_SHA rows are added.
-
-    No delete pass runs (``facts_deleted == 0`` always under v2).
+def test_regen_under_new_sha_replaces_prior_generation(tables):
+    """Per-file replace (ADR-046): a second write under NEW_SHA after an
+    OLD_SHA write deletes the prior generation for the overlapping files,
+    then writes the new one. Overlapping files' rows carry NEW_SHA;
+    new-to-NEW_SHA files are added. ``facts_deleted`` counts the evicted
+    overlap.
     """
     from shared.symbol_graph_writer import write_facts  # type: ignore
 
@@ -627,9 +626,10 @@ def test_regen_under_new_sha_upserts_in_place(tables):
         symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
         code_maps_table_name=CODE_MAPS_TABLE,
     )
-    # v2: facts_deleted is always 0. facts_written counts dedupe-unique
-    # PutItem operations the writer issued.
-    assert result.facts_deleted == 0
+    # Per-file replace: the 50 overlapping files (caller0..caller49) have
+    # their OLD_SHA rows evicted before the 75-fact write. facts_written
+    # counts the dedupe-unique PutItem operations the writer issued.
+    assert result.facts_deleted == 50
     assert result.facts_written == 75
     assert result.pointer_swapped is True
 
@@ -644,6 +644,192 @@ def test_regen_under_new_sha_upserts_in_place(tables):
     )
     assert partition["Count"] == 75
     assert all(item.get("commit_sha") == NEW_SHA for item in partition["Items"])
+
+
+# ===========================================================================
+# The accumulation bug (root-caused 2026-07-10) + its fix (ADR-046):
+# a fact SK embeds ``line``, so a line-shifting edit would orphan the old
+# row under a plain upsert. Per-file replace evicts the prior generation.
+# Parametrized across languages -- the replace keys on ``file_path`` and is
+# language-agnostic (all extractors funnel through this one writer).
+# ===========================================================================
+
+
+@pytest.mark.parametrize(
+    "language,file_path,caller,target",
+    [
+        (
+            "python",
+            "lambda/auth/handler.py",
+            "python:lambda.auth.handler::handler",
+            "python:lambda.auth.handler::require_auth",
+        ),
+        (
+            "typescript",
+            "src/lib/api.ts",
+            "typescript:src/lib/api::request",
+            "typescript:src/lib/auth::requireAuth",
+        ),
+    ],
+)
+def test_reextract_shifted_line_evicts_stale_generation(
+    tables, language, file_path, caller, target
+):
+    from shared.symbol_graph_writer import write_facts  # type: ignore
+
+    def call_at(line: int) -> FactShim:
+        return FactShim(
+            kind="calls",
+            source_symbol_id=caller,
+            target_symbol_id=target,
+            file_path=file_path,
+            line=line,
+            language=language,
+        )
+
+    # First extraction: the call is at line 10.
+    write_facts(
+        workspace_id=WORKSPACE_ID,
+        repo=REPO,
+        commit_sha=OLD_SHA,
+        facts=[call_at(10)],
+        symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
+        code_maps_table_name=CODE_MAPS_TABLE,
+    )
+    # Second extraction after inserting code above: SAME call, now line 20.
+    result = write_facts(
+        workspace_id=WORKSPACE_ID,
+        repo=REPO,
+        commit_sha=NEW_SHA,
+        facts=[call_at(20)],
+        symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
+        code_maps_table_name=CODE_MAPS_TABLE,
+    )
+    assert result.facts_deleted == 1  # the stale line-10 row
+
+    # Exactly one caller row survives, at line 20 -- not two generations.
+    table = tables.Table(SYMBOL_GRAPH_TABLE)
+    partition = table.query(
+        KeyConditionExpression=Key("PK").eq(f"{WORKSPACE_ID}#{REPO}")
+    )
+    call_rows = [
+        i
+        for i in partition["Items"]
+        if i["kind"] == "calls" and i["target_symbol_id"] == target
+    ]
+    assert len(call_rows) == 1
+    assert call_rows[0]["line"] == 20
+
+
+def test_replace_scoped_to_batch_files_leaves_others_intact(tables):
+    """Per-file replace only touches the files in the current batch. A
+    re-extract of file A must not evict file B's facts -- the invariant
+    that lets parallel same-repo batches (disjoint file sets) run without
+    racing on each other's deletes.
+    """
+    from shared.symbol_graph_writer import write_facts  # type: ignore
+
+    file_a = "lambda/a/handler.py"
+    file_b = "lambda/b/handler.py"
+
+    def fact(file_path: str, line: int, src: str, tgt: str) -> FactShim:
+        return FactShim(
+            kind="calls",
+            source_symbol_id=src,
+            target_symbol_id=tgt,
+            file_path=file_path,
+            line=line,
+            language="python",
+        )
+
+    # Seed both files.
+    write_facts(
+        workspace_id=WORKSPACE_ID,
+        repo=REPO,
+        commit_sha=OLD_SHA,
+        facts=[
+            fact(file_a, 10, "python:a::h", "python:x::t"),
+            fact(file_b, 10, "python:b::h", "python:y::t"),
+        ],
+        symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
+        code_maps_table_name=CODE_MAPS_TABLE,
+    )
+    # Re-extract ONLY file A (line shifted).
+    result = write_facts(
+        workspace_id=WORKSPACE_ID,
+        repo=REPO,
+        commit_sha=NEW_SHA,
+        facts=[fact(file_a, 25, "python:a::h", "python:x::t")],
+        symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
+        code_maps_table_name=CODE_MAPS_TABLE,
+    )
+    assert result.facts_deleted == 1  # only file A's old row
+
+    table = tables.Table(SYMBOL_GRAPH_TABLE)
+    partition = table.query(
+        KeyConditionExpression=Key("PK").eq(f"{WORKSPACE_ID}#{REPO}")
+    )
+    by_file = {}
+    for i in partition["Items"]:
+        by_file.setdefault(i["file_path"], []).append(i)
+    # File B untouched (still line 10); file A replaced (single row, line 25).
+    assert len(by_file[file_b]) == 1 and by_file[file_b][0]["line"] == 10
+    assert len(by_file[file_a]) == 1 and by_file[file_a][0]["line"] == 25
+
+
+def test_extracted_file_paths_clears_emptied_file(tables):
+    """A file re-extracted but emitting zero facts (all its symbols were
+    removed) still has its prior generation cleared when the caller names
+    it in ``extracted_file_paths`` -- the fact-derived set alone misses it.
+    """
+    from shared.symbol_graph_writer import write_facts  # type: ignore
+
+    emptied = "lambda/gone/handler.py"
+    kept = "lambda/keep/handler.py"
+
+    def fact(file_path: str, line: int, src: str, tgt: str) -> FactShim:
+        return FactShim(
+            kind="calls",
+            source_symbol_id=src,
+            target_symbol_id=tgt,
+            file_path=file_path,
+            line=line,
+            language="python",
+        )
+
+    # Seed a fact in each file.
+    write_facts(
+        workspace_id=WORKSPACE_ID,
+        repo=REPO,
+        commit_sha=OLD_SHA,
+        facts=[
+            fact(emptied, 10, "python:gone::h", "python:x::t"),
+            fact(kept, 10, "python:keep::h", "python:y::t"),
+        ],
+        symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
+        code_maps_table_name=CODE_MAPS_TABLE,
+    )
+
+    # Re-extract: ``kept`` still produces a fact; ``emptied`` produced none
+    # but is named as having been re-extracted this batch.
+    result = write_facts(
+        workspace_id=WORKSPACE_ID,
+        repo=REPO,
+        commit_sha=NEW_SHA,
+        facts=[fact(kept, 12, "python:keep::h", "python:y::t")],
+        extracted_file_paths=[emptied, kept],
+        symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
+        code_maps_table_name=CODE_MAPS_TABLE,
+    )
+    assert result.facts_deleted == 2  # emptied's row + kept's old row
+
+    table = tables.Table(SYMBOL_GRAPH_TABLE)
+    partition = table.query(
+        KeyConditionExpression=Key("PK").eq(f"{WORKSPACE_ID}#{REPO}")
+    )
+    files = {i["file_path"] for i in partition["Items"]}
+    assert emptied not in files  # cleared despite emitting zero facts
+    assert kept in files
 
 
 def test_facts_from_two_extractions_coexist_in_one_partition(tables):
