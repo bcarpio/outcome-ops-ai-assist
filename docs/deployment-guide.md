@@ -98,6 +98,23 @@ ui_fargate_assign_public_ip  = true
 ui_private_subnet_ids        = ["subnet-public-a", "subnet-public-b"]
 ```
 
+#### Network egress endpoints
+
+For a firewall/proxy allowlist, the Fargate tasks make outbound HTTPS to
+these DNS patterns. Only outbound-from-Fargate rules are needed; none of
+these require an inbound rule.
+
+| Endpoint pattern | Purpose | Notes |
+|------------------|---------|-------|
+| `*.lambda-url.<region>.on.aws` | Backend Lambda invocation (chat, workspace-mgmt, PR analysis, integrations) | Public DNS, but every Function URL is `authorization_type = "AWS_IAM"` -- requests are SigV4-signed by the Fargate task role and unsigned requests get 403. No PrivateLink path exists for Function URLs. See **ADR-045**. |
+| `bedrock-runtime.<region>.amazonaws.com` | Claude / embedding model calls | Reachable via the `com.amazonaws.<region>.bedrock-runtime` interface VPC endpoint if egress must stay off the public internet. |
+| `api.github.com`, `*.githubusercontent.com` | GitHub App + source fetch | Or the customer's GitHub Enterprise host. |
+| Per-integration SaaS hosts | e.g. `login.salesforce.com`, `login.microsoftonline.com`, Atlassian Cloud, ServiceNow instance | Only for the integrations the customer enables. |
+
+The `*.lambda-url.<region>.on.aws` entry is the one the network team most
+often flags; ADR-045 (Function URL network posture) is the written
+justification to hand them.
+
 ### Headless Mode
 
 Set `deploy_ui = false` to skip the Chat UI entirely. The platform operates via CLI (`./scripts/outcome-ops-assist`) and GitHub integrations only.
