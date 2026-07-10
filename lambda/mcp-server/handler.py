@@ -79,15 +79,59 @@ DEFAULT_MIN_SCORE = float(os.environ.get("MCP_RETRIEVAL_MIN_SCORE", "0"))
 # Per-result snippet ceiling so one large chunk can't dominate the budget.
 SNIPPET_MAX_TOKENS = int(os.environ.get("MCP_RETRIEVAL_SNIPPET_TOKENS", "500"))
 
-# Session storage (in-memory, single instance)
+# Session storage.
+#
+# fable-scale chunk 02: session state lives in an external SessionStore
+# (DDB in prod, in-memory for tests) instead of a per-container dict.
+# Externalizing was the design constraint that had prevented horizontal
+# scaling of the MCP Fargate service — a second task couldn't share
+# authenticated sessions.
+#
+# The `_sessions` and `_mcp_sessions` module-level dicts are retained as
+# BACKING STORAGE for the in-memory store. In memory mode, the store
+# reads/writes through them, so legacy unit tests that seed these dicts
+# directly (mcp_module._sessions[sid] = {...}) still work end-to-end.
+# In DDB mode, these dicts are unused — the store hits DynamoDB.
+#
+# _mcp_server_cache remains an in-memory per-task cache regardless: it
+# holds proxied-server descriptors (tools list + config), which are cheap
+# to regenerate on cache miss.
 _sessions = {}  # session_id -> {"email": str, "last_active": float, "tool_routing": dict}
-SESSION_TIMEOUT = 3600  # 1 hour
+_mcp_sessions = {}  # mcp_id -> {"session_id": str, "created_at": float}
+_session_store = None  # lazy-initialised via _get_session_store()
+SESSION_TIMEOUT = 3600  # 1 hour — application-side authoritative expiry
 
-# MCP proxy/fanout caches
+# MCP proxy/fanout cache (per-task, safe to lose on restart).
 _mcp_server_cache = {}  # mcp_id -> {"tools": [...], "config": {...}, "fetched_at": float}
 MCP_CACHE_TTL = 300  # 5 minutes
-_mcp_sessions = {}  # mcp_id -> {"session_id": str, "created_at": float}
-MCP_SESSION_TTL = 1800  # 30 minutes
+MCP_SESSION_TTL = 1800  # 30 minutes — TTL on upstream MCP proxy sessions
+
+# Store keys for upstream MCP proxy sessions are prefixed so they don't
+# collide with real user session_ids (32-hex-char secrets). The store
+# strips the prefix and routes upstream entries to `_mcp_sessions`;
+# user entries go to `_sessions`.
+_UPSTREAM_PREFIX = "upstream#"
+
+
+def _get_session_store():
+    """Lazy import + init so unit tests can override MCP_SESSION_STORE=memory
+    without triggering a boto3 client build at import time. Passes the
+    module-level dicts as backing storage for the in-memory store."""
+    global _session_store
+    if _session_store is None:
+        from session_store import build_session_store  # local import: same package
+        _session_store = build_session_store(
+            user_backing=_sessions,
+            upstream_backing=_mcp_sessions,
+        )
+    return _session_store
+
+
+def _reset_session_store_for_test():
+    """Test helper: drop the current store so the next _get_session_store()
+    call rebuilds it (picking up any env or backing-dict changes)."""
+    global _session_store
+    _session_store = None
 
 # Cached AWS clients
 _dynamodb = None
@@ -595,6 +639,19 @@ MCP_TOOLS = [
 # ============================================================================
 
 
+# fable-scale chunk 03: per-instance validate_api_key cache. Every MCP
+# request currently does 3 DDB ops on the key path (GSI1 Query + last_used_at
+# UpdateItem + audit PutItem). Under 2000 engineers running Claude Code
+# fleet-wide that's thousands of DDB ops/hour just for auth. Cache the
+# positive validation result for MCP_API_KEY_CACHE_TTL_SECONDS (default 60s)
+# — a revoked key still fails on next TTL boundary. last_used_at gets
+# throttled to once per TTL window per key. The audit PutItem stays
+# per-request — auditability trumps cost per [[project_moat_audit]].
+_MCP_API_KEY_CACHE_TTL = int(os.environ.get("MCP_API_KEY_CACHE_TTL_SECONDS", "60"))
+_api_key_cache: dict[str, tuple[dict, float]] = {}
+_api_key_cache_lock = threading.Lock()
+
+
 def validate_api_key(api_key, source_ip=""):
     """Validate an API key against DynamoDB. Returns user email or None.
 
@@ -604,10 +661,28 @@ def validate_api_key(api_key, source_ip=""):
     if not api_key or not DYNAMODB_TABLE:
         return None
 
+    key_hash = hashlib.sha256(api_key.encode()).hexdigest()
+    now = time.time()
+
+    # Cache lookup. Only positive results are cached (see write below) —
+    # negative results always go back to DDB so a rotated-in key is
+    # honored immediately.
+    with _api_key_cache_lock:
+        cached = _api_key_cache.get(key_hash)
+    if cached is not None and cached[1] > now:
+        info = cached[0]
+        # Positive-cache hits still emit an audit row (auditability
+        # invariant), but skip the last_used_at write — it's already been
+        # written on the previous TTL boundary and would be a wasted
+        # RCU/WCU pair per MCP call.
+        _emit_api_key_used(
+            info["key_id"], info["key_name"], info["email"], True, "", source_ip,
+        )
+        return info["email"]
+
     try:
         dynamodb = _get_dynamodb()
         table = dynamodb.Table(DYNAMODB_TABLE)
-        key_hash = hashlib.sha256(api_key.encode()).hexdigest()
 
         response = table.query(
             IndexName="GSI1",
@@ -642,7 +717,8 @@ def validate_api_key(api_key, source_ip=""):
             _emit_api_key_used(key_id, key_name, "", False, "key_missing_owner", source_ip)
             return None
 
-        # Update last_used_at (best-effort)
+        # Update last_used_at (best-effort). Only on cache MISS — the cache
+        # window bounds how often we touch the row.
         try:
             dual_write.ddb_update_item(
                 DYNAMODB_TABLE,
@@ -654,6 +730,15 @@ def validate_api_key(api_key, source_ip=""):
             )
         except Exception:
             pass
+
+        # Cache the positive result. Negative results are NOT cached so
+        # a newly-provisioned or rotated key isn't shadowed by a stale
+        # not-found. Revoked keys are handled by the TTL bound.
+        with _api_key_cache_lock:
+            _api_key_cache[key_hash] = (
+                {"email": email, "key_id": key_id, "key_name": key_name},
+                now + _MCP_API_KEY_CACHE_TTL,
+            )
 
         _emit_api_key_used(key_id, key_name, email, True, "", source_ip)
         return email
@@ -848,92 +933,124 @@ def format_results(results, query="", max_tokens=DEFAULT_MAX_TOKENS):
 
 
 def get_user_workspace_ids(email):
-    """Get workspace IDs the user has access to, including shared workspaces."""
+    """Get workspace IDs the user has access to, including shared workspaces.
+
+    fable-scale chunk 03: both the admin-enumerate-all branch and the
+    regular-user share-resolution branch cache their DDB scans per-instance
+    for WORKSPACE_CACHE_TTL_SECONDS (default 60s). At enterprise scale each
+    MCP tool call was doing a full workspaces-table Scan (2000+ rows);
+    steady-state cost drops ~99% while a new workspace still appears within
+    the TTL window. Per-user direct-memberships are cached under a
+    user-keyed entry.
+    """
+    from shared import ws_cache  # local import: shared layer
+
     dynamodb = _get_dynamodb()
     table = dynamodb.Table(DYNAMODB_TABLE)
 
     try:
-        # Check if org admin
+        # Check if org admin. Not cached — this Item is small and the
+        # is_admin flag is what forks the branch below; caching would
+        # tangle the two branches.
         org_resp = table.get_item(Key={"PK": f"USER#{email}", "SK": "ORG_MEMBER"})
         is_admin = org_resp.get("Item", {}).get("org_role") == "org_admin"
 
         if is_admin:
-            # Enumerate all WS#... METADATA rows across the whole table.
-            # Paginated via LastEvaluatedKey - a single Scan reads at most
-            # 1MB and silently truncates without it; bites at enterprise
-            # workspace counts. Same risk shape as the ServiceNow ADR-004
-            # write-up.
-            workspace_ids = []
-            scan_kwargs = {
-                "FilterExpression": "begins_with(SK, :sk)",
-                "ExpressionAttributeValues": {":sk": "METADATA"},
-                "ProjectionExpression": "PK",
+            def _compute_all_ids() -> List[str]:
+                # Enumerate all WS#... METADATA rows. Paginated per
+                # ADR-013 / [[feedback_enterprise_scale_pagination]].
+                out: List[str] = []
+                scan_kwargs = {
+                    "FilterExpression": "begins_with(SK, :sk)",
+                    "ExpressionAttributeValues": {":sk": "METADATA"},
+                    "ProjectionExpression": "PK",
+                }
+                while True:
+                    response = table.scan(**scan_kwargs)
+                    for item in response.get("Items", []):
+                        pk = item.get("PK", "")
+                        if pk.startswith("WS#"):
+                            out.append(pk.replace("WS#", ""))
+                    last_key = response.get("LastEvaluatedKey")
+                    if not last_key:
+                        break
+                    scan_kwargs["ExclusiveStartKey"] = last_key
+                return out
+
+            return ws_cache.get_or_compute(
+                (DYNAMODB_TABLE, "all_workspace_ids"),
+                _compute_all_ids,
+            )
+
+        # Regular user branch. Direct memberships cached per-user; the
+        # share-resolution METADATA scan is cached once for the whole
+        # instance.
+        def _compute_direct_ids() -> List[str]:
+            out: List[str] = []
+            query_kwargs = {
+                "KeyConditionExpression": "PK = :pk AND begins_with(SK, :sk)",
+                "ExpressionAttributeValues": {
+                    ":pk": f"USER#{email}",
+                    ":sk": "WS_MEMBER#",
+                },
             }
             while True:
-                response = table.scan(**scan_kwargs)
-                for item in response.get("Items", []):
-                    pk = item.get("PK", "")
-                    if pk.startswith("WS#"):
-                        workspace_ids.append(pk.replace("WS#", ""))
-                last_key = response.get("LastEvaluatedKey")
-                if not last_key:
+                response = table.query(**query_kwargs)
+                for item in response.get("Items", []) or []:
+                    ws = item.get("workspace_id")
+                    if ws:
+                        out.append(ws)
+                if "LastEvaluatedKey" not in response:
                     break
-                scan_kwargs["ExclusiveStartKey"] = last_key
-            return workspace_ids
+                query_kwargs["ExclusiveStartKey"] = response["LastEvaluatedKey"]
+            return out
 
-        # Regular user: direct memberships (paginated -- Chunk 05, single-shot
-        # query truncates at 1MB and the user silently loses workspace access
-        # in MCP results).
-        direct_ids: List[str] = []
-        query_kwargs = {
-            "KeyConditionExpression": "PK = :pk AND begins_with(SK, :sk)",
-            "ExpressionAttributeValues": {
-                ":pk": f"USER#{email}",
-                ":sk": "WS_MEMBER#",
-            },
-        }
-        while True:
-            response = table.query(**query_kwargs)
-            for item in response.get("Items", []) or []:
-                ws = item.get("workspace_id")
-                if ws:
-                    direct_ids.append(ws)
-            if "LastEvaluatedKey" not in response:
-                break
-            query_kwargs["ExclusiveStartKey"] = response["LastEvaluatedKey"]
+        direct_ids: List[str] = ws_cache.get_or_compute(
+            (DYNAMODB_TABLE, "user_memberships", email),
+            _compute_direct_ids,
+        )
 
         if not direct_ids:
             return []
 
-        # Find workspaces that share with the user's workspaces. Same
-        # pagination consideration as the admin branch - the share-resolution
-        # has to see EVERY workspace METADATA row to know whether it grants
-        # the user access via search_allowed_workspaces.
+        def _compute_share_rows() -> List[dict]:
+            # (PK, search_allowed_workspaces) tuples for every WS# METADATA
+            # row. Small payload per row; the enterprise cost is the row
+            # count, which caching absorbs.
+            out: List[dict] = []
+            scan_kwargs = {
+                "FilterExpression": "begins_with(SK, :sk)",
+                "ExpressionAttributeValues": {":sk": "METADATA"},
+                "ProjectionExpression": "PK, search_allowed_workspaces",
+            }
+            while True:
+                ws_scan = table.scan(**scan_kwargs)
+                out.extend(ws_scan.get("Items", []))
+                last_key = ws_scan.get("LastEvaluatedKey")
+                if not last_key:
+                    break
+                scan_kwargs["ExclusiveStartKey"] = last_key
+            return out
+
+        share_rows = ws_cache.get_or_compute(
+            (DYNAMODB_TABLE, "share_metadata_rows"),
+            _compute_share_rows,
+        )
+
         all_ids = set(direct_ids)
-        scan_kwargs = {
-            "FilterExpression": "begins_with(SK, :sk)",
-            "ExpressionAttributeValues": {":sk": "METADATA"},
-            "ProjectionExpression": "PK, search_allowed_workspaces",
-        }
-        while True:
-            ws_scan = table.scan(**scan_kwargs)
-            for item in ws_scan.get("Items", []):
-                pk = item.get("PK", "")
-                if not pk.startswith("WS#"):
-                    continue
-                ws_id = pk.replace("WS#", "")
-                if ws_id in all_ids:
-                    continue
-                allowed = item.get("search_allowed_workspaces", [])
-                if allowed:
-                    for direct_id in direct_ids:
-                        if direct_id in allowed:
-                            all_ids.add(ws_id)
-                            break
-            last_key = ws_scan.get("LastEvaluatedKey")
-            if not last_key:
-                break
-            scan_kwargs["ExclusiveStartKey"] = last_key
+        for item in share_rows:
+            pk = item.get("PK", "")
+            if not pk.startswith("WS#"):
+                continue
+            ws_id = pk.replace("WS#", "")
+            if ws_id in all_ids:
+                continue
+            allowed = item.get("search_allowed_workspaces", [])
+            if allowed:
+                for direct_id in direct_ids:
+                    if direct_id in allowed:
+                        all_ids.add(ws_id)
+                        break
 
         return list(all_ids)
     except ClientError as e:
@@ -1140,16 +1257,23 @@ def _proxy_tool_call(config, original_tool_name, arguments):
     # Add auth headers
     _add_mcp_auth_headers(headers, config)
 
-    # Get or create MCP session with the target server
+    # Get or create MCP session with the target server. Cached in the shared
+    # session store under the upstream# prefix so the same negotiated session
+    # can be reused across the Fargate task pool.
     now = time.time()
-    cached_session = _mcp_sessions.get(mcp_id)
-    if cached_session and (now - cached_session["created_at"]) < MCP_SESSION_TTL:
+    upstream_key = f"{_UPSTREAM_PREFIX}{mcp_id}"
+    cached_session = _get_session_store().get(upstream_key)
+    if cached_session and (now - cached_session.get("created_at", 0)) < MCP_SESSION_TTL:
         headers["Mcp-Session-Id"] = cached_session["session_id"]
     else:
         # Initialize new session
         session_id = _mcp_initialize_session(url, headers)
         if session_id:
-            _mcp_sessions[mcp_id] = {"session_id": session_id, "created_at": now}
+            _get_session_store().put(upstream_key, {
+                "session_id": session_id,
+                "created_at": now,
+                "last_active": now,
+            })
             headers["Mcp-Session-Id"] = session_id
 
     # Send tools/call
@@ -2679,8 +2803,8 @@ class McpHandler(BaseHTTPRequestHandler):
     def do_DELETE(self):
         """Handle session termination (DELETE /mcp/v1)."""
         session_id = self.headers.get("Mcp-Session-Id")
-        if session_id and session_id in _sessions:
-            del _sessions[session_id]
+        if session_id:
+            _get_session_store().delete(session_id)
             logger.info(f"Session terminated: {session_id[:8]}...")
         self.send_response(200)
         self.end_headers()
@@ -2718,11 +2842,16 @@ class McpHandler(BaseHTTPRequestHandler):
         session_id = self.headers.get("Mcp-Session-Id")
         email = None
 
-        if session_id and session_id in _sessions:
-            session = _sessions[session_id]
-            if time.time() - session["last_active"] < SESSION_TIMEOUT:
+        if session_id:
+            session = _get_session_store().get(session_id)
+            if session and time.time() - session.get("last_active", 0) < SESSION_TIMEOUT:
                 email = session["email"]
-                session["last_active"] = time.time()
+                # Refresh last_active + TTL. Note: this is a targeted field
+                # update rather than a full put(), so tool_routing set by a
+                # concurrent tools/list isn't clobbered by a stale copy.
+                _get_session_store().update_field(
+                    session_id, "last_active", time.time()
+                )
 
         if not email:
             # Try API key auth
@@ -2780,10 +2909,10 @@ class McpHandler(BaseHTTPRequestHandler):
 
         # Create session
         session_id = secrets.token_hex(16)
-        _sessions[session_id] = {
+        _get_session_store().put(session_id, {
             "email": email,
             "last_active": time.time(),
-        }
+        })
 
         logger.info(f"New session for {email}: {session_id[:8]}...")
 
@@ -2802,7 +2931,8 @@ class McpHandler(BaseHTTPRequestHandler):
 
     def _handle_tools_list(self, request_id, session_id):
         """Handle tools/list request. Returns native + proxied tools."""
-        email = _sessions.get(session_id, {}).get("email")
+        session = _get_session_store().get(session_id) if session_id else None
+        email = (session or {}).get("email")
         workspace_ids = get_user_workspace_ids(email) if email else []
 
         # Start with native OutcomeOps tools
@@ -2834,8 +2964,8 @@ class McpHandler(BaseHTTPRequestHandler):
             logger.error(f"Error discovering MCP servers: {e}", exc_info=True)
 
         # Store routing in session for use by tools/call
-        if session_id and session_id in _sessions:
-            _sessions[session_id]["tool_routing"] = tool_routing
+        if session_id:
+            _get_session_store().update_field(session_id, "tool_routing", tool_routing)
 
         result = {"tools": all_tools}
         self._send_json(200, jsonrpc_response(request_id, result), session_id=session_id)
@@ -2892,8 +3022,8 @@ class McpHandler(BaseHTTPRequestHandler):
             return
 
         # Check proxied tools
-        session = _sessions.get(session_id, {})
-        tool_routing = session.get("tool_routing", {})
+        session = _get_session_store().get(session_id) if session_id else None
+        tool_routing = (session or {}).get("tool_routing", {})
 
         # Build tool_routing on-demand if not yet populated
         # (handles cases where tools/call arrives before tools/list)
@@ -2909,8 +3039,8 @@ class McpHandler(BaseHTTPRequestHandler):
                             "config": server["config"],
                             "original_name": tool["name"],
                         }
-                if session_id and session_id in _sessions:
-                    _sessions[session_id]["tool_routing"] = tool_routing
+                if session_id:
+                    _get_session_store().update_field(session_id, "tool_routing", tool_routing)
                 logger.info(f"Built tool_routing on-demand: {len(tool_routing)} proxied tools")
             except Exception as e:
                 logger.error(f"Error building tool_routing on-demand: {e}", exc_info=True)
@@ -2965,18 +3095,22 @@ class McpHandler(BaseHTTPRequestHandler):
 
 
 def cleanup_sessions():
-    """Periodically clean up expired sessions."""
+    """Periodically clean up expired sessions.
+
+    fable-scale chunk 02: for the DDB store, DynamoDB TTL owns eviction
+    and this loop no-ops (cleanup_expired returns 0). For the in-memory
+    store, it retains the pre-refactor behavior of scanning + deleting
+    expired rows every 5 minutes.
+    """
+    store = _get_session_store()
     while True:
         time.sleep(300)  # Every 5 minutes
-        now = time.time()
-        expired = [
-            sid for sid, s in _sessions.items()
-            if now - s["last_active"] > SESSION_TIMEOUT
-        ]
-        for sid in expired:
-            del _sessions[sid]
-        if expired:
-            logger.info(f"Cleaned up {len(expired)} expired sessions")
+        try:
+            count = store.cleanup_expired()
+            if count:
+                logger.info(f"Cleaned up {count} expired sessions")
+        except Exception:
+            logger.exception("session cleanup pass failed; will retry next tick")
 
 
 # ============================================================================

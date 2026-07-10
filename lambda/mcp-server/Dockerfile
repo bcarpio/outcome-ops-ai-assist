@@ -15,6 +15,7 @@ COPY mcp-server/requirements.txt .
 RUN pip install --no-cache-dir --only-binary=:all: --require-hashes -r requirements.txt
 
 COPY mcp-server/handler.py .
+COPY mcp-server/session_store.py .
 COPY shared/ ./shared/
 
 EXPOSE 8080

@@ -57,9 +57,12 @@ mcp_module = _load_mcp_module()
 @pytest.fixture(autouse=True)
 def clear_caches():
     """Clear in-memory caches and global clients between tests."""
+    from shared import ws_cache
     mcp_module._mcp_server_cache.clear()
     mcp_module._mcp_sessions.clear()
     mcp_module._sessions.clear()
+    mcp_module._api_key_cache.clear()
+    ws_cache.clear()
     # Reset cached AWS clients so getter tests work
     mcp_module._dynamodb = None
     mcp_module._s3vectors_client = None
@@ -69,6 +72,8 @@ def clear_caches():
     mcp_module._mcp_server_cache.clear()
     mcp_module._mcp_sessions.clear()
     mcp_module._sessions.clear()
+    mcp_module._api_key_cache.clear()
+    ws_cache.clear()
     mcp_module._dynamodb = None
     mcp_module._s3vectors_client = None
     mcp_module._bedrock_client = None

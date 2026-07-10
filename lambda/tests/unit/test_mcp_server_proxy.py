@@ -37,13 +37,18 @@ mcp_module = _load_mcp_module()
 @pytest.fixture(autouse=True)
 def clear_caches():
     """Clear in-memory caches between tests."""
+    from shared import ws_cache
     mcp_module._mcp_server_cache.clear()
     mcp_module._mcp_sessions.clear()
     mcp_module._sessions.clear()
+    mcp_module._api_key_cache.clear()
+    ws_cache.clear()
     yield
     mcp_module._mcp_server_cache.clear()
     mcp_module._mcp_sessions.clear()
     mcp_module._sessions.clear()
+    mcp_module._api_key_cache.clear()
+    ws_cache.clear()
 
 
 @pytest.fixture
