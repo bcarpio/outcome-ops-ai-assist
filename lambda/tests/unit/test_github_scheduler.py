@@ -543,6 +543,49 @@ class TestLambdaHandler:
         lambda_handler({}, None)
         mock_queue.assert_called_once_with("ws_abc", "org/my-repo", "inst_xyz")
 
+    @patch.dict(os.environ, {"GITHUB_SCHEDULER_PARALLEL_WORKERS": "1"})
+    @patch.object(handler_module, 'queue_sync_job')
+    @patch.object(handler_module, 'scan_github_repos_for_sync')
+    def test_serial_fallback_when_workers_is_1(self, mock_scan, mock_queue):
+        """fable-scale chunk 08: setting workers=1 forces the serial path
+        (rollback lever). Verifies the fallback is wired."""
+        mock_scan.return_value = [
+            {"workspace_id": f"ws_{i}", "repo_name": f"o/r{i}",
+             "installation_id": f"inst_{i}", "last_sync_at": None,
+             "last_sync_status": None}
+            for i in range(5)
+        ]
+        mock_queue.return_value = True
+
+        result = lambda_handler({}, None)
+        assert result["statusCode"] == 200
+        assert mock_queue.call_count == 5
+
+    @patch.dict(os.environ, {"GITHUB_SCHEDULER_PARALLEL_WORKERS": "8"})
+    @patch.object(handler_module, 'queue_sync_job')
+    @patch.object(handler_module, 'scan_github_repos_for_sync')
+    def test_parallel_path_returns_correct_counts(self, mock_scan, mock_queue):
+        """fable-scale chunk 08: parallel fan-out returns the same counts
+        as serial even with 50 repos. Verifies the ThreadPoolExecutor path
+        aggregates queued/failed correctly."""
+        mock_scan.return_value = [
+            {"workspace_id": f"ws_{i}", "repo_name": f"o/r{i}",
+             "installation_id": f"inst_{i}", "last_sync_at": None,
+             "last_sync_status": None}
+            for i in range(50)
+        ]
+        # Simulate 3 failures interleaved.
+        mock_queue.side_effect = [
+            False if i in (7, 23, 41) else True for i in range(50)
+        ]
+
+        result = lambda_handler({}, None)
+        assert result["statusCode"] == 200
+        body = json.loads(result["body"])
+        assert body["repos_scanned"] == 50
+        assert body["repos_queued"] == 47
+        assert body["repos_failed"] == 3
+
     @patch.object(handler_module, 'scan_github_repos_for_sync')
     def test_handler_no_repos_found(self, mock_scan):
         """Test handler with no repos to sync."""

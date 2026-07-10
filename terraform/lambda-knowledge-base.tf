@@ -62,7 +62,12 @@ module "process_batch_summary_lambda" {
     # only reads REPLICATION_EVENT_BUS_NAME; EVENT_BUS_NAME had no
     # consumer and its value diverged primary vs secondary (automation
     # bus here, replication bus there) -- silent semantic mismatch.
-    ENABLE_BEDROCK_COOLDOWN            = tostring(var.enable_bedrock_cooldown)
+    ENABLE_BEDROCK_COOLDOWN = tostring(var.enable_bedrock_cooldown)
+    # fable-scale chunk 08: cooldown duration + merge-fan-in budget are now
+    # env-driven so operators can tune without redeploy.
+    BATCH_SUMMARY_MSG_COOLDOWN_MS      = tostring(var.batch_summary_msg_cooldown_ms)
+    BATCH_SUMMARY_MERGE_ATTEMPTS       = tostring(var.batch_summary_merge_attempts)
+    BATCH_SUMMARY_MERGE_DELAY_SECONDS  = tostring(var.batch_summary_merge_delay_s)
     AUDIT_TABLE                        = module.audit_logs_table.dynamodb_table_id
     WORKSPACES_TABLE                   = module.workspaces_table[0].dynamodb_table_id
     BEDROCK_ADVANCED_MODEL_ID          = var.bedrock_advanced_model_id
@@ -310,8 +315,9 @@ resource "aws_lambda_event_source_mapping" "code_maps_queue_to_lambda" {
 
   # Allow higher concurrency for faster processing
   # Each code unit batch uses unique MessageGroupId, so they can process in parallel
+  # fable-scale chunk 08: was hardcoded 20; tfvar-driven.
   scaling_config {
-    maximum_concurrency = 20 # Process up to 20 code unit batches in parallel
+    maximum_concurrency = var.batch_summary_max_conc
   }
 }
 
@@ -619,8 +625,9 @@ resource "aws_lambda_event_source_mapping" "repo_summaries_queue_to_lambda" {
 
   # Allow higher concurrency for faster processing
   # Each repo has unique MessageGroupId, so they can process in parallel
+  # fable-scale chunk 08: was hardcoded 20; tfvar-driven.
   scaling_config {
-    maximum_concurrency = 20 # Process up to 20 repos in parallel
+    maximum_concurrency = var.repo_summary_max_conc
   }
 }
 

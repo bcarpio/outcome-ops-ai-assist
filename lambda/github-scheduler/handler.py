@@ -160,21 +160,48 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             }),
         }
 
-    # Queue sync jobs
+    # Queue sync jobs.
+    #
+    # fable-scale chunk 08: parallel fan-out via ThreadPoolExecutor. The
+    # prior serial loop truncated at enterprise repo counts (each
+    # sqs.send_message is ~10ms + credential-provider warmup, so ~3000
+    # repos hit the old 60s Lambda timeout). Workers default to 32
+    # (GITHUB_SCHEDULER_PARALLEL_WORKERS env). Rollback: set env=1 to
+    # force serial.
+    workers = max(1, int(os.environ.get("GITHUB_SCHEDULER_PARALLEL_WORKERS", "32")))
     queued = 0
     failed = 0
 
-    for repo in repos:
-        if queue_sync_job(
-            repo["workspace_id"],
-            repo["repo_name"],
-            repo["installation_id"],
-        ):
-            queued += 1
-        else:
-            failed += 1
+    if workers == 1:
+        # Backward-compat serial path (rollback via env).
+        for repo in repos:
+            if queue_sync_job(
+                repo["workspace_id"],
+                repo["repo_name"],
+                repo["installation_id"],
+            ):
+                queued += 1
+            else:
+                failed += 1
+    else:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            results = executor.map(
+                lambda r: queue_sync_job(
+                    r["workspace_id"], r["repo_name"], r["installation_id"],
+                ),
+                repos,
+            )
+            for ok in results:
+                if ok:
+                    queued += 1
+                else:
+                    failed += 1
 
-    logger.info(f"Scheduler complete: {queued} queued, {failed} failed")
+    logger.info(
+        f"Scheduler complete: {queued} queued, {failed} failed "
+        f"(workers={workers}, repos={len(repos)})"
+    )
 
     return {
         "statusCode": 200,
