@@ -32,6 +32,9 @@ from botocore.exceptions import ClientError
 
 from shared import dual_write
 
+# fable-scale chunk 04 — GSI2 partition sharding.
+from shared import audit_shard as _audit_shard
+
 logger = logging.getLogger(__name__)
 
 
@@ -357,11 +360,12 @@ def log_admin_action(
             "SK": sort_key,
             "GSI1PK": user_key,
             "GSI1SK": sort_key,
-            # GSI2: category-partitioned index that lets the audit dashboard
-            # answer "all admin actions, newest first, across workspaces"
-            # via a single Query (vs. Scan + FilterExpression). See
-            # plan/01-dynamodb-schema.md and terraform/dynamodb-audit.tf.
-            "GSI2PK": f"CAT#{category}",
+            # GSI2: category-partitioned index. fable-scale chunk 04 shards
+            # this key by a hash of request_id so a hot category (e.g.
+            # CAT#admin during org-scale onboarding) doesn't hammer a single
+            # DDB partition. Reader must fan out across shards + the legacy
+            # unsharded key. See shared/audit_shard.py.
+            "GSI2PK": _audit_shard.gsi2pk_for_category(category, request_id),
             "GSI2SK": sort_key,
             "category": category,
             "action": action,

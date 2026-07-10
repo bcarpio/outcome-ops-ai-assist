@@ -173,7 +173,8 @@ class TestLogRoutingDecisionHappyPath:
         # Admin-shape keys land via log_admin_action delegation.
         assert item["PK"] == "WS#ws_engineering"
         assert item["GSI1PK"] == "USER#brian@example.com"
-        assert item["GSI2PK"] == "CAT#admin"
+        # fable-scale chunk 04: sharded shape CAT#admin#NN.
+        assert item["GSI2PK"].startswith("CAT#admin")
         assert item["category"] == CATEGORY_ADMIN
         assert item["action"] == ACTION_CHAT_ROUTING_DECISION
         assert item["workspace_id"] == "ws_engineering"

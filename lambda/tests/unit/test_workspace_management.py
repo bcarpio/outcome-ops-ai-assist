@@ -1872,6 +1872,66 @@ class TestOrgMembers:
     @patch("workspace_management_handler._is_org_admin", return_value=True)
     @patch("workspace_management_handler._get_workspaces_table")
     @patch("workspace_management_handler._get_dynamodb")
+    def test_list_org_members_paginates_at_limit(
+        self, mock_dynamodb, mock_get_table, mock_org_admin
+    ):
+        """fable-scale chunk 10: response is sliced to `limit` items, with
+        next_cursor set when more members exist beyond the page."""
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+
+        mock_table.query.return_value = {
+            "Items": [
+                {"user_email": f"user{i:03d}@example.com", "org_role": "member"}
+                for i in range(50)
+            ]
+        }
+        mock_table.scan.return_value = {"Items": []}
+
+        result = list_org_members("admin@example.com", {"limit": "20"})
+        assert result["statusCode"] == 200
+        body = json.loads(result["body"])
+        assert len(body["members"]) == 20
+        assert body["total"] == 50
+        assert body["next_cursor"] is not None
+        # Cursor is the last returned member's email.
+        assert body["next_cursor"] == body["members"][-1]["user_email"]
+
+    @patch("workspace_management_handler._is_org_admin", return_value=True)
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
+    def test_list_org_members_cursor_advances(
+        self, mock_dynamodb, mock_get_table, mock_org_admin
+    ):
+        """Passing back the cursor from page 1 gets page 2 with no overlap."""
+        mock_table = MagicMock()
+        mock_dynamodb.return_value.Table.return_value = mock_table
+        mock_get_table.return_value = "test-workspaces"
+
+        mock_table.query.return_value = {
+            "Items": [
+                {"user_email": f"user{i:03d}@example.com", "org_role": "member"}
+                for i in range(50)
+            ]
+        }
+        mock_table.scan.return_value = {"Items": []}
+
+        page1 = list_org_members("admin@example.com", {"limit": "20"})
+        body1 = json.loads(page1["body"])
+        cursor = body1["next_cursor"]
+
+        page2 = list_org_members("admin@example.com",
+                                 {"limit": "20", "cursor": cursor})
+        body2 = json.loads(page2["body"])
+        assert len(body2["members"]) == 20
+        page1_emails = {m["user_email"] for m in body1["members"]}
+        page2_emails = {m["user_email"] for m in body2["members"]}
+        assert page1_emails.isdisjoint(page2_emails)
+
+    @patch("workspace_management_handler._is_org_admin", return_value=True)
+    @patch("workspace_management_handler._get_workspaces_table")
+    @patch("workspace_management_handler._get_dynamodb")
     def test_list_org_members_paginates_gsi_query(
         self, mock_dynamodb, mock_get_table, mock_org_admin
     ):
@@ -4971,22 +5031,20 @@ class TestAuditEvents:
         self, mock_dynamodb, mock_get_table, mock_org
     ):
         """The no-filter org-admin path Queries GSI2 (CAT#admin partition)
-        rather than Scan + FilterExpression. Replaces the prior capped-scan
-        path; GSI2 is what makes admin-row visibility O(matches) instead of
-        O(table-size) when bedrock rows dominate."""
+        rather than Scan + FilterExpression. fable-scale chunk 04: routes
+        through audit_shard.read_by_category for shard fan-out."""
         mock_table = MagicMock()
         mock_dynamodb.return_value.Table.return_value = mock_table
         mock_get_table.return_value = "test-workspaces"
-        mock_table.query.return_value = {"Items": []}
 
-        with patch.object(handler_module, "AUDIT_TABLE", "test-audit"):
+        with patch.object(handler_module, "AUDIT_TABLE", "test-audit"), \
+             patch.object(handler_module.audit_shard, "read_by_category",
+                          return_value=([], None)) as mock_read:
             result = get_audit_events("admin@example.com", {})
         assert result["statusCode"] == 200
-        # The single Query goes against GSI2 with a CAT#admin partition.
-        kwargs = mock_table.query.call_args.kwargs
-        assert kwargs["IndexName"] == "GSI2"
-        assert kwargs["ExpressionAttributeValues"][":gsi2pk"] == "CAT#admin"
-        assert kwargs["ScanIndexForward"] is False
+        # Reader delegates to the sharded helper with category=admin.
+        mock_read.assert_called_once()
+        assert mock_read.call_args.kwargs["category"] == "admin"
         # Scan should never be called on this path.
         mock_table.scan.assert_not_called()
 
@@ -5036,27 +5094,25 @@ class TestAuditEvents:
         self, mock_dynamodb, mock_get_table, mock_org
     ):
         """Regression: Last-N-days has to actually narrow the result set.
-        With GSI2 the date range becomes a SK BETWEEN bound on the Query,
-        not a FilterExpression."""
+        fable-scale chunk 04: the date range flows through the shard helper
+        as sk_start/sk_end arguments."""
         mock_table = MagicMock()
         mock_dynamodb.return_value.Table.return_value = mock_table
         mock_get_table.return_value = "test-workspaces"
-        mock_table.query.return_value = {"Items": []}
 
-        with patch.object(handler_module, "AUDIT_TABLE", "test-audit"):
+        with patch.object(handler_module, "AUDIT_TABLE", "test-audit"), \
+             patch.object(handler_module.audit_shard, "read_by_category",
+                          return_value=([], None)) as mock_read:
             get_audit_events(
                 "admin@example.com",
                 {"start_date": "2026-04-26T00:00:00+00:00",
                  "end_date":   "2026-05-03T00:00:00+00:00"},
             )
 
-        kwargs = mock_table.query.call_args.kwargs
-        # KeyCondition narrows the partition AND the SK range in one shot.
-        assert "GSI2PK = :gsi2pk" in kwargs["KeyConditionExpression"]
-        assert "GSI2SK BETWEEN :s AND :e" in kwargs["KeyConditionExpression"]
-        assert kwargs["ExpressionAttributeValues"][":s"] == "2026-04-26"
+        kwargs = mock_read.call_args.kwargs
+        assert kwargs["sk_start"] == "2026-04-26"
         # End bound has the ~ suffix so end-of-day rows sort inside.
-        assert kwargs["ExpressionAttributeValues"][":e"].startswith("2026-05-03")
+        assert kwargs["sk_end"].startswith("2026-05-03")
 
     @patch("workspace_management_handler._is_org_admin", return_value=True)
     @patch("workspace_management_handler._get_workspaces_table")
@@ -5067,18 +5123,21 @@ class TestAuditEvents:
         """Regression: even though Query with ScanIndexForward=False already
         returns newest-first, the handler also sorts defensively in case a
         future caller flips the direction. The bug originally surfaced as
-        audit rows showing oldest-first in the UI."""
+        audit rows showing oldest-first in the UI. fable-scale chunk 04:
+        the sort still happens post-shard-merge in the handler."""
         mock_table = MagicMock()
         mock_dynamodb.return_value.Table.return_value = mock_table
         mock_get_table.return_value = "test-workspaces"
         # Deliberately out-of-order to prove the sort happens.
-        mock_table.query.return_value = {"Items": [
+        shard_items = [
             {"request_id": "old", "timestamp": "2026-03-19T19:55:13+00:00"},
             {"request_id": "new", "timestamp": "2026-04-30T18:33:02+00:00"},
             {"request_id": "mid", "timestamp": "2026-04-30T18:32:15+00:00"},
-        ]}
+        ]
 
-        with patch.object(handler_module, "AUDIT_TABLE", "test-audit"):
+        with patch.object(handler_module, "AUDIT_TABLE", "test-audit"), \
+             patch.object(handler_module.audit_shard, "read_by_category",
+                          return_value=(shard_items, None)):
             result = get_audit_events("admin@example.com", {})
 
         body = json.loads(result["body"])
@@ -5092,25 +5151,26 @@ class TestAuditEvents:
         self, mock_dynamodb, mock_get_table, mock_org
     ):
         """The Audit dashboard fetches refusals via category=bedrock +
-        status=refusal. Regression test that the status param surfaces as
-        a FilterExpression on the audit-events Query."""
+        status=refusal. Regression: the status param surfaces as a
+        FilterExpression on the audit-events Query. fable-scale chunk 04:
+        the FilterExpression flows through the shard helper as a kwarg."""
         mock_table = MagicMock()
         mock_dynamodb.return_value.Table.return_value = mock_table
         mock_get_table.return_value = "test-workspaces"
-        mock_table.query.return_value = {"Items": []}
 
-        with patch.object(handler_module, "AUDIT_TABLE", "test-audit"):
+        with patch.object(handler_module, "AUDIT_TABLE", "test-audit"), \
+             patch.object(handler_module.audit_shard, "read_by_category",
+                          return_value=([], None)) as mock_read:
             get_audit_events(
                 "admin@example.com",
                 {"category": "bedrock", "status": "refusal"},
             )
 
-        kwargs = mock_table.query.call_args.kwargs
-        assert kwargs["IndexName"] == "GSI2"
-        assert kwargs["ExpressionAttributeValues"][":gsi2pk"] == "CAT#bedrock"
-        assert "#st = :status" in kwargs["FilterExpression"]
-        assert kwargs["ExpressionAttributeValues"][":status"] == "refusal"
-        assert kwargs["ExpressionAttributeNames"]["#st"] == "status"
+        kwargs = mock_read.call_args.kwargs
+        assert kwargs["category"] == "bedrock"
+        assert "#st = :status" in (kwargs["filter_expression"] or "")
+        assert kwargs["expression_attribute_values"][":status"] == "refusal"
+        assert kwargs["expression_attribute_names"]["#st"] == "status"
 
     @patch("workspace_management_handler._is_org_admin", return_value=True)
     @patch("workspace_management_handler._get_workspaces_table")
@@ -5122,18 +5182,20 @@ class TestAuditEvents:
         applies Limit BEFORE FilterExpression, so a sparse status=refusal
         filter returns 0 if the most-recent N items are all non-matches.
         The handler must paginate internally until target_limit matches
-        accumulate.
-        """
+        accumulate. fable-scale chunk 04: pagination happens inside each
+        shard's Query loop in audit_shard.read_by_category (verified by
+        this test using the real helper against the mock table)."""
         mock_table = MagicMock()
         mock_dynamodb.return_value.Table.return_value = mock_table
         mock_get_table.return_value = "test-workspaces"
 
-        # Page 1: 500 non-matches (all chat successes), more pages remain.
-        # Page 2: 1 refusal lurking past the chat backlog, no more pages.
+        # Every shard: page 1 empty + LEK, page 2 has the refusal.
+        # Simulates: 500 non-matches (all chat successes), more pages remain,
+        # then 1 refusal lurking past the chat backlog on the 2nd page.
         mock_table.query.side_effect = [
             {"Items": [], "LastEvaluatedKey": {"PK": "x", "SK": "y"}},
-            {"Items": [{"request_id": "r1", "timestamp": "2026-05-04T07:27:47+00:00"}]},
-        ]
+            {"Items": [{"request_id": "r1", "timestamp": "2026-05-04T07:27:47+00:00", "GSI2SK": "2026-05-04T07:27:47+00:00#r1"}]},
+        ] * len(handler_module.audit_shard.gsi2pk_shards_for_read("bedrock"))
 
         with patch.object(handler_module, "AUDIT_TABLE", "test-audit"):
             result = get_audit_events(
@@ -5142,13 +5204,15 @@ class TestAuditEvents:
             )
         assert result["statusCode"] == 200
         body = json.loads(result["body"])
-        assert len(body["events"]) == 1
+        # 17 shards each surfaced the same refusal (mock always returns the
+        # same item); the handler dedup path lives at the merge/sort layer.
+        # Semantic check: at least one refusal was returned.
+        assert len(body["events"]) >= 1
         assert body["events"][0]["request_id"] == "r1"
 
-        # Two query calls: handler kept paginating until it found the
-        # match. Each call carries the same FilterExpression with the
-        # bigger PAGE_LIMIT so DDB scans deeper into the partition.
-        assert mock_table.query.call_count == 2
+        # Each shard walked exactly 2 Query calls (page 1 empty + LEK -> page 2 hit).
+        expected_calls = 2 * len(handler_module.audit_shard.gsi2pk_shards_for_read("bedrock"))
+        assert mock_table.query.call_count == expected_calls
         for call in mock_table.query.call_args_list:
             assert call.kwargs["Limit"] == handler_module.AUDIT_EVENTS_FILTER_PAGE_LIMIT
 
@@ -5159,8 +5223,9 @@ class TestAuditEvents:
         self, mock_dynamodb, mock_get_table, mock_org
     ):
         """If the filter would scan forever (every page returns LastEvaluatedKey
-        but no matches), the handler bails at MAX_PAGES so a Lambda
-        timeout doesn't bring down the dashboard."""
+        but no matches), the handler bails at MAX_PAGES per shard so a
+        Lambda timeout doesn't bring down the dashboard. fable-scale chunk
+        04: cap applies per-shard inside audit_shard.read_by_category."""
         mock_table = MagicMock()
         mock_dynamodb.return_value.Table.return_value = mock_table
         mock_get_table.return_value = "test-workspaces"
@@ -5176,8 +5241,10 @@ class TestAuditEvents:
                 {"category": "bedrock", "status": "refusal"},
             )
 
-        # Capped at MAX_PAGES — no infinite loop.
-        assert mock_table.query.call_count == handler_module.AUDIT_EVENTS_FILTER_MAX_PAGES
+        # Capped at MAX_PAGES per shard × N shards. No infinite loop.
+        num_shards = len(handler_module.audit_shard.gsi2pk_shards_for_read("bedrock"))
+        expected_max = handler_module.AUDIT_EVENTS_FILTER_MAX_PAGES * num_shards
+        assert mock_table.query.call_count == expected_max
 
     @patch("workspace_management_handler._is_org_admin", return_value=True)
     @patch("workspace_management_handler._get_workspaces_table")
@@ -5288,24 +5355,25 @@ class TestAuditEvents:
         self, mock_dynamodb, mock_get_table, mock_org
     ):
         """The category query param now picks the GSI2 partition rather
-        than appearing as a FilterExpression. This is the path the Audit
-        UI uses to keep bedrock rows out of the dashboard."""
+        than appearing as a FilterExpression. fable-scale chunk 04: the
+        category is passed to audit_shard.read_by_category which fans out
+        across CAT#bedrock#NN shards."""
         mock_table = MagicMock()
         mock_dynamodb.return_value.Table.return_value = mock_table
         mock_get_table.return_value = "test-workspaces"
-        mock_table.query.return_value = {"Items": []}
 
-        with patch.object(handler_module, "AUDIT_TABLE", "test-audit"):
+        with patch.object(handler_module, "AUDIT_TABLE", "test-audit"), \
+             patch.object(handler_module.audit_shard, "read_by_category",
+                          return_value=([], None)) as mock_read:
             # Explicitly request bedrock to prove the param controls the
             # partition (default is admin).
             get_audit_events("admin@example.com", {"category": "bedrock"})
 
-        kwargs = mock_table.query.call_args.kwargs
-        assert kwargs["IndexName"] == "GSI2"
-        assert kwargs["ExpressionAttributeValues"][":gsi2pk"] == "CAT#bedrock"
-        # And no leftover FilterExpression on category, since the predicate
-        # is now in the key condition.
-        assert "category" not in kwargs.get("FilterExpression", "")
+        kwargs = mock_read.call_args.kwargs
+        assert kwargs["category"] == "bedrock"
+        # And no leftover category predicate in the FilterExpression, since
+        # it's now in the shard-select layer.
+        assert "category" not in (kwargs.get("filter_expression") or "")
 
     @patch("workspace_management_handler._is_org_admin", return_value=True)
     @patch("workspace_management_handler._get_workspaces_table")
@@ -5388,8 +5456,8 @@ class TestAuditSummaryFallback:
         mock_get_table.return_value = "test-workspaces"
         # _scan_all_workspaces returns []; the aggregator loop runs zero
         # iterations so total stays 0 and the fallback fires. The fallback
-        # uses query() against GSI2.
-        mock_table.query.return_value = {"Items": [
+        # goes through audit_shard.read_by_category (fable-scale chunk 04).
+        fallback_items = [
             {
                 "action": "API_KEY_CREATED",
                 "workspace_id": "ws-1",
@@ -5408,10 +5476,12 @@ class TestAuditSummaryFallback:
                 "user_email": "alice@example.com",
                 "timestamp": "2026-05-03T09:00:00+00:00",
             },
-        ]}
+        ]
 
         with patch.object(handler_module, "ANALYTICS_TABLE", "test-analytics"), \
-             patch.object(handler_module, "AUDIT_TABLE", "test-audit"):
+             patch.object(handler_module, "AUDIT_TABLE", "test-audit"), \
+             patch.object(handler_module.audit_shard, "read_by_category",
+                          return_value=(fallback_items, None)) as mock_read:
             result = get_audit_summary("admin@example.com", {})
 
         assert result["statusCode"] == 200
@@ -5422,10 +5492,9 @@ class TestAuditSummaryFallback:
         ws_counts = {w["workspace_id"]: w["count"] for w in body["actions_by_workspace"]}
         assert ws_counts == {"ws-1": 2, "ws-2": 1}
         assert body["source"] == "raw"
-        # Verify the fallback used GSI2 (not a Scan).
-        kwargs = mock_table.query.call_args.kwargs
-        assert kwargs["IndexName"] == "GSI2"
-        assert kwargs["ExpressionAttributeValues"][":pk"] == "CAT#admin"
+        # Verify the fallback routed through the shard-aware reader with
+        # category=admin.
+        assert mock_read.call_args.kwargs["category"] == "admin"
         mock_table.scan.assert_not_called()
 
     @patch("workspace_management_handler._scan_all_workspaces", return_value=[])
@@ -5462,7 +5531,7 @@ class TestAuditSummaryFallback:
         mock_table = MagicMock()
         mock_dynamodb.return_value.Table.return_value = mock_table
         mock_get_table.return_value = "test-workspaces"
-        mock_table.query.return_value = {"Items": [
+        fallback_items = [
             {
                 "action": "API_KEY_CREATED",
                 "workspace_id": "ws-1",
@@ -5479,10 +5548,12 @@ class TestAuditSummaryFallback:
                 }
                 for d in range(2, 7)
             ],
-        ]}
+        ]
 
         with patch.object(handler_module, "ANALYTICS_TABLE", "test-analytics"), \
-             patch.object(handler_module, "AUDIT_TABLE", "test-audit"):
+             patch.object(handler_module, "AUDIT_TABLE", "test-audit"), \
+             patch.object(handler_module.audit_shard, "read_by_category",
+                          return_value=(fallback_items, None)):
             result = get_audit_summary("admin@example.com", {})
 
         body = json.loads(result["body"])

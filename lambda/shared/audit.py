@@ -29,6 +29,12 @@ from typing import List, Optional
 import boto3
 from botocore.exceptions import ClientError
 
+# fable-scale chunk 04 — GSI2 partition sharding to lift the ~1000 WCU
+# physical ceiling on the previously-single-partition CAT#bedrock key.
+# Absolute import (not `from . import`) because some test loaders load this
+# module by file path with no package parent.
+from shared import audit_shard as _audit_shard  # noqa: E402
+
 logger = logging.getLogger(__name__)
 
 # Lazy-initialized DynamoDB resource (one per container)
@@ -307,11 +313,13 @@ def log_audit_entry(
             "SK": sort_key,
             "GSI1PK": user_key,
             "GSI1SK": sort_key,
-            # GSI2: category-partitioned index. Bedrock rows go to CAT#bedrock
-            # so they stay out of the admin dashboard's GSI2 Query (which
-            # uses CAT#admin) and also keeps the schema uniform with chunk
-            # 02's audit_writer.
-            "GSI2PK": "CAT#bedrock",
+            # GSI2: category-partitioned index. fable-scale chunk 04 shards
+            # this key by a hash of request_id so Bedrock's high write rate
+            # doesn't hammer a single DDB partition (~1000 WCU physical
+            # ceiling on the unsharded shape). Legacy rows written before
+            # the cutover stay visible via reader fan-out over the legacy
+            # key. See shared/audit_shard.py.
+            "GSI2PK": _audit_shard.gsi2pk_for_category("bedrock", request_id),
             "GSI2SK": sort_key,
             "category": "bedrock",
             "request_id": request_id,

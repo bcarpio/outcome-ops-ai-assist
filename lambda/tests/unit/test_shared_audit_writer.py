@@ -186,7 +186,9 @@ class TestLogAdminAction:
         # GSI2: category-partitioned index for org-wide audit-dashboard
         # queries. Without this, /audit/events would have to Scan + Filter
         # past every bedrock row to find admin matches.
-        assert item["GSI2PK"] == "CAT#admin"
+        # fable-scale chunk 04: sharded shape CAT#admin#NN (writer routes
+        # through audit_shard.gsi2pk_for_category).
+        assert item["GSI2PK"].startswith("CAT#admin")
         assert item["GSI2SK"] == item["SK"]
         assert item["category"] == CATEGORY_ADMIN
         assert item["action"] == "API_KEY_CREATED"
@@ -276,7 +278,8 @@ class TestLogAdminAction:
         assert item["category"] == "auth"
         # GSI2 partition follows the category, so a future auth dashboard
         # can Query GSI2 with PK="CAT#auth" the same way the admin one does.
-        assert item["GSI2PK"] == "CAT#auth"
+        # fable-scale chunk 04: sharded shape CAT#auth#NN.
+        assert item["GSI2PK"].startswith("CAT#auth")
 
 
 # ============================================================================
@@ -409,7 +412,8 @@ class TestLogLicenseFailOpen:
 
         assert item["action"] == "LICENSE_FAIL_OPEN"
         assert item["category"] == "auth"
-        assert item["GSI2PK"] == "CAT#auth"
+        # fable-scale chunk 04: sharded shape CAT#auth#NN.
+        assert item["GSI2PK"].startswith("CAT#auth")
         assert item["details"] == {"lambda": "chat", "reason": "import_error"}
         assert item["user_email"] == ""
         assert item["PK"] == "WS#SYSTEM"

@@ -643,9 +643,11 @@ class TestLogAuditEntry:
         assert item["GSI1PK"] == "USER#user@example.com"
         assert item["SK"].startswith("20")  # ISO timestamp prefix
         assert "audit_" in item["SK"]
-        # GSI2: bedrock rows go to CAT#bedrock so org-wide audit-dashboard
-        # queries (CAT#admin) don't have to filter past them.
-        assert item["GSI2PK"] == "CAT#bedrock"
+        # GSI2: bedrock rows go to CAT#bedrock#NN (sharded, fable-scale
+        # chunk 04) so org-wide audit-dashboard queries (CAT#admin) don't
+        # have to filter past them AND write throughput scales past the
+        # ~1000 WCU single-partition ceiling.
+        assert item["GSI2PK"].startswith("CAT#bedrock")
         assert item["GSI2SK"] == item["SK"]
         assert item["category"] == "bedrock"
 
