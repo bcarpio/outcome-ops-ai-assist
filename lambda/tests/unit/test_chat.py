@@ -888,6 +888,44 @@ class TestSaveMessage:
         item = mock_table.put_item.call_args[1]["Item"]
         assert "sources" not in item
 
+    def test_save_message_sets_expires_at(self, mock_table):
+        """fable-scale chunk 10: expires_at drives TTL eviction (default 90d)."""
+        import time as _time
+        before = int(_time.time())
+        save_message("conv_test123", "user", "Hello")
+        after = int(_time.time())
+        item = mock_table.put_item.call_args[1]["Item"]
+        assert "expires_at" in item
+        # Default TTL = 7776000s (90 days). Row's expires_at should sit
+        # within the 90-day window from now, allowing for small clock drift.
+        assert item["expires_at"] >= before + 7776000
+        assert item["expires_at"] <= after + 7776000 + 5
+
+    def test_save_message_caps_oversized_content(self, mock_table, monkeypatch):
+        """fable-scale chunk 10: >CHAT_MAX_MESSAGE_CONTENT_CHARS pastes get
+        head+tail truncated with a middle-of-message marker."""
+        # Use a realistic cap so the head+tail budget preserves both ends.
+        monkeypatch.setenv("CHAT_MAX_MESSAGE_CONTENT_CHARS", "1000")
+        oversized = "A" * 600 + "B" * 500 + "C" * 600  # 1700 chars > 1000
+        save_message("conv_test123", "user", oversized)
+        item = mock_table.put_item.call_args[1]["Item"]
+        stored = item["content"]
+        # Cap + marker overhead. Head budget = cap//2 = 500;
+        # tail budget = cap - head - 100 = 400. Total ≤ 900 + marker.
+        assert len(stored) <= 1000
+        # Head + tail preserved; middle truncated.
+        assert stored.startswith("A")
+        assert stored.endswith("C")
+        assert "truncated" in stored
+
+    def test_save_message_leaves_small_content_intact(self, mock_table, monkeypatch):
+        """Content under the cap round-trips unchanged."""
+        monkeypatch.setenv("CHAT_MAX_MESSAGE_CONTENT_CHARS", "100")
+        small = "Hello, world"
+        save_message("conv_test123", "user", small)
+        item = mock_table.put_item.call_args[1]["Item"]
+        assert item["content"] == small
+
 
 # ============================================================================
 # Vector Search
