@@ -175,6 +175,7 @@ github_usernames_to_tag = "yourusername"
 
 # ALB Access Mode (see docs/adr/ADR-042 for the design rationale):
 #   true  = Internal ALB. Customer / enterprise recommendation.
+#          fable-scale chunk 09 made this the default.
 #   false = Public ALB, guarded solely by Azure AD OIDC. Fine for dev
 #          / sandbox use where public reachability is convenient.
 # ui_alb_internal = false
