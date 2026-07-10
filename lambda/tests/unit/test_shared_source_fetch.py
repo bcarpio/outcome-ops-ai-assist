@@ -97,7 +97,7 @@ class TestAzureDevOpsBranch:
 
 class TestGitHubBranch:
 
-    @patch.object(source_fetch, "urlopen")
+    @patch("shared.github_backoff.github_urllib_request")
     def test_constructs_raw_url_and_carries_bearer(self, mock_urlopen):
         mock_resp = MagicMock()
         mock_resp.__enter__ = MagicMock(return_value=mock_resp)
@@ -164,7 +164,7 @@ class TestFetchFileAtShaDispatch:
 
 class TestFetchFileAtShaGitHub:
 
-    @patch.object(source_fetch, "urlopen")
+    @patch("shared.github_backoff.github_urllib_request")
     def test_uses_sha_in_place_of_branch_ref(self, mock_urlopen):
         mock_resp = MagicMock()
         mock_resp.__enter__ = MagicMock(return_value=mock_resp)
@@ -188,7 +188,7 @@ class TestFetchFileAtShaGitHub:
         )
         assert req.headers["Authorization"] == "Bearer ghp_xxx"
 
-    @patch.object(source_fetch, "urlopen")
+    @patch("shared.github_backoff.github_urllib_request")
     def test_strips_leading_slash_on_file_path(self, mock_urlopen):
         mock_resp = MagicMock()
         mock_resp.__enter__ = MagicMock(return_value=mock_resp)
@@ -206,7 +206,7 @@ class TestFetchFileAtShaGitHub:
         req = mock_urlopen.call_args.args[0]
         assert "raw.githubusercontent.com/o/r/abc/src/main.py" in req.full_url
 
-    @patch.object(source_fetch, "urlopen")
+    @patch("shared.github_backoff.github_urllib_request")
     def test_returns_raw_bytes_not_decoded_text(self, mock_urlopen):
         # LICENSE_COMPLIANCE / TEST_COVERAGE may inspect binary lock
         # files; we return bytes so the caller decides how to decode.
@@ -223,7 +223,7 @@ class TestFetchFileAtShaGitHub:
         assert result == b"\x00\x01\x02\xff"
         assert isinstance(result, bytes)
 
-    @patch.object(source_fetch, "urlopen")
+    @patch("shared.github_backoff.github_urllib_request")
     def test_network_error_wraps_as_source_fetch_error(self, mock_urlopen):
         mock_urlopen.side_effect = Exception("connection reset")
         with pytest.raises(source_fetch.SourceFetchError) as ctx:

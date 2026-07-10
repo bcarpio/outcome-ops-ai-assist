@@ -184,11 +184,17 @@ class TestFetchPullRequest:
 
 
 class TestFetchPrFiles:
-    """Test fetching PR file changes from GitHub API."""
+    """Test fetching PR file changes from GitHub API.
 
-    @patch('analyze_pr_handler.requests.get')
-    def test_fetch_pr_files_success(self, mock_get):
-        """Test successful file fetch."""
+    fable-scale chunk 06: fetch_pr_files now paginates via
+    shared.github_backoff.github_request; tests mock at that layer so
+    they exercise the pagination loop shape while staying isolated from
+    the underlying requests library.
+    """
+
+    @patch('shared.github_backoff.github_request')
+    def test_fetch_pr_files_success(self, mock_gh):
+        """Test successful file fetch (single page fits under per_page=100)."""
         # Arrange
         mock_response = Mock()
         mock_response.status_code = 200
@@ -208,7 +214,7 @@ class TestFetchPrFiles:
                 "changes": 50
             }
         ]
-        mock_get.return_value = mock_response
+        mock_gh.return_value = mock_response
 
         # Act
         files = fetch_pr_files("owner/repo", 123, "test-token")
@@ -219,21 +225,45 @@ class TestFetchPrFiles:
         assert files[0].status == "modified"
         assert files[1].filename == "terraform/main.tf"
         assert files[1].status == "added"
+        # Only one page fetch — batch was < per_page so loop broke.
+        assert mock_gh.call_count == 1
 
-    @patch('analyze_pr_handler.requests.get')
-    def test_fetch_pr_files_empty(self, mock_get):
+    @patch('shared.github_backoff.github_request')
+    def test_fetch_pr_files_empty(self, mock_gh):
         """Test file fetch with no changes."""
         # Arrange
         mock_response = Mock()
         mock_response.status_code = 200
         mock_response.json.return_value = []
-        mock_get.return_value = mock_response
+        mock_gh.return_value = mock_response
 
         # Act
         files = fetch_pr_files("owner/repo", 123, "test-token")
 
         # Assert
         assert len(files) == 0
+        assert mock_gh.call_count == 1
+
+    @patch('shared.github_backoff.github_request')
+    def test_fetch_pr_files_paginates_across_multiple_pages(self, mock_gh):
+        """fable-scale chunk 06: monorepo PRs with >100 files now paginate
+        instead of getting truncated at the default GitHub page size (30)."""
+        page1 = Mock(status_code=200)
+        page1.json.return_value = [
+            {"filename": f"f{i}.py", "status": "modified", "additions": 1,
+             "deletions": 0, "changes": 1}
+            for i in range(100)
+        ]
+        page2 = Mock(status_code=200)
+        page2.json.return_value = [
+            {"filename": "f100.py", "status": "modified", "additions": 1,
+             "deletions": 0, "changes": 1},
+        ]
+        mock_gh.side_effect = [page1, page2]
+
+        files = fetch_pr_files("owner/repo", 123, "test-token")
+        assert len(files) == 101
+        assert mock_gh.call_count == 2
 
 
 class TestPostPrComment:

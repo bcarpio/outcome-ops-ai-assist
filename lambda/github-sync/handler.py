@@ -165,8 +165,12 @@ def generate_jwt() -> str:
     return jwt.encode(payload, private_key, algorithm="RS256")
 
 
-def get_installation_token(installation_id: str) -> str:
-    """Exchange App JWT for an installation access token."""
+def _mint_installation_token(installation_id: str) -> str:
+    """Uncached mint: JWT + POST /app/installations/{id}/access_tokens.
+
+    fable-scale chunk 06: split off from the cached wrapper below so
+    `shared.github_auth.get_installation_token` can invoke it on cache miss.
+    """
     import urllib.request
 
     jwt_token = generate_jwt()
@@ -192,6 +196,21 @@ def get_installation_token(installation_id: str) -> str:
         raise
 
 
+def get_installation_token(installation_id: str) -> str:
+    """Return an installation access token, SSM-cached for ~55 minutes.
+
+    fable-scale chunk 06: prior behavior minted a fresh token on every
+    call (~200ms + 2 API-quota units). At enterprise sync rates the mint
+    itself is a meaningful share of the GitHub App's 5000 req/hr ceiling.
+    Cache hits skip the mint entirely.
+
+    Env `GITHUB_TOKEN_CACHE_DISABLED=true` reverts to always-mint for
+    rollback / test isolation.
+    """
+    from shared.github_auth import get_installation_token as cached_get
+    return cached_get(installation_id, _mint_installation_token)
+
+
 # ============================================================================
 # GitHub API
 # ============================================================================
@@ -202,8 +221,15 @@ def get_repo_tree(token: str, owner: str, repo: str, ref: str = "HEAD") -> List[
     Get the entire repository tree recursively.
 
     Returns list of file objects with path, type, size, sha.
+
+    fable-scale chunk 06: routes through shared.github_backoff so a
+    rate-limit 403 or 429 sleeps + retries instead of hard-failing the
+    sync. A single sync = many get_repo_tree calls at enterprise scale
+    (thousands of repos); previously a burst could exhaust the App's
+    5000 req/hr ceiling and silently leave code-map gaps.
     """
     import urllib.request
+    from shared import github_backoff
 
     url = f"https://api.github.com/repos/{owner}/{repo}/git/trees/{ref}?recursive=1"
 
@@ -217,7 +243,7 @@ def get_repo_tree(token: str, owner: str, repo: str, ref: str = "HEAD") -> List[
     )
 
     try:
-        with urllib.request.urlopen(req, timeout=60) as response:
+        with github_backoff.github_urllib_request(req, timeout=60) as response:
             data = json.loads(response.read().decode())
             tree = data.get("tree", [])
             return tree

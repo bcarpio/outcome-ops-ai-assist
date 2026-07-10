@@ -100,11 +100,25 @@ module "github_integration_lambda" {
         ]
       }
 
+      # fable-scale chunk 06: PutParameter on the installation-token cache
+      # (github-integration also mints tokens; its ~8 callers all share the
+      # same cache prefix as github-sync).
+      ssm_write_token_cache = {
+        effect = "Allow"
+        actions = [
+          "ssm:PutParameter",
+        ]
+        resources = [
+          "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/github/installation-token/*",
+        ]
+      }
+
       # KMS for SSM parameter decryption
       kms_ssm = {
         effect = "Allow"
         actions = [
-          "kms:Decrypt"
+          "kms:Decrypt",
+          "kms:Encrypt", # fable-scale chunk 06: needed for PutParameter SecureString on the token cache
         ]
         resources = [
           "arn:aws:kms:${var.aws_region}:${data.aws_caller_identity.current.account_id}:alias/aws/ssm"
@@ -331,11 +345,25 @@ module "github_sync_lambda" {
         ]
       }
 
+      # fable-scale chunk 06: PutParameter on the installation-token cache
+      # so github-sync + github-integration can write cached tokens back to
+      # SSM. Scoped narrowly to just the token cache prefix.
+      ssm_write_token_cache = {
+        effect = "Allow"
+        actions = [
+          "ssm:PutParameter",
+        ]
+        resources = [
+          "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/github/installation-token/*",
+        ]
+      }
+
       # KMS for SSM parameter decryption
       kms_ssm = {
         effect = "Allow"
         actions = [
-          "kms:Decrypt"
+          "kms:Decrypt",
+          "kms:Encrypt", # fable-scale chunk 06: needed for PutParameter SecureString on the token cache
         ]
         resources = [
           "arn:aws:kms:${var.aws_region}:${data.aws_caller_identity.current.account_id}:alias/aws/ssm"
@@ -415,8 +443,11 @@ resource "aws_lambda_event_source_mapping" "github_sync" {
   # the ADR-030/ADR-032 retry contract for sync workers.
   function_response_types = ["ReportBatchItemFailures"]
 
+  # fable-scale chunk 08: max_conc tfvar-driven. Was hardcoded 5 which
+  # bottlenecked the ingestion pipeline at enterprise repo counts. 25
+  # default = 5x the sandbox rate; enterprises can bump higher.
   scaling_config {
-    maximum_concurrency = 5 # Limit concurrent syncs
+    maximum_concurrency = var.github_sync_max_conc
   }
 }
 
@@ -435,8 +466,11 @@ module "github_scheduler_lambda" {
   description   = "Hourly scheduler for GitHub sync jobs"
   handler       = "handler.lambda_handler"
   runtime       = "python3.12"
-  timeout       = 60
-  memory_size   = 256
+  # fable-scale chunk 08: tfvar-driven. Was 60 which truncated the fan-out
+  # at enterprise repo counts (hundreds of repos × ~10ms SQS send = >60s
+  # under serial enqueue). Parallelization in handler makes 300 comfortable.
+  timeout     = var.github_scheduler_timeout_seconds
+  memory_size = 256
 
   # Source code (chunk 07 adds shared.active_region import; bundle shared/)
   source_path = [
@@ -468,6 +502,8 @@ module "github_scheduler_lambda" {
     APP_NAME          = var.app_name
     WORKSPACES_TABLE  = module.workspaces_table[0].dynamodb_table_id
     GITHUB_SYNC_QUEUE = aws_sqs_queue.github_sync[0].url
+    # fable-scale chunk 08: parallel enqueue worker count.
+    GITHUB_SCHEDULER_PARALLEL_WORKERS = tostring(var.github_scheduler_parallel_workers)
     },
     local.ha_scheduler_env,
   )

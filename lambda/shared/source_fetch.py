@@ -165,9 +165,13 @@ def _fetch_from_raw_github(
         "Authorization": f"Bearer {github_token}",
         "User-Agent": "outcome-ops-process-batch-summary",
     }
+    # fable-scale chunk 06: route through the shared backoff so a rate-limit
+    # 403 or 429 sleeps + retries instead of failing the sync and shipping
+    # the file to DLQ.
+    from shared import github_backoff
     request = Request(url, headers=headers)
     try:
-        with urlopen(request, timeout=30) as response:
+        with github_backoff.github_urllib_request(request, timeout=30) as response:
             return response.read().decode("utf-8")
     except Exception as e:
         raise SourceFetchError(
@@ -296,9 +300,14 @@ def _fetch_from_raw_github_at_sha(
         "Authorization": f"Bearer {github_token}",
         "User-Agent": "outcome-ops-process-pr-check",
     }
+    # fable-scale chunk 06: rate-limit-aware backoff for the PR-check
+    # SHA-specific read path too.
+    from shared import github_backoff
     request = Request(url, headers=headers)
     try:
-        with urlopen(request, timeout=_PR_FETCH_TIMEOUT_SECONDS) as response:
+        with github_backoff.github_urllib_request(
+            request, timeout=_PR_FETCH_TIMEOUT_SECONDS,
+        ) as response:
             return response.read()
     except Exception as e:
         raise SourceFetchError(

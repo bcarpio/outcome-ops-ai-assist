@@ -364,8 +364,18 @@ class TestGenerateJwt:
 # get_installation_token
 # ============================================================================
 
+@patch.dict(os.environ, {"GITHUB_TOKEN_CACHE_DISABLED": "true"})
 class TestGetInstallationToken:
-    """Test installation access token retrieval."""
+    """Test installation access token retrieval.
+
+    fable-scale chunk 06: get_installation_token now wraps the raw mint
+    (_mint_installation_token_raw) with an SSM cache. This test class
+    disables the cache via GITHUB_TOKEN_CACHE_DISABLED=true so the mint
+    path fires on every call, keeping the existing urlopen-mock
+    verification shape. The returned expires_at is now always ""
+    (best-effort; callers all discard it — the tuple return preserved
+    for API compat).
+    """
 
     @patch.object(github_app.urllib.request, 'urlopen')
     @patch.object(github_app, 'generate_jwt')
@@ -379,7 +389,8 @@ class TestGetInstallationToken:
         token, expires_at = get_installation_token("12345")
 
         assert token == "ghs_install_token_abc"
-        assert expires_at == "2025-01-01T00:00:00Z"
+        # expires_at is best-effort empty post chunk 06 (callers discard it).
+        assert expires_at == ""
 
     @patch.object(github_app.urllib.request, 'urlopen')
     @patch.object(github_app, 'generate_jwt')

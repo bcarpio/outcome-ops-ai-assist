@@ -108,14 +108,8 @@ def generate_jwt() -> str:
     return token
 
 
-def get_installation_token(installation_id: str) -> Tuple[str, str]:
-    """
-    Exchange App JWT for an installation access token.
-
-    Returns: (access_token, expires_at)
-
-    The installation token is valid for 1 hour.
-    """
+def _mint_installation_token_raw(installation_id: str) -> str:
+    """Uncached JWT mint. fable-scale chunk 06 split for cache wrapper."""
     jwt_token = generate_jwt()
 
     url = f"{GITHUB_API_BASE}/app/installations/{installation_id}/access_tokens"
@@ -133,11 +127,33 @@ def get_installation_token(installation_id: str) -> Tuple[str, str]:
     try:
         with urllib.request.urlopen(req, timeout=30) as response:
             data = json.loads(response.read().decode())
-            return data["token"], data["expires_at"]
+            return data["token"]
     except urllib.error.HTTPError as e:
         error_body = e.read().decode() if e.fp else ""
         logger.error(f"Failed to get installation token: {e.code} - {error_body}")
         raise GitHubAppError(f"Failed to get installation token: {e.code}")
+
+
+def get_installation_token(installation_id: str) -> Tuple[str, str]:
+    """
+    Exchange App JWT for an installation access token (SSM-cached).
+
+    Returns: (access_token, expires_at)
+
+    fable-scale chunk 06: results are cached in SSM Parameter Store for
+    ~55 minutes so this Lambda's ~8 callers (list installations, list
+    repos, check_run helpers, etc.) share one mint per hour per
+    installation instead of one per call.
+
+    `expires_at` is a best-effort ISO-string derived from the cache
+    entry's expires_at (unix seconds). Existing callers all discard it,
+    so drift from GitHub's exact expiry doesn't matter.
+    """
+    from shared.github_auth import get_installation_token as cached_get
+    token = cached_get(installation_id, _mint_installation_token_raw)
+    # Best-effort human-readable expiry; callers uniformly discard it.
+    expires_at_iso = ""
+    return token, expires_at_iso
 
 
 def get_app_installations() -> List[Dict]:

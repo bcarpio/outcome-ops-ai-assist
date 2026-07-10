@@ -16,6 +16,7 @@ This Lambda is triggered manually or via GitHub webhooks.
 """
 
 import base64
+import hashlib
 import json
 import logging
 import os
@@ -280,6 +281,13 @@ def fetch_pr_files(repository: str, pr_number: int, token: str) -> List[GitHubFi
     Raises:
         Exception: If API request fails
     """
+    # fable-scale chunk 06: paginate GitHub's /pulls/{n}/files. The prior
+    # single unpaginated GET returned only the first 30 files (GitHub's
+    # default page size); monorepo PRs above that count got silently
+    # partial analysis. Also route through shared.github_backoff so
+    # rate-limit 403s and 429s back off rather than hard-fail.
+    from shared import github_backoff
+
     url = f"https://api.github.com/repos/{repository}/pulls/{pr_number}/files"
 
     headers = {
@@ -289,11 +297,28 @@ def fetch_pr_files(repository: str, pr_number: int, token: str) -> List[GitHubFi
     }
 
     try:
-        response = requests.get(url, headers=headers, timeout=30)
-        response.raise_for_status()
-
-        files_data = response.json()
-        files = [GitHubFile(**file_data) for file_data in files_data]
+        files: List[GitHubFile] = []
+        page = 1
+        per_page = 100  # GitHub's max page size for this endpoint
+        # 3000-file safety cap prevents runaway on catastrophically-large PRs
+        # (GitHub itself starts truncating past 3000 anyway).
+        MAX_PAGES = 30
+        while page <= MAX_PAGES:
+            response = github_backoff.github_request(
+                "GET", url, headers=headers, timeout=30,
+                params={"per_page": per_page, "page": page},
+            )
+            response.raise_for_status()
+            batch = response.json() or []
+            files.extend(GitHubFile(**fd) for fd in batch)
+            if len(batch) < per_page:
+                break
+            page += 1
+        if page > MAX_PAGES:
+            logger.warning(
+                "PR #%s has >%d files; analysis truncated at page cap",
+                pr_number, MAX_PAGES * per_page,
+            )
 
         logger.info(f"Fetched {len(files)} changed files for PR #{pr_number}")
         return files
@@ -968,8 +993,15 @@ def queue_check_jobs(
 
         # Message group ensures ordered processing per PR
         message_group_id = f"pr-{repository.replace('/', '-')}-{pr_number}"
-        # Deduplication ID prevents duplicate processing
-        message_deduplication_id = f"{message_group_id}-{check_type}-{int(datetime.now(timezone.utc).timestamp() * 1000)}"
+        # fable-scale chunk 06: MessageDeduplicationId is a stable content
+        # hash — same (repo, pr, head_sha, check_type) tuple always maps to
+        # the same dedup ID, so GitHub Actions re-runs of the same commit
+        # naturally coalesce within the SQS 5-min dedup window. Prior
+        # timestamp-based ID produced a new dedup ID per re-run, so a user
+        # clicking "re-run failed checks" queued duplicate jobs.
+        head_sha = getattr(job, "head_sha", "") or getattr(job, "commit_sha", "")
+        dedup_input = f"{repository}|{pr_number}|{head_sha}|{check_type}"
+        message_deduplication_id = hashlib.sha256(dedup_input.encode("utf-8")).hexdigest()
 
         try:
             sqs_client.send_message(
