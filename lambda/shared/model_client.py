@@ -39,7 +39,7 @@ Public surface:
 
 import logging
 import os
-from typing import Iterator, Optional
+from typing import Callable, Iterator, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -321,13 +321,19 @@ def invoke(
         tools=tools,
     )
     name = _resolve_backend(resolved_id)
-    if name == "converse":
-        from . import _converse_backend
-        return _converse_backend.invoke(req)
-    if name == "responses":
-        from . import _responses_backend
-        return _responses_backend.invoke(req)
-    raise BackendConfigError(f"Backend {name!r} resolved but not wired.")
+    # fable-scale chunk 05: per-workload gate + app-side retry. Gate acquisition
+    # sheds load BEFORE hitting a saturated Bedrock quota; retries with jitter
+    # cover transient throttles that leak past the gate.
+    from . import workload_gate
+    gate_workload = workload or "chat"  # ungated callers default to the chat pool
+    with workload_gate.acquire(gate_workload):
+        if name == "converse":
+            from . import _converse_backend
+            return _converse_backend.invoke_with_retry(req)
+        if name == "responses":
+            from . import _responses_backend
+            return _responses_backend.invoke(req)
+        raise BackendConfigError(f"Backend {name!r} resolved but not wired.")
 
 
 def invoke_stream(
@@ -342,6 +348,7 @@ def invoke_stream(
     top_p: Optional[float] = None,
     stop_sequences: Optional[list[str]] = None,
     tools: Optional[list[ToolSpec]] = None,
+    on_retry: Optional[Callable[[int, int], None]] = None,
 ) -> Iterator[StreamEvent]:
     resolved_id = _resolve_model_id(model_id, workload, tier)
     req = Request(
@@ -355,12 +362,19 @@ def invoke_stream(
         tools=tools,
     )
     name = _resolve_backend(resolved_id)
-    if name == "converse":
-        from . import _converse_backend
-        yield from _converse_backend.invoke_stream(req)
-        return
-    if name == "responses":
-        from . import _responses_backend
-        yield from _responses_backend.invoke_stream(req)
-        return
-    raise BackendConfigError(f"Backend {name!r} resolved but not wired.")
+    # fable-scale chunk 05: gate held for the duration of the stream — this is
+    # the whole "Bedrock call" for a streaming synth. `on_retry(attempt,
+    # delay_ms)` propagates to _converse_backend so chat can surface a
+    # `busy_retrying` event through the SSE stream.
+    from . import workload_gate
+    gate_workload = workload or "chat"
+    with workload_gate.acquire(gate_workload):
+        if name == "converse":
+            from . import _converse_backend
+            yield from _converse_backend.invoke_stream(req, on_retry=on_retry)
+            return
+        if name == "responses":
+            from . import _responses_backend
+            yield from _responses_backend.invoke_stream(req)
+            return
+        raise BackendConfigError(f"Backend {name!r} resolved but not wired.")

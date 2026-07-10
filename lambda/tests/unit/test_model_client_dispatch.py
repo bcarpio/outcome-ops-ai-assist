@@ -192,7 +192,9 @@ def test_invoke_unknown_model_id_raises_unsupported_before_backend_call():
 def test_invoke_stream_routes_to_correct_backend_and_yields():
     from shared.model_client_types import Usage
 
-    def fake_stream(req):
+    def fake_stream(req, on_retry=None):
+        # fable-scale chunk 05: invoke_stream now accepts an on_retry
+        # callback for stream-init backoff notifications.
         assert req.model_id == "anthropic.claude-opus-4-7-20260514-v1:0"
         yield TextDelta(text="hi")
         yield Stop(stop_reason=StopReason.END_TURN)

@@ -12,8 +12,17 @@ module "chat_streaming_lambda" {
   description   = "Streaming chat interface for OutcomeOps AI Assist"
   handler       = "run.sh"
   runtime       = "python3.12"
-  timeout       = 900 # 15 minutes max for streaming responses
-  memory_size   = 1024
+  # fable-scale chunk 05: timeout is tfvars-tunable. Was 900 (streaming max);
+  # 300 covers tool-use worst case comfortably and unblocks Lambda
+  # concurrency slots sooner under sustained load.
+  timeout     = var.chat_timeout_seconds
+  memory_size = 1024
+
+  # fable-scale chunk 05: reserved_concurrent_executions guarantees the
+  # chat surface a slice of the account concurrency pool so batch jobs
+  # (PR checks, code-maps ingestion) can't starve interactive chat.
+  # Default -1 (== unreserved) preserves sandbox behavior.
+  reserved_concurrent_executions = var.chat_reserved_concurrency
 
   # Lambda Web Adapter layer for HTTP streaming + OutcomeOps license validator
   # (ADR-019: license layer is required on every customer-facing Lambda).
@@ -85,8 +94,12 @@ module "chat_streaming_lambda" {
       RERANK_MAX_FETCH                   = tostring(var.rerank_max_fetch)
       RERANK_MIN_SCORE                   = tostring(var.rerank_min_score)
       RAG_MAX_DOC_CHARS                  = tostring(var.rag_max_doc_chars)
-      WORKSPACES_TABLE                   = module.workspaces_table[0].dynamodb_table_id
-      OAUTH_KMS_KEY_ARN                  = aws_kms_key.oauth_tokens[0].arn
+      # fable-scale chunk 10: chat message hygiene knobs.
+      CHAT_MESSAGE_TTL_SECONDS       = tostring(var.chat_message_ttl_seconds)
+      CHAT_MAX_MESSAGE_CONTENT_CHARS = tostring(var.chat_max_message_content_chars)
+      BEDROCK_PROMPT_CACHE_ENABLED   = tostring(var.bedrock_prompt_cache_enabled)
+      WORKSPACES_TABLE               = module.workspaces_table[0].dynamodb_table_id
+      OAUTH_KMS_KEY_ARN              = aws_kms_key.oauth_tokens[0].arn
 
       # Symbol-graph router + context builder. IAM read access is
       # attached separately in iam_symbol_graph.tf; the env vars here

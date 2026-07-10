@@ -397,6 +397,14 @@ resource "aws_lambda_event_source_mapping" "pr_checks_queue_to_lambda" {
 
   # Function response types for partial batch failures
   function_response_types = ["ReportBatchItemFailures"]
+
+  # fable-scale chunk 05: cap PR-analyzer concurrency so a Monday-9am burst
+  # of 200 PRs doesn't starve the interactive chat surface of Bedrock quota.
+  # Absent this cap, process-pr-check spins up as many concurrent Lambdas as
+  # SQS delivers messages, each holding a Sonnet inference slot.
+  scaling_config {
+    maximum_concurrency = var.pr_check_max_concurrency
+  }
 }
 
 output "process_pr_check_lambda_arn" {

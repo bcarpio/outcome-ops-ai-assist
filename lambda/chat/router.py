@@ -316,9 +316,14 @@ def classify_intent(
     """Classify ``question`` and return the routing decision.
 
     Bedrock-failures degrade gracefully to ``RouterDecision(intent=
-    "unknown", symbol_candidate=None, ...)`` so the chat handler falls
-    back to fan-out retrieval — the routing-decision default for
-    ``unknown``.
+    "pattern", symbol_candidate=None, ...)`` — the narrowest safe
+    default (RAG-only, no symbol-graph fan-out). fable-scale chunk 05
+    flipped this from ``unknown`` (which triggered fan-out to every
+    retrieval surface) so a router throttle doesn't pile MORE Bedrock
+    calls onto an already-saturated quota. Trade-off: pattern-only
+    retrieval yields less specific answers to structural questions
+    under throttle, but that's preferable to compounding the throttle
+    with additional graph queries.
 
     Every successful call is logged via ``log_audit_entry()`` with
     ``lambda_name="chat:router"`` so router spend is attributable to
@@ -363,8 +368,12 @@ def classify_intent(
         )
     except ClientError as exc:
         duration_ms = int((time.time() - started) * 1000)
+        # fable-scale chunk 05: degrade to 'pattern' (narrow, RAG-only) so a
+        # router throttle doesn't fan out MORE Bedrock calls. Prior behavior
+        # ('unknown') triggered structural/graph retrieval on top of RAG,
+        # compounding quota pressure at exactly the wrong moment.
         logger.warning(
-            "[chat.router] Bedrock classify failed (%s); defaulting to 'unknown'",
+            "[chat.router] Bedrock classify failed (%s); defaulting to 'pattern' (narrow)",
             exc,
         )
         # Audit the failure so the cost-and-error dashboard still sees
@@ -387,7 +396,7 @@ def classify_intent(
         except Exception:  # pragma: no cover - audit is best-effort
             logger.exception("[chat.router] audit emission failed")
         return RouterDecision(
-            intent="unknown",
+            intent="pattern",
             symbol_candidate=None,
             model_id=model_id,
             duration_ms=duration_ms,

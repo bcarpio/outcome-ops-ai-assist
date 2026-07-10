@@ -45,8 +45,10 @@ module "chat_streaming_lambda_secondary" {
   description   = "Streaming chat interface (secondary region)"
   handler       = "run.sh"
   runtime       = "python3.12"
-  timeout       = 900
-  memory_size   = 1024
+  # fable-scale chunk 05 (HA parity).
+  timeout                        = var.chat_timeout_seconds
+  memory_size                    = 1024
+  reserved_concurrent_executions = var.chat_reserved_concurrency
 
   # LWA layer: AWS publishes the same layer in every region under account
   # 753240598075. ARN format swaps region; same layer version.

@@ -298,7 +298,10 @@ def test_classify_unrecognized_token_falls_through_to_unknown(stub_bedrock):
 # ===========================================================================
 
 
-def test_classify_bedrock_clienterror_returns_unknown(stub_bedrock):
+def test_classify_bedrock_clienterror_returns_pattern(stub_bedrock):
+    """fable-scale chunk 05: router degrades to 'pattern' (narrow, RAG-only)
+    on ClientError so a router throttle doesn't fan out MORE Bedrock calls.
+    Prior behavior was 'unknown' which triggered structural+graph fan-out."""
     from router import classify_intent  # type: ignore
 
     stub_bedrock.converse.side_effect = ClientError(
@@ -306,7 +309,7 @@ def test_classify_bedrock_clienterror_returns_unknown(stub_bedrock):
         "Converse",
     )
     decision = classify_intent("Any question")
-    assert decision.intent == "unknown"
+    assert decision.intent == "pattern"
     assert decision.symbol_candidate is None
 
 
