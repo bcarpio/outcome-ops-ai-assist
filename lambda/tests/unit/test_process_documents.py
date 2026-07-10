@@ -127,7 +127,14 @@ def reset_mocks():
     mock_s3vectors_client.delete_vectors.side_effect = None
     # Reset cached vector config
     handler_module._vector_config = None
+    # fable-scale chunk 07: store_vectors now routes writes through
+    # shared.dual_write.s3vectors_put_vectors (HA replication + chunking).
+    # Inject the same mock client into dual_write so put_vectors call_args
+    # inspections in these tests continue to work.
+    from shared import dual_write
+    dual_write._set_clients_for_tests(s3vectors=mock_s3vectors_client)
     yield
+    dual_write._reset_clients_for_tests()
 
 
 @pytest.fixture(autouse=True)

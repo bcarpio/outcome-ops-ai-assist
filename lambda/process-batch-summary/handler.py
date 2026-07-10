@@ -94,11 +94,14 @@ sqs_client = boto3.client("sqs")
 CODE_MAPS_QUEUE_URL = os.environ.get("CODE_MAPS_QUEUE_URL", "")
 
 # Chunk 05: how many merge-requeue-with-delay attempts before we give
-# up and mark the merge failed. 10 attempts x 60s delay = ~10 minutes
-# of grace for the last shard to land, which is generous even for
-# slow-tokenizing runs.
-_MAX_MERGE_ATTEMPTS = 10
-_MERGE_REQUEUE_DELAY_SECONDS = 60
+# up and mark the merge failed. Historical default was 10 x 60s = ~10 min
+# grace for the last shard to land. fable-scale chunk 08 makes both
+# tunable via env — enterprise repo counts want a longer runway (30 x 60s
+# = 30 min default) since some shards genuinely take longer than 10 min.
+_MAX_MERGE_ATTEMPTS = int(os.environ.get("BATCH_SUMMARY_MERGE_ATTEMPTS", "30"))
+_MERGE_REQUEUE_DELAY_SECONDS = int(
+    os.environ.get("BATCH_SUMMARY_MERGE_DELAY_SECONDS", "60")
+)
 
 
 def _get_workspaces_table():
@@ -1208,9 +1211,12 @@ def store_batch_summary(
             metadata["workspace_id"] = workspace_id
             metadata["source"] = provider
 
-        s3vectors_client.put_vectors(
-            vectorBucketName=VECTOR_BUCKET,
-            indexName=VECTOR_INDEX,
+        # fable-scale chunk 07: route through shared.dual_write so this
+        # write replicates to the passive region.
+        from shared import dual_write
+        dual_write.s3vectors_put_vectors(
+            bucket=VECTOR_BUCKET,
+            index=VECTOR_INDEX,
             vectors=[{
                 "key": vector_key,
                 "data": {"float32": embedding},
@@ -1670,10 +1676,14 @@ def process_batch_record(record: Dict[str, Any]) -> None:
     # never existed for that path.
     _mark_code_map_unit_done(batch, status="ok")
 
-    # Optional cooldown period to prevent Bedrock throttling on next message
-    # Useful for accounts with low Bedrock quotas; disable for enterprise accounts
-    if ENABLE_BEDROCK_COOLDOWN:
-        cooldown_seconds = 10
+    # Optional cooldown period to prevent Bedrock throttling on next message.
+    # fable-scale chunk 08: duration tfvar-driven (was hardcoded 10s). Default
+    # 0 disables the cooldown entirely — enterprise Bedrock quotas absorb the
+    # rate; low-quota accounts can dial it back up. Kept ENABLE_BEDROCK_COOLDOWN
+    # as the master switch for backward compat.
+    cooldown_ms = int(os.environ.get("BATCH_SUMMARY_MSG_COOLDOWN_MS", "0"))
+    if ENABLE_BEDROCK_COOLDOWN and cooldown_ms > 0:
+        cooldown_seconds = cooldown_ms / 1000.0
         logger.info(f"Waiting {cooldown_seconds}s cooldown before next message...")
         time.sleep(cooldown_seconds)
 

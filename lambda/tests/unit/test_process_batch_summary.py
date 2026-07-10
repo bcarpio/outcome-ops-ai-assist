@@ -148,7 +148,7 @@ class TestFetchFileContent:
     """
 
     @patch("process_batch_summary_handler.get_default_branch")
-    @patch("shared.source_fetch.urlopen")
+    @patch("shared.github_backoff.github_urllib_request")
     def test_fetch_file_content_success(self, mock_urlopen, mock_get_branch):
         mock_get_branch.return_value = "main"
         mock_response = MagicMock()
@@ -162,7 +162,7 @@ class TestFetchFileContent:
         mock_urlopen.assert_called_once()
 
     @patch("process_batch_summary_handler.get_default_branch")
-    @patch("shared.source_fetch.urlopen")
+    @patch("shared.github_backoff.github_urllib_request")
     def test_fetch_file_content_url_format(self, mock_urlopen, mock_get_branch):
         mock_get_branch.return_value = "main"
         mock_response = MagicMock()
@@ -366,39 +366,49 @@ class TestStoreBatchSummary:
 
     @patch("process_batch_summary_handler.VECTOR_BUCKET", "test-bucket")
     @patch("process_batch_summary_handler.VECTOR_INDEX", "test-index")
-    @patch("process_batch_summary_handler.s3vectors_client")
-    def test_store_batch_summary_success(self, mock_s3vectors):
-        """Test successful batch summary storage."""
+    def test_store_batch_summary_success(self):
+        """Test successful batch summary storage.
+
+        fable-scale chunk 07: store_batch_summary now routes through
+        shared.dual_write.s3vectors_put_vectors (chunked at 500 + HA
+        replication). Inject a mock client into dual_write so the same
+        put_vectors call_args inspection shape works.
+        """
         # Arrange
-        batch = {
-            "repo": "outcome-ops-ai-assist",
-            "repo_project": "bcarpio/outcome-ops-ai-assist",
-            "storage_key": "summary#handler#ingest-docs",
-            "batch_type": "handler-group",
-            "group_name": "ingest-docs",
-            "file_paths": ["lambda/ingest-docs/handler.py"]
-        }
-        summary = "This handler ingests documents..."
-        embedding = [0.1] * 1024
-
+        from shared import dual_write
+        mock_s3vectors = MagicMock()
         mock_s3vectors.put_vectors.return_value = {}
+        dual_write._set_clients_for_tests(s3vectors=mock_s3vectors)
+        try:
+            batch = {
+                "repo": "outcome-ops-ai-assist",
+                "repo_project": "bcarpio/outcome-ops-ai-assist",
+                "storage_key": "summary#handler#ingest-docs",
+                "batch_type": "handler-group",
+                "group_name": "ingest-docs",
+                "file_paths": ["lambda/ingest-docs/handler.py"]
+            }
+            summary = "This handler ingests documents..."
+            embedding = [0.1] * 1024
 
-        # Act
-        result = store_batch_summary(batch, summary, embedding)
+            # Act
+            result = store_batch_summary(batch, summary, embedding)
 
-        # Assert
-        assert result is True
-        mock_s3vectors.put_vectors.assert_called_once()
-        call_kwargs = mock_s3vectors.put_vectors.call_args[1]
-        assert call_kwargs["vectorBucketName"] == "test-bucket"
-        assert call_kwargs["indexName"] == "test-index"
-        # Verify vector data
-        vectors = call_kwargs["vectors"]
-        assert len(vectors) == 1
-        assert vectors[0]["key"] == "outcome-ops-ai-assist#handler-group-summary#ingest-docs"
-        assert vectors[0]["metadata"]["repo"] == "bcarpio/outcome-ops-ai-assist"
-        assert vectors[0]["metadata"]["batch_type"] == "handler-group"
-        assert vectors[0]["metadata"]["group_name"] == "ingest-docs"
+            # Assert
+            assert result is True
+            mock_s3vectors.put_vectors.assert_called_once()
+            call_kwargs = mock_s3vectors.put_vectors.call_args[1]
+            assert call_kwargs["vectorBucketName"] == "test-bucket"
+            assert call_kwargs["indexName"] == "test-index"
+            # Verify vector data
+            vectors = call_kwargs["vectors"]
+            assert len(vectors) == 1
+            assert vectors[0]["key"] == "outcome-ops-ai-assist#handler-group-summary#ingest-docs"
+            assert vectors[0]["metadata"]["repo"] == "bcarpio/outcome-ops-ai-assist"
+            assert vectors[0]["metadata"]["batch_type"] == "handler-group"
+            assert vectors[0]["metadata"]["group_name"] == "ingest-docs"
+        finally:
+            dual_write._reset_clients_for_tests()
 
     @patch("process_batch_summary_handler.VECTOR_BUCKET", "test-bucket")
     @patch("process_batch_summary_handler.VECTOR_INDEX", "test-index")

@@ -631,9 +631,12 @@ def store_code_map_embedding(
             metadata["workspace_id"] = workspace_id
             metadata["source"] = provider
 
-        s3vectors_client.put_vectors(
-            vectorBucketName=VECTOR_BUCKET,
-            indexName=VECTOR_INDEX,
+        # fable-scale chunk 07: route through shared.dual_write for HA
+        # replication.
+        from shared import dual_write
+        dual_write.s3vectors_put_vectors(
+            bucket=VECTOR_BUCKET,
+            index=VECTOR_INDEX,
             vectors=[{
                 "key": vector_key,
                 "data": {"float32": embedding},

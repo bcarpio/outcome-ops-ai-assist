@@ -223,12 +223,27 @@ class TestGenerateEmbedding:
 
 
 class TestStoreCodeMapEmbedding:
-    """Test code map embedding storage."""
+    """Test code map embedding storage.
 
-    @patch.object(rsh, 's3vectors_client')
+    fable-scale chunk 07: store_code_map_embedding now routes writes
+    through shared.dual_write.s3vectors_put_vectors for HA replication +
+    500-vector chunking. Tests inject the mock client into dual_write via
+    the same fixture pattern used by process_documents tests.
+    """
+
+    def setup_method(self):
+        from shared import dual_write
+        self._mock_s3v = MagicMock()
+        self._mock_s3v.put_vectors.return_value = {}
+        dual_write._set_clients_for_tests(s3vectors=self._mock_s3v)
+
+    def teardown_method(self):
+        from shared import dual_write
+        dual_write._reset_clients_for_tests()
+
     @patch.object(rsh, 'VECTOR_BUCKET', 'test-bucket')
     @patch.object(rsh, 'VECTOR_INDEX', 'test-index')
-    def test_stores_without_workspace(self, mock_s3v):
+    def test_stores_without_workspace(self):
         """Test storing embedding without workspace_id."""
         rsh.store_code_map_embedding(
             doc_id="repo/code-map",
@@ -239,15 +254,14 @@ class TestStoreCodeMapEmbedding:
             doc_type="code-map",
             path="code-map"
         )
-        mock_s3v.put_vectors.assert_called_once()
-        call_kwargs = mock_s3v.put_vectors.call_args.kwargs
+        self._mock_s3v.put_vectors.assert_called_once()
+        call_kwargs = self._mock_s3v.put_vectors.call_args.kwargs
         vector = call_kwargs["vectors"][0]
         assert "workspace_id" not in vector["metadata"]
 
-    @patch.object(rsh, 's3vectors_client')
     @patch.object(rsh, 'VECTOR_BUCKET', 'test-bucket')
     @patch.object(rsh, 'VECTOR_INDEX', 'test-index')
-    def test_stores_with_workspace(self, mock_s3v):
+    def test_stores_with_workspace(self):
         """Test storing embedding with workspace_id."""
         rsh.store_code_map_embedding(
             doc_id="repo/code-map",
@@ -259,18 +273,17 @@ class TestStoreCodeMapEmbedding:
             path="code-map",
             workspace_id="ws-123"
         )
-        call_kwargs = mock_s3v.put_vectors.call_args.kwargs
+        call_kwargs = self._mock_s3v.put_vectors.call_args.kwargs
         vector = call_kwargs["vectors"][0]
         assert vector["metadata"]["workspace_id"] == "ws-123"
         assert vector["metadata"]["source"] == "github"
         assert vector["key"].startswith("ws-123#github#")
 
-    @patch.object(rsh, 's3vectors_client')
     @patch.object(rsh, 'VECTOR_BUCKET', 'test-bucket')
     @patch.object(rsh, 'VECTOR_INDEX', 'test-index')
-    def test_raises_on_client_error(self, mock_s3v):
+    def test_raises_on_client_error(self):
         """Test ClientError is raised."""
-        mock_s3v.put_vectors.side_effect = _make_client_error(
+        self._mock_s3v.put_vectors.side_effect = _make_client_error(
             {"Error": {"Code": "InternalError", "Message": "error"}},
             "PutVectors"
         )

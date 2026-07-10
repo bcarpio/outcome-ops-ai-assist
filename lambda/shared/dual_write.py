@@ -388,21 +388,40 @@ def s3_put_object(
     )
 
 
+_S3VECTORS_PUT_CHUNK_SIZE = 500  # AWS S3 Vectors PutVectors hard limit
+
+
 def s3vectors_put_vectors(
     bucket: str, index: str, vectors: list, **kwargs
 ) -> None:
-    _s3vectors_client().put_vectors(
-        vectorBucketName=bucket,
-        indexName=index,
-        vectors=vectors,
-        **kwargs,
-    )
-    _emit(
-        "s3vectors_put_vectors",
-        bucket=bucket,
-        index=index,
-        args={"vectors": vectors, **kwargs},
-    )
+    """Write vectors to S3 Vectors + emit one replication event per chunk.
+
+    fable-scale chunk 07: chunks at 500 to respect the AWS PutVectors
+    per-call limit. A single call with >500 vectors used to fail with
+    ValidationException at the SDK; ingestion handlers now call this
+    helper without worrying about chunk size.
+
+    Each chunk emits its own replication event so the passive-region
+    applier can play back per-chunk rather than needing to reconstruct
+    a giant payload.
+    """
+    if not vectors:
+        return
+    client = _s3vectors_client()
+    for i in range(0, len(vectors), _S3VECTORS_PUT_CHUNK_SIZE):
+        chunk = vectors[i:i + _S3VECTORS_PUT_CHUNK_SIZE]
+        client.put_vectors(
+            vectorBucketName=bucket,
+            indexName=index,
+            vectors=chunk,
+            **kwargs,
+        )
+        _emit(
+            "s3vectors_put_vectors",
+            bucket=bucket,
+            index=index,
+            args={"vectors": chunk, **kwargs},
+        )
 
 
 def s3vectors_delete_vectors(bucket: str, index: str, keys: list) -> None:

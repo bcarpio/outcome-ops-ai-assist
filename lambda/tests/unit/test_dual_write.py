@@ -175,6 +175,39 @@ def test_s3vectors_put_vectors_local_write_and_emit(_ha_module):
     assert detail["index"] == "vindex"
 
 
+def test_s3vectors_put_vectors_chunks_at_500_limit(_ha_module):
+    """fable-scale chunk 07: PutVectors has a hard 500-vector-per-call
+    limit. s3vectors_put_vectors chunks internally so ingestion handlers
+    don't need to know the limit."""
+    s3v = MagicMock()
+    events = MagicMock()
+    _ha_module._set_clients_for_tests(s3vectors=s3v, events=events)
+
+    # 1200 vectors → 3 chunks (500 + 500 + 200)
+    vectors = [
+        {"key": f"vec{i}", "data": {"float32": [0.1]}} for i in range(1200)
+    ]
+    _ha_module.s3vectors_put_vectors("vbucket", "vindex", vectors)
+
+    assert s3v.put_vectors.call_count == 3
+    # Each chunk should preserve the correct size + no vector is dropped.
+    sizes = [len(c.kwargs["vectors"]) for c in s3v.put_vectors.call_args_list]
+    assert sizes == [500, 500, 200]
+    # And each chunk fires its own replication event so the passive-region
+    # applier can play back per-chunk rather than reconstructing a giant payload.
+    assert events.put_events.call_count == 3
+
+
+def test_s3vectors_put_vectors_empty_is_noop(_ha_module):
+    """Zero-vector payloads short-circuit — no client call, no event."""
+    s3v = MagicMock()
+    events = MagicMock()
+    _ha_module._set_clients_for_tests(s3vectors=s3v, events=events)
+    _ha_module.s3vectors_put_vectors("vbucket", "vindex", [])
+    s3v.put_vectors.assert_not_called()
+    events.put_events.assert_not_called()
+
+
 def test_no_bus_configured_skips_emit(_ha_module, monkeypatch):
     # Override env from the autouse fixture so the module-level capture
     # of REPLICATION_EVENT_BUS_NAME re-reads empty.

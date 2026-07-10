@@ -716,9 +716,14 @@ def store_vectors(
         return 0
 
     try:
-        s3vectors_client.put_vectors(
-            vectorBucketName=config["bucket"],
-            indexName=config["index"],
+        # fable-scale chunk 07: route through shared.dual_write so vector
+        # writes replicate to the passive region + chunk to the 500-vector
+        # PutVectors SDK limit automatically (prior direct client.put_vectors
+        # bypassed dual_write and failed hard at >500 vectors per doc).
+        from shared import dual_write
+        dual_write.s3vectors_put_vectors(
+            bucket=config["bucket"],
+            index=config["index"],
             vectors=vectors,
         )
         logger.info(f"Stored {len(vectors)} vectors for {filename}")
