@@ -101,6 +101,7 @@ from shared.region_guard import (
     passive_response,
 )
 from shared import dual_write
+from shared import audit_shard  # fable-scale chunk 04 — GSI2 shard fan-out
 from shared.delete_dispatch import dispatch_repo_delete, region_from_sqs_url
 from shared.audit_writer import (
     ACTION_API_KEY_CREATED,
@@ -672,6 +673,13 @@ def create_workspace(
         # ticketing (ServiceNow, etc.).
         "is_global": bool(request.is_global),
     }
+    # fable-scale chunk 03: sparse-GSI hash attribute. Present ("1") when
+    # is_global=true so this row appears in GSI_is_global; absent when
+    # is_global=false so it stays out of the index entirely. Enterprise-scale
+    # "list every global workspace" becomes one Query on a small partition
+    # instead of a Scan-with-filter across every workspace METADATA row.
+    if bool(request.is_global):
+        workspace_item["is_global_flag"] = "1"
 
     # Create membership for creator (admin)
     member_item = {
@@ -931,6 +939,10 @@ def update_workspace(
         # Snapshot the current is_global before we write it, so the
         # audit row can carry (old -> new). Read once outside the SET.
         prior_is_global: Optional[bool] = None
+        # fable-scale chunk 03: track whether we need to REMOVE the sparse
+        # GSI attribute (flipping true→false) so we can emit an UpdateExpression
+        # with both SET and REMOVE clauses.
+        remove_parts: list[str] = []
         if want_flip_global:
             existing_row = table.get_item(
                 Key={"PK": f"WS#{workspace_id}", "SK": "METADATA"},
@@ -939,14 +951,26 @@ def update_workspace(
             update_parts.append("is_global = :ig")
             expr_values[":ig"] = bool(request.is_global)
             changed_fields.append("is_global")
+            # Keep the sparse-index attribute in sync with is_global. Present
+            # ("1") on true, absent on false. See dynamodb-workspaces.tf
+            # GSI_is_global definition.
+            if bool(request.is_global):
+                update_parts.append("is_global_flag = :igf")
+                expr_values[":igf"] = "1"
+            else:
+                remove_parts.append("is_global_flag")
 
         update_parts.append("updated_at = :ua")
         expr_values[":ua"] = now
 
+        update_expression = "SET " + ", ".join(update_parts)
+        if remove_parts:
+            update_expression += " REMOVE " + ", ".join(remove_parts)
+
         dual_write.ddb_update_item(
             _get_workspaces_table(),
             {"PK": f"WS#{workspace_id}", "SK": "METADATA"},
-            UpdateExpression="SET " + ", ".join(update_parts),
+            UpdateExpression=update_expression,
             ExpressionAttributeNames={"#n": "name"} if request.name else {},
             ExpressionAttributeValues=expr_values,
         )
@@ -1757,8 +1781,11 @@ def search_users(user_email: str, query: str) -> Dict:
 # ============================================================================
 
 
-def list_org_members(user_email: str) -> Dict:
-    """List all org members (org admin only).
+def list_org_members(
+    user_email: str,
+    query_params: Optional[Dict[str, Any]] = None,
+) -> Dict:
+    """List all org members (org admin only), paginated.
 
     Derives the member list from two sources:
       1. ORG_MEMBER records (org admins and explicitly added members)
@@ -1766,6 +1793,13 @@ def list_org_members(user_email: str) -> Dict:
 
     This avoids sync issues where a user is in a workspace but missing
     from the org listing.
+
+    fable-scale chunk 10: paginated. The full member list is still
+    materialized in-memory (both source scans have to complete to compute
+    each member's workspace list), but the RESPONSE is sliced to `limit`
+    items with a next_cursor so the admin UI can page through. At
+    enterprise seat counts the un-sliced response was tens of MB.
+    Defaults: limit=200, max=1000.
     """
     dynamodb = _get_dynamodb()
     table = dynamodb.Table(_get_workspaces_table())
@@ -1835,7 +1869,37 @@ def list_org_members(user_email: str) -> Dict:
         # Sort: org_admins first, then by email
         members.sort(key=lambda x: (x.get("org_role") != "org_admin", x.get("user_email", "")))
 
-        return _response(200, {"members": members})
+        # fable-scale chunk 10: slice + cursor. Cursor = the email of the
+        # last returned member; next page returns members with email > cursor
+        # (stable sort by email post admin-first grouping means this is
+        # deterministic within the trailing member set).
+        qp = query_params or {}
+        try:
+            limit = min(max(1, int(qp.get("limit", "200"))), 1000)
+        except (TypeError, ValueError):
+            limit = 200
+        cursor = (qp.get("cursor") or "").strip()
+
+        if cursor:
+            # Find first member strictly after cursor. Linear scan is fine
+            # at enterprise seat counts (~2000 rows).
+            start_idx = next(
+                (i for i, m in enumerate(members) if m.get("user_email", "") > cursor),
+                len(members),
+            )
+        else:
+            start_idx = 0
+
+        page = members[start_idx:start_idx + limit]
+        next_cursor = None
+        if start_idx + limit < len(members) and page:
+            next_cursor = page[-1].get("user_email", "") or None
+
+        return _response(200, {
+            "members": page,
+            "next_cursor": next_cursor,
+            "total": len(members),
+        })
     except ClientError as e:
         logger.error(f"Error listing org members: {e}")
         return _error(500, "Failed to list org members")
@@ -4764,30 +4828,26 @@ def _query_admin_events_for_range(
 ) -> List[Dict]:
     """Query GSI2 (CAT#<category>) for admin rows in a date range.
 
-    Uses GSI2 instead of Scan + FilterExpression so the query reads only
-    rows in the requested category — bedrock rows in the same table don't
-    have to be filtered post-read.
+    fable-scale chunk 04: fans out across sharded GSI2 partitions
+    (`CAT#<category>#00`..`#15`) plus the legacy unsharded key so pre-cutover
+    rows stay visible for the 365-day TTL window. Reads only rows in the
+    requested category — bedrock rows in the same table don't have to be
+    filtered post-read.
     """
-    items: List[Dict] = []
-    query_kwargs: Dict[str, Any] = {
-        "IndexName": "GSI2",
-        "KeyConditionExpression": "GSI2PK = :pk AND GSI2SK BETWEEN :s AND :e",
-        "ExpressionAttributeValues": {
-            ":pk": f"CAT#{category}",
-            ":s": start_date,
-            ":e": f"{end_date}~",
-        },
-        "Limit": limit,
-        "ScanIndexForward": False,  # newest-first
-    }
     try:
-        response = audit_table.query(**query_kwargs)
-        items.extend(response.get("Items", []) or [])
+        items, _ = audit_shard.read_by_category(
+            audit_table,
+            category=category,
+            sk_start=start_date,
+            sk_end=f"{end_date}~",
+            limit=limit,
+        )
+        return items
     except ClientError as e:
         logger.warning(
             f"[workspace-management] audit GSI2 query failed: {e}"
         )
-    return items
+        return []
 
 
 def get_audit_summary(user_email: str, query_params: Dict[str, Any]) -> Dict:
@@ -5126,6 +5186,12 @@ def get_audit_events(user_email: str, query_params: Dict[str, Any]) -> Dict:
         limit = _parse_audit_limit(
             query_params.get("limit"), AUDIT_EVENTS_DEFAULT_LIMIT
         )
+        # fable-scale chunk 04: this branch uses the shard-aware reader
+        # (audit_shard.read_by_category) instead of a single GSI2 Query.
+        # `query_kwargs` stays as a *carrier* for the FilterExpression
+        # builder below so the existing filter code doesn't need to fork —
+        # the actual Query dispatch is handled at execution time (line
+        # ~5230). `_shard_read` is the toggle.
         query_kwargs = {
             "IndexName": "GSI2",
             "KeyConditionExpression": (
@@ -5138,6 +5204,10 @@ def get_audit_events(user_email: str, query_params: Dict[str, Any]) -> Dict:
             },
             "Limit": limit,
             "ScanIndexForward": False,
+            "_shard_read": True,
+            "_shard_category": target_category,
+            "_shard_sk_start": sk_start,
+            "_shard_sk_end": sk_end,
         }
         # category filter is now part of the GSI2 key, not a FilterExpression;
         # mark it as consumed so the FilterExpression builder below skips it.
@@ -5196,15 +5266,42 @@ def get_audit_events(user_email: str, query_params: Dict[str, Any]) -> Dict:
     if filters:
         query_kwargs["FilterExpression"] = " AND ".join(filters)
 
+    # fable-scale chunk 04: for the sharded GSI2 branch, cursor semantics
+    # differ — it's a "high water mark SK", not a DDB LastEvaluatedKey.
     if cursor:
         decoded = _decode_audit_cursor(cursor)
         if decoded:
-            query_kwargs["ExclusiveStartKey"] = decoded
+            if query_kwargs.get("_shard_read") and isinstance(decoded, dict) and "cursor_sk" in decoded:
+                query_kwargs["_shard_cursor_sk"] = decoded["cursor_sk"]
+            else:
+                query_kwargs["ExclusiveStartKey"] = decoded
 
     try:
-        # Every branch is now a Query (base table, GSI1, or GSI2) - the Scan
-        # path was retired with the addition of GSI2.
-        if "FilterExpression" in query_kwargs:
+        if query_kwargs.get("_shard_read"):
+            # fable-scale chunk 04: shard fan-out. `audit_shard.read_by_category`
+            # runs 17 parallel Queries (16 shards + legacy), merges by GSI2SK
+            # desc, and returns (items, next_cursor_sk). FilterExpression is
+            # applied per-shard-Query so it doesn't hide throughput problems
+            # at the merge boundary.
+            filter_values = {
+                k: v for k, v in query_kwargs.get("ExpressionAttributeValues", {}).items()
+                if k not in (":gsi2pk", ":s", ":e")
+            }
+            items, next_cursor_sk = audit_shard.read_by_category(
+                audit_table,
+                category=query_kwargs["_shard_category"],
+                sk_start=query_kwargs["_shard_sk_start"],
+                sk_end=query_kwargs["_shard_sk_end"],
+                limit=limit,
+                filter_expression=query_kwargs.get("FilterExpression"),
+                expression_attribute_values=filter_values or None,
+                expression_attribute_names=query_kwargs.get("ExpressionAttributeNames"),
+                cursor_sk=query_kwargs.get("_shard_cursor_sk"),
+                filter_page_limit=AUDIT_EVENTS_FILTER_PAGE_LIMIT,
+                filter_max_pages=AUDIT_EVENTS_FILTER_MAX_PAGES,
+            )
+            last_key = {"cursor_sk": next_cursor_sk} if next_cursor_sk else None
+        elif "FilterExpression" in query_kwargs:
             # DDB applies Limit BEFORE FilterExpression, so a sparse filter
             # (e.g., status=refusal across a chat-heavy partition) returns
             # nothing if the first page of `limit` items happens to be all
@@ -5671,7 +5768,9 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
 
         # Route: GET /org/members
         if parts == ("org", "members") and http_method == "GET":
-            return list_org_members(user_email)
+            return list_org_members(
+                user_email, event.get("queryStringParameters") or {}
+            )
 
         # Route: POST /org/members
         if parts == ("org", "members") and http_method == "POST":

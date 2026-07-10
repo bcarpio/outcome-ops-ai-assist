@@ -32,6 +32,15 @@ module "workspaces_table" {
     {
       name = "GSI1SK"
       type = "S"
+    },
+    # fable-scale chunk 03: sparse GSI index attribute. Populated only on
+    # METADATA rows where is_global=true (value "1"). METADATA rows without
+    # this attribute don't appear in the GSI — that's the sparse-index
+    # property. Enterprise-scale wins: reading "which workspaces are global"
+    # becomes a small Query, not a full-table Scan filter over 2000+ rows.
+    {
+      name = "is_global_flag"
+      type = "S"
     }
   ]
 
@@ -43,6 +52,17 @@ module "workspaces_table" {
       name            = "GSI1"
       hash_key        = "GSI1PK"
       range_key       = "GSI1SK"
+      projection_type = "ALL"
+    },
+    # fable-scale chunk 03: sparse index for is_global lookup.
+    # Query with is_global_flag = "1" returns every global-workspace METADATA
+    # row. Regular workspaces never write this attribute so they never appear
+    # in the index — no hot-partition concern until we cross low-hundreds of
+    # global workspaces. Projection = ALL because METADATA rows are small
+    # and callers need the full row (workspace_id, name, etc.).
+    {
+      name            = "GSI_is_global"
+      hash_key        = "is_global_flag"
       projection_type = "ALL"
     }
   ]
@@ -157,6 +177,11 @@ module "workspaces_table_secondary" {
     {
       name = "GSI1SK"
       type = "S"
+    },
+    # fable-scale chunk 03 (HA parity): sparse is_global GSI attribute.
+    {
+      name = "is_global_flag"
+      type = "S"
     }
   ]
 
@@ -165,6 +190,12 @@ module "workspaces_table_secondary" {
       name            = "GSI1"
       hash_key        = "GSI1PK"
       range_key       = "GSI1SK"
+      projection_type = "ALL"
+    },
+    # fable-scale chunk 03 (HA parity).
+    {
+      name            = "GSI_is_global"
+      hash_key        = "is_global_flag"
       projection_type = "ALL"
     }
   ]

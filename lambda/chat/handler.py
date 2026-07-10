@@ -38,6 +38,9 @@ from shared import dual_write
 from shared.audit import log_audit_entry
 from shared import model_client
 from shared.model_client import invoke_stream as model_invoke_stream
+# fable-scale chunk 05: per-workload Bedrock gate saturation raises this
+# BEFORE the Bedrock call, distinct from Bedrock-side ThrottlingException.
+from shared.workload_gate import WorkloadBackpressureError
 from shared.model_client_types import (
     Metadata as _ModelMetadata,
     Stop as _ModelStop,
@@ -357,20 +360,67 @@ def _list_all_workspace_metadata(table) -> List[Dict]:
     read path. Not exposed publicly -- callers must have already
     established that the user is a member of an ``is_global``
     workspace in the requested set before reaching here.
+
+    fable-scale chunk 03: cached per-instance for
+    WORKSPACE_CACHE_TTL_SECONDS (default 60s). At 2000-workspace scale
+    the Scan is the enterprise bottleneck; caching drops per-instance
+    cost ~99% at steady chat rates while keeping the "new workspace
+    shows up within a minute" UX intact.
     """
-    items = []
-    scan_kwargs = {
-        "FilterExpression": "SK = :sk AND begins_with(PK, :pk_prefix)",
-        "ExpressionAttributeValues": {":sk": "METADATA", ":pk_prefix": "WS#"},
-    }
-    while True:
-        response = table.scan(**scan_kwargs)
-        items.extend(response.get("Items", []))
-        last_key = response.get("LastEvaluatedKey")
-        if not last_key:
-            break
-        scan_kwargs["ExclusiveStartKey"] = last_key
-    return items
+    from shared import ws_cache  # local import: shared layer
+
+    def _compute() -> List[Dict]:
+        items: List[Dict] = []
+        scan_kwargs = {
+            "FilterExpression": "SK = :sk AND begins_with(PK, :pk_prefix)",
+            "ExpressionAttributeValues": {":sk": "METADATA", ":pk_prefix": "WS#"},
+        }
+        while True:
+            response = table.scan(**scan_kwargs)
+            items.extend(response.get("Items", []))
+            last_key = response.get("LastEvaluatedKey")
+            if not last_key:
+                break
+            scan_kwargs["ExclusiveStartKey"] = last_key
+        return items
+
+    return ws_cache.get_or_compute(
+        (table.table_name, "all_workspace_metadata"),
+        _compute,
+    )
+
+
+def _list_global_workspace_metadata(table) -> List[Dict]:
+    """All ``is_global=true`` workspace METADATA rows.
+
+    fable-scale chunk 03: queries the sparse GSI_is_global index (added
+    to the workspaces table by terraform/dynamodb-workspaces.tf). At
+    enterprise scale globals are few (tens); the Query beats a Scan-with-
+    filter by orders of magnitude. Cached alongside the full-metadata
+    list for the same TTL window.
+    """
+    from shared import ws_cache  # local import: shared layer
+
+    def _compute() -> List[Dict]:
+        items: List[Dict] = []
+        query_kwargs = {
+            "IndexName": "GSI_is_global",
+            "KeyConditionExpression": "is_global_flag = :ig",
+            "ExpressionAttributeValues": {":ig": "1"},
+        }
+        while True:
+            response = table.query(**query_kwargs)
+            items.extend(response.get("Items", []))
+            last_key = response.get("LastEvaluatedKey")
+            if not last_key:
+                break
+            query_kwargs["ExclusiveStartKey"] = last_key
+        return items
+
+    return ws_cache.get_or_compute(
+        (table.table_name, "global_workspace_metadata"),
+        _compute,
+    )
 
 
 def resolve_chat_workspace_scope(
@@ -1341,11 +1391,44 @@ def get_conversation_messages(conversation_id: str, limit: int = 10) -> List[Dic
         return []
 
 
+def _cap_message_content(content: str) -> str:
+    """fable-scale chunk 10: cap message content at CHAT_MAX_MESSAGE_CONTENT_CHARS
+    via head+tail preservation. Chat re-sends the last 10 messages verbatim on
+    every synthesis; unbounded pastes approach the 400KB DDB item limit AND
+    inflate every subsequent Bedrock input by their full size.
+
+    Truncation keeps ~half the budget at the start (recent context tail-end)
+    and the rest at the end (any final code / conclusion). The middle gets
+    replaced with a `[truncated N chars]` marker so the model sees the
+    truncation explicitly.
+    """
+    cap = int(os.environ.get("CHAT_MAX_MESSAGE_CONTENT_CHARS", "50000"))
+    if cap <= 0 or len(content) <= cap:
+        return content
+    marker = " ... [truncated {} chars] ... "
+    # Budget: reserve ~100 chars for the truncation marker itself.
+    head_budget = cap // 2
+    tail_budget = max(0, cap - head_budget - 100)
+    truncated_chars = len(content) - head_budget - tail_budget
+    head = content[:head_budget]
+    # Guard against Python's `-0 == 0` quirk: content[-0:] returns the whole
+    # string. When tail_budget is 0, emit an empty tail.
+    tail = content[-tail_budget:] if tail_budget > 0 else ""
+    return head + marker.format(truncated_chars) + tail
+
+
 def save_message(conversation_id: str, role: str, content: str, sources: List[Dict] = None):
     """Save a message to the conversation."""
     message_id = generate_id()
     now = datetime.now(timezone.utc).isoformat()
 
+    # fable-scale chunk 10: cap runaway pastes before persisting.
+    content = _cap_message_content(content)
+
+    # fable-scale chunk 10: TTL. Rows written before this deploy have no
+    # expires_at and stay indefinitely (safe default). New rows drop out
+    # after CHAT_MESSAGE_TTL_SECONDS (env, default 90d).
+    ttl_seconds = int(os.environ.get("CHAT_MESSAGE_TTL_SECONDS", "7776000"))
     item = {
         "PK": f"CONV#{conversation_id}",
         "SK": f"MSG#{now}#{message_id}",
@@ -1353,6 +1436,7 @@ def save_message(conversation_id: str, role: str, content: str, sources: List[Di
         "role": role,
         "content": content,
         "created_at": now,
+        "expires_at": int(time.time()) + ttl_seconds,
     }
     if sources:
         item["sources"] = sources
@@ -2693,8 +2777,34 @@ def handle_chat_stream(event: Dict) -> Generator[str, None, None]:
                 answer_chunks.append(chunk)
                 yield json.dumps({"type": "token", "text": chunk}) + "\n"
     except ClientError as e:
-        logger.error(f"Failed to generate answer: {e}")
-        yield _stream_error("Failed to generate response", 500) + "\n"
+        # fable-scale chunk 05: distinguish throttle-after-retry-exhaustion
+        # from other errors so operators can tell whether the pain is quota
+        # exhaustion or an actual bug. Silent retries with backoff live inside
+        # shared.model_client.invoke_stream (via _converse_backend.
+        # open_stream_with_retry); the ThrottlingException we see here means
+        # BEDROCK_MAX_ATTEMPTS attempts have all been throttled.
+        code = e.response.get("Error", {}).get("Code", "")
+        if code == "ThrottlingException":
+            logger.warning(
+                "Bedrock quota exhausted after in-Lambda retries: %s", e
+            )
+            yield _stream_error(
+                "Bedrock quota temporarily exhausted, please retry in a moment.",
+                503,
+            ) + "\n"
+        else:
+            logger.error(f"Failed to generate answer: {e}")
+            yield _stream_error("Failed to generate response", 500) + "\n"
+        return
+    except WorkloadBackpressureError as e:
+        # fable-scale chunk 05: the per-instance chat gate is saturated
+        # BEFORE we could reach Bedrock. Same user-facing shape as
+        # ThrottlingException — busy, retry.
+        logger.warning("chat workload gate saturated: %s", e)
+        yield _stream_error(
+            "Chat surface is at capacity on this instance, please retry.",
+            503,
+        ) + "\n"
         return
     bedrock_duration_ms = int((time.time() - bedrock_start) * 1000)
 
@@ -3183,30 +3293,53 @@ def list_shared_conversations(
 
 
 def _get_user_workspace_ids(user_id: str) -> List[str]:
-    """Get all workspace IDs the user is a member of."""
+    """Get all workspace IDs the user is a member of.
+
+    fable-scale chunk 03:
+    - Query is now paginated (was single-shot, silently truncated at 1MB
+      once a user carried ~10k+ memberships — the MCP-server equivalent
+      already paginates).
+    - Result cached per-instance for WORKSPACE_CACHE_TTL_SECONDS (default
+      60s), keyed by user id. Membership only changes on
+      workspace-management writes, so a 60s stale window is invisible.
+    """
+    from shared import ws_cache  # local import: shared layer
+
     dynamodb = _get_dynamodb()
     table = dynamodb.Table(_get_workspaces_table())
 
-    try:
-        response = table.query(
-            KeyConditionExpression="PK = :pk AND begins_with(SK, :sk)",
-            ExpressionAttributeValues={
-                ":pk": f"USER#{user_id}",
-                ":sk": "WS_MEMBER#",
-            },
-        )
-        workspace_ids = []
-        for item in response.get("Items", []):
-            # SK format is WS_MEMBER#{workspace_id}
-            sk = item.get("SK", "")
-            if sk.startswith("WS_MEMBER#"):
-                ws_id = sk[len("WS_MEMBER#"):]
-                if ws_id:
-                    workspace_ids.append(ws_id)
-        return workspace_ids
-    except ClientError as e:
-        logger.error(f"Error getting user workspace IDs: {e}")
-        return []
+    def _compute() -> List[str]:
+        workspace_ids: List[str] = []
+        try:
+            query_kwargs = {
+                "KeyConditionExpression": "PK = :pk AND begins_with(SK, :sk)",
+                "ExpressionAttributeValues": {
+                    ":pk": f"USER#{user_id}",
+                    ":sk": "WS_MEMBER#",
+                },
+            }
+            while True:
+                response = table.query(**query_kwargs)
+                for item in response.get("Items", []):
+                    # SK format is WS_MEMBER#{workspace_id}
+                    sk = item.get("SK", "")
+                    if sk.startswith("WS_MEMBER#"):
+                        ws_id = sk[len("WS_MEMBER#"):]
+                        if ws_id:
+                            workspace_ids.append(ws_id)
+                last_key = response.get("LastEvaluatedKey")
+                if not last_key:
+                    break
+                query_kwargs["ExclusiveStartKey"] = last_key
+            return workspace_ids
+        except ClientError as e:
+            logger.error(f"Error getting user workspace IDs: {e}")
+            return []
+
+    return ws_cache.get_or_compute(
+        (table.table_name, "user_memberships", user_id),
+        _compute,
+    )
 
 
 def list_conversations(user_id: str = None, limit: int = 20, cursor: str = None) -> Dict:

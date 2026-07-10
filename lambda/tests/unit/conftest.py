@@ -69,6 +69,28 @@ def _walk_stack_for(dual_write, accessors: tuple[str, ...], resources: tuple[str
 
 
 @pytest.fixture(autouse=True)
+def _reset_ws_cache():
+    """Clear ``shared.ws_cache`` around every test.
+
+    fable-scale chunk 03 introduced ``shared.ws_cache`` -- a module-level
+    TTL cache consulted by workspace-resolution paths (chat, mcp-server,
+    workspace-management). It legitimately persists across calls in
+    production, but across *tests* a stale entry seeded by one file leaks
+    into another that expects a cold cache (e.g. ``test_mcp_outcomeops``'s
+    ``list_workspaces_empty``, which mocks an empty workspace list but
+    reads a ``ws-1`` left behind by an earlier file). Files that already
+    clear it in their own ``clear_caches`` fixture are unaffected -- a
+    second clear is a no-op. Doing it here makes cold-cache expectations
+    independent of collection / xdist-worker order.
+    """
+    from shared import ws_cache
+
+    ws_cache.clear()
+    yield
+    ws_cache.clear()
+
+
+@pytest.fixture(autouse=True)
 def _route_dual_write_through_handler(monkeypatch):
     from shared import dual_write
 
