@@ -57,12 +57,18 @@ module "ui_ecs_secondary" {
 
   cluster_name = "${var.environment}-${var.app_name}-ui"
 
-  cluster_capacity_providers = ["FARGATE_SPOT"]
+  # fable-scale chunk 01 (HA parity): mixed capacity providers, same
+  # weights as primary. See ui-fargate.tf for the full comment.
+  cluster_capacity_providers = ["FARGATE", "FARGATE_SPOT"]
 
   default_capacity_provider_strategy = {
+    FARGATE = {
+      base   = var.ui_fargate_ondemand_base
+      weight = var.ui_fargate_ondemand_weight
+    }
     FARGATE_SPOT = {
-      weight = 100
       base   = 0
+      weight = var.ui_fargate_spot_weight
     }
   }
 
@@ -75,21 +81,48 @@ module "ui_ecs_secondary" {
 
   services = {
     ui = {
-      cpu    = 256
-      memory = 512
+      # fable-scale chunk 01 (HA parity): tfvars-driven sizing +
+      # autoscaling, same shape as primary.
+      cpu    = var.ui_fargate_cpu
+      memory = var.ui_fargate_memory
 
       capacity_provider_strategy = {
+        fargate = {
+          capacity_provider = "FARGATE"
+          base              = var.ui_fargate_ondemand_base
+          weight            = var.ui_fargate_ondemand_weight
+        }
         fargate_spot = {
           capacity_provider = "FARGATE_SPOT"
-          weight            = 100
           base              = 0
+          weight            = var.ui_fargate_spot_weight
         }
       }
 
-      desired_count = 1
+      desired_count = var.ui_fargate_desired_count
 
       deployment_maximum_percent         = 200
-      deployment_minimum_healthy_percent = 0
+      deployment_minimum_healthy_percent = var.ui_fargate_min_healthy_percent
+
+      # fable-scale chunk 01 (HA parity): target-tracking autoscaling on
+      # ALBRequestCountPerTarget for the secondary ALB + target group.
+      enable_autoscaling       = true
+      autoscaling_min_capacity = var.ui_fargate_min_count
+      autoscaling_max_capacity = var.ui_fargate_max_count
+      autoscaling_policies = {
+        alb_request_count = {
+          policy_type = "TargetTrackingScaling"
+          target_tracking_scaling_policy_configuration = {
+            predefined_metric_specification = {
+              predefined_metric_type = "ALBRequestCountPerTarget"
+              resource_label         = local.deploy_ui_secondary ? "${module.ui_alb_secondary.arn_suffix}/${module.ui_alb_secondary.target_groups["ui"].arn_suffix}" : ""
+            }
+            target_value       = var.ui_fargate_target_requests_per_task
+            scale_out_cooldown = 60
+            scale_in_cooldown  = 180
+          }
+        }
+      }
 
       container_definitions = {
         ui = {

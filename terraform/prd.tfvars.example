@@ -215,9 +215,10 @@ github_usernames_to_tag = "yourusername"
 #          FedRAMP-friendly posture the product is designed around.
 #   false = Public ALB, guarded solely by Azure AD OIDC at the Express
 #          layer. Intended for the OutcomeOps maintainer's sandbox and
-#          low-stakes PoCs. The variable default is `false` for backwards
-#          compatibility with initial sandbox deploys; customer deploys
-#          should explicitly set this to `true`.
+#          low-stakes PoCs. fable-scale chunk 09 flipped the variable
+#          default from `false` → `true`; customer deploys inherit the
+#          safer posture automatically. Sandbox deploys must now
+#          explicitly set `ui_alb_internal = false`.
 # ui_alb_internal = true
 
 # Assign public IP to Fargate tasks. Default: false.
@@ -467,3 +468,42 @@ audit_stream_export_enabled = true
 
 # Custom tags merged with default tags (Environment, Application, ManagedBy).
 # tags = {}
+
+# ============================================================================
+# Enterprise / F500 deployment profile (fable-scale chunk 09)
+# ----------------------------------------------------------------------------
+# Uncomment the block below for a 2000-engineer enterprise deploy behind a
+# private VPC + Transit Gateway + Zscaler + Infoblox. Every knob has a
+# sensible sandbox default; overriding here documents the enterprise
+# intent explicitly rather than relying on defaults drifting.
+#
+# See docs/deployment-guide.md "Enterprise deployment profile" for the
+# accompanying networking / KMS / Azure AD setup and the sharp edges
+# (Function URL public DNS — see docs/adr/ADR-<TBD>-function-url-*.md).
+# ============================================================================
+
+# --- Network posture ---
+# ui_alb_internal              = true    # Default post-chunk-09; explicit here for clarity.
+# ui_fargate_assign_public_ip  = false   # Private subnets with NAT / TGW egress.
+# manage_dns_in_route53        = false   # Infoblox CNAME -> alb_dns_name.
+# ui_acm_certificate_arn       = "arn:aws:acm:us-west-2:...:certificate/..."
+# platform_ca_bundle_ssm_param_arns = [
+#   "arn:aws:ssm:us-west-2:...:parameter/prd/outcome-ops-ai-assist/ca-bundle/enterprise-root",
+# ]
+# enable_github_issue_integration = false  # No public API Gateway ingress.
+
+# --- Fargate autoscaling (fable-scale chunk 01) ---
+# ui_fargate_min_count           = 4
+# ui_fargate_max_count           = 40
+# mcp_server_min_count           = 4
+# mcp_server_max_count           = 40
+
+# --- Bedrock fairness (fable-scale chunk 05) ---
+# pr_check_max_concurrency  = 40
+# chat_reserved_concurrency = 200
+
+# --- Ingestion throughput (fable-scale chunk 08) ---
+# github_sync_max_conc              = 50
+# repo_summary_max_conc             = 100
+# batch_summary_max_conc            = 100
+# github_scheduler_parallel_workers = 64

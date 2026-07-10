@@ -681,13 +681,19 @@ module "ui_ecs" {
 
   cluster_name = "${var.environment}-${var.app_name}-ui"
 
-  # Fargate Spot for cost savings
-  cluster_capacity_providers = ["FARGATE_SPOT"]
+  # fable-scale chunk 01: cluster must offer BOTH on-demand + spot so the
+  # service's mixed capacity provider strategy resolves. Default strategy
+  # is 1 on-demand base + weighted spot above it (see var.ui_fargate_*).
+  cluster_capacity_providers = ["FARGATE", "FARGATE_SPOT"]
 
   default_capacity_provider_strategy = {
+    FARGATE = {
+      base   = var.ui_fargate_ondemand_base
+      weight = var.ui_fargate_ondemand_weight
+    }
     FARGATE_SPOT = {
-      weight = 100
       base   = 0
+      weight = var.ui_fargate_spot_weight
     }
   }
 
@@ -701,24 +707,62 @@ module "ui_ecs" {
 
   services = {
     ui = {
-      cpu    = 256 # 0.25 vCPU - minimum
-      memory = 512 # 0.5 GB - minimum
+      # fable-scale chunk 01: sizing is tfvars-driven. Sandbox defaults
+      # were 256/512/1 SPOT-only; enterprise defaults are 512/1024/2 with
+      # mixed capacity providers and target-tracking autoscaling on
+      # ALBRequestCountPerTarget.
+      cpu    = var.ui_fargate_cpu
+      memory = var.ui_fargate_memory
 
-      # Use Fargate Spot
+      # Mixed on-demand + spot: on-demand base guarantees always-on
+      # tasks that never spot-reclaim; spot above the base optimizes
+      # cost. Weights control the ratio above the base.
       capacity_provider_strategy = {
+        fargate = {
+          capacity_provider = "FARGATE"
+          base              = var.ui_fargate_ondemand_base
+          weight            = var.ui_fargate_ondemand_weight
+        }
         fargate_spot = {
           capacity_provider = "FARGATE_SPOT"
-          weight            = 100
           base              = 0
+          weight            = var.ui_fargate_spot_weight
         }
       }
 
-      # Single task - keep costs minimal
-      desired_count = 1
+      # Initial count; autoscaling adjusts out-of-band (module lifecycle
+      # already ignores desired_count changes for enable_autoscaling
+      # services).
+      desired_count = var.ui_fargate_desired_count
 
-      # Allow Fargate Spot interruptions
+      # min_healthy_percent = 100 guarantees no in-flight SSE stream is
+      # dropped during a deploy or spot reclamation. deployment_maximum_percent
+      # stays at 200 so a rolling replacement can bring new tasks up
+      # before killing old ones.
       deployment_maximum_percent         = 200
-      deployment_minimum_healthy_percent = 0
+      deployment_minimum_healthy_percent = var.ui_fargate_min_healthy_percent
+
+      # fable-scale chunk 01: target-tracking on ALBRequestCountPerTarget.
+      # SSE streams hold sockets 30-900s, so this is really "concurrent
+      # streams per task". resource_label format is required by the
+      # predefined metric: <alb-arn-suffix>/<tg-arn-suffix>.
+      enable_autoscaling       = true
+      autoscaling_min_capacity = var.ui_fargate_min_count
+      autoscaling_max_capacity = var.ui_fargate_max_count
+      autoscaling_policies = {
+        alb_request_count = {
+          policy_type = "TargetTrackingScaling"
+          target_tracking_scaling_policy_configuration = {
+            predefined_metric_specification = {
+              predefined_metric_type = "ALBRequestCountPerTarget"
+              resource_label         = var.deploy_ui ? "${module.ui_alb.arn_suffix}/${module.ui_alb.target_groups["ui"].arn_suffix}" : ""
+            }
+            target_value       = var.ui_fargate_target_requests_per_task
+            scale_out_cooldown = 60
+            scale_in_cooldown  = 180
+          }
+        }
+      }
 
       # Container definition
       container_definitions = {

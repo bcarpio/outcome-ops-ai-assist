@@ -256,18 +256,37 @@ resource "aws_ecs_service" "mcp" {
   name            = "${var.server_name}-mcp"
   cluster         = var.ecs_cluster_arn
   task_definition = aws_ecs_task_definition.mcp.arn
-  desired_count   = 1
+  desired_count   = var.desired_count
 
-  # Fargate Spot (don't set launch_type when using capacity_provider_strategy)
+  # fable-scale chunk 01: mixed on-demand + spot. Base=0 keeps the
+  # sandbox default behaviour (all-spot); callers wanting always-on
+  # tasks pass ondemand_base > 0.
+  dynamic "capacity_provider_strategy" {
+    for_each = var.ondemand_weight > 0 || var.ondemand_base > 0 ? [1] : []
+    content {
+      capacity_provider = "FARGATE"
+      base              = var.ondemand_base
+      weight            = var.ondemand_weight
+    }
+  }
+
   capacity_provider_strategy {
     capacity_provider = "FARGATE_SPOT"
-    weight            = 100
+    weight            = var.spot_weight
     base              = 0
   }
 
-  # Allow Spot interruptions
   deployment_maximum_percent         = 200
-  deployment_minimum_healthy_percent = 0
+  deployment_minimum_healthy_percent = var.min_healthy_percent
+
+  # fable-scale chunk 01: required when capacity_provider_strategy changes.
+  # ECS refuses the update otherwise ("force_new_deployment should be true
+  # when capacity_provider_strategy is being updated"). Same default as the
+  # terraform-aws-modules/ecs/aws service submodule. Session state lives in
+  # DDB (fable-scale chunk 02) so rolling a task is stateless-safe; the
+  # min_healthy_percent = 100 guarantees an in-flight tools/call isn't
+  # dropped mid-roll.
+  force_new_deployment = true
 
   network_configuration {
     subnets          = var.private_subnet_ids
@@ -296,5 +315,48 @@ resource "aws_ecs_service" "mcp" {
 
   tags = {
     Purpose = "mcp-${var.server_name}"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# fable-scale chunk 01: application autoscaling (target-tracking on
+# ALBRequestCountPerTarget). Only wired when the caller opts in AND the ALB
+# path is in use — Cloud Map-only deployments would need a different metric.
+# Enabling this on MCP requires session state to live outside the container
+# (fable-scale chunk 02); with in-memory sessions, a second task can't share
+# state, so autoscaling would multiply session losses.
+# -----------------------------------------------------------------------------
+
+resource "aws_appautoscaling_target" "mcp" {
+  count = var.enable_autoscaling && local.use_alb ? 1 : 0
+
+  min_capacity = var.autoscaling_min_capacity
+  max_capacity = var.autoscaling_max_capacity
+
+  resource_id        = "service/${element(split("/", var.ecs_cluster_arn), 1)}/${aws_ecs_service.mcp.name}"
+  scalable_dimension = "ecs:service:DesiredCount"
+  service_namespace  = "ecs"
+}
+
+resource "aws_appautoscaling_policy" "mcp_alb_requests" {
+  count = var.enable_autoscaling && local.use_alb ? 1 : 0
+
+  name               = "${local.server_full}-alb-requests"
+  policy_type        = "TargetTrackingScaling"
+  resource_id        = aws_appautoscaling_target.mcp[0].resource_id
+  scalable_dimension = aws_appautoscaling_target.mcp[0].scalable_dimension
+  service_namespace  = aws_appautoscaling_target.mcp[0].service_namespace
+
+  target_tracking_scaling_policy_configuration {
+    predefined_metric_specification {
+      predefined_metric_type = "ALBRequestCountPerTarget"
+      # Format: app/<alb-name>/<alb-id>/targetgroup/<tg-name>/<tg-id>.
+      # The caller supplies the ALB arn_suffix (up through the /<alb-id>);
+      # we append the target group's arn_suffix (targetgroup/... onward).
+      resource_label = "${var.alb_arn_suffix}/${aws_lb_target_group.mcp[0].arn_suffix}"
+    }
+    target_value       = var.autoscaling_target_requests_per_task
+    scale_out_cooldown = 60
+    scale_in_cooldown  = 180
   }
 }

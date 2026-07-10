@@ -46,6 +46,74 @@ variable "memory" {
   default     = 1024
 }
 
+# ---------------------------------------------------------------------------
+# fable-scale chunk 01: sizing + autoscaling knobs
+# ---------------------------------------------------------------------------
+# Previously desired_count, capacity_provider_strategy, and
+# deployment_minimum_healthy_percent were hardcoded to 1 / SPOT-only / 0
+# — a single-task sandbox. These variables let the caller (mcp-outcomeops.tf
+# et al.) tune per environment.
+
+variable "desired_count" {
+  type        = number
+  description = "Initial ECS service desired_count. Autoscaling adjusts out-of-band (lifecycle already ignores desired_count changes)."
+  default     = 1
+}
+
+variable "ondemand_base" {
+  type        = number
+  description = "FARGATE (on-demand) base count in the capacity provider strategy."
+  default     = 0
+}
+
+variable "ondemand_weight" {
+  type        = number
+  description = "FARGATE (on-demand) weight in the capacity provider strategy above the base."
+  default     = 0
+}
+
+variable "spot_weight" {
+  type        = number
+  description = "FARGATE_SPOT weight in the capacity provider strategy."
+  default     = 100
+}
+
+variable "min_healthy_percent" {
+  type        = number
+  description = "deployment_minimum_healthy_percent for the service. 100 guarantees no in-flight request lost during a deploy or spot reclamation."
+  default     = 0
+}
+
+variable "enable_autoscaling" {
+  type        = bool
+  description = "Whether to attach app-autoscaling to this service."
+  default     = false
+}
+
+variable "autoscaling_min_capacity" {
+  type        = number
+  description = "Autoscaling minimum task count. Ignored when enable_autoscaling = false."
+  default     = 1
+}
+
+variable "autoscaling_max_capacity" {
+  type        = number
+  description = "Autoscaling maximum task count. Ignored when enable_autoscaling = false."
+  default     = 10
+}
+
+variable "autoscaling_target_requests_per_task" {
+  type        = number
+  description = "Target-tracking value for ALBRequestCountPerTarget on this service. Ignored when enable_autoscaling = false or when use_alb = false."
+  default     = 200
+}
+
+variable "alb_arn_suffix" {
+  type        = string
+  description = "ARN suffix of the ALB fronting this service (app/<name>/<id>). Required for ALBRequestCountPerTarget autoscaling; ignored otherwise."
+  default     = ""
+}
+
 variable "environment_variables" {
   type        = map(string)
   description = "Environment variables for the MCP server container"

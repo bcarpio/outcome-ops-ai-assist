@@ -82,8 +82,21 @@ module "mcp_outcomeops_secondary" {
   # cross-region replication config from chunk 9a.
   container_image = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.secondary_region}.amazonaws.com/${var.environment}-${var.app_name}-mcp-outcomeops:latest"
   container_port  = 8080
-  cpu             = 512
-  memory          = 1024
+
+  # fable-scale chunk 01 (HA parity): tfvars-driven sizing + autoscaling,
+  # same shape as primary. Requires fable-scale chunk 02 sessions in DDB.
+  cpu                                  = var.mcp_server_cpu
+  memory                               = var.mcp_server_memory
+  desired_count                        = var.mcp_server_desired_count
+  ondemand_base                        = var.mcp_server_ondemand_base
+  ondemand_weight                      = var.mcp_server_ondemand_weight
+  spot_weight                          = var.mcp_server_spot_weight
+  min_healthy_percent                  = var.mcp_server_min_healthy_percent
+  enable_autoscaling                   = var.mcp_server_enable_autoscaling
+  autoscaling_min_capacity             = var.mcp_server_min_count
+  autoscaling_max_capacity             = var.mcp_server_max_count
+  autoscaling_target_requests_per_task = var.mcp_server_target_requests_per_task
+  alb_arn_suffix                       = local.deploy_ui_secondary ? module.ui_alb_secondary.arn_suffix : ""
 
   environment_variables = merge({
     PORT               = "8080"
@@ -95,6 +108,11 @@ module "mcp_outcomeops_secondary" {
     ENVIRONMENT        = var.environment
     MCP_BASE_URL       = local.mcp_base_url_secondary
     AUDIT_TABLE        = module.audit_logs_table_secondary[0].dynamodb_table_id
+    # fable-scale chunk 02 (HA parity): DDB-backed session store, secondary
+    # region's own table. Sessions are region-scoped by design (chunk 02
+    # comment in terraform/dynamodb-mcp-sessions.tf).
+    MCP_SESSION_STORE  = "ddb"
+    MCP_SESSIONS_TABLE = module.mcp_sessions_table_secondary[0].dynamodb_table_id
     SYMBOL_GRAPH_TABLE = module.symbol_graph_table_secondary[0].dynamodb_table_id
     CODE_MAPS_TABLE    = module.code_maps_table_secondary[0].dynamodb_table_id
     # chunk 09 (HA parity, ADR-033): mirror primary rerank env. Without
@@ -186,6 +204,20 @@ resource "aws_iam_role_policy" "mcp_outcomeops_secondary" {
         Resource = [
           module.workspaces_table_secondary[0].dynamodb_table_arn,
           "${module.workspaces_table_secondary[0].dynamodb_table_arn}/index/*",
+        ]
+      },
+      {
+        # fable-scale chunk 02 (HA parity): session store, secondary region.
+        Sid    = "MCPSessionsAccess"
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:DeleteItem",
+        ]
+        Resource = [
+          module.mcp_sessions_table_secondary[0].dynamodb_table_arn,
         ]
       },
       {

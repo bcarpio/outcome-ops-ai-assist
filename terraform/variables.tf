@@ -548,13 +548,269 @@ variable "ui_container_image_secondary" {
 }
 
 variable "ui_alb_internal" {
-  description = "Make the ALB internal (VPC-only access). Set to false for public ALB secured by OIDC."
+  description = "Make the ALB internal (VPC-only access). Set to false for public ALB secured by OIDC. fable-scale chunk 09 flipped the default from false → true so a fresh enterprise deploy defaults to the safer posture; sandbox / demo deploys explicitly set `ui_alb_internal = false` in their tfvars."
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "ui_fargate_assign_public_ip" {
   description = "Assign public IP to Fargate tasks. Set to true for public subnets without NAT. Set to false for private subnets with outbound via NAT, Transit Gateway, or Direct Connect."
+  type        = bool
+  default     = false
+}
+
+# ============================================================================
+# UI proxy Fargate sizing + autoscaling (fable-scale chunk 01)
+# ----------------------------------------------------------------------------
+# Historically the UI proxy shipped as one 0.25 vCPU / 512 MB FARGATE_SPOT
+# task with deployment_minimum_healthy_percent = 0. Fine as a sandbox demo;
+# every SSE chat stream for the whole company can't fit through it, and a
+# spot reclamation drops every in-flight stream. These knobs let operators
+# right-size for the deployment tier without editing terraform. Defaults
+# target a small-enterprise workload (2 tasks base, scale to 20, mixed
+# on-demand + spot). Enterprise operators bump max + min in tfvars.
+# ============================================================================
+
+variable "ui_fargate_cpu" {
+  description = "CPU units for each UI proxy Fargate task (256 = 0.25 vCPU). 512 covers the enterprise chat + streaming workload; 256 was the sandbox default."
+  type        = number
+  default     = 512
+}
+
+variable "ui_fargate_memory" {
+  description = "Memory (MB) for each UI proxy Fargate task. 1024 covers the Node event-loop headroom under high SSE concurrency."
+  type        = number
+  default     = 1024
+}
+
+variable "ui_fargate_desired_count" {
+  description = "Initial desired task count for the UI proxy service. Autoscaling can adjust this out-of-band; terraform ignores subsequent drift (module lifecycle)."
+  type        = number
+  default     = 2
+}
+
+variable "ui_fargate_min_count" {
+  description = "Autoscaling minimum task count for the UI proxy service. Below 2 there is no fault tolerance under spot reclamation."
+  type        = number
+  default     = 2
+}
+
+variable "ui_fargate_max_count" {
+  description = "Autoscaling maximum task count for the UI proxy service. Cap at the point where the ALB target group starts to see diminishing returns (per-task connection budget)."
+  type        = number
+  default     = 20
+}
+
+variable "ui_fargate_target_requests_per_task" {
+  description = "Target-tracking value for ALBRequestCountPerTarget on the UI proxy service. Sizing driver: chat SSE holds a socket 30-900s, so this is really 'concurrent streams per task'."
+  type        = number
+  default     = 500
+}
+
+variable "ui_fargate_ondemand_base" {
+  description = "FARGATE (on-demand) base count in the capacity provider strategy. Set to 1+ to guarantee at least N always-on tasks that never spot-reclaim."
+  type        = number
+  default     = 1
+}
+
+variable "ui_fargate_ondemand_weight" {
+  description = "FARGATE (on-demand) weight in the capacity provider strategy. Combined with spot_weight, controls the on-demand:spot ratio above the base."
+  type        = number
+  default     = 1
+}
+
+variable "ui_fargate_spot_weight" {
+  description = "FARGATE_SPOT weight in the capacity provider strategy. Higher = more spot use above the on-demand base. Cost knob."
+  type        = number
+  default     = 3
+}
+
+variable "ui_fargate_min_healthy_percent" {
+  description = "deployment_minimum_healthy_percent for the UI proxy service. 100 guarantees at least the current desired_count of healthy tasks during a deploy; 0 permits full replacement (sandbox default). Enterprise deploys should stay at 100."
+  type        = number
+  default     = 100
+}
+
+# ============================================================================
+# MCP server Fargate sizing + autoscaling (fable-scale chunk 01)
+# ----------------------------------------------------------------------------
+# Same story as ui_fargate_*: sandbox default was 0.5 vCPU / 1 GB / 1
+# FARGATE_SPOT task. At 2000 engineers running Claude Code with persistent
+# MCP connections this melts. Autoscaling requires session state to move
+# out of the module-global _sessions dict — see fable-scale chunk 02.
+# ============================================================================
+
+variable "mcp_server_cpu" {
+  description = "CPU units for each MCP server Fargate task (256 = 0.25 vCPU). MCP holds persistent connections; 1024 gives thread-pool + FD headroom for the enterprise workload."
+  type        = number
+  default     = 1024
+}
+
+variable "mcp_server_memory" {
+  description = "Memory (MB) for each MCP server Fargate task. 2048 covers the Python stdlib ThreadingHTTPServer + boto client caches."
+  type        = number
+  default     = 2048
+}
+
+variable "mcp_server_desired_count" {
+  description = "Initial desired task count for the MCP server service. Requires DDB-backed sessions (fable-scale chunk 02); with in-memory sessions, second+ tasks won't share state."
+  type        = number
+  default     = 2
+}
+
+variable "mcp_server_min_count" {
+  description = "Autoscaling minimum task count for the MCP server service."
+  type        = number
+  default     = 2
+}
+
+variable "mcp_server_max_count" {
+  description = "Autoscaling maximum task count for the MCP server service."
+  type        = number
+  default     = 20
+}
+
+variable "mcp_server_target_requests_per_task" {
+  description = "Target-tracking value for ALBRequestCountPerTarget on the MCP server service. MCP tool calls are short-lived so this is closer to a QPS cap than a concurrency cap."
+  type        = number
+  default     = 200
+}
+
+variable "mcp_server_ondemand_base" {
+  description = "FARGATE (on-demand) base count in the MCP server capacity provider strategy."
+  type        = number
+  default     = 1
+}
+
+variable "mcp_server_ondemand_weight" {
+  description = "FARGATE (on-demand) weight in the MCP server capacity provider strategy."
+  type        = number
+  default     = 1
+}
+
+variable "mcp_server_spot_weight" {
+  description = "FARGATE_SPOT weight in the MCP server capacity provider strategy."
+  type        = number
+  default     = 3
+}
+
+variable "mcp_server_min_healthy_percent" {
+  description = "deployment_minimum_healthy_percent for the MCP server service."
+  type        = number
+  default     = 100
+}
+
+variable "mcp_server_enable_autoscaling" {
+  description = "Whether to attach app-autoscaling to the MCP server service. Requires session externalization (fable-scale chunk 02). Disable when running in-memory sessions."
+  type        = bool
+  default     = true
+}
+
+# ============================================================================
+# Bedrock fairness + graceful degradation (fable-scale chunk 05)
+# ----------------------------------------------------------------------------
+# All four workloads (chat, code-maps, code-gen, pr-analyzer) share the same
+# per-model Bedrock on-demand quota. Without concurrency caps and fairness
+# controls, a batch of PR checks or a re-ingestion burst starves the
+# interactive chat surface. These knobs cap the batch workloads and give
+# operators room to reserve Lambda concurrency for chat.
+# ============================================================================
+
+variable "pr_check_max_concurrency" {
+  description = "Maximum concurrent process-pr-check Lambda invocations from the SQS event source. Caps PR-analyzer's share of the Bedrock quota so a Monday burst of 200 PRs doesn't 500 interactive chat streams."
+  type        = number
+  default     = 20
+}
+
+variable "chat_reserved_concurrency" {
+  description = "Reserved concurrent executions for the chat Lambda. Null = shared account pool (sandbox default). Set to e.g. 100 in enterprise deploys so interactive chat never contends with batch jobs for account concurrency."
+  type        = number
+  default     = -1 # -1 == unreserved (Lambda module maps this to null)
+}
+
+variable "chat_timeout_seconds" {
+  description = "Chat Lambda timeout. Historical default was 900 (max for streaming); tool-use worst case fits comfortably in 300. Shorter timeout unblocks Lambda concurrency slots sooner under sustained load."
+  type        = number
+  default     = 300
+}
+
+# ============================================================================
+# Ingestion throughput (fable-scale chunk 08)
+# ----------------------------------------------------------------------------
+# Prior sandbox defaults capped github-sync at 5 concurrent + repo/batch
+# summaries at 20. At thousands of repos re-ingesting on every push-to-main
+# the pipeline lags by days. The 10s hardcoded cooldown in process-batch-
+# summary was defensive against low Bedrock quotas — enterprise deploys
+# with dedicated capacity should disable it (default 0). Merge budget was
+# hardcoded 10x60s = 10 min; at scale we want a longer runway.
+# ============================================================================
+
+variable "github_sync_max_conc" {
+  description = "SQS ESM MaximumConcurrency on process-github-sync (was 5). At enterprise repo counts, 5 concurrent syncs bottlenecks the entire ingestion pipeline."
+  type        = number
+  default     = 25
+}
+
+variable "repo_summary_max_conc" {
+  description = "SQS ESM MaximumConcurrency on process-repo-summary (was 20). Repo summary work is Bedrock-heavy; bumping requires Bedrock quota headroom + the workload gate from chunk 05."
+  type        = number
+  default     = 50
+}
+
+variable "batch_summary_max_conc" {
+  description = "SQS ESM MaximumConcurrency on process-batch-summary (was 20). Same Bedrock-quota constraint as repo_summary_max_conc."
+  type        = number
+  default     = 50
+}
+
+variable "batch_summary_msg_cooldown_ms" {
+  description = "Per-message cooldown in process-batch-summary after Bedrock synthesis (was hardcoded 10000ms = 10s). Set to 0 (default) for enterprise Bedrock quotas; raise for low-quota accounts hitting throttles."
+  type        = number
+  default     = 0
+}
+
+variable "batch_summary_merge_attempts" {
+  description = "Max requeue-with-delay attempts before the code-map merge fan-in gives up (was hardcoded 10). At enterprise repo scale, some shards take longer than 10 attempts × 60s = 10 min."
+  type        = number
+  default     = 30
+}
+
+variable "batch_summary_merge_delay_s" {
+  description = "Requeue delay per merge attempt in seconds (was hardcoded 60). Combined with merge_attempts, sets the total merge-window budget."
+  type        = number
+  default     = 60
+}
+
+variable "github_scheduler_timeout_seconds" {
+  description = "github-scheduler Lambda timeout. Was 60s (hardcoded); with parallel enqueue the scheduler completes much faster than the timeout, but 300 gives headroom for enterprise repo counts + SQS latency variance."
+  type        = number
+  default     = 300
+}
+
+variable "github_scheduler_parallel_workers" {
+  description = "ThreadPoolExecutor worker count for github-scheduler's SQS enqueue fan-out (was serial). 32 workers × ~10ms per SQS send handles ~3000 repos inside the 300s timeout with plenty of margin."
+  type        = number
+  default     = 32
+}
+
+# ============================================================================
+# Data-layer hygiene (fable-scale chunk 10)
+# ============================================================================
+
+variable "chat_message_ttl_seconds" {
+  description = "TTL applied to new chat table rows via `expires_at`. Prior behavior: unbounded — every historical chat message survived forever. Default 90 days (7776000s). Rows written before this landed have no attribute and are ignored by TTL."
+  type        = number
+  default     = 7776000 # 90 days
+}
+
+variable "chat_max_message_content_chars" {
+  description = "Cap on chat message content length in chars before head+tail truncation. Historical writes had no cap; large pastes approached the 400KB DDB item limit and inflated every subsequent synthesis prompt (chat re-sends the last 10 messages verbatim). 50000 covers legitimate code pastes; larger content gets truncated with a middle-of-message notice."
+  type        = number
+  default     = 50000
+}
+
+variable "bedrock_prompt_cache_enabled" {
+  description = "Enable Bedrock Converse cachePoint on chat synthesis system prompts. Rollout-gated (default false); flip to true once cache-hit-rate telemetry validates the win. Real input-token savings on stable system prompts."
   type        = bool
   default     = false
 }

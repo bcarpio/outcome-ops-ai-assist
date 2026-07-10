@@ -44,8 +44,23 @@ module "mcp_outcomeops" {
   server_name     = "outcomeops"
   container_image = "${aws_ecr_repository.mcp_outcomeops[0].repository_url}:latest"
   container_port  = 8080
-  cpu             = 512
-  memory          = 1024
+
+  # fable-scale chunk 01: sizing + autoscaling driven by tfvars. Autoscaling
+  # here presumes DDB-backed sessions (fable-scale chunk 02); with in-memory
+  # sessions a second task can't share auth/session state — flip
+  # mcp_server_enable_autoscaling = false as a rollback until chunk 02 ships.
+  cpu                                  = var.mcp_server_cpu
+  memory                               = var.mcp_server_memory
+  desired_count                        = var.mcp_server_desired_count
+  ondemand_base                        = var.mcp_server_ondemand_base
+  ondemand_weight                      = var.mcp_server_ondemand_weight
+  spot_weight                          = var.mcp_server_spot_weight
+  min_healthy_percent                  = var.mcp_server_min_healthy_percent
+  enable_autoscaling                   = var.mcp_server_enable_autoscaling
+  autoscaling_min_capacity             = var.mcp_server_min_count
+  autoscaling_max_capacity             = var.mcp_server_max_count
+  autoscaling_target_requests_per_task = var.mcp_server_target_requests_per_task
+  alb_arn_suffix                       = var.deploy_ui ? module.ui_alb.arn_suffix : ""
 
   environment_variables = merge({
     PORT               = "8080"
@@ -56,6 +71,12 @@ module "mcp_outcomeops" {
     KB_BUCKET          = module.knowledge_base_bucket.s3_bucket_id
     ENVIRONMENT        = var.environment
     MCP_BASE_URL       = local.mcp_base_url
+    # fable-scale chunk 02: DDB-backed session store. MCP_SESSION_STORE
+    # picks the impl (memory | ddb); "ddb" is required for horizontal
+    # scaling (chunk 01 autoscaling). Fallback to "memory" reverts to the
+    # single-task in-memory dict (test-mode + operator rollback).
+    MCP_SESSION_STORE  = "ddb"
+    MCP_SESSIONS_TABLE = module.mcp_sessions_table[0].dynamodb_table_id
     # plan/audit-completeness chunk 02 + 08: MCP server emits
     # ACTION_API_KEY_USED + ACTION_MCP_TOOL_INVOKED audit rows.
     AUDIT_TABLE = module.audit_logs_table.dynamodb_table_id
@@ -149,6 +170,20 @@ resource "aws_iam_role_policy" "mcp_outcomeops" {
         Resource = [
           module.workspaces_table[0].dynamodb_table_arn,
           "${module.workspaces_table[0].dynamodb_table_arn}/index/*"
+        ]
+      },
+      {
+        # fable-scale chunk 02: session store (PK-only, TTL-driven).
+        Sid    = "MCPSessionsAccess"
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:DeleteItem",
+        ]
+        Resource = [
+          module.mcp_sessions_table[0].dynamodb_table_arn,
         ]
       },
       {
