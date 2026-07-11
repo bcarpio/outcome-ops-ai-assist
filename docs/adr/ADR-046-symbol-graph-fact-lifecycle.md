@@ -81,11 +81,14 @@ one generation of facts per file survives.**
    `facts_deleted` counts the pruned rows (0 when nothing shifted).
 
    **Ordering is a safety property, not incidental.** The ADR-046 replace roughly
-   doubles write volume (a delete plus a put per fact), and a full-repo
-   re-extract fires ~30 parallel batches at the on-demand symbol-graph table —
-   bursts that briefly outrun auto-scaling and raise `ThrottlingException`.
-   process-batch-summary swallows a symbol-graph write failure (it must never
-   break the summary path) and does not retry, and the pointer still commits.
+   doubles write volume (a delete plus a put per fact). Re-extraction is
+   incremental (only the code units whose files changed are reprocessed), but a
+   single large handler's facts, written across parallel process-batch-summary
+   batches, is enough of a burst to briefly outrun the on-demand symbol-graph
+   table's auto-scaling and raise `ThrottlingException` — no full-repo sync is
+   required. process-batch-summary swallows a symbol-graph write failure (it must
+   never break the summary path) and does not retry, and the pointer still
+   commits.
    With **delete-first**, a write that throttles *after* the delete would leave
    the file with **zero facts** — silent data loss under a load the fix itself
    creates. **Write-then-prune** makes the same failure non-destructive: a failed
