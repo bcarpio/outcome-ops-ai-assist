@@ -487,6 +487,64 @@ export async function removeMember(workspaceId: string, email: string): Promise<
   }
 }
 
+// ---------------------------------------------------------------------------
+// Azure AD group -> workspace bindings (chunk 11a)
+// ---------------------------------------------------------------------------
+
+export interface GroupBinding {
+  group_id: string
+  workspace_id: string
+  role: 'member' | 'workspace_admin'
+  created_at?: string
+}
+
+/**
+ * List the Entra group bindings for a workspace (admin).
+ */
+export async function listGroupBindings(workspaceId: string): Promise<GroupBinding[]> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/group-bindings`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to list group bindings: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return (data?.bindings as GroupBinding[]) || []
+}
+
+/**
+ * Bind an Entra group to a workspace at a role (admin).
+ */
+export async function createGroupBinding(
+  workspaceId: string,
+  groupId: string,
+  role: 'member' | 'workspace_admin' = 'member'
+): Promise<GroupBinding> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/group-bindings`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ group_id: groupId, role }),
+  })
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to create group binding: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return data?.binding as GroupBinding
+}
+
+/**
+ * Remove an Entra group -> workspace binding (admin).
+ */
+export async function deleteGroupBinding(workspaceId: string, groupId: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/group-bindings/${encodeURIComponent(groupId)}`, {
+    method: 'DELETE',
+  })
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to delete group binding: ${response.status}`)
+  }
+}
+
 /**
  * List workspace repos
  */

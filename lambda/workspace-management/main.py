@@ -241,6 +241,56 @@ async def remove_member(workspace_id: str, member_email: str, request: Request):
 
 
 # ============================================================================
+# Azure AD group->workspace bindings + on-login sync (chunk 11a)
+# ============================================================================
+
+
+@app.post("/sync-memberships")
+async def sync_memberships_route(request: Request):
+    """On-login group->workspace membership reconciliation (self-service)."""
+    from handler import lambda_handler
+
+    body = await request.body()
+    event = _build_event(request, "POST", "/sync-memberships", body.decode("utf-8"))
+    return _parse_response(lambda_handler(event, None))
+
+
+@app.get("/workspaces/{workspace_id}/group-bindings")
+async def list_group_bindings_route(workspace_id: str, request: Request):
+    """List Entra group bindings for a workspace."""
+    from handler import lambda_handler
+
+    event = _build_event(
+        request, "GET", f"/workspaces/{workspace_id}/group-bindings")
+    return _parse_response(lambda_handler(event, None))
+
+
+@app.post("/workspaces/{workspace_id}/group-bindings")
+async def create_group_binding_route(workspace_id: str, request: Request):
+    """Bind an Entra group to a workspace."""
+    from handler import lambda_handler
+
+    body = await request.body()
+    event = _build_event(
+        request, "POST", f"/workspaces/{workspace_id}/group-bindings",
+        body.decode("utf-8"))
+    return _parse_response(lambda_handler(event, None))
+
+
+@app.delete("/workspaces/{workspace_id}/group-bindings/{group_id}")
+async def delete_group_binding_route(
+    workspace_id: str, group_id: str, request: Request
+):
+    """Remove an Entra group->workspace binding."""
+    from handler import lambda_handler
+
+    event = _build_event(
+        request, "DELETE",
+        f"/workspaces/{workspace_id}/group-bindings/{group_id}")
+    return _parse_response(lambda_handler(event, None))
+
+
+# ============================================================================
 # Repo Routes
 # ============================================================================
 

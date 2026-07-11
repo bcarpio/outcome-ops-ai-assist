@@ -152,12 +152,24 @@ function extractUser(req) {
         }
       }
 
+      // chunk 11a: the Entra `groups` claim drives group->workspace sync.
+      // Azure AD emits `groups` only when the enterprise app sets
+      // groupMembershipClaims=SecurityGroup/All. For users in >200 groups it
+      // emits `_claim_names` + `hasGroups` INSTEAD of `groups` (the overage) --
+      // in that case we must NOT treat groups as empty (that would wrongly
+      // revoke every group-derived membership on login); flag it so the sync
+      // is skipped until the Graph /me/memberOf fallback ships.
+      const groups = Array.isArray(payload.groups) ? payload.groups : [];
+      const groupsOverflow = !!(payload.hasGroups || payload._claim_names);
+
       return {
         email: (email || payload.sub || "unknown").toLowerCase(),
         name: payload.name || email || "unknown",
+        groups,
+        groupsOverflow,
       };
     } catch {
-      return { email: "unknown", name: "unknown" };
+      return { email: "unknown", name: "unknown", groups: [], groupsOverflow: false };
     }
   }
 
@@ -678,6 +690,44 @@ function handleMockWorkspaceRequest(req, res, method, path) {
 }
 
 // Helper to proxy workspace requests
+// chunk 11a: on-login group->workspace membership sync. Fire-and-forget from
+// the proxy, at most once per user per hour (matching the ALB OIDC token
+// refresh cadence). Server-internal -- the React client never calls it. Skipped
+// on the >200-group overage: syncing with an empty group list would wrongly
+// revoke every group-derived membership.
+const _membershipSyncCache = new Map(); // email -> last-sync epoch ms
+const MEMBERSHIP_SYNC_TTL_MS = 60 * 60 * 1000;
+
+async function maybeSyncMemberships(req, user) {
+  if (LOCAL_DEV_MODE || !WORKSPACE_LAMBDA_URL) return;
+  if (!user || !user.email || user.email === "unknown") return;
+  if (user.groupsOverflow) {
+    console.warn(
+      `[sync] ${user.email} has >200 groups (claim overage); skipping group ` +
+      `sync until the Graph /me/memberOf fallback ships`
+    );
+    return;
+  }
+  const last = _membershipSyncCache.get(user.email) || 0;
+  if (Date.now() - last < MEMBERSHIP_SYNC_TTL_MS) return;
+  _membershipSyncCache.set(user.email, Date.now());
+  try {
+    const resp = await signedWorkspaceFetch("POST", "/sync-memberships", {
+      extraHeaders: userHeaders(req, user),
+      body: JSON.stringify({ groups: user.groups || [] }),
+    });
+    if (!resp.ok) {
+      console.warn(`[sync] membership sync for ${user.email} -> ${resp.status}`);
+    } else {
+      const data = await resp.json().catch(() => ({}));
+      console.log(`[sync] ${user.email}: +${data.added || 0} -${data.revoked || 0} workspaces`);
+    }
+  } catch (e) {
+    // Never block the user's request on a sync hiccup.
+    console.warn(`[sync] membership sync failed for ${user.email}: ${e.message}`);
+  }
+}
+
 async function proxyWorkspaceRequest(req, res, method, path) {
   // Use mock handlers in local development mode
   if (LOCAL_DEV_MODE) {
@@ -692,6 +742,10 @@ async function proxyWorkspaceRequest(req, res, method, path) {
 
   const user = extractUser(req);
   console.log(`[proxy] Workspace ${method} ${path} for: ${user.email}`);
+
+  // chunk 11a: reconcile group-derived memberships on the first request per
+  // user per hour. Fire-and-forget -- never awaited, never blocks this request.
+  maybeSyncMemberships(req, user);
 
   try {
     const options = { extraHeaders: userHeaders(req, user) };
@@ -755,6 +809,11 @@ app.post("/api/workspaces/:id/members", (req, res) => proxyWorkspaceRequest(req,
 app.get("/api/workspaces/:id/members", (req, res) => proxyWorkspaceRequest(req, res, "GET", `/workspaces/${req.params.id}/members`));
 app.patch("/api/workspaces/:id/members/:email", (req, res) => proxyWorkspaceRequest(req, res, "PATCH", `/workspaces/${req.params.id}/members/${encodeURIComponent(req.params.email)}`));
 app.delete("/api/workspaces/:id/members/:email", (req, res) => proxyWorkspaceRequest(req, res, "DELETE", `/workspaces/${req.params.id}/members/${encodeURIComponent(req.params.email)}`));
+
+// chunk 11a: Azure AD group -> workspace bindings (admin)
+app.get("/api/workspaces/:id/group-bindings", (req, res) => proxyWorkspaceRequest(req, res, "GET", `/workspaces/${req.params.id}/group-bindings`));
+app.post("/api/workspaces/:id/group-bindings", (req, res) => proxyWorkspaceRequest(req, res, "POST", `/workspaces/${req.params.id}/group-bindings`));
+app.delete("/api/workspaces/:id/group-bindings/:gid", (req, res) => proxyWorkspaceRequest(req, res, "DELETE", `/workspaces/${req.params.id}/group-bindings/${encodeURIComponent(req.params.gid)}`));
 
 // Workspace repos
 app.get("/api/workspaces/:id/repos/available", (req, res) => proxyWorkspaceRequest(req, res, "GET", `/workspaces/${req.params.id}/repos/available`));

@@ -1,0 +1,164 @@
+"""Tests for the Azure AD group->workspace backend (chunk 11a).
+
+Covers create/delete/list group bindings + the on-login sync_memberships
+reconciliation in workspace-management/handler.py.
+"""
+
+import importlib.util
+import os
+import sys
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+
+def _load_handler_module():
+    # Load under a UNIQUE module name so we never delete/clobber the
+    # "workspace_management_handler" entry that test_workspace_management.py
+    # captures -- reloading a shared module name mid-suite invalidates the
+    # other file's captured functions + patches. We patch.object(H, ...) on
+    # this private instance, so string-target patching is not needed.
+    handler_path = os.path.join(
+        os.path.dirname(__file__), "../../workspace-management/handler.py")
+    name = "wm_handler_group_bindings"
+    spec = importlib.util.spec_from_file_location(name, handler_path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+H = _load_handler_module()
+create_group_binding = H.create_group_binding
+delete_group_binding = H.delete_group_binding
+list_group_bindings = H.list_group_bindings
+sync_memberships = H.sync_memberships
+GroupBindingRequest = H.GroupBindingRequest
+SyncMembershipsRequest = H.SyncMembershipsRequest
+
+ADMIN = "admin@outcomeops.onmicrosoft.com"
+USER = "alice@outcomeops.onmicrosoft.com"
+
+
+def _binding(gid, ws, role="member"):
+    return {"group_id": gid, "workspace_id": ws, "role": role}
+
+
+def _member(ws, role="member", source=None):
+    m = {"PK": f"USER#{USER}", "SK": f"WS_MEMBER#{ws}",
+         "workspace_id": ws, "role": role, "user_email": USER}
+    if source is not None:
+        m["source"] = source
+    return m
+
+
+class TestGroupBindingCRUD:
+    @patch.object(H, "log_admin_action")
+    @patch.object(H.dual_write, "ddb_put_item")
+    @patch.object(H, "_is_workspace_admin", return_value=True)
+    @patch.object(H, "_get_workspaces_table",
+           return_value="t")
+    @patch.object(H, "_get_dynamodb")
+    def test_create_binding_admin(self, ddb, _t, _adm, put, _audit):
+        table = MagicMock()
+        ddb.return_value.Table.return_value = table
+        table.get_item.return_value = {"Item": {"PK": "WS#ws1"}}
+
+        res = create_group_binding(
+            ADMIN, "ws1", GroupBindingRequest(group_id="g1", role="workspace_admin"))
+
+        assert res["statusCode"] == 201
+        item = put.call_args.args[1]
+        assert item["PK"] == "GROUP#g1"
+        assert item["SK"] == "WORKSPACE#ws1"
+        assert item["GSI1PK"] == "WS#ws1" and item["GSI1SK"] == "GROUP#g1"
+        assert item["role"] == "workspace_admin"
+
+    @patch.object(H.dual_write, "ddb_put_item")
+    @patch.object(H, "_is_workspace_admin", return_value=False)
+    @patch.object(H, "_get_workspaces_table", return_value="t")
+    @patch.object(H, "_get_dynamodb")
+    def test_create_binding_non_admin_403(self, ddb, _t, _adm, put):
+        ddb.return_value.Table.return_value = MagicMock()
+        res = create_group_binding(USER, "ws1", GroupBindingRequest(group_id="g1"))
+        assert res["statusCode"] == 403
+        put.assert_not_called()
+
+    @patch.object(H, "log_admin_action")
+    @patch.object(H.dual_write, "ddb_delete_item")
+    @patch.object(H, "_is_workspace_admin", return_value=True)
+    @patch.object(H, "_get_workspaces_table", return_value="t")
+    @patch.object(H, "_get_dynamodb")
+    def test_delete_binding_admin(self, ddb, _t, _adm, dele, _audit):
+        ddb.return_value.Table.return_value = MagicMock()
+        res = delete_group_binding(ADMIN, "ws1", "g1")
+        assert res["statusCode"] == 200
+        assert dele.call_args.args[1] == {"PK": "GROUP#g1", "SK": "WORKSPACE#ws1"}
+
+    @patch.object(H, "_is_workspace_admin", return_value=True)
+    @patch.object(H, "_get_workspaces_table", return_value="t")
+    @patch.object(H, "_get_dynamodb")
+    def test_list_bindings(self, ddb, _t, _adm):
+        table = MagicMock()
+        ddb.return_value.Table.return_value = table
+        table.query.return_value = {"Items": [
+            {"group_id": "g1", "workspace_id": "ws1", "role": "member",
+             "created_at": "t0"}]}
+        res = list_group_bindings(ADMIN, "ws1")
+        assert res["statusCode"] == 200
+
+
+class TestSyncMemberships:
+    @patch.object(H, "log_admin_action")
+    @patch.object(H.dual_write, "ddb_delete_item")
+    @patch.object(H.dual_write, "ddb_put_item")
+    @patch.object(H, "_get_workspaces_table", return_value="t")
+    @patch.object(H, "_get_dynamodb")
+    def test_new_group_grant_written(self, ddb, _t, put, dele, _audit):
+        table = MagicMock()
+        ddb.return_value.Table.return_value = table
+        # query order: bindings for g1, then user's existing members
+        table.query.side_effect = [
+            {"Items": [_binding("g1", "ws1", "member")]},   # bindings for g1
+            {"Items": []},                                   # existing members
+        ]
+        res = sync_memberships(USER, SyncMembershipsRequest(groups=["g1"]))
+        assert res["statusCode"] == 200
+        item = put.call_args.args[1]
+        assert item["SK"] == "WS_MEMBER#ws1"
+        assert item["source"] == "group:g1"
+        assert item["user_email"] == USER
+        dele.assert_not_called()
+
+    @patch.object(H, "log_admin_action")
+    @patch.object(H.dual_write, "ddb_delete_item")
+    @patch.object(H.dual_write, "ddb_put_item")
+    @patch.object(H, "_get_workspaces_table", return_value="t")
+    @patch.object(H, "_get_dynamodb")
+    def test_group_removed_revokes(self, ddb, _t, put, dele, _audit):
+        table = MagicMock()
+        ddb.return_value.Table.return_value = table
+        # no groups -> no binding queries; existing has a group-owned row
+        table.query.side_effect = [
+            {"Items": [_member("ws1", source="group:g1")]},  # existing members
+        ]
+        res = sync_memberships(USER, SyncMembershipsRequest(groups=[]))
+        assert res["statusCode"] == 200
+        put.assert_not_called()
+        assert dele.call_args.args[1] == {"PK": f"USER#{USER}", "SK": "WS_MEMBER#ws1"}
+
+    @patch.object(H, "log_admin_action")
+    @patch.object(H.dual_write, "ddb_delete_item")
+    @patch.object(H.dual_write, "ddb_put_item")
+    @patch.object(H, "_get_workspaces_table", return_value="t")
+    @patch.object(H, "_get_dynamodb")
+    def test_manual_row_untouched(self, ddb, _t, put, dele, _audit):
+        table = MagicMock()
+        ddb.return_value.Table.return_value = table
+        table.query.side_effect = [
+            {"Items": [_member("ws1", role="workspace_admin", source="manual")]},
+        ]
+        res = sync_memberships(USER, SyncMembershipsRequest(groups=[]))
+        assert res["statusCode"] == 200
+        put.assert_not_called()
+        dele.assert_not_called()

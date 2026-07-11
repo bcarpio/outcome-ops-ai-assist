@@ -102,6 +102,7 @@ from shared.region_guard import (
 )
 from shared import dual_write
 from shared import audit_shard  # fable-scale chunk 04 — GSI2 shard fan-out
+from shared import group_workspace_sync  # chunk 11a — Azure AD group->workspace
 from shared.delete_dispatch import dispatch_repo_delete, region_from_sqs_url
 from shared.audit_writer import (
     ACTION_API_KEY_CREATED,
@@ -109,6 +110,9 @@ from shared.audit_writer import (
     ACTION_API_KEY_USED,
     ACTION_DOCUMENT_DELETED,
     ACTION_DOCUMENT_DOWNLOADED,
+    ACTION_GROUP_BINDING_ADDED,
+    ACTION_GROUP_BINDING_REMOVED,
+    ACTION_GROUP_MEMBERSHIPS_SYNCED,
     ACTION_LOGIN_SUCCEEDED,
     ACTION_MCP_SERVER_ASSIGNED,
     ACTION_MCP_SERVER_CREATED,
@@ -365,6 +369,39 @@ class UpdateMemberRequest(BaseModel):
         if v not in ("workspace_admin", "member"):
             raise ValueError("role must be 'workspace_admin' or 'member'")
         return v
+
+
+class GroupBindingRequest(BaseModel):
+    """Request model for binding an Entra (Azure AD) group to a workspace."""
+
+    group_id: str
+    role: str = Field(default="member")
+
+    @field_validator("group_id")
+    @classmethod
+    def normalize_group_id(cls, v: str) -> str:
+        v = (v or "").strip()
+        if not v:
+            raise ValueError("group_id is required")
+        return v
+
+    @field_validator("role")
+    @classmethod
+    def validate_role(cls, v: str) -> str:
+        if v not in ("workspace_admin", "member"):
+            raise ValueError("role must be 'workspace_admin' or 'member'")
+        return v
+
+
+class SyncMembershipsRequest(BaseModel):
+    """Request model for on-login group->workspace membership sync.
+
+    ``groups`` is the caller's current Entra group-id list, taken from the OIDC
+    ``groups`` claim by the Fargate proxy. Empty list is valid (user is in no
+    groups -> all of their group-derived memberships get revoked).
+    """
+
+    groups: List[str] = Field(default_factory=list)
 
 
 class AddRepoRequest(BaseModel):
@@ -1177,6 +1214,9 @@ def add_member(
             "workspace_id": workspace_id,
             "user_email": request.email,
             "role": request.role,
+            # Tag admin-added rows as manual so the Azure AD group sync
+            # (chunk 11a) never revokes or overwrites them.
+            "source": group_workspace_sync.MANUAL_SOURCE,
             "joined_at": now,
         }
 
@@ -1371,6 +1411,229 @@ def remove_member(
     except ClientError as e:
         logger.error(f"Error removing member: {e}")
         return _error(500, "Failed to remove member")
+
+
+# ============================================================================
+# Azure AD group -> workspace bindings + on-login membership sync (chunk 11a)
+# ============================================================================
+
+
+def create_group_binding(
+    user_email: str,
+    workspace_id: str,
+    request: GroupBindingRequest,
+    audit_ctx: Optional[Dict[str, str]] = None,
+) -> Dict:
+    """Bind an Entra group to a workspace at a role (workspace admin only).
+
+    Stored as PK=GROUP#<gid>, SK=WORKSPACE#<wid> with a GSI1 mirror
+    (GSI1PK=WS#<wid>, GSI1SK=GROUP#<gid>) so bindings are queryable both by
+    group (the on-login sync) and by workspace (the admin UI).
+    """
+    dynamodb = _get_dynamodb()
+    table = dynamodb.Table(_get_workspaces_table())
+    try:
+        if not _is_workspace_admin(table, user_email, workspace_id):
+            return _error(403, "Only workspace admins can bind groups")
+        ws = table.get_item(Key={"PK": f"WS#{workspace_id}", "SK": "METADATA"})
+        if "Item" not in ws:
+            return _error(404, "Workspace not found")
+
+        now = datetime.now(timezone.utc).isoformat()
+        item = {
+            "PK": f"GROUP#{request.group_id}",
+            "SK": f"WORKSPACE#{workspace_id}",
+            "GSI1PK": f"WS#{workspace_id}",
+            "GSI1SK": f"GROUP#{request.group_id}",
+            "group_id": request.group_id,
+            "workspace_id": workspace_id,
+            "role": request.role,
+            "created_at": now,
+            "created_by": user_email,
+        }
+        dual_write.ddb_put_item(_get_workspaces_table(), item)
+
+        ctx = audit_ctx or {}
+        log_admin_action(
+            AUDIT_TABLE, ACTION_GROUP_BINDING_ADDED,
+            workspace_id=workspace_id, user_email=user_email,
+            source_ip=ctx.get("source_ip", ""), user_agent=ctx.get("user_agent", ""),
+            details={"group_id": request.group_id, "role": request.role},
+        )
+        logger.info(
+            f"Bound group {request.group_id} -> {workspace_id} ({request.role})")
+        return _response(201, {"binding": item})
+    except ClientError as e:
+        logger.error(f"Error creating group binding: {e}")
+        return _error(500, "Failed to create group binding")
+
+
+def delete_group_binding(
+    user_email: str,
+    workspace_id: str,
+    group_id: str,
+    audit_ctx: Optional[Dict[str, str]] = None,
+) -> Dict:
+    """Remove a group->workspace binding (workspace admin only).
+
+    Group-derived WS_MEMBER# rows are left in place; they prune the next time
+    each affected user's on-login sync runs (the binding is gone, so the
+    workspace drops out of their desired set).
+    """
+    dynamodb = _get_dynamodb()
+    table = dynamodb.Table(_get_workspaces_table())
+    try:
+        if not _is_workspace_admin(table, user_email, workspace_id):
+            return _error(403, "Only workspace admins can unbind groups")
+        dual_write.ddb_delete_item(
+            _get_workspaces_table(),
+            {"PK": f"GROUP#{group_id}", "SK": f"WORKSPACE#{workspace_id}"},
+        )
+        ctx = audit_ctx or {}
+        log_admin_action(
+            AUDIT_TABLE, ACTION_GROUP_BINDING_REMOVED,
+            workspace_id=workspace_id, user_email=user_email,
+            source_ip=ctx.get("source_ip", ""), user_agent=ctx.get("user_agent", ""),
+            details={"group_id": group_id},
+        )
+        logger.info(f"Unbound group {group_id} from {workspace_id}")
+        return _response(200, {"unbound": group_id, "workspace_id": workspace_id})
+    except ClientError as e:
+        logger.error(f"Error deleting group binding: {e}")
+        return _error(500, "Failed to delete group binding")
+
+
+def list_group_bindings(user_email: str, workspace_id: str) -> Dict:
+    """List the group bindings for a workspace (workspace admin only)."""
+    dynamodb = _get_dynamodb()
+    table = dynamodb.Table(_get_workspaces_table())
+    try:
+        if not _is_workspace_admin(table, user_email, workspace_id):
+            return _error(403, "Only workspace admins can view group bindings")
+        bindings: List[Dict] = []
+        kwargs = {
+            "IndexName": "GSI1",
+            "KeyConditionExpression": "GSI1PK = :pk AND begins_with(GSI1SK, :sk)",
+            "ExpressionAttributeValues": {
+                ":pk": f"WS#{workspace_id}", ":sk": "GROUP#"},
+        }
+        while True:
+            resp = table.query(**kwargs)
+            bindings.extend({
+                "group_id": i["group_id"], "workspace_id": i["workspace_id"],
+                "role": i.get("role", "member"), "created_at": i.get("created_at"),
+            } for i in resp.get("Items", []))
+            lek = resp.get("LastEvaluatedKey")
+            if not lek:
+                break
+            kwargs["ExclusiveStartKey"] = lek
+        return _response(200, {"bindings": bindings})
+    except ClientError as e:
+        logger.error(f"Error listing group bindings: {e}")
+        return _error(500, "Failed to list group bindings")
+
+
+def _query_group_bindings_for_groups(table, group_ids: List[str]) -> List[Dict]:
+    """Read all group->workspace bindings for the given group ids."""
+    out: List[Dict] = []
+    for gid in group_ids:
+        if not gid:
+            continue
+        kwargs = {
+            "KeyConditionExpression": "PK = :pk AND begins_with(SK, :sk)",
+            "ExpressionAttributeValues": {
+                ":pk": f"GROUP#{gid}", ":sk": "WORKSPACE#"},
+        }
+        while True:
+            resp = table.query(**kwargs)
+            out.extend({
+                "group_id": i["group_id"], "workspace_id": i["workspace_id"],
+                "role": i.get("role", "member"),
+            } for i in resp.get("Items", []))
+            lek = resp.get("LastEvaluatedKey")
+            if not lek:
+                break
+            kwargs["ExclusiveStartKey"] = lek
+    return out
+
+
+def _query_user_memberships(table, user_email: str) -> List[Dict]:
+    """Read the user's WS_MEMBER# rows (for the sync diff)."""
+    out: List[Dict] = []
+    kwargs = {
+        "KeyConditionExpression": "PK = :pk AND begins_with(SK, :sk)",
+        "ExpressionAttributeValues": {
+            ":pk": f"USER#{user_email}", ":sk": "WS_MEMBER#"},
+    }
+    while True:
+        resp = table.query(**kwargs)
+        out.extend(resp.get("Items", []))
+        lek = resp.get("LastEvaluatedKey")
+        if not lek:
+            break
+        kwargs["ExclusiveStartKey"] = lek
+    return out
+
+
+def sync_memberships(
+    user_email: str,
+    request: SyncMembershipsRequest,
+    audit_ctx: Optional[Dict[str, str]] = None,
+) -> Dict:
+    """Reconcile the caller's group-derived workspace memberships on login.
+
+    Reads the bindings for the caller's current groups + their existing
+    WS_MEMBER# rows, computes the delta (shared.group_workspace_sync), and
+    applies it. Only group-owned rows (source=group:<gid>) are ever written or
+    revoked; manual/legacy rows are untouched. Self-service -- operates on the
+    caller's own rows, no admin check.
+    """
+    dynamodb = _get_dynamodb()
+    table = dynamodb.Table(_get_workspaces_table())
+    try:
+        groups = request.groups or []
+        bindings = _query_group_bindings_for_groups(table, groups)
+        existing = _query_user_memberships(table, user_email)
+        to_put, to_delete = group_workspace_sync.compute_delta(
+            user_email, groups, bindings, existing)
+
+        now = datetime.now(timezone.utc).isoformat()
+        for m in to_put:
+            wid = m["workspace_id"]
+            dual_write.ddb_put_item(_get_workspaces_table(), {
+                "PK": f"USER#{user_email}",
+                "SK": f"WS_MEMBER#{wid}",
+                "GSI1PK": f"WS#{wid}",
+                "GSI1SK": f"USER#{user_email}",
+                "workspace_id": wid,
+                "user_email": user_email,
+                "role": m["role"],
+                "source": m["source"],
+                "joined_at": now,
+            })
+        for m in to_delete:
+            wid = m["workspace_id"]
+            dual_write.ddb_delete_item(
+                _get_workspaces_table(),
+                {"PK": f"USER#{user_email}", "SK": f"WS_MEMBER#{wid}"})
+
+        if to_put or to_delete:
+            ctx = audit_ctx or {}
+            log_admin_action(
+                AUDIT_TABLE, ACTION_GROUP_MEMBERSHIPS_SYNCED,
+                workspace_id="", user_email=user_email,
+                source_ip=ctx.get("source_ip", ""),
+                user_agent=ctx.get("user_agent", ""),
+                details={"added": [m["workspace_id"] for m in to_put],
+                         "revoked": [m["workspace_id"] for m in to_delete]},
+            )
+        logger.info(
+            f"Synced memberships for {user_email}: "
+            f"+{len(to_put)} -{len(to_delete)}")
+        return _response(200, {"added": len(to_put), "revoked": len(to_delete)})
+    except ClientError as e:
+        logger.error(f"Error syncing memberships: {e}")
+        return _error(500, "Failed to sync memberships")
 
 
 # ============================================================================
@@ -5551,6 +5814,46 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
                 return blocked
             member_email = unquote(parts[3])
             return remove_member(user_email, parts[1], member_email, audit_ctx)
+
+        # Route: POST /sync-memberships (chunk 11a — on-login self-service)
+        if parts == ("sync-memberships",) and http_method == "POST":
+            if blocked := _guard_or_block("sync_memberships"):
+                return blocked
+            request = SyncMembershipsRequest(**body)
+            return sync_memberships(user_email, request, audit_ctx)
+
+        # Route: GET /workspaces/{id}/group-bindings
+        if (
+            len(parts) == 3
+            and parts[0] == "workspaces"
+            and parts[2] == "group-bindings"
+            and http_method == "GET"
+        ):
+            return list_group_bindings(user_email, parts[1])
+
+        # Route: POST /workspaces/{id}/group-bindings
+        if (
+            len(parts) == 3
+            and parts[0] == "workspaces"
+            and parts[2] == "group-bindings"
+            and http_method == "POST"
+        ):
+            if blocked := _guard_or_block("create_group_binding", parts[1]):
+                return blocked
+            request = GroupBindingRequest(**body)
+            return create_group_binding(user_email, parts[1], request, audit_ctx)
+
+        # Route: DELETE /workspaces/{id}/group-bindings/{group_id}
+        if (
+            len(parts) == 4
+            and parts[0] == "workspaces"
+            and parts[2] == "group-bindings"
+            and http_method == "DELETE"
+        ):
+            if blocked := _guard_or_block("delete_group_binding", parts[1]):
+                return blocked
+            return delete_group_binding(
+                user_email, parts[1], unquote(parts[3]), audit_ctx)
 
         # Route: GET /workspaces/{id}/repos/available
         if (
