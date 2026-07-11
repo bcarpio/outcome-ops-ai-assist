@@ -251,6 +251,130 @@ def _emit_class_extends(
             )
 
 
+def _inner_def(node: Node) -> Optional[Node]:
+    """Unwrap a ``decorated_definition`` to its inner function/class node.
+
+    A decorated top-level def (``@app.get(...)``, ``@dataclass`` over a class,
+    ``@staticmethod`` over a method) parses as a ``decorated_definition`` node
+    that WRAPS the real ``function_definition`` / ``class_definition``. The
+    extractor's loops match on the definition node types, so without unwrapping
+    a decorated def is skipped entirely — no ``defines`` fact and none of its
+    internal ``calls``. FastAPI-style route handlers (``@app.get`` etc.) are the
+    common casualty. Returns ``node`` unchanged when it is not decorated, or
+    ``None`` when the wrapper has no inner definition. Decorators themselves are
+    intentionally NOT emitted as calls (out of scope).
+    """
+
+    if node.type != "decorated_definition":
+        return node
+    inner = _child_by_field(node, "definition")
+    if inner is not None:
+        return inner
+    for c in reversed(node.children):
+        if c.type in ("function_definition", "class_definition"):
+            return c
+    return None
+
+
+def _emit_function(
+    fn_node: Node,
+    module: str,
+    module_symbol_id: str,
+    source: bytes,
+    file_path: str,
+) -> Iterator[Fact]:
+    """Emit the ``defines`` fact for a top-level function plus its body calls.
+
+    ``line`` anchors on the ``def`` keyword (the inner node's start), matching
+    the undecorated case — not the decorator line.
+    """
+
+    name_node = _child_by_field(fn_node, "name")
+    if name_node is None:
+        return
+    fn_name = _node_text(name_node, source)
+    fn_id = make_symbol_id("python", module, fn_name)
+    yield Fact(
+        kind="defines",
+        source_symbol_id=module_symbol_id,
+        target_symbol_id=fn_id,
+        file_path=file_path,
+        line=fn_node.start_point[0] + 1,
+        language="python",
+        signature=_extract_signature(fn_node, source),
+    )
+    body = _child_by_field(fn_node, "body")
+    if body is not None:
+        for callee, line in _walk_calls(body, source):
+            yield Fact(
+                kind="calls",
+                source_symbol_id=fn_id,
+                target_symbol_id=make_symbol_id("python", module, callee),
+                file_path=file_path,
+                line=line,
+                language="python",
+            )
+
+
+def _emit_class(
+    cls_node: Node,
+    module: str,
+    module_symbol_id: str,
+    source: bytes,
+    file_path: str,
+) -> Iterator[Fact]:
+    """Emit ``defines`` + ``extends`` for a class and its methods (including
+    decorated methods, unwrapped via ``_inner_def``)."""
+
+    name_node = _child_by_field(cls_node, "name")
+    if name_node is None:
+        return
+    cls_name = _node_text(name_node, source)
+    cls_id = make_symbol_id("python", module, cls_name)
+    yield Fact(
+        kind="defines",
+        source_symbol_id=module_symbol_id,
+        target_symbol_id=cls_id,
+        file_path=file_path,
+        line=cls_node.start_point[0] + 1,
+        language="python",
+    )
+    yield from _emit_class_extends(cls_node, source, file_path, cls_id)
+    body = _child_by_field(cls_node, "body")
+    if body is None:
+        return
+    for member in body.children:
+        method = _inner_def(member)
+        if method is None or method.type != "function_definition":
+            continue
+        m_name_node = _child_by_field(method, "name")
+        if m_name_node is None:
+            continue
+        m_name = _node_text(m_name_node, source)
+        method_id = make_symbol_id("python", module, m_name, namespace=cls_name)
+        yield Fact(
+            kind="defines",
+            source_symbol_id=cls_id,
+            target_symbol_id=method_id,
+            file_path=file_path,
+            line=method.start_point[0] + 1,
+            language="python",
+            signature=_extract_signature(method, source),
+        )
+        m_body = _child_by_field(method, "body")
+        if m_body is None:
+            continue
+        for callee, line in _walk_calls(m_body, source):
+            yield Fact(
+                kind="calls",
+                source_symbol_id=method_id,
+                target_symbol_id=make_symbol_id("python", module, callee),
+                file_path=file_path,
+                line=line,
+                language="python",
+            )
+
+
 def extract(file_path: str, source: bytes) -> Iterator[Fact]:
     """Yield Facts for a single Python source file."""
 
@@ -269,83 +393,20 @@ def extract(file_path: str, source: bytes) -> Iterator[Fact]:
             yield from _emit_imports(child, source, file_path, module_symbol_id)
             continue
 
-        if child.type == "function_definition":
-            name_node = _child_by_field(child, "name")
-            if name_node is None:
-                continue
-            fn_name = _node_text(name_node, source)
-            fn_id = make_symbol_id("python", module, fn_name)
-            yield Fact(
-                kind="defines",
-                source_symbol_id=module_symbol_id,
-                target_symbol_id=fn_id,
-                file_path=file_path,
-                line=child.start_point[0] + 1,
-                language="python",
-                signature=_extract_signature(child, source),
-            )
-            body = _child_by_field(child, "body")
-            if body is not None:
-                for callee, line in _walk_calls(body, source):
-                    yield Fact(
-                        kind="calls",
-                        source_symbol_id=fn_id,
-                        target_symbol_id=make_symbol_id("python", module, callee),
-                        file_path=file_path,
-                        line=line,
-                        language="python",
-                    )
+        # Unwrap decorated top-level defs so @decorator over a def/class is not
+        # silently skipped (the pre-fix root loop matched only the bare
+        # definition node types).
+        node = _inner_def(child)
+        if node is None:
             continue
-
-        if child.type == "class_definition":
-            name_node = _child_by_field(child, "name")
-            if name_node is None:
-                continue
-            cls_name = _node_text(name_node, source)
-            cls_id = make_symbol_id("python", module, cls_name)
-            yield Fact(
-                kind="defines",
-                source_symbol_id=module_symbol_id,
-                target_symbol_id=cls_id,
-                file_path=file_path,
-                line=child.start_point[0] + 1,
-                language="python",
+        if node.type == "function_definition":
+            yield from _emit_function(
+                node, module, module_symbol_id, source, file_path
             )
-            yield from _emit_class_extends(child, source, file_path, cls_id)
-            body = _child_by_field(child, "body")
-            if body is None:
-                continue
-            for member in body.children:
-                if member.type != "function_definition":
-                    continue
-                m_name_node = _child_by_field(member, "name")
-                if m_name_node is None:
-                    continue
-                m_name = _node_text(m_name_node, source)
-                method_id = make_symbol_id(
-                    "python", module, m_name, namespace=cls_name
-                )
-                yield Fact(
-                    kind="defines",
-                    source_symbol_id=cls_id,
-                    target_symbol_id=method_id,
-                    file_path=file_path,
-                    line=member.start_point[0] + 1,
-                    language="python",
-                    signature=_extract_signature(member, source),
-                )
-                m_body = _child_by_field(member, "body")
-                if m_body is None:
-                    continue
-                for callee, line in _walk_calls(m_body, source):
-                    yield Fact(
-                        kind="calls",
-                        source_symbol_id=method_id,
-                        target_symbol_id=make_symbol_id("python", module, callee),
-                        file_path=file_path,
-                        line=line,
-                        language="python",
-                    )
+        elif node.type == "class_definition":
+            yield from _emit_class(
+                node, module, module_symbol_id, source, file_path
+            )
 
 
 register_language("python", extract)

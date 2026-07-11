@@ -217,3 +217,64 @@ class TestSignatures:
         fact = self._find(defines_by_target, "::Greeter")
         assert fact is not None
         assert fact.signature is None
+
+
+class TestDecoratedDefinitions:
+    """Decorated top-level defs must NOT be hidden by the
+    ``decorated_definition`` wrapper (the ADR-046 extractor gap)."""
+
+    @pytest.fixture
+    def facts(self):
+        return _load("decorated.py")
+
+    def _define_ids(self, facts):
+        return [f.target_symbol_id for f in _by_kind(facts, "defines")]
+
+    def test_decorated_function_defines_and_calls(self, facts):
+        ids = self._define_ids(facts)
+        assert any(i.endswith("::list_items") for i in ids)
+        # @app.get-decorated route still emits its internal call.
+        calls = _by_kind(facts, "calls")
+        assert any(
+            "list_items" in f.source_symbol_id
+            and f.target_symbol_id.endswith("::authorize")
+            for f in calls
+        )
+
+    def test_decorated_class_defines_and_extends(self, facts):
+        ids = self._define_ids(facts)
+        assert any(i.endswith("::Record") for i in ids)
+        extends = _by_kind(facts, "extends")
+        assert any("Base" in f.target_symbol_id for f in extends)
+
+    def test_decorated_method_defines_and_calls(self, facts):
+        ids = self._define_ids(facts)
+        # @staticmethod / @property decorated methods surface with their
+        # class namespace.
+        assert any(i.endswith("::Controller::handle") for i in ids)
+        assert any(i.endswith("::Controller::name") for i in ids)
+        calls = _by_kind(facts, "calls")
+        assert any(
+            "Controller::handle" in f.source_symbol_id
+            and f.target_symbol_id.endswith("::authorize")
+            for f in calls
+        )
+        assert any(
+            "Controller::name" in f.source_symbol_id
+            and f.target_symbol_id.endswith("::compute_name")
+            for f in calls
+        )
+
+    def test_undecorated_regression(self, facts):
+        ids = self._define_ids(facts)
+        assert any(i.endswith("::undecorated") for i in ids)
+
+    def test_decorator_itself_not_emitted_as_call(self, facts):
+        # @app.get("/items") is a call expression but decorators are out of
+        # scope — no `calls` fact should target app.get.
+        calls = _by_kind(facts, "calls")
+        assert not any(
+            f.target_symbol_id.endswith("app.get")
+            or f.target_symbol_id.endswith("::get")
+            for f in calls
+        )
