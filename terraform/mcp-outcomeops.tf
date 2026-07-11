@@ -71,6 +71,13 @@ module "mcp_outcomeops" {
     KB_BUCKET          = module.knowledge_base_bucket.s3_bucket_id
     ENVIRONMENT        = var.environment
     MCP_BASE_URL       = local.mcp_base_url
+    # chunk 11b (ADR-049): Azure AD OAuth (JWT) auth for the MCP server.
+    # AZURE_AD_TENANT_ID + MCP_JWT_AUDIENCE enable the JWT path;
+    # MCP_STATIC_KEYS_ENABLED gates the legacy static-key path (default true;
+    # set false in the enterprise profile once all clients use OAuth).
+    AZURE_AD_TENANT_ID      = var.azure_ad_tenant_id
+    MCP_JWT_AUDIENCE        = var.mcp_jwt_audience
+    MCP_STATIC_KEYS_ENABLED = tostring(var.mcp_static_keys_enabled)
     # fable-scale chunk 02: DDB-backed session store. MCP_SESSION_STORE
     # picks the impl (memory | ddb); "ddb" is required for horizontal
     # scaling (chunk 01 autoscaling). Fallback to "memory" reverts to the

@@ -59,6 +59,16 @@ S3_VECTORS_INDEX = os.environ.get("S3_VECTORS_INDEX", "")
 KB_BUCKET = os.environ.get("KB_BUCKET", "")
 ENVIRONMENT = os.environ.get("ENVIRONMENT", "prd")
 MCP_BASE_URL = os.environ.get("MCP_BASE_URL", "")
+# chunk 11b: Azure AD OAuth (JWT) auth for the MCP server. AZURE_AD_TENANT_ID +
+# MCP_JWT_AUDIENCE are required for the JWT path; when either is unset the JWT
+# path is disabled and only static keys work. MCP_STATIC_KEYS_ENABLED gates the
+# legacy static-key path (default true for back-compat; false in the F500
+# profile once every client has moved to OAuth).
+AZURE_AD_TENANT_ID = os.environ.get("AZURE_AD_TENANT_ID", "")
+MCP_JWT_AUDIENCE = os.environ.get("MCP_JWT_AUDIENCE", "")
+MCP_STATIC_KEYS_ENABLED = (
+    os.environ.get("MCP_STATIC_KEYS_ENABLED", "true").lower() == "true"
+)
 EMBEDDING_MODEL_ID = os.environ.get(
     "BEDROCK_EMBEDDING_MODEL_ID", "amazon.titan-embed-text-v2:0"
 )
@@ -745,6 +755,107 @@ def validate_api_key(api_key, source_ip=""):
     except ClientError as e:
         logger.error(f"Error validating API key: {e}")
         return None
+
+
+# ---------------------------------------------------------------------------
+# Azure AD OAuth (JWT) auth (chunk 11b / ADR-049)
+# ---------------------------------------------------------------------------
+
+_jwks_client = None
+_jwks_client_lock = threading.Lock()
+
+
+def _get_jwks_client():
+    """Return a cached PyJWKClient for the tenant's signing keys (per task).
+
+    PyJWKClient fetches the JWKS from Azure AD's discovery endpoint and caches
+    the signing keys in-process (1h lifespan) -- same cadence as the DDB-session
+    and api-key caches.
+    """
+    global _jwks_client
+    if not AZURE_AD_TENANT_ID:
+        return None
+    with _jwks_client_lock:
+        if _jwks_client is None:
+            import jwt  # PyJWT; deferred like the read_source path
+            jwks_uri = (
+                f"https://login.microsoftonline.com/{AZURE_AD_TENANT_ID}"
+                "/discovery/v2.0/keys"
+            )
+            _jwks_client = jwt.PyJWKClient(
+                jwks_uri, cache_keys=True, lifespan=3600)
+        return _jwks_client
+
+
+def _validate_azure_ad_jwt(bearer, source_ip=""):
+    """Validate an Azure AD access token (JWT). Returns user email or None.
+
+    Verifies the RS256 signature against the tenant JWKS, plus iss / aud / exp /
+    nbf, then maps preferred_username | upn | email to the user identity.
+    """
+    if not AZURE_AD_TENANT_ID or not MCP_JWT_AUDIENCE:
+        logger.warning(
+            "[auth] JWT presented but AZURE_AD_TENANT_ID/MCP_JWT_AUDIENCE unset")
+        return None
+    client = _get_jwks_client()
+    if client is None:
+        return None
+    try:
+        import jwt  # PyJWT
+        signing_key = client.get_signing_key_from_jwt(bearer)
+        issuer = f"https://login.microsoftonline.com/{AZURE_AD_TENANT_ID}/v2.0"
+        claims = jwt.decode(
+            bearer,
+            signing_key.key,
+            algorithms=["RS256"],
+            audience=MCP_JWT_AUDIENCE,
+            issuer=issuer,
+            options={"require": ["exp", "iss", "aud"]},
+        )
+    except Exception as e:  # jwt.* errors + JWKS fetch/parse
+        logger.warning(f"[auth] Azure AD JWT rejected: {e}")
+        _emit_api_key_used("", "azure-ad-jwt", "", False, "jwt_invalid", source_ip)
+        return None
+
+    email = (
+        claims.get("preferred_username")
+        or claims.get("upn")
+        or claims.get("email")
+    )
+    if not email:
+        logger.warning(
+            "[auth] Azure AD JWT valid but no preferred_username/upn/email claim")
+        _emit_api_key_used("", "azure-ad-jwt", "", False, "jwt_no_email", source_ip)
+        return None
+    email = email.lower()
+    _emit_api_key_used("", "azure-ad-jwt", email, True, "", source_ip)
+    return email
+
+
+def validate_bearer(bearer, source_ip=""):
+    """Validate an Authorization bearer, dispatching by token shape.
+
+    A JWT (compact JWS -- its base64url header object starts ``eyJ``) is
+    validated against Azure AD (OAuth). Anything else is a legacy static API
+    key, honored only while ``MCP_STATIC_KEYS_ENABLED`` is true and logged
+    deprecated. Returns the user email or None.
+    """
+    if not bearer:
+        return None
+    if bearer.startswith("eyJ"):
+        return _validate_azure_ad_jwt(bearer, source_ip)
+    if not MCP_STATIC_KEYS_ENABLED:
+        logger.warning(
+            "[auth] static API key presented but MCP_STATIC_KEYS_ENABLED=false; "
+            "rejecting (client must use an Azure AD OAuth token)")
+        _emit_api_key_used("", "", "", False, "static_keys_disabled", source_ip)
+        return None
+    email = validate_api_key(bearer, source_ip)
+    if email:
+        logger.info(
+            f"[auth] static API key used (deprecated=true) for {email}; "
+            "migrate this client to Azure AD OAuth")
+    return email
 
 
 def _emit_api_key_used(key_id, key_name, email, success, reason, source_ip):
@@ -2858,7 +2969,7 @@ class McpHandler(BaseHTTPRequestHandler):
             auth_header = self.headers.get("Authorization", "")
             if auth_header.startswith("Bearer "):
                 api_key = auth_header[7:]
-                email = validate_api_key(
+                email = validate_bearer(
                     api_key,
                     source_ip=getattr(self, "client_address", ("",))[0] if getattr(self, "client_address", None) else "",
                 )
@@ -2895,7 +3006,7 @@ class McpHandler(BaseHTTPRequestHandler):
         email = None
         if auth_header.startswith("Bearer "):
             api_key = auth_header[7:]
-            email = validate_api_key(
+            email = validate_bearer(
                 api_key,
                 source_ip=getattr(self, "client_address", ("",))[0] if getattr(self, "client_address", None) else "",
             )

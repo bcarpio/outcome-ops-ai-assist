@@ -670,6 +670,25 @@ variable "mcp_server_max_count" {
   default     = 20
 }
 
+# chunk 11b (ADR-049): Azure AD OAuth (JWT) auth for the MCP server.
+variable "azure_ad_tenant_id" {
+  description = "Azure AD (Entra) tenant ID (GUID) for MCP OAuth JWT validation. Empty disables the JWT auth path (static keys only)."
+  type        = string
+  default     = ""
+}
+
+variable "mcp_jwt_audience" {
+  description = "Expected `aud` claim for MCP Azure AD access tokens -- the MCP server's App Registration client ID or Application ID URI. Empty disables JWT auth."
+  type        = string
+  default     = ""
+}
+
+variable "mcp_static_keys_enabled" {
+  description = "Allow legacy static API-key auth on the MCP server. Default true for back-compat; set false in the enterprise profile once every client uses Azure AD OAuth (ADR-049 deprecation path)."
+  type        = bool
+  default     = true
+}
+
 variable "mcp_server_target_requests_per_task" {
   description = "Target-tracking value for ALBRequestCountPerTarget on the MCP server service. MCP tool calls are short-lived so this is closer to a QPS cap than a concurrency cap."
   type        = number
