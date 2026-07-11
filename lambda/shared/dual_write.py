@@ -58,9 +58,19 @@ import time
 from typing import Any, Optional
 
 import boto3
+from botocore.config import Config as BotoConfig
 from botocore.exceptions import ClientError
 
 logger = logging.getLogger(__name__)
+
+# Adaptive retries for DynamoDB: the symbol-graph writer's per-file replace
+# (ADR-046) roughly doubles write ops, and a full-repo re-extract fires ~30
+# parallel process-batch-summary batches at the on-demand table -- bursts that
+# briefly outrun auto-scaling. Adaptive mode client-side-throttles and retries
+# ThrottlingException (up to max_attempts) so transient throttles are absorbed
+# instead of surfacing as BatchWriteItem failures. Write-then-prune ordering in
+# the writer makes a failure that still slips through non-destructive.
+_DDB_RETRY_CONFIG = BotoConfig(retries={"mode": "adaptive", "max_attempts": 10})
 
 
 REPLICATION_EVENT_BUS_NAME = os.environ.get("REPLICATION_EVENT_BUS_NAME", "")
@@ -82,7 +92,7 @@ _events = None
 def _ddb():
     global _dynamodb
     if _dynamodb is None:
-        _dynamodb = boto3.resource("dynamodb")
+        _dynamodb = boto3.resource("dynamodb", config=_DDB_RETRY_CONFIG)
     return _dynamodb
 
 

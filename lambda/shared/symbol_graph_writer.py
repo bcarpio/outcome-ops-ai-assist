@@ -11,12 +11,13 @@ v2 schema (this module):
     already uniquely identifies a fact within a (workspace, repo) via
     ``kind#source#target#file_path#line``.
   - Reextracting facts follows per-file replace-on-reextract (ADR-046):
-    before writing a file's facts, the writer deletes that file's
-    existing facts. The SK embeds ``line``, so a same-SK upsert only
-    overwrites facts whose line did not move; any edit that shifts a
-    call/def line would otherwise orphan the old row forever (the
-    accumulation bug root-caused 2026-07-10). The file-scoped delete
-    keeps exactly one generation of facts per file.
+    the writer writes the new generation, then prunes the file's prior
+    rows (those whose SK is not in the new set). The SK embeds ``line``,
+    so a same-SK upsert only overwrites facts whose line did not move; any
+    edit that shifts a call/def line would otherwise orphan the old row
+    forever (the accumulation bug root-caused 2026-07-10). Write-before-
+    prune is deliberate: a failed write never deletes, so throttling leaves
+    a file stale rather than empty. One generation of facts per file.
   - The pointer module (``shared.symbol_graph_pointer``) is unchanged;
     ``graph_sha`` / ``graph_sha_committed_at`` still drive staleness
     reporting but no longer gate correctness.
@@ -32,7 +33,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Optional, Sequence
+from typing import AbstractSet, Dict, Iterable, List, Optional, Sequence
 
 import boto3
 from boto3.dynamodb.conditions import Key
@@ -365,29 +366,35 @@ def _swap_pointer(
 # ---------------------------------------------------------------------------
 
 
-def _delete_file_facts(
+def _prune_stale_file_facts(
     symbol_graph_table_name: str,
     workspace_id: str,
     repo: str,
     file_paths: Sequence[str],
+    keep_sks: AbstractSet[str],
 ) -> int:
-    """Delete every existing fact for ``file_paths`` under (workspace, repo).
+    """Delete existing facts for ``file_paths`` EXCEPT the SKs in ``keep_sks``.
 
     Per-file replace-on-reextract (ADR-046): a fact's SK embeds ``line``,
     so re-extracting an edited file writes new rows for any call/def whose
-    line moved while the old rows survive. Before writing a file's new
-    generation, remove its prior one.
+    line moved while the old rows survive. ``keep_sks`` is the SK set of the
+    generation just written; every other row for ``file_paths`` is a prior
+    generation and gets pruned.
+
+    **Ordering matters (throttle safety):** this runs AFTER the write, not
+    before. If the write fails (e.g. a DynamoDB ThrottlingException during a
+    full-repo re-extract burst), pruning never runs and the file keeps its
+    prior generation intact -- stale, not gone. Delete-first would instead
+    leave the file with zero facts on a write failure (silent data loss).
+    Passing an empty ``keep_sks`` reduces this to a full delete of the files'
+    facts (used by explicit-purge callers).
 
     The SK shape (``kind#source#target#file_path#line``) does not let a
     single file be range-queried, so this reads the ``{workspace}#{repo}``
-    partition once -- projected to keys plus ``file_path`` (small items) --
-    and deletes the rows whose ``file_path`` is in the batch's file set.
-    One partition read per write batch, not per file (ADR-046 documents the
-    file-delete-GSI escalation if this read cost becomes material).
-
+    partition once -- projected to keys plus ``file_path`` (small items).
     Deletes route through ``dual_write.ddb_batch_delete_items`` so the
-    eviction replicates to the passive region under HA, symmetric with the
-    batch-put path. Returns the number of rows deleted.
+    eviction replicates to the passive region under HA. Returns the number
+    of rows deleted.
     """
 
     targets = {fp for fp in file_paths if fp}
@@ -406,7 +413,7 @@ def _delete_file_facts(
     while True:
         resp = table.query(**query_kwargs)
         for it in resp.get("Items", []):
-            if it.get("file_path") in targets:
+            if it.get("file_path") in targets and it["SK"] not in keep_sks:
                 keys.append({"PK": it["PK"], "SK": it["SK"]})
         lek = resp.get("LastEvaluatedKey")
         if not lek:
@@ -501,17 +508,24 @@ def write_facts(
          single batch with a duplicate (PK, SK) is rejected by
          BatchWriteItem).
       5. Batch-write the new generation.
-      6. Optionally swap the legacy ``current_commit_sha`` pointer (when
+      6. Prune the prior generation: delete the files' rows whose SK is NOT
+         in the generation just written.
+      7. Optionally swap the legacy ``current_commit_sha`` pointer (when
          ``skip_pointer_swap=False``). The atomic-swap path in
          ``shared.symbol_graph_pointer`` owns the modern ``graph_sha`` /
          ``graph_pending_sha`` state machine and passes
          ``skip_pointer_swap=True``.
 
-    Delete precedes write: the delete removes the file's prior rows and the
-    write lays down the current generation. If the delete raises, no write
-    happens; if the write raises after the delete, the SQS retry re-runs
-    both (the delete is idempotent). The pointer swap (step 6) only runs
-    after a clean write.
+    **Write precedes prune (throttle safety).** The new generation is
+    written FIRST, then the stale rows are pruned. If the write raises --
+    e.g. a DynamoDB ThrottlingException during a full-repo re-extract burst,
+    where the ADR-046 delete+put roughly doubles write volume -- nothing is
+    pruned and the file keeps its prior generation intact (stale, not gone).
+    Delete-first would instead leave the file with ZERO facts on a write
+    failure (silent data loss). Worst case here is the opposite, milder
+    failure: if the prune raises after a clean write, some stale rows linger
+    (over-report) and self-heal on the next successful prune. The pointer
+    swap (step 7) only runs after a clean write.
 
     Args:
         workspace_id: Workspace scope.
@@ -580,16 +594,20 @@ def write_facts(
     if extracted_file_paths is not None:
         file_paths.update(fp for fp in extracted_file_paths if fp)
 
-    # Step 3: per-file replace (ADR-046). Delete the prior generation for
-    # these files BEFORE writing so line-shifted facts do not accumulate.
-    deleted = _delete_file_facts(
-        table_name, workspace_id, repo, list(file_paths)
-    )
-
-    # Steps 4-5: dedupe + batch-write the new generation.
+    # Steps 4-5: dedupe + batch-write the new generation FIRST.
     written = _write_facts_batched(table_name, items)
 
-    # Step 6: legacy pointer-swap. Skipped when the caller is on the
+    # Step 6: per-file replace (ADR-046), throttle-safe ordering. Prune the
+    # prior generation only AFTER the write succeeds -- delete the files'
+    # rows whose SK is not in the generation just written. A failed write
+    # (step 5 raises) therefore never deletes anything: the file keeps its
+    # prior generation rather than being left empty.
+    keep_sks = {str(item["SK"]) for item in items}
+    deleted = _prune_stale_file_facts(
+        table_name, workspace_id, repo, list(file_paths), keep_sks
+    )
+
+    # Step 7: legacy pointer-swap. Skipped when the caller is on the
     # atomic-swap path (process-batch-summary) which owns the modern
     # pointer state machine in shared.symbol_graph_pointer.
     if skip_pointer_swap or not code_maps_name:

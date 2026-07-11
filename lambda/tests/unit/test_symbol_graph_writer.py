@@ -511,9 +511,9 @@ def test_write_facts_large_round_trip(tables):
 
 
 def test_idempotent_rewrite_same_sha_no_duplicates(tables):
-    """Per-file replace (ADR-046): rewriting the same Facts deletes the
-    file's prior generation, then rewrites it -- so the item count is
-    unchanged and ``facts_deleted`` equals the prior generation's size.
+    """Per-file replace (ADR-046), write-then-prune ordering: rewriting the
+    same Facts upserts them in place (same SKs), so the prune finds NOTHING
+    stale to remove -- item count unchanged, ``facts_deleted == 0``.
     """
     from shared.symbol_graph_writer import write_facts  # type: ignore
 
@@ -535,9 +535,9 @@ def test_idempotent_rewrite_same_sha_no_duplicates(tables):
         symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
         code_maps_table_name=CODE_MAPS_TABLE,
     )
-    # Per-file replace: the second write evicts the 100 prior-generation
-    # rows (one per file) before rewriting them; end count is unchanged.
-    assert result.facts_deleted == 100
+    # Write-then-prune: the rewrite reuses the same SKs, so there is nothing
+    # stale to prune; end count is unchanged.
+    assert result.facts_deleted == 0
 
     table = tables.Table(SYMBOL_GRAPH_TABLE)
     response = table.query(
@@ -596,10 +596,10 @@ def test_write_facts_dedupes_identical_facts_within_one_batch(tables):
 
 def test_regen_under_new_sha_replaces_prior_generation(tables):
     """Per-file replace (ADR-046): a second write under NEW_SHA after an
-    OLD_SHA write deletes the prior generation for the overlapping files,
-    then writes the new one. Overlapping files' rows carry NEW_SHA;
-    new-to-NEW_SHA files are added. ``facts_deleted`` counts the evicted
-    overlap.
+    OLD_SHA write upserts the overlapping rows in place (identical SKs --
+    same file/line) and adds the new ones. Because no line shifted, the
+    prune finds nothing stale (``facts_deleted == 0``); the shifted-line
+    case is covered by test_reextract_shifted_line_evicts_stale_generation.
     """
     from shared.symbol_graph_writer import write_facts  # type: ignore
 
@@ -626,10 +626,10 @@ def test_regen_under_new_sha_replaces_prior_generation(tables):
         symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
         code_maps_table_name=CODE_MAPS_TABLE,
     )
-    # Per-file replace: the 50 overlapping files (caller0..caller49) have
-    # their OLD_SHA rows evicted before the 75-fact write. facts_written
-    # counts the dedupe-unique PutItem operations the writer issued.
-    assert result.facts_deleted == 50
+    # Write-then-prune: the 50 overlapping rows are upserted in place (same
+    # SKs), so nothing is stale to prune. facts_written counts the
+    # dedupe-unique PutItem operations the writer issued.
+    assert result.facts_deleted == 0
     assert result.facts_written == 75
     assert result.pointer_swapped is True
 
@@ -830,6 +830,75 @@ def test_extracted_file_paths_clears_emptied_file(tables):
     files = {i["file_path"] for i in partition["Items"]}
     assert emptied not in files  # cleared despite emitting zero facts
     assert kept in files
+
+
+def test_write_failure_leaves_prior_generation_intact(tables, monkeypatch):
+    """Throttle-safety regression (write-then-prune): if the batch write
+    raises -- e.g. a DynamoDB ThrottlingException during a full-repo
+    re-extract burst -- the file's PRIOR generation must survive. The prune
+    runs only after a successful write, so a failed write deletes nothing and
+    the file is left stale, never empty. Delete-first (the pre-fix ordering)
+    would have wiped the prior rows before the failing write -> data loss.
+    """
+    from botocore.exceptions import ClientError
+
+    from shared import symbol_graph_writer as w  # type: ignore
+
+    target = "python:lambda.auth.handler::require_auth"
+    same_file = "lambda/auth/handler.py"
+
+    def call_at(line: int) -> FactShim:
+        return FactShim(
+            kind="calls",
+            source_symbol_id="python:lambda.auth.handler::handler",
+            target_symbol_id=target,
+            file_path=same_file,
+            line=line,
+            language="python",
+        )
+
+    # Seed generation 1 (call at line 10) via a normal, successful write.
+    w.write_facts(
+        workspace_id=WORKSPACE_ID,
+        repo=REPO,
+        commit_sha=OLD_SHA,
+        facts=[call_at(10)],
+        symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
+        code_maps_table_name=CODE_MAPS_TABLE,
+    )
+
+    # The next write (same call, shifted to line 20) throttles mid-flight.
+    def boom(*args, **kwargs):
+        raise ClientError(
+            {"Error": {"Code": "ThrottlingException", "Message": "slow down"}},
+            "BatchWriteItem",
+        )
+
+    monkeypatch.setattr(w, "_write_facts_batched", boom)
+
+    with pytest.raises(ClientError):
+        w.write_facts(
+            workspace_id=WORKSPACE_ID,
+            repo=REPO,
+            commit_sha=NEW_SHA,
+            facts=[call_at(20)],
+            symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
+            code_maps_table_name=CODE_MAPS_TABLE,
+        )
+
+    # Generation 1 (line 10) MUST still be present -- the failed write never
+    # deleted it. (Delete-first would have left zero rows here.)
+    table = tables.Table(SYMBOL_GRAPH_TABLE)
+    partition = table.query(
+        KeyConditionExpression=Key("PK").eq(f"{WORKSPACE_ID}#{REPO}")
+    )
+    call_rows = [
+        i
+        for i in partition["Items"]
+        if i["kind"] == "calls" and i["target_symbol_id"] == target
+    ]
+    assert len(call_rows) == 1
+    assert call_rows[0]["line"] == 10  # prior generation intact, not gone
 
 
 def test_facts_from_two_extractions_coexist_in_one_partition(tables):

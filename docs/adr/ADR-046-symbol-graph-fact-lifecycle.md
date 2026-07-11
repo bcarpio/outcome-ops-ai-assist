@@ -65,26 +65,39 @@ generation under incremental ingestion.
 
 ## Decision
 
-**Symbol-graph facts follow per-file replace-on-reextract semantics: writing
-the facts for a file first deletes that file's existing facts, so exactly one
-generation of facts per file survives.**
+**Symbol-graph facts follow per-file replace-on-reextract semantics: the writer
+writes a file's new generation, then prunes that file's prior rows, so exactly
+one generation of facts per file survives.**
 
-1. **Delete scope is the file, not the repo.** Ingestion is incremental — a
+1. **Replace scope is the file, not the repo.** Ingestion is incremental — a
    re-extract processes only changed files, batched. A repo-wide delete would
    wipe unchanged files' facts that will not be rewritten. The unit of
    replacement is therefore `(workspace_id, repo, file_path)`.
 
-2. **The writer owns the replace.** `write_facts` receives a batch whose facts
-   may span several files (each `Fact` carries `file_path`). Before writing, it
-   derives the distinct set of files in the batch and deletes each file's prior
-   facts, then writes the new generation. `facts_deleted` is restored to a
-   truthful count.
+2. **The writer owns the replace, write-before-prune.** `write_facts` receives a
+   batch whose facts may span several files (each `Fact` carries `file_path`). It
+   writes the new generation FIRST, then prunes each file's prior rows — the
+   rows for the batch's files whose SK is not in the generation just written.
+   `facts_deleted` counts the pruned rows (0 when nothing shifted).
 
-3. **Enumerating a file's facts to delete** reuses the delete-worker's proven
-   key-query pattern (`_query_all_keys` over the `{workspace_id}#{repo}`
-   partition, projected to keys plus `file_path`), filtered to the batch's
-   files. No base-table SK change and no data migration are required, so the
-   change is additive and reversible. This trades a per-batch partition
+   **Ordering is a safety property, not incidental.** The ADR-046 replace roughly
+   doubles write volume (a delete plus a put per fact), and a full-repo
+   re-extract fires ~30 parallel batches at the on-demand symbol-graph table —
+   bursts that briefly outrun auto-scaling and raise `ThrottlingException`.
+   process-batch-summary swallows a symbol-graph write failure (it must never
+   break the summary path) and does not retry, and the pointer still commits.
+   With **delete-first**, a write that throttles *after* the delete would leave
+   the file with **zero facts** — silent data loss under a load the fix itself
+   creates. **Write-then-prune** makes the same failure non-destructive: a failed
+   write prunes nothing, so the file keeps its prior generation (stale, not
+   gone), self-healing on the next successful re-extract. To further reduce the
+   throttling, the DynamoDB client uses adaptive retries.
+
+3. **Enumerating a file's rows to prune** reuses the delete-worker's proven
+   key-query pattern (over the `{workspace_id}#{repo}` partition, projected to
+   keys plus `file_path`), filtered to the batch's files and excluding the
+   just-written SKs. No base-table SK change and no data migration are required,
+   so the change is additive and reversible. This trades a per-batch partition
    key-read for correctness; it does not add a standing write tax.
 
 4. **Concurrency invariant.** A single file's facts are written by exactly one
