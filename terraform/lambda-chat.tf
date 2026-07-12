@@ -164,6 +164,20 @@ module "chat_streaming_lambda" {
       ]
     }
 
+    # shared.symbol_graph_reader emits OutcomeOps/SymbolGraph::QueryLatency
+    # (chunk-08 latency alarm) from the chat path too. PutMetricData has no
+    # resource ARN, so scope by namespace. Without this the emit AccessDenies.
+    cloudwatch_symbol_graph_metrics = {
+      effect    = "Allow"
+      actions   = ["cloudwatch:PutMetricData"]
+      resources = ["*"]
+      conditions = [{
+        test     = "StringEquals"
+        variable = "cloudwatch:namespace"
+        values   = ["OutcomeOps/SymbolGraph"]
+      }]
+    }
+
     # SSM for configuration (vector bucket, index names, etc.)
     ssm_read = {
       effect = "Allow"

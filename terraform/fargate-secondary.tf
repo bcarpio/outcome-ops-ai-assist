@@ -346,6 +346,18 @@ resource "aws_iam_role_policy" "mcp_outcomeops_secondary" {
           aws_cloudwatch_event_bus.replication_secondary[0].arn,
         ]
       },
+      {
+        # Parity with primary: symbol_graph_reader QueryLatency metric emit.
+        Sid      = "CloudWatchSymbolGraphMetrics"
+        Effect   = "Allow"
+        Action   = ["cloudwatch:PutMetricData"]
+        Resource = ["*"]
+        Condition = {
+          StringEquals = {
+            "cloudwatch:namespace" = "OutcomeOps/SymbolGraph"
+          }
+        }
+      },
     ]
   })
 }
@@ -366,8 +378,11 @@ module "mcp_sonarqube_secondary" {
   app_name    = var.app_name
   aws_region  = var.secondary_region
 
-  server_name     = "sonarqube"
-  container_image = "mcp/sonarqube:latest"
+  server_name = "sonarqube"
+  # Pinned to the official versioned image (parity with primary mcp.tf) -- the
+  # Docker MCP-catalog `mcp/sonarqube:latest` regressed 2026-07-08 with a fatal
+  # I/O reactor shutdown bug. Never use `:latest` for a third-party MCP image.
+  container_image = "sonarsource/sonarqube-mcp:1.21.0.2975"
   container_port  = 8080
   cpu             = 512
   memory          = 1024

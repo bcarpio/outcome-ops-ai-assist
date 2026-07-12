@@ -51,8 +51,16 @@ module "mcp_sonarqube" {
   app_name    = var.app_name
   aws_region  = var.aws_region
 
-  server_name     = "sonarqube"
-  container_image = "mcp/sonarqube:latest"
+  server_name = "sonarqube"
+  # PINNED (ADR-none, ops fix 2026-07-12): the Docker MCP-catalog image
+  # `mcp/sonarqube:latest` was republished 2026-07-08 (digest 925c88bc) with a
+  # regression that shuts down the Apache HttpClient async I/O reactor within
+  # minutes of startup (IOReactorShutdownException -> every SonarCloud call
+  # fast-fails; the container stays "running" so ECS never self-heals). Switched
+  # to SonarSource's official versioned image and pinned a pre-regression
+  # release (1.21.0.2975, 2026-06-25). Never use `:latest` here -- an unpinned
+  # third-party MCP image is an uncontrolled prod dependency. Bump deliberately.
+  container_image = "sonarsource/sonarqube-mcp:1.21.0.2975"
   container_port  = 8080
   cpu             = 512
   memory          = 1024

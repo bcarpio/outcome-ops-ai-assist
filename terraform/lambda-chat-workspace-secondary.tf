@@ -133,6 +133,13 @@ module "chat_streaming_lambda_secondary" {
         "${module.chat_table_secondary[0].dynamodb_table_arn}/index/*",
       ]
     }
+    # Parity with primary: symbol_graph_reader QueryLatency metric emit.
+    cloudwatch_symbol_graph_metrics = {
+      effect     = "Allow"
+      actions    = ["cloudwatch:PutMetricData"]
+      resources  = ["*"]
+      conditions = [{ test = "StringEquals", variable = "cloudwatch:namespace", values = ["OutcomeOps/SymbolGraph"] }]
+    }
     ssm_read = {
       effect    = "Allow"
       actions   = ["ssm:GetParameter", "ssm:GetParameters"]

@@ -298,6 +298,23 @@ resource "aws_iam_role_policy" "mcp_outcomeops" {
         Resource = [
           module.audit_logs_table.dynamodb_table_arn
         ]
+      },
+      {
+        # shared.symbol_graph_reader emits OutcomeOps/SymbolGraph::QueryLatency
+        # (chunk-08 latency alarm). PutMetricData has no resource-level ARN, so
+        # scope it by namespace condition. Without this the emit fails
+        # AccessDenied every query (non-fatal, but noisy + blinds the alarm).
+        Sid    = "CloudWatchSymbolGraphMetrics"
+        Effect = "Allow"
+        Action = [
+          "cloudwatch:PutMetricData"
+        ]
+        Resource = ["*"]
+        Condition = {
+          StringEquals = {
+            "cloudwatch:namespace" = "OutcomeOps/SymbolGraph"
+          }
+        }
       }
     ]
   })

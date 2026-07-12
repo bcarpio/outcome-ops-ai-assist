@@ -381,9 +381,11 @@ def rerank_results(
     # Rerank mechanics live in the shared module (same Cohere call, same
     # graceful cosine-order fallback) so chat and the MCP server share one
     # reranker. lambda_name="query-kb" preserves the audit + log shape.
-    # ADR-016 v1.2: prefer the chat/cohere-rerank profile ARN so rerank
-    # spend attributes to the chat workload; falls back to bare model id.
-    rerank_id = resolve_profile_arn("chat", "cohere-rerank") or RERANK_MODEL_ID
+    # NOTE: the Bedrock Rerank API only accepts a FOUNDATION-MODEL ARN and
+    # rejects application inference profile ARNs ("invalid model ARN"), so --
+    # unlike InvokeModel -- rerank can't attribute to the workload profile
+    # (ADR-016 v1.2). Use the bare model id; rerank spend is negligible.
+    rerank_id = RERANK_MODEL_ID
     return shared_retrieval.rerank(
         bedrock_agent_runtime_client=bedrock_agent_runtime_client,
         rerank_model_id=rerank_id,

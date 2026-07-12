@@ -980,10 +980,13 @@ def search_knowledge_base(
         return []
 
     if RERANK_ENABLED and len(docs) > 1:
-        # ADR-016 v1.2 -- chat/cohere-rerank profile ARN attribution.
-        rerank_id = (
-            resolve_profile_arn("chat", "cohere-rerank") or RERANK_MODEL_ID
-        )
+        # NOTE: the Bedrock Rerank API only accepts a FOUNDATION-MODEL ARN --
+        # it rejects application inference profile ARNs ("invalid model ARN").
+        # So unlike InvokeModel, rerank cannot be routed through the workload
+        # profile for ADR-016 v1.2 cost attribution. Use the bare model id
+        # (retrieval.rerank wraps it into arn:...::foundation-model/<id>).
+        # Rerank spend is negligible vs LLM synthesis ([[project_retrieval_cost_model]]).
+        rerank_id = RERANK_MODEL_ID
         docs = shared_retrieval.rerank(
             bedrock_agent_runtime_client=_get_bedrock_agent_runtime_client(),
             rerank_model_id=rerank_id,
