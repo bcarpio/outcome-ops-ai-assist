@@ -496,6 +496,14 @@ export interface GroupBinding {
   workspace_id: string
   role: 'member' | 'workspace_admin'
   created_at?: string
+  group_name?: string
+}
+
+// A group offered by the binding picker (ADR-048 v1.1). `display_name` is empty
+// when the source is a raw token GUID with no resolvable name.
+export interface BindableGroup {
+  id: string
+  display_name: string
 }
 
 /**
@@ -512,17 +520,41 @@ export async function listGroupBindings(workspaceId: string): Promise<GroupBindi
 }
 
 /**
- * Bind an Entra group to a workspace at a role (admin).
+ * Search Entra groups eligible to bind to a workspace (admin picker).
+ *
+ * Credential-free deploys return the caller's own token groups (filtered by the
+ * naming-convention patterns); Graph-enabled deploys return the full
+ * pattern-scoped directory search. Empty result is normal (paste-by-id remains).
+ */
+export async function listBindableGroups(
+  workspaceId: string,
+  query = ''
+): Promise<BindableGroup[]> {
+  const qs = query ? `?q=${encodeURIComponent(query)}` : ''
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/bindable-groups${qs}`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to list bindable groups: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return (data?.groups as BindableGroup[]) || []
+}
+
+/**
+ * Bind an Entra group to a workspace at a role (admin). `groupName` is the
+ * cached display name from the picker (optional; enables name-matching + a
+ * human-readable bindings list).
  */
 export async function createGroupBinding(
   workspaceId: string,
   groupId: string,
-  role: 'member' | 'workspace_admin' = 'member'
+  role: 'member' | 'workspace_admin' = 'member',
+  groupName = ''
 ): Promise<GroupBinding> {
   const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/group-bindings`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ group_id: groupId, role }),
+    body: JSON.stringify({ group_id: groupId, role, group_name: groupName }),
   })
   if (!response.ok) {
     const data = await safeJson(response)

@@ -101,3 +101,44 @@ class TestComputeDelta:
              "source": "group:g-sales", "user_email": USER}
         ]
         assert to_delete == existing
+
+
+class TestMixedNameAndIdMatching:
+    """ADR-048 v1.1: hybrid tenants emit a mix of object IDs and on-prem names
+    in one claim; a binding matches by EITHER, case-insensitively."""
+
+    GUID = "d3f5d7a8-92f6-44c3-b220-7f29445e4677"
+
+    def test_binding_by_name_matches_name_claim(self):
+        bindings = [{"group_id": "outcomeops-eng", "workspace_id": "ws-eng",
+                     "role": "member"}]
+        desired = desired_memberships(["OutcomeOps-Eng"], bindings)
+        assert desired == {"ws-eng": ("member", "outcomeops-eng")}
+
+    def test_binding_by_id_matches_when_claim_has_name(self):
+        # bound via Graph picker (object id stored + name cached); the synced
+        # group arrives in the claim as its on-prem NAME -> group_name matches.
+        bindings = [{"group_id": self.GUID, "group_name": "outcomeops-eng",
+                     "workspace_id": "ws-eng", "role": "workspace_admin"}]
+        desired = desired_memberships(["outcomeops-eng"], bindings)
+        # source stays keyed on the canonical object id
+        assert desired == {"ws-eng": ("workspace_admin", self.GUID)}
+
+    def test_binding_by_id_matches_guid_claim(self):
+        bindings = [{"group_id": self.GUID, "group_name": "outcomeops-eng",
+                     "workspace_id": "ws-eng", "role": "member"}]
+        desired = desired_memberships([self.GUID.upper()], bindings)
+        assert desired == {"ws-eng": ("member", self.GUID)}
+
+    def test_no_false_match(self):
+        bindings = [{"group_id": self.GUID, "group_name": "outcomeops-eng",
+                     "workspace_id": "ws-eng", "role": "member"}]
+        assert desired_memberships(["outcomeops-sales"], bindings) == {}
+
+    def test_revocation_by_name_binding(self):
+        bindings = [{"group_id": "outcomeops-eng", "workspace_id": "ws-eng",
+                     "role": "member"}]
+        existing = [_member("ws-eng", source="group:outcomeops-eng")]
+        # user no longer carries the group name in the claim -> revoke
+        to_put, to_delete = compute_delta(USER, [], bindings, existing)
+        assert to_put == [] and to_delete == existing

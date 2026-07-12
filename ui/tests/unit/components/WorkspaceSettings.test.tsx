@@ -14,6 +14,7 @@ vi.mock('../../../src/lib/api', () => ({
   updateMember: vi.fn(),
   removeMember: vi.fn(),
   listGroupBindings: vi.fn(),
+  listBindableGroups: vi.fn(),
   createGroupBinding: vi.fn(),
   deleteGroupBinding: vi.fn(),
   listConfluenceConnections: vi.fn(),
@@ -131,7 +132,7 @@ vi.mock('../../../src/lib/api', () => ({
 import {
   getWorkspace, updateWorkspace, deleteWorkspace,
   listMembers, addMember, updateMember, removeMember,
-  listGroupBindings, createGroupBinding, deleteGroupBinding,
+  listGroupBindings, listBindableGroups, createGroupBinding, deleteGroupBinding,
   listConfluenceConnections, listJiraConnections,
   getSearchAccess, updateSearchAccess, listSharingOptions,
   listDocuments, deleteDocument,
@@ -166,6 +167,7 @@ const mockAddMember = vi.mocked(addMember)
 const mockUpdateMember = vi.mocked(updateMember)
 const mockRemoveMember = vi.mocked(removeMember)
 const mockListGroupBindings = vi.mocked(listGroupBindings)
+const mockListBindableGroups = vi.mocked(listBindableGroups)
 const mockCreateGroupBinding = vi.mocked(createGroupBinding)
 const mockDeleteGroupBinding = vi.mocked(deleteGroupBinding)
 const mockListConfluenceConnections = vi.mocked(listConfluenceConnections)
@@ -237,6 +239,7 @@ function setupDefaultMocks() {
   mockGetWorkspace.mockResolvedValue(ws)
   mockListMembers.mockResolvedValue([])
   mockListGroupBindings.mockResolvedValue([])
+  mockListBindableGroups.mockResolvedValue([])
   mockListConfluenceConnections.mockResolvedValue([])
   mockListJiraConnections.mockResolvedValue([])
   mockGetSearchAccess.mockResolvedValue([])
@@ -831,10 +834,14 @@ describe('WorkspaceSettings', () => {
     expect(screen.getByText('No groups bound')).toBeInTheDocument()
   })
 
-  it('binds a group via the inline form', async () => {
+  it('binds a group by picking a search result', async () => {
     mockListGroupBindings.mockResolvedValue([])
+    mockListBindableGroups.mockResolvedValue([
+      { id: 'grp-eng-id', display_name: 'outcomeops-engineering' },
+    ])
     mockCreateGroupBinding.mockResolvedValue({
-      group_id: 'grp-new-789', workspace_id: 'ws-1', role: 'workspace_admin',
+      group_id: 'grp-eng-id', workspace_id: 'ws-1', role: 'member',
+      group_name: 'outcomeops-engineering',
     })
     renderSettings('members')
 
@@ -844,6 +851,34 @@ describe('WorkspaceSettings', () => {
 
     const user = userEvent.setup()
     await user.click(screen.getByText('Bind Group'))
+    await user.type(screen.getByPlaceholderText(/Start typing a group name/), 'eng')
+
+    // the search result renders; picking it binds by object id + cached name
+    await waitFor(() => {
+      expect(screen.getByText('outcomeops-engineering')).toBeInTheDocument()
+    })
+    await user.click(screen.getByText('outcomeops-engineering'))
+
+    await waitFor(() => {
+      expect(mockCreateGroupBinding).toHaveBeenCalledWith(
+        'ws-1', 'grp-eng-id', 'member', 'outcomeops-engineering')
+    })
+  })
+
+  it('binds a group by object id via the fallback', async () => {
+    mockListGroupBindings.mockResolvedValue([])
+    mockCreateGroupBinding.mockResolvedValue({
+      group_id: 'grp-new-789', workspace_id: 'ws-1', role: 'member',
+    })
+    renderSettings('members')
+
+    await waitFor(() => {
+      expect(screen.getByText('Azure AD Groups (0)')).toBeInTheDocument()
+    })
+
+    const user = userEvent.setup()
+    await user.click(screen.getByText('Bind Group'))
+    await user.click(screen.getByText('Bind by object ID'))
     await user.type(
       screen.getByPlaceholderText('00000000-0000-0000-0000-000000000000'),
       'grp-new-789',
@@ -851,7 +886,8 @@ describe('WorkspaceSettings', () => {
     await user.click(screen.getByText('Bind'))
 
     await waitFor(() => {
-      expect(mockCreateGroupBinding).toHaveBeenCalledWith('ws-1', 'grp-new-789', 'member')
+      expect(mockCreateGroupBinding).toHaveBeenCalledWith(
+        'ws-1', 'grp-new-789', 'member', '')
     })
   })
 

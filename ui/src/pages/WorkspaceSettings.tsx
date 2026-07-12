@@ -40,6 +40,7 @@ import {
   updateMember,
   removeMember,
   listGroupBindings,
+  listBindableGroups,
   createGroupBinding,
   deleteGroupBinding,
   listConfluenceConnections,
@@ -149,6 +150,7 @@ import {
   type Workspace,
   type WorkspaceMember,
   type GroupBinding,
+  type BindableGroup,
   type ConfluenceConnection,
   type ConfluenceSpace,
   type ServiceNowConnection,
@@ -294,8 +296,16 @@ export default function WorkspaceSettings() {
   const [loadingGroupBindings, setLoadingGroupBindings] = useState(false)
   const [showAddGroupBinding, setShowAddGroupBinding] = useState(false)
   const [newGroupId, setNewGroupId] = useState('')
+  const [newGroupName, setNewGroupName] = useState('')
   const [newGroupRole, setNewGroupRole] = useState<'member' | 'workspace_admin'>('member')
   const [addingGroupBinding, setAddingGroupBinding] = useState(false)
+  // Typeahead picker (ADR-048 v1.1): search eligible groups by name; the raw
+  // object-ID field stays available behind a toggle for the credential-free
+  // gap case (binding a group not in the picker).
+  const [groupQuery, setGroupQuery] = useState('')
+  const [groupResults, setGroupResults] = useState<BindableGroup[]>([])
+  const [searchingGroups, setSearchingGroups] = useState(false)
+  const [bindByIdMode, setBindByIdMode] = useState(false)
 
   // Integrations tab state
   const [confluenceConnections, setConfluenceConnections] = useState<ConfluenceConnection[]>([])
@@ -2459,20 +2469,45 @@ export default function WorkspaceSettings() {
     }
   }
 
-  async function handleAddGroupBinding() {
-    if (!workspaceId || !newGroupId.trim()) return
+  async function handleGroupSearch(q: string) {
+    setGroupQuery(q)
+    if (!workspaceId) return
+    setSearchingGroups(true)
+    try {
+      const results = await listBindableGroups(workspaceId, q.trim())
+      // hide groups already bound so the picker only offers new ones
+      const bound = new Set(groupBindings.map(b => b.group_id))
+      setGroupResults(results.filter(g => !bound.has(g.id)))
+    } catch {
+      setGroupResults([])
+    } finally {
+      setSearchingGroups(false)
+    }
+  }
+
+  function resetGroupBindingForm() {
+    setShowAddGroupBinding(false)
+    setNewGroupId('')
+    setNewGroupName('')
+    setNewGroupRole('member')
+    setGroupQuery('')
+    setGroupResults([])
+    setBindByIdMode(false)
+  }
+
+  async function handleBindGroup(groupId: string, groupName: string) {
+    if (!workspaceId || !groupId.trim()) return
     setAddingGroupBinding(true)
     setError(null)
     try {
-      const binding = await createGroupBinding(workspaceId, newGroupId.trim(), newGroupRole)
+      const binding = await createGroupBinding(
+        workspaceId, groupId.trim(), newGroupRole, groupName.trim())
       // Replace-or-append: re-binding an existing group updates its role in place.
       setGroupBindings(prev => {
         const rest = prev.filter(b => b.group_id !== binding.group_id)
         return [...rest, binding]
       })
-      setShowAddGroupBinding(false)
-      setNewGroupId('')
-      setNewGroupRole('member')
+      resetGroupBindingForm()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to bind group')
     } finally {
@@ -2934,7 +2969,8 @@ export default function WorkspaceSettings() {
           {/* Azure AD group bindings. Members added by a binding are synced
               from the user's OIDC `groups` claim on login (ADR-048) and show
               up in the Members list above with source=group; they are never
-              revoked by manual edits. Bind by Entra group object ID. */}
+              revoked by manual edits. Bind via the name-search picker
+              (ADR-048 v1.1), with paste-by-object-ID as the fallback. */}
           <div className="bg-white rounded-lg border shadow-sm">
             <div className="p-4 border-b flex items-center justify-between">
               <div className="flex items-center gap-3">
@@ -2959,48 +2995,118 @@ export default function WorkspaceSettings() {
 
             {isAdmin && showAddGroupBinding && (
               <div className="p-4 border-b bg-gray-50">
-                <label htmlFor="groupId" className="block text-sm font-medium text-gray-700 mb-1">
-                  Entra group object ID
-                </label>
-                <div className="flex flex-col sm:flex-row gap-2">
-                  <input
-                    id="groupId"
-                    type="text"
-                    value={newGroupId}
-                    onChange={(e) => setNewGroupId(e.target.value)}
-                    placeholder="00000000-0000-0000-0000-000000000000"
-                    className="flex-1 px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    autoFocus
-                  />
-                  <select
-                    value={newGroupRole}
-                    onChange={(e) => setNewGroupRole(e.target.value as 'member' | 'workspace_admin')}
-                    className="text-sm border rounded-lg px-2 py-2"
-                  >
-                    <option value="member">Member</option>
-                    <option value="workspace_admin">Admin</option>
-                  </select>
-                  <MutationButton
-                    onClick={handleAddGroupBinding}
-                    disabled={!newGroupId.trim() || addingGroupBinding}
-                    className="px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
-                  >
-                    {addingGroupBinding && <Loader2 size={16} className="animate-spin" />}
-                    Bind
-                  </MutationButton>
-                  <button
-                    onClick={() => {
-                      setShowAddGroupBinding(false)
-                      setNewGroupId('')
-                      setNewGroupRole('member')
-                    }}
-                    className="px-4 py-2 text-sm text-gray-700 hover:bg-gray-200 rounded-lg transition-colors"
-                  >
-                    Cancel
-                  </button>
+                <div className="flex items-center justify-between mb-1">
+                  <label htmlFor="groupSearch" className="block text-sm font-medium text-gray-700">
+                    {bindByIdMode ? 'Entra group object ID' : 'Search groups'}
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <select
+                      value={newGroupRole}
+                      onChange={(e) => setNewGroupRole(e.target.value as 'member' | 'workspace_admin')}
+                      className="text-sm border rounded-lg px-2 py-1.5"
+                    >
+                      <option value="member">Member</option>
+                      <option value="workspace_admin">Admin</option>
+                    </select>
+                    <button
+                      onClick={resetGroupBindingForm}
+                      className="px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-200 rounded-lg transition-colors"
+                    >
+                      Cancel
+                    </button>
+                  </div>
                 </div>
+
+                {bindByIdMode ? (
+                  <div className="flex flex-col sm:flex-row gap-2">
+                    <input
+                      id="groupSearch"
+                      type="text"
+                      value={newGroupId}
+                      onChange={(e) => setNewGroupId(e.target.value)}
+                      placeholder="00000000-0000-0000-0000-000000000000"
+                      className="flex-1 px-3 py-2 border rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      autoFocus
+                    />
+                    <input
+                      type="text"
+                      value={newGroupName}
+                      onChange={(e) => setNewGroupName(e.target.value)}
+                      placeholder="display name (optional)"
+                      className="flex-1 px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                    <MutationButton
+                      onClick={() => handleBindGroup(newGroupId, newGroupName)}
+                      disabled={!newGroupId.trim() || addingGroupBinding}
+                      className="px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
+                    >
+                      {addingGroupBinding && <Loader2 size={16} className="animate-spin" />}
+                      Bind
+                    </MutationButton>
+                  </div>
+                ) : (
+                  <>
+                    <input
+                      id="groupSearch"
+                      type="text"
+                      value={groupQuery}
+                      onChange={(e) => handleGroupSearch(e.target.value)}
+                      placeholder="Start typing a group name, e.g. outcomeops-"
+                      className="w-full px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      autoFocus
+                    />
+                    <div className="mt-2 max-h-56 overflow-y-auto rounded-lg border bg-white divide-y">
+                      {searchingGroups ? (
+                        <div className="p-3 flex items-center justify-center text-gray-400">
+                          <Loader2 className="animate-spin" size={18} />
+                        </div>
+                      ) : groupResults.length === 0 ? (
+                        <div className="p-3 text-sm text-gray-500">
+                          {groupQuery.trim()
+                            ? 'No matching groups you can see here.'
+                            : 'Type to search the groups available to you.'}
+                        </div>
+                      ) : (
+                        groupResults.map(g => (
+                          <button
+                            key={g.id}
+                            onClick={() => handleBindGroup(g.id, g.display_name)}
+                            disabled={addingGroupBinding}
+                            className="w-full text-left px-3 py-2 hover:bg-blue-50 disabled:opacity-50 transition-colors"
+                          >
+                            <span className="text-sm text-gray-900">
+                              {g.display_name || g.id}
+                            </span>
+                            {g.display_name && (
+                              <span className="block text-xs text-gray-400 font-mono">{g.id}</span>
+                            )}
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  </>
+                )}
+
                 <p className="text-xs text-gray-500 mt-2">
-                  Find the object ID in Entra under Groups &rarr; the group &rarr; Overview.
+                  {bindByIdMode ? (
+                    <button
+                      onClick={() => setBindByIdMode(false)}
+                      className="text-blue-600 hover:underline"
+                    >
+                      &larr; Back to search
+                    </button>
+                  ) : (
+                    <>
+                      Can&rsquo;t find it?{' '}
+                      <button
+                        onClick={() => setBindByIdMode(true)}
+                        className="text-blue-600 hover:underline"
+                      >
+                        Bind by object ID
+                      </button>{' '}
+                      (Entra &rarr; Groups &rarr; the group &rarr; Overview).
+                    </>
+                  )}
                 </p>
               </div>
             )}
@@ -3026,7 +3132,14 @@ export default function WorkspaceSettings() {
                         <Users className="text-gray-400" size={20} />
                       )}
                       <div>
-                        <p className="font-mono text-sm text-gray-900">{binding.group_id}</p>
+                        {binding.group_name ? (
+                          <>
+                            <p className="text-sm text-gray-900">{binding.group_name}</p>
+                            <p className="text-xs text-gray-400 font-mono">{binding.group_id}</p>
+                          </>
+                        ) : (
+                          <p className="font-mono text-sm text-gray-900">{binding.group_id}</p>
+                        )}
                         <p className="text-sm text-gray-500 capitalize">{binding.role.replace('_', ' ')}</p>
                       </div>
                     </div>

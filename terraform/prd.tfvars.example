@@ -291,6 +291,27 @@ github_usernames_to_tag = "yourusername"
 #     --type SecureString --value "your-client-secret"
 # See docs/azure-ad-setup.md for full setup instructions.
 
+# --- Azure AD group -> workspace provisioning (ADR-048) -------------------
+# Bind Entra security groups to workspaces so membership follows the OIDC
+# `groups` claim. Recommended app config: groupMembershipClaims=ApplicationGroup
+# (emit only groups assigned to the app) so the claim is curated + bounded.
+#
+# azure_ad_group_patterns = ["outcomeops-*", "*-outcomeops-*"]  # eligibility scope
+# azure_ad_group_sync_enabled = true
+#
+# If your enterprise app emits on-prem group NAMES (sAMAccountName) for synced
+# groups, enable the credential-free name-matching + picker path:
+# azure_ad_group_name_claim_enabled = true
+#
+# For cloud-only groups (or a complete "search all eligible groups" picker),
+# enable the app-only Graph read (Group.Read.All, application, admin-consented).
+# This is the customer's own tenant grant -- no vendor-held credential.
+# azure_ad_group_graph_fallback_enabled = true
+# azure_ad_graph_client_id       = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+# azure_ad_graph_secret_ssm_path = "/prd/outcome-ops-ai-assist/azure/graph-secret"
+#   aws ssm put-parameter --name "/prd/outcome-ops-ai-assist/azure/graph-secret" \
+#     --type SecureString --value "your-graph-app-client-secret"
+
 # ============================================================================
 # MCP Server Catalog
 # ============================================================================

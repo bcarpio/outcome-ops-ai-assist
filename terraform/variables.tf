@@ -689,6 +689,45 @@ variable "mcp_static_keys_enabled" {
   default     = true
 }
 
+# chunk 03 (ADR-048 v1.1): Azure AD group selection UX -- naming-convention
+# eligibility scope + toggleable app-only Graph read for the binding picker and
+# the >200-group memberOf fallback.
+variable "azure_ad_group_patterns" {
+  description = "Case-insensitive globs scoping which Entra groups are eligible/visible for workspace binding (e.g. [\"outcomeops-*\", \"*-outcomeops-*\"]). Visibility filter only -- bindings stay explicit per-group. Empty = no restriction (v1.0 behavior)."
+  type        = list(string)
+  default     = []
+}
+
+variable "azure_ad_group_sync_enabled" {
+  description = "Master on/off for Azure AD group -> workspace provisioning (OIDC groups claim + on-login reconcile)."
+  type        = bool
+  default     = true
+}
+
+variable "azure_ad_group_name_claim_enabled" {
+  description = "True when the enterprise app emits on-prem group names (sAMAccountName) in the groups claim for synced groups. Enables the credential-free name-matching path."
+  type        = bool
+  default     = false
+}
+
+variable "azure_ad_group_graph_fallback_enabled" {
+  description = "Allow an app-only Microsoft Graph read (env-SSM secret) to populate the full binding picker and resolve the >200-group memberOf overage. Off = credential-free (own-token picker + paste)."
+  type        = bool
+  default     = false
+}
+
+variable "azure_ad_graph_client_id" {
+  description = "App (client) ID of the Entra App Registration granted Group.Read.All (application) for the group picker. Only used when azure_ad_group_graph_fallback_enabled. Secret in SSM (azure_ad_graph_secret_ssm_path)."
+  type        = string
+  default     = ""
+}
+
+variable "azure_ad_graph_secret_ssm_path" {
+  description = "SSM SecureString path holding the Graph app client secret. Read at runtime by the workspace-management Lambda when the Graph fallback is enabled."
+  type        = string
+  default     = ""
+}
+
 variable "mcp_server_target_requests_per_task" {
   description = "Target-tracking value for ALBRequestCountPerTarget on the MCP server service. MCP tool calls are short-lived so this is closer to a QPS cap than a concurrency cap."
   type        = number

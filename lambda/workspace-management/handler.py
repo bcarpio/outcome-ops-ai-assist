@@ -376,6 +376,10 @@ class GroupBindingRequest(BaseModel):
 
     group_id: str
     role: str = Field(default="member")
+    # Optional cached display name (ADR-048 v1.1). The picker supplies it so the
+    # bindings list shows a human name and the mixed matcher can match a synced
+    # group that arrives in the claim by name. Falls back to group_id in the UI.
+    group_name: str = Field(default="")
 
     @field_validator("group_id")
     @classmethod
@@ -384,6 +388,11 @@ class GroupBindingRequest(BaseModel):
         if not v:
             raise ValueError("group_id is required")
         return v
+
+    @field_validator("group_name")
+    @classmethod
+    def normalize_group_name(cls, v: str) -> str:
+        return (v or "").strip()
 
     @field_validator("role")
     @classmethod
@@ -399,9 +408,17 @@ class SyncMembershipsRequest(BaseModel):
     ``groups`` is the caller's current Entra group-id list, taken from the OIDC
     ``groups`` claim by the Fargate proxy. Empty list is valid (user is in no
     groups -> all of their group-derived memberships get revoked).
+
+    When a user is in >200 groups Azure AD omits ``groups`` and emits
+    ``_claim_names``/``hasGroups`` instead. The proxy sets ``overflow=true`` and
+    passes the user's ``user_oid`` so the Lambda resolves the true group set via
+    Graph ``memberOf`` (ADR-048 v1.1 §10). If Graph is unavailable the sync is
+    SKIPPED rather than revoking everything against an empty list.
     """
 
     groups: List[str] = Field(default_factory=list)
+    overflow: bool = Field(default=False)
+    user_oid: str = Field(default="")
 
 
 class AddRepoRequest(BaseModel):
@@ -1451,6 +1468,8 @@ def create_group_binding(
             "created_at": now,
             "created_by": user_email,
         }
+        if request.group_name:
+            item["group_name"] = request.group_name
         dual_write.ddb_put_item(_get_workspaces_table(), item)
 
         ctx = audit_ctx or {}
@@ -1522,6 +1541,7 @@ def list_group_bindings(user_email: str, workspace_id: str) -> Dict:
             bindings.extend({
                 "group_id": i["group_id"], "workspace_id": i["workspace_id"],
                 "role": i.get("role", "member"), "created_at": i.get("created_at"),
+                "group_name": i.get("group_name", ""),
             } for i in resp.get("Items", []))
             lek = resp.get("LastEvaluatedKey")
             if not lek:
@@ -1531,6 +1551,29 @@ def list_group_bindings(user_email: str, workspace_id: str) -> Dict:
     except ClientError as e:
         logger.error(f"Error listing group bindings: {e}")
         return _error(500, "Failed to list group bindings")
+
+
+def bindable_groups(user_email: str, workspace_id: str, query: str = "") -> Dict:
+    """Return Entra groups eligible to bind to a workspace (workspace admin only).
+
+    Graph-backed path (ADR-048 v1.1): when the app-only Graph fallback is
+    enabled, search the pattern-scoped directory so an admin can bind any
+    eligible group whether or not they are a member. When it is disabled this
+    returns an empty list -- the credential-free picker (the caller's own token
+    groups + paste) is served entirely by the Fargate proxy, which never calls
+    this endpoint in that posture.
+    """
+    dynamodb = _get_dynamodb()
+    table = dynamodb.Table(_get_workspaces_table())
+    try:
+        if not _is_workspace_admin(table, user_email, workspace_id):
+            return _error(403, "Only workspace admins can list bindable groups")
+        from shared import graph_client
+        groups = graph_client.search_groups(query)
+        return _response(200, {"groups": groups, "source": "graph"})
+    except ClientError as e:
+        logger.error(f"Error listing bindable groups: {e}")
+        return _error(500, "Failed to list bindable groups")
 
 
 def _query_group_bindings_for_groups(table, group_ids: List[str]) -> List[Dict]:
@@ -1592,6 +1635,17 @@ def sync_memberships(
     table = dynamodb.Table(_get_workspaces_table())
     try:
         groups = request.groups or []
+        if request.overflow:
+            # >200-group user: the claim had no group list. Resolve the true set
+            # via Graph; if Graph is off/unconfigured, member_of returns [] and
+            # we must NOT proceed (an empty list would revoke every group row).
+            from shared import graph_client
+            groups = graph_client.member_of(request.user_oid)
+            if not groups:
+                logger.info(
+                    f"Skipping sync for {user_email}: >200-group overflow and "
+                    "Graph memberOf unavailable (no false revocation)")
+                return _response(200, {"skipped": "overflow_no_graph"})
         bindings = _query_group_bindings_for_groups(table, groups)
         existing = _query_user_memberships(table, user_email)
         to_put, to_delete = group_workspace_sync.compute_delta(
@@ -5821,6 +5875,16 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
                 return blocked
             request = SyncMembershipsRequest(**body)
             return sync_memberships(user_email, request, audit_ctx)
+
+        # Route: GET /workspaces/{id}/bindable-groups?q= (ADR-048 v1.1 picker)
+        if (
+            len(parts) == 3
+            and parts[0] == "workspaces"
+            and parts[2] == "bindable-groups"
+            and http_method == "GET"
+        ):
+            qp = event.get("queryStringParameters") or {}
+            return bindable_groups(user_email, parts[1], (qp.get("q") or "").strip())
 
         # Route: GET /workspaces/{id}/group-bindings
         if (

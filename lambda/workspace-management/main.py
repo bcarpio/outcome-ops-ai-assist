@@ -255,6 +255,17 @@ async def sync_memberships_route(request: Request):
     return _parse_response(lambda_handler(event, None))
 
 
+@app.get("/workspaces/{workspace_id}/bindable-groups")
+async def bindable_groups_route(workspace_id: str, request: Request):
+    """Search Entra groups eligible to bind (Graph-backed picker, ADR-048 v1.1)."""
+    from handler import lambda_handler
+
+    event = _build_event(
+        request, "GET", f"/workspaces/{workspace_id}/bindable-groups")
+    event["queryStringParameters"] = dict(request.query_params)
+    return _parse_response(lambda_handler(event, None))
+
+
 @app.get("/workspaces/{workspace_id}/group-bindings")
 async def list_group_bindings_route(workspace_id: str, request: Request):
     """List Entra group bindings for a workspace."""

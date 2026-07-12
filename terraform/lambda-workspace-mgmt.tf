@@ -95,6 +95,18 @@ module "workspace_management_lambda" {
     INTEGRATION_SERVICENOW_ENABLED          = tostring(var.enable_servicenow_integration)
     INTEGRATION_SALESFORCE_ENABLED          = tostring(var.enable_salesforce_integration)
 
+    # chunk 03 (ADR-048 v1.1): Azure AD group selection UX. Patterns scope the
+    # binding picker; the Graph fallback (app-only, SSM secret) populates the
+    # full picker + resolves the >200-group memberOf overage. Off => the picker
+    # is fed by the caller's own token groups + paste (credential-free).
+    AZURE_AD_TENANT_ID                    = var.azure_ad_tenant_id
+    AZURE_AD_GROUP_PATTERNS               = jsonencode(var.azure_ad_group_patterns)
+    AZURE_AD_GROUP_SYNC_ENABLED           = tostring(var.azure_ad_group_sync_enabled)
+    AZURE_AD_GROUP_NAME_CLAIM_ENABLED     = tostring(var.azure_ad_group_name_claim_enabled)
+    AZURE_AD_GROUP_GRAPH_FALLBACK_ENABLED = tostring(var.azure_ad_group_graph_fallback_enabled)
+    AZURE_AD_GRAPH_CLIENT_ID              = var.azure_ad_graph_client_id
+    AZURE_AD_GRAPH_SECRET_SSM_PATH        = var.azure_ad_graph_secret_ssm_path
+
     # Point requests / urllib3 / httpx / stdlib ssl + urllib.request at
     # the merged PEM shipped in the platform-CA layer so BYO-internal-CA
     # MCP listeners are trusted. Both env vars are needed because
@@ -226,6 +238,19 @@ module "workspace_management_lambda" {
     # Empty (no-op) in single-region mode.
     local.ha_writer_events_iam,
     local.ha_scheduler_iam,
+    # ADR-048 v1.1: read the app-only Graph client secret for the binding
+    # picker + >200-group memberOf fallback. Only when configured; the path is
+    # customer-chosen so it may sit outside the app's own SSM prefix. aws/ssm
+    # KMS decrypt is already granted above.
+    var.azure_ad_graph_secret_ssm_path != "" ? {
+      graph_secret_read = {
+        effect  = "Allow"
+        actions = ["ssm:GetParameter"]
+        resources = [
+          "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${var.azure_ad_graph_secret_ssm_path}"
+        ]
+      }
+    } : {},
   )
 
   tags = {

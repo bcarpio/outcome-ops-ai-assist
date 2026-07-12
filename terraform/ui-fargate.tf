@@ -800,6 +800,17 @@ module "ui_ecs" {
                 name  = "WORKSPACE_LAMBDA_URL"
                 value = aws_lambda_function_url.workspace_management[0].function_url
               },
+              # ADR-048 v1.1: the Express proxy filters the caller's own token
+              # groups by these patterns for the credential-free binding picker,
+              # and forwards to the Lambda instead when the Graph fallback is on.
+              {
+                name  = "AZURE_AD_GROUP_PATTERNS"
+                value = jsonencode(var.azure_ad_group_patterns)
+              },
+              {
+                name  = "AZURE_AD_GROUP_GRAPH_FALLBACK_ENABLED"
+                value = tostring(var.azure_ad_group_graph_fallback_enabled)
+              },
               # try(...) wraps every per-integration Function URL so a
               # disabled integration's absent aws_lambda_function_url[0]
               # doesn't blow up plan. The Express proxy skips routes

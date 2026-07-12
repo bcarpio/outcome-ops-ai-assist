@@ -32,9 +32,15 @@ H = _load_handler_module()
 create_group_binding = H.create_group_binding
 delete_group_binding = H.delete_group_binding
 list_group_bindings = H.list_group_bindings
+bindable_groups = H.bindable_groups
 sync_memberships = H.sync_memberships
 GroupBindingRequest = H.GroupBindingRequest
 SyncMembershipsRequest = H.SyncMembershipsRequest
+
+_LAMBDA_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+if _LAMBDA_ROOT not in sys.path:
+    sys.path.insert(0, _LAMBDA_ROOT)
+from shared import graph_client  # noqa: E402
 
 ADMIN = "admin@outcomeops.onmicrosoft.com"
 USER = "alice@outcomeops.onmicrosoft.com"
@@ -107,6 +113,45 @@ class TestGroupBindingCRUD:
         res = list_group_bindings(ADMIN, "ws1")
         assert res["statusCode"] == 200
 
+    @patch.object(H, "log_admin_action")
+    @patch.object(H.dual_write, "ddb_put_item")
+    @patch.object(H, "_is_workspace_admin", return_value=True)
+    @patch.object(H, "_get_workspaces_table", return_value="t")
+    @patch.object(H, "_get_dynamodb")
+    def test_create_binding_stores_group_name(self, ddb, _t, _adm, put, _audit):
+        table = MagicMock()
+        ddb.return_value.Table.return_value = table
+        table.get_item.return_value = {"Item": {"PK": "WS#ws1"}}
+        res = create_group_binding(
+            ADMIN, "ws1",
+            GroupBindingRequest(group_id="00000000-0000-0000-0000-000000000001",
+                                role="member", group_name="outcomeops-eng"))
+        assert res["statusCode"] == 201
+        assert put.call_args.args[1]["group_name"] == "outcomeops-eng"
+
+
+class TestBindableGroups:
+    @patch.object(graph_client, "search_groups",
+                  return_value=[{"id": "1", "display_name": "outcomeops-eng"}])
+    @patch.object(H, "_is_workspace_admin", return_value=True)
+    @patch.object(H, "_get_workspaces_table", return_value="t")
+    @patch.object(H, "_get_dynamodb")
+    def test_admin_gets_graph_results(self, ddb, _t, _adm, search):
+        ddb.return_value.Table.return_value = MagicMock()
+        res = bindable_groups(ADMIN, "ws1", "eng")
+        assert res["statusCode"] == 200
+        search.assert_called_once_with("eng")
+
+    @patch.object(graph_client, "search_groups")
+    @patch.object(H, "_is_workspace_admin", return_value=False)
+    @patch.object(H, "_get_workspaces_table", return_value="t")
+    @patch.object(H, "_get_dynamodb")
+    def test_non_admin_403(self, ddb, _t, _adm, search):
+        ddb.return_value.Table.return_value = MagicMock()
+        res = bindable_groups(USER, "ws1", "eng")
+        assert res["statusCode"] == 403
+        search.assert_not_called()
+
 
 class TestSyncMemberships:
     @patch.object(H, "log_admin_action")
@@ -162,3 +207,37 @@ class TestSyncMemberships:
         assert res["statusCode"] == 200
         put.assert_not_called()
         dele.assert_not_called()
+
+    @patch.object(graph_client, "member_of", return_value=[])
+    @patch.object(H.dual_write, "ddb_delete_item")
+    @patch.object(H.dual_write, "ddb_put_item")
+    @patch.object(H, "_get_workspaces_table", return_value="t")
+    @patch.object(H, "_get_dynamodb")
+    def test_overflow_without_graph_skips(self, ddb, _t, put, dele, memberof):
+        # >200 overage + Graph off (member_of returns []) -> skip, no revocation
+        ddb.return_value.Table.return_value = MagicMock()
+        res = sync_memberships(
+            USER, SyncMembershipsRequest(overflow=True, user_oid="oid-1"))
+        assert res["statusCode"] == 200
+        assert res["body"] and "skipped" in res["body"]
+        put.assert_not_called()
+        dele.assert_not_called()
+
+    @patch.object(H, "log_admin_action")
+    @patch.object(graph_client, "member_of", return_value=["g1"])
+    @patch.object(H.dual_write, "ddb_delete_item")
+    @patch.object(H.dual_write, "ddb_put_item")
+    @patch.object(H, "_get_workspaces_table", return_value="t")
+    @patch.object(H, "_get_dynamodb")
+    def test_overflow_with_graph_resolves(self, ddb, _t, put, dele, memberof, _a):
+        table = MagicMock()
+        ddb.return_value.Table.return_value = table
+        table.query.side_effect = [
+            {"Items": [_binding("g1", "ws1", "member")]},   # bindings for g1
+            {"Items": []},                                   # existing members
+        ]
+        res = sync_memberships(
+            USER, SyncMembershipsRequest(overflow=True, user_oid="oid-1"))
+        assert res["statusCode"] == 200
+        memberof.assert_called_once_with("oid-1")
+        assert put.call_args.args[1]["source"] == "group:g1"

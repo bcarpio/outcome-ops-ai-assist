@@ -36,6 +36,24 @@ def _higher_role(a: str, b: str) -> str:
     return a if _ROLE_RANK.get(a, 0) >= _ROLE_RANK.get(b, 0) else b
 
 
+def _binding_identifiers(b: Dict) -> List[str]:
+    """The normalized values a binding can be matched by (ADR-048 v1.1).
+
+    A hybrid Entra tenant emits a mix of object IDs and on-prem group names in
+    one token's ``groups`` claim, and a binding may have been stored by either
+    (object ID via the Graph picker, or on-prem name in the credential-free
+    path). So a binding matches the claim on EITHER its ``group_id`` or its
+    optional ``group_name``. GUIDs are case-insensitive and names are matched
+    case-insensitively, so everything is compared lowercased.
+    """
+    out: List[str] = []
+    for key in ("group_id", "group_name"):
+        v = b.get(key)
+        if v:
+            out.append(v.strip().lower())
+    return out
+
+
 def desired_memberships(
     claim_group_ids: Iterable[str],
     bindings: Iterable[Dict],
@@ -48,18 +66,20 @@ def desired_memberships(
     workspace, the highest role wins and its ``group_id`` is recorded as the
     owning source.
     """
-    claim = {g for g in claim_group_ids if g}
+    claim = {g.strip().lower() for g in claim_group_ids if g}
     desired: Dict[str, Tuple[str, str]] = {}
     for b in bindings:
         gid = b.get("group_id")
         ws = b.get("workspace_id")
         role = b.get("role", "member")
-        if not gid or not ws or gid not in claim:
+        # Match by EITHER object ID or on-prem name (hybrid-tenant mixed claim).
+        if not gid or not ws or not (set(_binding_identifiers(b)) & claim):
             continue
         if role not in _ROLE_RANK:
             role = "member"
         if ws in desired:
             role = _higher_role(desired[ws][0], role)
+        # source stays keyed on the canonical group_id (object ID when known).
         desired[ws] = (role, gid)
     return desired
 

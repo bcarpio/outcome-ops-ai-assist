@@ -55,6 +55,57 @@ const STATIC_DIR = process.env.STATIC_DIR || "/app/static";
 const LOCAL_DEV_MODE = process.env.LOCAL_DEV_MODE === "true";
 const SCANNER_JWT_SECRET_SSM = process.env.SCANNER_JWT_SECRET_SSM || "";
 
+// ADR-048 v1.1: Azure AD group selection UX. Patterns scope which groups are
+// eligible/visible for binding; the credential-free picker is served here from
+// the caller's own token groups filtered by these patterns. When the Graph
+// fallback is on, the bindable-groups request is proxied to the Lambda instead.
+const AZURE_AD_GROUP_PATTERNS = (() => {
+  try {
+    const v = JSON.parse(process.env.AZURE_AD_GROUP_PATTERNS || "[]");
+    return Array.isArray(v) ? v.map(String) : [];
+  } catch {
+    return [];
+  }
+})();
+const AZURE_AD_GROUP_GRAPH_FALLBACK_ENABLED =
+  process.env.AZURE_AD_GROUP_GRAPH_FALLBACK_ENABLED === "true";
+
+// Case-insensitive glob match (mirrors shared/group_patterns.matches). Empty
+// pattern list => no restriction (v1.0 back-compat). A value that is a GUID
+// only survives a name filter when there's no real restriction.
+const _OBJECT_ID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function _globToRegExp(pattern) {
+  const esc = pattern.trim().toLowerCase().replace(/[.+^${}()|[\]\\]/g, "\\$&");
+  return new RegExp("^" + esc.replace(/\*/g, ".*").replace(/\?/g, ".") + "$");
+}
+function groupNameMatchesPatterns(name, patterns) {
+  if (!patterns || patterns.length === 0) return true;
+  if (!name) return false;
+  const low = String(name).trim().toLowerCase();
+  return patterns.some((p) => p && _globToRegExp(p).test(low));
+}
+function filterOwnTokenGroups(groups, patterns, q) {
+  const ql = (q || "").trim().toLowerCase();
+  const out = [];
+  for (const g of groups || []) {
+    if (!g) continue;
+    const isGuid = _OBJECT_ID_RE.test(String(g).trim());
+    if (isGuid) {
+      const allowAll = !patterns.length || patterns.some((p) => p.trim() === "*");
+      if (!allowAll) continue;
+    } else if (!groupNameMatchesPatterns(g, patterns)) {
+      continue;
+    }
+    if (ql && !String(g).toLowerCase().includes(ql)) continue;
+    // token groups have no separate display name; id == display for names,
+    // and a GUID shows as itself (the admin typically binds a group they can
+    // read by name; GUIDs here are the rare cross-group case).
+    out.push({ id: String(g), display_name: isGuid ? "" : String(g) });
+  }
+  return out;
+}
+
 // Scanner JWT secret loaded from SSM at startup (null = scanner auth disabled)
 let scannerJwtSecret = null;
 
@@ -167,9 +218,12 @@ function extractUser(req) {
         name: payload.name || email || "unknown",
         groups,
         groupsOverflow,
+        // Entra object ID of the user -- needed for the Graph memberOf fallback
+        // that resolves the >200-group overage (ADR-048 v1.1 §10).
+        oid: payload.oid || "",
       };
     } catch {
-      return { email: "unknown", name: "unknown", groups: [], groupsOverflow: false };
+      return { email: "unknown", name: "unknown", groups: [], groupsOverflow: false, oid: "" };
     }
   }
 
@@ -701,10 +755,13 @@ const MEMBERSHIP_SYNC_TTL_MS = 60 * 60 * 1000;
 async function maybeSyncMemberships(req, user) {
   if (LOCAL_DEV_MODE || !WORKSPACE_LAMBDA_URL) return;
   if (!user || !user.email || user.email === "unknown") return;
-  if (user.groupsOverflow) {
+  // >200-group overage: Azure AD omitted the group list. If the Graph fallback
+  // is enabled the Lambda resolves the true set via memberOf(user_oid); if not,
+  // skip (syncing against an empty list would wrongly revoke every group row).
+  if (user.groupsOverflow && !AZURE_AD_GROUP_GRAPH_FALLBACK_ENABLED) {
     console.warn(
       `[sync] ${user.email} has >200 groups (claim overage); skipping group ` +
-      `sync until the Graph /me/memberOf fallback ships`
+      `sync (Graph memberOf fallback disabled on this deploy)`
     );
     return;
   }
@@ -712,9 +769,12 @@ async function maybeSyncMemberships(req, user) {
   if (Date.now() - last < MEMBERSHIP_SYNC_TTL_MS) return;
   _membershipSyncCache.set(user.email, Date.now());
   try {
+    const body = user.groupsOverflow
+      ? { overflow: true, user_oid: user.oid || "" }
+      : { groups: user.groups || [] };
     const resp = await signedWorkspaceFetch("POST", "/sync-memberships", {
       extraHeaders: userHeaders(req, user),
-      body: JSON.stringify({ groups: user.groups || [] }),
+      body: JSON.stringify(body),
     });
     if (!resp.ok) {
       console.warn(`[sync] membership sync for ${user.email} -> ${resp.status}`);
@@ -809,6 +869,21 @@ app.post("/api/workspaces/:id/members", (req, res) => proxyWorkspaceRequest(req,
 app.get("/api/workspaces/:id/members", (req, res) => proxyWorkspaceRequest(req, res, "GET", `/workspaces/${req.params.id}/members`));
 app.patch("/api/workspaces/:id/members/:email", (req, res) => proxyWorkspaceRequest(req, res, "PATCH", `/workspaces/${req.params.id}/members/${encodeURIComponent(req.params.email)}`));
 app.delete("/api/workspaces/:id/members/:email", (req, res) => proxyWorkspaceRequest(req, res, "DELETE", `/workspaces/${req.params.id}/members/${encodeURIComponent(req.params.email)}`));
+
+// ADR-048 v1.1: binding picker. Graph fallback ON -> proxy to the Lambda (it
+// searches the pattern-scoped directory). OFF -> serve the credential-free
+// picker here from the caller's own token groups filtered by the patterns.
+app.get("/api/workspaces/:id/bindable-groups", (req, res) => {
+  if (AZURE_AD_GROUP_GRAPH_FALLBACK_ENABLED) {
+    const q = req.query.q ? `?q=${encodeURIComponent(String(req.query.q))}` : "";
+    return proxyWorkspaceRequest(
+      req, res, "GET", `/workspaces/${req.params.id}/bindable-groups${q}`);
+  }
+  const user = extractUser(req);
+  const groups = filterOwnTokenGroups(
+    user.groups || [], AZURE_AD_GROUP_PATTERNS, req.query.q);
+  return res.json({ groups, source: "token" });
+});
 
 // chunk 11a: Azure AD group -> workspace bindings (admin)
 app.get("/api/workspaces/:id/group-bindings", (req, res) => proxyWorkspaceRequest(req, res, "GET", `/workspaces/${req.params.id}/group-bindings`));

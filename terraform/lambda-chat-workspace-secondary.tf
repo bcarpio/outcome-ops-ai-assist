@@ -333,6 +333,15 @@ module "workspace_management_lambda_secondary" {
       INTEGRATION_ONEDRIVE_ENABLED            = tostring(var.enable_onedrive_integration)
       INTEGRATION_ONENOTE_ENABLED             = tostring(var.enable_onenote_integration)
       INTEGRATION_DATABASE_ENABLED            = tostring(var.enable_database_integration)
+
+      # ADR-048 v1.1 (primary/secondary parity): Azure AD group selection UX.
+      AZURE_AD_TENANT_ID                    = var.azure_ad_tenant_id
+      AZURE_AD_GROUP_PATTERNS               = jsonencode(var.azure_ad_group_patterns)
+      AZURE_AD_GROUP_SYNC_ENABLED           = tostring(var.azure_ad_group_sync_enabled)
+      AZURE_AD_GROUP_NAME_CLAIM_ENABLED     = tostring(var.azure_ad_group_name_claim_enabled)
+      AZURE_AD_GROUP_GRAPH_FALLBACK_ENABLED = tostring(var.azure_ad_group_graph_fallback_enabled)
+      AZURE_AD_GRAPH_CLIENT_ID              = var.azure_ad_graph_client_id
+      AZURE_AD_GRAPH_SECRET_SSM_PATH        = var.azure_ad_graph_secret_ssm_path
     },
     local.ha_writer_env_secondary,
     local.ha_scheduler_env_secondary,
@@ -398,6 +407,16 @@ module "workspace_management_lambda_secondary" {
     },
     local.ha_writer_events_iam_secondary,
     local.ha_scheduler_iam_secondary,
+    # ADR-048 v1.1 (parity): read the Graph client secret when configured.
+    var.azure_ad_graph_secret_ssm_path != "" ? {
+      graph_secret_read = {
+        effect  = "Allow"
+        actions = ["ssm:GetParameter"]
+        resources = [
+          "arn:aws:ssm:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:parameter${var.azure_ad_graph_secret_ssm_path}"
+        ]
+      }
+    } : {},
   )
 
   tags = { Purpose = "workspace-management" }

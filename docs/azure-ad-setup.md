@@ -108,12 +108,67 @@ By default, the `openid`, `email`, and `profile` scopes are requested. These are
 3. Add: `openid`, `email`, `profile`
 4. Click **Grant admin consent** if required by your organization
 
+## Step 8: Group -> workspace provisioning (Optional, ADR-048)
+
+Drive workspace membership from Entra security groups instead of per-user
+invites. Members of a bound group get the workspace (at the role you set) on
+their next login; removing them from the group revokes it.
+
+### 8a. Emit the `groups` claim, scoped to the app
+
+1. App Registration > **Token configuration** > **Add groups claim**.
+2. Choose **Groups assigned to the application** (`ApplicationGroup`), not "All
+   groups" — this curates the claim to the groups your identity team assigns to
+   OutcomeOps and keeps users under the 200-group token limit.
+3. Under **Enterprise applications** > OutcomeOps > **Users and groups**, assign
+   the security groups you want available (e.g. your `outcomeops-*` set).
+4. Terraform already requests the `groups` OIDC scope on the ALB listener.
+
+### 8b. Name matching for on-prem-synced groups (credential-free)
+
+If your groups are synced from on-prem AD via Entra Connect, emit their names so
+OutcomeOps can match them without any Graph permission:
+
+1. In the groups claim config (8a), set the emitted format to
+   **sAMAccountName** (Entra emits names only for on-prem-synced groups;
+   cloud-only groups always emit object IDs).
+2. Set `azure_ad_group_name_claim_enabled = true` and
+   `azure_ad_group_patterns = ["outcomeops-*"]` (your convention) in tfvars.
+
+### 8c. Graph read for the full picker / cloud-only groups (Optional)
+
+For a "search all eligible groups" picker, or for cloud-only groups, grant a
+read-only Graph app permission **in your own tenant** (no vendor credential):
+
+1. On the OutcomeOps App Registration (or a dedicated one), **API permissions**
+   > **Microsoft Graph** > **Application permissions** > add `Group.Read.All`,
+   then **Grant admin consent**.
+2. Create a client secret; store it in SSM:
+   ```bash
+   aws ssm put-parameter --name "/{env}/outcome-ops-ai-assist/azure/graph-secret" \
+     --type SecureString --value "your-graph-app-client-secret"
+   ```
+3. In tfvars:
+   ```hcl
+   azure_ad_group_graph_fallback_enabled = true
+   azure_ad_graph_client_id       = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+   azure_ad_graph_secret_ssm_path = "/{env}/outcome-ops-ai-assist/azure/graph-secret"
+   ```
+
+Without 8c, the picker is served from the admin's own token groups (filtered by
+your patterns), plus a paste-by-object-ID fallback — no Graph permission needed.
+
+Bindings are always explicit per-group (chosen in **Workspace > Members > Azure
+AD Groups**); the patterns only scope which groups are offered.
+
 ## Verification
 
 1. Access the UI URL from the Terraform output (`ui_url`)
 2. You should be redirected to the Azure AD login page
 3. After login, the chat UI loads
 4. Check Fargate logs for `[proxy] User: user@yourdomain.com` entries
+5. (Groups) In a workspace's **Members > Azure AD Groups**, bind a group; a
+   member of it gets `source=group` membership on their next login.
 
 ## Disabling Authentication
 
