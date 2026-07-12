@@ -39,6 +39,9 @@ import {
   addMember,
   updateMember,
   removeMember,
+  listGroupBindings,
+  createGroupBinding,
+  deleteGroupBinding,
   listConfluenceConnections,
   getConfluenceAuthUrl,
   listConfluenceSpaces,
@@ -145,6 +148,7 @@ import {
   type AzureDevOpsRepoType,
   type Workspace,
   type WorkspaceMember,
+  type GroupBinding,
   type ConfluenceConnection,
   type ConfluenceSpace,
   type ServiceNowConnection,
@@ -283,6 +287,15 @@ export default function WorkspaceSettings() {
   const [userSearchQuery, setUserSearchQuery] = useState('')
   const [userSearchResults, setUserSearchResults] = useState<SearchUser[]>([])
   const [searchingUsers, setSearchingUsers] = useState(false)
+
+  // Azure AD group bindings (Members tab). Bindings drive membership from the
+  // OIDC `groups` claim on login (ADR-048); they coexist with manual members.
+  const [groupBindings, setGroupBindings] = useState<GroupBinding[]>([])
+  const [loadingGroupBindings, setLoadingGroupBindings] = useState(false)
+  const [showAddGroupBinding, setShowAddGroupBinding] = useState(false)
+  const [newGroupId, setNewGroupId] = useState('')
+  const [newGroupRole, setNewGroupRole] = useState<'member' | 'workspace_admin'>('member')
+  const [addingGroupBinding, setAddingGroupBinding] = useState(false)
 
   // Integrations tab state
   const [confluenceConnections, setConfluenceConnections] = useState<ConfluenceConnection[]>([])
@@ -525,6 +538,7 @@ export default function WorkspaceSettings() {
   useEffect(() => {
     if (workspaceId && activeTab === 'members') {
       loadMembers()
+      loadGroupBindings()
     } else if (workspaceId && activeTab === 'integrations') {
       loadConnections()
       loadGitHubData()
@@ -612,6 +626,22 @@ export default function WorkspaceSettings() {
       console.error('Failed to load members:', err)
     } finally {
       setLoadingMembers(false)
+    }
+  }
+
+  async function loadGroupBindings() {
+    if (!workspaceId) return
+    setLoadingGroupBindings(true)
+    try {
+      const data = await listGroupBindings(workspaceId)
+      setGroupBindings(data || [])
+    } catch (err) {
+      // Non-fatal: the JWT `groups` claim path may not be configured on this
+      // deploy. Leave the section empty rather than blocking the Members tab.
+      console.error('Failed to load group bindings:', err)
+      setGroupBindings([])
+    } finally {
+      setLoadingGroupBindings(false)
     }
   }
 
@@ -2429,6 +2459,37 @@ export default function WorkspaceSettings() {
     }
   }
 
+  async function handleAddGroupBinding() {
+    if (!workspaceId || !newGroupId.trim()) return
+    setAddingGroupBinding(true)
+    setError(null)
+    try {
+      const binding = await createGroupBinding(workspaceId, newGroupId.trim(), newGroupRole)
+      // Replace-or-append: re-binding an existing group updates its role in place.
+      setGroupBindings(prev => {
+        const rest = prev.filter(b => b.group_id !== binding.group_id)
+        return [...rest, binding]
+      })
+      setShowAddGroupBinding(false)
+      setNewGroupId('')
+      setNewGroupRole('member')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to bind group')
+    } finally {
+      setAddingGroupBinding(false)
+    }
+  }
+
+  async function handleRemoveGroupBinding(groupId: string) {
+    if (!workspaceId) return
+    try {
+      await deleteGroupBinding(workspaceId, groupId)
+      setGroupBindings(prev => prev.filter(b => b.group_id !== groupId))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to remove group binding')
+    }
+  }
+
   async function loadSystemPrompt() {
     if (!workspaceId) return
     setLoadingSystemPrompt(true)
@@ -2805,6 +2866,7 @@ export default function WorkspaceSettings() {
 
         {/* Members Tab */}
         {activeTab === 'members' && (
+          <div className="space-y-6">
           <div className="bg-white rounded-lg border shadow-sm">
             <div className="p-4 border-b flex items-center justify-between">
               <h3 className="font-medium">Members ({members.length})</h3>
@@ -2867,6 +2929,121 @@ export default function WorkspaceSettings() {
                 })}
               </ul>
             )}
+          </div>
+
+          {/* Azure AD group bindings. Members added by a binding are synced
+              from the user's OIDC `groups` claim on login (ADR-048) and show
+              up in the Members list above with source=group; they are never
+              revoked by manual edits. Bind by Entra group object ID. */}
+          <div className="bg-white rounded-lg border shadow-sm">
+            <div className="p-4 border-b flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <Users className="text-blue-600" size={20} />
+                <div>
+                  <h3 className="font-medium">Azure AD Groups ({groupBindings.length})</h3>
+                  <p className="text-sm text-gray-500">
+                    Members of a bound Entra group get this workspace on login, at the role you set.
+                  </p>
+                </div>
+              </div>
+              {isAdmin && !showAddGroupBinding && (
+                <button
+                  onClick={() => setShowAddGroupBinding(true)}
+                  className="flex items-center gap-2 px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                >
+                  <Plus size={16} />
+                  Bind Group
+                </button>
+              )}
+            </div>
+
+            {isAdmin && showAddGroupBinding && (
+              <div className="p-4 border-b bg-gray-50">
+                <label htmlFor="groupId" className="block text-sm font-medium text-gray-700 mb-1">
+                  Entra group object ID
+                </label>
+                <div className="flex flex-col sm:flex-row gap-2">
+                  <input
+                    id="groupId"
+                    type="text"
+                    value={newGroupId}
+                    onChange={(e) => setNewGroupId(e.target.value)}
+                    placeholder="00000000-0000-0000-0000-000000000000"
+                    className="flex-1 px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    autoFocus
+                  />
+                  <select
+                    value={newGroupRole}
+                    onChange={(e) => setNewGroupRole(e.target.value as 'member' | 'workspace_admin')}
+                    className="text-sm border rounded-lg px-2 py-2"
+                  >
+                    <option value="member">Member</option>
+                    <option value="workspace_admin">Admin</option>
+                  </select>
+                  <MutationButton
+                    onClick={handleAddGroupBinding}
+                    disabled={!newGroupId.trim() || addingGroupBinding}
+                    className="px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
+                  >
+                    {addingGroupBinding && <Loader2 size={16} className="animate-spin" />}
+                    Bind
+                  </MutationButton>
+                  <button
+                    onClick={() => {
+                      setShowAddGroupBinding(false)
+                      setNewGroupId('')
+                      setNewGroupRole('member')
+                    }}
+                    className="px-4 py-2 text-sm text-gray-700 hover:bg-gray-200 rounded-lg transition-colors"
+                  >
+                    Cancel
+                  </button>
+                </div>
+                <p className="text-xs text-gray-500 mt-2">
+                  Find the object ID in Entra under Groups &rarr; the group &rarr; Overview.
+                </p>
+              </div>
+            )}
+
+            {loadingGroupBindings ? (
+              <div className="p-8 flex items-center justify-center">
+                <Loader2 className="animate-spin text-gray-400" size={24} />
+              </div>
+            ) : groupBindings.length === 0 ? (
+              <div className="p-8 text-center text-gray-500">
+                <Users className="mx-auto text-gray-300 mb-2" size={40} />
+                <p>No groups bound</p>
+                <p className="text-sm mt-1">Bind an Entra group to provision members automatically.</p>
+              </div>
+            ) : (
+              <ul className="divide-y">
+                {groupBindings.map(binding => (
+                  <li key={binding.group_id} className="p-4 flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      {binding.role === 'workspace_admin' ? (
+                        <Crown className="text-amber-500" size={20} />
+                      ) : (
+                        <Users className="text-gray-400" size={20} />
+                      )}
+                      <div>
+                        <p className="font-mono text-sm text-gray-900">{binding.group_id}</p>
+                        <p className="text-sm text-gray-500 capitalize">{binding.role.replace('_', ' ')}</p>
+                      </div>
+                    </div>
+                    {isAdmin && (
+                      <MutationButton
+                        onClick={() => handleRemoveGroupBinding(binding.group_id)}
+                        className="p-1.5 rounded text-red-500 hover:bg-red-50 transition-colors"
+                        title="Remove group binding"
+                      >
+                        <UserMinus size={18} />
+                      </MutationButton>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
           </div>
         )}
 

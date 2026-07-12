@@ -13,6 +13,9 @@ vi.mock('../../../src/lib/api', () => ({
   addMember: vi.fn(),
   updateMember: vi.fn(),
   removeMember: vi.fn(),
+  listGroupBindings: vi.fn(),
+  createGroupBinding: vi.fn(),
+  deleteGroupBinding: vi.fn(),
   listConfluenceConnections: vi.fn(),
   getConfluenceAuthUrl: vi.fn(),
   listConfluenceSpaces: vi.fn(),
@@ -128,6 +131,7 @@ vi.mock('../../../src/lib/api', () => ({
 import {
   getWorkspace, updateWorkspace, deleteWorkspace,
   listMembers, addMember, updateMember, removeMember,
+  listGroupBindings, createGroupBinding, deleteGroupBinding,
   listConfluenceConnections, listJiraConnections,
   getSearchAccess, updateSearchAccess, listSharingOptions,
   listDocuments, deleteDocument,
@@ -161,6 +165,9 @@ const mockListMembers = vi.mocked(listMembers)
 const mockAddMember = vi.mocked(addMember)
 const mockUpdateMember = vi.mocked(updateMember)
 const mockRemoveMember = vi.mocked(removeMember)
+const mockListGroupBindings = vi.mocked(listGroupBindings)
+const mockCreateGroupBinding = vi.mocked(createGroupBinding)
+const mockDeleteGroupBinding = vi.mocked(deleteGroupBinding)
 const mockListConfluenceConnections = vi.mocked(listConfluenceConnections)
 const mockListJiraConnections = vi.mocked(listJiraConnections)
 const mockGetSearchAccess = vi.mocked(getSearchAccess)
@@ -229,6 +236,7 @@ function setupDefaultMocks() {
   const ws = createWorkspace({ workspace_id: 'ws-1', name: 'Test WS', role: 'workspace_admin' })
   mockGetWorkspace.mockResolvedValue(ws)
   mockListMembers.mockResolvedValue([])
+  mockListGroupBindings.mockResolvedValue([])
   mockListConfluenceConnections.mockResolvedValue([])
   mockListJiraConnections.mockResolvedValue([])
   mockGetSearchAccess.mockResolvedValue([])
@@ -795,6 +803,74 @@ describe('WorkspaceSettings', () => {
 
     await waitFor(() => {
       expect(mockRemoveMember).toHaveBeenCalled()
+    })
+  })
+
+  // Azure AD group-binding tests (Members tab)
+  it('lists existing group bindings on the members tab', async () => {
+    mockListGroupBindings.mockResolvedValue([
+      { group_id: 'grp-eng-123', workspace_id: 'ws-1', role: 'member' },
+      { group_id: 'grp-admins-456', workspace_id: 'ws-1', role: 'workspace_admin' },
+    ])
+    renderSettings('members')
+
+    await waitFor(() => {
+      expect(screen.getByText('Azure AD Groups (2)')).toBeInTheDocument()
+    })
+    expect(screen.getByText('grp-eng-123')).toBeInTheDocument()
+    expect(screen.getByText('grp-admins-456')).toBeInTheDocument()
+  })
+
+  it('shows the empty state when no groups are bound', async () => {
+    mockListGroupBindings.mockResolvedValue([])
+    renderSettings('members')
+
+    await waitFor(() => {
+      expect(screen.getByText('Azure AD Groups (0)')).toBeInTheDocument()
+    })
+    expect(screen.getByText('No groups bound')).toBeInTheDocument()
+  })
+
+  it('binds a group via the inline form', async () => {
+    mockListGroupBindings.mockResolvedValue([])
+    mockCreateGroupBinding.mockResolvedValue({
+      group_id: 'grp-new-789', workspace_id: 'ws-1', role: 'workspace_admin',
+    })
+    renderSettings('members')
+
+    await waitFor(() => {
+      expect(screen.getByText('Azure AD Groups (0)')).toBeInTheDocument()
+    })
+
+    const user = userEvent.setup()
+    await user.click(screen.getByText('Bind Group'))
+    await user.type(
+      screen.getByPlaceholderText('00000000-0000-0000-0000-000000000000'),
+      'grp-new-789',
+    )
+    await user.click(screen.getByText('Bind'))
+
+    await waitFor(() => {
+      expect(mockCreateGroupBinding).toHaveBeenCalledWith('ws-1', 'grp-new-789', 'member')
+    })
+  })
+
+  it('removes a group binding', async () => {
+    mockListGroupBindings.mockResolvedValue([
+      { group_id: 'grp-eng-123', workspace_id: 'ws-1', role: 'member' },
+    ])
+    mockDeleteGroupBinding.mockResolvedValue(undefined)
+    renderSettings('members')
+
+    await waitFor(() => {
+      expect(screen.getByText('grp-eng-123')).toBeInTheDocument()
+    })
+
+    const user = userEvent.setup()
+    await user.click(screen.getByTitle('Remove group binding'))
+
+    await waitFor(() => {
+      expect(mockDeleteGroupBinding).toHaveBeenCalledWith('ws-1', 'grp-eng-123')
     })
   })
 
