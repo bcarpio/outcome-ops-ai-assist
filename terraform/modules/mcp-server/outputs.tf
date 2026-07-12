@@ -41,3 +41,13 @@ output "task_role_arn" {
   description = "ARN of the ECS task IAM role"
   value       = aws_iam_role.task.arn
 }
+
+output "log_group_name" {
+  description = "CloudWatch log group name for this MCP server's container"
+  value       = aws_cloudwatch_log_group.mcp.name
+}
+
+output "log_group_arn" {
+  description = "CloudWatch log group ARN for this MCP server's container"
+  value       = aws_cloudwatch_log_group.mcp.arn
+}
