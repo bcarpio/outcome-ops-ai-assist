@@ -122,7 +122,11 @@ their next login; removing them from the group revokes it.
    OutcomeOps and keeps users under the 200-group token limit.
 3. Under **Enterprise applications** > OutcomeOps > **Users and groups**, assign
    the security groups you want available (e.g. your `outcomeops-*` set).
-4. Terraform already requests the `groups` OIDC scope on the ALB listener.
+
+Do **not** add `groups` to the OIDC `scope` — it is not an OAuth scope in Azure
+AD and Entra will reject sign-in with `AADSTS650053`. The claim is delivered by
+the Token configuration above and the ALB forwards it in `x-amzn-oidc-data`; the
+listener scope stays `openid email profile`.
 
 ### 8b. Name matching for on-prem-synced groups (credential-free)
 

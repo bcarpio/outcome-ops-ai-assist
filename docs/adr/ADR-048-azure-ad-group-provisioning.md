@@ -44,14 +44,18 @@ membership, reconciled on login, without a provisioning endpoint (no SCIM).
 Groups are bound to workspaces explicitly, one at a time, from a picker scoped
 by an org-wide naming convention.**
 
-1. **OIDC `groups` claim.** Both ALB listener rules request
-   `scope = "openid email profile groups"`. Azure AD emits `groups` only when
-   the enterprise app is configured to do so. Recommended enterprise config is
-   `groupMembershipClaims = ApplicationGroup` (emit only groups **assigned to
-   the OutcomeOps app**) rather than `SecurityGroup`/`All` — this curates the
-   claim to the intended set and largely retires the >200-group overage. For
-   hybrid tenants, also configure the optional `groups` claim to emit
-   `sam_account_name` so synced groups arrive as names (enabling the
+1. **OIDC `groups` claim.** The ALB listener rules keep the standard OIDC
+   `scope = "openid email profile"`. **`groups` is NOT an OAuth scope in Azure
+   AD** — requesting it (`scope = "... groups"`) makes Entra reject the whole
+   auth flow with `AADSTS650053: scope 'groups' ... doesn't exist on the
+   resource` (Microsoft Graph). Instead the claim is emitted via the app's
+   **Token configuration → `groupMembershipClaims`**, and the ALB passes it
+   through in `x-amzn-oidc-data` regardless of scope. Recommended enterprise
+   config is `groupMembershipClaims = ApplicationGroup` (emit only groups
+   **assigned to the OutcomeOps app**) rather than `SecurityGroup`/`All` — this
+   curates the claim to the intended set and largely retires the >200-group
+   overage. For hybrid tenants, also configure the optional `groups` claim to
+   emit `sam_account_name` so synced groups arrive as names (enabling the
    credential-free path). Operator prerequisite (deployment guide).
 
 2. **Eligibility via a tfvars pattern allow-list.** A configurable list of
@@ -160,9 +164,10 @@ by an org-wide naming convention.**
 - No SCIM: enterprise IdPs vary and a provisioning endpoint carries operational
   burden; the group-claim covers the offboarding requirement. SCIM can come
   later behind a flag if a customer needs full lifecycle provisioning.
-- HA parity: when HA returns, the `groups` OIDC scope must be mirrored on the
-  secondary listener rules; the derived rows already dual-write; the Graph
-  SSM secret must be replicated per the secrets-parity rule.
+- HA parity: when HA returns, the OIDC scope stays `openid email profile` on the
+  secondary listener rules (the `groups` claim rides `groupMembershipClaims`, not
+  scope); the derived rows already dual-write; the Graph SSM secret must be
+  replicated per the secrets-parity rule.
 
 ## Alternatives considered
 

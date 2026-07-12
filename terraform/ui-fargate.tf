@@ -397,7 +397,7 @@ resource "aws_lb_listener" "https" {
       issuer                 = "https://login.microsoftonline.com/${var.oidc_tenant_id}/v2.0"
       client_id              = var.oidc_client_id
       client_secret          = data.aws_ssm_parameter.oidc_client_secret[0].value
-      scope                  = "openid email profile groups"
+      scope                  = "openid email profile"
     }
   }
 
@@ -634,7 +634,7 @@ resource "aws_lb_listener" "https_secondary" {
       issuer                 = "https://login.microsoftonline.com/${var.oidc_tenant_id}/v2.0"
       client_id              = var.oidc_client_id
       client_secret          = data.aws_ssm_parameter.oidc_client_secret_secondary[0].value
-      scope                  = "openid email profile groups"
+      scope                  = "openid email profile"
     }
   }
 
