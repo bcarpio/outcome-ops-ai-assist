@@ -60,6 +60,10 @@ module "sonar_selfheal_lambda" {
   }
 
   # Allow the sonar container log group's subscription filter to invoke us.
+  # We don't publish versions, so attach the permission to the unqualified
+  # function -- attaching to the "current version" ($LATEST) is rejected by
+  # Lambda ("do not support adding policies for $LATEST").
+  create_current_version_allowed_triggers = false
   allowed_triggers = {
     LogsSubscription = {
       principal  = "logs.amazonaws.com"
