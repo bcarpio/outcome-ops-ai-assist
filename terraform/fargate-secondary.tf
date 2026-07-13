@@ -125,11 +125,6 @@ module "mcp_outcomeops_secondary" {
     BEDROCK_RERANK_MODEL_ID = var.bedrock_rerank_model_id
     RERANK_ENABLED          = tostring(var.bedrock_rerank_enabled)
     RERANK_MAX_FETCH        = tostring(var.rerank_max_fetch)
-    # Native SonarQube Cloud tools (parity with primary mcp-outcomeops.tf); opt-in.
-    SONARQUBE_ENABLED        = tostring(var.mcp_sonarqube_enabled)
-    SONARQUBE_URL            = var.mcp_sonarqube_url != "" ? var.mcp_sonarqube_url : "https://sonarcloud.io"
-    SONARQUBE_ORG            = var.mcp_sonarqube_org
-    SONARQUBE_TOKEN_SSM_PATH = var.mcp_sonarqube_enabled ? "/${var.environment}/${var.app_name}/mcp/sonarqube-token" : ""
     # ADR-030 v1.1 (HA parity): ADO branch of read_source needs the
     # same env plumbing on the secondary. Region-neutral values flow
     # from the same tfvars as the primary.

@@ -35,6 +35,13 @@ def _org():
 def _token():
     if _TOKEN_CACHE["value"]:
         return _TOKEN_CACHE["value"]
+    # Prefer the ECS-injected secret env (SONARQUBE_TOKEN from SSM, same pattern
+    # as the other MCP containers). Fall back to reading SSM directly if only a
+    # path is provided.
+    tok = os.environ.get("SONARQUBE_TOKEN")
+    if tok:
+        _TOKEN_CACHE["value"] = tok
+        return tok
     path = os.environ.get("SONARQUBE_TOKEN_SSM_PATH", "")
     if not path:
         return None
@@ -92,7 +99,7 @@ def _err(msg):
 
 # --- tools (names/params mirror the upstream tools they replace) -----------
 
-def search_my_sonarqube_projects(args, _email):
+def search_my_sonarqube_projects(args, _email=None):
     body, err = _get("/api/components/search_projects", {
         "organization": _org(),
         "p": args.get("page"),
@@ -106,7 +113,7 @@ def search_my_sonarqube_projects(args, _email):
     return _ok({"projects": projects, "paging": body.get("paging", {})})
 
 
-def get_project_quality_gate_status(args, _email):
+def get_project_quality_gate_status(args, _email=None):
     body, err = _get("/api/qualitygates/project_status", {
         "projectKey": args.get("projectKey"),
         "analysisId": args.get("analysisId"),
@@ -119,7 +126,7 @@ def get_project_quality_gate_status(args, _email):
     return _ok(body.get("projectStatus", body))
 
 
-def get_component_measures(args, _email):
+def get_component_measures(args, _email=None):
     body, err = _get("/api/measures/component", {
         "component": args.get("projectKey") or args.get("component"),
         "metricKeys": _csv(args.get("metricKeys")),
@@ -130,7 +137,7 @@ def get_component_measures(args, _email):
     return _ok(body)
 
 
-def search_sonar_issues_in_projects(args, _email):
+def search_sonar_issues_in_projects(args, _email=None):
     body, err = _get("/api/issues/search", {
         "organization": _org(),
         "projects": _csv(args.get("projects")),
@@ -151,7 +158,7 @@ def search_sonar_issues_in_projects(args, _email):
     return _ok(body)
 
 
-def search_security_hotspots(args, _email):
+def search_security_hotspots(args, _email=None):
     body, err = _get("/api/hotspots/search", {
         "organization": _org(),
         "projectKey": args.get("projectKey"),
@@ -164,3 +171,93 @@ def search_security_hotspots(args, _email):
     if err:
         return _err(err)
     return _ok(body)
+
+
+# --- MCP tool registry (bare names; the gateway/chat catalog namespaces them
+#     as sonarqube__<name> via the server_name prefix) -----------------------
+
+TOOL_DEFS = [
+    {
+        "name": "search_my_sonarqube_projects",
+        "description": "[SonarQube] Find SonarQube Cloud projects in your organization. Use this first when the project key is unknown.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "q": {"type": "string", "description": "Optional text to filter projects by name/key."},
+                "pageSize": {"type": "number", "description": "Page size (default 100, max 500)."},
+                "page": {"type": "string", "description": "Optional page number (default 1)."},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "get_project_quality_gate_status",
+        "description": "[SonarQube] Get the Quality Gate status for a project (pass/fail + failing conditions).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "projectKey": {"type": "string", "description": "The project key."},
+                "analysisId": {"type": "string"},
+                "projectId": {"type": "string"},
+                "pullRequest": {"type": "string"},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "get_component_measures",
+        "description": "[SonarQube] Get measures for a project (bugs, vulnerabilities, code_smells, coverage, ncloc, ratings, etc.).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "projectKey": {"type": "string", "description": "The project key."},
+                "metricKeys": {"type": "array", "items": {"type": "string"}, "description": "Metric keys, e.g. ['bugs','coverage','ncloc']."},
+                "pullRequest": {"type": "string"},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "search_sonar_issues_in_projects",
+        "description": "[SonarQube] Search issues (bugs, vulnerabilities, code smells). Filter by severities=['HIGH','BLOCKER'], impactSoftwareQualities=['SECURITY'], issueStatuses=['OPEN'].",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "projects": {"type": "array", "items": {"type": "string"}, "description": "Project keys to search."},
+                "severities": {"type": "array", "items": {"type": "string", "enum": ["INFO", "LOW", "MEDIUM", "HIGH", "BLOCKER"]}},
+                "issueStatuses": {"type": "array", "items": {"type": "string", "enum": ["OPEN", "CONFIRMED", "FALSE_POSITIVE", "ACCEPTED", "FIXED"]}},
+                "impactSoftwareQualities": {"type": "array", "items": {"type": "string", "enum": ["MAINTAINABILITY", "RELIABILITY", "SECURITY"]}},
+                "files": {"type": "array", "items": {"type": "string"}},
+                "issueKey": {"type": "array", "items": {"type": "string"}},
+                "pullRequestId": {"type": "string"},
+                "p": {"type": "number", "description": "Page number."},
+                "ps": {"type": "number", "description": "Page size (default 100, max 500)."},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "search_security_hotspots",
+        "description": "[SonarQube] Search security hotspots for a project.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "projectKey": {"type": "string", "description": "The project key."},
+                "status": {"type": "string", "description": "TO_REVIEW or REVIEWED."},
+                "resolution": {"type": "string"},
+                "pullRequest": {"type": "string"},
+                "p": {"type": "number"},
+                "ps": {"type": "number"},
+            },
+            "required": [],
+        },
+    },
+]
+
+TOOL_MAP = {
+    "search_my_sonarqube_projects": search_my_sonarqube_projects,
+    "get_project_quality_gate_status": get_project_quality_gate_status,
+    "get_component_measures": get_component_measures,
+    "search_sonar_issues_in_projects": search_sonar_issues_in_projects,
+    "search_security_hotspots": search_security_hotspots,
+}

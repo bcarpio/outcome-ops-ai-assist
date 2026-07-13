@@ -420,6 +420,39 @@ build-snyk-image:
 	 docker build -t $(ECR_REPO):latest containers/mcp-snyk/ && \
 	 docker push $(ECR_REPO):latest
 
+build-sonarqube-image:
+	@if [ -z "$$ENVIRONMENT" ]; then \
+		echo "Error: ENVIRONMENT variable not set."; \
+		echo "Usage: ENVIRONMENT=dev make build-sonarqube-image"; \
+		echo "       ENVIRONMENT=prd make build-sonarqube-image"; \
+		exit 1; \
+	fi
+	@SQ_ENABLED=$$(awk -F'=' '/^[[:space:]]*mcp_sonarqube_enabled[[:space:]]*=/ {gsub(/[[:space:]]/, "", $$2); print $$2; exit}' terraform/$$ENVIRONMENT.tfvars 2>/dev/null); \
+	 if [ "$$SQ_ENABLED" != "true" ]; then \
+	   echo "Skipping build-sonarqube-image — mcp_sonarqube_enabled=$$SQ_ENABLED in terraform/$$ENVIRONMENT.tfvars (only builds when true)."; \
+	   exit 0; \
+	 fi; \
+	 echo "Ensuring ECR repository exists for environment: $$ENVIRONMENT"; \
+	 cd terraform && \
+	   terraform init -input=false > /dev/null 2>&1 && \
+	   (terraform workspace select $$ENVIRONMENT 2>/dev/null || terraform workspace new $$ENVIRONMENT) && \
+	   terraform apply -var-file=$$ENVIRONMENT.tfvars -target=aws_ecr_repository.mcp_sonarqube -auto-approve
+	@SQ_ENABLED=$$(awk -F'=' '/^[[:space:]]*mcp_sonarqube_enabled[[:space:]]*=/ {gsub(/[[:space:]]/, "", $$2); print $$2; exit}' terraform/$$ENVIRONMENT.tfvars 2>/dev/null); \
+	 [ "$$SQ_ENABLED" != "true" ] && exit 0; \
+	 echo ""; \
+	 echo "Building SonarQube MCP server container image for environment: $$ENVIRONMENT"
+	$(eval ECR_REPO := $(shell cd terraform && terraform output -raw mcp_sonarqube_ecr_url 2>/dev/null))
+	$(eval AWS_ACCOUNT := $(shell aws sts get-caller-identity --query Account --output text))
+	$(eval BUILD_AWS_REGION := $(shell awk -F'"' '/^[[:space:]]*aws_region[[:space:]]*=/ {print $$2; exit}' terraform/$(ENVIRONMENT).tfvars 2>/dev/null))
+	$(eval BUILD_AWS_REGION := $(or $(BUILD_AWS_REGION),$(AWS_REGION)))
+	@if [ -z "$(ECR_REPO)" ] || [ "$(ECR_REPO)" = "null" ]; then \
+	   echo "Skipping build-sonarqube-image — mcp_sonarqube_ecr_url output is empty (mcp_sonarqube_enabled=false?)."; \
+	   exit 0; \
+	 fi; \
+	 aws ecr get-login-password --region $(BUILD_AWS_REGION) | docker login --username AWS --password-stdin $(AWS_ACCOUNT).dkr.ecr.$(BUILD_AWS_REGION).amazonaws.com && \
+	 docker build -t $(ECR_REPO):latest containers/mcp-sonarqube/ && \
+	 docker push $(ECR_REPO):latest
+
 # ============================================================================
 # Lambda layers — installed packages / binaries published as Lambda layer
 # versions, distinct from container images. Each script builds inside the

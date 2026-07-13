@@ -1,4 +1,4 @@
-"""Unit tests for the native SonarQube Cloud MCP tools (lambda/mcp-server/sonarcloud.py)."""
+"""Unit tests for the native SonarQube Cloud MCP tools (containers/mcp-sonarqube/sonarcloud.py)."""
 
 from __future__ import annotations
 
@@ -10,12 +10,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-_MCP_DIR = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "..", "mcp-server"))
+_SONAR_DIR = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "..", "containers", "mcp-sonarqube"))
 
 
 def _load():
-    path = os.path.join(_MCP_DIR, "sonarcloud.py")
+    path = os.path.join(_SONAR_DIR, "sonarcloud.py")
     spec = importlib.util.spec_from_file_location("sonarcloud_under_test", path)
     mod = importlib.util.module_from_spec(spec)
     sys.modules["sonarcloud_under_test"] = mod
@@ -118,3 +118,18 @@ class TestErrors:
         with patch.dict(os.environ, {"SONARQUBE_TOKEN_SSM_PATH": ""}, clear=False):
             out = S.search_my_sonarqube_projects({}, "e@x")
         assert "error" in out and "not configured" in out["error"]
+
+
+class TestRegistry:
+    def test_tool_defs_and_map_consistent(self):
+        def_names = {t["name"] for t in S.TOOL_DEFS}
+        assert def_names == set(S.TOOL_MAP)
+        assert len(S.TOOL_DEFS) == 5
+        # bare names (the catalog namespaces them as sonarqube__<name>)
+        assert "get_project_quality_gate_status" in def_names
+        assert not any(n.startswith("sonarqube__") for n in def_names)
+
+    def test_token_prefers_injected_env(self):
+        S._TOKEN_CACHE["value"] = None
+        with patch.dict(os.environ, {"SONARQUBE_TOKEN": "injected"}, clear=False):
+            assert S._token() == "injected"

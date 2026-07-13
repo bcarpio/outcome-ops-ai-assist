@@ -6,12 +6,10 @@
 # ============================================================================
 
 locals {
-  # SonarQube is now served by NATIVE tools in the OutcomeOps MCP server
-  # (lambda/mcp-server/sonarcloud.py), not a Fargate service -- so it no longer
-  # needs the Cloud Map namespace / ALB routing that the Fargate MCP servers do.
-  any_mcp_enabled = var.mcp_snyk_enabled || var.mcp_server_enabled
+  any_mcp_enabled = var.mcp_sonarqube_enabled || var.mcp_snyk_enabled || var.mcp_server_enabled
 
-  # SSM token path consumed by the native SonarQube tools (SONARQUBE_TOKEN_SSM_PATH).
+  # SSM token path; injected as the SONARQUBE_TOKEN secret into the sonar MCP
+  # container (see mcp-sonarqube.tf).
   mcp_sonarqube_token_ssm_path = "/${var.environment}/${var.app_name}/mcp/sonarqube-token"
 
   # ALB listener ARN - use HTTPS when OIDC is enabled, HTTP when not
