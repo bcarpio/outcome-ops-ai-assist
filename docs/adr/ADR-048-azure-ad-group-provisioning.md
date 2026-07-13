@@ -8,8 +8,14 @@
   eligibility/visibility; **explicit per-group** bindings chosen from a
   pattern-filtered picker (no wildcard bindings); a **mixed** name/object-ID
   matcher for hybrid tenants; an **optional, toggleable** app-only Graph read
-  (env-SSM) that also subsumes the >200-group fallback. Design below; see the
-  active plan for build status.
+  (env-SSM) that also subsumes the >200-group fallback.
+- v1.2 (2026-07-13) — the app-only Graph read **reuses the existing OIDC login
+  App Registration by default** (add `Group.Read.All` Application perm + admin
+  consent to it); client id / tenant come from the `oidc_*` tfvars and the
+  secret from the derived house path `/<env>/<app>/oidc/client-secret` — no
+  second app and no SSM path in tfvars. `azure_ad_graph_client_id` /
+  `azure_ad_graph_secret_ssm_path` become optional overrides for a dedicated
+  read-only app. See §4 "Which app registration."
 
 ## Context
 
@@ -93,6 +99,22 @@ by an org-wide naming convention.**
      permission (`Group.Read.All`, app-only) is a standing read grant the
      customer's security team consents to in their own tenant. Secret in SSM
      SecureString, per the env-SSM integration pattern.
+   - **Which app registration.** By default the app-only Graph read reuses the
+     deployment's **existing OIDC login App Registration** — the customer adds
+     the `Group.Read.All` (Application) permission + admin consent to that same
+     app. A single registration legitimately carries both the delegated perms
+     that back the ALB sign-in and this one application perm; there is no reason
+     to stand up a second app for a single read scope. Consequently the picker's
+     client id / tenant are the `oidc_*` values already in tfvars, and its secret
+     is the login app's own secret at the **derived** house path
+     `/<env>/<app>/oidc/client-secret` — an SSM path is **never** placed in
+     tfvars for the common case (matches `ui-fargate.tf`). A security team that
+     insists on separating the user-facing login credential from the app-only
+     Graph reader may override with a dedicated `Group.Read.All`-only app via
+     `azure_ad_graph_client_id` (+ optionally `azure_ad_graph_secret_ssm_path`
+     for a distinct secret); the overrides win when set, otherwise the login app
+     is used. Either way the workspace-management Lambda's `ssm:GetParameter`
+     grant is scoped to exactly the effective secret ARN.
 
 5. **Mixed name/object-ID matcher (login-time sync).** For each value in the
    user's `groups` claim: if it is a name matching the allow-list, match it

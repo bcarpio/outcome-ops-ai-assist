@@ -142,22 +142,36 @@ OutcomeOps can match them without any Graph permission:
 ### 8c. Graph read for the full picker / cloud-only groups (Optional)
 
 For a "search all eligible groups" picker, or for cloud-only groups, grant a
-read-only Graph app permission **in your own tenant** (no vendor credential):
+read-only Graph **application** permission **in your own tenant** (no vendor
+credential). The default path **reuses the OIDC login App Registration you
+already created in Step 1** — one registration legitimately holds both the
+delegated sign-in perms and this one application read perm, so there is nothing
+new to register and no new secret to manage:
 
-1. On the OutcomeOps App Registration (or a dedicated one), **API permissions**
-   > **Microsoft Graph** > **Application permissions** > add `Group.Read.All`,
-   then **Grant admin consent**.
-2. Create a client secret; store it in SSM:
-   ```bash
-   aws ssm put-parameter --name "/{env}/outcome-ops-ai-assist/azure/graph-secret" \
-     --type SecureString --value "your-graph-app-client-secret"
-   ```
-3. In tfvars:
+1. On that **same** App Registration (client id = your `oidc_client_id`),
+   **API permissions** > **Microsoft Graph** > **Application permissions** > add
+   `Group.Read.All`, then **Grant admin consent**.
+2. Nothing else. The picker reuses the app's existing client id, tenant, and the
+   secret you already stored in Step 3 at
+   `/<env>/outcome-ops-ai-assist/oidc/client-secret` — the terraform derives all
+   three, so an SSM path never goes in tfvars.
+3. In tfvars, a single toggle:
    ```hcl
    azure_ad_group_graph_fallback_enabled = true
-   azure_ad_graph_client_id       = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-   azure_ad_graph_secret_ssm_path = "/{env}/outcome-ops-ai-assist/azure/graph-secret"
    ```
+
+**Dedicated read-only app (optional).** If your security team requires the
+app-only Graph reader to be separate from the user-facing login credential,
+register a second app with only `Group.Read.All` (admin-consented), store its
+secret at a path of your choosing, and override:
+```hcl
+azure_ad_group_graph_fallback_enabled = true
+azure_ad_graph_client_id       = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+azure_ad_graph_secret_ssm_path = "/<env>/outcome-ops-ai-assist/azure/graph-secret"  # dedicated
+```
+When set, these overrides win; otherwise the login app above is used. Either way
+the workspace-management Lambda's `ssm:GetParameter` grant is scoped to exactly
+the effective secret ARN.
 
 Without 8c, the picker is served from the admin's own token groups (filtered by
 your patterns), plus a paste-by-object-ID fallback — no Graph permission needed.

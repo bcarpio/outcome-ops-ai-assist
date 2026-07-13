@@ -717,13 +717,13 @@ variable "azure_ad_group_graph_fallback_enabled" {
 }
 
 variable "azure_ad_graph_client_id" {
-  description = "App (client) ID of the Entra App Registration granted Group.Read.All (application) for the group picker. Only used when azure_ad_group_graph_fallback_enabled. Secret in SSM (azure_ad_graph_secret_ssm_path)."
+  description = "OPTIONAL override. App (client) ID of a DEDICATED Entra App Registration granted Group.Read.All (Application) for the group picker. Leave empty (default) to reuse the deploy's OIDC login app (oidc_client_id) -- just add the Group.Read.All Application permission + admin consent to that existing app. Only consulted when azure_ad_group_graph_fallback_enabled."
   type        = string
   default     = ""
 }
 
 variable "azure_ad_graph_secret_ssm_path" {
-  description = "SSM SecureString path holding the Graph app client secret. Read at runtime by the workspace-management Lambda when the Graph fallback is enabled."
+  description = "OPTIONAL override. SSM SecureString path for a DEDICATED Graph app's client secret. Leave empty (default) to reuse the OIDC login app's secret at the derived house path /<env>/<app>/oidc/client-secret (never set an SSM path in tfvars for the common case). Read at runtime by the workspace-management Lambda when the Graph fallback is enabled."
   type        = string
   default     = ""
 }

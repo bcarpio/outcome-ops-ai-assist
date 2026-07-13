@@ -306,7 +306,15 @@ github_usernames_to_tag = "yourusername"
 # For cloud-only groups (or a complete "search all eligible groups" picker),
 # enable the app-only Graph read (Group.Read.All, application, admin-consented).
 # This is the customer's own tenant grant -- no vendor-held credential.
+#
+# DEFAULT: reuses the OIDC login app (oidc_client_id / oidc_tenant_id) and its
+# secret at /<env>/<app>/oidc/client-secret. Just add the Group.Read.All
+# Application permission + admin consent to that existing app, then set one flag:
 # azure_ad_group_graph_fallback_enabled = true
+#
+# OPTIONAL: to use a DEDICATED read-only Graph app instead (separate from the
+# login credential), also set these overrides (secret path is only ever put here
+# for the dedicated case -- never for the default):
 # azure_ad_graph_client_id       = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
 # azure_ad_graph_secret_ssm_path = "/prd/outcome-ops-ai-assist/azure/graph-secret"
 #   aws ssm put-parameter --name "/prd/outcome-ops-ai-assist/azure/graph-secret" \

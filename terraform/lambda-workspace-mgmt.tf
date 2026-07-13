@@ -4,6 +4,25 @@
 # Uses Lambda Web Adapter (LWA) for HTTP endpoints
 # ============================================================================
 
+locals {
+  # ADR-048 v1.1: the group-binding picker's app-only Microsoft Graph reads
+  # default to the deploy's EXISTING OIDC login App Registration -- add the
+  # `Group.Read.All` (Application) permission + admin consent to that same app
+  # and nothing new needs registering. Consequences of reusing it:
+  #   * client id / tenant come from the oidc_* tfvars we already carry, and
+  #   * the secret is the login app's own secret, read from the derived
+  #     house-pattern path (local.oidc_ssm_path) -- NOT a path in tfvars.
+  # A security-conscious customer who wants a dedicated read-only Graph app
+  # overrides azure_ad_graph_client_id (+ optionally azure_ad_graph_secret_ssm_path
+  # for a separate secret); those overrides win when set.
+  azure_ad_graph_client_id = var.azure_ad_graph_client_id != "" ? var.azure_ad_graph_client_id : var.oidc_client_id
+  azure_ad_graph_tenant_id = var.azure_ad_tenant_id != "" ? var.azure_ad_tenant_id : var.oidc_tenant_id
+  azure_ad_graph_secret_ssm_path = (
+    var.azure_ad_graph_secret_ssm_path != "" ? var.azure_ad_graph_secret_ssm_path :
+    (var.oidc_enabled ? local.oidc_ssm_path : "")
+  )
+}
+
 module "workspace_management_lambda" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "8.1.2"
@@ -99,13 +118,17 @@ module "workspace_management_lambda" {
     # binding picker; the Graph fallback (app-only, SSM secret) populates the
     # full picker + resolves the >200-group memberOf overage. Off => the picker
     # is fed by the caller's own token groups + paste (credential-free).
-    AZURE_AD_TENANT_ID                    = var.azure_ad_tenant_id
+    # Graph creds default to the OIDC login app (see locals above); tenant falls
+    # back to oidc_tenant_id. This is workspace-mgmt-only -- the MCP server's
+    # AZURE_AD_TENANT_ID stays governed by its own var so this does not switch on
+    # chunk-02 MCP JWT validation.
+    AZURE_AD_TENANT_ID                    = local.azure_ad_graph_tenant_id
     AZURE_AD_GROUP_PATTERNS               = jsonencode(var.azure_ad_group_patterns)
     AZURE_AD_GROUP_SYNC_ENABLED           = tostring(var.azure_ad_group_sync_enabled)
     AZURE_AD_GROUP_NAME_CLAIM_ENABLED     = tostring(var.azure_ad_group_name_claim_enabled)
     AZURE_AD_GROUP_GRAPH_FALLBACK_ENABLED = tostring(var.azure_ad_group_graph_fallback_enabled)
-    AZURE_AD_GRAPH_CLIENT_ID              = var.azure_ad_graph_client_id
-    AZURE_AD_GRAPH_SECRET_SSM_PATH        = var.azure_ad_graph_secret_ssm_path
+    AZURE_AD_GRAPH_CLIENT_ID              = local.azure_ad_graph_client_id
+    AZURE_AD_GRAPH_SECRET_SSM_PATH        = local.azure_ad_graph_secret_ssm_path
 
     # Point requests / urllib3 / httpx / stdlib ssl + urllib.request at
     # the merged PEM shipped in the platform-CA layer so BYO-internal-CA
@@ -239,15 +262,16 @@ module "workspace_management_lambda" {
     local.ha_writer_events_iam,
     local.ha_scheduler_iam,
     # ADR-048 v1.1: read the app-only Graph client secret for the binding
-    # picker + >200-group memberOf fallback. Only when configured; the path is
-    # customer-chosen so it may sit outside the app's own SSM prefix. aws/ssm
-    # KMS decrypt is already granted above.
-    var.azure_ad_graph_secret_ssm_path != "" ? {
+    # picker + >200-group memberOf fallback. Granted only when the fallback is
+    # enabled; the effective path defaults to the OIDC login app's own secret
+    # (local.azure_ad_graph_secret_ssm_path) but honors a dedicated override.
+    # aws/ssm KMS decrypt is already granted above.
+    (var.azure_ad_group_graph_fallback_enabled && local.azure_ad_graph_secret_ssm_path != "") ? {
       graph_secret_read = {
         effect  = "Allow"
         actions = ["ssm:GetParameter"]
         resources = [
-          "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${var.azure_ad_graph_secret_ssm_path}"
+          "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${local.azure_ad_graph_secret_ssm_path}"
         ]
       }
     } : {},
