@@ -376,14 +376,12 @@ class TestMcpTools:
     def test_all_tools_defined(self):
         """Test that the expected native tools are all defined.
 
-        Six symbol-graph query tools (the five directional/resolution
-        tools plus ``find_symbol_at_line`` for line-citation grounding
-        per ADR-031) plus the ``read_source`` adjudicator sit alongside
-        the original four KB tools, so the surface is 11. See
-        docs/mcp-server.md.
+        Four KB tools + six symbol-graph tools + read_source (11), plus five
+        native SonarQube Cloud tools that replaced the third-party sonar Fargate
+        proxy (sonarcloud.py) = 16. See docs/mcp-server.md.
         """
         tools = mcp_module.MCP_TOOLS
-        assert len(tools) == 11
+        assert len(tools) == 16
         names = {t["name"] for t in tools}
         assert names == {
             # KB tools
@@ -400,7 +398,24 @@ class TestMcpTools:
             "find_symbol_at_line",
             # Read-source adjudicator
             "read_source",
+            # Native SonarQube Cloud tools (sonarqube__* -- match the retired proxy)
+            "sonarqube__search_my_sonarqube_projects",
+            "sonarqube__get_project_quality_gate_status",
+            "sonarqube__get_component_measures",
+            "sonarqube__search_sonar_issues_in_projects",
+            "sonarqube__search_security_hotspots",
         }
+
+    def test_sonarqube_tools_are_opt_in(self):
+        """The 5 sonarqube__* tools exist but are gated on SONARQUBE_ENABLED
+        (mcp_sonarqube_enabled tfvar) so non-Sonar customers don't see them."""
+        sonar = [t for t in mcp_module.MCP_TOOLS
+                 if t["name"].startswith("sonarqube__")]
+        assert len(sonar) == 5
+        with patch.dict(os.environ, {"SONARQUBE_ENABLED": "false"}):
+            assert mcp_module._sonarqube_enabled() is False
+        with patch.dict(os.environ, {"SONARQUBE_ENABLED": "true"}):
+            assert mcp_module._sonarqube_enabled() is True
 
     def test_tools_have_required_fields(self):
         """Test that each tool has name, description, and inputSchema."""

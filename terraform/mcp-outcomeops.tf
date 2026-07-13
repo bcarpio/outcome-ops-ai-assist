@@ -101,6 +101,15 @@ module "mcp_outcomeops" {
     BEDROCK_RERANK_MODEL_ID = var.bedrock_rerank_model_id
     RERANK_ENABLED          = tostring(var.bedrock_rerank_enabled)
     RERANK_MAX_FETCH        = tostring(var.rerank_max_fetch)
+
+    # Native SonarQube Cloud tools (sonarcloud.py) -- replaced the third-party
+    # sonar Fargate proxy. Opt-in per deployment: when mcp_sonarqube_enabled is
+    # false the 5 sonarqube__* tools aren't listed at all (customers who don't
+    # use SonarQube never see them). Token read from SSM at request time.
+    SONARQUBE_ENABLED        = tostring(var.mcp_sonarqube_enabled)
+    SONARQUBE_URL            = var.mcp_sonarqube_url != "" ? var.mcp_sonarqube_url : "https://sonarcloud.io"
+    SONARQUBE_ORG            = var.mcp_sonarqube_org
+    SONARQUBE_TOKEN_SSM_PATH = var.mcp_sonarqube_enabled ? local.mcp_sonarqube_token_ssm_path : ""
     # ADR-030 v1.1: read_source is platform-agnostic. When the
     # workspace's connection is Azure DevOps, the tool refreshes an
     # Entra ID OAuth access token via shared.entra_id_oauth. The

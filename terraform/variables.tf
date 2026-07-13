@@ -955,7 +955,7 @@ variable "oidc_tenant_id" {
 # ============================================================================
 
 variable "mcp_sonarqube_enabled" {
-  description = "Deploy SonarQube MCP server as a Fargate Spot task"
+  description = "Enable the native SonarQube Cloud tools in the OutcomeOps MCP server (sonarcloud.py). When true, the sonarqube__* tools are listed and call SonarCloud's REST API using mcp_sonarqube_url/org + the token at /{env}/{app}/mcp/sonarqube-token. (Formerly deployed a third-party Fargate task; replaced due to its I/O-reactor instability.)"
   type        = bool
   default     = false
 }

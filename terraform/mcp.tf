@@ -6,11 +6,13 @@
 # ============================================================================
 
 locals {
-  any_mcp_enabled = var.mcp_sonarqube_enabled || var.mcp_snyk_enabled || var.mcp_server_enabled
+  # SonarQube is now served by NATIVE tools in the OutcomeOps MCP server
+  # (lambda/mcp-server/sonarcloud.py), not a Fargate service -- so it no longer
+  # needs the Cloud Map namespace / ALB routing that the Fargate MCP servers do.
+  any_mcp_enabled = var.mcp_snyk_enabled || var.mcp_server_enabled
 
-  # SSM paths follow convention: /{env}/{app}/mcp/{server}-token
+  # SSM token path consumed by the native SonarQube tools (SONARQUBE_TOKEN_SSM_PATH).
   mcp_sonarqube_token_ssm_path = "/${var.environment}/${var.app_name}/mcp/sonarqube-token"
-  mcp_sonarqube_token_ssm_arn  = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${local.mcp_sonarqube_token_ssm_path}"
 
   # ALB listener ARN - use HTTPS when OIDC is enabled, HTTP when not
   mcp_alb_listener_arn = var.deploy_ui ? (
@@ -35,140 +37,4 @@ resource "aws_service_discovery_private_dns_namespace" "mcp" {
   tags = {
     Purpose = "mcp-service-discovery"
   }
-}
-
-# -----------------------------------------------------------------------------
-# SonarQube MCP Server
-# Docker image: mcp/sonarqube (official from SonarSource)
-# https://github.com/SonarSource/sonarqube-mcp-server
-# -----------------------------------------------------------------------------
-
-module "mcp_sonarqube" {
-  source = "./modules/mcp-server"
-  count  = var.mcp_sonarqube_enabled ? 1 : 0
-
-  environment = var.environment
-  app_name    = var.app_name
-  aws_region  = var.aws_region
-
-  server_name = "sonarqube"
-  # PINNED (ADR-none, ops fix 2026-07-12): the Docker MCP-catalog image
-  # `mcp/sonarqube:latest` was republished 2026-07-08 (digest 925c88bc) with a
-  # regression that shuts down the Apache HttpClient async I/O reactor within
-  # minutes of startup (IOReactorShutdownException -> every SonarCloud call
-  # fast-fails; the container stays "running" so ECS never self-heals). Switched
-  # to SonarSource's official versioned image and pinned a pre-regression
-  # release (1.21.0.2975, 2026-06-25). Never use `:latest` here -- an unpinned
-  # third-party MCP image is an uncontrolled prod dependency. Bump deliberately.
-  container_image = "sonarsource/sonarqube-mcp:1.21.0.2975"
-  container_port  = 8080
-  cpu             = 512
-  memory          = 1024
-
-  environment_variables = merge(
-    {
-      SONARQUBE_TRANSPORT = "http"
-      SONARQUBE_HTTP_HOST = "0.0.0.0"
-      SONARQUBE_HTTP_PORT = "8080"
-    },
-    var.mcp_sonarqube_url != "" ? { SONARQUBE_URL = var.mcp_sonarqube_url } : {},
-    var.mcp_sonarqube_org != "" ? { SONARQUBE_ORG = var.mcp_sonarqube_org } : {},
-  )
-
-  secrets = {
-    SONARQUBE_TOKEN = local.mcp_sonarqube_token_ssm_arn
-  }
-
-  ecs_cluster_arn    = module.ui_ecs.cluster_arn
-  vpc_id             = var.ui_vpc_id
-  private_subnet_ids = var.ui_private_subnet_ids
-  assign_public_ip   = var.ui_fargate_assign_public_ip
-
-  service_discovery_namespace_id   = aws_service_discovery_private_dns_namespace.mcp[0].id
-  service_discovery_namespace_name = aws_service_discovery_private_dns_namespace.mcp[0].name
-
-  # ALB routing - Lambda calls MCP through ALB, bypassing OIDC
-  use_alb                    = var.deploy_ui
-  alb_listener_arn           = local.mcp_alb_listener_arn
-  alb_listener_rule_priority = 7
-  mcp_path_pattern           = "/mcp"
-
-  # Allow ALB + OutcomeOps gateway to reach the MCP container.
-  # The gateway is a Fargate task in the same VPC and reaches siblings
-  # via Cloud Map private DNS (no ALB hop, no TLS, no cert trust). The
-  # conditional + compact() keeps the disable path
-  # (mcp_server_enabled = false) clean when module.mcp_outcomeops has
-  # zero instances.
-  allowed_security_group_ids = merge(
-    { ui_alb = module.ui_alb_sg.security_group_id },
-    var.mcp_server_enabled ? { mcp_outcomeops = module.mcp_outcomeops[0].security_group_id } : {},
-  )
-}
-
-# State migration: the mcp-server module switched aws_security_group_rule.mcp_ingress
-# from `count`-indexed to `for_each`-keyed. Without these terraform plans a
-# destroy + recreate. The OLD caller order was [ui_alb_sg, mcp_outcomeops_sg],
-# so [0] → "ui_alb" and [1] → "mcp_outcomeops".
-moved {
-  from = module.mcp_sonarqube[0].aws_security_group_rule.mcp_ingress[0]
-  to   = module.mcp_sonarqube[0].aws_security_group_rule.mcp_ingress["ui_alb"]
-}
-
-moved {
-  from = module.mcp_sonarqube[0].aws_security_group_rule.mcp_ingress[1]
-  to   = module.mcp_sonarqube[0].aws_security_group_rule.mcp_ingress["mcp_outcomeops"]
-}
-
-# -----------------------------------------------------------------------------
-# Auto-Register MCP Servers in DynamoDB
-# Creates catalog records so servers appear in the MCP management UI.
-# NOT auto-global -- org admins assign to workspaces via the UI.
-# -----------------------------------------------------------------------------
-
-resource "aws_dynamodb_table_item" "mcp_sonarqube" {
-  count = var.mcp_sonarqube_enabled ? 1 : 0
-
-  table_name = module.workspaces_table[0].dynamodb_table_id
-  hash_key   = "PK"
-  range_key  = "SK"
-
-  item = jsonencode({
-    PK     = { S = "MCP#catalog-sonarqube" }
-    SK     = { S = "METADATA" }
-    GSI1PK = { S = "ORG#default" }
-    GSI1SK = { S = "MCP#catalog-sonarqube" }
-    mcp_id = { S = "catalog-sonarqube" }
-    name   = { S = "SonarQube" }
-    url    = { S = "${local.mcp_base_url}/mcp" }
-    # Cloud Map private DNS - gateway reads this and bypasses the ALB.
-    # External Lambda callers (chat, workspace-management) can't resolve
-    # private DNS and continue to use `url`.
-    internal_url          = { S = module.mcp_sonarqube[0].service_url }
-    auth_type             = { S = "none" }
-    ssm_token_path        = { S = local.mcp_sonarqube_token_ssm_path }
-    ssm_token_header      = { S = "SONARQUBE_TOKEN" }
-    is_global             = { BOOL = false }
-    is_catalog            = { BOOL = true }
-    refresh_interval_days = { N = "7" }
-    status                = { S = "pending" }
-    tool_count            = { N = "0" }
-    created_by            = { S = "terraform" }
-    created_at            = { S = "2026-01-01T00:00:00Z" }
-    updated_at            = { S = "2026-01-01T00:00:00Z" }
-  })
-
-  lifecycle {
-    ignore_changes = [item]
-  }
-
-  depends_on = [module.mcp_sonarqube]
-}
-
-# -----------------------------------------------------------------------------
-# Outputs
-# -----------------------------------------------------------------------------
-
-output "mcp_sonarqube_url" {
-  description = "URL of the SonarQube MCP server (through ALB)"
-  value       = var.mcp_sonarqube_enabled ? "${local.mcp_base_url}/mcp" : null
 }

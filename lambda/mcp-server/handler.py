@@ -30,6 +30,7 @@ from botocore.exceptions import ClientError
 # Make shared/ importable. Image is built with context=lambda/ so
 # shared/ is COPYed alongside this file at /app/shared/.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import sonarcloud  # type: ignore  # noqa: E402  -- native SonarQube Cloud tools
 from shared import dual_write  # type: ignore  # noqa: E402
 from shared import retrieval as shared_retrieval  # type: ignore  # noqa: E402
 from shared.model_client import resolve_profile_arn  # type: ignore  # noqa: E402
@@ -190,6 +191,12 @@ def _get_ssm_client():
     if _ssm_client is None:
         _ssm_client = boto3.client("ssm", region_name=AWS_REGION)
     return _ssm_client
+
+
+def _sonarqube_enabled():
+    """Native SonarQube Cloud tools are opt-in per deployment (mcp_sonarqube_enabled
+    tfvar -> SONARQUBE_ENABLED env). Read at request time so it's testable."""
+    return os.environ.get("SONARQUBE_ENABLED", "false").lower() == "true"
 
 
 def _bounded_int(value, default, lo, hi):
@@ -639,6 +646,85 @@ MCP_TOOLS = [
                 },
             },
             "required": ["workspace_id"],
+        },
+    },
+    # SonarQube Cloud tools -- native (call the SonarCloud REST API directly).
+    # Named sonarqube__* to match what the retired proxy exposed, so nothing
+    # downstream changes. See lambda/mcp-server/sonarcloud.py.
+    {
+        "name": "sonarqube__search_my_sonarqube_projects",
+        "description": "[SonarQube] Find SonarQube Cloud projects in your organization. Use this first when the project key is unknown.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "q": {"type": "string", "description": "Optional text to filter projects by name/key."},
+                "pageSize": {"type": "number", "description": "Page size (default 100, max 500)."},
+                "page": {"type": "string", "description": "Optional page number (default 1)."},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "sonarqube__get_project_quality_gate_status",
+        "description": "[SonarQube] Get the Quality Gate status for a project (pass/fail + failing conditions).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "projectKey": {"type": "string", "description": "The project key."},
+                "analysisId": {"type": "string"},
+                "projectId": {"type": "string"},
+                "pullRequest": {"type": "string"},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "sonarqube__get_component_measures",
+        "description": "[SonarQube] Get measures for a project (bugs, vulnerabilities, code_smells, coverage, ncloc, ratings, etc.).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "projectKey": {"type": "string", "description": "The project key."},
+                "metricKeys": {"type": "array", "items": {"type": "string"},
+                               "description": "Metric keys, e.g. ['bugs','coverage','ncloc']."},
+                "pullRequest": {"type": "string"},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "sonarqube__search_sonar_issues_in_projects",
+        "description": "[SonarQube] Search issues (bugs, vulnerabilities, code smells). Filter by severities=['HIGH','BLOCKER'], impactSoftwareQualities=['SECURITY'], issueStatuses=['OPEN'].",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "projects": {"type": "array", "items": {"type": "string"}, "description": "Project keys to search."},
+                "severities": {"type": "array", "items": {"type": "string", "enum": ["INFO", "LOW", "MEDIUM", "HIGH", "BLOCKER"]}},
+                "issueStatuses": {"type": "array", "items": {"type": "string", "enum": ["OPEN", "CONFIRMED", "FALSE_POSITIVE", "ACCEPTED", "FIXED"]}},
+                "impactSoftwareQualities": {"type": "array", "items": {"type": "string", "enum": ["MAINTAINABILITY", "RELIABILITY", "SECURITY"]}},
+                "files": {"type": "array", "items": {"type": "string"}},
+                "issueKey": {"type": "array", "items": {"type": "string"}},
+                "pullRequestId": {"type": "string"},
+                "p": {"type": "number", "description": "Page number."},
+                "ps": {"type": "number", "description": "Page size (default 100, max 500)."},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "sonarqube__search_security_hotspots",
+        "description": "[SonarQube] Search security hotspots for a project.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "projectKey": {"type": "string", "description": "The project key."},
+                "status": {"type": "string", "description": "TO_REVIEW or REVIEWED."},
+                "resolution": {"type": "string"},
+                "pullRequest": {"type": "string"},
+                "p": {"type": "number"},
+                "ps": {"type": "number"},
+            },
+            "required": [],
         },
     },
 ]
@@ -2861,6 +2947,13 @@ TOOL_HANDLERS = {
     # Read-source adjudicator -- bounded source-read for verified-value
     # claims (see docs/adr/ADR-???-read-source-adjudicator.md once chunk 04 lands).
     "read_source": handle_read_source,
+    # SonarQube Cloud -- native REST tools (replaced the third-party Fargate
+    # proxy; see sonarcloud.py). Names match the retired proxy's.
+    "sonarqube__search_my_sonarqube_projects": sonarcloud.search_my_sonarqube_projects,
+    "sonarqube__get_project_quality_gate_status": sonarcloud.get_project_quality_gate_status,
+    "sonarqube__get_component_measures": sonarcloud.get_component_measures,
+    "sonarqube__search_sonar_issues_in_projects": sonarcloud.search_sonar_issues_in_projects,
+    "sonarqube__search_security_hotspots": sonarcloud.search_security_hotspots,
 }
 
 
@@ -3049,8 +3142,13 @@ class McpHandler(BaseHTTPRequestHandler):
         email = (session or {}).get("email")
         workspace_ids = get_user_workspace_ids(email) if email else []
 
-        # Start with native OutcomeOps tools
-        all_tools = list(MCP_TOOLS)
+        # Start with native OutcomeOps tools. SonarQube Cloud tools are opt-in
+        # per deployment (SONARQUBE_ENABLED, driven by the mcp_sonarqube_enabled
+        # tfvar) -- customers who don't use SonarQube never see them.
+        all_tools = [
+            t for t in MCP_TOOLS
+            if _sonarqube_enabled() or not t["name"].startswith("sonarqube__")
+        ]
 
         # Build proxy tool mapping for this session
         tool_routing = {}  # namespaced_tool_name -> {"config": ..., "original_name": ...}
@@ -3093,6 +3191,15 @@ class McpHandler(BaseHTTPRequestHandler):
             if getattr(self, "client_address", None) else ""
         )
         invoke_start = time.time()
+
+        # SonarQube tools are opt-in; reject if this deployment hasn't enabled them.
+        if tool_name.startswith("sonarqube__") and not _sonarqube_enabled():
+            self._send_json(
+                200,
+                jsonrpc_error(request_id, -32602, f"Unknown tool: {tool_name}"),
+                session_id=session_id,
+            )
+            return
 
         # Check native tools first
         handler = TOOL_HANDLERS.get(tool_name)

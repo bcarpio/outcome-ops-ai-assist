@@ -4,7 +4,6 @@
 # Mirror of:
 #   - aws_service_discovery_private_dns_namespace.mcp (in mcp.tf)
 #   - module.mcp_outcomeops      (in mcp-outcomeops.tf)
-#   - module.mcp_sonarqube       (in mcp.tf)
 #   - module.security_scanner_lambda + SSM + target group + listener rules
 #     (in security-scanner.tf)
 #
@@ -126,6 +125,11 @@ module "mcp_outcomeops_secondary" {
     BEDROCK_RERANK_MODEL_ID = var.bedrock_rerank_model_id
     RERANK_ENABLED          = tostring(var.bedrock_rerank_enabled)
     RERANK_MAX_FETCH        = tostring(var.rerank_max_fetch)
+    # Native SonarQube Cloud tools (parity with primary mcp-outcomeops.tf); opt-in.
+    SONARQUBE_ENABLED        = tostring(var.mcp_sonarqube_enabled)
+    SONARQUBE_URL            = var.mcp_sonarqube_url != "" ? var.mcp_sonarqube_url : "https://sonarcloud.io"
+    SONARQUBE_ORG            = var.mcp_sonarqube_org
+    SONARQUBE_TOKEN_SSM_PATH = var.mcp_sonarqube_enabled ? "/${var.environment}/${var.app_name}/mcp/sonarqube-token" : ""
     # ADR-030 v1.1 (HA parity): ADO branch of read_source needs the
     # same env plumbing on the secondary. Region-neutral values flow
     # from the same tfvars as the primary.
@@ -361,70 +365,6 @@ resource "aws_iam_role_policy" "mcp_outcomeops_secondary" {
     ]
   })
 }
-
-# ----------------------------------------------------------------------------
-# SonarQube MCP server (secondary)
-# ----------------------------------------------------------------------------
-
-module "mcp_sonarqube_secondary" {
-  source = "./modules/mcp-server"
-  count  = local.deploy_ui_secondary && var.mcp_sonarqube_enabled ? 1 : 0
-
-  providers = {
-    aws = aws.secondary
-  }
-
-  environment = var.environment
-  app_name    = var.app_name
-  aws_region  = var.secondary_region
-
-  server_name = "sonarqube"
-  # Pinned to the official versioned image (parity with primary mcp.tf) -- the
-  # Docker MCP-catalog `mcp/sonarqube:latest` regressed 2026-07-08 with a fatal
-  # I/O reactor shutdown bug. Never use `:latest` for a third-party MCP image.
-  container_image = "sonarsource/sonarqube-mcp:1.21.0.2975"
-  container_port  = 8080
-  cpu             = 512
-  memory          = 1024
-
-  environment_variables = merge(
-    {
-      SONARQUBE_TRANSPORT = "http"
-      SONARQUBE_HTTP_HOST = "0.0.0.0"
-      SONARQUBE_HTTP_PORT = "8080"
-    },
-    var.mcp_sonarqube_url != "" ? { SONARQUBE_URL = var.mcp_sonarqube_url } : {},
-    var.mcp_sonarqube_org != "" ? { SONARQUBE_ORG = var.mcp_sonarqube_org } : {},
-  )
-
-  secrets = {
-    SONARQUBE_TOKEN = "arn:aws:ssm:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:parameter${local.mcp_sonarqube_token_ssm_path}"
-  }
-
-  ecs_cluster_arn    = try(module.ui_ecs_secondary[0].cluster_arn, "")
-  vpc_id             = var.ui_vpc_id_secondary
-  private_subnet_ids = var.ui_private_subnet_ids_secondary
-  assign_public_ip   = var.ui_fargate_assign_public_ip
-
-  service_discovery_namespace_id   = aws_service_discovery_private_dns_namespace.mcp_secondary[0].id
-  service_discovery_namespace_name = aws_service_discovery_private_dns_namespace.mcp_secondary[0].name
-
-  use_alb                    = local.deploy_ui_secondary
-  alb_listener_arn           = local.mcp_alb_listener_arn_secondary
-  alb_listener_rule_priority = 7
-  mcp_path_pattern           = "/mcp"
-
-  role_name_suffix = "-secondary"
-
-  allowed_security_group_ids = merge(
-    { ui_alb = module.ui_alb_sg_secondary.security_group_id },
-    var.mcp_server_enabled ? { mcp_outcomeops = module.mcp_outcomeops_secondary[0].security_group_id } : {},
-  )
-}
-
-# Operator must pre-create the SonarQube token in secondary's SSM before
-# the Fargate task can pull secrets. Document in HA.md (chunk 9l).
-# Read by the secondary MCP-sonarqube task via the SECRETS array above.
 
 # ----------------------------------------------------------------------------
 # Security scanner (secondary)
