@@ -16,7 +16,6 @@ RUN pip install --no-cache-dir --only-binary=:all: --require-hashes -r requireme
 
 COPY mcp-server/handler.py .
 COPY mcp-server/session_store.py .
-COPY mcp-server/sonarcloud.py .
 COPY shared/ ./shared/
 
 EXPOSE 8080
