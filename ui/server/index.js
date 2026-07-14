@@ -184,34 +184,47 @@ function extractUser(req) {
 
       let email = payload.email || payload.preferred_username || null;
 
-      // Azure AD cloud-only accounts may not have email in UserInfo.
-      // Fall back to decoding the access token for upn/preferred_username.
-      if (!email) {
-        const accessToken = req.headers["x-amzn-oidc-accesstoken"];
-        if (accessToken) {
-          try {
-            const tokenPayload = JSON.parse(
-              Buffer.from(accessToken.split(".")[1], "base64url").toString()
-            );
-            email = tokenPayload.upn || tokenPayload.preferred_username || tokenPayload.unique_name || null;
-            if (email) {
-              console.log(`[auth] Resolved email from access token: ${email}`);
-            }
-          } catch {
-            // Access token may not be a decodable JWT (opaque tokens)
-          }
+      // The ALB builds x-amzn-oidc-data from Azure AD's UserInfo endpoint, which
+      // does NOT return `groups` or `oid` (and, for cloud-only accounts, not
+      // always email). Those claims ride in the access token instead -- Azure
+      // emits `groups` into the access token when groupMembershipClaims is set
+      // for Access tokens. Decode it once (guarded; may be opaque) and use it to
+      // backfill what UserInfo omits.
+      let at = {};
+      const accessToken = req.headers["x-amzn-oidc-accesstoken"];
+      if (accessToken) {
+        try {
+          at = JSON.parse(
+            Buffer.from(accessToken.split(".")[1], "base64url").toString()
+          );
+        } catch {
+          // Access token may not be a decodable JWT (opaque tokens)
         }
       }
 
-      // chunk 11a: the Entra `groups` claim drives group->workspace sync.
-      // Azure AD emits `groups` only when the enterprise app sets
-      // groupMembershipClaims=SecurityGroup/All. For users in >200 groups it
-      // emits `_claim_names` + `hasGroups` INSTEAD of `groups` (the overage) --
-      // in that case we must NOT treat groups as empty (that would wrongly
-      // revoke every group-derived membership on login); flag it so the sync
-      // is skipped until the Graph /me/memberOf fallback ships.
-      const groups = Array.isArray(payload.groups) ? payload.groups : [];
-      const groupsOverflow = !!(payload.hasGroups || payload._claim_names);
+      if (!email) {
+        email = at.upn || at.preferred_username || at.unique_name || null;
+        if (email) {
+          console.log(`[auth] Resolved email from access token: ${email}`);
+        }
+      }
+
+      // chunk 11a: the Entra `groups` claim drives group->workspace sync. Prefer
+      // the UserInfo payload, but fall back to the access token -- for ALB+Azure
+      // that is where the claim actually arrives (UserInfo omits it). For users
+      // in >200 groups Azure emits `_claim_names`/`hasGroups` (the overage)
+      // instead of a list; flag it so the sync uses the Graph memberOf fallback
+      // rather than treating groups as empty (which would wrongly revoke every
+      // group-derived membership on login).
+      const groups = Array.isArray(payload.groups)
+        ? payload.groups
+        : Array.isArray(at.groups)
+          ? at.groups
+          : [];
+      const groupsOverflow = !!(
+        payload.hasGroups || payload._claim_names || at.hasgroups || at._claim_names
+      );
+      const oid = payload.oid || at.oid || "";
 
       return {
         email: (email || payload.sub || "unknown").toLowerCase(),
@@ -220,7 +233,7 @@ function extractUser(req) {
         groupsOverflow,
         // Entra object ID of the user -- needed for the Graph memberOf fallback
         // that resolves the >200-group overage (ADR-048 v1.1 §10).
-        oid: payload.oid || "",
+        oid,
       };
     } catch {
       return { email: "unknown", name: "unknown", groups: [], groupsOverflow: false, oid: "" };
@@ -765,13 +778,28 @@ async function maybeSyncMemberships(req, user) {
     );
     return;
   }
+  // Decide how the Lambda should resolve this user's groups:
+  //  - overflow (>200 groups): Lambda uses Graph memberOf(user_oid);
+  //  - token carried groups: use them directly;
+  //  - no token groups but we have oid + Graph on: ALB+Azure can't deliver the
+  //    groups claim (UserInfo omits it; the ID token isn't forwarded), so have
+  //    the Lambda resolve group-centrically via Graph (members of bound groups);
+  //  - otherwise: do NOT sync. Sending an empty group list would revoke every
+  //    group-derived membership, so we skip rather than risk a false revoke.
+  let body;
+  if (user.groupsOverflow) {
+    body = { overflow: true, user_oid: user.oid || "" };
+  } else if (Array.isArray(user.groups) && user.groups.length > 0) {
+    body = { groups: user.groups };
+  } else if (AZURE_AD_GROUP_GRAPH_FALLBACK_ENABLED && user.oid) {
+    body = { resolve_via_graph: true, user_oid: user.oid };
+  } else {
+    return;
+  }
   const last = _membershipSyncCache.get(user.email) || 0;
   if (Date.now() - last < MEMBERSHIP_SYNC_TTL_MS) return;
   _membershipSyncCache.set(user.email, Date.now());
   try {
-    const body = user.groupsOverflow
-      ? { overflow: true, user_oid: user.oid || "" }
-      : { groups: user.groups || [] };
     const resp = await signedWorkspaceFetch("POST", "/sync-memberships", {
       extraHeaders: userHeaders(req, user),
       body: JSON.stringify(body),

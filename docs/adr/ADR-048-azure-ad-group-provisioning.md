@@ -16,6 +16,11 @@
   second app and no SSM path in tfvars. `azure_ad_graph_client_id` /
   `azure_ad_graph_secret_ssm_path` become optional overrides for a dedicated
   read-only app. See §4 "Which app registration."
+- v1.3 (2026-07-14) — **ALB OIDC + Azure AD cannot deliver the `groups` claim to
+  the app**, so on-login group resolution uses app-only Graph, resolved
+  **group-centrically** (members of the bound groups, `Group.Read.All` +
+  `GroupMember.Read.All` — no directory/user read). Live-verified in prd. See
+  §11.
 
 ## Context
 
@@ -167,6 +172,51 @@ by an org-wide naming convention.**
     `GET /users/{id}/memberOf`; when it is not, >200-group users keep their
     memberships (no false revocation) and simply are not re-synced. Recommended
     mitigation is `ApplicationGroup` scoping (§1), which keeps the claim small.
+
+11. **ALB OIDC + Azure AD can't deliver the groups claim; resolve via app-only
+    Graph, group-centrically.** (v1.3) The UI sits behind an AWS ALB doing
+    `authenticate-oidc`. The ALB builds the `x-amzn-oidc-data` header it forwards
+    from Azure's **UserInfo** endpoint, which returns only a minimal profile
+    (`sub`, `name`, `email`) — never `groups` or `oid`. The `groups` claim rides
+    in the **ID token**, but the ALB consumes the ID token internally and does
+    not forward it; the forwarded **access token** is Graph-audience and also
+    omits the app's `groups` optional-claim. Net: **no Entra portal setting can
+    put `groups` in front of the proxy** (`groupMembershipClaims` is necessary
+    for the ID token but insufficient for delivery). Verified against live token
+    key-sets: UserInfo `[sub,name,picture,exp,iss]`, access token has `oid`+`upn`
+    but no `groups`.
+
+    Resolution therefore does not use the claim: the proxy reads the user's
+    `oid` from the forwarded access token and sends `resolve_via_graph` +
+    `user_oid`; the Lambda resolves membership via app-only Graph. It is
+    **group-centric**, not user-centric: `GET /users/{id}/memberOf` (and any
+    `/users/{id}/…`) requires a broad `User.Read.All` / `Directory.Read.All`
+    grant, which the least-privilege posture rejects (confirmed: even reading the
+    user object 403s under group-only perms). Instead, with `Group.Read.All` +
+    `GroupMember.Read.All` (both group-scoped, read-only) the Lambda reads the
+    **members of each bound group** (`GET /groups/{gid}/members`) and asks "is the
+    user's `oid` among them?". Per-group member sets are cached in-process on a
+    TTL. If any Graph lookup fails the sync is **skipped** (never revoke against a
+    partial result); a genuine empty result (Graph confirms the user is in none of
+    the candidate groups) is authoritative and does reconcile. The proxy likewise
+    **never sends an empty group list** when it cannot resolve — it skips, so a
+    delivery failure can't mass-revoke.
+
+    **Safety — candidate = bound groups ∪ the user's existing group-owned rows.**
+    The bound-groups list is a *cached* Scan and can be briefly stale/empty (a
+    binding added seconds ago, or a cold cache). Resolving against a stale-empty
+    candidate would make a user's real `source=group:<gid>` rows look orphaned and
+    get **falsely revoked** on login. To prevent that, the candidate set always
+    unions in the group ids the user *already* has rows for, so every current
+    membership is re-verified against Graph directly. Net effect: a stale scan can
+    only **delay provisioning** (eventual consistency, ≤ the cache TTL) — it can
+    never falsely revoke an existing membership. Genuine offboarding (Graph
+    confirms the user left the group, or the binding was removed) still revokes.
+
+    *Scale note:* there is no single-partition index for `GROUP#<gid>` binding
+    rows, so bound-group enumeration is a cached, paginated Scan. For very large
+    per-customer tables this should move to a maintained registry item or a
+    constant-partition GSI; it is a low-frequency cached read, not per-request.
 
 ## Consequences
 

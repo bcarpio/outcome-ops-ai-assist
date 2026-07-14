@@ -105,3 +105,71 @@ class TestMemberOf:
              patch.object(graph_client, "_get", side_effect=fake_get):
             ids = graph_client.member_of("user-1")
         assert ids == ["g1", "g2", "g3"]
+
+
+class TestGroupCentric:
+    """group_member_ids + groups_containing_user (ADR-048 v1.3)."""
+
+    def setup_method(self):
+        graph_client._members_cache.clear()
+
+    def test_group_member_ids_paginates_and_casts_to_user(self, enabled_env):
+        pages = [
+            {"value": [{"id": "u1"}, {"id": "u2"}],
+             "@odata.nextLink": "https://graph/next"},
+            {"value": [{"id": "u3"}]},
+        ]
+        seen = {}
+
+        def fake_get(path, tok, headers=None):
+            seen.setdefault("first_path", path)
+            return pages.pop(0)
+
+        with patch.object(graph_client, "_token", return_value="tok"), \
+             patch.object(graph_client, "_get", side_effect=fake_get):
+            ids = graph_client.group_member_ids("grp-1")
+        assert ids == {"u1", "u2", "u3"}
+        # group-scoped, cast to user (no directory/user read)
+        assert "/groups/grp-1/members/microsoft.graph.user" in seen["first_path"]
+
+    def test_group_member_ids_cached(self, enabled_env):
+        calls = {"n": 0}
+
+        def fake_get(path, tok, headers=None):
+            calls["n"] += 1
+            return {"value": [{"id": "u1"}]}
+
+        with patch.object(graph_client, "_token", return_value="tok"), \
+             patch.object(graph_client, "_get", side_effect=fake_get):
+            graph_client.group_member_ids("grp-1")
+            graph_client.group_member_ids("grp-1")
+        assert calls["n"] == 1  # second call served from cache
+
+    def test_group_member_ids_raises_without_token(self, enabled_env):
+        with patch.object(graph_client, "_token", return_value=None):
+            with pytest.raises(RuntimeError):
+                graph_client.group_member_ids("grp-1")
+
+    def test_groups_containing_user_returns_subset(self, enabled_env):
+        members = {"g1": {"u1", "u2"}, "g2": {"u9"}, "g3": {"u1"}}
+        with patch.object(graph_client, "group_member_ids",
+                          side_effect=lambda gid: members[gid]):
+            got = graph_client.groups_containing_user("u1", ["g1", "g2", "g3"])
+        assert got == ["g1", "g3"]
+
+    def test_groups_containing_user_raises_when_disabled(self):
+        with patch.dict(os.environ,
+                        {"AZURE_AD_GROUP_GRAPH_FALLBACK_ENABLED": "false"}):
+            with pytest.raises(RuntimeError):
+                graph_client.groups_containing_user("u1", ["g1"])
+
+    def test_groups_containing_user_propagates_lookup_failure(self, enabled_env):
+        def boom(gid):
+            raise RuntimeError("graph down")
+
+        with patch.object(graph_client, "group_member_ids", side_effect=boom):
+            with pytest.raises(RuntimeError):
+                graph_client.groups_containing_user("u1", ["g1"])
+
+    def test_groups_containing_user_empty_oid(self, enabled_env):
+        assert graph_client.groups_containing_user("", ["g1"]) == []

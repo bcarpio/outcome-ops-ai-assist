@@ -162,10 +162,10 @@ class TestSyncMemberships:
     def test_new_group_grant_written(self, ddb, _t, put, dele, _audit):
         table = MagicMock()
         ddb.return_value.Table.return_value = table
-        # query order: bindings for g1, then user's existing members
+        # query order: user's existing members first, then bindings for g1
         table.query.side_effect = [
-            {"Items": [_binding("g1", "ws1", "member")]},   # bindings for g1
             {"Items": []},                                   # existing members
+            {"Items": [_binding("g1", "ws1", "member")]},   # bindings for g1
         ]
         res = sync_memberships(USER, SyncMembershipsRequest(groups=["g1"]))
         assert res["statusCode"] == 200
@@ -215,7 +215,9 @@ class TestSyncMemberships:
     @patch.object(H, "_get_dynamodb")
     def test_overflow_without_graph_skips(self, ddb, _t, put, dele, memberof):
         # >200 overage + Graph off (member_of returns []) -> skip, no revocation
-        ddb.return_value.Table.return_value = MagicMock()
+        table = MagicMock()
+        table.query.side_effect = [{"Items": []}]  # existing members
+        ddb.return_value.Table.return_value = table
         res = sync_memberships(
             USER, SyncMembershipsRequest(overflow=True, user_oid="oid-1"))
         assert res["statusCode"] == 200
@@ -233,11 +235,149 @@ class TestSyncMemberships:
         table = MagicMock()
         ddb.return_value.Table.return_value = table
         table.query.side_effect = [
-            {"Items": [_binding("g1", "ws1", "member")]},   # bindings for g1
             {"Items": []},                                   # existing members
+            {"Items": [_binding("g1", "ws1", "member")]},   # bindings for g1
         ]
         res = sync_memberships(
             USER, SyncMembershipsRequest(overflow=True, user_oid="oid-1"))
         assert res["statusCode"] == 200
         memberof.assert_called_once_with("oid-1")
         assert put.call_args.args[1]["source"] == "group:g1"
+
+
+class TestSyncMembershipsGraphCentric:
+    """resolve_via_graph: ALB+Azure group-centric resolution (ADR-048 v1.3)."""
+
+    def setup_method(self):
+        H._bound_groups_cache.update({"exp": 0.0, "ids": []})
+
+    @patch.object(H, "log_admin_action")
+    @patch.object(graph_client, "groups_containing_user", return_value=["g1"])
+    @patch.object(graph_client, "enabled", return_value=True)
+    @patch.object(H, "_bound_group_ids", return_value=["g1", "g2"])
+    @patch.object(H.dual_write, "ddb_delete_item")
+    @patch.object(H.dual_write, "ddb_put_item")
+    @patch.object(H, "_get_workspaces_table", return_value="t")
+    @patch.object(H, "_get_dynamodb")
+    def test_resolve_via_graph_provisions(
+            self, ddb, _t, put, dele, bound, _en, gcu, _a):
+        table = MagicMock()
+        ddb.return_value.Table.return_value = table
+        # query order: existing members first, then bindings for g1
+        table.query.side_effect = [
+            {"Items": []},                                   # existing members
+            {"Items": [_binding("g1", "ws1", "member")]},   # bindings for g1
+        ]
+        res = sync_memberships(
+            USER, SyncMembershipsRequest(resolve_via_graph=True, user_oid="oid-1"))
+        assert res["statusCode"] == 200
+        # candidate = bound groups (no existing group rows to union in here)
+        gcu.assert_called_once_with("oid-1", ["g1", "g2"])
+        assert put.call_args.args[1]["SK"] == "WS_MEMBER#ws1"
+        assert put.call_args.args[1]["source"] == "group:g1"
+        dele.assert_not_called()
+
+    @patch.object(graph_client, "enabled", return_value=False)
+    @patch.object(H.dual_write, "ddb_delete_item")
+    @patch.object(H.dual_write, "ddb_put_item")
+    @patch.object(H, "_get_workspaces_table", return_value="t")
+    @patch.object(H, "_get_dynamodb")
+    def test_resolve_via_graph_disabled_skips(self, ddb, _t, put, dele, _en):
+        table = MagicMock()
+        table.query.side_effect = [{"Items": []}]  # existing members
+        ddb.return_value.Table.return_value = table
+        res = sync_memberships(
+            USER, SyncMembershipsRequest(resolve_via_graph=True, user_oid="oid-1"))
+        assert res["statusCode"] == 200
+        assert "skipped" in res["body"]
+        put.assert_not_called()
+        dele.assert_not_called()
+
+    @patch.object(graph_client, "groups_containing_user",
+                  side_effect=RuntimeError("graph down"))
+    @patch.object(graph_client, "enabled", return_value=True)
+    @patch.object(H, "_bound_group_ids", return_value=["g1"])
+    @patch.object(H.dual_write, "ddb_delete_item")
+    @patch.object(H.dual_write, "ddb_put_item")
+    @patch.object(H, "_get_workspaces_table", return_value="t")
+    @patch.object(H, "_get_dynamodb")
+    def test_resolve_via_graph_error_skips_no_revoke(
+            self, ddb, _t, put, dele, bound, _en, gcu):
+        # Graph lookup fails -> skip; must NOT revoke even though a group row exists.
+        table = MagicMock()
+        table.query.side_effect = [
+            {"Items": [_member("ws1", source="group:g1")]},  # existing members
+        ]
+        ddb.return_value.Table.return_value = table
+        res = sync_memberships(
+            USER, SyncMembershipsRequest(resolve_via_graph=True, user_oid="oid-1"))
+        assert res["statusCode"] == 200
+        assert "skipped" in res["body"]
+        put.assert_not_called()
+        dele.assert_not_called()
+
+    @patch.object(H, "log_admin_action")
+    @patch.object(graph_client, "groups_containing_user", return_value=[])
+    @patch.object(graph_client, "enabled", return_value=True)
+    @patch.object(H, "_bound_group_ids", return_value=["g1"])
+    @patch.object(H.dual_write, "ddb_delete_item")
+    @patch.object(H.dual_write, "ddb_put_item")
+    @patch.object(H, "_get_workspaces_table", return_value="t")
+    @patch.object(H, "_get_dynamodb")
+    def test_resolve_via_graph_empty_is_authoritative_revokes(
+            self, ddb, _t, put, dele, bound, _en, gcu, _a):
+        # Graph CONFIRMS the user is in none of the candidate groups -> revoke.
+        table = MagicMock()
+        table.query.side_effect = [
+            {"Items": [_member("ws1", source="group:g1")]},  # existing members
+        ]
+        ddb.return_value.Table.return_value = table
+        res = sync_memberships(
+            USER, SyncMembershipsRequest(resolve_via_graph=True, user_oid="oid-1"))
+        assert res["statusCode"] == 200
+        put.assert_not_called()
+        assert dele.call_args.args[1] == {"PK": f"USER#{USER}", "SK": "WS_MEMBER#ws1"}
+
+    @patch.object(H, "log_admin_action")
+    @patch.object(graph_client, "groups_containing_user", return_value=["g1"])
+    @patch.object(graph_client, "enabled", return_value=True)
+    @patch.object(H, "_bound_group_ids", return_value=[])  # STALE/empty scan
+    @patch.object(H.dual_write, "ddb_delete_item")
+    @patch.object(H.dual_write, "ddb_put_item")
+    @patch.object(H, "_get_workspaces_table", return_value="t")
+    @patch.object(H, "_get_dynamodb")
+    def test_resolve_via_graph_stale_scan_no_false_revoke(
+            self, ddb, _t, put, dele, bound, _en, gcu, _a):
+        # SAFETY: bound-groups scan is stale/empty, but the user already has a
+        # group:g1 row. The existing group id must be unioned into the candidate
+        # so membership is re-verified -> user still in g1, binding still there ->
+        # keep. A stale scan must NEVER falsely revoke a real membership.
+        table = MagicMock()
+        table.query.side_effect = [
+            {"Items": [_member("ws1", source="group:g1")]},  # existing members
+            {"Items": [_binding("g1", "ws1", "member")]},    # bindings for g1
+        ]
+        ddb.return_value.Table.return_value = table
+        res = sync_memberships(
+            USER, SyncMembershipsRequest(resolve_via_graph=True, user_oid="oid-1"))
+        assert res["statusCode"] == 200
+        # candidate came from the EXISTING row (g1), not the empty scan
+        gcu.assert_called_once_with("oid-1", ["g1"])
+        dele.assert_not_called()            # no false revoke
+        put.assert_not_called()             # already a member, nothing to add
+
+    @patch.object(H, "_get_workspaces_table", return_value="t")
+    def test_bound_group_ids_scan_paginates_and_caches(self, _t):
+        H._bound_groups_cache.update({"exp": 0.0, "ids": []})
+        table = MagicMock()
+        table.scan.side_effect = [
+            {"Items": [{"group_id": "g1"}, {"group_id": "g2"}],
+             "LastEvaluatedKey": {"PK": "x"}},
+            {"Items": [{"group_id": "g2"}, {"group_id": "g3"}]},
+        ]
+        out = H._bound_group_ids(table)
+        assert out == ["g1", "g2", "g3"]         # distinct + sorted
+        assert table.scan.call_count == 2        # paginated
+        # second call served from the TTL cache -> no further scans
+        assert H._bound_group_ids(table) == ["g1", "g2", "g3"]
+        assert table.scan.call_count == 2

@@ -419,6 +419,12 @@ class SyncMembershipsRequest(BaseModel):
     groups: List[str] = Field(default_factory=list)
     overflow: bool = Field(default=False)
     user_oid: str = Field(default="")
+    # ALB + Azure AD cannot deliver the OIDC `groups` claim (UserInfo omits it;
+    # the ID token that carries it is consumed by the ALB and never forwarded).
+    # When set, the Lambda resolves the user's groups group-centrically via
+    # app-only Graph (members of the bound groups), keyed by `user_oid`. See
+    # ADR-048.
+    resolve_via_graph: bool = Field(default=False)
 
 
 class AddRepoRequest(BaseModel):
@@ -1618,6 +1624,46 @@ def _query_user_memberships(table, user_email: str) -> List[Dict]:
     return out
 
 
+# Process-lifetime cache of the distinct bound group ids. Refreshed on a TTL so
+# a new admin binding is picked up within the window without a scan per login.
+_bound_groups_cache: Dict[str, object] = {"exp": 0.0, "ids": []}
+_BOUND_GROUPS_TTL = int(os.environ.get("AZURE_AD_BOUND_GROUPS_TTL_SECONDS", "300"))
+
+
+def _bound_group_ids(table) -> List[str]:
+    """Distinct Entra group ids that have at least one workspace binding.
+
+    Group-centric Graph resolution (ADR-048) checks a user against exactly these
+    groups. There is no single-partition index for GROUP#<gid> rows, so this is a
+    paginated Scan filtered to binding rows, cached in-process for
+    ``_BOUND_GROUPS_TTL``. For very large per-customer tables this should move to
+    a maintained registry item or a constant-partition GSI (see ADR-048); it is a
+    cached, low-frequency read here, not a per-request scan.
+    """
+    now = time.time()
+    if float(_bound_groups_cache["exp"]) > now:
+        return _bound_groups_cache["ids"]  # type: ignore[return-value]
+    ids: set = set()
+    kwargs: Dict = {
+        "FilterExpression": "begins_with(PK, :g) AND begins_with(SK, :w)",
+        "ExpressionAttributeValues": {":g": "GROUP#", ":w": "WORKSPACE#"},
+        "ProjectionExpression": "group_id",
+    }
+    while True:
+        resp = table.scan(**kwargs)
+        for i in resp.get("Items", []):
+            if i.get("group_id"):
+                ids.add(i["group_id"])
+        lek = resp.get("LastEvaluatedKey")
+        if not lek:
+            break
+        kwargs["ExclusiveStartKey"] = lek
+    out = sorted(ids)
+    _bound_groups_cache["ids"] = out
+    _bound_groups_cache["exp"] = now + _BOUND_GROUPS_TTL
+    return out
+
+
 def sync_memberships(
     user_email: str,
     request: SyncMembershipsRequest,
@@ -1634,6 +1680,7 @@ def sync_memberships(
     dynamodb = _get_dynamodb()
     table = dynamodb.Table(_get_workspaces_table())
     try:
+        existing = _query_user_memberships(table, user_email)
         groups = request.groups or []
         if request.overflow:
             # >200-group user: the claim had no group list. Resolve the true set
@@ -1646,8 +1693,40 @@ def sync_memberships(
                     f"Skipping sync for {user_email}: >200-group overflow and "
                     "Graph memberOf unavailable (no false revocation)")
                 return _response(200, {"skipped": "overflow_no_graph"})
+        elif request.resolve_via_graph:
+            # ALB + Azure AD: the OIDC groups claim can't reach us, so resolve
+            # group-centrically -- which of the candidate groups is this user in?
+            # Candidate = the bound groups UNION the groups the user already has a
+            # group-owned row for. Unioning the existing-row groups is load-bearing
+            # for SAFETY: the bound-groups list is a cached scan and can be briefly
+            # stale/empty, but every current group membership is still re-verified
+            # against Graph, so a stale scan can only DELAY provisioning -- it can
+            # never make a real membership look orphaned and get falsely revoked.
+            # groups_containing_user RAISES on any Graph failure, so we skip (never
+            # revoke against a partial result). A genuine empty set (Graph confirms
+            # the user is in none of the candidate groups) is authoritative and
+            # DOES reconcile.
+            from shared import graph_client
+            if not graph_client.enabled():
+                logger.info(
+                    f"Skipping sync for {user_email}: Graph resolution requested "
+                    "but the app-only Graph fallback is disabled")
+                return _response(200, {"skipped": "graph_disabled"})
+            existing_gids = {
+                str(m.get("source", "")).split("group:", 1)[1]
+                for m in existing
+                if str(m.get("source", "")).startswith("group:")
+            }
+            try:
+                candidate = sorted(set(_bound_group_ids(table)) | existing_gids)
+                groups = graph_client.groups_containing_user(
+                    request.user_oid, candidate)
+            except Exception as e:  # noqa: BLE001 -- any Graph error => skip
+                logger.warning(
+                    f"Skipping sync for {user_email}: group-centric Graph "
+                    f"resolution failed ({e}); no false revocation")
+                return _response(200, {"skipped": "graph_error"})
         bindings = _query_group_bindings_for_groups(table, groups)
-        existing = _query_user_memberships(table, user_email)
         to_put, to_delete = group_workspace_sync.compute_delta(
             user_email, groups, bindings, existing)
 
