@@ -2987,17 +2987,34 @@ function clearSessionCookies(res) {
   });
 }
 
+// Build the Azure AD end_session (logout) URL. Clearing the ALB session cookie
+// alone is NOT a logout: the ALB re-runs OIDC on the next request and Azure AD,
+// whose SSO session is still alive, silently re-authenticates the user (the
+// "logout logs me right back in" bug). Redirecting through the IdP's
+// end_session_endpoint terminates the Azure session too. Azure then bounces back
+// to post_logout_redirect_uri (which MUST be registered on the app registration);
+// landing on "/" re-hits the ALB with no Azure session -> a fresh login prompt.
+function azureLogoutUrl(req) {
+  const tenant = process.env.OIDC_TENANT_ID;
+  if (!tenant) return null;
+  const returnTo = `https://${req.get("host")}/`;
+  return (
+    `https://login.microsoftonline.com/${encodeURIComponent(tenant)}/oauth2/v2.0/logout` +
+    `?post_logout_redirect_uri=${encodeURIComponent(returnTo)}`
+  );
+}
+
 app.get("/api/logout", (req, res) => {
-  console.log("[logout] Clearing session cookies");
+  console.log("[logout] Clearing session cookies + redirecting to IdP logout");
   clearSessionCookies(res);
-  // Redirect to root - ALB will force re-authentication
-  res.redirect("/");
+  res.redirect(azureLogoutUrl(req) || "/");
 });
 
 app.post("/api/logout", (req, res) => {
   console.log("[logout] Clearing session cookies (POST)");
   clearSessionCookies(res);
-  res.status(200).json({ message: "Logged out" });
+  // Return the IdP logout URL so a programmatic caller can complete the logout.
+  res.status(200).json({ message: "Logged out", logoutUrl: azureLogoutUrl(req) || "/" });
 });
 
 // Chunk 13: /api 404 guard + terminal JSON error middleware. See

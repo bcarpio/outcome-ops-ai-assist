@@ -811,6 +811,13 @@ module "ui_ecs" {
                 name  = "AZURE_AD_GROUP_GRAPH_FALLBACK_ENABLED"
                 value = tostring(var.azure_ad_group_graph_fallback_enabled)
               },
+              # Entra tenant id -> the proxy builds the Azure AD end_session
+              # (logout) URL from it. Without it, "logout" only clears the ALB
+              # cookie and the IdP silently re-authenticates. Non-secret.
+              {
+                name  = "OIDC_TENANT_ID"
+                value = var.oidc_tenant_id
+              },
               # try(...) wraps every per-integration Function URL so a
               # disabled integration's absent aws_lambda_function_url[0]
               # doesn't blow up plan. The Express proxy skips routes
