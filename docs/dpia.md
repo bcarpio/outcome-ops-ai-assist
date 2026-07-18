@@ -124,7 +124,7 @@ The following data is sent to Anthropic Claude (via AWS Bedrock managed service)
 4. System prompt (generic, not user-specific; defined in `lambda/shared/prompts.py`)
 5. MCP tool schemas and results (when applicable)
 
-**No PII redaction or data minimization is performed before sending to Bedrock.** Full user prompts and KB content are sent as-is.
+**No *additional* PII redaction is performed at inference time before sending to Bedrock.** The user prompt is sent as-is; the retrieved KB context is the content already redacted at INGEST via Amazon Comprehend (STRICT mode) before it entered the vector store (see ADR-051). No further redaction is applied to the prompt/response at model-call time.
 
 Per AWS Bedrock's data privacy policy: customer prompts and completions are not stored by AWS or used for model training. Data is processed in transit and discarded after response generation.
 
@@ -152,7 +152,7 @@ Per AWS Bedrock's data privacy policy: customer prompts and completions are not 
 | Audit table stores full prompts/responses | Proportionate for enterprise compliance requirements; 365-day TTL limits retention |
 | Chat messages stored indefinitely | **Gap:** No TTL configured on chat table; should align with organizational retention policy |
 | Workspaces/user data stored indefinitely | **Gap:** No TTL or cleanup for deactivated users; should implement user offboarding |
-| No PII redaction before Bedrock calls | Accepted risk; Bedrock does not store/train on data; content is enterprise technical data |
+| No additional inference-time redaction before Bedrock calls (KB context is already ingest-redacted via Comprehend, ADR-051) | Accepted risk; Bedrock does not store/train on data; content is enterprise technical data |
 | Employee PI in ingested content | Incidental; content is primarily code/documentation; organizations control what is ingested |
 | OAuth tokens in DynamoDB | Mitigated by KMS encryption; tokens are encrypted at application level before storage |
 
@@ -174,7 +174,7 @@ Per AWS Bedrock's data privacy policy: customer prompts and completions are not 
 | R8 | Chat data stored indefinitely without retention policy | Former employees whose conversations persist | Privacy |
 | R9 | CloudWatch logs may contain user emails and request details | Employees (limited exposure -- 7-day retention) | Privacy |
 | R10 | S3 Vectors bucket has no lifecycle rules; embeddings persist indefinitely | Organization (data minimization compliance) | Compliance |
-| R11 | No automatic PII detection or redaction in ingested content | Employees whose PI is in source documents | Privacy |
+| R11 | Ingested content IS redacted at ingest (Amazon Comprehend, STRICT default, ADR-051); residual risk is the raw source mirror, deliberately left unredacted for read_source fidelity and protected by IAM + KMS | Employees whose PI is in source documents | Privacy |
 | R12 | MCP server sessions stored in-memory; no persistent session audit trail | Organization (accountability gap) | Accountability |
 
 ---
@@ -193,7 +193,7 @@ Per AWS Bedrock's data privacy policy: customer prompts and completions are not 
 | R8 | Indefinite chat retention | Medium | Medium | Medium | No TTL on chat table; conversations accumulate without cleanup |
 | R9 | PI in CloudWatch logs | Low | Low | Low | 7-day retention; KMS encrypted |
 | R10 | No vector lifecycle rules | Low | Low | Low | Embeddings don't contain raw PI; metadata is limited |
-| R11 | No PII detection in ingested content | Medium | Medium | Medium | Organizations control what is ingested, but no automated safeguards |
+| R11 | Raw PII persists in the S3 source mirror at rest | Low | Medium | Low | Comprehend redacts the synthesis/vector path at ingest (STRICT default); the residual is the deliberately-unredacted read_source mirror, bounded by IAM + KMS (ADR-051) |
 | R12 | No MCP session audit trail | Low | Low | Low | MCP interactions go through existing audit pipeline for Bedrock calls |
 
 ---
@@ -266,7 +266,7 @@ Per AWS Bedrock's data privacy policy: customer prompts and completions are not 
 |---|---|---|
 | AI hallucination (R4) | Medium | Inherent to LLMs; human-in-the-loop PR review is the primary mitigation; RAG reduces but does not eliminate hallucination |
 | Employee PI in ingested content (R6) | Low | PI is incidental (names/emails in git history); organizations control what is ingested; data is technical in nature |
-| No PII redaction before Bedrock (R11) | Low | Bedrock does not store/train on data; content is primarily code and technical documentation |
+| Raw PII in the source mirror + no inference-time redaction (R11) | Low | Ingest redaction (Comprehend, STRICT) sanitizes the synthesis/vector path; the raw read_source mirror is IAM + KMS-protected; Bedrock does not store/train on data; content is primarily code + technical documentation (ADR-051) |
 
 ### 7.2 Risks Requiring Remediation
 
@@ -276,7 +276,7 @@ Per AWS Bedrock's data privacy policy: customer prompts and completions are not 
 | No user offboarding process (R8) | Medium | Implement process to purge user data (conversations, API keys, profile) when employees leave | High |
 | No S3 Vectors lifecycle (R10) | Low | Add lifecycle rules to S3 Vectors bucket for stale workspace data | Low |
 | OAuth token compromise blast radius (R2) | High (if exploited) | Implement token rotation schedule; monitor for anomalous API usage on connected services | Medium |
-| No PII detection in ingested content (R11) | Medium | Consider optional PII scanning on ingestion pipeline for organizations processing sensitive content | Medium |
+| Raw PII in the read_source mirror (R11) | Low | Ingest PII scanning is IMPLEMENTED (Comprehend, STRICT default, ADR-051). Residual is the raw source mirror -- for highly sensitive content, add an S3 lifecycle/TTL on the mirror prefix or tighten bucket access | Low |
 
 ---
 
@@ -323,8 +323,8 @@ The following gaps were identified from code review where data is processed but 
 | No chat retention policy | DynamoDB chat table has no TTL; conversations persist indefinitely | `dynamodb-chat.tf` |
 | No user data cleanup | No automated process to remove user data when employees leave the organization | `lambda/workspace-management/handler.py` |
 | No S3 Vectors lifecycle | Vector embeddings bucket has no lifecycle rules for stale data | `s3-vectors.tf` |
-| No PII scanning on ingestion | Ingested content (git repos, Confluence, Jira) is not scanned for PII before embedding | `lambda/file-ingestion/handler.py` |
-| No data minimization to Bedrock | Full prompts including KB context sent to Bedrock without redaction | `lambda/chat/handler.py` |
+| Raw source mirror unredacted at rest | Ingested content IS scanned + redacted (Comprehend, STRICT) before embedding into the vector store; the residual is the raw source mirror kept unredacted for read_source fidelity (ADR-051), protected by IAM + KMS | `lambda/shared/pii.py`, `lambda/process-documents/handler.py` |
+| No inference-time redaction to Bedrock | User prompt sent as-is; the KB context is already ingest-redacted (ADR-051); no additional redaction at model-call time | `lambda/chat/handler.py` |
 | No AI pre-use notice | No explicit notice to users that they are interacting with an AI system | `ui/src/` (pending implementation) |
 | Workspaces table no TTL | User profiles, memberships, and workspace data persist indefinitely | `dynamodb-workspaces.tf` |
 | Code maps table no TTL | Ingestion state tracking data persists indefinitely | `dynamodb.tf` |
