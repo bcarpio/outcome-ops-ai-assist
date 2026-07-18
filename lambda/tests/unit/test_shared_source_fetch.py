@@ -95,6 +95,57 @@ class TestAzureDevOpsBranch:
         assert "text" in result
 
 
+class TestGitLabBranch:
+    """ADR-050: gitlab-sync mirrors source to S3 first (the ADO pattern),
+    so fetch_repo_file reads the latest snapshot from the S3 mirror at
+    ``workspaces/{ws}/gitlab/{slug}/{path}``."""
+
+    def test_gitlab_requires_workspace_slug_bucket(self):
+        with pytest.raises(source_fetch.SourceFetchError):
+            source_fetch.fetch_repo_file("gitlab", "file.py")
+        with pytest.raises(source_fetch.SourceFetchError):
+            source_fetch.fetch_repo_file(
+                "gitlab", "file.py",
+                workspace_id="ws-1",  # missing slug + kb_bucket
+            )
+
+    @patch.object(source_fetch, "_get_s3")
+    def test_reads_from_s3_mirror_with_nested_subgroup_slug(self, mock_get_s3):
+        # Nested-subgroup slug has a VARIABLE number of slashes -- the S3
+        # key must preserve every segment of the slug verbatim, or the
+        # code-map worker reads the wrong key.
+        mock_s3 = MagicMock()
+        mock_s3.get_object.return_value = {
+            "Body": MagicMock(read=MagicMock(return_value=b"gitlab content")),
+        }
+        mock_get_s3.return_value = mock_s3
+
+        result = source_fetch.fetch_repo_file(
+            "gitlab",
+            "/src/main.py",  # leading slash normalized
+            workspace_id="ws-xyz",
+            slug="acme/platform/backend/api",  # group/subgroup/subgroup/project
+            kb_bucket="kb-bucket",
+        )
+        assert result == "gitlab content"
+        mock_s3.get_object.assert_called_once_with(
+            Bucket="kb-bucket",
+            Key="workspaces/ws-xyz/gitlab/acme/platform/backend/api/src/main.py",
+        )
+
+    @patch.object(source_fetch, "_get_s3")
+    def test_s3_read_error_wraps_as_source_fetch_error(self, mock_get_s3):
+        mock_s3 = MagicMock()
+        mock_s3.get_object.side_effect = Exception("NoSuchKey")
+        mock_get_s3.return_value = mock_s3
+        with pytest.raises(source_fetch.SourceFetchError) as ctx:
+            source_fetch.fetch_repo_file(
+                "gitlab", "/x.py",
+                workspace_id="ws-1", slug="grp/proj", kb_bucket="b",
+            )
+        assert "NoSuchKey" in str(ctx.value)
+
+
 class TestGitHubBranch:
 
     @patch("shared.github_backoff.github_urllib_request")
@@ -144,6 +195,18 @@ class TestFetchFileAtShaDispatch:
             source_fetch.fetch_file_at_sha(
                 "github", "file.py", "abc123",
                 github_token="ghp",  # missing repository
+            )
+
+    def test_gitlab_requires_project_path_and_token(self):
+        with pytest.raises(source_fetch.SourceFetchError):
+            source_fetch.fetch_file_at_sha(
+                "gitlab", "file.py", "abc123",
+                gitlab_project_path="grp/proj",  # missing token
+            )
+        with pytest.raises(source_fetch.SourceFetchError):
+            source_fetch.fetch_file_at_sha(
+                "gitlab", "file.py", "abc123",
+                gitlab_access_token="tok",  # missing project path
             )
 
     def test_azure_devops_requires_all_ado_kwargs(self):
@@ -368,3 +431,49 @@ class TestFetchFileAtShaAzureDevOps:
         )
         req = mock_urlopen.call_args.args[0]
         assert "versionDescriptor.versionType=commit" in req.full_url
+
+
+class TestFetchFileAtShaGitLab:
+    """ADR-050: fetch_file_at_sha delegates to the shared GitLab API v4
+    raw-file client. ``sha`` is passed through as the ``ref``; GitLab
+    accepts a SHA, branch, or tag uniformly in that slot."""
+
+    @patch("shared.gitlab_api.get_file_content")
+    def test_passes_sha_as_ref_and_strips_leading_slash(self, mock_get):
+        mock_get.return_value = b"gitlab bytes at sha"
+        result = source_fetch.fetch_file_at_sha(
+            "gitlab",
+            "/src/main.py",  # leading slash normalized to no-leading-slash
+            "abc1234deadbeef",
+            gitlab_project_path="acme/platform/backend/api",
+            gitlab_access_token="glpat-xyz",
+        )
+        assert result == b"gitlab bytes at sha"
+        # Positional call: (access_token, project_path, file_path, ref)
+        args = mock_get.call_args.args
+        assert args[0] == "glpat-xyz"
+        assert args[1] == "acme/platform/backend/api"
+        assert args[2] == "src/main.py"  # leading slash stripped
+        assert args[3] == "abc1234deadbeef"  # sha in the ref slot
+
+    @patch("shared.gitlab_api.get_file_content")
+    def test_returns_raw_bytes(self, mock_get):
+        mock_get.return_value = b"\xde\xad\xbe\xef"
+        result = source_fetch.fetch_file_at_sha(
+            "gitlab", "x.bin", "abc",
+            gitlab_project_path="grp/proj",
+            gitlab_access_token="tok",
+        )
+        assert result == b"\xde\xad\xbe\xef"
+        assert isinstance(result, bytes)
+
+    @patch("shared.gitlab_api.get_file_content")
+    def test_network_error_wraps_as_source_fetch_error(self, mock_get):
+        mock_get.side_effect = Exception("401 Unauthorized")
+        with pytest.raises(source_fetch.SourceFetchError) as ctx:
+            source_fetch.fetch_file_at_sha(
+                "gitlab", "x.py", "abc",
+                gitlab_project_path="grp/proj",
+                gitlab_access_token="tok",
+            )
+        assert "401 Unauthorized" in str(ctx.value)

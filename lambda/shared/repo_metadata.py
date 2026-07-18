@@ -62,11 +62,14 @@ def fetch_repo_metadata(
     ado_project: Optional[str] = None,
     ado_repo: Optional[str] = None,
     ado_access_token: Optional[str] = None,
+    # gitlab branch
+    gitlab_project_path: Optional[str] = None,
+    gitlab_access_token: Optional[str] = None,
 ) -> RepoMetadata:
     """Fetch default branch + recursive file tree from the source provider.
 
     Args:
-        provider: ``"github"`` or ``"azure_devops"``.
+        provider: ``"github"``, ``"azure_devops"``, or ``"gitlab"``.
         repository: GitHub ``owner/repo``. Required for github.
         github_token: GitHub PAT. Required for github.
         ado_org: ADO org name. Required for azure_devops.
@@ -74,6 +77,10 @@ def fetch_repo_metadata(
         ado_repo: ADO repo name. Required for azure_devops.
         ado_access_token: ADO OAuth access token (pre-refreshed by
             caller). Required for azure_devops.
+        gitlab_project_path: GitLab full project path
+            (``group/{...subgroups}/project``). Required for gitlab.
+        gitlab_access_token: GitLab user-scoped OAuth access token
+            (pre-refreshed by caller). Required for gitlab.
 
     Returns:
         RepoMetadata NamedTuple.
@@ -102,6 +109,17 @@ def fetch_repo_metadata(
             ado_project=ado_project,
             ado_repo=ado_repo,
             ado_access_token=ado_access_token,
+        )
+
+    if provider == "gitlab":
+        if not (gitlab_project_path and gitlab_access_token):
+            raise RepoMetadataError(
+                "gitlab fetch_repo_metadata needs gitlab_project_path "
+                "+ gitlab_access_token",
+            )
+        return _fetch_repo_from_gitlab(
+            project_path=gitlab_project_path,
+            access_token=gitlab_access_token,
         )
 
     raise RepoMetadataError(f"Unknown provider for fetch_repo_metadata: {provider}")
@@ -212,6 +230,43 @@ def _fetch_repo_from_ado(
         if path:
             file_paths.append(path.lstrip("/"))
 
+    return RepoMetadata(default_branch=default_branch, file_paths=file_paths)
+
+
+def _fetch_repo_from_gitlab(
+    *,
+    project_path: str,
+    access_token: str,
+) -> RepoMetadata:
+    """Fetch default branch + recursive tree from GitLab.
+
+    Two GitLab API v4 calls via the shared client:
+      GET /projects/{enc}                                  -- default_branch
+      GET /projects/{enc}/repository/tree?recursive=true   -- tree
+
+    ``gitlab_api.get_tree`` already filters to blob (file) entries and
+    returns bare paths (no leading slash), so the result normalizes to
+    the same shape as the GitHub/ADO branches. The project is addressed
+    by its URL-encoded full path (nested subgroups work).
+    """
+    from shared import gitlab_api  # noqa: WPS433 -- defer import
+    try:
+        default_branch = gitlab_api.get_default_branch(access_token, project_path)
+    except Exception as e:
+        raise RepoMetadataError(
+            f"GitLab default-branch fetch failed for {project_path}: {e}",
+        )
+    if not default_branch:
+        raise RepoMetadataError(
+            f"GitLab project {project_path} has no default_branch",
+        )
+    try:
+        tree = gitlab_api.get_tree(access_token, project_path, default_branch)
+    except Exception as e:
+        raise RepoMetadataError(
+            f"GitLab tree fetch failed for {project_path}: {e}",
+        )
+    file_paths = [p.lstrip("/") for p in tree if p]
     return RepoMetadata(default_branch=default_branch, file_paths=file_paths)
 
 

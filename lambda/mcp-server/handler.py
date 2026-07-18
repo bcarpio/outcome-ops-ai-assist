@@ -550,23 +550,28 @@ MCP_TOOLS = [
     {
         "name": "read_source",
         "description": (
-            "Fetch a bounded window of source code from GitHub or Azure "
-            "DevOps anchored at file:line. Platform is auto-detected "
-            "from the `repo` shape: `owner/name` = GitHub, "
-            "`org/project/repo` = Azure DevOps. Use this when an exact "
-            "code value is being claimed (a literal, a key prefix like "
-            "'MAGIC_TOKEN#', a specific algorithm choice, a signature "
-            "parameter) and the code-map summary plus the symbol graph "
-            "are not enough to verify it. The code-map deliberately "
-            "omits literals (ADR-027) and the symbol graph stores "
-            "anchors but not values -- read_source supplies the actual "
-            "line. Reads HEAD of the default branch by default; pass "
-            "`ref` to pin to a specific SHA (recommended when the "
-            "file:line came from the symbol graph, since the graph's "
-            "anchor is pinned to the graph_sha and HEAD may have "
-            "drifted). The response payload's `platform` field is "
-            "either 'github' or 'azure_devops' so the caller can log "
-            "which side served the read."
+            "Fetch a bounded window of source code from GitHub, Azure "
+            "DevOps, or GitLab anchored at file:line. The platform is "
+            "resolved by looking up the workspace's enrolled repositories "
+            "(NOT by counting slashes): `owner/name` is usually GitHub "
+            "and `org/project/repo` usually Azure DevOps, but GitLab "
+            "supports nested subgroups so its slug is "
+            "`group/{...subgroups}/project` with a variable number of "
+            "slashes (>=2) and is disambiguated by the enrolled-repo "
+            "lookup, not its shape. The slash-count hint above is "
+            "advisory only. Use this when an exact code value is being "
+            "claimed (a literal, a key prefix like 'MAGIC_TOKEN#', a "
+            "specific algorithm choice, a signature parameter) and the "
+            "code-map summary plus the symbol graph are not enough to "
+            "verify it. The code-map deliberately omits literals "
+            "(ADR-027) and the symbol graph stores anchors but not "
+            "values -- read_source supplies the actual line. Reads HEAD "
+            "of the default branch by default; pass `ref` to pin to a "
+            "specific SHA (recommended when the file:line came from the "
+            "symbol graph, since the graph's anchor is pinned to the "
+            "graph_sha and HEAD may have drifted). The response payload's "
+            "`platform` field is 'github', 'azure_devops', or 'gitlab' so "
+            "the caller can log which side served the read."
         ),
         "inputSchema": {
             "type": "object",
@@ -582,13 +587,31 @@ MCP_TOOLS = [
                 "repo": {
                     "type": "string",
                     "description": (
-                        "Repository. For GitHub: 'owner/name' "
+                        "Repository slug. For GitHub: 'owner/name' "
                         "(e.g. 'bcarpio/eShop'). For Azure DevOps: "
                         "'org/project/repo' "
                         "(e.g. 'bcarpio/OutcomeOps/ooai-license-server'). "
-                        "Slash count identifies the platform; the "
-                        "router rejects a shape that doesn't match the "
-                        "workspace's actual connection."
+                        "For GitLab: the full project path "
+                        "'group/{...subgroups}/project' "
+                        "(e.g. 'acme/platform/backend/api') -- nested "
+                        "subgroups mean a variable number of slashes. The "
+                        "platform is determined by looking up the "
+                        "workspace's enrolled repositories, not by slash "
+                        "count; the router rejects a repo that doesn't "
+                        "match the workspace's actual connection."
+                    ),
+                },
+                "provider": {
+                    "type": "string",
+                    "enum": ["github", "azure_devops", "gitlab"],
+                    "description": (
+                        "Optional explicit code-hosting platform hint. "
+                        "When omitted the platform is resolved from the "
+                        "workspace's enrolled repositories (GitHub -> "
+                        "Azure DevOps -> GitLab). Supply this to pin "
+                        "resolution to one provider -- useful for a "
+                        "GitLab slug whose shape is ambiguous with an "
+                        "Azure DevOps triplet."
                     ),
                 },
                 "file_path": {
@@ -2231,6 +2254,35 @@ def _read_source_ado_access_token(connection_id):
     return access_token
 
 
+def _read_source_gitlab_access_token(connection_id):
+    """Refresh the GitLab OAuth access token for a workspace connection.
+
+    Mirrors ``_read_source_ado_access_token`` for the GitLab side but is
+    thinner: ``shared.oauth.gitlab.refresh_access_token`` already loads
+    the OAuth app's client id (env) + client secret (SSM) and delegates
+    KMS-encrypted token storage to ``shared.entra_id_oauth`` keyed by the
+    ``GITLAB_TOKEN#`` prefix, so no inline secret read is needed here.
+
+    Raises ``ValueError``/``RuntimeError`` on missing prereqs or refresh
+    failure -- callers surface a clean tool-facing error to the LLM.
+    """
+    if not connection_id:
+        raise ValueError("connection_id required for GitLab token refresh")
+
+    from shared.oauth import gitlab as gitlab_oauth  # noqa: WPS433
+    access_token = gitlab_oauth.refresh_access_token(
+        workspaces_table=DYNAMODB_TABLE,
+        kms_key_arn=os.environ.get("OAUTH_KMS_KEY_ARN"),
+        connection_id=connection_id,
+    )
+    if not access_token:
+        raise RuntimeError(
+            "Failed to refresh GitLab access token; the workspace's "
+            "GitLab OAuth connection may need to be reauthorized"
+        )
+    return access_token
+
+
 def _read_source_resolve_full_ado_triplet(workspace_id, bare_repo):
     """Find the full ``org/project/repo`` triplet for a bare repo name.
 
@@ -2266,31 +2318,80 @@ def _read_source_resolve_full_ado_triplet(workspace_id, bare_repo):
     return f"{org}/{project}/{repo}"
 
 
-def _read_source_resolve_platform(workspace_id, repo_hint=None):
+def _read_source_resolve_full_gitlab_slug(workspace_id, bare_repo):
+    """Find the full ``group/{...subgroups}/project`` slug for a bare name.
+
+    Mirrors ``_read_source_resolve_full_ado_triplet`` for the GitLab
+    side. The symbol graph stores ``repo`` as the bare project name (the
+    last slug segment) so the code-maps pointer key matches; the GitLab
+    API needs the full slug. Because GitLab slugs have a variable number
+    of slashes (nested subgroups), we cannot pass-through on a fixed
+    slash count -- instead a value that already contains a ``/`` is
+    treated as a full slug, and a bare name is resolved by scanning the
+    workspace's ``GITLAB_REPO#`` rows for the one whose slug tail matches.
+
+    Returns the full slug, or None when no row matches or multiple rows
+    share the bare tail (ambiguous -- fail loudly rather than fetch from
+    the wrong project).
+    """
+    from boto3.dynamodb.conditions import Key  # noqa: WPS433
+    if not bare_repo:
+        return None
+    if "/" in bare_repo:
+        return bare_repo
+    table = _get_dynamodb().Table(DYNAMODB_TABLE)
+    resp = table.query(
+        KeyConditionExpression=Key("PK").eq(f"WS#{workspace_id}")
+        & Key("SK").begins_with("GITLAB_REPO#"),
+    )
+    matches = []
+    for item in resp.get("Items", []):
+        slug = item.get("slug") or item.get("SK", "").split("GITLAB_REPO#", 1)[-1]
+        if slug and slug.rsplit("/", 1)[-1] == bare_repo:
+            matches.append(slug)
+    if len(matches) != 1:
+        return None
+    return matches[0]
+
+
+def _read_source_resolve_platform(workspace_id, repo_hint=None, provider=None):
     """Return the workspace's connected code-hosting platform.
 
     Result shape:
       {"platform": "github", "installation_id": "..."}
       {"platform": "azure_devops",
        "connection_id": "...", "org": "...", "project": "...", "repo": "..."}
+      {"platform": "gitlab", "connection_id": "...", "slug": "..."}
       None  # no connection linked
 
-    ``repo_hint`` is either a full slug/owner-name string (``owner/name``
-    or ``org/project/repo``) or None. When present, the ADO branch does
-    a direct ``get_item`` on ``AZDO_REPO#{repo_hint}``. That's the fast
-    path used by the explicit-anchor mode (chunk 04 caller has repo
-    already). For the ``at_graph_sha`` path the caller resolves the
-    triplet via ``_read_source_resolve_full_ado_triplet`` first, then
-    calls this with the full triplet.
+    ``repo_hint`` is either a full slug/owner-name string (``owner/name``,
+    ``org/project/repo``, or the variable-depth GitLab
+    ``group/{...subgroups}/project``) or None. When present, the ADO and
+    GitLab branches do a direct ``get_item`` on ``AZDO_REPO#{repo_hint}``
+    / ``GITLAB_REPO#{repo_hint}``. That's the fast path used by the
+    explicit-anchor mode (caller has the repo already). For the
+    ``at_graph_sha`` path the caller resolves the full slug via
+    ``_read_source_resolve_full_ado_triplet`` /
+    ``_read_source_resolve_full_gitlab_slug`` first, then calls this
+    with the full slug.
 
-    Order of resolution:
-      1. GitHub short-circuit -- if any GITHUB_INSTALLATION# row exists,
-         return GitHub. Matches the pre-1.1 behavior for workspaces
-         that only have GitHub.
-      2. ADO fallback -- look for an AZDO_REPO# row matching the hint,
-         or (if no hint) any AZDO_REPO# row on the workspace, and
-         return its embedded connection_id + triplet.
-      3. None otherwise.
+    ADR-050 Decision 6: the platform is resolved by DDB lookup of the
+    enrolled ``*_REPO#`` rows, NOT by slash count. GitLab supports nested
+    subgroups, so its slug has a VARIABLE number of slashes (>=2) and
+    would collide with ADO's fixed 3-segment shape -- slash-count
+    inference is ambiguous. Resolution order (when no explicit
+    ``provider`` hint is supplied):
+      1. GitHub short-circuit -- if any GITHUB_INSTALLATION# row exists.
+      2. ADO fallback -- an AZDO_REPO# row matching the hint (or any
+         AZDO_REPO# row on the workspace).
+      3. GitLab fallback -- a GITLAB_REPO# row matching the hint (or any
+         GITLAB_REPO# row on the workspace).
+      4. None otherwise.
+
+    ``provider`` (``"github"`` / ``"azure_devops"`` / ``"gitlab"``) is an
+    optional caller-supplied hint that pins resolution to that platform,
+    bypassing the ordered fallback -- honored per ADR-050 Decision 6 for
+    callers that already know the source host.
 
     Fail-soft on DDB error: returns None so the caller emits the same
     clear "no code-hosting integration linked" error rather than
@@ -2300,45 +2401,87 @@ def _read_source_resolve_platform(workspace_id, repo_hint=None):
 
     try:
         table = _get_dynamodb().Table(DYNAMODB_TABLE)
-        gh_resp = table.query(
-            KeyConditionExpression=Key("PK").eq(f"WS#{workspace_id}")
-            & Key("SK").begins_with("GITHUB_INSTALLATION#"),
-            Limit=1,
-        )
-        gh_items = gh_resp.get("Items", [])
-        if gh_items:
-            installation_id = gh_items[0].get("installation_id")
-            if installation_id:
-                return {
-                    "platform": "github",
-                    "installation_id": installation_id,
-                }
 
-        # ADO branch. Direct-key path when repo_hint is a full triplet.
-        if repo_hint and repo_hint.count("/") == 2:
-            repo_resp = table.get_item(
-                Key={
-                    "PK": f"WS#{workspace_id}",
-                    "SK": f"AZDO_REPO#{repo_hint}",
-                }
+        if provider in (None, "github"):
+            gh_resp = table.query(
+                KeyConditionExpression=Key("PK").eq(f"WS#{workspace_id}")
+                & Key("SK").begins_with("GITHUB_INSTALLATION#"),
+                Limit=1,
             )
-            item = repo_resp.get("Item")
-            if item:
-                return _ado_platform_result(item)
+            gh_items = gh_resp.get("Items", [])
+            if gh_items:
+                installation_id = gh_items[0].get("installation_id")
+                if installation_id:
+                    return {
+                        "platform": "github",
+                        "installation_id": installation_id,
+                    }
+            if provider == "github":
+                return None
 
-        # Scan/query fallback: no direct hint, or the direct-key miss.
-        # Query all AZDO_REPO# rows on the workspace; return the first
-        # one that has a connection_id. (No hint = caller only wants to
-        # know the workspace has SOME ADO connection; router will reject
-        # a repo-shape mismatch later.)
-        ado_resp = table.query(
-            KeyConditionExpression=Key("PK").eq(f"WS#{workspace_id}")
-            & Key("SK").begins_with("AZDO_REPO#"),
-            Limit=1,
-        )
-        ado_items = ado_resp.get("Items", [])
-        if ado_items:
-            return _ado_platform_result(ado_items[0])
+        if provider in (None, "azure_devops"):
+            # ADO branch. Direct-key path when repo_hint is a full triplet.
+            if repo_hint and repo_hint.count("/") == 2:
+                repo_resp = table.get_item(
+                    Key={
+                        "PK": f"WS#{workspace_id}",
+                        "SK": f"AZDO_REPO#{repo_hint}",
+                    }
+                )
+                item = repo_resp.get("Item")
+                if item:
+                    ado = _ado_platform_result(item)
+                    if ado:
+                        return ado
+
+            # Scan/query fallback: no direct hint, or the direct-key miss.
+            # Query all AZDO_REPO# rows on the workspace; return the first
+            # one that has a connection_id. (No hint = caller only wants to
+            # know the workspace has SOME ADO connection; router will reject
+            # a repo-shape mismatch later.)
+            ado_resp = table.query(
+                KeyConditionExpression=Key("PK").eq(f"WS#{workspace_id}")
+                & Key("SK").begins_with("AZDO_REPO#"),
+                Limit=1,
+            )
+            ado_items = ado_resp.get("Items", [])
+            if ado_items:
+                ado = _ado_platform_result(ado_items[0])
+                if ado:
+                    return ado
+            if provider == "azure_devops":
+                return None
+
+        if provider in (None, "gitlab"):
+            # GitLab branch (ADR-050). Direct-key path whenever a hint is
+            # present -- unlike ADO we can't gate on slash count (nested
+            # subgroups make it ambiguous), so we simply attempt the
+            # direct get and fall through to a scan on a miss.
+            if repo_hint:
+                gl_resp = table.get_item(
+                    Key={
+                        "PK": f"WS#{workspace_id}",
+                        "SK": f"GITLAB_REPO#{repo_hint}",
+                    }
+                )
+                item = gl_resp.get("Item")
+                if item:
+                    gl = _gitlab_platform_result(item)
+                    if gl:
+                        return gl
+
+            gl_resp = table.query(
+                KeyConditionExpression=Key("PK").eq(f"WS#{workspace_id}")
+                & Key("SK").begins_with("GITLAB_REPO#"),
+                Limit=1,
+            )
+            gl_items = gl_resp.get("Items", [])
+            if gl_items:
+                gl = _gitlab_platform_result(gl_items[0])
+                if gl:
+                    return gl
+            if provider == "gitlab":
+                return None
 
         return None
     except ClientError:
@@ -2359,6 +2502,25 @@ def _ado_platform_result(item):
         "org": org,
         "project": project,
         "repo": repo,
+    }
+
+
+def _gitlab_platform_result(item):
+    """Build the GitLab branch's platform_info dict from a GITLAB_REPO# item.
+
+    Each GITLAB_REPO# row carries its own ``connection_id`` (a workspace
+    can span multiple GitLab connections) and the URL-decoded ``slug``
+    (``group/{...subgroups}/project``). Falls back to deriving the slug
+    from the SK when the attribute is absent.
+    """
+    connection_id = item.get("connection_id")
+    slug = item.get("slug") or item.get("SK", "").split("GITLAB_REPO#", 1)[-1]
+    if not (connection_id and slug):
+        return None
+    return {
+        "platform": "gitlab",
+        "connection_id": connection_id,
+        "slug": slug,
     }
 
 
@@ -2506,6 +2668,20 @@ def _read_source_resolve_via_graph(workspace_id, symbol, platform="github"):
                     )
                 }
             repo_full = looked_up
+    elif platform == "gitlab":
+        if "/" not in repo_full:
+            looked_up = _read_source_resolve_full_gitlab_slug(
+                workspace_id, repo_bare_for_pointer,
+            )
+            if not looked_up:
+                return {
+                    "error": (
+                        f"workspace has no GitLab repo row matching bare "
+                        f"name {site.repo!r}; cannot derive the "
+                        "group/.../project slug for the GitLab fetch"
+                    )
+                }
+            repo_full = looked_up
     else:  # github (default)
         if "/" not in repo_full:
             looked_up = _read_source_resolve_full_repo_name(
@@ -2603,6 +2779,43 @@ def _read_source_fetch_file_ado(org, project, repo, file_path, token, ref=None):
     return raw
 
 
+def _read_source_fetch_file_gitlab(slug, file_path, token, ref=None):
+    """Fetch the raw bytes of a file from GitLab.
+
+    Delegates to the shared GitLab API v4 client
+    (``GET /projects/{enc}/repository/files/{enc}/raw?ref=<ref>``); the
+    project is addressed by its URL-encoded full ``slug``
+    (``group/{...subgroups}/project``) so nested subgroups work.
+
+    GitLab's raw endpoint requires a ``ref``. When the caller doesn't
+    pin one (the HEAD-of-default-branch case, matching the ADO fetcher's
+    ref-omitted path), we resolve the project's default branch first and
+    read at its tip. When ``ref`` IS supplied it's a commit SHA (the
+    ``at_graph_sha`` flow) passed straight through -- GitLab accepts a
+    SHA, branch, or tag uniformly in that slot.
+
+    Caps the read at ``_READ_SOURCE_MAX_FILE_BYTES``; over-cap raises
+    ``ValueError`` so the caller surfaces the limit rather than return a
+    silently-truncated window (matching the github/ADO fetchers). The
+    window slice around the anchor line happens in ``handle_read_source``
+    after this returns.
+    """
+    from shared import gitlab_api  # noqa: WPS433 -- defer import
+    effective_ref = ref or gitlab_api.get_default_branch(token, slug)
+    if not effective_ref:
+        raise ValueError(
+            f"could not resolve a ref for GitLab project {slug!r} "
+            "(no ref supplied and no default branch found)"
+        )
+    raw = gitlab_api.get_file_content(token, slug, file_path, effective_ref)
+    if len(raw) > _READ_SOURCE_MAX_FILE_BYTES:
+        raise ValueError(
+            f"file {file_path} exceeds {_READ_SOURCE_MAX_FILE_BYTES}-byte "
+            "read-source cap"
+        )
+    return raw
+
+
 def _read_source_fetch_file(repo, file_path, token, ref=None):
     """Fetch the raw bytes of a file via the GitHub Contents API.
 
@@ -2685,11 +2898,18 @@ def handle_read_source(params, email):
             return {"error": "context_lines must be an integer"}
         if ctx < 0 or ctx > _READ_SOURCE_MAX_CONTEXT:
             return {"error": f"context_lines must be 0-{_READ_SOURCE_MAX_CONTEXT}"}
-        if _read_source_platform_from_repo(repo) is None:
+        # ADR-050 Decision 6: the platform is resolved from the enrolled
+        # *_REPO# rows below, NOT from slash count -- GitLab nested-
+        # subgroup slugs have a variable number of slashes and would
+        # collide with the ADO 3-segment shape. Reject only the clearly
+        # invalid no-slash / empty-segment shapes here; the platform-
+        # specific cross-check runs after resolution.
+        if "/" not in repo or not all(repo.split("/")):
             return {
                 "error": (
-                    "repo must be in 'owner/name' (GitHub) or "
-                    "'org/project/repo' (Azure DevOps) form"
+                    "repo must be a 'group/.../project' (GitLab), "
+                    "'owner/name' (GitHub), or 'org/project/repo' "
+                    "(Azure DevOps) slug"
                 )
             }
 
@@ -2699,9 +2919,14 @@ def handle_read_source(params, email):
 
     # Resolve the workspace's connected platform BEFORE symbol-graph
     # resolution: the graph resolver needs to know which full-name
-    # resolver to use when the graph row was bare.
+    # resolver to use when the graph row was bare. ADR-050 Decision 6:
+    # resolution is a DDB lookup of the enrolled *_REPO# rows (GitHub ->
+    # ADO -> GitLab), honoring an explicit `provider` hint when supplied.
+    provider_hint = params.get("provider") or None
     repo_hint = repo if not at_graph_sha else None
-    platform_info = _read_source_resolve_platform(workspace_id, repo_hint=repo_hint)
+    platform_info = _read_source_resolve_platform(
+        workspace_id, repo_hint=repo_hint, provider=provider_hint,
+    )
     if platform_info is None:
         return {
             "error": (
@@ -2757,21 +2982,29 @@ def handle_read_source(params, email):
     if context_lines < 0 or context_lines > _READ_SOURCE_MAX_CONTEXT:
         return {"error": f"context_lines must be 0-{_READ_SOURCE_MAX_CONTEXT}"}
 
-    detected_platform = _read_source_platform_from_repo(repo)
-    if detected_platform is None:
-        return {
-            "error": (
-                "repo must be in 'owner/name' (GitHub) or "
-                "'org/project/repo' (Azure DevOps) form"
-            )
-        }
-    if detected_platform != platform:
-        return {
-            "error": (
-                f"workspace {workspace_id} is connected via {platform} but "
-                f"repo shape indicates {detected_platform}"
-            )
-        }
+    # ADR-050 Decision 6: `platform` came from the enrolled-repo DDB
+    # lookup, not slash count. GitLab nested-subgroup slugs have a
+    # variable slash count and MUST NOT be shape-checked (a 3-segment
+    # GitLab slug would look like ADO; a deeper one like nothing). For
+    # GitHub/ADO keep the cheap slash-count cross-check so a caller-sent
+    # repo that contradicts the resolved connection is rejected rather
+    # than fetched from the wrong host.
+    if platform in ("github", "azure_devops"):
+        detected_platform = _read_source_platform_from_repo(repo)
+        if detected_platform is None:
+            return {
+                "error": (
+                    "repo must be in 'owner/name' (GitHub) or "
+                    "'org/project/repo' (Azure DevOps) form"
+                )
+            }
+        if detected_platform != platform:
+            return {
+                "error": (
+                    f"workspace {workspace_id} is connected via {platform} but "
+                    f"repo shape indicates {detected_platform}"
+                )
+            }
 
     try:
         if platform == "github":
@@ -2779,6 +3012,14 @@ def handle_read_source(params, email):
                 platform_info["installation_id"],
             )
             raw = _read_source_fetch_file(repo, file_path, token, ref=ref)
+        elif platform == "gitlab":
+            token = _read_source_gitlab_access_token(
+                platform_info["connection_id"],
+            )
+            # `repo` is the full GitLab slug (group/.../project) -- from
+            # the caller in explicit mode, or the graph-resolved slug in
+            # at_graph_sha mode.
+            raw = _read_source_fetch_file_gitlab(repo, file_path, token, ref=ref)
         else:  # azure_devops
             org, project, repo_bare = repo.split("/")
             token = _read_source_ado_access_token(
@@ -2790,6 +3031,8 @@ def handle_read_source(params, email):
     except urllib.error.HTTPError as exc:
         if platform == "github":
             return {"error": f"GitHub returned {exc.code} for {repo}:{file_path}"}
+        if platform == "gitlab":
+            return {"error": f"GitLab returned {exc.code} for {repo}:{file_path}"}
         return {
             "error": f"Azure DevOps returned {exc.code} for {repo}:{file_path}"
         }
@@ -2798,6 +3041,12 @@ def handle_read_source(params, email):
             return {
                 "error": (
                     f"GitHub fetch failed for {repo}:{file_path}: {exc.reason}"
+                )
+            }
+        if platform == "gitlab":
+            return {
+                "error": (
+                    f"GitLab fetch failed for {repo}:{file_path}: {exc.reason}"
                 )
             }
         return {

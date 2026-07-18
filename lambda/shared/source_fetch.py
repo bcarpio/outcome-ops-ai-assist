@@ -88,6 +88,8 @@ def fetch_repo_file(
         ``github_token``
       - azure_devops: ``workspace_id`` + ``slug`` (org/project/repo)
         + ``kb_bucket``
+      - gitlab: ``workspace_id`` + ``slug`` (group/.../project)
+        + ``kb_bucket``
     """
     if provider == "azure_devops":
         if not (workspace_id and slug and kb_bucket):
@@ -97,6 +99,24 @@ def fetch_repo_file(
         return _fetch_from_s3_mirror(
             workspace_id=workspace_id,
             provider_dir="azure_devops",
+            slug=slug,
+            file_path=file_path,
+            kb_bucket=kb_bucket,
+        )
+
+    if provider == "gitlab":
+        # ADR-050: gitlab-sync mirrors source to S3 first (the ADO
+        # pattern), so the code-map pipeline reads the latest snapshot
+        # from ``workspaces/{ws}/gitlab/{slug}/{path}`` -- no live API
+        # hit at code-map-generation time. ``slug`` is the URL-decoded
+        # full project path (``group/{...subgroups}/project``).
+        if not (workspace_id and slug and kb_bucket):
+            raise SourceFetchError(
+                "gitlab fetch needs workspace_id + slug + kb_bucket",
+            )
+        return _fetch_from_s3_mirror(
+            workspace_id=workspace_id,
+            provider_dir="gitlab",
             slug=slug,
             file_path=file_path,
             kb_bucket=kb_bucket,
@@ -206,11 +226,14 @@ def fetch_file_at_sha(
     ado_repo: Optional[str] = None,
     ado_access_token: Optional[str] = None,
     ado_version_type: str = "commit",
+    # gitlab branch
+    gitlab_project_path: Optional[str] = None,
+    gitlab_access_token: Optional[str] = None,
 ) -> bytes:
     """Return one file's raw bytes at a specific ref position.
 
     Args:
-        provider: ``"github"`` or ``"azure_devops"``.
+        provider: ``"github"``, ``"azure_devops"``, or ``"gitlab"``.
         file_path: Repo-relative path (e.g. ``"src/foo.py"``). Both
             providers tolerate a leading slash but the callers should
             normalize to no-leading-slash.
@@ -232,6 +255,12 @@ def fetch_file_at_sha(
         ado_version_type: ADO ``versionDescriptor.versionType`` value.
             ``"commit"`` (default) or ``"branch"``. Ignored on
             ``provider="github"``.
+        gitlab_project_path: GitLab full project path
+            (``group/{...subgroups}/project``). Required for
+            ``provider="gitlab"``. The shared API client URL-encodes it.
+        gitlab_access_token: GitLab user-scoped OAuth access token
+            (pre-refreshed by the caller). Required for
+            ``provider="gitlab"``.
 
     Returns:
         Raw file bytes. Text-file callers should ``.decode("utf-8", "replace")``.
@@ -269,6 +298,19 @@ def fetch_file_at_sha(
             sha=sha,
             ado_access_token=ado_access_token,
             version_type=ado_version_type,
+        )
+
+    if provider == "gitlab":
+        if not (gitlab_project_path and gitlab_access_token):
+            raise SourceFetchError(
+                "gitlab fetch_file_at_sha needs gitlab_project_path + "
+                "gitlab_access_token",
+            )
+        return _fetch_from_gitlab_at_sha(
+            project_path=gitlab_project_path,
+            file_path=file_path,
+            sha=sha,
+            access_token=gitlab_access_token,
         )
 
     raise SourceFetchError(
@@ -366,4 +408,34 @@ def _fetch_from_ado_at_sha(
         raise SourceFetchError(
             f"ADO items fetch@{sha[:8]} ({version_type}) failed for "
             f"{ado_org}/{ado_project}/{ado_repo}/{file_path}: {e}",
+        )
+
+
+def _fetch_from_gitlab_at_sha(
+    *,
+    project_path: str,
+    file_path: str,
+    sha: str,
+    access_token: str,
+) -> bytes:
+    """Fetch a file at a specific ref position from GitLab.
+
+    Delegates to the shared GitLab API v4 client's raw-file endpoint
+    (``GET /projects/{enc}/repository/files/{enc}/raw?ref=<sha>``). The
+    ``sha`` is passed straight through as the ``ref`` -- GitLab's raw
+    endpoint accepts a commit SHA, branch name, or tag uniformly in that
+    slot, so the same value serves a commit-pinned PR-check read or a
+    branch-tip read (mirroring the ``ado_version_type`` commit/branch
+    duality without a separate flag). Returns raw bytes so binary files
+    round-trip losslessly, matching the github/ADO branches.
+    """
+    from shared import gitlab_api  # noqa: WPS433 -- defer import
+    try:
+        return gitlab_api.get_file_content(
+            access_token, project_path, file_path.lstrip("/"), sha,
+        )
+    except Exception as e:
+        raise SourceFetchError(
+            f"GitLab raw fetch@{sha[:8]} failed for "
+            f"{project_path}/{file_path}: {e}",
         )

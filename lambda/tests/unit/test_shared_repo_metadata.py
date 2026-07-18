@@ -51,6 +51,16 @@ class TestFetchRepoMetadataDispatch:
                 ado_access_token="tok",
             )
 
+    def test_gitlab_requires_project_path_and_token(self):
+        with pytest.raises(repo_metadata.RepoMetadataError):
+            repo_metadata.fetch_repo_metadata(
+                "gitlab", gitlab_project_path="grp/proj",
+            )
+        with pytest.raises(repo_metadata.RepoMetadataError):
+            repo_metadata.fetch_repo_metadata(
+                "gitlab", gitlab_access_token="tok",
+            )
+
 
 # ---------------------------------------------------------------------------
 # GitHub branch.
@@ -229,5 +239,70 @@ class TestFetchRepoMetadataAzureDevOps:
                 "azure_devops",
                 ado_org="o", ado_project="p", ado_repo="r",
                 ado_access_token="tok",
+            )
+        assert "connection reset" in str(ctx.value)
+
+
+# ---------------------------------------------------------------------------
+# GitLab branch (ADR-050). Delegates to the shared GitLab API v4 client;
+# ``get_tree`` already filters to blobs + returns bare paths.
+# ---------------------------------------------------------------------------
+
+
+class TestFetchRepoMetadataGitLab:
+
+    @patch("shared.gitlab_api.get_tree")
+    @patch("shared.gitlab_api.get_default_branch")
+    def test_returns_default_branch_and_blob_paths(self, mock_branch, mock_tree):
+        mock_branch.return_value = "main"
+        mock_tree.return_value = ["src/a.py", "src/b.py", "README.md"]
+
+        # Nested-subgroup project path exercises the variable-slash slug.
+        result = repo_metadata.fetch_repo_metadata(
+            "gitlab",
+            gitlab_project_path="acme/platform/backend/api",
+            gitlab_access_token="glpat-xyz",
+        )
+        assert result.default_branch == "main"
+        assert result.file_paths == ["src/a.py", "src/b.py", "README.md"]
+
+        assert mock_branch.call_args.args == (
+            "glpat-xyz", "acme/platform/backend/api",
+        )
+        assert mock_tree.call_args.args == (
+            "glpat-xyz", "acme/platform/backend/api", "main",
+        )
+
+    @patch("shared.gitlab_api.get_default_branch")
+    def test_missing_default_branch_wraps_as_repo_metadata_error(self, mock_branch):
+        mock_branch.return_value = None
+        with pytest.raises(repo_metadata.RepoMetadataError):
+            repo_metadata.fetch_repo_metadata(
+                "gitlab",
+                gitlab_project_path="grp/proj",
+                gitlab_access_token="tok",
+            )
+
+    @patch("shared.gitlab_api.get_tree")
+    @patch("shared.gitlab_api.get_default_branch")
+    def test_empty_tree_returns_empty_file_paths(self, mock_branch, mock_tree):
+        mock_branch.return_value = "develop"
+        mock_tree.return_value = []
+        result = repo_metadata.fetch_repo_metadata(
+            "gitlab",
+            gitlab_project_path="grp/proj",
+            gitlab_access_token="tok",
+        )
+        assert result.default_branch == "develop"
+        assert result.file_paths == []
+
+    @patch("shared.gitlab_api.get_default_branch")
+    def test_network_error_wraps_as_repo_metadata_error(self, mock_branch):
+        mock_branch.side_effect = Exception("connection reset")
+        with pytest.raises(repo_metadata.RepoMetadataError) as ctx:
+            repo_metadata.fetch_repo_metadata(
+                "gitlab",
+                gitlab_project_path="grp/proj",
+                gitlab_access_token="tok",
             )
         assert "connection reset" in str(ctx.value)

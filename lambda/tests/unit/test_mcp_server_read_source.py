@@ -1460,3 +1460,392 @@ class TestReadSourceRouter:
         assert contents
         assert f"versionDescriptor.version={graph_sha}" in contents[-1]
         assert "versionDescriptor.versionType=commit" in contents[-1]
+
+
+# ===========================================================================
+# ADR-050 -- GitLab as a first-class read_source platform. The load-bearing
+# rule (Decision 6): GitLab supports nested subgroups, so a slug is
+# group/{...subgroups}/project with a VARIABLE number of slashes -- slash
+# count is AMBIGUOUS (a 2-slash slug looks exactly like an ADO triplet).
+# The platform is therefore resolved by DDB lookup of the enrolled
+# GITLAB_REPO# rows, NOT by shape. These tests prove that.
+# ===========================================================================
+
+
+GITLAB_WORKSPACE_ID = "ws-rs-gitlab-test"
+GITLAB_CONNECTION_ID = "conn-gitlab-abc123"
+# 2-slash slug (group/subgroup/project). _read_source_platform_from_repo
+# would call this 'azure_devops' -- the whole point of Decision 6 is that
+# the DDB lookup overrides that shape inference.
+GITLAB_SLUG_NESTED = "acme/backend/api"
+# Deeper nesting -- 3 slashes, which slash-count inference rejects outright.
+GITLAB_SLUG_DEEP = "acme/platform/backend/api"
+
+
+def _seed_gitlab_repo_row(
+    table, workspace_id, slug=GITLAB_SLUG_NESTED,
+    connection_id=GITLAB_CONNECTION_ID,
+):
+    """Seed a GITLAB_REPO# row matching what the GitLab enroll flow writes
+    (ADR-050 Decision 7): SK = GITLAB_REPO#{slug}, own connection_id,
+    provider:"gitlab", slug = URL-decoded full project path."""
+    table.put_item(Item={
+        "PK": f"WS#{workspace_id}",
+        "SK": f"GITLAB_REPO#{slug}",
+        "workspace_id": workspace_id,
+        "provider": "gitlab",
+        "slug": slug,
+        "connection_id": connection_id,
+        "default_branch": "main",
+        "last_commit_sha": "e" * 40,
+        "enabled": True,
+    })
+
+
+class TestReadSourceResolvePlatformGitLab:
+    """Decision 6: platform resolved by enrolled-repo DDB lookup."""
+
+    def test_gitlab_direct_key_when_repo_hint_is_slug(self, workspaces_table):
+        _seed_gitlab_repo_row(workspaces_table, GITLAB_WORKSPACE_ID)
+        info = mcp_module._read_source_resolve_platform(
+            GITLAB_WORKSPACE_ID, repo_hint=GITLAB_SLUG_NESTED,
+        )
+        assert info == {
+            "platform": "gitlab",
+            "connection_id": GITLAB_CONNECTION_ID,
+            "slug": GITLAB_SLUG_NESTED,
+        }
+
+    def test_gitlab_query_fallback_when_no_repo_hint(self, workspaces_table):
+        _seed_gitlab_repo_row(workspaces_table, GITLAB_WORKSPACE_ID)
+        info = mcp_module._read_source_resolve_platform(GITLAB_WORKSPACE_ID)
+        assert info["platform"] == "gitlab"
+        assert info["connection_id"] == GITLAB_CONNECTION_ID
+        assert info["slug"] == GITLAB_SLUG_NESTED
+
+    def test_nested_subgroup_slug_resolves_gitlab_not_ado_by_shape(
+        self, workspaces_table,
+    ):
+        """LOAD-BEARING: a 2-slash slug (group/subgroup/project) has the
+        SAME shape as an ADO org/project/repo triplet. Slash-count
+        inference would misroute it to Azure DevOps. Because the ONLY
+        enrolled row is a GITLAB_REPO# row (no AZDO_REPO#), the DDB
+        lookup must resolve it to gitlab -- proving resolution is by
+        enrolled-repo lookup, not slash count."""
+        # Sanity: the bare shape inference disagrees with the truth.
+        assert (
+            mcp_module._read_source_platform_from_repo(GITLAB_SLUG_NESTED)
+            == "azure_devops"
+        )
+        _seed_gitlab_repo_row(
+            workspaces_table, GITLAB_WORKSPACE_ID, slug=GITLAB_SLUG_NESTED,
+        )
+        info = mcp_module._read_source_resolve_platform(
+            GITLAB_WORKSPACE_ID, repo_hint=GITLAB_SLUG_NESTED,
+        )
+        assert info["platform"] == "gitlab"
+        assert info["slug"] == GITLAB_SLUG_NESTED
+
+    def test_github_short_circuits_gitlab(self, workspaces_table):
+        """Resolution order GitHub -> ADO -> GitLab: a workspace with both
+        a GitHub install and a GitLab repo resolves to GitHub."""
+        # WORKSPACE_ID already has GITHUB_INSTALLATION# from the fixture.
+        _seed_gitlab_repo_row(workspaces_table, WORKSPACE_ID)
+        info = mcp_module._read_source_resolve_platform(WORKSPACE_ID)
+        assert info["platform"] == "github"
+
+    def test_provider_hint_pins_to_gitlab_over_github(self, workspaces_table):
+        """An explicit provider='gitlab' hint bypasses the GitHub
+        short-circuit and resolves the GitLab row directly."""
+        # WORKSPACE_ID has a GitHub install; seed a GitLab row too.
+        _seed_gitlab_repo_row(workspaces_table, WORKSPACE_ID)
+        info = mcp_module._read_source_resolve_platform(
+            WORKSPACE_ID, repo_hint=GITLAB_SLUG_NESTED, provider="gitlab",
+        )
+        assert info["platform"] == "gitlab"
+        assert info["connection_id"] == GITLAB_CONNECTION_ID
+
+    def test_provider_hint_gitlab_returns_none_when_no_row(self, workspaces_table):
+        info = mcp_module._read_source_resolve_platform(
+            "ws-no-gitlab", provider="gitlab",
+        )
+        assert info is None
+
+    def test_gitlab_direct_key_miss_falls_through_to_query(self, workspaces_table):
+        """A wrong-slug hint shouldn't hide an existing GitLab row -- the
+        fallback query still finds it."""
+        _seed_gitlab_repo_row(workspaces_table, GITLAB_WORKSPACE_ID)
+        info = mcp_module._read_source_resolve_platform(
+            GITLAB_WORKSPACE_ID, repo_hint="wrong/group/project",
+        )
+        assert info["platform"] == "gitlab"
+
+    def test_none_when_no_gitlab_row(self, workspaces_table):
+        assert mcp_module._read_source_resolve_platform(
+            "ws-empty-no-gitlab",
+        ) is None
+
+
+class TestReadSourceResolveFullGitLabSlug:
+    """Decision 6: bare project-name -> full nested slug for at_graph_sha."""
+
+    def test_passthrough_when_already_has_slash(self, workspaces_table):
+        assert mcp_module._read_source_resolve_full_gitlab_slug(
+            GITLAB_WORKSPACE_ID, GITLAB_SLUG_DEEP,
+        ) == GITLAB_SLUG_DEEP
+
+    def test_resolves_bare_to_full_nested_slug(self, workspaces_table):
+        _seed_gitlab_repo_row(
+            workspaces_table, GITLAB_WORKSPACE_ID, slug=GITLAB_SLUG_DEEP,
+        )
+        # graph stores the bare project tail 'api'; must recover the full
+        # variable-depth slug.
+        result = mcp_module._read_source_resolve_full_gitlab_slug(
+            GITLAB_WORKSPACE_ID, "api",
+        )
+        assert result == GITLAB_SLUG_DEEP
+
+    def test_returns_none_when_bare_missing(self, workspaces_table):
+        assert mcp_module._read_source_resolve_full_gitlab_slug(
+            GITLAB_WORKSPACE_ID, "does-not-exist",
+        ) is None
+
+    def test_returns_none_when_ambiguous(self, workspaces_table):
+        """Two GitLab projects with the same bare tail in different
+        subgroups must not silently resolve to one."""
+        _seed_gitlab_repo_row(
+            workspaces_table, GITLAB_WORKSPACE_ID, slug="acme/team-a/api",
+        )
+        _seed_gitlab_repo_row(
+            workspaces_table, GITLAB_WORKSPACE_ID, slug="acme/team-b/api",
+            connection_id="conn-other",
+        )
+        assert mcp_module._read_source_resolve_full_gitlab_slug(
+            GITLAB_WORKSPACE_ID, "api",
+        ) is None
+
+    def test_returns_none_on_empty_input(self, workspaces_table):
+        assert mcp_module._read_source_resolve_full_gitlab_slug(
+            GITLAB_WORKSPACE_ID, "",
+        ) is None
+
+
+class TestReadSourceGitLabAccessToken:
+    """Token-mint wrapper reaches shared.oauth.gitlab with the right
+    args + error surface."""
+
+    def test_missing_connection_id_raises(self):
+        with pytest.raises(ValueError):
+            mcp_module._read_source_gitlab_access_token("")
+
+    def test_returns_token_from_shared_oauth_helper(self, monkeypatch):
+        monkeypatch.setenv("OAUTH_KMS_KEY_ARN", "arn:aws:kms:us-west-2:1:key/abc")
+        import shared.oauth.gitlab as gitlab_oauth  # noqa: WPS433
+        captured = {}
+
+        def _fake_refresh(**kwargs):
+            captured.update(kwargs)
+            return "gitlab-access-token-value"
+
+        with patch.object(gitlab_oauth, "refresh_access_token",
+                          side_effect=_fake_refresh):
+            token = mcp_module._read_source_gitlab_access_token(
+                GITLAB_CONNECTION_ID,
+            )
+        assert token == "gitlab-access-token-value"
+        assert captured["connection_id"] == GITLAB_CONNECTION_ID
+        assert captured["workspaces_table"] == WORKSPACES_TABLE
+
+    def test_refresh_failure_raises_runtime(self, monkeypatch):
+        import shared.oauth.gitlab as gitlab_oauth  # noqa: WPS433
+        with patch.object(gitlab_oauth, "refresh_access_token",
+                          return_value=None):
+            with pytest.raises(RuntimeError, match="reauth"):
+                mcp_module._read_source_gitlab_access_token(GITLAB_CONNECTION_ID)
+
+
+class TestReadSourceFetchFileGitLab:
+    """GitLab raw-file fetcher: ref pinning, default-branch resolution
+    when no ref, and the byte cap."""
+
+    def test_uses_supplied_ref_and_skips_default_branch_lookup(self):
+        import shared.gitlab_api as gitlab_api  # noqa: WPS433
+        sha = "deadbeef" * 5
+        with patch.object(gitlab_api, "get_default_branch") as mock_branch, \
+             patch.object(gitlab_api, "get_file_content",
+                          return_value=b"a\nb\nc\n") as mock_get:
+            raw = mcp_module._read_source_fetch_file_gitlab(
+                GITLAB_SLUG_DEEP, "src/main.py", "gl-token", ref=sha,
+            )
+        assert raw == b"a\nb\nc\n"
+        mock_branch.assert_not_called()
+        assert mock_get.call_args.args == (
+            "gl-token", GITLAB_SLUG_DEEP, "src/main.py", sha,
+        )
+
+    def test_resolves_default_branch_when_no_ref(self):
+        import shared.gitlab_api as gitlab_api  # noqa: WPS433
+        with patch.object(gitlab_api, "get_default_branch",
+                          return_value="main") as mock_branch, \
+             patch.object(gitlab_api, "get_file_content",
+                          return_value=b"x\n") as mock_get:
+            mcp_module._read_source_fetch_file_gitlab(
+                GITLAB_SLUG_NESTED, "src/main.py", "gl-token", ref=None,
+            )
+        mock_branch.assert_called_once_with("gl-token", GITLAB_SLUG_NESTED)
+        # default-branch tip used as the ref.
+        assert mock_get.call_args.args[3] == "main"
+
+    def test_over_cap_raises_valueerror(self):
+        import shared.gitlab_api as gitlab_api  # noqa: WPS433
+        oversize = b"x" * (mcp_module._READ_SOURCE_MAX_FILE_BYTES + 100)
+        with patch.object(gitlab_api, "get_file_content", return_value=oversize):
+            with pytest.raises(ValueError, match="read-source cap"):
+                mcp_module._read_source_fetch_file_gitlab(
+                    GITLAB_SLUG_DEEP, "src/Big.py", "gl-token", ref="main",
+                )
+
+
+class TestReadSourceRouterGitLab:
+    """handle_read_source dispatch: a GitLab-connected workspace fetches
+    via the GitLab client, and the nested-subgroup slug is NOT rejected
+    by the slash-count shape check (Decision 6)."""
+
+    def _patch_gitlab_fetch(self, file_text, default_branch="main"):
+        import shared.gitlab_api as gitlab_api  # noqa: WPS433
+        return [
+            patch.object(gitlab_api, "get_default_branch",
+                         return_value=default_branch),
+            patch.object(gitlab_api, "get_file_content",
+                         return_value=file_text.encode()),
+            patch.object(mcp_module, "_read_source_gitlab_access_token",
+                         return_value="gl-token"),
+        ]
+
+    def test_nested_slug_workspace_dispatches_to_gitlab(self, workspaces_table):
+        """End-to-end: a 2-slash GitLab slug (ADO-shaped) on a
+        GitLab-connected workspace fetches via GitLab and reports
+        platform='gitlab' -- the shape check does NOT misroute it."""
+        _seed_gitlab_repo_row(workspaces_table, GITLAB_WORKSPACE_ID)
+        file_text = "\n".join(f"line-{i}" for i in range(1, 21))
+        patches = self._patch_gitlab_fetch(file_text)
+        _enter(patches)
+        try:
+            with _patch_user_workspaces([GITLAB_WORKSPACE_ID]):
+                result = mcp_module.handle_read_source(
+                    {"workspace_id": GITLAB_WORKSPACE_ID,
+                     "repo": GITLAB_SLUG_NESTED,
+                     "file_path": "src/main.py", "line": 10,
+                     "context_lines": 2},
+                    USER_EMAIL,
+                )
+        finally:
+            _exit(patches)
+        assert "text" in result, f"expected success, got {result}"
+        payload = json.loads(result["text"])
+        assert payload["platform"] == "gitlab"
+        assert payload["repo"] == GITLAB_SLUG_NESTED
+        assert payload["anchor_line"] == 10
+
+    def test_deep_slug_workspace_dispatches_to_gitlab(self, workspaces_table):
+        """A 3-slash slug (which slash-count inference rejects outright)
+        still reads when resolved via the GITLAB_REPO# lookup."""
+        _seed_gitlab_repo_row(
+            workspaces_table, GITLAB_WORKSPACE_ID, slug=GITLAB_SLUG_DEEP,
+        )
+        file_text = "\n".join(f"L{i}" for i in range(1, 21))
+        patches = self._patch_gitlab_fetch(file_text)
+        _enter(patches)
+        try:
+            with _patch_user_workspaces([GITLAB_WORKSPACE_ID]):
+                result = mcp_module.handle_read_source(
+                    {"workspace_id": GITLAB_WORKSPACE_ID,
+                     "repo": GITLAB_SLUG_DEEP,
+                     "file_path": "src/main.py", "line": 5,
+                     "context_lines": 2},
+                    USER_EMAIL,
+                )
+        finally:
+            _exit(patches)
+        assert "text" in result, f"expected success, got {result}"
+        payload = json.loads(result["text"])
+        assert payload["platform"] == "gitlab"
+        assert payload["repo"] == GITLAB_SLUG_DEEP
+
+    def test_provider_hint_forces_gitlab_on_mixed_workspace(self, workspaces_table):
+        """A workspace with a GitHub install AND a GitLab row: an explicit
+        provider='gitlab' hint routes the read to GitLab despite the
+        GitHub short-circuit that would otherwise win."""
+        _seed_gitlab_repo_row(workspaces_table, WORKSPACE_ID)  # + fixture GH row
+        file_text = "\n".join(f"g{i}" for i in range(1, 21))
+        patches = self._patch_gitlab_fetch(file_text)
+        _enter(patches)
+        try:
+            with _patch_user_workspaces([WORKSPACE_ID]):
+                result = mcp_module.handle_read_source(
+                    {"workspace_id": WORKSPACE_ID,
+                     "repo": GITLAB_SLUG_NESTED, "provider": "gitlab",
+                     "file_path": "src/main.py", "line": 10,
+                     "context_lines": 2},
+                    USER_EMAIL,
+                )
+        finally:
+            _exit(patches)
+        assert "text" in result, f"expected success, got {result}"
+        payload = json.loads(result["text"])
+        assert payload["platform"] == "gitlab"
+
+    def test_gitlab_at_graph_sha_resolves_bare_to_full_slug(
+        self, workspaces_table, graph_tables,
+    ):
+        """at_graph_sha on a GitLab workspace: the graph row carries the
+        bare project tail; the resolver must recover the full nested slug
+        via _read_source_resolve_full_gitlab_slug and pin the read to the
+        graph_sha."""
+        _seed_gitlab_repo_row(
+            workspaces_table, GITLAB_WORKSPACE_ID, slug=GITLAB_SLUG_DEEP,
+        )
+        graph_sha = "f" * 40
+        sym = "python:api.handler::create_token"
+        # graph stores repo as the bare project tail 'api'.
+        _seed_defines_bare_repo(
+            graph_tables, GITLAB_WORKSPACE_ID, "api", sym,
+            "src/handler.py", 5, graph_sha,
+        )
+        import shared.gitlab_api as gitlab_api  # noqa: WPS433
+        captured = {}
+
+        def _fake_get_file_content(token, slug, path, ref):
+            captured["slug"] = slug
+            captured["ref"] = ref
+            return b"1\n2\n3\n4\n5\n6\n7\n"
+
+        patches = [
+            patch.object(gitlab_api, "get_file_content",
+                         side_effect=_fake_get_file_content),
+            patch.object(mcp_module, "_read_source_gitlab_access_token",
+                         return_value="gl-token"),
+        ]
+        _enter(patches)
+        try:
+            with _patch_user_workspaces([GITLAB_WORKSPACE_ID]):
+                result = mcp_module.handle_read_source(
+                    {
+                        "workspace_id": GITLAB_WORKSPACE_ID,
+                        "symbol": sym,
+                        "at_graph_sha": True,
+                        "context_lines": 2,
+                    },
+                    USER_EMAIL,
+                )
+        finally:
+            _exit(patches)
+        assert "text" in result, f"expected success, got {result}"
+        payload = json.loads(result["text"])
+        assert payload["platform"] == "gitlab"
+        # Bare 'api' recovered to the full nested slug.
+        assert payload["repo"] == GITLAB_SLUG_DEEP
+        assert captured["slug"] == GITLAB_SLUG_DEEP
+        # Pinned to the graph_sha (a commit SHA passed straight through as ref).
+        assert payload["graph_sha"] == graph_sha
+        assert captured["ref"] == graph_sha
