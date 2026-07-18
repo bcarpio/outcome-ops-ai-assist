@@ -48,6 +48,7 @@ const ONENOTE_LAMBDA_URL = process.env.ONENOTE_LAMBDA_URL;
 const DATABASE_LAMBDA_URL = process.env.DATABASE_LAMBDA_URL;
 const AZURE_DEVOPS_LAMBDA_URL = process.env.AZURE_DEVOPS_LAMBDA_URL;
 const AZURE_DEVOPS_BOARDS_LAMBDA_URL = process.env.AZURE_DEVOPS_BOARDS_LAMBDA_URL;
+const GITLAB_LAMBDA_URL = process.env.GITLAB_LAMBDA_URL;
 const SERVICENOW_LAMBDA_URL = process.env.SERVICENOW_LAMBDA_URL;
 const SALESFORCE_LAMBDA_URL = process.env.SALESFORCE_LAMBDA_URL;
 const AWS_REGION = process.env.AWS_REGION || "us-west-2";
@@ -404,6 +405,10 @@ async function signedAzureDevOpsFetch(method, path, options = {}) {
 
 async function signedAzureDevOpsBoardsFetch(method, path, options = {}) {
   return signedFetch(AZURE_DEVOPS_BOARDS_LAMBDA_URL, method, path, options);
+}
+
+async function signedGitLabFetch(method, path, options = {}) {
+  return signedFetch(GITLAB_LAMBDA_URL, method, path, options);
 }
 
 /**
@@ -2219,6 +2224,164 @@ app.post("/api/workspaces/:id/azure-devops-boards/sync", (req, res) =>
     `/workspaces/${req.params.id}/azure-devops-boards/sync`,
   ),
 );
+
+// ============================================================================
+// GitLab Integration Routes (ADR-050)
+//
+// Mirrors the Azure DevOps proxy shape -- same SigV4 IAM auth path
+// (signedGitLabFetch -> GITLAB_LAMBDA_URL), same error handling, same
+// redirect-passthrough on OAuth callback. GitLab is group -> project (two
+// levels), so the discovery cascade is one hop shallower than ADO's
+// org -> project -> repo; there is no ADO-style "repos under a project"
+// route. Project slugs are the full path_with_namespace and can contain
+// nested-subgroup slashes, so repo routes use the wildcard catch-all.
+// ============================================================================
+
+async function proxyGitLabRequest(req, res, method, path) {
+  if (!GITLAB_LAMBDA_URL) {
+    console.log("[proxy] GITLAB_LAMBDA_URL not configured - GitLab integration disabled");
+    res.status(404).json({ error: "GitLab integration not enabled. Set GITLAB_LAMBDA_URL." });
+    return;
+  }
+
+  const user = extractUser(req);
+  console.log(`[proxy] GitLab ${method} ${path} for: ${user.email}`);
+
+  try {
+    const options = {
+      extraHeaders: userHeaders(req, user),
+    };
+    if (req.body && Object.keys(req.body).length > 0) {
+      options.body = JSON.stringify(req.body);
+    }
+
+    const response = await signedGitLabFetch(method, path, options);
+
+    if (response.status === 302) {
+      const location = response.headers.get("location");
+      return res.redirect(location);
+    }
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`[proxy] GitLab Lambda error: ${response.status} - ${errorText}`);
+      res.status(response.status).json({ error: errorText || "GitLab request failed" });
+      return;
+    }
+
+    const text = await response.text();
+    if (!text) {
+      res.status(500).json({ error: "Empty response from GitLab service" });
+      return;
+    }
+
+    try {
+      const data = JSON.parse(text);
+      res.status(response.status).json(data);
+    } catch (parseError) {
+      console.error(`[proxy] Failed to parse GitLab response: ${text}`);
+      res.status(500).json({ error: "Invalid response from GitLab service" });
+    }
+  } catch (error) {
+    console.error(`[proxy] GitLab error: ${error.message}`);
+    if (error.message.includes("credentials") || error.message.includes("Credential")) {
+      res.status(500).json({ error: "AWS credentials not configured." });
+    } else {
+      res.status(500).json({ error: `Failed to process GitLab request: ${error.message}` });
+    }
+  }
+}
+
+// OAuth authorize + callback
+app.get("/api/gitlab/authorize", (req, res) => {
+  const workspaceId = req.query.workspace_id;
+  proxyGitLabRequest(req, res, "GET", `/gitlab/authorize?workspace_id=${encodeURIComponent(workspaceId)}`);
+});
+
+app.get("/api/gitlab/callback", async (req, res) => {
+  const { code, state, error } = req.query;
+  if (error) {
+    return res.redirect(`/?gitlab_error=${encodeURIComponent(error)}`);
+  }
+  if (!GITLAB_LAMBDA_URL) {
+    return res.redirect(`/?gitlab_error=not_configured`);
+  }
+  try {
+    const response = await signedGitLabFetch("POST", "/gitlab/callback", {
+      body: JSON.stringify({ code, state }),
+    });
+    if (response.status === 302) {
+      const location = response.headers.get("location");
+      return res.redirect(location);
+    }
+    const text = await response.text();
+    try {
+      const data = JSON.parse(text);
+      if (data.redirect) {
+        return res.redirect(data.redirect);
+      }
+      res.status(response.status).json(data);
+    } catch {
+      res.status(response.status).send(text);
+    }
+  } catch (err) {
+    console.error(`[proxy] GitLab callback error: ${err.message}`);
+    res.redirect(`/?gitlab_error=callback_failed`);
+  }
+});
+
+// Connections + discovery (connection -> groups -> projects)
+app.get("/api/workspaces/:id/gitlab/connections", (req, res) =>
+  proxyGitLabRequest(req, res, "GET", `/workspaces/${req.params.id}/gitlab/connections`),
+);
+
+app.delete("/api/workspaces/:id/gitlab/connections/:cid", (req, res) =>
+  proxyGitLabRequest(
+    req, res, "DELETE",
+    `/workspaces/${req.params.id}/gitlab/connections/${encodeURIComponent(req.params.cid)}`,
+  ),
+);
+
+app.get("/api/workspaces/:id/gitlab/connections/:cid/groups", (req, res) =>
+  proxyGitLabRequest(
+    req, res, "GET",
+    `/workspaces/${req.params.id}/gitlab/connections/${encodeURIComponent(req.params.cid)}/groups`,
+  ),
+);
+
+app.get("/api/workspaces/:id/gitlab/connections/:cid/groups/:gid/projects", (req, res) =>
+  proxyGitLabRequest(
+    req, res, "GET",
+    `/workspaces/${req.params.id}/gitlab/connections/${encodeURIComponent(req.params.cid)}/groups/${encodeURIComponent(req.params.gid)}/projects`,
+  ),
+);
+
+// Workspace repo set
+app.get("/api/workspaces/:id/gitlab/repos", (req, res) =>
+  proxyGitLabRequest(req, res, "GET", `/workspaces/${req.params.id}/gitlab/repos`),
+);
+
+app.post("/api/workspaces/:id/gitlab/repos", (req, res) =>
+  proxyGitLabRequest(req, res, "POST", `/workspaces/${req.params.id}/gitlab/repos`),
+);
+
+// group/.../project slug contains at least one slash (nested subgroups add
+// more); use the wildcard catch-all.
+app.put("/api/workspaces/:id/gitlab/repos/*", (req, res) => {
+  const slug = req.params[0];
+  proxyGitLabRequest(
+    req, res, "PUT",
+    `/workspaces/${req.params.id}/gitlab/repos/${encodeURIComponent(slug)}`,
+  );
+});
+
+app.delete("/api/workspaces/:id/gitlab/repos/*", (req, res) => {
+  const slug = req.params[0];
+  proxyGitLabRequest(
+    req, res, "DELETE",
+    `/workspaces/${req.params.id}/gitlab/repos/${encodeURIComponent(slug)}`,
+  );
+});
 
 // ============================================================================
 // Outlook Integration Routes

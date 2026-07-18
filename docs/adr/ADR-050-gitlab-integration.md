@@ -30,10 +30,19 @@ real decision, not a copy-paste. ADO is the closer template: it is the most rece
    both. Not conflated into the initial integration.
 
 2. **Auth = Model A, delegated OAuth (per-user tokens).** A GitLab admin registers
-   ONE group-owned OAuth application for the deployment (`client_id` in tfvars,
-   secret in operator-managed SSM, redirect URI = the integration Function URL
-   callback). Each end user performs a one-click OAuth **authorize** (never
-   creates an app), minting a **user-scoped** access+refresh token. Consequences:
+   **exactly ONE** OAuth application for the whole deployment (`client_id` in
+   tfvars, secret in operator-managed SSM, redirect URI = the integration Function
+   URL callback). Each end user performs a one-click OAuth **authorize** (never
+   creates an app), minting a **user-scoped** access+refresh token.
+   - **One app, org-wide — NOT one per group.** An OAuth app's registration
+     location (user-owned / group-owned / instance-wide) determines only who
+     *manages* the credentials; it does NOT scope token access. A token's reach is
+     the authorizing user's permissions across the entire instance (every group)
+     intersected with the scopes. So a single app serves an org with hundreds of
+     groups. On **gitlab.com** register it in a top-level group; on **self-managed**
+     GitLab prefer an **instance-wide application** (Admin Area → Applications),
+     admin-managed. Same integration code either way.
+   Consequences:
    "a user can only enroll repos they already have access to" is automatic and
    free (no per-user membership plumbing), and every connection carries per-user
    attribution.

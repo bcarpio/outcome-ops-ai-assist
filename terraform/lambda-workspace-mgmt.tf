@@ -103,6 +103,7 @@ module "workspace_management_lambda" {
     INTEGRATION_AZURE_DEVOPS_BOARDS_ENABLED = tostring(var.enable_azure_devops_boards_integration)
     INTEGRATION_GITHUB_ENABLED              = tostring(var.enable_github_integration)
     INTEGRATION_GITHUB_ISSUES_ENABLED       = tostring(var.enable_github_issue_integration)
+    INTEGRATION_GITLAB_ENABLED              = tostring(var.enable_gitlab_integration)
     INTEGRATION_CONFLUENCE_ENABLED          = tostring(var.enable_confluence_integration)
     INTEGRATION_JIRA_ENABLED                = tostring(var.enable_jira_integration)
     INTEGRATION_OUTLOOK_ENABLED             = tostring(var.enable_outlook_integration)

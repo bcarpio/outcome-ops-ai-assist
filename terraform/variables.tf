@@ -150,6 +150,45 @@ variable "enable_github_integration" {
   default     = false
 }
 
+# ============================================================================
+# GitLab integration (ADR-050). Model A delegated OAuth: ONE admin-registered
+# OAuth app for the whole deployment (client id here, secret in operator-
+# managed SSM). SaaS-first (gitlab.com); self-managed base URL is a later
+# chunk. All values default so the integration is OFF by default; customers
+# without GitLab pay no operational tax. The integration enables itself only
+# when the config values are populated AND enable_gitlab_integration is true.
+# ============================================================================
+
+variable "gitlab_base_url" {
+  type        = string
+  description = "GitLab instance base URL (no trailing slash). Defaults to the SaaS host; a later chunk makes self-managed GitLab a first-class base URL."
+  default     = "https://gitlab.com"
+}
+
+variable "gitlab_client_id" {
+  type        = string
+  description = "GitLab OAuth application id (non-secret) for the GitLab integration."
+  default     = ""
+}
+
+variable "gitlab_client_secret_ssm_param" {
+  type        = string
+  description = "OPTIONAL override. SSM SecureString path for the GitLab OAuth app secret. Leave empty (default) and terraform creates a placeholder at the derived house path /<env>/<app>/gitlab/client-secret (lifecycle ignore_changes) that the operator overwrites after apply -- no SSM path in tfvars. Set only to point at a self-managed param terraform should NOT create."
+  default     = ""
+}
+
+variable "gitlab_redirect_uri" {
+  type        = string
+  description = "OPTIONAL override. OAuth callback URI registered with the GitLab app. Leave empty (default) to derive https://<deploy-fqdn>/api/gitlab/callback. Set only for a non-standard host."
+  default     = ""
+}
+
+variable "enable_gitlab_integration" {
+  type        = bool
+  description = "Provision the workspace GitLab integration surface: integration Lambda + Function URL + SSM parameter for the Function URL + IAM. Default false. Customers without GitLab leave this false and pay zero footprint."
+  default     = false
+}
+
 variable "enable_confluence_integration" {
   type        = bool
   description = "Provision the workspace Confluence integration surface (integration Lambda + Function URL + sync + scheduler + SQS + DLQ). Shares Atlassian OAuth SSM parameters with the Jira integration -- either flag being true keeps those SSM parameters. Default false."

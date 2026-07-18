@@ -844,6 +844,10 @@ module "ui_ecs" {
                 value = try(aws_lambda_function_url.azure_devops_boards_integration[0].function_url, "")
               },
               {
+                name  = "GITLAB_LAMBDA_URL"
+                value = try(aws_lambda_function_url.gitlab_integration[0].function_url, "")
+              },
+              {
                 name  = "OUTLOOK_LAMBDA_URL"
                 value = try(aws_lambda_function_url.outlook_integration[0].function_url, "")
               },
