@@ -15,11 +15,13 @@ deployment reviews the recurring question is:
 The architecture invokes backend Lambdas over **Lambda Function URLs**,
 not API Gateway. Concretely, as of this ADR:
 
-- **18** first-party `aws_lambda_function_url` resources exist across the
+- **19** first-party `aws_lambda_function_url` resources exist across the
   request path -- chat, workspace-management, PR analysis (github), and
   every source integration (Azure DevOps, Azure DevOps Boards, Confluence,
-  database, Jira, OneDrive, OneNote, Outlook, Salesforce, ServiceNow,
-  SharePoint, Teams), including their secondary-region counterparts.
+  database, GitLab, Jira, OneDrive, OneNote, Outlook, Salesforce, ServiceNow,
+  SharePoint, Teams), including their secondary-region counterparts. (GitLab
+  was added by ADR-050; its secondary-region counterpart lands with the GitLab
+  HA chunk, which brings the total to 20.)
 - **Every one** is declared `authorization_type = "AWS_IAM"`. There are
   zero `NONE`/public Function URLs in first-party terraform.
 - At least the chat path uses `invoke_mode = "RESPONSE_STREAM"` so the UI
