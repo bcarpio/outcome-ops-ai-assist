@@ -2365,6 +2365,10 @@ app.post("/api/workspaces/:id/gitlab/repos", (req, res) =>
   proxyGitLabRequest(req, res, "POST", `/workspaces/${req.params.id}/gitlab/repos`),
 );
 
+app.post("/api/workspaces/:id/gitlab/sync", (req, res) =>
+  proxyGitLabRequest(req, res, "POST", `/workspaces/${req.params.id}/gitlab/sync`),
+);
+
 // group/.../project slug contains at least one slash (nested subgroups add
 // more); use the wildcard catch-all.
 app.put("/api/workspaces/:id/gitlab/repos/*", (req, res) => {

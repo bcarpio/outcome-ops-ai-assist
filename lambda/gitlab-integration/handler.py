@@ -95,8 +95,15 @@ OAUTH_KMS_KEY_ARN = os.environ.get("OAUTH_KMS_KEY_ARN", "")
 GITLAB_CLIENT_ID = os.environ.get("GITLAB_CLIENT_ID", "")
 GITLAB_REDIRECT_URI = os.environ.get("GITLAB_REDIRECT_URI", "")
 
+# Sync + delete queues (chunk-03). The sync queue receives the initial
+# sync job on add-repos; the shared delete queue receives S3-mirror
+# prefix cleanup on delete-repo / disconnect.
+GITLAB_SYNC_QUEUE = os.environ.get("GITLAB_SYNC_QUEUE")
+DELETE_QUEUE = os.environ.get("DELETE_QUEUE")
+
 # Cached clients
 _dynamodb = None
+_sqs = None
 
 
 def _get_dynamodb():
@@ -104,6 +111,61 @@ def _get_dynamodb():
     if _dynamodb is None:
         _dynamodb = boto3.resource("dynamodb", config=_BOTO_CONFIG)
     return _dynamodb
+
+
+def _get_sqs():
+    global _sqs
+    if _sqs is None:
+        _sqs = boto3.client("sqs", config=_BOTO_CONFIG)
+    return _sqs
+
+
+def _queue_sync_job(workspace_id: str, slug: str, connection_id: str) -> None:
+    """Enqueue the initial sync job to the GitLab sync queue. The message
+    shape must match what the gitlab-sync worker + gitlab-scheduler produce
+    (workspace_id, connection_id, slug, group, project, triggered_by)."""
+    if not GITLAB_SYNC_QUEUE:
+        logger.warning("GITLAB_SYNC_QUEUE not configured")
+        return
+    parts = _slug_to_parts(slug)
+    if not parts:
+        logger.warning("Malformed slug %s -- not enqueuing sync", slug)
+        return
+    group, project = parts
+    _get_sqs().send_message(
+        QueueUrl=GITLAB_SYNC_QUEUE,
+        MessageBody=json.dumps({
+            "workspace_id": workspace_id,
+            "connection_id": connection_id,
+            "slug": slug,
+            "group": group,
+            "project": project,
+            "triggered_by": "manual",
+        }),
+    )
+    logger.info("Queued GitLab sync for %s/%s", workspace_id, slug)
+
+
+def _queue_delete_job(workspace_id: str, slug: str) -> None:
+    """Enqueue S3-mirror prefix cleanup so the sync-written blobs under
+    ``workspaces/{ws}/gitlab/{slug}/`` (plus their vectors) get purged.
+
+    The shared delete-worker prepends ``workspaces/{workspace_id}/{source}/``
+    itself, so the ``prefix`` here is repo-relative (``{slug}/``) -- NOT
+    ``gitlab/{slug}/``."""
+    if not DELETE_QUEUE:
+        logger.warning("DELETE_QUEUE not configured")
+        return
+    _get_sqs().send_message(
+        QueueUrl=DELETE_QUEUE,
+        MessageBody=json.dumps({
+            "action": "delete_prefix",
+            "workspace_id": workspace_id,
+            "source": "gitlab",
+            "prefix": f"{slug}/",
+        }),
+    )
+    logger.info("Queued GitLab deletion for %s/%s", workspace_id, slug)
 
 
 def _snapshot_active_repos() -> None:
@@ -640,15 +702,10 @@ def handle_add_repos(event: Dict) -> Dict:
         added.append(item)
 
         if include_code_maps:
-            # TODO(chunk-03): enqueue the initial sync job here. ADO calls
-            # ``_queue_sync_job(workspace_id, slug, connection_id)`` against
-            # its AZURE_DEVOPS_SYNC_QUEUE; the GitLab sync queue + worker +
-            # scheduler land in the sync chunk. Until then, added repos sit
-            # at last_sync_status="pending" with no queue wired.
-            logger.info(
-                "[chunk-03 TODO] would enqueue GitLab sync for %s/%s",
-                workspace_id, slug,
-            )
+            # Enqueue the initial sync job so the repo is mirrored + code-
+            # mapped immediately, rather than waiting for the next hourly
+            # scheduler tick. Only when include_code_maps is set.
+            _queue_sync_job(workspace_id, slug, connection_id)
 
     if added:
         _snapshot_active_repos()
@@ -700,6 +757,45 @@ def handle_list_repos(event: Dict) -> Dict:
             if r.get("slug")
         ]
     })
+
+
+def handle_trigger_sync(event: Dict) -> Dict:
+    """POST /workspaces/{id}/gitlab/sync
+
+    Body optional. ``{"slug": "group/.../project"}`` syncs one repo; omitted
+    syncs every enabled, code-map-enabled repo in the workspace. Enqueues to the
+    GitLab sync queue (the gitlab-sync worker does the actual mirror + fan-out).
+    """
+    user_email = _get_user_from_request(event)
+    if not user_email:
+        return _error(401, "User email not provided")
+    workspace_id = event.get("pathParameters", {}).get("id")
+    table = _get_dynamodb().Table(WORKSPACES_TABLE)
+    if not _can_access_workspace(table, user_email, workspace_id):
+        return _error(403, "Not a member of this workspace")
+
+    try:
+        body = json.loads(event.get("body") or "{}")
+    except json.JSONDecodeError:
+        body = {}
+    requested_slug = body.get("slug")
+
+    if requested_slug:
+        repo = _get_workspace_repo(workspace_id, requested_slug)
+        if not repo:
+            return _error(404, "Repo not found")
+        if not repo.get("enabled", True):
+            return _error(400, "Repo is disabled")
+        _queue_sync_job(workspace_id, requested_slug, repo["connection_id"])
+        return _response(200, {"message": "Sync queued", "repos": 1})
+
+    queued = 0
+    for repo in _list_workspace_repos(workspace_id):
+        if not repo.get("enabled", True) or not repo.get("include_code_maps", True):
+            continue
+        _queue_sync_job(workspace_id, repo["slug"], repo["connection_id"])
+        queued += 1
+    return _response(200, {"message": "Sync queued", "repos": queued})
 
 
 def handle_update_repo(event: Dict) -> Dict:
@@ -781,15 +877,9 @@ def handle_delete_repo(event: Dict) -> Dict:
     if not repo:
         return _error(404, "Repo not found")
 
-    # TODO(chunk-03): enqueue the S3-mirror prefix cleanup here. ADO calls
-    # ``_queue_delete_job(workspace_id, slug)`` against the shared DELETE_QUEUE
-    # so the sync-written blobs under gitlab/{slug}/ get purged. The GitLab
-    # sync/ingest pipeline (and its delete-job producer) land in the sync
-    # chunk; until then removal only drops the DDB row.
-    logger.info(
-        "[chunk-03 TODO] would enqueue GitLab S3 cleanup for %s/%s",
-        workspace_id, slug,
-    )
+    # Purge the sync-written blobs under gitlab/{slug}/ (+ their vectors)
+    # via the shared delete worker before dropping the DDB row.
+    _queue_delete_job(workspace_id, slug)
     dual_write.ddb_delete_item(
         WORKSPACES_TABLE,
         {"PK": f"WS#{workspace_id}", "SK": f"GITLAB_REPO#{slug}"},
@@ -819,12 +909,8 @@ def handle_disconnect(event: Dict) -> Dict:
     for repo in _list_workspace_repos(workspace_id):
         if repo.get("connection_id") != connection_id:
             continue
-        # TODO(chunk-03): enqueue S3-mirror prefix cleanup per repo (ADO calls
-        # ``_queue_delete_job``). Wired when the GitLab sync pipeline lands.
-        logger.info(
-            "[chunk-03 TODO] would enqueue GitLab S3 cleanup for %s/%s",
-            workspace_id, repo["slug"],
-        )
+        # Purge each repo's S3-mirror prefix before dropping its DDB row.
+        _queue_delete_job(workspace_id, repo["slug"])
         dual_write.ddb_delete_item(
             WORKSPACES_TABLE,
             {"PK": f"WS#{workspace_id}", "SK": f"GITLAB_REPO#{repo['slug']}"},
@@ -924,6 +1010,15 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
                     except RegionPassiveError:
                         return passive_response("gitlab_add_repos")
                     return handle_add_repos(event)
+
+            # /workspaces/{id}/gitlab/sync -- manual sync trigger (UI button)
+            if len(parts) == 4 and parts[3] == "sync" and http_method == "POST":
+                event["pathParameters"] = {"id": workspace_id}
+                try:
+                    guard_active("gitlab_trigger_sync", workspace_id=workspace_id)
+                except RegionPassiveError:
+                    return passive_response("gitlab_trigger_sync")
+                return handle_trigger_sync(event)
 
             # /workspaces/{id}/gitlab/repos/{slug...}
             # ``slug`` is group/.../project and contains AT LEAST one slash

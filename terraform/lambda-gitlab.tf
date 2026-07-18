@@ -118,6 +118,11 @@ module "gitlab_integration_lambda" {
       GITLAB_CLIENT_SECRET_SSM_PARAM = local.gitlab_secret_ssm_path
       GITLAB_REDIRECT_URI            = local.gitlab_redirect_uri
 
+      # chunk-03: the handler enqueues the initial sync job on add-repos
+      # and S3-mirror prefix cleanup on delete-repo / disconnect.
+      GITLAB_SYNC_QUEUE = aws_sqs_queue.gitlab_sync[0].url
+      DELETE_QUEUE      = aws_sqs_queue.delete_queue[0].url
+
       AUDIT_TABLE = module.audit_logs_table.dynamodb_table_id
     },
     local.outcomeops_license_env,
@@ -152,6 +157,19 @@ module "gitlab_integration_lambda" {
         ]
         resources = [
           "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${local.gitlab_secret_ssm_path}",
+        ]
+      }
+
+      # chunk-03: enqueue the initial sync job (gitlab sync queue) + the
+      # S3-mirror prefix cleanup (shared delete queue) from the handler.
+      sqs_send = {
+        effect = "Allow"
+        actions = [
+          "sqs:SendMessage"
+        ]
+        resources = [
+          aws_sqs_queue.gitlab_sync[0].arn,
+          aws_sqs_queue.delete_queue[0].arn
         ]
       }
 
@@ -244,4 +262,348 @@ output "gitlab_integration_lambda_arn" {
 output "gitlab_integration_url" {
   description = "Lambda Function URL for GitLab integration"
   value       = try(aws_lambda_function_url.gitlab_integration[0].function_url, null)
+}
+
+# ============================================================================
+# SQS queue + DLQ for GitLab sync jobs (ADR-050, chunk-03).
+# The integration Lambda writes to this queue on add-repos; the scheduler
+# fans out hourly sync jobs; the sync worker consumes it.
+# ============================================================================
+
+resource "aws_sqs_queue" "gitlab_sync" {
+  count = var.enable_workspaces && var.enable_gitlab_integration ? 1 : 0
+
+  name                       = "${var.environment}-${var.app_name}-gitlab-sync"
+  visibility_timeout_seconds = 900   # 15 minutes for long-running syncs
+  message_retention_seconds  = 86400 # 1 day
+  receive_wait_time_seconds  = 20    # Long polling
+
+  redrive_policy = jsonencode({
+    deadLetterTargetArn = aws_sqs_queue.gitlab_sync_dlq[0].arn
+    maxReceiveCount     = 3
+  })
+
+  sqs_managed_sse_enabled = var.enable_cmk_encryption ? null : true
+  kms_master_key_id       = local.data_cmk_arn
+
+  tags = {
+    Purpose = "gitlab-sync-queue"
+  }
+}
+
+resource "aws_sqs_queue" "gitlab_sync_dlq" {
+  count = var.enable_workspaces && var.enable_gitlab_integration ? 1 : 0
+
+  name                      = "${var.environment}-${var.app_name}-gitlab-sync-dlq"
+  message_retention_seconds = 1209600 # 14 days
+
+  sqs_managed_sse_enabled = var.enable_cmk_encryption ? null : true
+  kms_master_key_id       = local.data_cmk_arn
+
+  tags = {
+    Purpose = "gitlab-sync-dlq"
+  }
+}
+
+output "gitlab_sync_queue_url" {
+  description = "SQS queue URL for GitLab sync jobs"
+  value       = try(aws_sqs_queue.gitlab_sync[0].url, null)
+}
+
+output "gitlab_sync_queue_arn" {
+  description = "SQS queue ARN for GitLab sync jobs"
+  value       = try(aws_sqs_queue.gitlab_sync[0].arn, null)
+}
+
+# ============================================================================
+# GitLab Sync Scheduler Lambda (ADR-050, chunk-03)
+# Runs hourly via EventBridge to fan out sync jobs for every enabled
+# GITLAB_REPO# row. Honors is_active_region() so the secondary-region copy
+# returns immediately when passive.
+# ============================================================================
+
+module "gitlab_scheduler_lambda" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "8.1.2"
+
+  count = var.enable_workspaces && var.enable_gitlab_integration ? 1 : 0
+
+  function_name = "${var.environment}-${var.app_name}-gitlab-scheduler"
+  description   = "Hourly scheduler for GitLab sync jobs"
+  handler       = "handler.lambda_handler"
+  runtime       = "python3.12"
+  timeout       = 60
+  memory_size   = 256
+
+  source_path = [
+    {
+      path             = "${path.module}/../lambda/gitlab-scheduler"
+      pip_requirements = false
+      patterns = [
+        "!tests/.*",
+        "!__pycache__/.*",
+        "!\\.venv/.*",
+        "!.*\\.pyc",
+      ]
+    },
+    {
+      path          = "${path.module}/../lambda/shared"
+      prefix_in_zip = "shared"
+    },
+  ]
+
+  cloudwatch_logs_retention_in_days = 7
+  cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs.arn
+  quiet_archive_local_exec          = true
+
+  environment_variables = merge({
+    ENV               = var.environment
+    APP_NAME          = var.app_name
+    WORKSPACES_TABLE  = module.workspaces_table[0].dynamodb_table_id
+    GITLAB_SYNC_QUEUE = aws_sqs_queue.gitlab_sync[0].url
+    },
+    local.ha_scheduler_env,
+  )
+
+  attach_policy_statements = true
+  policy_statements = merge({
+    # The scheduler scans WORKSPACES_TABLE for GITLAB_REPO# rows.
+    # Scan is paginated in the handler per feedback_enterprise_scale_pagination.
+    dynamodb = {
+      effect    = "Allow"
+      actions   = ["dynamodb:Scan"]
+      resources = [module.workspaces_table[0].dynamodb_table_arn]
+    }
+
+    sqs_send = {
+      effect    = "Allow"
+      actions   = ["sqs:SendMessage"]
+      resources = [aws_sqs_queue.gitlab_sync[0].arn]
+    }
+    },
+    local.ha_scheduler_iam,
+  )
+
+  tags = {
+    Purpose = "gitlab-scheduler"
+  }
+}
+
+resource "aws_cloudwatch_event_rule" "gitlab_hourly_sync" {
+  count = var.enable_workspaces && var.enable_gitlab_integration ? 1 : 0
+
+  name                = "${var.environment}-${var.app_name}-gitlab-hourly-sync"
+  description         = "Trigger GitLab sync scheduler every hour"
+  schedule_expression = "rate(1 hour)"
+
+  tags = {
+    Purpose = "gitlab-scheduler"
+  }
+}
+
+resource "aws_cloudwatch_event_target" "gitlab_scheduler" {
+  count = var.enable_workspaces && var.enable_gitlab_integration ? 1 : 0
+
+  rule      = aws_cloudwatch_event_rule.gitlab_hourly_sync[0].name
+  target_id = "gitlab-scheduler"
+  arn       = module.gitlab_scheduler_lambda[0].lambda_function_arn
+}
+
+resource "aws_lambda_permission" "gitlab_scheduler_eventbridge" {
+  count = var.enable_workspaces && var.enable_gitlab_integration ? 1 : 0
+
+  statement_id  = "AllowEventBridgeInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = module.gitlab_scheduler_lambda[0].lambda_function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.gitlab_hourly_sync[0].arn
+}
+
+# ============================================================================
+# GitLab Sync Worker Lambda (ADR-050, chunk-03)
+# SQS-triggered. Pulls source content from GitLab, mirrors it to S3, and
+# enqueues one repo-summaries message so the code-map + symbol-graph
+# pipeline runs for GitLab too.
+# ============================================================================
+
+module "gitlab_sync_lambda" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "8.1.2"
+
+  count = var.enable_workspaces && var.enable_gitlab_integration ? 1 : 0
+
+  function_name = "${var.environment}-${var.app_name}-gitlab-sync"
+  description   = "Pulls GitLab repo content + fans out to downstream KB workers"
+  handler       = "handler.lambda_handler"
+  runtime       = "python3.12"
+  timeout       = 900 # 15 minutes for large monorepos
+  memory_size   = 1024
+
+  source_path = [
+    {
+      path             = "${path.module}/../lambda/gitlab-sync"
+      pip_requirements = true
+      patterns = [
+        "!tests/.*",
+        "!__pycache__/.*",
+        "!\\.venv/.*",
+        "!requirements-dev\\.txt",
+        "!.*\\.pyc",
+        "!\\.pytest_cache/.*",
+      ]
+    },
+    {
+      path          = "${path.module}/../lambda/shared"
+      prefix_in_zip = "shared"
+    }
+  ]
+
+  cloudwatch_logs_retention_in_days = 7
+  cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs.arn
+  quiet_archive_local_exec          = true
+
+  layers = [
+    var.outcomeops_license_layer_arn,
+  ]
+
+  environment_variables = merge(
+    {
+      ENV               = var.environment
+      APP_NAME          = var.app_name
+      WORKSPACES_TABLE  = module.workspaces_table[0].dynamodb_table_id
+      OAUTH_KMS_KEY_ARN = aws_kms_key.oauth_tokens[0].arn
+
+      GITLAB_BASE_URL                = var.gitlab_base_url
+      GITLAB_CLIENT_ID               = var.gitlab_client_id
+      GITLAB_CLIENT_SECRET_SSM_PARAM = local.gitlab_secret_ssm_path
+
+      # chunk-03: sync worker writes files DIRECTLY to S3 (not via
+      # file-ingestion / repo-summaries) so we don't contaminate the
+      # github-shaped consumers + their DLQs. process-documents is
+      # S3-triggered + source-agnostic, so KB chat search picks up
+      # the uploaded files automatically.
+      KB_BUCKET         = module.knowledge_base_bucket.s3_bucket_id
+      GITLAB_SYNC_QUEUE = aws_sqs_queue.gitlab_sync[0].url
+      # After the per-file S3 upload finishes the sync worker enqueues
+      # ONE repo-summaries message so the existing code-map +
+      # symbol-graph pipeline (process-repo-summary + process-batch-
+      # summary) runs for GitLab too. Downstream consumers route the
+      # file-content fetch to the S3 mirror via shared.source_fetch.
+      REPO_SUMMARIES_QUEUE = module.repo_summaries_queue.queue_url
+      AUDIT_TABLE          = module.audit_logs_table.dynamodb_table_id
+    },
+    local.outcomeops_license_env,
+    local.ha_writer_env,
+  )
+
+  attach_policy_statements = true
+  policy_statements = merge(
+    {
+      dynamodb = {
+        effect = "Allow"
+        actions = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:Query",
+        ]
+        resources = [
+          module.workspaces_table[0].dynamodb_table_arn,
+          "${module.workspaces_table[0].dynamodb_table_arn}/index/*",
+        ]
+      }
+
+      # SSM for the client secret (read by shared.oauth.gitlab during token
+      # refresh). Scope to the exact derived (or overridden) parameter name.
+      ssm_secret = {
+        effect  = "Allow"
+        actions = ["ssm:GetParameter"]
+        resources = [
+          "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${local.gitlab_secret_ssm_path}",
+        ]
+      }
+
+      kms_oauth = {
+        effect    = "Allow"
+        actions   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
+        resources = [aws_kms_key.oauth_tokens[0].arn]
+      }
+
+      kms_ssm = {
+        effect    = "Allow"
+        actions   = ["kms:Decrypt"]
+        resources = ["arn:aws:kms:${var.aws_region}:${data.aws_caller_identity.current.account_id}:alias/aws/ssm"]
+      }
+
+      sqs_receive = {
+        effect    = "Allow"
+        actions   = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"]
+        resources = [aws_sqs_queue.gitlab_sync[0].arn]
+      }
+
+      # Write blobs directly to the KB bucket. process-documents is
+      # S3-triggered + source-agnostic so chat retrieval picks up GitLab
+      # files without a downstream Lambda refactor.
+      s3_kb_write = {
+        effect    = "Allow"
+        actions   = ["s3:PutObject", "s3:PutObjectAcl"]
+        resources = ["${module.knowledge_base_bucket.s3_bucket_arn}/*"]
+      }
+
+      # Enqueue one repo-summaries job per sync so the code-map +
+      # symbol-graph pipeline fans into the same queue github-sync uses.
+      sqs_send_repo_summaries = {
+        effect    = "Allow"
+        actions   = ["sqs:SendMessage"]
+        resources = [module.repo_summaries_queue.queue_arn]
+      }
+
+      dynamodb_audit = {
+        effect    = "Allow"
+        actions   = ["dynamodb:PutItem"]
+        resources = [module.audit_logs_table.dynamodb_table_arn]
+      }
+    },
+    local.outcomeops_license_iam,
+    local.ha_writer_events_iam,
+  )
+
+  tags = {
+    Purpose = "gitlab-sync"
+  }
+}
+
+resource "aws_lambda_event_source_mapping" "gitlab_sync" {
+  count = var.enable_workspaces && var.enable_gitlab_integration ? 1 : 0
+
+  event_source_arn = aws_sqs_queue.gitlab_sync[0].arn
+  function_name    = module.gitlab_sync_lambda[0].lambda_function_name
+
+  batch_size                         = 1
+  maximum_batching_window_in_seconds = 0
+  function_response_types            = ["ReportBatchItemFailures"]
+
+  scaling_config {
+    maximum_concurrency = 5
+  }
+}
+
+output "gitlab_sync_lambda_name" {
+  description = "Name of the GitLab sync Lambda function"
+  value       = try(module.gitlab_sync_lambda[0].lambda_function_name, null)
+}
+
+output "gitlab_sync_lambda_arn" {
+  description = "ARN of the GitLab sync Lambda function"
+  value       = try(module.gitlab_sync_lambda[0].lambda_function_arn, null)
+}
+
+output "gitlab_scheduler_lambda_name" {
+  description = "Name of the GitLab scheduler Lambda function"
+  value       = try(module.gitlab_scheduler_lambda[0].lambda_function_name, null)
+}
+
+output "gitlab_scheduler_lambda_arn" {
+  description = "ARN of the GitLab scheduler Lambda function"
+  value       = try(module.gitlab_scheduler_lambda[0].lambda_function_arn, null)
 }

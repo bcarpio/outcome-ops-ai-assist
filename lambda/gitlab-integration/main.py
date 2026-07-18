@@ -146,6 +146,18 @@ async def add_repos(workspace_id: str, request: Request):
     return _parse_response(lambda_handler(event, None))
 
 
+@app.post("/workspaces/{workspace_id}/gitlab/sync")
+async def trigger_sync(workspace_id: str, request: Request):
+    from handler import lambda_handler
+    body = await request.body()
+    event = _build_event(
+        request, "POST",
+        f"/workspaces/{workspace_id}/gitlab/sync",
+        body.decode("utf-8"),
+    )
+    return _parse_response(lambda_handler(event, None))
+
+
 @app.get("/workspaces/{workspace_id}/gitlab/repos")
 async def list_repos(workspace_id: str, request: Request):
     from handler import lambda_handler
