@@ -40,6 +40,18 @@ def _one_page(items):
 
 
 class TestListing:
+    def test_list_groups_uses_reporter_floor(self):
+        captured = {}
+
+        def stub(access_token, path, params=None):
+            captured["params"] = params
+            return [{"id": 1, "full_path": "g", "name": "g"}]
+        with patch.object(gitlab_api, "_get_paginated", stub):
+            out = gitlab_api.list_groups("at")
+        # Reporter (20), not Developer (30) -- read-only integration floor
+        assert captured["params"]["min_access_level"] == 20
+        assert out == [{"id": 1, "full_path": "g", "name": "g"}]
+
     def test_list_group_projects_uses_path_with_namespace_as_slug(self):
         projects = [
             {"id": 1, "path_with_namespace": "grp/sub/proj", "name": "proj",

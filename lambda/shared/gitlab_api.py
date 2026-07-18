@@ -72,12 +72,18 @@ def _get_paginated(access_token: str, path: str,
 
 
 def list_groups(access_token: str) -> List[Dict]:
-    """Groups the user belongs to (min developer access, top-level + subgroups)."""
+    """Groups the user belongs to with at least REPORTER access.
+
+    min_access_level=20 (Reporter) is the correct floor for a read-only
+    integration: Reporter can read a project's code, so a Reporter-access group
+    is enrollable. A higher floor (e.g. Developer=30) would wrongly hide groups
+    a user can legitimately read + ingest.
+    """
     return [
         {"id": g["id"], "full_path": g["full_path"], "name": g["name"]}
         for g in _get_paginated(
             access_token, "/groups",
-            {"min_access_level": 30, "all_available": "false"})
+            {"min_access_level": 20, "all_available": "false"})
     ]
 
 
