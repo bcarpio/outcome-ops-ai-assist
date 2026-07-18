@@ -2858,6 +2858,214 @@ export async function disconnectAzureDevOps(workspaceId: string, connectionId: s
 }
 
 // ============================================================================
+// GitLab Integration (ADR-050)
+// ============================================================================
+//
+// Mirrors the Azure DevOps client above, one hierarchy level shallower:
+// GitLab is connection -> group -> project, and the *project* IS the
+// enrollable repo (no ADO-style third "repos under a project" hop). The
+// enrollable identifier (``slug``) is the GitLab full ``path_with_namespace``
+// (e.g. ``group/subgroup/project``) and can carry more than two segments
+// because GitLab supports nested subgroups.
+
+export interface GitLabConnection {
+  connection_id: string
+  display_name: string
+  gitlab_username: string
+  base_url: string
+  created_at: string
+}
+
+export interface GitLabGroup {
+  id: number
+  full_path: string
+  name: string
+}
+
+// A GitLab project returned by the group-projects picker. The project IS the
+// enrollable repo -- its ``slug`` (path_with_namespace) is what gets added.
+export interface GitLabProject {
+  id: number
+  slug: string
+  name: string
+  default_branch: string | null
+  already_added: boolean
+}
+
+export type GitLabRepoType = 'application' | 'standards' | 'infrastructure'
+
+export interface GitLabRepo {
+  slug: string
+  group: string
+  project: string
+  connection_id: string
+  default_branch: string | null
+  enabled: boolean
+  include_code_maps: boolean
+  repo_type: GitLabRepoType
+  last_sync_at: string | null
+  last_sync_status: string
+  last_sync_error: string | null
+  added_at: string
+  added_by: string
+}
+
+/** Get the GitLab OAuth authorize URL for connecting GitLab to a workspace. */
+export async function getGitLabAuthUrl(workspaceId: string): Promise<string> {
+  const response = await fetch(
+    `${API_BASE}/gitlab/authorize?workspace_id=${encodeURIComponent(workspaceId)}`,
+  )
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to get GitLab auth URL: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return data?.auth_url as string
+}
+
+/** List GitLab connections for a workspace. */
+export async function listGitLabConnections(workspaceId: string): Promise<GitLabConnection[]> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/gitlab/connections`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to list GitLab connections: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return (data?.connections as GitLabConnection[]) || []
+}
+
+/** List GitLab groups visible to a connection. */
+export async function listGitLabGroups(
+  workspaceId: string,
+  connectionId: string,
+): Promise<GitLabGroup[]> {
+  const response = await fetch(
+    `${API_BASE}/workspaces/${workspaceId}/gitlab/connections/${encodeURIComponent(connectionId)}/groups`,
+  )
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to list GitLab groups: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return (data?.groups as GitLabGroup[]) || []
+}
+
+/** List GitLab projects (enrollable repos) inside a group, with already-added flag. */
+export async function listGitLabProjects(
+  workspaceId: string,
+  connectionId: string,
+  groupId: string | number,
+): Promise<GitLabProject[]> {
+  const response = await fetch(
+    `${API_BASE}/workspaces/${workspaceId}/gitlab/connections/${encodeURIComponent(connectionId)}/groups/${encodeURIComponent(String(groupId))}/projects`,
+  )
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to list GitLab projects: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return (data?.projects as GitLabProject[]) || []
+}
+
+/** List GitLab repos already in the workspace. */
+export async function listGitLabRepos(workspaceId: string): Promise<GitLabRepo[]> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/gitlab/repos`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to list GitLab repos: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return (data?.repos as GitLabRepo[]) || []
+}
+
+/** Add GitLab repos (projects) to a workspace. */
+export async function addGitLabRepos(
+  workspaceId: string,
+  connectionId: string,
+  repos: {
+    // The GitLab full project path (path_with_namespace), e.g.
+    // ``group/subgroup/project``. This is the enrollable identifier.
+    slug: string
+    include_code_maps?: boolean
+    repo_type?: GitLabRepoType
+    // Optional override for the repo's default branch. If omitted, the
+    // backend resolves via the GitLab API on add.
+    default_branch?: string
+  }[],
+): Promise<GitLabRepo[]> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/gitlab/repos`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ connection_id: connectionId, repos }),
+  })
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to add GitLab repos: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return (data?.repos as GitLabRepo[]) || []
+}
+
+/** Update a GitLab repo's settings. */
+export async function updateGitLabRepo(
+  workspaceId: string,
+  slug: string,
+  updates: { enabled?: boolean; include_code_maps?: boolean; default_branch?: string },
+): Promise<GitLabRepo> {
+  const response = await fetch(
+    `${API_BASE}/workspaces/${workspaceId}/gitlab/repos/${encodeURIComponent(slug)}`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updates),
+    },
+  )
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to update GitLab repo: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return data?.repo as GitLabRepo
+}
+
+/** Remove a GitLab repo from a workspace. */
+export async function removeGitLabRepo(workspaceId: string, slug: string): Promise<void> {
+  const response = await fetch(
+    `${API_BASE}/workspaces/${workspaceId}/gitlab/repos/${encodeURIComponent(slug)}`,
+    { method: 'DELETE' },
+  )
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to remove GitLab repo: ${response.status}`)
+  }
+}
+
+/** Trigger a GitLab sync (all repos, or a specific slug). */
+export async function triggerGitLabSync(workspaceId: string, slug?: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/gitlab/sync`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(slug ? { slug } : {}),
+  })
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to trigger GitLab sync: ${response.status}`)
+  }
+}
+
+/** Disconnect GitLab (cascade-removes connection + tokens + tied repos). */
+export async function disconnectGitLab(workspaceId: string, connectionId: string): Promise<void> {
+  const response = await fetch(
+    `${API_BASE}/workspaces/${workspaceId}/gitlab/connections/${encodeURIComponent(connectionId)}`,
+    { method: 'DELETE' },
+  )
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to disconnect GitLab: ${response.status}`)
+  }
+}
+
+// ============================================================================
 // MCP Server Management
 // ============================================================================
 
@@ -3289,6 +3497,7 @@ export async function getWorkspacePrivacy(
 export type EnabledIntegrations = {
   azure_devops: boolean
   azure_devops_boards: boolean
+  gitlab: boolean
   github: boolean
   github_issues: boolean
   confluence: boolean

@@ -78,6 +78,16 @@ vi.mock('../../../src/lib/api', () => ({
   removeAzureDevOpsRepo: vi.fn(),
   triggerAzureDevOpsSync: vi.fn(),
   disconnectAzureDevOps: vi.fn(),
+  getGitLabAuthUrl: vi.fn(),
+  listGitLabConnections: vi.fn(),
+  listGitLabGroups: vi.fn(),
+  listGitLabProjects: vi.fn(),
+  listGitLabRepos: vi.fn(),
+  addGitLabRepos: vi.fn(),
+  updateGitLabRepo: vi.fn(),
+  removeGitLabRepo: vi.fn(),
+  triggerGitLabSync: vi.fn(),
+  disconnectGitLab: vi.fn(),
   listTeamsConnections: vi.fn(),
   getTeamsAuthUrl: vi.fn(),
   listTeamsTeams: vi.fn(),
@@ -260,6 +270,9 @@ function setupDefaultMocks() {
   mockGetEnabledIntegrations.mockResolvedValue({
     azure_devops: true,
     azure_devops_boards: true,
+    // GitLab card off by default so its "Connect GitLab" button doesn't
+    // add another match to tests that grep for /connect/i.
+    gitlab: false,
     github: true,
     github_issues: true,
     confluence: true,
@@ -2348,6 +2361,7 @@ describe('WorkspaceSettings', () => {
         onenote: false,
         database: false,
         servicenow: true,
+        gitlab: false,
       })
     })
 
@@ -2409,6 +2423,7 @@ describe('WorkspaceSettings', () => {
         database: false,
         servicenow: false,
         salesforce: true,
+        gitlab: false,
       })
     })
 

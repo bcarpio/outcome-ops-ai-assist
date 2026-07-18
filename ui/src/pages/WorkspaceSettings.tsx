@@ -140,6 +140,15 @@ import {
   removeAzureDevOpsRepo,
   updateAzureDevOpsRepo,
   listAzureDevOpsRepoBranches,
+  getGitLabAuthUrl,
+  listGitLabConnections,
+  listGitLabGroups,
+  listGitLabProjects,
+  listGitLabRepos,
+  addGitLabRepos,
+  triggerGitLabSync,
+  disconnectGitLab,
+  removeGitLabRepo,
   type RepoBranchesResponse,
   type AzureDevOpsConnection,
   type AzureDevOpsOrg,
@@ -147,6 +156,11 @@ import {
   type AzureDevOpsAvailableRepo,
   type AzureDevOpsRepo,
   type AzureDevOpsRepoType,
+  type GitLabConnection,
+  type GitLabGroup,
+  type GitLabProject,
+  type GitLabRepo,
+  type GitLabRepoType,
   type Workspace,
   type WorkspaceMember,
   type GroupBinding,
@@ -236,6 +250,7 @@ export default function WorkspaceSettings() {
   >({
     azure_devops: true,
     azure_devops_boards: true,
+    gitlab: true,
     github: true,
     github_issues: true,
     confluence: true,
@@ -509,6 +524,31 @@ export default function WorkspaceSettings() {
   // dropdown selection).
   const [azureDevOpsBranchOverrides, setAzureDevOpsBranchOverrides] = useState<Record<string, string>>({})
 
+  // GitLab integration state (ADR-050). Mirrors ADO but one level
+  // shallower: connection -> group -> project, where the project IS the
+  // enrollable repo. No org->project->repo third hop.
+  const [gitlabConnections, setGitlabConnections] = useState<GitLabConnection[]>([])
+  const [gitlabRepos, setGitlabRepos] = useState<GitLabRepo[]>([])
+  const [loadingGitlab, setLoadingGitlab] = useState(false)
+  const [connectingGitlab, setConnectingGitlab] = useState(false)
+  const [disconnectingGitlab, setDisconnectingGitlab] = useState<string | null>(null)
+  const [syncingGitlab, setSyncingGitlab] = useState<string | null>(null)
+  const [removingGitlabRepo, setRemovingGitlabRepo] = useState<string | null>(null)
+  // Repo picker modal (connection -> group -> project). Dedicated picker
+  // state so it never collides with the shared ADO picker state.
+  const [showAddGitlabRepo, setShowAddGitlabRepo] = useState(false)
+  const [gitlabPickerConnectionId, setGitlabPickerConnectionId] = useState<string | null>(null)
+  const [gitlabGroups, setGitlabGroups] = useState<GitLabGroup[]>([])
+  const [gitlabPickerGroup, setGitlabPickerGroup] = useState<string>('')
+  const [gitlabAvailableProjects, setGitlabAvailableProjects] = useState<GitLabProject[]>([])
+  const [loadingGitlabGroups, setLoadingGitlabGroups] = useState(false)
+  const [loadingGitlabProjects, setLoadingGitlabProjects] = useState(false)
+  const [addingGitlabRepo, setAddingGitlabRepo] = useState<string | null>(null)
+  const [selectedGitlabRepoType, setSelectedGitlabRepoType] = useState<GitLabRepoType>('application')
+  // Per-row branch override for the GitLab add-repo picker; keyed by the
+  // project slug (unique within a group).
+  const [gitlabBranchOverrides, setGitlabBranchOverrides] = useState<Record<string, string>>({})
+
   // Sharing tab state
   const [, setSharingAccess] = useState<WorkspaceSearchAccess[]>([])
   const [sharingOptions, setSharingOptions] = useState<WorkspaceSearchAccess[]>([])
@@ -553,6 +593,7 @@ export default function WorkspaceSettings() {
       loadConnections()
       loadGitHubData()
       loadAzureDevOpsData()
+      loadGitLabData()
     } else if (workspaceId && activeTab === 'sharing') {
       loadSharing()
     } else if (workspaceId && activeTab === 'documents') {
@@ -910,6 +951,166 @@ export default function WorkspaceSettings() {
     setAzureDevOpsOrgs([])
     setAzureDevOpsProjects([])
     setAzureDevOpsAvailableRepos([])
+  }
+
+  // ------------------------------------------------------------------
+  // GitLab handlers (ADR-050). Mirror the ADO handlers above, one level
+  // shallower: the picker cascades connection -> group -> project, and the
+  // project IS the enrollable repo (no third org/project/repo hop).
+  // ------------------------------------------------------------------
+  async function loadGitLabData() {
+    if (!workspaceId) return
+    setLoadingGitlab(true)
+    try {
+      const [connections, repos] = await Promise.all([
+        listGitLabConnections(workspaceId).catch(() => []),
+        listGitLabRepos(workspaceId).catch(() => []),
+      ])
+      setGitlabConnections(connections)
+      setGitlabRepos(repos)
+    } catch (err) {
+      console.error('Failed to load GitLab data:', err)
+    } finally {
+      setLoadingGitlab(false)
+    }
+  }
+
+  async function handleConnectGitLab() {
+    if (!workspaceId) return
+    setConnectingGitlab(true)
+    try {
+      const authUrl = await getGitLabAuthUrl(workspaceId)
+      // Redirect the browser to GitLab's consent screen. The callback
+      // writes the connection row + tokens then redirects back to
+      // /workspaces/{id}/settings?tab=integrations.
+      window.location.href = authUrl
+    } catch (err) {
+      console.error('Failed to start GitLab connect:', err)
+      setConnectingGitlab(false)
+    }
+  }
+
+  async function handleDisconnectGitLab(connectionId: string) {
+    if (!workspaceId) return
+    if (!window.confirm(
+      'Disconnect GitLab? Every repo added through this connection will be ' +
+      'removed from the workspace and its indexed content will be deleted from the ' +
+      'knowledge base. This cannot be undone.'
+    )) return
+    setDisconnectingGitlab(connectionId)
+    try {
+      await disconnectGitLab(workspaceId, connectionId)
+      await loadGitLabData()
+    } catch (err) {
+      console.error('Failed to disconnect GitLab:', err)
+    } finally {
+      setDisconnectingGitlab(null)
+    }
+  }
+
+  async function handleSyncGitLab(slug?: string) {
+    if (!workspaceId) return
+    setSyncingGitlab(slug || 'all')
+    try {
+      await triggerGitLabSync(workspaceId, slug)
+      await loadGitLabData()
+    } catch (err) {
+      console.error('Failed to trigger GitLab sync:', err)
+    } finally {
+      setSyncingGitlab(null)
+    }
+  }
+
+  async function handleRemoveGitLabRepo(slug: string) {
+    if (!workspaceId) return
+    if (!window.confirm(`Remove ${slug} from this workspace? Indexed content will be deleted.`)) return
+    setRemovingGitlabRepo(slug)
+    try {
+      await removeGitLabRepo(workspaceId, slug)
+      await loadGitLabData()
+    } catch (err) {
+      console.error('Failed to remove GitLab repo:', err)
+    } finally {
+      setRemovingGitlabRepo(null)
+    }
+  }
+
+  // Repo picker: cascade group -> project (project is the enrollable repo).
+  async function openGitLabRepoPicker(connectionId: string) {
+    if (!workspaceId) return
+    setGitlabPickerConnectionId(connectionId)
+    setShowAddGitlabRepo(true)
+    setGitlabPickerGroup('')
+    setGitlabAvailableProjects([])
+    setLoadingGitlabGroups(true)
+    try {
+      const groups = await listGitLabGroups(workspaceId, connectionId)
+      setGitlabGroups(groups)
+    } catch (err) {
+      console.error('Failed to load GitLab groups:', err)
+      setError(err instanceof Error ? err.message : 'Failed to load groups')
+    } finally {
+      setLoadingGitlabGroups(false)
+    }
+  }
+
+  async function onSelectGitLabGroup(groupId: string) {
+    if (!workspaceId || !gitlabPickerConnectionId) return
+    setGitlabPickerGroup(groupId)
+    if (!groupId) {
+      setGitlabAvailableProjects([])
+      return
+    }
+    setLoadingGitlabProjects(true)
+    try {
+      const projects = await listGitLabProjects(workspaceId, gitlabPickerConnectionId, groupId)
+      setGitlabAvailableProjects(projects)
+    } catch (err) {
+      console.error('Failed to load GitLab projects:', err)
+      setError(err instanceof Error ? err.message : 'Failed to load projects')
+    } finally {
+      setLoadingGitlabProjects(false)
+    }
+  }
+
+  async function handleAddGitLabRepo(slug: string) {
+    if (!workspaceId || !gitlabPickerConnectionId) return
+    setAddingGitlabRepo(slug)
+    setError(null)
+    const overrideRaw = gitlabBranchOverrides[slug]
+    const branchOverride = overrideRaw && overrideRaw.trim() ? overrideRaw.trim() : undefined
+    try {
+      await addGitLabRepos(workspaceId, gitlabPickerConnectionId, [{
+        slug,
+        include_code_maps: true,
+        repo_type: selectedGitlabRepoType,
+        default_branch: branchOverride,
+      }])
+      // Optimistically flip the already_added flag so the button disables
+      // without a round-trip.
+      setGitlabAvailableProjects(prev =>
+        prev.map(p => p.slug === slug ? { ...p, already_added: true } : p),
+      )
+      setGitlabBranchOverrides(prev => {
+        const next = { ...prev }
+        delete next[slug]
+        return next
+      })
+      await loadGitLabData()
+      setSuccess(`Added ${slug}`)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to add repo')
+    } finally {
+      setAddingGitlabRepo(null)
+    }
+  }
+
+  function closeGitLabRepoPicker() {
+    setShowAddGitlabRepo(false)
+    setGitlabPickerConnectionId(null)
+    setGitlabPickerGroup('')
+    setGitlabGroups([])
+    setGitlabAvailableProjects([])
   }
 
   // Legacy loadRepos function removed - now using GitHub App integration
@@ -3463,6 +3664,147 @@ export default function WorkspaceSettings() {
                                 className="flex items-center gap-1 px-2 py-1 text-sm text-red-600 hover:bg-red-50 rounded transition-colors disabled:opacity-50"
                               >
                                 {removingAzureDevOpsRepo === repo.slug ? (
+                                  <Loader2 size={14} className="animate-spin" />
+                                ) : (
+                                  <Trash2 size={14} />
+                                )}
+                              </MutationButton>
+                            </div>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
+            </div>
+            )}
+
+            {/* GitLab Section (ADR-050) */}
+            {enabledIntegrations.gitlab && (
+            <div className="bg-white rounded-lg border shadow-sm">
+              <div className="p-4 border-b flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <GitBranch className="text-orange-600" size={24} />
+                  <div>
+                    <h3 className="font-medium">GitLab</h3>
+                    <p className="text-sm text-gray-500">Connect GitLab to sync repositories for chat search</p>
+                  </div>
+                </div>
+                {isAdmin && gitlabConnections.length === 0 && (
+                  <MutationButton
+                    onClick={handleConnectGitLab}
+                    disabled={connectingGitlab}
+                    className="flex items-center gap-2 px-3 py-1.5 text-sm bg-gray-900 text-white rounded-lg hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  >
+                    {connectingGitlab ? (
+                      <Loader2 size={16} className="animate-spin" />
+                    ) : (
+                      <Plus size={16} />
+                    )}
+                    Connect GitLab
+                  </MutationButton>
+                )}
+              </div>
+              {loadingGitlab ? (
+                <div className="p-8 flex items-center justify-center">
+                  <Loader2 className="animate-spin text-gray-400" size={24} />
+                </div>
+              ) : gitlabConnections.length === 0 ? (
+                <div className="p-8 text-center text-gray-500">
+                  <GitBranch className="mx-auto text-gray-300 mb-2" size={48} />
+                  <p>No GitLab connection</p>
+                  <p className="text-sm mt-1">Connect your GitLab account to sync repositories</p>
+                </div>
+              ) : (
+                <div>
+                  {gitlabConnections.map(conn => (
+                    <div key={conn.connection_id} className="border-b last:border-b-0">
+                      <div className="p-4 bg-gray-50 flex items-center justify-between">
+                        <div className="flex items-center gap-3">
+                          <GitBranch className="text-gray-600" size={20} />
+                          <div>
+                            <p className="font-medium text-gray-900">{conn.display_name}</p>
+                            <p className="text-sm text-gray-500">{conn.gitlab_username}</p>
+                          </div>
+                        </div>
+                        {isAdmin && (
+                          <div className="flex items-center gap-2">
+                            <MutationButton
+                              onClick={() => openGitLabRepoPicker(conn.connection_id)}
+                              className="flex items-center gap-2 px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                            >
+                              <Plus size={16} />
+                              Add Repos
+                            </MutationButton>
+                            <MutationButton
+                              onClick={() => handleDisconnectGitLab(conn.connection_id)}
+                              disabled={disconnectingGitlab === conn.connection_id}
+                              className="flex items-center gap-2 px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-50"
+                            >
+                              {disconnectingGitlab === conn.connection_id ? (
+                                <Loader2 size={16} className="animate-spin" />
+                              ) : (
+                                <Trash2 size={16} />
+                              )}
+                              Disconnect
+                            </MutationButton>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+
+                  {gitlabRepos.length === 0 ? (
+                    <div className="p-8 text-center text-gray-500">
+                      <p>No repositories added yet</p>
+                      <p className="text-sm mt-1">Click <strong>Add Repos</strong> above to pick from your GitLab groups and projects.</p>
+                    </div>
+                  ) : (
+                    <ul className="divide-y">
+                      {gitlabRepos.map(repo => (
+                        <li key={repo.slug} className="p-4 flex items-center justify-between hover:bg-gray-50">
+                          <div className="flex items-center gap-3 flex-1 min-w-0">
+                            <GitBranch className="text-gray-400 flex-shrink-0" size={20} />
+                            <div className="min-w-0">
+                              <p className="font-medium text-gray-900 truncate">{repo.slug}</p>
+                              <p className="text-sm text-gray-500">
+                                {repo.default_branch || '(branch unknown)'} ·{' '}
+                                <span className={
+                                  repo.last_sync_status === 'success'
+                                    ? 'text-green-600'
+                                    : repo.last_sync_status === 'failed'
+                                      ? 'text-red-600'
+                                      : 'text-gray-500'
+                                }>
+                                  {repo.last_sync_status}
+                                </span>
+                                {repo.last_sync_error && (
+                                  <span className="text-red-500"> · {repo.last_sync_error}</span>
+                                )}
+                              </p>
+                            </div>
+                          </div>
+                          {isAdmin && (
+                            <div className="flex items-center gap-2 flex-shrink-0">
+                              <MutationButton
+                                onClick={() => handleSyncGitLab(repo.slug)}
+                                disabled={syncingGitlab === repo.slug}
+                                className="flex items-center gap-1 px-2 py-1 text-sm text-blue-600 hover:bg-blue-50 rounded transition-colors disabled:opacity-50"
+                              >
+                                {syncingGitlab === repo.slug ? (
+                                  <Loader2 size={14} className="animate-spin" />
+                                ) : (
+                                  <RefreshCw size={14} />
+                                )}
+                                Sync
+                              </MutationButton>
+                              <MutationButton
+                                onClick={() => handleRemoveGitLabRepo(repo.slug)}
+                                disabled={removingGitlabRepo === repo.slug}
+                                className="flex items-center gap-1 px-2 py-1 text-sm text-red-600 hover:bg-red-50 rounded transition-colors disabled:opacity-50"
+                              >
+                                {removingGitlabRepo === repo.slug ? (
                                   <Loader2 size={14} className="animate-spin" />
                                 ) : (
                                   <Trash2 size={14} />
@@ -6503,6 +6845,124 @@ export default function WorkspaceSettings() {
             <div className="px-6 py-4 bg-gray-50 rounded-b-lg flex justify-end border-t">
               <button
                 onClick={closeAzureDevOpsRepoPicker}
+                className="px-4 py-2 text-gray-700 hover:bg-gray-200 rounded-lg transition-colors"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* GitLab repo picker modal (ADR-050): group -> project, where the
+          project IS the enrollable repo. One dropdown shallower than ADO. */}
+      {showAddGitlabRepo && gitlabPickerConnectionId && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-lg mx-4 max-h-[80vh] flex flex-col">
+            <div className="p-6 border-b">
+              <h2 className="text-lg font-semibold">Add GitLab Repositories</h2>
+              <p className="text-sm text-gray-500 mt-1">
+                Pick a group and a project (repository) to add.
+              </p>
+            </div>
+            <div className="p-4 border-b space-y-3">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Group</label>
+                <select
+                  value={gitlabPickerGroup}
+                  onChange={(e) => onSelectGitLabGroup(e.target.value)}
+                  disabled={loadingGitlabGroups}
+                  className="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="">
+                    {loadingGitlabGroups ? 'Loading groups...' : 'Select a group'}
+                  </option>
+                  {gitlabGroups.map(group => (
+                    <option key={group.id} value={String(group.id)}>{group.full_path}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Repository Type</label>
+                <select
+                  value={selectedGitlabRepoType}
+                  onChange={(e) => setSelectedGitlabRepoType(e.target.value as GitLabRepoType)}
+                  className="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="application">Application (code, Terraform, serverless)</option>
+                  <option value="standards">Standards (ADRs, docs, YAML, JSON, XML)</option>
+                </select>
+              </div>
+            </div>
+            <div className="flex-1 overflow-y-auto">
+              {!gitlabPickerGroup ? (
+                <div className="py-8 text-center text-gray-500">
+                  Pick a group to see projects
+                </div>
+              ) : loadingGitlabProjects ? (
+                <div className="py-8 flex items-center justify-center">
+                  <Loader2 className="animate-spin text-gray-400" size={24} />
+                </div>
+              ) : gitlabAvailableProjects.length === 0 ? (
+                <div className="py-8 text-center text-gray-500">
+                  No projects in this group
+                </div>
+              ) : (
+                <ul className="divide-y">
+                  {gitlabAvailableProjects.map(project => (
+                    <li key={project.id} className="p-4 flex items-center justify-between hover:bg-gray-50">
+                      <div className="flex items-center gap-3 min-w-0 flex-1">
+                        <GitBranch className="text-gray-400 flex-shrink-0" size={20} />
+                        <div className="min-w-0">
+                          <p className="font-medium text-gray-900 truncate">{project.slug}</p>
+                          {project.default_branch ? (
+                            <label className="text-xs text-gray-500 mt-1 flex items-center gap-1">
+                              <span>Sync from branch:</span>
+                              <input
+                                type="text"
+                                value={
+                                  gitlabBranchOverrides[project.slug] ?? project.default_branch
+                                }
+                                onChange={(e) =>
+                                  setGitlabBranchOverrides(prev => ({
+                                    ...prev,
+                                    [project.slug]: e.target.value,
+                                  }))
+                                }
+                                placeholder={project.default_branch}
+                                className="ml-1 px-1.5 py-0.5 text-xs font-mono border border-gray-200 rounded focus:outline-none focus:ring-1 focus:ring-blue-400 focus:border-blue-400 w-32"
+                                aria-label={`Sync branch for ${project.slug}`}
+                              />
+                            </label>
+                          ) : (
+                            <p className="text-xs text-gray-400 mt-0.5">
+                              (empty repo — no default branch)
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                      <MutationButton
+                        onClick={() => handleAddGitLabRepo(project.slug)}
+                        disabled={addingGitlabRepo === project.slug || project.already_added || !project.default_branch}
+                        className="ml-4 px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center gap-1"
+                      >
+                        {addingGitlabRepo === project.slug ? (
+                          <Loader2 size={14} className="animate-spin" />
+                        ) : project.already_added ? (
+                          <Check size={14} />
+                        ) : (
+                          <Plus size={14} />
+                        )}
+                        {project.already_added ? 'Added' : 'Add'}
+                      </MutationButton>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            <div className="px-6 py-4 bg-gray-50 rounded-b-lg flex justify-end border-t">
+              <button
+                onClick={closeGitLabRepoPicker}
                 className="px-4 py-2 text-gray-700 hover:bg-gray-200 rounded-lg transition-colors"
               >
                 Done
