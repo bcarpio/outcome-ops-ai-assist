@@ -529,6 +529,7 @@ class TestExpectedCodeMapVectorKeys:
             "ws_abc#github#myrepo#handler-group-summary#chat",
             "ws_abc#github#myrepo#handler-group-summary#github-sync",
             "ws_abc#github#myrepo#docs-summary#documentation",
+            "ws_abc#github#myrepo#code-map#myrepo/code-map",
         ]
 
     def test_no_workspace_uses_short_key_shape(self):
@@ -538,7 +539,10 @@ class TestExpectedCodeMapVectorKeys:
         keys = repo_summary_handler._expected_code_map_vector_keys(
             units, "myrepo", None
         )
-        assert keys == ["myrepo#handler-group-summary#chat"]
+        assert keys == [
+            "myrepo#handler-group-summary#chat",
+            "myrepo#code-map#myrepo/code-map",
+        ]
 
     def test_gitlab_slug_collapses_to_bare_name(self):
         # ADR-052: GitLab passes the full slug as repo, but the writer keys
@@ -549,13 +553,36 @@ class TestExpectedCodeMapVectorKeys:
         keys = repo_summary_handler._expected_code_map_vector_keys(
             units, "group/subgroup/myrepo", "ws_abc", provider="gitlab"
         )
-        assert keys == ["ws_abc#gitlab#myrepo#handler-group-summary#chat"]
+        assert keys == [
+            "ws_abc#gitlab#myrepo#handler-group-summary#chat",
+            "ws_abc#gitlab#myrepo#code-map#group/subgroup/myrepo/code-map",
+        ]
 
     def test_empty_units_returns_empty(self):
+        """Empty units MUST return [] -- the producer refuses to queue a
+        sweep with empty expected_keys ('would wipe everything'). If the
+        code-map key were appended unconditionally, a discovery failure
+        would produce a one-key retain-list and the sweep would delete
+        every unit summary for the repo."""
         keys = repo_summary_handler._expected_code_map_vector_keys(
             [], "myrepo", "ws"
         )
         assert keys == []
+
+    def test_architectural_code_map_key_is_retained(self):
+        """Regression for the 2026-07-19 code-map-eaten-by-sweep bug: the
+        architectural code-map vector ({ws}#{prov}#{bare}#code-map#...)
+        sits under the swept prefix and is not a _chunk_ per-doc key, but
+        expected_keys never listed it -- so every regen's sweep deleted
+        the code-map written moments earlier in the same run (live-hit:
+        both regens on 2026-07-19, 'Found 1 orphan' each, ~20s after
+        'Stored code map embedding'). No repo had a bare-keyed code-map
+        at rest; only the sweep-dodging legacy slug-keyed twins survived."""
+        units = [{"batch_type": "handler-group", "group_name": "chat"}]
+        keys = repo_summary_handler._expected_code_map_vector_keys(
+            units, "myrepo", "ws_abc"
+        )
+        assert "ws_abc#github#myrepo#code-map#myrepo/code-map" in keys
 
     def test_multi_backend_batch_types_get_summary_suffix(self):
         """Different backends produce different raw batch_types - all
@@ -581,6 +608,7 @@ class TestExpectedCodeMapVectorKeys:
             "ws#github#myrepo#components-summary#navbar",
             "ws#github#myrepo#build-summary#maven",
             "ws#github#myrepo#kubernetes-summary#manifests",
+            "ws#github#myrepo#code-map#myrepo/code-map",
         ]
 
 
@@ -602,7 +630,10 @@ class TestExpectedCodeMapVectorKeysShardAware:
         keys = repo_summary_handler._expected_code_map_vector_keys(
             units, "myrepo", "ws", all_files=None,
         )
-        assert keys == ["ws#github#myrepo#handler-group-summary#chat"]
+        assert keys == [
+            "ws#github#myrepo#handler-group-summary#chat",
+            "ws#github#myrepo#code-map#myrepo/code-map",
+        ]
 
     def test_small_unit_stays_single_key_with_all_files(self):
         """A unit whose files fit under TARGET_SHARD_TOKENS gets one key."""
@@ -615,7 +646,10 @@ class TestExpectedCodeMapVectorKeysShardAware:
         keys = repo_summary_handler._expected_code_map_vector_keys(
             units, "myrepo", "ws", all_files=all_files,
         )
-        assert keys == ["ws#github#myrepo#handler-group-summary#chat"]
+        assert keys == [
+            "ws#github#myrepo#handler-group-summary#chat",
+            "ws#github#myrepo#code-map#myrepo/code-map",
+        ]
 
     def test_oversized_unit_emits_shard_suffixed_keys(self):
         """15 files x 40k bytes overflows TARGET_SHARD_TOKENS. Expected
@@ -644,7 +678,9 @@ class TestExpectedCodeMapVectorKeysShardAware:
         # ABSENT, which made the orphan sweep delete every merged summary
         # on the following sync.)
         assert "ws#github#myrepo#handler-group-summary#tests" in keys
-        assert len(keys) == len(shard_keys) + 1
+        # shards + merged parent + architectural code-map key
+        assert len(keys) == len(shard_keys) + 2
+        assert "ws#github#myrepo#code-map#myrepo/code-map" in keys
 
     def test_sharded_unit_includes_merged_parent_key(self):
         """Regression for the 2026-07-19 merged-parent-orphan bug: the
@@ -678,7 +714,10 @@ class TestExpectedCodeMapVectorKeysShardAware:
             "myrepo", "ws",
             all_files=[{"path": "lambda/chat/handler.py", "type": "blob", "size": 500}],
         )
-        assert small == ["ws#github#myrepo#handler-group-summary#chat"]
+        assert small == [
+            "ws#github#myrepo#handler-group-summary#chat",
+            "ws#github#myrepo#code-map#myrepo/code-map",
+        ]
 
     def test_shard_group_names_match_splitter_emissions(self):
         """The keys emitted here must match what the splitter actually

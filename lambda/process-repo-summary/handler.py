@@ -776,6 +776,23 @@ def _expected_code_map_vector_keys(
                 )
             else:
                 keys.append(f"{repo_bare}#{doc_type}#{group_name}")
+    if keys:
+        # The architectural code-map vector (store_code_map_embedding:
+        # doc_type "code-map", doc_id f"{repo}/code-map") lives under the
+        # same {ws}#{provider}#{bare}# prefix the orphan sweep scans, and
+        # is NOT a per-doc chunk key -- so it must be retained explicitly
+        # or every sweep deletes the code-map written moments earlier in
+        # the same run. The legacy slug-keyed twins survived only because
+        # their owner/slug segment dodges the bare-prefix scan. Guarded on
+        # `keys` so empty code_units still returns [] and the producer's
+        # empty-expected refusal (would wipe the repo) stays intact.
+        code_map_doc_id = f"{repo}/code-map".replace(":", "-")
+        if workspace_id:
+            keys.append(
+                f"{workspace_id}#{provider}#{repo_bare}#code-map#{code_map_doc_id}"
+            )
+        else:
+            keys.append(f"{repo_bare}#code-map#{code_map_doc_id}")
     return keys
 
 
