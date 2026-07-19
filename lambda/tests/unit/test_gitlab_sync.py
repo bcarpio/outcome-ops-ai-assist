@@ -208,7 +208,7 @@ class TestSkipUnchanged:
 
     @patch.object(handler, "get_default_branch", return_value="main")
     @patch.object(handler, "get_latest_commit_sha", return_value="sha-A")
-    @patch.object(handler, "refresh_access_token", return_value="access-token")
+    @patch.object(handler, "get_valid_access_token", return_value="access-token")
     def test_matching_sha_and_non_manual_skips_walk(
         self, mock_tok, mock_sha, mock_branch, mock_table, _mock_dual_write,
     ):
@@ -221,7 +221,7 @@ class TestSkipUnchanged:
 
     @patch.object(handler, "get_default_branch", return_value="main")
     @patch.object(handler, "get_latest_commit_sha", return_value="sha-A")
-    @patch.object(handler, "refresh_access_token", return_value="access-token")
+    @patch.object(handler, "get_valid_access_token", return_value="access-token")
     @patch.object(handler, "get_tree", return_value=[])
     def test_manual_trigger_overrides_skip_unchanged(
         self, mock_tree, mock_tok, mock_sha, mock_branch,
@@ -244,7 +244,7 @@ class TestS3Upload:
 
     @patch.object(handler, "get_default_branch", return_value="main")
     @patch.object(handler, "get_latest_commit_sha", return_value="sha-B")
-    @patch.object(handler, "refresh_access_token", return_value="access-token")
+    @patch.object(handler, "get_valid_access_token", return_value="access-token")
     @patch.object(handler, "get_tree", return_value=[
         "src/main.py",
         "docs/README.md",
@@ -265,7 +265,7 @@ class TestS3Upload:
 
     @patch.object(handler, "get_default_branch", return_value="main")
     @patch.object(handler, "get_latest_commit_sha", return_value="sha-B")
-    @patch.object(handler, "refresh_access_token", return_value="access-token")
+    @patch.object(handler, "get_valid_access_token", return_value="access-token")
     @patch.object(handler, "get_tree", return_value=["src/main.py"])
     @patch.object(handler, "get_file_content", return_value=b"file body")
     def test_s3_key_shape_and_metadata(
@@ -288,7 +288,7 @@ class TestS3Upload:
 
     @patch.object(handler, "get_default_branch", return_value="main")
     @patch.object(handler, "get_latest_commit_sha", return_value="sha-B")
-    @patch.object(handler, "refresh_access_token", return_value="access-token")
+    @patch.object(handler, "get_valid_access_token", return_value="access-token")
     @patch.object(handler, "get_tree", return_value=["a.py", "b.py"])
     def test_vanished_file_doesnt_fail_whole_sync(
         self, mock_tree, mock_tok, mock_sha, mock_branch,
@@ -315,7 +315,7 @@ class TestRepoSummariesFanOut:
 
     @patch.object(handler, "get_default_branch", return_value="main")
     @patch.object(handler, "get_latest_commit_sha", return_value="sha-B")
-    @patch.object(handler, "refresh_access_token", return_value="access-token")
+    @patch.object(handler, "get_valid_access_token", return_value="access-token")
     @patch.object(handler, "get_tree", return_value=["src/main.py"])
     @patch.object(handler, "get_file_content", return_value=b"body")
     def test_application_repo_fans_out_with_provider_gitlab(
@@ -336,7 +336,7 @@ class TestRepoSummariesFanOut:
 
     @patch.object(handler, "get_default_branch", return_value="main")
     @patch.object(handler, "get_latest_commit_sha", return_value="sha-B")
-    @patch.object(handler, "refresh_access_token", return_value="access-token")
+    @patch.object(handler, "get_valid_access_token", return_value="access-token")
     @patch.object(handler, "get_tree", return_value=["docs/standard.md"])
     @patch.object(handler, "get_file_content", return_value=b"body")
     def test_standards_repo_does_not_fan_out(
@@ -355,7 +355,7 @@ class TestRepoSummariesFanOut:
 
 class TestFailures:
 
-    @patch.object(handler, "refresh_access_token", return_value=None)
+    @patch.object(handler, "get_valid_access_token", return_value=None)
     def test_failed_token_refresh_marks_failed_and_raises(
         self, mock_tok, mock_table, _mock_dual_write,
     ):
@@ -371,7 +371,7 @@ class TestFailures:
 
     @patch.object(handler, "get_default_branch", return_value="main")
     @patch.object(handler, "get_latest_commit_sha", return_value="sha-B")
-    @patch.object(handler, "refresh_access_token", return_value="access-token")
+    @patch.object(handler, "get_valid_access_token", return_value="access-token")
     @patch.object(handler, "get_tree")
     def test_auth_error_on_tree_walk_classifies_reconnect_required(
         self, mock_tree, mock_tok, mock_sha, mock_branch,
@@ -391,7 +391,7 @@ class TestFailures:
 
     @patch.object(handler, "get_default_branch", return_value="main")
     @patch.object(handler, "get_latest_commit_sha", return_value="sha-B")
-    @patch.object(handler, "refresh_access_token", return_value="access-token")
+    @patch.object(handler, "get_valid_access_token", return_value="access-token")
     @patch.object(handler, "get_tree")
     def test_not_found_on_tree_walk_classifies_repo_or_branch_not_found(
         self, mock_tree, mock_tok, mock_sha, mock_branch,
@@ -412,7 +412,7 @@ class TestDeletedRowToleranceOnUpdate:
 
     @patch.object(handler, "get_default_branch", return_value="main")
     @patch.object(handler, "get_latest_commit_sha", return_value="sha-B")
-    @patch.object(handler, "refresh_access_token", return_value="access-token")
+    @patch.object(handler, "get_valid_access_token", return_value="access-token")
     @patch.object(handler, "get_tree", return_value=[])
     def test_conditional_check_failure_does_not_propagate(
         self, mock_tree, mock_tok, mock_sha, mock_branch,
@@ -425,6 +425,51 @@ class TestDeletedRowToleranceOnUpdate:
         )
         result = handler.process_sync_message(_msg())
         assert result["status"] == "success"
+
+
+# ---------------------------------------------------------------------------
+# Concurrency: per-repo dedup lock + 401 force-refresh retry (ADR-050 v1.1)
+# ---------------------------------------------------------------------------
+
+
+class TestConcurrencyHardening:
+
+    def test_concurrent_message_skipped_when_lock_held(
+        self, mock_table, _mock_dual_write,
+    ):
+        # Another worker holds the per-repo sync lock: the conditional
+        # acquire fails, so this message no-ops instead of double-walking.
+        mock_table.get_item.return_value = {"Item": _repo_row()}
+        mock_table.update_item.side_effect = ClientError(
+            {"Error": {"Code": "ConditionalCheckFailedException"}}, "UpdateItem")
+        result = handler.process_sync_message(_msg())
+        assert result["status"] == "skip-in-progress"
+        # Never started the actual sync -> no in_progress status write.
+        statuses = [
+            c.kwargs["ExpressionAttributeValues"].get(":status")
+            for c in _mock_dual_write.ddb_update_item.call_args_list
+        ]
+        assert "in_progress" not in statuses
+
+    @patch.object(handler, "get_tree", return_value=[])
+    @patch.object(handler, "get_latest_commit_sha", return_value="sha-B")
+    @patch.object(handler, "get_default_branch",
+                  side_effect=[_http_error(401), "main"])
+    @patch.object(handler, "get_valid_access_token",
+                  side_effect=["stale-token", "fresh-token"])
+    def test_401_forces_refresh_and_retries_once(
+        self, mock_tok, mock_branch, mock_sha, mock_tree,
+        mock_table, _mock_dual_write,
+    ):
+        # First attempt 401s on the cached token; the worker force-refreshes
+        # (single-flight) and retries the sync once, which succeeds.
+        mock_table.get_item.return_value = {"Item": _repo_row(last_commit_sha="sha-A")}
+        result = handler.process_sync_message(_msg(triggered_by="manual"))
+        assert result["status"] == "success"
+        assert mock_branch.call_count == 2       # initial + retry
+        assert mock_tok.call_count == 2
+        # The retry token fetch is a forced refresh.
+        assert mock_tok.call_args_list[1].kwargs.get("force_refresh") is True
 
 
 # ---------------------------------------------------------------------------

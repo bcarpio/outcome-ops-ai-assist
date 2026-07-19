@@ -56,6 +56,7 @@ import json
 import logging
 import os
 import sys
+import time
 import urllib.error
 import uuid
 from datetime import datetime, timezone
@@ -80,7 +81,7 @@ from shared.gitlab_api import (  # noqa: E402
     get_latest_commit_sha,
     get_tree,
 )
-from shared.oauth.gitlab import refresh_access_token  # noqa: E402
+from shared.oauth.gitlab import get_valid_access_token  # noqa: E402
 
 
 logger = logging.getLogger()
@@ -152,6 +153,51 @@ def _get_repo_row(workspace_id: str, slug: str) -> Optional[Dict[str, Any]]:
         Key={"PK": f"WS#{workspace_id}", "SK": f"GITLAB_REPO#{slug}"},
     )
     return response.get("Item")
+
+
+# Per-repo dedup lock. Two sync messages for the same repo (manual add +
+# hourly scheduler overlapping, or an SQS redelivery) would otherwise both
+# walk the tree and double-write S3. The lock is region-local (a direct
+# conditional update_item, NOT dual_write) since each region's worker syncs
+# its own active-region row. The lock value carries its own TTL, so a
+# crashed worker's lock self-heals rather than wedging the repo.
+_SYNC_LOCK_TTL_SECONDS = 900
+
+
+def _acquire_repo_sync_lock(workspace_id: str, slug: str) -> bool:
+    """Claim the repo's sync lock. Returns False when another worker holds a
+    still-live lock (caller should skip -- that worker will complete)."""
+    table = _get_dynamodb().Table(WORKSPACES_TABLE)
+    now = int(time.time())
+    try:
+        table.update_item(
+            Key={"PK": f"WS#{workspace_id}", "SK": f"GITLAB_REPO#{slug}"},
+            UpdateExpression="SET sync_lock_until = :until",
+            ConditionExpression=(
+                "attribute_not_exists(sync_lock_until) OR sync_lock_until < :now"
+            ),
+            ExpressionAttributeValues={
+                ":until": now + _SYNC_LOCK_TTL_SECONDS,
+                ":now": now,
+            },
+        )
+        return True
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return False
+        raise
+
+
+def _release_repo_sync_lock(workspace_id: str, slug: str) -> None:
+    table = _get_dynamodb().Table(WORKSPACES_TABLE)
+    try:
+        table.update_item(
+            Key={"PK": f"WS#{workspace_id}", "SK": f"GITLAB_REPO#{slug}"},
+            UpdateExpression="REMOVE sync_lock_until",
+        )
+    except ClientError:
+        # Best-effort; the TTL on the lock value auto-expires it.
+        pass
 
 
 def _update_sync_status(
@@ -403,17 +449,20 @@ def process_sync_message(message: Dict[str, Any]) -> Dict[str, Any]:
 
     repo_type = repo_row.get("repo_type", "application")
 
+    # Dedup concurrent messages for the same repo (belt-and-suspenders on top
+    # of the single-flight token cache): only one worker syncs a repo at a
+    # time, so two overlapping messages (manual add + hourly scheduler, or an
+    # SQS redelivery) don't both walk the tree and double-write S3.
+    if not _acquire_repo_sync_lock(workspace_id, slug):
+        logger.info(
+            "GitLab sync skip -- another sync already in progress: %s/%s",
+            workspace_id, slug,
+        )
+        return {"slug": slug, "status": "skip-in-progress", "sync_id": sync_id}
+
     _update_sync_status(workspace_id, slug, status="in_progress")
 
-    try:
-        access_token = refresh_access_token(
-            workspaces_table=WORKSPACES_TABLE,
-            kms_key_arn=OAUTH_KMS_KEY_ARN,
-            connection_id=connection_id,
-        )
-        if not access_token:
-            raise RuntimeError("reconnect_required")
-
+    def _do_sync(access_token: str) -> Dict[str, Any]:
         default_branch = get_default_branch(access_token, slug)
         if not default_branch:
             raise RuntimeError("default_branch_missing")
@@ -521,6 +570,37 @@ def process_sync_message(message: Dict[str, Any]) -> Dict[str, Any]:
             "sync_id": sync_id,
         }
 
+    try:
+        access_token = get_valid_access_token(
+            workspaces_table=WORKSPACES_TABLE,
+            kms_key_arn=OAUTH_KMS_KEY_ARN,
+            connection_id=connection_id,
+        )
+        if not access_token:
+            raise RuntimeError("reconnect_required")
+        try:
+            return _do_sync(access_token)
+        except urllib.error.HTTPError as e:
+            # A cached / near-expiry token was rejected mid-flight -- mint a
+            # fresh one under the single-flight lock and retry the sync once
+            # before surfacing a reconnect. Prevents a genuine ~2h expiry
+            # from failing an otherwise-healthy sync.
+            if e.code in (401, 403):
+                logger.warning(
+                    "GitLab sync token rejected (%d) -- force refresh + retry: %s/%s",
+                    e.code, workspace_id, slug,
+                )
+                access_token = get_valid_access_token(
+                    workspaces_table=WORKSPACES_TABLE,
+                    kms_key_arn=OAUTH_KMS_KEY_ARN,
+                    connection_id=connection_id,
+                    force_refresh=True,
+                )
+                if not access_token:
+                    raise RuntimeError("reconnect_required")
+                return _do_sync(access_token)
+            raise
+
     except urllib.error.HTTPError as e:
         # Classify the GitLab API failure into the last_sync_error strings
         # the UI keys off. 401/403 -> reconnect banner; 404 -> repo gone.
@@ -542,6 +622,8 @@ def process_sync_message(message: Dict[str, Any]) -> Dict[str, Any]:
     except Exception as e:
         _update_sync_status(workspace_id, slug, status="failed", error=str(e))
         raise
+    finally:
+        _release_repo_sync_lock(workspace_id, slug)
 
 
 # ---------------------------------------------------------------------------

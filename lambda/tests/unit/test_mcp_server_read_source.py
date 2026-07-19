@@ -1643,12 +1643,14 @@ class TestReadSourceGitLabAccessToken:
         import shared.oauth.gitlab as gitlab_oauth  # noqa: WPS433
         captured = {}
 
-        def _fake_refresh(**kwargs):
+        def _fake_get_valid(**kwargs):
             captured.update(kwargs)
             return "gitlab-access-token-value"
 
-        with patch.object(gitlab_oauth, "refresh_access_token",
-                          side_effect=_fake_refresh):
+        # ADR-050 v1.1: read_source now routes through the cached,
+        # single-flight get_valid_access_token (not raw refresh).
+        with patch.object(gitlab_oauth, "get_valid_access_token",
+                          side_effect=_fake_get_valid):
             token = mcp_module._read_source_gitlab_access_token(
                 GITLAB_CONNECTION_ID,
             )
@@ -1658,7 +1660,7 @@ class TestReadSourceGitLabAccessToken:
 
     def test_refresh_failure_raises_runtime(self, monkeypatch):
         import shared.oauth.gitlab as gitlab_oauth  # noqa: WPS433
-        with patch.object(gitlab_oauth, "refresh_access_token",
+        with patch.object(gitlab_oauth, "get_valid_access_token",
                           return_value=None):
             with pytest.raises(RuntimeError, match="reauth"):
                 mcp_module._read_source_gitlab_access_token(GITLAB_CONNECTION_ID)

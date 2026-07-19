@@ -111,6 +111,21 @@ def _decrypt_token(encrypted_token: str) -> str:
     return response["Plaintext"].decode("utf-8")
 
 
+# Public wrappers so provider wrappers (e.g. shared.oauth.gitlab) can cache
+# an extra secret (the short-lived access token) in the same CREDENTIALS
+# row using the identical KMS-at-rest logic, without reaching into the
+# leading-underscore internals. Additive; no behavior change for existing
+# consumers.
+def encrypt_token(token: str, kms_key_arn: str) -> str:
+    """KMS-encrypt a token to a base64 ciphertext string."""
+    return _encrypt_token(token, kms_key_arn)
+
+
+def decrypt_token(encrypted_token: str) -> str:
+    """Decrypt a base64 ciphertext string produced by ``encrypt_token``."""
+    return _decrypt_token(encrypted_token)
+
+
 # ============================================================================
 # Public surface (the 5 functions every consuming wrapper calls into)
 # ============================================================================

@@ -455,17 +455,19 @@ def _get_connection(workspace_id: str, connection_id: str) -> Optional[Dict]:
 
 
 def _connection_access_token(connection_id: str) -> Optional[str]:
-    """Get a fresh access token for the connection. Refreshes (and rotates
-    the stored refresh token) if needed. The shared module reads the client
-    secret from SSM itself."""
+    """Get a usable access token for the connection via the cached,
+    single-flight path (ADR-050 v1.1) -- reuses a cached token when valid
+    and only refreshes (rotating the stored refresh token) under a
+    per-connection lock, so concurrent callers never collide. The shared
+    module reads the client secret from SSM itself."""
     try:
-        return gitlab_oauth.refresh_access_token(
+        return gitlab_oauth.get_valid_access_token(
             workspaces_table=WORKSPACES_TABLE,
             kms_key_arn=OAUTH_KMS_KEY_ARN,
             connection_id=connection_id,
         )
     except Exception:
-        logger.exception("Failed to refresh GitLab access token")
+        logger.exception("Failed to obtain GitLab access token")
         return None
 
 

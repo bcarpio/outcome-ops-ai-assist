@@ -336,9 +336,15 @@ resource "aws_iam_role_policy" "mcp_outcomeops_ado_kms" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid      = "KMSDecryptOAuthTokens"
+        # Decrypt to read stored refresh tokens; Encrypt to cache the
+        # short-lived access token + persist the rotated refresh token via
+        # get_valid_access_token (ADR-050 v1.1). The prior read_source path
+        # never persisted rotations because Encrypt was absent and
+        # save_tokens swallowed the failure -- quietly poisoning the
+        # connection for the next consumer.
+        Sid      = "KMSOAuthTokens"
         Effect   = "Allow"
-        Action   = ["kms:Decrypt"]
+        Action   = ["kms:Decrypt", "kms:Encrypt"]
         Resource = [aws_kms_key.oauth_tokens[0].arn]
       }
     ]

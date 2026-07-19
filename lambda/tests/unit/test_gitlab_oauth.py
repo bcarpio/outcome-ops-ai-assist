@@ -79,25 +79,130 @@ class TestExchange:
         assert kwargs["refresh_token"] == "rt"
 
 
-class TestRefresh:
-    def test_rotates_and_resaves_refresh_token(self):
-        # GitLab returns a NEW refresh token; it must be re-persisted.
+def _mock_table():
+    """A mock DDB table whose update_item succeeds (lock/persist) by default."""
+    table = MagicMock()
+    return table
+
+
+def _patch_ddb(table):
+    ddb = MagicMock()
+    ddb.Table.return_value = table
+    return patch.object(gitlab, "_get_ddb", return_value=ddb)
+
+
+def _patch_crypto():
+    return (
+        patch.object(gitlab.entra_id_oauth, "encrypt_token",
+                     side_effect=lambda t, k: f"enc({t})"),
+        patch.object(gitlab.entra_id_oauth, "decrypt_token",
+                     side_effect=lambda ct: ct[4:-1] if ct.startswith("enc(") else ct),
+    )
+
+
+class TestGetValidAccessToken:
+    def test_cache_hit_returns_without_refresh(self):
+        # A valid cached access token is served with no lock + no network.
+        table = _mock_table()
+        table.get_item.return_value = {"Item": {
+            "gl_access_ct": "enc(cachedAT)",
+            "gl_access_exp": 9999999999,  # far future
+        }}
+        enc, dec = _patch_crypto()
+        with _patch_ddb(table), enc, dec, \
+                patch.object(gitlab, "_post_token") as post:
+            out = gitlab.get_valid_access_token("wt", "kms-arn", "conn1")
+        assert out == "cachedAT"
+        post.assert_not_called()
+        table.update_item.assert_not_called()  # no lock taken
+
+    def test_refresh_when_no_cache_rotates_and_caches(self):
+        # No cached access token -> lock, refresh, persist rotated refresh +
+        # cached access, release. GitLab returns a NEW refresh token.
+        table = _mock_table()
+        table.get_item.return_value = {"Item": {
+            "encrypted_refresh_token": "enc(rt1)",
+        }}
         new = {"access_token": "at2", "refresh_token": "rt2", "expires_in": 7200}
-        with patch.object(gitlab.entra_id_oauth, "get_refresh_token",
-                          return_value="rt1"), \
-             patch.object(gitlab, "_post_token", return_value=new), \
-             patch.object(gitlab, "_load_client_secret", return_value="s"), \
-             patch.object(gitlab.entra_id_oauth, "save_tokens") as save:
-            out = gitlab.refresh_access_token("wt", "kms-arn", "conn1")
+        enc, dec = _patch_crypto()
+        with _patch_ddb(table), enc, dec, \
+                patch.object(gitlab.entra_id_oauth, "get_refresh_token",
+                             return_value="rt1"), \
+                patch.object(gitlab, "_post_token", return_value=new), \
+                patch.object(gitlab, "_load_client_secret", return_value="s"):
+            out = gitlab.get_valid_access_token("wt", "kms-arn", "conn1")
         assert out == "at2"
-        assert save.call_args.kwargs["refresh_token"] == "rt2"
+        # One of the update_item calls persists the rotated refresh token +
+        # the freshly cached access token.
+        persisted = [
+            c for c in table.update_item.call_args_list
+            if ":rt" in (c.kwargs.get("ExpressionAttributeValues") or {})
+        ]
+        assert persisted, "expected a persist update_item with the rotated token"
+        vals = persisted[0].kwargs["ExpressionAttributeValues"]
+        assert vals[":rt"] == "enc(rt2)"
+        assert vals[":act"] == "enc(at2)"
+
+    def test_force_refresh_ignores_valid_cache(self):
+        # After a 401 the caller forces a refresh even though the cache looks
+        # valid -- a fresh token must be minted under the lock.
+        table = _mock_table()
+        table.get_item.return_value = {"Item": {
+            "gl_access_ct": "enc(staleAT)",
+            "gl_access_exp": 9999999999,
+            "encrypted_refresh_token": "enc(rt1)",
+        }}
+        new = {"access_token": "freshAT", "refresh_token": "rt2", "expires_in": 7200}
+        enc, dec = _patch_crypto()
+        with _patch_ddb(table), enc, dec, \
+                patch.object(gitlab.entra_id_oauth, "get_refresh_token",
+                             return_value="rt1"), \
+                patch.object(gitlab, "_post_token", return_value=new) as post, \
+                patch.object(gitlab, "_load_client_secret", return_value="s"):
+            out = gitlab.get_valid_access_token(
+                "wt", "kms-arn", "conn1", force_refresh=True)
+        assert out == "freshAT"
+        post.assert_called_once()  # refreshed despite the valid-looking cache
+
+    def test_contended_lock_reuses_cache_without_refreshing(self):
+        # Another worker holds the refresh lock: we must NOT refresh (which
+        # would collide on rotation) -- reuse the still-usable cached token.
+        # Token is inside the skew window: the initial skew=120 check misses
+        # (so we try to lock) but the skew=0 fallback still accepts it.
+        import time as _t
+        table = _mock_table()
+        table.get_item.return_value = {"Item": {
+            "gl_access_ct": "enc(cachedAT)",
+            "gl_access_exp": int(_t.time()) + 60,
+            "encrypted_refresh_token": "enc(rt1)",
+        }}
+        enc, dec = _patch_crypto()
+        with _patch_ddb(table), enc, dec, \
+                patch.object(gitlab, "_acquire_lock_blocking", return_value=False), \
+                patch.object(gitlab, "_post_token") as post:
+            out = gitlab.get_valid_access_token("wt", "kms-arn", "conn1")
+        assert out == "cachedAT"
+        post.assert_not_called()
 
     def test_none_when_no_stored_refresh(self):
-        with patch.object(gitlab.entra_id_oauth, "get_refresh_token",
-                          return_value=None), \
-             patch.object(gitlab, "_post_token") as post:
-            assert gitlab.refresh_access_token("wt", "kms-arn", "conn1") is None
+        table = _mock_table()
+        table.get_item.return_value = {"Item": {}}  # no refresh token
+        with _patch_ddb(table), \
+                patch.object(gitlab.entra_id_oauth, "get_refresh_token",
+                             return_value=None), \
+                patch.object(gitlab, "_post_token") as post:
+            assert gitlab.get_valid_access_token(
+                "wt", "kms-arn", "conn1", force_refresh=True) is None
         post.assert_not_called()
+
+
+class TestRefreshShim:
+    def test_delegates_to_get_valid_force_refresh(self):
+        with patch.object(gitlab, "get_valid_access_token",
+                          return_value="at") as gv:
+            out = gitlab.refresh_access_token("wt", "kms-arn", "conn1")
+        assert out == "at"
+        assert gv.call_args.kwargs["force_refresh"] is True
 
 
 class TestProfile:

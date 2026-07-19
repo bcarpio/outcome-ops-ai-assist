@@ -176,9 +176,12 @@ resource "aws_iam_role_policy" "mcp_outcomeops_secondary_ado_kms" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid      = "KMSDecryptOAuthTokensSecondary"
+        # Decrypt stored refresh tokens + Encrypt the cached access token /
+        # rotated refresh token via get_valid_access_token (ADR-050 v1.1).
+        # Mirrors the primary mcp-outcomeops KMSOAuthTokens grant.
+        Sid      = "KMSOAuthTokensSecondary"
         Effect   = "Allow"
-        Action   = ["kms:Decrypt"]
+        Action   = ["kms:Decrypt", "kms:Encrypt"]
         Resource = [try(aws_kms_replica_key.oauth_tokens_secondary[0].arn, "")]
       }
     ]

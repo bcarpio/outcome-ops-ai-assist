@@ -25,12 +25,16 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Dict, Optional, Tuple
 
 import boto3
+from botocore.exceptions import ClientError
 
 from shared import entra_id_oauth
 
@@ -40,8 +44,32 @@ PK_PREFIX = "GITLAB_TOKEN#"
 SCOPES = "read_api read_repository"
 _DEFAULT_BASE_URL = "https://gitlab.com"
 
+# Access-token cache + single-flight refresh (ADR-050 v1.1). GitLab rotates
+# the refresh token on EVERY refresh, so concurrent consumers that each
+# refresh collide -- the loser's refresh token is invalidated and its call
+# 401s, and it may persist a now-dead token, poisoning the connection.
+# We cache the short-lived access token (KMS-encrypted) in the CREDENTIALS
+# row and serialise refresh with a per-connection DDB lock: concurrent
+# consumers reuse one cached token, and refreshes run one-at-a-time so the
+# rotation never collides.
+_ACCESS_CT_ATTR = "gl_access_ct"          # KMS-encrypted access token
+_ACCESS_EXP_ATTR = "gl_access_exp"        # int epoch: access-token expiry
+_REFRESH_LOCK_ATTR = "gl_refresh_lock"    # int epoch: refresh-lock expiry
+_ACCESS_SKEW_SECONDS = 120                # refresh if within 2 min of expiry
+_REFRESH_LOCK_TTL_SECONDS = 25            # lock auto-expires (> HTTP timeout)
+_LOCK_WAIT_MAX_SECONDS = 25               # max wait for another refresher
+_LOCK_WAIT_POLL_SECONDS = 1.0
+
 _ssm_client = None
+_dynamodb = None
 _secret_cache: Dict[str, str] = {}
+
+
+def _get_ddb():
+    global _dynamodb
+    if _dynamodb is None:
+        _dynamodb = boto3.resource("dynamodb")
+    return _dynamodb
 
 
 def base_url() -> str:
@@ -122,36 +150,179 @@ def exchange_code_for_tokens(
     return body["access_token"]
 
 
-def refresh_access_token(
-    workspaces_table: str,
-    kms_key_arn: str,
-    connection_id: str,
+def _cred_key(connection_id: str) -> Dict[str, str]:
+    return {"PK": f"{PK_PREFIX}{connection_id}", "SK": "CREDENTIALS"}
+
+
+def _cached_access_if_valid(
+    row: Optional[Dict], now: float, skew: int = _ACCESS_SKEW_SECONDS
 ) -> Optional[str]:
-    """Mint a fresh access token from the stored refresh token; re-persist the
-    rotated refresh token GitLab returns. Returns None if no refresh token is
-    stored (caller must re-auth)."""
+    """Decrypt + return the cached access token when it is present and not
+    within ``skew`` seconds of expiry; otherwise None."""
+    if not row:
+        return None
+    ct = row.get(_ACCESS_CT_ATTR)
+    exp = row.get(_ACCESS_EXP_ATTR)
+    if ct and exp is not None and float(exp) > now + skew:
+        return entra_id_oauth.decrypt_token(ct)
+    return None
+
+
+def _try_acquire_lock(table, connection_id: str, now: float) -> bool:
+    """Conditionally claim the per-connection refresh lock. Fails (returns
+    False) when the row is absent or another holder's lock is still live."""
+    try:
+        table.update_item(
+            Key=_cred_key(connection_id),
+            UpdateExpression=f"SET {_REFRESH_LOCK_ATTR} = :until",
+            ConditionExpression=(
+                f"attribute_exists(PK) AND (attribute_not_exists({_REFRESH_LOCK_ATTR}) "
+                f"OR {_REFRESH_LOCK_ATTR} < :now)"
+            ),
+            ExpressionAttributeValues={
+                ":until": Decimal(int(now + _REFRESH_LOCK_TTL_SECONDS)),
+                ":now": Decimal(int(now)),
+            },
+        )
+        return True
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return False
+        raise
+
+
+def _acquire_lock_blocking(table, connection_id: str) -> bool:
+    """Wait up to ``_LOCK_WAIT_MAX_SECONDS`` for the refresh lock. Refreshes
+    are thus serialised: even under rotation, one completes + persists the
+    new refresh token before the next reads it, so they never collide."""
+    deadline = time.time() + _LOCK_WAIT_MAX_SECONDS
+    while True:
+        if _try_acquire_lock(table, connection_id, time.time()):
+            return True
+        if time.time() >= deadline:
+            return False
+        time.sleep(_LOCK_WAIT_POLL_SECONDS)
+
+
+def _release_lock(table, connection_id: str) -> None:
+    try:
+        table.update_item(
+            Key=_cred_key(connection_id),
+            UpdateExpression=f"REMOVE {_REFRESH_LOCK_ATTR}",
+            ConditionExpression="attribute_exists(PK)",
+        )
+    except ClientError:
+        # Best-effort: the lock value carries its own TTL, so a missed
+        # release self-heals after _REFRESH_LOCK_TTL_SECONDS.
+        pass
+
+
+def _raw_refresh(workspaces_table: str, connection_id: str) -> Optional[Dict]:
+    """POST the stored refresh token to GitLab. Returns the token body
+    (access_token / refresh_token / expires_in) or None when no refresh
+    token is stored."""
     refresh_token = entra_id_oauth.get_refresh_token(
         workspaces_table, PK_PREFIX, connection_id)
     if not refresh_token:
         return None
-    body = _post_token({
+    return _post_token({
         "client_id": get_client_id(),
         "client_secret": _load_client_secret(),
         "refresh_token": refresh_token,
         "grant_type": "refresh_token",
     })
-    # GitLab rotates refresh tokens on every use -- persist the new one or the
-    # next refresh fails.
-    entra_id_oauth.save_tokens(
-        workspaces_table=workspaces_table,
-        kms_key_arn=kms_key_arn,
-        pk_prefix=PK_PREFIX,
-        connection_id=connection_id,
-        access_token=body["access_token"],
-        refresh_token=body["refresh_token"],
-        expires_in=int(body.get("expires_in", 7200)),
+
+
+def _persist_refresh(
+    table, kms_key_arn: str, connection_id: str, body: Dict
+) -> None:
+    """Atomically persist the rotated refresh token + cache the new access
+    token (both KMS-encrypted) and release the lock, in one update_item so
+    the cache and the refresh token can never diverge."""
+    now = time.time()
+    expires_in = int(body.get("expires_in", 7200))
+    expires_at = Decimal(int(now + expires_in))
+    table.update_item(
+        Key=_cred_key(connection_id),
+        UpdateExpression=(
+            "SET encrypted_refresh_token = :rt, expires_at = :exp, "
+            f"{_ACCESS_CT_ATTR} = :act, {_ACCESS_EXP_ATTR} = :aexp, "
+            "updated_at = :upd REMOVE " + _REFRESH_LOCK_ATTR
+        ),
+        ExpressionAttributeValues={
+            ":rt": entra_id_oauth.encrypt_token(body["refresh_token"], kms_key_arn),
+            ":exp": expires_at,
+            ":act": entra_id_oauth.encrypt_token(body["access_token"], kms_key_arn),
+            ":aexp": expires_at,
+            ":upd": datetime.now(timezone.utc).isoformat(),
+        },
     )
-    return body["access_token"]
+
+
+def get_valid_access_token(
+    workspaces_table: str,
+    kms_key_arn: str,
+    connection_id: str,
+    *,
+    force_refresh: bool = False,
+) -> Optional[str]:
+    """Return a usable GitLab access token, refreshing only when needed and
+    only one caller at a time per connection.
+
+    Fast path: a cached, unexpired access token is returned with no network
+    call. Otherwise a per-connection DDB lock serialises the refresh so
+    GitLab's per-use refresh-token rotation never collides across concurrent
+    consumers (the bug that 401'd concurrent syncs). ``force_refresh=True``
+    (used after a 401) skips the cache and mints a token under the lock.
+    Returns None when the connection has no refresh token (caller must
+    prompt reconnect)."""
+    table = _get_ddb().Table(workspaces_table)
+
+    if not force_refresh:
+        cached = _cached_access_if_valid(
+            _read_cred_row(table, connection_id), time.time())
+        if cached:
+            return cached
+
+    if not _acquire_lock_blocking(table, connection_id):
+        # Couldn't serialise; fall back to any still-usable cached token
+        # rather than risk a colliding unlocked refresh.
+        if not force_refresh:
+            return _cached_access_if_valid(
+                _read_cred_row(table, connection_id), time.time(), skew=0)
+        return None
+
+    try:
+        if not force_refresh:
+            # A concurrent holder may have refreshed just before we locked.
+            cached = _cached_access_if_valid(
+                _read_cred_row(table, connection_id), time.time())
+            if cached:
+                return cached
+        body = _raw_refresh(workspaces_table, connection_id)
+        if not body or not body.get("access_token"):
+            return None
+        _persist_refresh(table, kms_key_arn, connection_id, body)
+        return body["access_token"]
+    finally:
+        _release_lock(table, connection_id)
+
+
+def _read_cred_row(table, connection_id: str) -> Optional[Dict]:
+    resp = table.get_item(Key=_cred_key(connection_id))
+    return resp.get("Item")
+
+
+def refresh_access_token(
+    workspaces_table: str,
+    kms_key_arn: str,
+    connection_id: str,
+) -> Optional[str]:
+    """Back-compat shim: force a fresh access token through the cached,
+    single-flight path. Prefer ``get_valid_access_token`` (cache-first) in
+    new code."""
+    return get_valid_access_token(
+        workspaces_table, kms_key_arn, connection_id, force_refresh=True)
 
 
 def delete_tokens(workspaces_table: str, connection_id: str) -> None:

@@ -8,6 +8,12 @@
   ingest, scheduled (no webhooks). Foundation (shared OAuth + API client + this
   decision record) is chunk 01; the Lambda triad, read_source dispatch, UI, and
   HA parity follow.
+- v1.1 (2026-07-19) — Token concurrency hardening (Decision 7). GitLab rotates
+  the refresh token on EVERY refresh; concurrent consumers (two overlapping sync
+  messages, or a sync racing a read_source) each refreshed and collided, one
+  getting a 401 and persisting a dead token that poisoned the connection. Add a
+  cached, single-flight access-token path so concurrent consumers reuse one token
+  and refreshes run one-at-a-time. Written after a re-ingest stalled on 401s.
 
 ## Context
 
@@ -99,6 +105,29 @@ real decision, not a copy-paste. ADO is the closer template: it is the most rece
 8. **Raw `urllib` API client, no SDK** (ADR-036 Decision 5). `shared/gitlab_api.py`
    lists groups/projects, resolves default branch + latest commit SHA, walks the
    repository tree, and reads file content.
+
+9. **Cached, single-flight access tokens (v1.1).** GitLab rotates the refresh
+   token on **every** refresh, so a naive "refresh on each use" collides under
+   concurrency: two consumers refreshing at once each invalidate the other's
+   refresh token — the loser 401s, and (because the old `save_tokens` swallowed
+   write failures) may persist a now-dead token that poisons the connection for
+   everyone. `shared.oauth.gitlab.get_valid_access_token` fixes this:
+   - **Cache the short-lived access token** (KMS-encrypted) + its expiry in the
+     `GITLAB_TOKEN#` row. Consumers reuse a valid cached token with no network
+     call, so refreshes become rare (~once per token lifetime).
+   - **Serialise refresh with a per-connection DDB lock** (conditional
+     `update_item`, TTL auto-release). Only one refresh runs at a time, so the
+     rotation completes + persists before the next reads it — no collision.
+     `_persist_refresh` writes the rotated refresh token, the cached access
+     token, and the lock release in ONE `update_item` (never diverging), and it
+     RAISES on an IAM/DDB failure rather than silently dropping the rotation.
+   - **On 401, force-refresh + retry once** (the `gitlab-sync` worker), so a
+     genuine ~2h expiry mid-sync self-heals instead of failing the message.
+   - **Dedup concurrent sync messages** with a per-repo TTL lock so two
+     overlapping messages don't both walk the tree + double-write S3.
+   All three GitLab token consumers (`gitlab-sync`, `gitlab-integration`,
+   `mcp-server` read_source) route through this one path. Requires
+   `kms:Encrypt` + `dynamodb:UpdateItem` on each consumer's role.
 
 ## Consequences
 

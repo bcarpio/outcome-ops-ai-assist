@@ -2258,10 +2258,12 @@ def _read_source_gitlab_access_token(connection_id):
     """Refresh the GitLab OAuth access token for a workspace connection.
 
     Mirrors ``_read_source_ado_access_token`` for the GitLab side but is
-    thinner: ``shared.oauth.gitlab.refresh_access_token`` already loads
+    thinner: ``shared.oauth.gitlab.get_valid_access_token`` already loads
     the OAuth app's client id (env) + client secret (SSM) and delegates
     KMS-encrypted token storage to ``shared.entra_id_oauth`` keyed by the
-    ``GITLAB_TOKEN#`` prefix, so no inline secret read is needed here.
+    ``GITLAB_TOKEN#`` prefix, so no inline secret read is needed here. It
+    also serves a cached token and single-flights refresh (ADR-050 v1.1),
+    so a read_source call never collides with a concurrent sync's refresh.
 
     Raises ``ValueError``/``RuntimeError`` on missing prereqs or refresh
     failure -- callers surface a clean tool-facing error to the LLM.
@@ -2270,7 +2272,7 @@ def _read_source_gitlab_access_token(connection_id):
         raise ValueError("connection_id required for GitLab token refresh")
 
     from shared.oauth import gitlab as gitlab_oauth  # noqa: WPS433
-    access_token = gitlab_oauth.refresh_access_token(
+    access_token = gitlab_oauth.get_valid_access_token(
         workspaces_table=DYNAMODB_TABLE,
         kms_key_arn=os.environ.get("OAUTH_KMS_KEY_ARN"),
         connection_id=connection_id,
