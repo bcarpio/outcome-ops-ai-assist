@@ -976,6 +976,39 @@ class TestHandleDeletePrefix:
         assert mock_list.call_args_list[0].args == ("workspaces/ws_123/confluence/",)
         assert mock_list.call_count == 2
 
+    @patch.object(handler_module, 'delete_s3_objects_batch')
+    @patch.object(handler_module, 'delete_vectors_by_key_prefix')
+    @patch.object(handler_module, 'delete_vectors_for_s3_key')
+    @patch.object(handler_module, 'list_s3_keys_with_prefix')
+    def test_delete_prefix_code_map_sweep_runs_for_gitlab(
+        self, mock_list, mock_del_vec, mock_del_vec_prefix, mock_del_s3
+    ):
+        """ADR-052: the code-map/summary vector sweep must run for every
+        provider, not just github. For a GitLab slug prefix it must purge
+        BOTH the per-doc chunk prefix ({ws}#gitlab#group#project#) and the
+        bare-name code-map prefix ({ws}#gitlab#project#)."""
+        mock_list.side_effect = [
+            ["workspaces/ws_123/gitlab/group/project/README.md"],
+            [],
+        ]
+        mock_del_vec.return_value = 0
+        mock_del_vec_prefix.return_value = 3
+        mock_del_s3.return_value = 1
+
+        result = handle_delete_prefix({
+            "workspace_id": "ws_123",
+            "source": "gitlab",
+            "prefix": "group/project/",
+        })
+
+        assert result["status"] == "success"
+        called_prefixes = {
+            c.args[0] for c in mock_del_vec_prefix.call_args_list
+        }
+        # per-doc chunk prefix (slash -> #) AND bare-name code-map prefix.
+        assert "ws_123#gitlab#group#project#" in called_prefixes
+        assert "ws_123#gitlab#project#" in called_prefixes
+
     def test_delete_prefix_missing_workspace_id(self):
         """Test error when workspace_id is missing."""
         result = handle_delete_prefix({

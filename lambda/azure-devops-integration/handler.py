@@ -87,6 +87,10 @@ from shared.azure_devops_api import (  # noqa: E402
     list_projects as ado_list_projects,
     list_repos as ado_list_repos,
 )
+from shared.delete_dispatch import (  # noqa: E402
+    dispatch_repo_delete,
+    region_from_sqs_url,
+)
 from shared.oauth.azure_devops import (  # noqa: E402
     AZDO_SCOPES,
     delete_tokens,
@@ -105,6 +109,9 @@ APP_NAME = os.environ.get("APP_NAME", "outcome-ops-ai-assist")
 WORKSPACES_TABLE = os.environ.get("WORKSPACES_TABLE")
 AZURE_DEVOPS_SYNC_QUEUE = os.environ.get("AZURE_DEVOPS_SYNC_QUEUE")
 DELETE_QUEUE = os.environ.get("DELETE_QUEUE")
+# Secondary-region delete queue so each region's delete-worker cleans its
+# own stores under HA (delete-bug 02). Empty in single-region mode.
+DELETE_QUEUE_SECONDARY = os.environ.get("DELETE_QUEUE_SECONDARY")
 
 # Per-customer tenant + client config (set at deploy time from tfvars).
 AZURE_DEVOPS_TENANT_ID = os.environ.get("AZURE_DEVOPS_TENANT_ID", "")
@@ -118,6 +125,7 @@ AZURE_DEVOPS_REDIRECT_URI = os.environ.get("AZURE_DEVOPS_REDIRECT_URI", "")
 _dynamodb = None
 _ssm = None
 _sqs = None
+_sqs_secondary = None
 _client_secret: Optional[str] = None
 
 
@@ -140,6 +148,22 @@ def _get_sqs():
     if _sqs is None:
         _sqs = boto3.client("sqs", config=_BOTO_CONFIG)
     return _sqs
+
+
+def _get_sqs_secondary():
+    """SQS client targeting the secondary-region delete queue, or None
+    when not configured. Region is derived from the queue URL."""
+    global _sqs_secondary
+    if not DELETE_QUEUE_SECONDARY:
+        return None
+    if _sqs_secondary is None:
+        region = region_from_sqs_url(DELETE_QUEUE_SECONDARY)
+        _sqs_secondary = (
+            boto3.client("sqs", region_name=region, config=_BOTO_CONFIG)
+            if region
+            else None
+        )
+    return _sqs_secondary
 
 
 def _get_client_secret() -> str:
@@ -682,19 +706,30 @@ def _queue_sync_job(workspace_id: str, slug: str, connection_id: str) -> None:
 
 
 def _queue_delete_job(workspace_id: str, slug: str) -> None:
+    """Enqueue COMPLETE cleanup for a removed Azure DevOps repo (ADR-052).
+
+    ``slug`` is the full ``org/project/repo`` path. ADO routes through
+    the same ``dispatch_repo_delete`` helper as GitHub/GitLab so all
+    three artifact shapes get queued in every region: the source mirror +
+    per-doc chunks under ``azure_devops/{slug}/``; the bare-name
+    architectural-summary + code-map/summary vectors under the BARE repo
+    name; and the symbol-graph facts + code-maps pointer. The delete-
+    worker prepends ``workspaces/{ws}/{source}/`` itself, so the prefix
+    here is repo-relative -- the previous hand-rolled message doubled the
+    ``azure_devops/`` segment (prefix ``azure_devops/{slug}/`` under
+    source ``azure_devops``), so ADO deletes silently cleaned nothing."""
     if not DELETE_QUEUE:
         logger.warning("DELETE_QUEUE not configured")
         return
-    _get_sqs().send_message(
-        QueueUrl=DELETE_QUEUE,
-        MessageBody=json.dumps({
-            "action": "delete_prefix",
-            "workspace_id": workspace_id,
-            "source": "azure_devops",
-            "prefix": f"azure_devops/{slug}/",
-        }),
+    targets = [(_get_sqs(), DELETE_QUEUE)]
+    secondary = _get_sqs_secondary()
+    if secondary is not None:
+        targets.append((secondary, DELETE_QUEUE_SECONDARY))
+    sent = dispatch_repo_delete(workspace_id, slug, targets, source="azure_devops")
+    logger.info(
+        "Queued full cleanup for %s/%s: %d message(s) across %d region(s)",
+        workspace_id, slug, sent, len(targets),
     )
-    logger.info("Queued ADO deletion for %s/%s", workspace_id, slug)
 
 
 def handle_add_repos(event: Dict) -> Dict:

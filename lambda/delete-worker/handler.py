@@ -46,6 +46,12 @@ SYMBOL_GRAPH_TABLE = os.environ.get("SYMBOL_GRAPH_TABLE")
 CODE_MAPS_TABLE = os.environ.get("CODE_MAPS_TABLE")
 PENDING_WORK_TABLE = os.environ.get("PENDING_WORK_TABLE")
 
+# Code-host sources whose repos carry aggregate (code-map / *-summary)
+# vectors keyed on the BARE repo name (ADR-052). Doc sources
+# (confluence/jira/sharepoint/...) have no such vectors, so the code-map
+# sweep is skipped for them.
+_CODE_HOST_SOURCES = ("github", "gitlab", "azure_devops")
+
 # AWS clients
 s3_client = boto3.client("s3")
 ssm_client = boto3.client("ssm")
@@ -481,18 +487,24 @@ def handle_delete_prefix(message: Dict) -> Dict[str, Any]:
             vector_key_prefix = f"{workspace_id}#{source}#{safe_prefix}#"
             vectors_deleted += delete_vectors_by_key_prefix(vector_key_prefix)
 
-    # GitHub-only: code-map summary vectors have a different shape than
-    # per-doc chunks. Keys are {ws}#github#{repo}#{batch_type}#{group}
-    # (no owner segment), so the per-doc prefix above misses them.
-    # Without this second pass, removing a repo from a workspace via the UI
-    # leaves all handler-group-summary / *-summary / code-map vectors as
-    # queryable orphans. Repo name = last non-empty path segment of the
-    # source prefix (e.g., "owner/repo/" → "repo").
-    # Note: two GitHub repos in the same workspace sharing a final segment
-    # (e.g., alice/myrepo and bob/myrepo) would collide on this prefix.
+    # Code-host sources (ADR-052): code-map / handler-group / *-summary
+    # vectors have a different shape than per-doc chunks. Keys are
+    # {ws}#{source}#{repo_bare}#{batch_type}#{group} -- the BARE repo name
+    # (last path segment), no owner/group/org/project segment -- so the
+    # per-doc prefix above misses them. Without this second pass, removing
+    # a repo leaves all handler-group-summary / *-summary / code-map
+    # vectors as queryable orphans. GitHub/ADO already key these on the
+    # bare name; GitLab was normalised to match (process-batch-summary).
+    # Runs for every code host (github/gitlab/azure_devops), NOT for
+    # doc sources (confluence/jira/...) which have no aggregate vectors --
+    # skipping them saves a redundant list_vectors round-trip. Repo name =
+    # last non-empty path segment of the source prefix (e.g. "owner/repo/"
+    # or "group/sub/project/" -> the final segment).
+    # Note: two repos in the same workspace sharing a final segment
+    # (e.g. alice/myrepo and bob/myrepo) would collide on this prefix.
     # Acceptable for single-customer workspaces today; document if it
     # surfaces.
-    if workspace_id and source == "github" and prefix:
+    if workspace_id and source in _CODE_HOST_SOURCES and prefix:
         repo_only = prefix.rstrip("/").split("/")[-1]
         if repo_only:
             code_map_prefix = f"{workspace_id}#{source}#{repo_only}#"

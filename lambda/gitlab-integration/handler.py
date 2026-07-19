@@ -63,6 +63,10 @@ from shared.audit_writer import (  # noqa: E402
     ACTION_OAUTH_CONNECTION_ESTABLISHED,
     log_admin_action,
 )
+from shared.delete_dispatch import (  # noqa: E402
+    dispatch_repo_delete,
+    region_from_sqs_url,
+)
 from shared.license_repos import get_active_repos_for_customer  # noqa: E402
 from shared.oauth import gitlab as gitlab_oauth  # noqa: E402
 from shared.region_guard import (  # noqa: E402
@@ -100,10 +104,14 @@ GITLAB_REDIRECT_URI = os.environ.get("GITLAB_REDIRECT_URI", "")
 # prefix cleanup on delete-repo / disconnect.
 GITLAB_SYNC_QUEUE = os.environ.get("GITLAB_SYNC_QUEUE")
 DELETE_QUEUE = os.environ.get("DELETE_QUEUE")
+# Secondary-region delete queue so each region's delete-worker cleans its
+# own stores under HA (delete-bug 02). Empty in single-region mode.
+DELETE_QUEUE_SECONDARY = os.environ.get("DELETE_QUEUE_SECONDARY")
 
 # Cached clients
 _dynamodb = None
 _sqs = None
+_sqs_secondary = None
 
 
 def _get_dynamodb():
@@ -118,6 +126,22 @@ def _get_sqs():
     if _sqs is None:
         _sqs = boto3.client("sqs", config=_BOTO_CONFIG)
     return _sqs
+
+
+def _get_sqs_secondary():
+    """SQS client targeting the secondary-region delete queue, or None
+    when not configured. Region is derived from the queue URL."""
+    global _sqs_secondary
+    if not DELETE_QUEUE_SECONDARY:
+        return None
+    if _sqs_secondary is None:
+        region = region_from_sqs_url(DELETE_QUEUE_SECONDARY)
+        _sqs_secondary = (
+            boto3.client("sqs", region_name=region, config=_BOTO_CONFIG)
+            if region
+            else None
+        )
+    return _sqs_secondary
 
 
 def _queue_sync_job(workspace_id: str, slug: str, connection_id: str) -> None:
@@ -147,25 +171,29 @@ def _queue_sync_job(workspace_id: str, slug: str, connection_id: str) -> None:
 
 
 def _queue_delete_job(workspace_id: str, slug: str) -> None:
-    """Enqueue S3-mirror prefix cleanup so the sync-written blobs under
-    ``workspaces/{ws}/gitlab/{slug}/`` (plus their vectors) get purged.
+    """Enqueue COMPLETE cleanup for a removed GitLab repo (ADR-052).
 
-    The shared delete-worker prepends ``workspaces/{workspace_id}/{source}/``
-    itself, so the ``prefix`` here is repo-relative (``{slug}/``) -- NOT
-    ``gitlab/{slug}/``."""
+    A repo's data spans three shapes that a single slug-prefix delete
+    misses: the source mirror + per-doc chunk vectors under
+    ``gitlab/{slug}/``; the bare-name architectural-summary +
+    code-map/summary vectors under ``gitlab/{bare}/`` and
+    ``{ws}#gitlab#{bare}#...``; and the symbol-graph facts + code-maps
+    pointer (keyed by the BARE name). GitLab routes through the same
+    ``dispatch_repo_delete`` helper as GitHub so all three are queued in
+    every region -- the bare name is the last path segment of the slug,
+    so nested subgroups (``group/subgroup/project``) collapse correctly."""
     if not DELETE_QUEUE:
         logger.warning("DELETE_QUEUE not configured")
         return
-    _get_sqs().send_message(
-        QueueUrl=DELETE_QUEUE,
-        MessageBody=json.dumps({
-            "action": "delete_prefix",
-            "workspace_id": workspace_id,
-            "source": "gitlab",
-            "prefix": f"{slug}/",
-        }),
+    targets = [(_get_sqs(), DELETE_QUEUE)]
+    secondary = _get_sqs_secondary()
+    if secondary is not None:
+        targets.append((secondary, DELETE_QUEUE_SECONDARY))
+    sent = dispatch_repo_delete(workspace_id, slug, targets, source="gitlab")
+    logger.info(
+        "Queued full cleanup for %s/%s: %d message(s) across %d region(s)",
+        workspace_id, slug, sent, len(targets),
     )
-    logger.info("Queued GitLab deletion for %s/%s", workspace_id, slug)
 
 
 def _snapshot_active_repos() -> None:

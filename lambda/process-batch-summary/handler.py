@@ -1192,13 +1192,22 @@ def store_batch_summary(
         # all existing vector keys + metadata.
         provider = batch.get("provider", "github")
 
-        # Construct vector key
-        # Workspace repos: {workspace_id}#{provider}#{repo}#{doc_type}#{group_name}
-        # Legacy repos: {repo}#{doc_type}#{group_name}
+        # Construct vector key on the BARE repo name (last path segment),
+        # uniform across providers (ADR-052). GitHub/ADO already pass a
+        # bare batch['repo'] (no owner/org/project), so rsplit is a no-op
+        # for them; GitLab passes the full slug ("group/subgroup/project")
+        # and is normalised here to the bare project name so its
+        # code-map/summary vectors match the {ws}#{source}#{bare}#... shape
+        # that the delete-worker's code-map sweep purges on repo removal.
+        # Without this, GitLab code-map vectors keyed on the slug leaked
+        # into the RAG after a repo was deleted (delete-bug: GitLab).
+        # Workspace repos: {workspace_id}#{provider}#{repo_bare}#{doc_type}#{group_name}
+        # Legacy repos: {repo_bare}#{doc_type}#{group_name}
+        repo_bare = batch["repo"].rsplit("/", 1)[-1]
         if workspace_id:
-            vector_key = f"{workspace_id}#{provider}#{batch['repo']}#{doc_type}#{batch['group_name']}"
+            vector_key = f"{workspace_id}#{provider}#{repo_bare}#{doc_type}#{batch['group_name']}"
         else:
-            vector_key = f"{batch['repo']}#{doc_type}#{batch['group_name']}"
+            vector_key = f"{repo_bare}#{doc_type}#{batch['group_name']}"
 
         metadata = {
             "content": summary,

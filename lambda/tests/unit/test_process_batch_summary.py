@@ -426,6 +426,38 @@ class TestStoreBatchSummary:
         finally:
             dual_write._reset_clients_for_tests()
 
+    def test_store_batch_summary_gitlab_key_uses_bare_name(self):
+        """ADR-052: GitLab passes the full slug as batch['repo'], but the
+        code-map/summary vector key must use the BARE project name (last
+        path segment) so it matches the {ws}#gitlab#{bare}#... shape the
+        delete-worker purges on repo removal. Nested subgroups collapse to
+        the final segment. Without this, GitLab code-map vectors keyed on
+        the slug leaked into the RAG after a repo was deleted."""
+        from shared import dual_write
+        mock_s3vectors = MagicMock()
+        mock_s3vectors.put_vectors.return_value = {}
+        dual_write._set_clients_for_tests(s3vectors=mock_s3vectors)
+        try:
+            batch = {
+                "workspace_id": "ws_abc",
+                "provider": "gitlab",
+                "repo": "group/subgroup/license-server",  # full slug
+                "repo_project": "group/subgroup/license-server",
+                "storage_key": "summary#code-map",
+                "batch_type": "code",
+                "group_name": "license-server/code-map",
+                "file_paths": ["README.md"],
+            }
+            result = store_batch_summary(batch, "summary text", [0.1] * 1024)
+            assert result is True
+            vectors = mock_s3vectors.put_vectors.call_args[1]["vectors"]
+            assert (
+                vectors[0]["key"]
+                == "ws_abc#gitlab#license-server#code-summary#license-server/code-map"
+            )
+        finally:
+            dual_write._reset_clients_for_tests()
+
     @patch("process_batch_summary_handler.VECTOR_BUCKET", "test-bucket")
     @patch("process_batch_summary_handler.VECTOR_INDEX", "test-index")
     @patch("process_batch_summary_handler.s3vectors_client")

@@ -823,8 +823,28 @@ class TestDisconnect:
         )
         result = handler.lambda_handler(event, None)
         assert result["statusCode"] == 200
-        # Two repo delete-jobs enqueued for the cascade (c1's repos only).
-        assert mock_sqs.send_message.call_count == 2
+        # Cascade removes c1's two repos; each repo now enqueues the FULL
+        # 3-message delete contract (slug delete_prefix + bare delete_prefix
+        # + delete_symbol_graph) via shared.delete_dispatch (ADR-052), so
+        # 2 repos x 3 = 6 messages. Single region (no secondary queue).
+        assert mock_sqs.send_message.call_count == 6
+        bodies = [
+            json.loads(c.kwargs["MessageBody"])
+            for c in mock_sqs.send_message.call_args_list
+        ]
+        assert all(
+            b["source"] == "azure_devops"
+            for b in bodies
+            if b["action"] == "delete_prefix"
+        )
+        assert {b["action"] for b in bodies} == {
+            "delete_prefix", "delete_symbol_graph",
+        }
+        # Bare name is the final slug segment (org/project/repo -> repo).
+        assert any(
+            b["action"] == "delete_symbol_graph" and b["repo_bare"] == "c1"
+            for b in bodies
+        )
         # Three DDB deletes: 2 repos + 1 connection row.
         assert mock_dual.ddb_delete_item.call_count == 3
         # Token row deleted.

@@ -119,9 +119,13 @@ module "gitlab_integration_lambda" {
       GITLAB_REDIRECT_URI            = local.gitlab_redirect_uri
 
       # chunk-03: the handler enqueues the initial sync job on add-repos
-      # and S3-mirror prefix cleanup on delete-repo / disconnect.
+      # and full repo-delete cleanup on delete-repo / disconnect (ADR-052,
+      # via shared.delete_dispatch -- same contract as GitHub).
       GITLAB_SYNC_QUEUE = aws_sqs_queue.gitlab_sync[0].url
       DELETE_QUEUE      = aws_sqs_queue.delete_queue[0].url
+      # Secondary-region delete queue (HA) so repo-delete cleanup reaches
+      # both regions (delete-bug 02). Empty in single-region mode.
+      DELETE_QUEUE_SECONDARY = var.secondary_region != "" ? aws_sqs_queue.delete_queue_secondary[0].url : ""
 
       AUDIT_TABLE = module.audit_logs_table.dynamodb_table_id
     },
@@ -160,17 +164,21 @@ module "gitlab_integration_lambda" {
         ]
       }
 
-      # chunk-03: enqueue the initial sync job (gitlab sync queue) + the
-      # S3-mirror prefix cleanup (shared delete queue) from the handler.
+      # chunk-03: enqueue the initial sync job (gitlab sync queue) + full
+      # repo-delete cleanup (shared delete queue, + secondary delete queue
+      # under HA per ADR-052) from the handler.
       sqs_send = {
         effect = "Allow"
         actions = [
           "sqs:SendMessage"
         ]
-        resources = [
-          aws_sqs_queue.gitlab_sync[0].arn,
-          aws_sqs_queue.delete_queue[0].arn
-        ]
+        resources = concat(
+          [
+            aws_sqs_queue.gitlab_sync[0].arn,
+            aws_sqs_queue.delete_queue[0].arn,
+          ],
+          var.secondary_region != "" ? [aws_sqs_queue.delete_queue_secondary[0].arn] : [],
+        )
       }
 
       # KMS for token encryption/decryption at rest in DDB.
