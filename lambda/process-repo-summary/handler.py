@@ -759,7 +759,17 @@ def _expected_code_map_vector_keys(
     keys = []
     for unit in code_units:
         doc_type = f"{unit['batch_type']}-summary"
-        for group_name in _shard_group_names_for_unit(unit, file_sizes):
+        group_names = _shard_group_names_for_unit(unit, file_sizes)
+        if len(group_names) > 1:
+            # Sharded unit: the merge fan-in stores the unified summary
+            # under the PARENT group_name, so the parent key must be in
+            # expected_keys alongside the shard keys. Without it, the
+            # NEXT sync's orphan sweep deletes the merged summary as an
+            # orphan -- silently, because the merge already succeeded so
+            # no failed-files row is ever written -- and incremental
+            # syncs never regenerate it while the unit is unchanged.
+            group_names = [unit["group_name"], *group_names]
+        for group_name in group_names:
             if workspace_id:
                 keys.append(
                     f"{workspace_id}#{provider}#{repo_bare}#{doc_type}#{group_name}"

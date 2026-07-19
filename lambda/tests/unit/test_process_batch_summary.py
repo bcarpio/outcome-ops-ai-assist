@@ -458,6 +458,40 @@ class TestStoreBatchSummary:
         finally:
             dual_write._reset_clients_for_tests()
 
+    def test_store_batch_summary_stamps_commit_sha_metadata(self):
+        """Shard keys are deterministic, so a shard vector from a
+        previous run is indistinguishable from this run's by key alone.
+        commit_sha in metadata is the generation marker the merge fan-in
+        uses to reject stale shards. Absent from the message (legacy
+        producers) -> absent from metadata."""
+        from shared import dual_write
+        mock_s3vectors = MagicMock()
+        mock_s3vectors.put_vectors.return_value = {}
+        dual_write._set_clients_for_tests(s3vectors=mock_s3vectors)
+        try:
+            batch = {
+                "workspace_id": "ws_abc",
+                "repo": "myrepo",
+                "repo_project": "bcarpio/myrepo",
+                "storage_key": "summary#tests",
+                "batch_type": "handler-group",
+                "group_name": "tests#shard-00",
+                "file_paths": ["lambda/tests/t.py"],
+                "commit_sha": "deadbeef",
+            }
+            assert store_batch_summary(batch, "text", [0.1] * 1024) is True
+            vectors = mock_s3vectors.put_vectors.call_args[1]["vectors"]
+            assert vectors[0]["metadata"]["commit_sha"] == "deadbeef"
+
+            # Legacy message without commit_sha: no stamp, no crash.
+            mock_s3vectors.reset_mock()
+            del batch["commit_sha"]
+            assert store_batch_summary(batch, "text", [0.1] * 1024) is True
+            vectors = mock_s3vectors.put_vectors.call_args[1]["vectors"]
+            assert "commit_sha" not in vectors[0]["metadata"]
+        finally:
+            dual_write._reset_clients_for_tests()
+
     def test_store_batch_summary_failure(self):
         """Test handling S3 Vectors storage failure. Inject the failure
         through dual_write (the actual write path) so this is self-contained
@@ -707,6 +741,23 @@ class TestHandleMergeMessage:
         )
 
     @patch("process_batch_summary_handler._mark_code_map_unit_done")
+    @patch("process_batch_summary_handler._requeue_merge_with_delay")
+    @patch("process_batch_summary_handler._fetch_shard_summaries")
+    def test_merge_passes_commit_sha_to_shard_fetch(
+        self, mock_fetch, mock_requeue, mock_mark,
+    ):
+        """The merge must thread its commit_sha into the shard fetch so
+        stale shards from a previous run (same deterministic keys) can't
+        satisfy it. Without this the merge races its own shards on the
+        non-FIFO code-maps queue and merges one-generation-stale
+        content."""
+        mock_fetch.return_value = []
+        handler_module.handle_merge_message(self._base_batch(shard_count=3))
+        assert (
+            mock_fetch.call_args.kwargs["expected_commit_sha"] == "abc"
+        )
+
+    @patch("process_batch_summary_handler._mark_code_map_unit_done")
     def test_zero_shard_count_marks_ledger_and_returns(self, mock_mark):
         """Defensive: a malformed merge message (shard_count=0) should
         still close the ledger so sha-truth advance isn't blocked."""
@@ -756,6 +807,51 @@ class TestFetchShardSummaries:
         with patch.object(handler_module, "s3vectors_client", mock_client):
             result = handler_module._fetch_shard_summaries(["k1"])
         assert result == []
+
+    def test_stale_commit_sha_shards_treated_as_not_landed(self):
+        """Regression for the 2026-07-19 stale-shard-merge bug: the
+        code-maps queue is not FIFO, so the merge message can run before
+        this run's shards land. The previous run's shard vectors sit at
+        the same deterministic keys and satisfied the merge with
+        one-generation-stale content (live-hit: app.retrieveit.ai
+        infrastructure merge on 2026-07-18 declared '8 shards ready'
+        20s before this run's first shard was stored). Shards whose
+        commit_sha doesn't match -- or predate sha-stamping entirely --
+        must be treated as not-landed so the requeue loop waits."""
+        mock_client = MagicMock()
+        mock_client.get_vectors.return_value = {
+            "vectors": [
+                {"key": "k1", "metadata": {
+                    "content": "current", "file_count": "1",
+                    "commit_sha": "new-sha"}},
+                {"key": "k2", "metadata": {
+                    "content": "stale", "file_count": "1",
+                    "commit_sha": "old-sha"}},
+                {"key": "k3", "metadata": {
+                    "content": "pre-stamping", "file_count": "1"}},
+            ],
+        }
+        with patch.object(handler_module, "s3vectors_client", mock_client):
+            result = handler_module._fetch_shard_summaries(
+                ["k1", "k2", "k3"], expected_commit_sha="new-sha",
+            )
+        assert [s["key"] for s in result] == ["k1"]
+
+    def test_no_expected_sha_accepts_all_shards(self):
+        """Legacy merge messages (no commit_sha) keep the old behavior:
+        any shard with content counts as landed."""
+        mock_client = MagicMock()
+        mock_client.get_vectors.return_value = {
+            "vectors": [
+                {"key": "k1", "metadata": {
+                    "content": "a", "file_count": "1",
+                    "commit_sha": "whatever"}},
+                {"key": "k2", "metadata": {"content": "b", "file_count": "1"}},
+            ],
+        }
+        with patch.object(handler_module, "s3vectors_client", mock_client):
+            result = handler_module._fetch_shard_summaries(["k1", "k2"])
+        assert len(result) == 2
 
 
 class TestSymbolGraphWiring:

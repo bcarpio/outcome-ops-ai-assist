@@ -1222,6 +1222,14 @@ def store_batch_summary(
         if workspace_id:
             metadata["workspace_id"] = workspace_id
             metadata["source"] = provider
+        if batch.get("commit_sha"):
+            # Generation marker: shard keys are deterministic, so a shard
+            # vector from a PREVIOUS run is indistinguishable from this
+            # run's by key alone. The merge fan-in compares this against
+            # the merge message's commit_sha to avoid merging stale
+            # shards (the code-maps queue is not FIFO, so the merge can
+            # race ahead of its own shards).
+            metadata["commit_sha"] = batch["commit_sha"]
 
         # fable-scale chunk 07: route through shared.dual_write so this
         # write replicates to the passive region.
@@ -1743,11 +1751,21 @@ def _shard_vector_key(
     return f"{repo_bare}#{doc_type}#{shard_group_name}"
 
 
-def _fetch_shard_summaries(shard_keys: List[str]) -> List[Dict[str, Any]]:
+def _fetch_shard_summaries(
+    shard_keys: List[str],
+    expected_commit_sha: Optional[str] = None,
+) -> List[Dict[str, Any]]:
     """Fetch shard summaries from S3 Vectors by known key. Returns a
     list of {content, file_count, key} dicts for shards that have
     landed. Missing shards are silently dropped -- caller compares
     len(returned) to shard_count to decide whether to merge or requeue.
+
+    When expected_commit_sha is set, shards whose metadata commit_sha
+    doesn't match are treated as not-landed: shard keys are
+    deterministic, so a previous run's shard vector sits at the same key
+    as this run's and would otherwise satisfy the merge with stale
+    content. Shards written before commit_sha stamping (no commit_sha
+    in metadata) are likewise treated as stale.
     """
     if not shard_keys:
         return []
@@ -1766,6 +1784,18 @@ def _fetch_shard_summaries(shard_keys: List[str]) -> List[Dict[str, Any]]:
         metadata = vector.get("metadata", {})
         content = metadata.get("content", "")
         if not content:
+            continue
+        if (
+            expected_commit_sha
+            and metadata.get("commit_sha") != expected_commit_sha
+        ):
+            logger.info(
+                "[merge] Ignoring stale shard %s (commit_sha %s, "
+                "expected %s)",
+                vector.get("key", ""),
+                metadata.get("commit_sha", "<absent>"),
+                expected_commit_sha,
+            )
             continue
         try:
             file_count = int(metadata.get("file_count", "0"))
@@ -1871,7 +1901,12 @@ def handle_merge_message(batch: Dict[str, Any]) -> None:
         )
         for i in range(shard_count)
     ]
-    shard_summaries = _fetch_shard_summaries(shard_keys)
+    # Pass the merge message's commit_sha so stale shards from a
+    # previous run (same deterministic keys) can't satisfy the merge
+    # before this run's shards land.
+    shard_summaries = _fetch_shard_summaries(
+        shard_keys, expected_commit_sha=batch.get("commit_sha"),
+    )
 
     if len(shard_summaries) < shard_count:
         merge_attempt = int(batch.get("merge_attempt", 0)) + 1

@@ -633,11 +633,52 @@ class TestExpectedCodeMapVectorKeysShardAware:
         keys = repo_summary_handler._expected_code_map_vector_keys(
             units, "myrepo", "ws", all_files=all_files,
         )
-        # Must have shard-suffixed keys, NOT the parent key
-        assert all(k.startswith("ws#github#myrepo#handler-group-summary#tests#shard-") for k in keys)
-        assert "ws#github#myrepo#handler-group-summary#tests" not in keys
-        # Shard indices 0..N-1
-        assert len(keys) >= 2
+        # Must have shard-suffixed keys for every shard the splitter emits
+        shard_keys = [
+            k for k in keys
+            if k.startswith("ws#github#myrepo#handler-group-summary#tests#shard-")
+        ]
+        assert len(shard_keys) >= 2
+        # AND the parent key: the merge fan-in stores the unified summary
+        # there. (The pre-2026-07-19 version asserted the parent was
+        # ABSENT, which made the orphan sweep delete every merged summary
+        # on the following sync.)
+        assert "ws#github#myrepo#handler-group-summary#tests" in keys
+        assert len(keys) == len(shard_keys) + 1
+
+    def test_sharded_unit_includes_merged_parent_key(self):
+        """Regression for the 2026-07-19 merged-parent-orphan bug: the
+        merge fan-in writes the unified summary at the PARENT group_name,
+        but expected_keys only listed shard-suffixed names. The next
+        sync's orphan sweep then deleted the merged summary -- silently,
+        since the merge had succeeded and no failed-files row existed --
+        and incremental syncs never regenerated it while the unit was
+        unchanged (live-hit: app.retrieveit.ai infrastructure-summary,
+        deleted 2026-07-19 by the sweep after the 07-18 merge)."""
+        file_paths = [f"terraform/f{i}.tf" for i in range(15)]
+        units = [{
+            "batch_type": "infrastructure",
+            "group_name": "infrastructure",
+            "file_paths": file_paths,
+        }]
+        all_files = [
+            {"path": p, "type": "blob", "size": 40_000} for p in file_paths
+        ]
+        keys = repo_summary_handler._expected_code_map_vector_keys(
+            units, "myrepo", "ws", all_files=all_files,
+        )
+        assert "ws#github#myrepo#infrastructure-summary#infrastructure" in keys
+        # Small units are unaffected: exactly one key, no duplicate parent
+        small = repo_summary_handler._expected_code_map_vector_keys(
+            [{
+                "batch_type": "handler-group",
+                "group_name": "chat",
+                "file_paths": ["lambda/chat/handler.py"],
+            }],
+            "myrepo", "ws",
+            all_files=[{"path": "lambda/chat/handler.py", "type": "blob", "size": 500}],
+        )
+        assert small == ["ws#github#myrepo#handler-group-summary#chat"]
 
     def test_shard_group_names_match_splitter_emissions(self):
         """The keys emitted here must match what the splitter actually
