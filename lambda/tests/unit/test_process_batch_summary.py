@@ -458,32 +458,31 @@ class TestStoreBatchSummary:
         finally:
             dual_write._reset_clients_for_tests()
 
-    @patch("process_batch_summary_handler.VECTOR_BUCKET", "test-bucket")
-    @patch("process_batch_summary_handler.VECTOR_INDEX", "test-index")
-    @patch("process_batch_summary_handler.s3vectors_client")
-    def test_store_batch_summary_failure(self, mock_s3vectors):
-        """Test handling S3 Vectors storage failure."""
-        # Arrange
+    def test_store_batch_summary_failure(self):
+        """Test handling S3 Vectors storage failure. Inject the failure
+        through dual_write (the actual write path) so this is self-contained
+        and not dependent on a prior test's client reset."""
         from botocore.exceptions import ClientError
+        from shared import dual_write
 
+        mock_s3vectors = MagicMock()
         mock_s3vectors.put_vectors.side_effect = ClientError(
             {"Error": {"Code": "ValidationException"}}, "PutVectors"
         )
-
-        batch = {
-            "repo": "test-repo",
-            "repo_project": "owner/test-repo",
-            "storage_key": "summary#test",
-            "batch_type": "shared",
-            "group_name": "utils",
-            "file_paths": []
-        }
-
-        # Act
-        result = store_batch_summary(batch, "summary", [0.1] * 1024)
-
-        # Assert
-        assert result is False
+        dual_write._set_clients_for_tests(s3vectors=mock_s3vectors)
+        try:
+            batch = {
+                "repo": "test-repo",
+                "repo_project": "owner/test-repo",
+                "storage_key": "summary#test",
+                "batch_type": "shared",
+                "group_name": "utils",
+                "file_paths": []
+            }
+            result = store_batch_summary(batch, "summary", [0.1] * 1024)
+            assert result is False
+        finally:
+            dual_write._reset_clients_for_tests()
 
 
 class TestProcessBatchRecord:

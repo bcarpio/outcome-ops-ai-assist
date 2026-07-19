@@ -611,13 +611,21 @@ def store_code_map_embedding(
         workspace_id: Optional workspace ID for workspace-scoped storage
     """
     try:
-        # Construct vector key
-        # Workspace repos: {workspace_id}#{provider}#{repo}#{doc_type}#{identifier}
-        # Legacy repos: {repo}#{doc_type}#{identifier}
+        # Construct vector key on the BARE repo name (last path segment),
+        # uniform across providers (ADR-052). GitHub/ADO already pass a bare
+        # repo; GitLab passes the full slug ("group/subgroup/project") whose
+        # literal "/" would dodge BOTH delete-worker sweeps (the per-doc
+        # sweep translates slug "/"->"#", the code-map sweep keys on bare) --
+        # leaving the code-map vector orphaned after a repo is deleted. rsplit
+        # is a no-op for the already-bare providers. metadata["repo"] keeps
+        # the full slug for attribution.
+        repo_bare = repo.rsplit("/", 1)[-1]
+        # Workspace repos: {workspace_id}#{provider}#{repo_bare}#{doc_type}#{identifier}
+        # Legacy repos: {repo_bare}#{doc_type}#{identifier}
         if workspace_id:
-            vector_key = f"{workspace_id}#{provider}#{repo}#{doc_type}#{doc_id.replace(':', '-')}"
+            vector_key = f"{workspace_id}#{provider}#{repo_bare}#{doc_type}#{doc_id.replace(':', '-')}"
         else:
-            vector_key = f"{repo}#{doc_type}#{doc_id.replace(':', '-')}"
+            vector_key = f"{repo_bare}#{doc_type}#{doc_id.replace(':', '-')}"
 
         metadata = {
             "content": content,
@@ -711,10 +719,11 @@ def _expected_code_map_vector_keys(
     all_files: Optional[List[Any]] = None,
 ) -> List[str]:
     """Compute the deterministic vector keys process-batch-summary will
-    write for the given code units. Mirrors the writer's key derivation:
+    write for the given code units. Mirrors the writer's key derivation
+    (ADR-052: repo is the BARE name, last path segment):
 
         doc_type = f"{batch['batch_type']}-summary"
-        key      = f"{ws}#{provider}#{repo}#{doc_type}#{group_name}"
+        key      = f"{ws}#{provider}#{repo_bare}#{doc_type}#{group_name}"
 
     For sharded units (chunk 03 splitter emits N shard messages per
     oversized unit), the writer stores each shard's summary under a
@@ -740,6 +749,12 @@ def _expected_code_map_vector_keys(
         List of expected vector keys (>= one per unit; N+1 for
         multi-shard units when all_files is provided).
     """
+    # Match the writer's BARE-name key derivation (ADR-052): store_batch_
+    # summary keys on repo.rsplit("/")[-1], so the expected-key set (used by
+    # the orphan sweep) must use the bare name too, or it would treat every
+    # real GitLab summary as an orphan and delete it. No-op for the already-
+    # bare github/azure_devops providers.
+    repo_bare = repo.rsplit("/", 1)[-1]
     file_sizes = _build_file_sizes_map(all_files)
     keys = []
     for unit in code_units:
@@ -747,10 +762,10 @@ def _expected_code_map_vector_keys(
         for group_name in _shard_group_names_for_unit(unit, file_sizes):
             if workspace_id:
                 keys.append(
-                    f"{workspace_id}#{provider}#{repo}#{doc_type}#{group_name}"
+                    f"{workspace_id}#{provider}#{repo_bare}#{doc_type}#{group_name}"
                 )
             else:
-                keys.append(f"{repo}#{doc_type}#{group_name}")
+                keys.append(f"{repo_bare}#{doc_type}#{group_name}")
     return keys
 
 
@@ -758,6 +773,8 @@ def _queue_orphan_code_map_cleanup(
     repo: str,
     expected_keys: List[str],
     workspace_id: Optional[str],
+    *,
+    provider: str = "github",
 ) -> None:
     """Queue a delete_orphan_code_maps job to delete-worker.
 
@@ -769,9 +786,13 @@ def _queue_orphan_code_map_cleanup(
     delete-worker action only handles workspace-scoped key shapes today.
 
     Args:
-        repo: Short repo name (matches the writer's batch messages).
+        repo: Repo name/slug (matches the writer's batch messages).
         expected_keys: Full set of vector keys to retain.
         workspace_id: Workspace ID. Required - cleanup is skipped if None.
+        provider: Code host (github/gitlab/azure_devops). Sent as ``source``
+            so the delete-worker scans the right ``{ws}#{source}#{bare}#``
+            key space (ADR-052) -- previously hardcoded github, so GitLab
+            orphans were never swept.
     """
     if not workspace_id:
         return
@@ -795,7 +816,10 @@ def _queue_orphan_code_map_cleanup(
     payload = {
         "action": "delete_orphan_code_maps",
         "workspace_id": workspace_id,
-        "repo": repo,
+        "source": provider,
+        # BARE repo name -- the delete-worker scans {ws}#{source}#{bare}#
+        # (ADR-052). rsplit is a no-op for already-bare github/ADO.
+        "repo": repo.rsplit("/", 1)[-1],
         "expected_keys": expected_keys,
     }
     try:
@@ -1596,7 +1620,8 @@ def handler(event, context):
                     full_code_units, repo, workspace_id, provider=provider,
                     all_files=all_files,
                 )
-                _queue_orphan_code_map_cleanup(repo, expected_keys, workspace_id)
+                _queue_orphan_code_map_cleanup(
+                    repo, expected_keys, workspace_id, provider=provider)
 
             # Usage tracking (ADR-019). Non-blocking: returns bool, never
             # raises. Liveness tracking moved to connect/disconnect handlers

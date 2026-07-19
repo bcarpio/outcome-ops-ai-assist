@@ -1731,11 +1731,16 @@ def _shard_vector_key(
     """Compute the vector key for a single shard summary. Must match
     the key shape that ``store_batch_summary`` writes when it receives
     a shard message (which uses the shard-suffixed group_name that
-    ``send_code_units_to_sqs`` set on the shard message)."""
+    ``send_code_units_to_sqs`` set on the shard message). Keys on the BARE
+    repo name (last path segment) to match store_batch_summary (ADR-052);
+    without this, GitLab (slug repo) shard summaries would be written bare
+    but fetched by a slug key, silently breaking merge fan-in. No-op for
+    already-bare github/ADO."""
+    repo_bare = repo.rsplit("/", 1)[-1]
     shard_group_name = f"{parent_group_name}#shard-{shard_index:02d}"
     if workspace_id:
-        return f"{workspace_id}#{provider}#{repo}#{doc_type}#{shard_group_name}"
-    return f"{repo}#{doc_type}#{shard_group_name}"
+        return f"{workspace_id}#{provider}#{repo_bare}#{doc_type}#{shard_group_name}"
+    return f"{repo_bare}#{doc_type}#{shard_group_name}"
 
 
 def _fetch_shard_summaries(shard_keys: List[str]) -> List[Dict[str, Any]]:

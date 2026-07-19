@@ -574,12 +574,17 @@ def handle_delete_orphan_code_maps(message: Dict) -> Dict[str, Any]:
             expected_keys is the full set of vector keys the producer will
             write or has written for this repo's current tree. An empty
             expected_keys is refused (would wipe all code-maps for the repo).
+            ``source`` (github/gitlab/azure_devops, default github) selects
+            the key space; ``repo`` is the BARE repo name (ADR-052).
 
     Returns:
         Result dict with orphans_found and vectors_deleted counts.
     """
     workspace_id = message.get("workspace_id")
-    repo = message.get("repo")
+    # Producer sends the BARE name; rsplit defensively in case an older
+    # producer still sends a slug.
+    repo = (message.get("repo") or "").rsplit("/", 1)[-1]
+    source = message.get("source", "github")
     expected_keys = set(message.get("expected_keys", []))
 
     if not workspace_id or not repo:
@@ -595,7 +600,7 @@ def handle_delete_orphan_code_maps(message: Dict) -> Dict[str, Any]:
         )
         return {"status": "skipped", "reason": "empty expected_keys"}
 
-    repo_prefix = f"{workspace_id}#github#{repo}#"
+    repo_prefix = f"{workspace_id}#{source}#{repo}#"
     logger.info(
         f"Detecting code-map orphans for {repo_prefix} "
         f"(expected={len(expected_keys)} keys)"

@@ -540,6 +540,17 @@ class TestExpectedCodeMapVectorKeys:
         )
         assert keys == ["myrepo#handler-group-summary#chat"]
 
+    def test_gitlab_slug_collapses_to_bare_name(self):
+        # ADR-052: GitLab passes the full slug as repo, but the writer keys
+        # on the BARE project name -- so the expected-key set (which the
+        # orphan sweep compares against) must too, or it would treat every
+        # real GitLab summary as an orphan.
+        units = [{"batch_type": "handler-group", "group_name": "chat"}]
+        keys = repo_summary_handler._expected_code_map_vector_keys(
+            units, "group/subgroup/myrepo", "ws_abc", provider="gitlab"
+        )
+        assert keys == ["ws_abc#gitlab#myrepo#handler-group-summary#chat"]
+
     def test_empty_units_returns_empty(self):
         keys = repo_summary_handler._expected_code_map_vector_keys(
             [], "myrepo", "ws"

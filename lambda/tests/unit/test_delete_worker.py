@@ -1676,6 +1676,27 @@ class TestHandleDeleteOrphanCodeMaps:
         deleted_keys = mock_s3vectors_client.delete_vectors.call_args[1]["keys"]
         assert deleted_keys == ["ws#github#repo#handler-group-summary#slack-integration"]
 
+    def test_gitlab_source_scans_gitlab_key_space(self, vector_config):
+        """ADR-052: orphan sweep must be provider-aware. With source=gitlab
+        it scans {ws}#gitlab#{bare}# -- NOT the hardcoded github space that
+        left GitLab orphans uncollected -- and only touches gitlab keys."""
+        mock_s3vectors_client.list_vectors.return_value = {
+            "vectors": [
+                {"key": "ws#gitlab#repo#handler-group-summary#chat"},      # keep
+                {"key": "ws#gitlab#repo#handler-group-summary#orphan"},    # delete
+                {"key": "ws#github#repo#handler-group-summary#chat"},      # other space
+            ],
+        }
+        result = handle_delete_orphan_code_maps({
+            "workspace_id": "ws",
+            "source": "gitlab",
+            "repo": "group/subgroup/repo",  # slug -> bare "repo"
+            "expected_keys": ["ws#gitlab#repo#handler-group-summary#chat"],
+        })
+        assert result["status"] == "success"
+        deleted_keys = mock_s3vectors_client.delete_vectors.call_args[1]["keys"]
+        assert deleted_keys == ["ws#gitlab#repo#handler-group-summary#orphan"]
+
     def test_refuses_empty_expected_keys(self, vector_config):
         """Defensive: empty expected_keys must NOT wipe everything."""
         result = handle_delete_orphan_code_maps({

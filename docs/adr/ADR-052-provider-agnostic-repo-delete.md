@@ -65,11 +65,18 @@ shapes 2, 3, and 4. Two further defects compounded it:
    that purges `{ws}#{source}#{bare}#…` aggregate vectors runs for every
    `source`, not just github.
 
-3. **Code-map vector keys are bare for every provider.**
-   `process-batch-summary` keys aggregate vectors on the bare project
-   name (last path segment) uniformly. GitHub/ADO already passed a bare
-   name (no-op); GitLab's slug is normalized here, so its code-map
-   vectors now share the `{ws}#{source}#{bare}#…` shape the sweep purges.
+3. **Code-map vector keys are bare for every provider.** EVERY code-map /
+   summary vector writer keys on the bare project name (last path segment)
+   uniformly: `process-batch-summary.store_batch_summary`,
+   `process-repo-summary.store_code_map_embedding` (the direct
+   architectural code-map vector), and the orphan-sweep's expected-key
+   mirror `_expected_code_map_vector_keys`. The `delete_orphan_code_maps`
+   producer/consumer also became provider-aware (it hardcoded `#github#`,
+   so GitLab orphans were never swept). GitHub/ADO already passed a bare
+   name (no-op); GitLab's slug is normalized, so its code-map vectors
+   share the `{ws}#{source}#{bare}#…` shape both delete sweeps purge. A
+   GitLab slug keeps its literal `/` when embedded whole, which would
+   dodge both sweeps — hence normalizing at the writer, not the deleter.
 
 ## Consequences
 
