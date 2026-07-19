@@ -208,16 +208,19 @@ def fetch_file_content(
       (org/project/repo) for the key shape
       ``workspaces/{ws}/azure_devops/{slug}/{path}``.
 
-    GitLab (future) follows the azure_devops pattern.
+    GitLab (ADR-050) follows the same S3-mirror pattern as azure_devops:
+    ``workspaces/{ws}/gitlab/{slug}/{path}``.
 
     See lambda/shared/source_fetch.py for the dispatch contract.
     """
     from shared.source_fetch import fetch_repo_file, SourceFetchError
 
     try:
-        if provider == "azure_devops":
+        if provider in ("azure_devops", "gitlab"):
+            # both write an S3 source mirror during sync; source_fetch reads
+            # workspaces/{ws}/{provider}/{slug}/{path}.
             return fetch_repo_file(
-                "azure_devops",
+                provider,
                 file_path,
                 workspace_id=workspace_id,
                 slug=slug,

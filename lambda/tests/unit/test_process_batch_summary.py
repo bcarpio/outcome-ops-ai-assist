@@ -177,6 +177,22 @@ class TestFetchFileContent:
         assert "raw.githubusercontent.com" in request_obj.full_url
         assert "bcarpio/outcome-ops-ai-assist/main/lambda/handler.py" in request_obj.full_url
 
+    def test_fetch_file_content_gitlab_reads_s3_mirror(self):
+        # GitLab (ADR-050) follows the ADO S3-mirror pattern -- source comes from
+        # shared.source_fetch(provider="gitlab"), NOT the github raw path. This is
+        # what feeds the symbol-graph extractor for GitLab repos.
+        with patch("shared.source_fetch.fetch_repo_file",
+                   return_value="gl content") as mock_fetch:
+            result = fetch_file_content(
+                "bcarpio-group/ooai-license-server", "src/validator.py",
+                provider="gitlab", workspace_id="ws-1",
+                slug="bcarpio-group/ooai-license-server")
+        assert result == "gl content"
+        args, kwargs = mock_fetch.call_args
+        assert args[0] == "gitlab"
+        assert kwargs["workspace_id"] == "ws-1"
+        assert kwargs["slug"] == "bcarpio-group/ooai-license-server"
+
 
 class TestGenerateBatchSummary:
     """Test batch summary generation."""

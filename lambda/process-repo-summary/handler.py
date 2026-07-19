@@ -728,7 +728,7 @@ def _expected_code_map_vector_keys(
         code_units: Output of discover_code_units().
         repo: Short repo name (matches batch["repo"] in the writer).
         workspace_id: Workspace ID, or None for non-workspace repos.
-        provider: "github" or "azure_devops" -- matches the writer.
+        provider: "github", "azure_devops", or "gitlab" -- matches the writer.
         all_files: Tree walk output. Used to size each unit against
             TARGET_SHARD_TOKENS and emit shard-suffixed keys for
             oversized units. Optional for backward compatibility;
@@ -1343,19 +1343,18 @@ def handler(event, context):
             # delete vectors for unchanged handlers.
             full_code_units: List[Dict[str, Any]] = []
 
-            if should_discover and provider == "azure_devops":
-                # chunk-08a ADO branch. No installation token needed;
-                # the sync worker already wrote files to S3 and
-                # downstream process-batch-summary reads them via
-                # shared.source_fetch using provider+workspace_id+slug.
-                # Backend selection still runs to figure out which
-                # code-units the file paths belong to, but with a
-                # token=None signal. Change detection is skipped
-                # (treat every ADO sync as full-regen for v1 -- the
-                # azure-devops-sync skip-unchanged check at the SHA
-                # level upstream already gates the work).
+            if should_discover and provider in ("azure_devops", "gitlab"):
+                # S3-mirror providers (ADO chunk-08a + GitLab ADR-050). No
+                # installation token needed; the sync worker already wrote files
+                # to S3 and downstream process-batch-summary reads them via
+                # shared.source_fetch using provider+workspace_id+slug. Backend
+                # selection still runs to figure out which code-units the file
+                # paths belong to, but with a token=None signal. Change detection
+                # is skipped (treat every sync as full-regen for v1 -- the sync
+                # worker's skip-unchanged check at the SHA level upstream already
+                # gates the work).
                 logger.info(
-                    f"Workspace ADO repo {repo_project}: discovering code units",
+                    f"Workspace {provider} repo {repo_project}: discovering code units",
                 )
                 try:
                     code_units = discover_code_units(
@@ -1368,7 +1367,7 @@ def handler(event, context):
                     full_code_units = list(code_units)
                 except Exception as e:
                     logger.warning(
-                        f"Failed to discover code units for ADO repo "
+                        f"Failed to discover code units for {provider} repo "
                         f"{repo_project}: {e}",
                     )
                     code_units = []
