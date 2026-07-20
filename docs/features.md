@@ -508,10 +508,10 @@ to the `/audit` page, and ADR-018 for schema design.
   Fargate).
 - **Fargate Spot master switch** — `fargate_enable_spot` tfvar
   gates FARGATE_SPOT across every ECS service (UI proxy + MCP
-  servers, both regions). Default true (mixed on-demand base +
-  weighted spot, cost posture); enterprise deploys set false for
-  100% on-demand so interactive chat/MCP tasks never spot-reclaim.
-  Per-service `*_spot_weight` vars tune the ratio when enabled.
+  servers, both regions). Default FALSE: 100% on-demand out of the
+  box so interactive chat/MCP tasks never spot-reclaim (safe-default
+  philosophy, like `ui_alb_internal`). Sandbox deploys opt in with
+  true; per-service `*_spot_weight` vars tune the ratio.
 - **HA active/passive multi-region** — `secondary_region` tfvar
   provisions every stateful resource in both regions with cross-
   region replication driven by EventBridge; per-region AppConfig
