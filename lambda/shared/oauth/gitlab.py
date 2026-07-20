@@ -41,7 +41,14 @@ from shared import entra_id_oauth
 logger = logging.getLogger()
 
 PK_PREFIX = "GITLAB_TOKEN#"
-SCOPES = "read_api read_repository"
+# ``api`` (read/write) rather than ``read_api read_repository``: MR-analysis
+# (ADR-050 chunk 05) posts and updates MR notes with this token, and GitLab
+# has no finer-grained note-write scope -- ``api`` is the narrowest scope
+# that can write a comment. Ingest-only deploys still work (api supersedes
+# both read scopes). The group-owned OAuth application's registration must
+# list the same scope, and tokens minted before the change stay read-only
+# until the user reconnects.
+SCOPES = "api"
 _DEFAULT_BASE_URL = "https://gitlab.com"
 
 # Access-token cache + single-flight refresh (ADR-050 v1.1). GitLab rotates

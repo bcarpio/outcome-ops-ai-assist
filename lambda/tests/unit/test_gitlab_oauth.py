@@ -43,7 +43,9 @@ class TestAuthorizeUrl:
         assert url.startswith("https://gitlab.com/oauth/authorize?")
         assert "client_id=app-123" in url
         assert "response_type=code" in url
-        assert "scope=read_api+read_repository" in url
+        # ``api`` (not read_api+read_repository): MR-analysis writes MR
+        # notes with this token and GitLab has no narrower write scope.
+        assert "scope=api" in url
         assert "state=st8" in url
         assert "redirect_uri=https%3A%2F%2Fui%2Fapi%2Fgitlab%2Fcallback" in url
 

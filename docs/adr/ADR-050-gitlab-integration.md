@@ -14,6 +14,16 @@
   getting a 401 and persisting a dead token that poisoned the connection. Add a
   cached, single-flight access-token path so concurrent consumers reuse one token
   and refreshes run one-at-a-time. Written after a re-ingest stalled on 401s.
+- v1.2 (2026-07-20) — MR analysis parity (chunk 05) + OAuth scope widened to
+  `api`. The six PR checks run on GitLab MRs with the same collapsed-`<details>`
+  + upsert-in-place comment UX as GitHub/ADO (MR notes; note id stored in the
+  same providerCommentId column). Scope consequence: the original
+  `read_api read_repository` scopes could ingest but not POST/update MR notes
+  — GitLab has no finer-grained note-write scope, so the delegated token now
+  requests `api` (the narrowest scope that can write a comment). Operator
+  action on existing deploys: add the `api` scope to the group-owned OAuth
+  application's registration, and each connected user re-authorizes once
+  (tokens minted under the old scopes remain read-only until reconnect).
 
 ## Context
 
