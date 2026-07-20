@@ -287,11 +287,12 @@ runtime resource.
   with the same React+Express image as primary. Env vars point at the
   secondary's own Function URLs. `THIS_REGION` is injected so the UI
   knows which region served it.
-- **All 9 *-integration Lambdas** (`lambda-integrations-secondary.tf`)
+- **All 13 *-integration Lambdas** (`lambda-integrations-secondary.tf`)
   — github / confluence / jira / outlook / teams / sharepoint /
-  onedrive / onenote / database. Each has its own Function URL +
-  SSM URL parameter so the OAuth-callback handlers in either region
-  can answer.
+  onedrive / onenote / database / azure-devops / gitlab / servicenow /
+  salesforce (plus azure-devops-boards in its own file). Each has its
+  own Function URL + SSM URL parameter so the OAuth-callback handlers
+  in either region can answer.
 - **chat-streaming + workspace-management** (`lambda-chat-workspace-secondary.tf`)
   — symbol-graph reader IAM is inlined per-region.
 - **Writer Lambdas** (`lambda-writers-secondary.tf`) — file-ingestion,

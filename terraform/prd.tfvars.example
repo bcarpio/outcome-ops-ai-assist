@@ -452,6 +452,33 @@ audit_stream_export_enabled = true
 # azure_devops_redirect_uri = ""
 
 # ============================================================================
+# GitLab integration (off by default; see docs.outcomeops.ai integrations/gitlab)
+# ============================================================================
+
+# Master switch. Provisions the gitlab-integration / gitlab-sync /
+# gitlab-scheduler Lambdas + SQS + Function URL (and their secondary-region
+# mirrors when secondary_region is set).
+# enable_gitlab_integration = false
+
+# Application ID of the group-owned GitLab OAuth application. Register it
+# with the `api` scope (MR-note posting needs it; GitLab has no narrower
+# write scope) and redirect URI https://<your-deploy-fqdn>/api/gitlab/callback.
+# gitlab_client_id = ""
+
+# Self-managed GitLab base URL. Leave default for gitlab.com.
+# gitlab_base_url = "https://gitlab.com"
+
+# OPTIONAL override: SSM SecureString path for the OAuth app secret. When
+# empty, terraform creates a placeholder at
+# /<env>/<app>/gitlab/client-secret (in both regions under HA) and you
+# overwrite the value post-apply with `aws ssm put-parameter --overwrite`.
+# gitlab_client_secret_ssm_param = ""
+
+# OPTIONAL override: OAuth redirect URI. Derived from the deploy FQDN when
+# empty; must match the OAuth application registration exactly.
+# gitlab_redirect_uri = ""
+
+# ============================================================================
 # ServiceNow Knowledge Base integration
 # ============================================================================
 #

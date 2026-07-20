@@ -1276,6 +1276,136 @@ resource "aws_lambda_event_source_mapping" "azure_devops_sync_secondary" {
 }
 
 # ----------------------------------------------------------------------------
+# GitLab sync (secondary) -- ADR-050 chunk 08
+# ----------------------------------------------------------------------------
+
+module "gitlab_sync_lambda_secondary" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "8.1.2"
+
+  count     = var.enable_workspaces && var.enable_gitlab_integration && var.secondary_region != "" ? 1 : 0
+  providers = { aws = aws.secondary }
+
+  function_name = "${var.environment}-${var.app_name}-gitlab-sync"
+  role_name     = "${var.environment}-${var.app_name}-gitlab-sync-secondary"
+  description   = "GitLab sync (secondary region)"
+  handler       = "handler.lambda_handler"
+  runtime       = "python3.12"
+  timeout       = 900
+  memory_size   = 1024
+
+  source_path = [
+    { path = "${path.module}/../lambda/gitlab-sync", pip_requirements = true, patterns = ["!tests/.*", "!__pycache__/.*", "!\\.venv/.*", "!requirements-dev\\.txt", "!.*\\.pyc", "!\\.pytest_cache/.*"] },
+    { path = "${path.module}/../lambda/shared", prefix_in_zip = "shared" },
+  ]
+
+  cloudwatch_logs_retention_in_days = 7
+  cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs_secondary[0].arn
+  quiet_archive_local_exec          = true
+
+  layers = [var.outcomeops_license_layer_arn_secondary]
+
+  environment_variables = merge(
+    {
+      ENV               = var.environment
+      APP_NAME          = var.app_name
+      WORKSPACES_TABLE  = module.workspaces_table_secondary[0].dynamodb_table_id
+      OAUTH_KMS_KEY_ARN = aws_kms_replica_key.oauth_tokens_secondary[0].arn
+
+      GITLAB_BASE_URL                = var.gitlab_base_url
+      GITLAB_CLIENT_ID               = var.gitlab_client_id
+      GITLAB_CLIENT_SECRET_SSM_PARAM = local.gitlab_secret_ssm_path
+
+      # Mirror of the primary's direct-to-S3 + repo-summaries fan-out.
+      # Without REPO_SUMMARIES_QUEUE + its grant, post-failover GitLab
+      # syncs never enqueue code-map / symbol-graph regen (the exact
+      # silent-divergence failure mode the parity rule exists for).
+      KB_BUCKET            = module.knowledge_base_bucket_secondary.s3_bucket_id
+      GITLAB_SYNC_QUEUE    = aws_sqs_queue.gitlab_sync_secondary[0].url
+      REPO_SUMMARIES_QUEUE = module.repo_summaries_queue_secondary.queue_url
+      AUDIT_TABLE          = module.audit_logs_table_secondary[0].dynamodb_table_id
+    },
+    local.outcomeops_license_env,
+    local.ha_writer_env_secondary,
+  )
+
+  attach_policy_statements = true
+  policy_statements = merge(
+    {
+      dynamodb = {
+        effect  = "Allow"
+        actions = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query"]
+        resources = [
+          module.workspaces_table_secondary[0].dynamodb_table_arn,
+          "${module.workspaces_table_secondary[0].dynamodb_table_arn}/index/*",
+        ]
+      }
+      ssm_secret = {
+        effect    = "Allow"
+        actions   = ["ssm:GetParameter"]
+        resources = ["arn:aws:ssm:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:parameter${local.gitlab_secret_ssm_path}"]
+      }
+      # Include both the secondary replica ARN (encrypt/decrypt in the
+      # passive region) AND the primary ARN so a token minted against
+      # the primary ARN is still decryptable after failover routes an
+      # SQS message to this Lambda.
+      kms_oauth = {
+        effect  = "Allow"
+        actions = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
+        resources = [
+          aws_kms_replica_key.oauth_tokens_secondary[0].arn,
+          aws_kms_key.oauth_tokens[0].arn,
+        ]
+      }
+      kms_ssm = {
+        effect    = "Allow"
+        actions   = ["kms:Decrypt"]
+        resources = ["arn:aws:ssm:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:alias/aws/ssm"]
+      }
+      sqs_receive = {
+        effect    = "Allow"
+        actions   = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"]
+        resources = [aws_sqs_queue.gitlab_sync_secondary[0].arn]
+      }
+      # Bucket-root scope to match the primary exactly (the ADO chunk-08
+      # live-burn: a prefix-scoped secondary grant diverged silently).
+      s3_kb_write = {
+        effect    = "Allow"
+        actions   = ["s3:PutObject", "s3:PutObjectAcl"]
+        resources = ["${module.knowledge_base_bucket_secondary.s3_bucket_arn}/*"]
+      }
+      sqs_send_repo_summaries = {
+        effect    = "Allow"
+        actions   = ["sqs:SendMessage"]
+        resources = [module.repo_summaries_queue_secondary.queue_arn]
+      }
+      dynamodb_audit = {
+        effect    = "Allow"
+        actions   = ["dynamodb:PutItem"]
+        resources = [module.audit_logs_table_secondary[0].dynamodb_table_arn]
+      }
+    },
+    local.outcomeops_license_iam,
+    local.ha_writer_events_iam_secondary,
+  )
+
+  tags = { Purpose = "gitlab-sync" }
+}
+
+resource "aws_lambda_event_source_mapping" "gitlab_sync_secondary" {
+  count                              = var.enable_workspaces && var.enable_gitlab_integration && var.secondary_region != "" ? 1 : 0
+  provider                           = aws.secondary
+  event_source_arn                   = aws_sqs_queue.gitlab_sync_secondary[0].arn
+  function_name                      = module.gitlab_sync_lambda_secondary[0].lambda_function_name
+  batch_size                         = 1
+  maximum_batching_window_in_seconds = 0
+  function_response_types            = ["ReportBatchItemFailures"]
+  scaling_config {
+    maximum_concurrency = 5
+  }
+}
+
+# ----------------------------------------------------------------------------
 # ServiceNow sync (secondary) -- chunk 07 (HA parity, ADR-044)
 # ----------------------------------------------------------------------------
 

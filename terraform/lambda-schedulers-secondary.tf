@@ -995,6 +995,95 @@ resource "aws_lambda_permission" "azure_devops_scheduler_eventbridge_secondary" 
 }
 
 # ----------------------------------------------------------------------------
+# GitLab scheduler (secondary) -- ADR-050 chunk 08
+# ----------------------------------------------------------------------------
+
+module "gitlab_scheduler_lambda_secondary" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "8.1.2"
+
+  count = var.enable_workspaces && var.enable_gitlab_integration && var.secondary_region != "" ? 1 : 0
+
+  providers = {
+    aws = aws.secondary
+  }
+
+  function_name = "${var.environment}-${var.app_name}-gitlab-scheduler"
+  role_name     = "${var.environment}-${var.app_name}-gitlab-scheduler-secondary"
+  description   = "Hourly scheduler for GitLab sync jobs (secondary region)"
+  handler       = "handler.lambda_handler"
+  runtime       = "python3.12"
+  timeout       = 60
+  memory_size   = 256
+
+  source_path = [
+    { path = "${path.module}/../lambda/gitlab-scheduler", pip_requirements = false, patterns = ["!tests/.*", "!__pycache__/.*", "!\\.venv/.*", "!.*\\.pyc"] },
+    { path = "${path.module}/../lambda/shared", prefix_in_zip = "shared" },
+  ]
+
+  cloudwatch_logs_retention_in_days = 7
+  cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs_secondary[0].arn
+  quiet_archive_local_exec          = true
+
+  environment_variables = merge({
+    ENV               = var.environment
+    APP_NAME          = var.app_name
+    WORKSPACES_TABLE  = module.workspaces_table_secondary[0].dynamodb_table_id
+    GITLAB_SYNC_QUEUE = aws_sqs_queue.gitlab_sync_secondary[0].url
+    },
+    local.ha_scheduler_env_secondary,
+  )
+
+  attach_policy_statements = true
+  policy_statements = merge({
+    dynamodb = {
+      effect    = "Allow"
+      actions   = ["dynamodb:Scan"]
+      resources = [module.workspaces_table_secondary[0].dynamodb_table_arn]
+    }
+    sqs_send = {
+      effect    = "Allow"
+      actions   = ["sqs:SendMessage"]
+      resources = [aws_sqs_queue.gitlab_sync_secondary[0].arn]
+    }
+    },
+    local.ha_scheduler_iam_secondary,
+  )
+
+  tags = { Purpose = "gitlab-scheduler" }
+}
+
+resource "aws_cloudwatch_event_rule" "gitlab_hourly_sync_secondary" {
+  count    = var.enable_workspaces && var.enable_gitlab_integration && var.secondary_region != "" ? 1 : 0
+  provider = aws.secondary
+
+  name                = "${var.environment}-${var.app_name}-gitlab-hourly-sync"
+  description         = "Trigger GitLab sync scheduler every hour (secondary region)"
+  schedule_expression = "rate(1 hour)"
+  tags                = { Purpose = "gitlab-scheduler" }
+}
+
+resource "aws_cloudwatch_event_target" "gitlab_scheduler_secondary" {
+  count    = var.enable_workspaces && var.enable_gitlab_integration && var.secondary_region != "" ? 1 : 0
+  provider = aws.secondary
+
+  rule      = aws_cloudwatch_event_rule.gitlab_hourly_sync_secondary[0].name
+  target_id = "gitlab-scheduler"
+  arn       = module.gitlab_scheduler_lambda_secondary[0].lambda_function_arn
+}
+
+resource "aws_lambda_permission" "gitlab_scheduler_eventbridge_secondary" {
+  count    = var.enable_workspaces && var.enable_gitlab_integration && var.secondary_region != "" ? 1 : 0
+  provider = aws.secondary
+
+  statement_id  = "AllowEventBridgeInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = module.gitlab_scheduler_lambda_secondary[0].lambda_function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.gitlab_hourly_sync_secondary[0].arn
+}
+
+# ----------------------------------------------------------------------------
 # ServiceNow scheduler (secondary) -- chunk 07 (HA parity, ADR-044)
 # ----------------------------------------------------------------------------
 

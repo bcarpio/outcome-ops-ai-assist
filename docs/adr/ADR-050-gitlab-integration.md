@@ -24,6 +24,17 @@
   action on existing deploys: add the `api` scope to the group-owned OAuth
   application's registration, and each connected user re-authorizes once
   (tokens minted under the old scopes remain read-only until reconnect).
+- v1.3 (2026-07-20) — HA parity (chunk 08). Secondary-region mirrors for the
+  integration Lambda + Function URL, sync worker + SQS/DLQ + event source
+  mapping, hourly scheduler, and the client-secret SSM placeholder (SSM is
+  regional; `ha-list-secrets`/`ha-sync-secrets` carry the value). Chunk 05
+  live-verified 2026-07-20 (MR !1: collapsed notes + upsert-in-place proven).
+  Intentional divergence, recorded per the parity rule: the PR-analysis
+  Lambdas (analyze-pr, process-pr-check) have NO secondary-region mirrors for
+  ANY provider — a pre-existing posture predating the ADO integration, not a
+  GitLab gap. PR checks are CI-triggered against the primary region's
+  function name; post-failover PR checks are accepted as unavailable until
+  that posture changes deliberately (future work, all providers at once).
 
 ## Context
 
