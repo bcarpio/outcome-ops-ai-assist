@@ -43,7 +43,8 @@ Keep entries terse — this is the index, not the spec.
 - **read_source adjudicator** — platform-agnostic tool exposing
   `read_this_file_at_this_SHA` to the model. Any citation the model
   wants to make can be verified against source-of-truth git state
-  (GitHub + Azure DevOps supported). ADR-030 (v1.1 adds ADO dispatch).
+  (GitHub + Azure DevOps + GitLab supported). ADR-030 (v1.1 adds ADO
+  dispatch; GitLab via ADR-050).
 - **Streaming chat UI** — `lambda/chat` over Lambda Web Adapter,
   NDJSON event stream, citation rendering, file attachments.
 - **Multi-workspace search** — chat can span workspaces the user has
@@ -77,6 +78,15 @@ webhook entry), `*-scheduler` (EventBridge cron driver), `*-sync`
   Powers ADR-030 v1.1's platform-agnostic `read_source` dispatch.
 - **Azure DevOps Boards** — work items alongside GitHub Issues / Jira.
   Shares the ADO OAuth config with Repos.
+- **GitLab** — source code + ADRs + docs as a third code host
+  (gitlab.com; self-managed via `gitlab_base_url`). ONE group-owned
+  OAuth app per deploy; per-user delegated tokens (`api` scope —
+  narrowest GitLab scope that can write an MR note), so users enroll
+  only projects they can already access. Nested subgroups (variable-
+  depth slugs) supported everywhere via DDB `GITLAB_REPO#` lookup,
+  never slash-count. Cached single-flight token refresh (GitLab
+  rotates refresh tokens per use). `enable_gitlab_integration` +
+  `gitlab_client_id` tfvars. ADR-050.
 - **Salesforce** — Account / Contact / Opportunity records +
   embedded recent Task / Event activity + attached files (Notes and
   Attachments via ContentVersion). Shared Connected App OAuth per
@@ -272,7 +282,10 @@ tests, ADR-aware, with auto-fix retry.
   if all retries fail.
 - **Truncation recovery** — kicks in on SQS retry when the
   `max_tokens=32000` ceiling is hit, splits the work.
-- **`analyze-pr`** — AI-powered PR review against ADRs.
+- **`analyze-pr`** — AI-powered PR review against ADRs. GitHub PRs,
+  ADO PRs, and GitLab MRs (ADR-050 v1.2) all get the same six checks
+  with collapsed `<details>` comments upserted in place per push
+  (one comment per check, PATCHed/PUT, never a duplicate).
 - **`process-pr-check`** — feedback loop on CI check results;
   pricing env-var-driven so customers can plug in negotiated rates.
 - **`run-tests`** — EventBridge-driven (`OutcomeOps.CodeGeneration.Completed`)
