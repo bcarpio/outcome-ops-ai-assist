@@ -88,6 +88,15 @@ module "github_sync_lambda_secondary" {
         actions   = ["ssm:GetParameter", "ssm:GetParameters"]
         resources = ["arn:aws:ssm:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/*"]
       }
+      # fable-scale 06 mirror: the cached-installation-token path WRITES
+      # the token back to SSM. Without PutParameter the secondary falls
+      # back to a fresh token mint on every call post-failover (GitHub
+      # rate-limit exposure), and the write raises AccessDenied noise.
+      ssm_write_token_cache = {
+        effect    = "Allow"
+        actions   = ["ssm:PutParameter"]
+        resources = ["arn:aws:ssm:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/github/installation-token/*"]
+      }
       kms_ssm = {
         effect    = "Allow"
         actions   = ["kms:Decrypt"]
@@ -1074,7 +1083,7 @@ module "database_sync_lambda_secondary" {
           "${module.workspaces_table_secondary[0].dynamodb_table_arn}/index/*",
         ]
       }
-      kms_credentials = {
+      kms_db_credentials = {
         effect    = "Allow"
         actions   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
         resources = [aws_kms_replica_key.db_credentials_secondary[0].arn]

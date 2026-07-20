@@ -1,4 +1,4 @@
-.PHONY: help setup install fmt lint validate test test-unit test-coverage test-ui audit build-run-tests-image build-ui-image build-mcp-server-image build-snyk-image build-database-images build-runtime-layer build-terraform-layer build-all-layers build-platform-layer build-all-images pre-deploy clean all ha-status ha-replay-dlq ha-list-secrets ha-sync-secrets ha-bootstrap ha-kms-migrate _ha-env-check
+.PHONY: help setup install fmt lint validate check-ha-parity test test-unit test-coverage test-ui audit build-run-tests-image build-ui-image build-mcp-server-image build-snyk-image build-database-images build-runtime-layer build-terraform-layer build-all-layers build-platform-layer build-all-images pre-deploy clean all ha-status ha-replay-dlq ha-list-secrets ha-sync-secrets ha-bootstrap ha-kms-migrate _ha-env-check
 
 APP_NAME ?= outcome-ops-ai-assist
 AWS_REGION ?= us-west-2
@@ -81,13 +81,22 @@ fmt:
 # Alias for validate-docs (common in many projects)
 lint: validate-docs
 
-validate: validate-tf validate-docs
+validate: validate-tf validate-docs check-ha-parity
 	@echo ""
 	@echo "All validation checks passed ✓"
 
 validate-tf:
 	@echo "Validating terraform configuration..."
 	cd terraform && terraform validate
+
+# ADR-022 primary/secondary parity guard. Compares env-var key sets, IAM
+# statement names, and merge()'d locals for every module with a
+# *_secondary mirror. Fails on drift -- the class of bug that is
+# invisible until failover (six modules had silently drifted when this
+# landed 2026-07-20). Pure stdlib; any python3 works.
+check-ha-parity:
+	@echo "Checking HA primary/secondary parity..."
+	python3 scripts/check-ha-parity.py
 
 validate-docs:
 	@echo "Validating file sizes for code map embedding..."

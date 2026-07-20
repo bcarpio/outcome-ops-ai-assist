@@ -435,8 +435,6 @@ module "process_batch_summary_lambda_secondary" {
   cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs_secondary[0].arn
   quiet_archive_local_exec          = true
 
-  layers = [var.outcomeops_license_layer_arn_secondary]
-
   environment_variables = merge(
     {
       ENV      = var.environment
@@ -481,7 +479,6 @@ module "process_batch_summary_lambda_secondary" {
       # fails in the secondary post-failover.
       KB_BUCKET = module.knowledge_base_bucket_secondary.s3_bucket_id
     },
-    local.outcomeops_license_env,
     local.ha_writer_env_secondary,
     # ADR-016 v1.2 -- code-maps workload (batch summaries), secondary parity.
     local.bedrock_code_maps_env_secondary,
@@ -549,13 +546,15 @@ module "process_batch_summary_lambda_secondary" {
           "arn:aws:bedrock:*:${data.aws_caller_identity.current.account_id}:application-inference-profile/*",
         ]
       }
-      s3vectors = {
+      s3_vectors_write = {
         effect = "Allow"
         # chunk 09 (HA parity): mirror primary. DeleteVectors was missing
         # -- orphan-vector cleanup broken post-failover. Also widened
         # resources to include both the bucket ARN and bucket/* per
         # primary, because bucket-level actions need the naked bucket ARN.
-        actions = ["s3vectors:PutVectors", "s3vectors:DeleteVectors"]
+        # GetVectors is FUNCTIONAL parity: the merge fan-in fetches shard
+        # summaries by key before unifying them (chunk 05 splitter).
+        actions = ["s3vectors:PutVectors", "s3vectors:DeleteVectors", "s3vectors:GetVectors"]
         resources = [
           "arn:aws:s3vectors:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:bucket/${var.environment}-${var.app_name}-vectors",
           "arn:aws:s3vectors:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:bucket/${var.environment}-${var.app_name}-vectors/*",
@@ -583,8 +582,17 @@ module "process_batch_summary_lambda_secondary" {
         actions   = ["comprehend:DetectPiiEntities"]
         resources = ["*"]
       }
+      kms_decrypt = {
+        effect    = "Allow"
+        actions   = ["kms:Decrypt"]
+        resources = ["arn:aws:kms:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:alias/aws/ssm"]
+      }
+      aws_marketplace = {
+        effect    = "Allow"
+        actions   = ["aws-marketplace:ViewSubscriptions", "aws-marketplace:Subscribe"]
+        resources = ["*"]
+      }
     },
-    local.outcomeops_license_iam,
     local.ha_writer_events_iam_secondary,
   )
 
@@ -721,18 +729,17 @@ module "process_repo_summary_lambda_secondary" {
           "arn:aws:bedrock:*:${data.aws_caller_identity.current.account_id}:application-inference-profile/*",
         ]
       }
-      s3_kb = {
-        effect  = "Allow"
-        actions = ["s3:GetObject", "s3:PutObject"]
-        # Mirrors primary's whole-bucket scope. The previous code-maps/*
-        # narrow scope blocked writing architectural-summary.txt under
-        # workspaces/, which only surfaced once failover routed work to
-        # this region (2026-06-01).
-        resources = [
-          "${module.knowledge_base_bucket_secondary.s3_bucket_arn}/*",
-        ]
+      s3_write = {
+        effect    = "Allow"
+        actions   = ["s3:PutObject", "s3:GetObject"]
+        resources = ["${module.knowledge_base_bucket_secondary.s3_bucket_arn}/*"]
       }
-      s3vectors = {
+      s3_kb_read = {
+        effect    = "Allow"
+        actions   = ["s3:GetObject"]
+        resources = ["${module.knowledge_base_bucket_secondary.s3_bucket_arn}/workspaces/*"]
+      }
+      s3_vectors_write = {
         effect = "Allow"
         # chunk 09 (HA parity): mirror primary. DeleteVectors was missing
         # -- orphan-vector cleanup broken post-failover. Also widened
@@ -743,20 +750,18 @@ module "process_repo_summary_lambda_secondary" {
           "arn:aws:s3vectors:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:bucket/${var.environment}-${var.app_name}-vectors/*",
         ]
       }
-      sqs_receive_repo = {
+      sqs_receive = {
         effect    = "Allow"
         actions   = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"]
         resources = [module.repo_summaries_queue_secondary.queue_arn]
       }
-      sqs_send_code_maps = {
-        effect    = "Allow"
-        actions   = ["sqs:SendMessage"]
-        resources = [module.code_maps_queue_secondary.queue_arn]
-      }
-      sqs_send_delete = {
-        effect    = "Allow"
-        actions   = ["sqs:SendMessage"]
-        resources = [aws_sqs_queue.delete_queue_secondary[0].arn]
+      sqs_send = {
+        effect  = "Allow"
+        actions = ["sqs:SendMessage", "sqs:GetQueueAttributes"]
+        resources = [
+          module.code_maps_queue_secondary.queue_arn,
+          aws_sqs_queue.delete_queue_secondary[0].arn,
+        ]
       }
       dynamodb_audit = {
         effect    = "Allow"
@@ -766,6 +771,16 @@ module "process_repo_summary_lambda_secondary" {
       comprehend_pii = {
         effect    = "Allow"
         actions   = ["comprehend:DetectPiiEntities"]
+        resources = ["*"]
+      }
+      kms_decrypt = {
+        effect    = "Allow"
+        actions   = ["kms:Decrypt"]
+        resources = ["arn:aws:kms:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:alias/aws/ssm"]
+      }
+      aws_marketplace = {
+        effect    = "Allow"
+        actions   = ["aws-marketplace:ViewSubscriptions", "aws-marketplace:Subscribe"]
         resources = ["*"]
       }
     },

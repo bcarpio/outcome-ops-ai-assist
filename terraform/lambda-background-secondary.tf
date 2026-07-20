@@ -220,7 +220,7 @@ module "analytics_aggregator_lambda_secondary" {
       actions   = ["dynamodb:GetRecords", "dynamodb:GetShardIterator", "dynamodb:DescribeStream", "dynamodb:ListStreams"]
       resources = [module.audit_logs_table_secondary[0].dynamodb_table_stream_arn]
     }
-    analytics_write = {
+    dynamodb_analytics_write = {
       effect = "Allow"
       # chunk 10 (HA parity): add PutItem to match primary. UpdateItem-only
       # was tight but incomplete -- initial-row inserts (no prior row to
@@ -321,7 +321,7 @@ module "analytics_cost_alert_lambda_secondary" {
       actions   = ["sns:Publish"]
       resources = [module.cost_alerts_sns_secondary[0].topic_arn]
     }
-    analytics_read = {
+    dynamodb_analytics = {
       effect = "Allow"
       # chunk 10 (HA alignment): drop Scan (handler doesn't scan
       # analytics), add PutItem (matches handler's alert-fired
@@ -329,12 +329,12 @@ module "analytics_cost_alert_lambda_secondary" {
       actions   = ["dynamodb:Query", "dynamodb:GetItem", "dynamodb:PutItem"]
       resources = [module.analytics_table_secondary[0].dynamodb_table_arn]
     }
-    workspaces_read = {
+    dynamodb_workspaces = {
       effect    = "Allow"
       actions   = ["dynamodb:GetItem", "dynamodb:Scan"]
       resources = [module.workspaces_table_secondary[0].dynamodb_table_arn]
     }
-    audit_write = {
+    dynamodb_audit = {
       effect    = "Allow"
       actions   = ["dynamodb:PutItem"]
       resources = [module.audit_logs_table_secondary[0].dynamodb_table_arn]

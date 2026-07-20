@@ -277,3 +277,10 @@ jobs:
         run: terraform validate
         working-directory: ${{ env.TERRAFORM_DIR }}
 
+      # ADR-022 parity guard: fails the build when a primary module's
+      # env keys / IAM statements drift from its *_secondary mirror.
+      # Divergence here is invisible in steady state and only surfaces
+      # at failover -- six modules had drifted when this check landed.
+      - name: HA primary/secondary parity
+        run: make check-ha-parity
+
