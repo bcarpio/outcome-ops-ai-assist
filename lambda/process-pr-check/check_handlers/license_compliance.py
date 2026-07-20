@@ -396,36 +396,45 @@ def _fetch_license_file_diff(
     ado_project: Optional[str] = None,
     ado_repo: Optional[str] = None,
     ado_access_token: Optional[str] = None,
-    ado_base_sha: Optional[str] = None,
-    ado_head_sha: Optional[str] = None,
+    gitlab_access_token: Optional[str] = None,
+    base_sha: Optional[str] = None,
+    head_sha: Optional[str] = None,
 ) -> str:
     """Provider-dispatching per-file diff for license/copyright scanning.
 
-    On GitHub uses the server-side unified-diff endpoint. On ADO
-    fetches base+head bytes at PR SHAs and computes diff client-side.
+    On GitHub uses the server-side unified-diff endpoint. On ADO and
+    GitLab fetches base+head bytes at PR SHAs and computes diff
+    client-side. GitLab's project path IS ``repository``.
     """
     if provider == "github":
         return fetch_pr_file_diff(repository, pr_number, file_path, github_token)
 
-    if provider == "azure_devops":
+    if provider in ("azure_devops", "gitlab"):
         from shared.source_fetch import fetch_file_at_sha, SourceFetchError
         from shared.pr_diff import compute_file_diff
+
+        if provider == "azure_devops":
+            fetch_kwargs = dict(
+                ado_org=ado_org, ado_project=ado_project, ado_repo=ado_repo,
+                ado_access_token=ado_access_token,
+            )
+        else:
+            fetch_kwargs = dict(
+                gitlab_project_path=repository,
+                gitlab_access_token=gitlab_access_token,
+            )
 
         base_bytes: Optional[bytes]
         head_bytes: Optional[bytes]
         try:
             base_bytes = fetch_file_at_sha(
-                "azure_devops", file_path, ado_base_sha,
-                ado_org=ado_org, ado_project=ado_project, ado_repo=ado_repo,
-                ado_access_token=ado_access_token,
+                provider, file_path, base_sha, **fetch_kwargs,
             )
         except SourceFetchError:
             base_bytes = None
         try:
             head_bytes = fetch_file_at_sha(
-                "azure_devops", file_path, ado_head_sha,
-                ado_org=ado_org, ado_project=ado_project, ado_repo=ado_repo,
-                ado_access_token=ado_access_token,
+                provider, file_path, head_sha, **fetch_kwargs,
             )
         except SourceFetchError:
             head_bytes = None
@@ -445,6 +454,7 @@ def get_ai_generated_files(
     ado_project: Optional[str] = None,
     ado_repo: Optional[str] = None,
     ado_access_token: Optional[str] = None,
+    gitlab_access_token: Optional[str] = None,
 ) -> List[str]:
     """
     Filter changed files to only those from AI-generated commits.
@@ -457,12 +467,20 @@ def get_ai_generated_files(
     Co-Authored-By trailers are visible).
     """
     try:
-        if provider == "azure_devops":
+        if provider in ("azure_devops", "gitlab"):
             from shared.pr_commits import fetch_pr_commits as _fetch_commits_shared
+            if provider == "azure_devops":
+                commits_kwargs = dict(
+                    ado_org=ado_org, ado_project=ado_project,
+                    ado_repo=ado_repo, ado_access_token=ado_access_token,
+                )
+            else:
+                commits_kwargs = dict(
+                    gitlab_project_path=repository,
+                    gitlab_access_token=gitlab_access_token,
+                )
             shared_commits = _fetch_commits_shared(
-                "azure_devops", pr_number,
-                ado_org=ado_org, ado_project=ado_project, ado_repo=ado_repo,
-                ado_access_token=ado_access_token,
+                provider, pr_number, **commits_kwargs,
             )
             # Adapt the shared NamedTuple shape to the dict shape
             # is_ai_generated_commit() expects.
@@ -819,7 +837,7 @@ def check_license_compliance(
     AI-generated code (Phase 2 activation). Both surfaces work on
     GitHub and Azure DevOps.
     """
-    if provider not in ("github", "azure_devops"):
+    if provider not in ("github", "azure_devops", "gitlab"):
         raise NotImplementedError(
             f"check_license_compliance does not support provider={provider!r}."
         )
@@ -835,12 +853,13 @@ def check_license_compliance(
     # Provider-specific auth + PR context prep.
     github_token: Optional[str] = None
     ado_access_token: Optional[str] = None
-    ado_base_sha: Optional[str] = None
-    ado_head_sha: Optional[str] = None
+    gitlab_access_token: Optional[str] = None
+    base_sha: Optional[str] = None
+    head_sha: Optional[str] = None
 
     if provider == "github":
         github_token = get_github_token(github_token_param)
-    else:  # azure_devops
+    elif provider == "azure_devops":
         from shared.pr_metadata import fetch_pr_metadata
 
         ado_access_token = refresh_ado_token(connection_id)
@@ -849,8 +868,21 @@ def check_license_compliance(
             ado_org=ado_org, ado_project=ado_project, ado_repo=ado_repo,
             ado_access_token=ado_access_token,
         )
-        ado_base_sha = pr.base_sha
-        ado_head_sha = pr.head_sha
+        base_sha = pr.base_sha
+        head_sha = pr.head_sha
+    else:  # gitlab
+        from shared.pr_metadata import fetch_pr_metadata
+        from .gitlab_context import get_gitlab_token
+
+        # ``repository`` IS the full project path (variable-depth slug).
+        gitlab_access_token = get_gitlab_token(connection_id)
+        pr = fetch_pr_metadata(
+            "gitlab", pr_number,
+            gitlab_project_path=repository,
+            gitlab_access_token=gitlab_access_token,
+        )
+        base_sha = pr.base_sha
+        head_sha = pr.head_sha
 
     # Resolve per-check retrieval scope. LICENSE_COMPLIANCE is a
     # "standards" check: walks the repo's workspace(s) + all
@@ -899,12 +931,13 @@ def check_license_compliance(
         ai_generated_files = get_ai_generated_files(
             repository, pr_number, source_files, github_token,
         )
-    else:  # azure_devops
+    else:  # azure_devops or gitlab
         ai_generated_files = get_ai_generated_files(
             repository, pr_number, source_files, None,
-            provider="azure_devops",
+            provider=provider,
             ado_org=ado_org, ado_project=ado_project, ado_repo=ado_repo,
             ado_access_token=ado_access_token,
+            gitlab_access_token=gitlab_access_token,
         )
     logger.info(f"Scanning {len(source_files)} source files ({len(ai_generated_files)} AI-generated)")
 
@@ -926,8 +959,9 @@ def check_license_compliance(
                 ado_project=ado_project,
                 ado_repo=ado_repo,
                 ado_access_token=ado_access_token,
-                ado_base_sha=ado_base_sha,
-                ado_head_sha=ado_head_sha,
+                gitlab_access_token=gitlab_access_token,
+                base_sha=base_sha,
+                head_sha=head_sha,
             )
 
             # Comprehensive analysis (Phase 1 + Phase 2)

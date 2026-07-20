@@ -447,7 +447,7 @@ def check_test_coverage(
     Returns:
         Check result dict with status, message, and details
     """
-    if provider not in ("github", "azure_devops"):
+    if provider not in ("github", "azure_devops", "gitlab"):
         raise NotImplementedError(
             f"check_test_coverage does not support provider={provider!r}."
         )
@@ -472,9 +472,8 @@ def check_test_coverage(
     raw_config = None
     backend = None
     token = None
-    ado_access_token: Optional[str] = None
-    ado_default_branch: Optional[str] = None
-    ado_repo_file_paths: Optional[List[str]] = None
+    repo_default_branch: Optional[str] = None
+    repo_file_paths: Optional[List[str]] = None
 
     # Fetch .outcomeops.yaml at the PR HEAD (not the default branch)
     # so a PR that adds/edits config sees that config applied to itself
@@ -507,55 +506,62 @@ def check_test_coverage(
                 raw_config = fetch_outcomeops_yaml(repository, token)
         except Exception as e:
             logger.warning(f"Could not fetch .outcomeops.yaml: {e}")
-    else:  # azure_devops
+    else:  # azure_devops or gitlab
         from shared.repo_metadata import fetch_repo_metadata, RepoMetadataError
 
+        # Per-provider kwargs for the shared fetchers. GitLab's project
+        # path IS ``repository`` (variable-depth slug); its ref slot
+        # accepts a commit SHA or branch name uniformly, so no
+        # version_type flag is needed there.
         try:
-            ado_access_token = refresh_ado_token(connection_id)
-            repo_meta = fetch_repo_metadata(
-                "azure_devops",
-                ado_org=ado_org, ado_project=ado_project, ado_repo=ado_repo,
-                ado_access_token=ado_access_token,
-            )
-            ado_default_branch = repo_meta.default_branch
-            ado_repo_file_paths = repo_meta.file_paths
+            if provider == "azure_devops":
+                access_token = refresh_ado_token(connection_id)
+                fetch_kwargs = dict(
+                    ado_org=ado_org, ado_project=ado_project,
+                    ado_repo=ado_repo, ado_access_token=access_token,
+                )
+            else:  # gitlab
+                from .gitlab_context import get_gitlab_token
+                access_token = get_gitlab_token(connection_id)
+                fetch_kwargs = dict(
+                    gitlab_project_path=repository,
+                    gitlab_access_token=access_token,
+                )
+            repo_meta = fetch_repo_metadata(provider, **fetch_kwargs)
+            repo_default_branch = repo_meta.default_branch
+            repo_file_paths = repo_meta.file_paths
 
             # Read .outcomeops.yaml at the PR HEAD (see note above --
             # parity with GitHub side, matches every other check's
             # source-fetch semantics). Fall back to the default branch
             # only if PR-metadata retrieval fails.
             try:
-                pr_meta = fetch_pr_metadata(
-                    "azure_devops", pr_number,
-                    ado_org=ado_org, ado_project=ado_project,
-                    ado_repo=ado_repo, ado_access_token=ado_access_token,
-                )
+                pr_meta = fetch_pr_metadata(provider, pr_number, **fetch_kwargs)
                 yaml_ref = pr_meta.head_sha
                 yaml_version_type = "commit"
             except PRMetadataError as e:
                 logger.warning(
-                    f"Could not fetch ADO PR metadata for #{pr_number}: {e}. "
+                    f"Could not fetch {provider} PR metadata for #{pr_number}: {e}. "
                     "Falling back to default branch for .outcomeops.yaml."
                 )
-                yaml_ref = ado_default_branch
+                yaml_ref = repo_default_branch
                 yaml_version_type = "branch"
 
             try:
                 yaml_bytes = fetch_file_at_sha(
-                    "azure_devops", ".outcomeops.yaml",
+                    provider, ".outcomeops.yaml",
                     yaml_ref,
-                    ado_org=ado_org, ado_project=ado_project, ado_repo=ado_repo,
-                    ado_access_token=ado_access_token,
                     ado_version_type=yaml_version_type,
+                    **fetch_kwargs,
                 )
                 raw_config = yaml.safe_load(yaml_bytes.decode("utf-8", errors="replace"))
             except SourceFetchError:
                 logger.info(
                     f"No .outcomeops.yaml at {yaml_version_type} {yaml_ref} "
-                    f"in ADO repo {ado_repo}"
+                    f"in {provider} repo {repository}"
                 )
         except RepoMetadataError as e:
-            logger.warning(f"Could not fetch ADO repo metadata: {e}")
+            logger.warning(f"Could not fetch {provider} repo metadata: {e}")
 
     # Create usage tracker (TEST_COVERAGE uses Haiku via KB queries)
     usage_tracker = UsageTracker()
@@ -696,10 +702,10 @@ def check_test_coverage(
         if provider == "github":
             if token:
                 all_test_files = fetch_repo_test_files(repository, token, test_patterns)
-        else:  # azure_devops
-            if ado_repo_file_paths is not None:
+        else:  # azure_devops or gitlab (repo_file_paths from fetch_repo_metadata)
+            if repo_file_paths is not None:
                 all_test_files = [
-                    f for f in ado_repo_file_paths
+                    f for f in repo_file_paths
                     if matches_pattern(f, test_patterns)
                 ]
         logger.info(f"Fetched {len(all_test_files)} test files from repository")

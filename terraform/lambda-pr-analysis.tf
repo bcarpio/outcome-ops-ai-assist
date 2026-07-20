@@ -94,6 +94,16 @@ module "analyze_pr_lambda" {
     AZURE_DEVOPS_TENANT_ID               = var.azure_devops_tenant_id
     AZURE_DEVOPS_CLIENT_ID               = var.azure_devops_client_id
     AZURE_DEVOPS_CLIENT_SECRET_SSM_PARAM = var.azure_devops_client_secret_ssm_param
+
+    # GitLab MR-analysis dispatch (chunk 05). Same pattern as the ADO
+    # block above: empty on deploys without GitLab; the gitlab branch
+    # surfaces a clear error in that case. Token acquisition goes
+    # through the cached single-flight path (ADR-050 v1.1) which reads
+    # GITLAB_TOKEN# rows from WORKSPACES_TABLE and encrypts the cached
+    # access token with the OAuth tokens KMS key (both wired above).
+    GITLAB_BASE_URL                = var.gitlab_base_url
+    GITLAB_CLIENT_ID               = var.gitlab_client_id
+    GITLAB_CLIENT_SECRET_SSM_PARAM = local.gitlab_secret_ssm_path
   }
 
   # IAM permissions
@@ -247,6 +257,14 @@ module "process_pr_check_lambda" {
     AZURE_DEVOPS_TENANT_ID               = var.azure_devops_tenant_id
     AZURE_DEVOPS_CLIENT_ID               = var.azure_devops_client_id
     AZURE_DEVOPS_CLIENT_SECRET_SSM_PARAM = var.azure_devops_client_secret_ssm_param
+
+    # GitLab MR-check dispatch (chunk 05). Token acquisition goes
+    # through the cached single-flight path (ADR-050 v1.1) reading
+    # GITLAB_TOKEN# rows from WORKSPACES_TABLE + the OAuth KMS key
+    # (both wired above). Empty on deploys without GitLab.
+    GITLAB_BASE_URL                = var.gitlab_base_url
+    GITLAB_CLIENT_ID               = var.gitlab_client_id
+    GITLAB_CLIENT_SECRET_SSM_PARAM = local.gitlab_secret_ssm_path
     },
     # HA dual-write: emit replication events for the check-result row.
     local.ha_writer_env,

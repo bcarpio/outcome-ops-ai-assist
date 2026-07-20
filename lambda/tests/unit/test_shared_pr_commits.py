@@ -183,3 +183,34 @@ class TestFetchPRCommitsAzureDevOps:
         req = mock_urlopen.call_args_list[0].args[0]
         assert "api-version=7.0" in req.full_url
         assert req.headers["Authorization"] == "Bearer tok"
+
+
+class TestFetchPRCommitsGitLab:
+    """Chunk 05: MR commits via the shared GitLab client. ``message`` is
+    the full body, so Co-Authored-By trailers survive without an
+    ADO-style truncation refetch."""
+
+    def test_gitlab_requires_project_path_and_token(self):
+        with pytest.raises(pr_commits.PRCommitsError):
+            pr_commits.fetch_pr_commits(
+                "gitlab", 1, gitlab_project_path="g/p")
+
+    def test_gitlab_commits_normalized(self):
+        entries = [
+            {"id": "a" * 40,
+             "title": "feat: add tier",
+             "message": "feat: add tier\n\nCo-Authored-By: Claude <n@a>",
+             "author_name": "Brian Carpio"},
+            {"id": "b" * 40, "message": "fix: typo", "author_name": "Dev"},
+        ]
+        with patch("shared.gitlab_api.get_merge_request_commits",
+                   return_value=entries):
+            commits = pr_commits.fetch_pr_commits(
+                "gitlab", 7,
+                gitlab_project_path="group/project",
+                gitlab_access_token="tok",
+            )
+        assert len(commits) == 2
+        assert commits[0].sha == "a" * 40
+        assert "Co-Authored-By: Claude" in commits[0].message
+        assert commits[0].author == "Brian Carpio"

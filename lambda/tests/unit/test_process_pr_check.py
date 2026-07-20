@@ -1890,10 +1890,11 @@ class TestCheckHandlerSignatureWidening:
             result = adr_compliance_module.check_adr_compliance(**self._minimal_kwargs())
             assert result["status"] == "PASS"
 
-    # Chunks 03 + 04 wired ADO for ALL six check handlers, so the
-    # NotImplementedError guards were removed. What remains is the
-    # "unknown provider" guard: any provider string other than
-    # "github" or "azure_devops" should still raise loudly.
+    # Chunks 03 + 04 wired ADO for ALL six check handlers, and the
+    # GitLab chunk (05) wired gitlab, so the NotImplementedError guards
+    # were removed for both. What remains is the "unknown provider"
+    # guard: any provider string other than github / azure_devops /
+    # gitlab should still raise loudly.
 
     def test_unknown_provider_still_raises(self):
         with pytest.raises(NotImplementedError):
@@ -1901,21 +1902,21 @@ class TestCheckHandlerSignatureWidening:
                 check_type="LICENSE_COMPLIANCE",
                 pr_number=1, repository="o/r", changed_files=[],
                 query_kb_lambda_name="qkb", github_token_param="/x",
-                provider="gitlab",
+                provider="bitbucket",
             )
         with pytest.raises(NotImplementedError):
             readme_freshness_module.check_readme_freshness(
                 check_type="README_FRESHNESS",
                 pr_number=1, repository="o/r", changed_files=[],
                 github_token_param="/x",
-                provider="gitlab",
+                provider="bitbucket",
             )
         with pytest.raises(NotImplementedError):
             test_coverage_module.check_test_coverage(
                 check_type="TEST_COVERAGE",
                 pr_number=1, repository="o/r", changed_files=[],
                 github_token_param="/x", query_kb_lambda_name="qkb",
-                provider="gitlab",
+                provider="bitbucket",
             )
 
 
@@ -2413,3 +2414,64 @@ class TestTestCoverageADO:
                 ado_org="o", ado_project="p", ado_repo="r",
             )
         assert result["status"] in ("PASS", "WARN", "FAIL")
+
+
+class TestGitLabCheckJob:
+    """Chunk 05: gitlab provider on the worker side."""
+
+    def _fresh_job_gitlab(self):
+        return CheckJob(
+            checkType="TEST_COVERAGE",
+            pr_number=7,
+            repository="group/subgroup/project",
+            changedFiles=["src/x.py"],
+            provider="gitlab",
+            connection_id="conn-1",
+        )
+
+    def test_gitlab_job_validates_with_connection_only(self):
+        job = self._fresh_job_gitlab()
+        assert job.provider == "gitlab"
+        assert job.connection_id == "conn-1"
+        assert job.azure_devops_org is None
+
+    @patch('process_pr_check_handler.store_check_result')
+    @patch('process_pr_check_handler._post_gitlab_note')
+    @patch('process_pr_check_handler._get_existing_check_result_row', return_value=None)
+    @patch('process_pr_check_handler.run_check')
+    def test_gitlab_first_run_posts_note_and_stores_id(
+        self, mock_run, _mock_exist, mock_post_note, mock_store,
+    ):
+        mock_run.return_value = {"status": "PASS", "message": "ok", "details": []}
+        mock_post_note.return_value = {"id": 314}
+        result = process_check_job(self._fresh_job_gitlab())
+        mock_post_note.assert_called_once()
+        assert result.PK == "PR#gitlab#group/subgroup/project#7"
+        assert result.provider_comment_id == 314
+        assert result.provider_thread_id is None
+        assert "#note_314" in result.comment_url
+
+    @patch('process_pr_check_handler.store_check_result')
+    @patch('process_pr_check_handler._post_gitlab_note')
+    @patch('process_pr_check_handler._try_patch_gitlab_comment')
+    @patch('process_pr_check_handler._get_existing_check_result_row')
+    @patch('process_pr_check_handler.run_check')
+    def test_gitlab_second_run_updates_note_in_place(
+        self, mock_run, mock_exist, mock_patch_note, mock_post_note, mock_store,
+    ):
+        mock_run.return_value = {"status": "WARN", "message": "w", "details": []}
+        mock_exist.return_value = {"providerCommentId": 314}
+        mock_patch_note.return_value = (
+            "https://gitlab.com/group/subgroup/project/-/merge_requests/7#note_314"
+        )
+        result = process_check_job(self._fresh_job_gitlab())
+        mock_patch_note.assert_called_once()
+        mock_post_note.assert_not_called()
+        # Existing note id preserved so the NEXT run also PATCHes.
+        assert result.provider_comment_id == 314
+
+    def test_try_patch_gitlab_no_stored_id_returns_none(self):
+        assert handler_module._try_patch_gitlab_comment(
+            repository="g/p", pr_number=7, connection_id="c",
+            existing_row={}, comment_body="b",
+        ) is None

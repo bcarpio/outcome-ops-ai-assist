@@ -107,34 +107,43 @@ def _fetch_arch_dup_file_diff(
     ado_project: Optional[str] = None,
     ado_repo: Optional[str] = None,
     ado_access_token: Optional[str] = None,
-    ado_base_sha: Optional[str] = None,
-    ado_head_sha: Optional[str] = None,
+    gitlab_access_token: Optional[str] = None,
+    base_sha: Optional[str] = None,
+    head_sha: Optional[str] = None,
 ) -> str:
     """Provider-dispatching per-file diff fetcher for architectural
     duplication analysis. Same shape as the adr_compliance helper;
-    kept module-local so the two handlers can evolve independently."""
+    kept module-local so the two handlers can evolve independently.
+    GitLab's project path IS ``repository`` (variable-depth slug)."""
     if provider == "github":
         return fetch_pr_file_diff(repository, pr_number, file_path, github_token)
 
-    if provider == "azure_devops":
+    if provider in ("azure_devops", "gitlab"):
         from shared.source_fetch import fetch_file_at_sha, SourceFetchError
         from shared.pr_diff import compute_file_diff
+
+        if provider == "azure_devops":
+            fetch_kwargs = dict(
+                ado_org=ado_org, ado_project=ado_project, ado_repo=ado_repo,
+                ado_access_token=ado_access_token,
+            )
+        else:
+            fetch_kwargs = dict(
+                gitlab_project_path=repository,
+                gitlab_access_token=gitlab_access_token,
+            )
 
         base_bytes: Optional[bytes]
         head_bytes: Optional[bytes]
         try:
             base_bytes = fetch_file_at_sha(
-                "azure_devops", file_path, ado_base_sha,
-                ado_org=ado_org, ado_project=ado_project, ado_repo=ado_repo,
-                ado_access_token=ado_access_token,
+                provider, file_path, base_sha, **fetch_kwargs,
             )
         except SourceFetchError:
             base_bytes = None
         try:
             head_bytes = fetch_file_at_sha(
-                "azure_devops", file_path, ado_head_sha,
-                ado_org=ado_org, ado_project=ado_project, ado_repo=ado_repo,
-                ado_access_token=ado_access_token,
+                provider, file_path, head_sha, **fetch_kwargs,
             )
         except SourceFetchError:
             head_bytes = None
@@ -567,8 +576,9 @@ def check_architectural_duplication(
         # diff endpoint).
         github_token: Optional[str] = None
         ado_access_token: Optional[str] = None
-        ado_base_sha: Optional[str] = None
-        ado_head_sha: Optional[str] = None
+        gitlab_access_token: Optional[str] = None
+        base_sha: Optional[str] = None
+        head_sha: Optional[str] = None
 
         if provider == "github":
             github_token = get_github_token(github_token_param)
@@ -582,8 +592,21 @@ def check_architectural_duplication(
                 ado_org=ado_org, ado_project=ado_project, ado_repo=ado_repo,
                 ado_access_token=ado_access_token,
             )
-            ado_base_sha = pr.base_sha
-            ado_head_sha = pr.head_sha
+            base_sha = pr.base_sha
+            head_sha = pr.head_sha
+        elif provider == "gitlab":
+            from shared.pr_metadata import fetch_pr_metadata
+            from .gitlab_context import get_gitlab_token
+
+            # ``repository`` IS the full project path (variable-depth slug).
+            gitlab_access_token = get_gitlab_token(connection_id)
+            pr = fetch_pr_metadata(
+                "gitlab", pr_number,
+                gitlab_project_path=repository,
+                gitlab_access_token=gitlab_access_token,
+            )
+            base_sha = pr.base_sha
+            head_sha = pr.head_sha
         else:
             raise ValueError(f"Unknown provider: {provider}")
 
@@ -601,8 +624,9 @@ def check_architectural_duplication(
                     ado_project=ado_project,
                     ado_repo=ado_repo,
                     ado_access_token=ado_access_token,
-                    ado_base_sha=ado_base_sha,
-                    ado_head_sha=ado_head_sha,
+                    gitlab_access_token=gitlab_access_token,
+                    base_sha=base_sha,
+                    head_sha=head_sha,
                 )
             except Exception as e:
                 logger.warning(f"Could not fetch diff for {file}: {e}")

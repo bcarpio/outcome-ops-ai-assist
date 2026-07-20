@@ -115,44 +115,54 @@ def _fetch_file_diff(
     ado_project: Optional[str] = None,
     ado_repo: Optional[str] = None,
     ado_access_token: Optional[str] = None,
-    ado_base_sha: Optional[str] = None,
-    ado_head_sha: Optional[str] = None,
+    # GitLab context (unused for GitHub/ADO; project path == repository)
+    gitlab_access_token: Optional[str] = None,
+    base_sha: Optional[str] = None,
+    head_sha: Optional[str] = None,
 ) -> str:
     """Provider-dispatching per-file diff fetcher.
 
     On GitHub, uses the existing ``fetch_pr_file_diff`` which pulls the
     server-side unified diff via ``Accept: application/vnd.github.v3.diff``.
 
-    On Azure DevOps, ADO has no equivalent server-side diff endpoint, so
-    we fetch base and head file bytes at the SHAs already computed by
-    the caller (via ``shared.pr_metadata.fetch_pr_metadata``) and produce
-    a unified diff client-side via ``shared.pr_diff.compute_file_diff``.
+    On Azure DevOps and GitLab there is no equivalent server-side
+    per-file diff endpoint, so we fetch base and head file bytes at the
+    SHAs already computed by the caller (via
+    ``shared.pr_metadata.fetch_pr_metadata``) and produce a unified diff
+    client-side via ``shared.pr_diff.compute_file_diff``.
     """
     if provider == "github":
         return fetch_pr_file_diff(repository, pr_number, file_path, github_token)
 
-    if provider == "azure_devops":
+    if provider in ("azure_devops", "gitlab"):
         # Late imports so unit tests can load this module without the
         # shared/ package being on sys.path at import time (the parent
         # handler.py sets that up).
         from shared.source_fetch import fetch_file_at_sha, SourceFetchError
         from shared.pr_diff import compute_file_diff
 
+        if provider == "azure_devops":
+            fetch_kwargs = dict(
+                ado_org=ado_org, ado_project=ado_project, ado_repo=ado_repo,
+                ado_access_token=ado_access_token,
+            )
+        else:
+            fetch_kwargs = dict(
+                gitlab_project_path=repository,
+                gitlab_access_token=gitlab_access_token,
+            )
+
         base_bytes: Optional[bytes]
         head_bytes: Optional[bytes]
         try:
             base_bytes = fetch_file_at_sha(
-                "azure_devops", file_path, ado_base_sha,
-                ado_org=ado_org, ado_project=ado_project, ado_repo=ado_repo,
-                ado_access_token=ado_access_token,
+                provider, file_path, base_sha, **fetch_kwargs,
             )
         except SourceFetchError:
             base_bytes = None  # File added — did not exist in base
         try:
             head_bytes = fetch_file_at_sha(
-                "azure_devops", file_path, ado_head_sha,
-                ado_org=ado_org, ado_project=ado_project, ado_repo=ado_repo,
-                ado_access_token=ado_access_token,
+                provider, file_path, head_sha, **fetch_kwargs,
             )
         except SourceFetchError:
             head_bytes = None  # File deleted in head
@@ -324,8 +334,9 @@ def analyze_lambda_handlers(
     ado_project: Optional[str] = None,
     ado_repo: Optional[str] = None,
     ado_access_token: Optional[str] = None,
-    ado_base_sha: Optional[str] = None,
-    ado_head_sha: Optional[str] = None,
+    gitlab_access_token: Optional[str] = None,
+    base_sha: Optional[str] = None,
+    head_sha: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Analyze Lambda handlers against ADR standards using Claude."""
     # Filter for Lambda handler files (exclude tests, shared libs)
@@ -370,8 +381,9 @@ def analyze_lambda_handlers(
                 ado_project=ado_project,
                 ado_repo=ado_repo,
                 ado_access_token=ado_access_token,
-                ado_base_sha=ado_base_sha,
-                ado_head_sha=ado_head_sha,
+                gitlab_access_token=gitlab_access_token,
+                base_sha=base_sha,
+                head_sha=head_sha,
             )
 
             # Analyze with Claude
@@ -421,8 +433,9 @@ def analyze_terraform_files(
     ado_project: Optional[str] = None,
     ado_repo: Optional[str] = None,
     ado_access_token: Optional[str] = None,
-    ado_base_sha: Optional[str] = None,
-    ado_head_sha: Optional[str] = None,
+    gitlab_access_token: Optional[str] = None,
+    base_sha: Optional[str] = None,
+    head_sha: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Analyze Terraform files against module standards using Claude."""
     terraform_files = [f for f in files if f.startswith("terraform/") and f.endswith(".tf")]
@@ -462,8 +475,9 @@ def analyze_terraform_files(
                 ado_project=ado_project,
                 ado_repo=ado_repo,
                 ado_access_token=ado_access_token,
-                ado_base_sha=ado_base_sha,
-                ado_head_sha=ado_head_sha,
+                gitlab_access_token=gitlab_access_token,
+                base_sha=base_sha,
+                head_sha=head_sha,
             )
 
             # Analyze with Claude
@@ -541,8 +555,9 @@ def check_adr_compliance(
         # Provider-specific auth + PR context prep.
         github_token: Optional[str] = None
         ado_access_token: Optional[str] = None
-        ado_base_sha: Optional[str] = None
-        ado_head_sha: Optional[str] = None
+        gitlab_access_token: Optional[str] = None
+        base_sha: Optional[str] = None
+        head_sha: Optional[str] = None
 
         if provider == "github":
             github_token = get_github_token(github_token_param)
@@ -557,8 +572,21 @@ def check_adr_compliance(
                 ado_org=ado_org, ado_project=ado_project, ado_repo=ado_repo,
                 ado_access_token=ado_access_token,
             )
-            ado_base_sha = pr.base_sha
-            ado_head_sha = pr.head_sha
+            base_sha = pr.base_sha
+            head_sha = pr.head_sha
+        elif provider == "gitlab":
+            from shared.pr_metadata import fetch_pr_metadata
+            from .gitlab_context import get_gitlab_token
+
+            # ``repository`` IS the full project path (variable-depth slug).
+            gitlab_access_token = get_gitlab_token(connection_id)
+            pr = fetch_pr_metadata(
+                "gitlab", pr_number,
+                gitlab_project_path=repository,
+                gitlab_access_token=gitlab_access_token,
+            )
+            base_sha = pr.base_sha
+            head_sha = pr.head_sha
         else:
             raise ValueError(f"Unknown provider: {provider}")
 
@@ -588,7 +616,8 @@ def check_adr_compliance(
             provider=provider,
             ado_org=ado_org, ado_project=ado_project, ado_repo=ado_repo,
             ado_access_token=ado_access_token,
-            ado_base_sha=ado_base_sha, ado_head_sha=ado_head_sha,
+            gitlab_access_token=gitlab_access_token,
+            base_sha=base_sha, head_sha=head_sha,
         )
 
         terraform_result = analyze_terraform_files(
@@ -598,7 +627,8 @@ def check_adr_compliance(
             provider=provider,
             ado_org=ado_org, ado_project=ado_project, ado_repo=ado_repo,
             ado_access_token=ado_access_token,
-            ado_base_sha=ado_base_sha, ado_head_sha=ado_head_sha,
+            gitlab_access_token=gitlab_access_token,
+            base_sha=base_sha, head_sha=head_sha,
         )
 
         # Combine results

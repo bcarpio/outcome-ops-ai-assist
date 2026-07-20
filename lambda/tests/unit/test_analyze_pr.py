@@ -526,6 +526,70 @@ class TestAnalyzePrUpsertHelpers:
         assert kwargs["provider_thread_comment_id"] == 1
 
 
+class TestUpsertGitlabComment:
+    """GitLab MR-note upsert (chunk 05): PUT-in-place on re-runs, POST on
+    first run, note id stored in providerCommentId (single-id model)."""
+
+    @patch('analyze_pr_handler._get_existing_comment_row', return_value=None)
+    @patch('analyze_pr_handler._store_comment_row')
+    def test_upsert_gitlab_first_run_posts(self, mock_store, _mock_exist):
+        # Patch the real module's functions: the handler resolves
+        # ``from shared import gitlab_api`` via the package attribute,
+        # so a sys.modules patch.dict would not intercept it once the
+        # real module has been imported by any earlier test.
+        with patch("shared.gitlab_api.post_merge_request_note",
+                   return_value={"id": 314}), \
+             patch("shared.gitlab_api.update_merge_request_note"):
+            handler_module._upsert_gitlab_comment(
+                repository="group/subgroup/project",
+                pr_number=7, access_token="tok",
+                role=handler_module.COMMENT_ROLE_ANALYSIS_STARTED,
+                body="hi",
+            )
+        _, kwargs = mock_store.call_args
+        assert kwargs["provider_comment_id"] == 314
+        assert kwargs["sk"] == "COMMENT#analysis_started"
+        assert kwargs["pk"] == "PR#gitlab#group/subgroup/project#7"
+
+    @patch('analyze_pr_handler._get_existing_comment_row')
+    @patch('analyze_pr_handler._store_comment_row')
+    def test_upsert_gitlab_second_run_puts_in_place(self, mock_store, mock_exist):
+        mock_exist.return_value = {"providerCommentId": 314}
+        with patch("shared.gitlab_api.post_merge_request_note") as post_mock, \
+             patch("shared.gitlab_api.update_merge_request_note",
+                   return_value={"id": 314}) as put_mock:
+            handler_module._upsert_gitlab_comment(
+                repository="group/subgroup/project",
+                pr_number=7, access_token="tok",
+                role=handler_module.COMMENT_ROLE_ANALYSIS_STARTED,
+                body="new body",
+            )
+        put_mock.assert_called_once()
+        post_mock.assert_not_called()
+        _, kwargs = mock_store.call_args
+        assert kwargs["provider_comment_id"] == 314
+
+    @patch('analyze_pr_handler._get_existing_comment_row')
+    @patch('analyze_pr_handler._store_comment_row')
+    def test_upsert_gitlab_put_failure_falls_back_to_post(
+        self, mock_store, mock_exist,
+    ):
+        mock_exist.return_value = {"providerCommentId": 999}
+        with patch("shared.gitlab_api.post_merge_request_note",
+                   return_value={"id": 777}) as post_mock, \
+             patch("shared.gitlab_api.update_merge_request_note",
+                   side_effect=Exception("410 note gone")):
+            handler_module._upsert_gitlab_comment(
+                repository="group/project",
+                pr_number=7, access_token="tok",
+                role=handler_module.COMMENT_ROLE_ANALYSIS_STARTED,
+                body="b",
+            )
+        post_mock.assert_called_once()
+        _, kwargs = mock_store.call_args
+        assert kwargs["provider_comment_id"] == 777
+
+
 class TestParseChangedFiles:
     """Test file change parsing and check determination."""
 
@@ -1306,7 +1370,7 @@ class TestCheckJobShapeParity:
         # Confirm all analyze-pr.CheckJob ADO fields are declared in
         # process-pr-check.CheckJob source (same names + aliases).
         for expected in [
-            'provider: Literal["github", "azure_devops"]',
+            'provider: Literal["github", "azure_devops", "gitlab"]',
             'connection_id: Optional[str]',
             'azure_devops_slug',
             'azure_devops_org',
@@ -1554,3 +1618,95 @@ class TestHandleAzureDevOpsEndToEnd:
     def test_refresh_ado_access_token_missing_connection_id(self):
         with pytest.raises(ValueError):
             handler_module._refresh_ado_access_token("")
+
+
+class TestGitLabRequestValidation:
+    """Chunk 05: gitlab provider shape. Variable-depth slugs (nested
+    subgroups) must validate by segments, never slash-count."""
+
+    def test_gitlab_two_segment_slug_accepted(self):
+        request = AnalyzePrRequest(
+            pr_number=7,
+            repository="group/project",
+            provider="gitlab",
+            connection_id="conn-1",
+        )
+        assert request.provider == "gitlab"
+
+    def test_gitlab_nested_subgroup_slug_accepted(self):
+        request = AnalyzePrRequest(
+            pr_number=7,
+            repository="group/sub/subsub/project",
+            provider="gitlab",
+            connection_id="conn-1",
+        )
+        assert request.repository == "group/sub/subsub/project"
+
+    def test_gitlab_single_segment_rejected(self):
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            AnalyzePrRequest(
+                pr_number=7, repository="justaproject",
+                provider="gitlab", connection_id="conn-1",
+            )
+
+    def test_gitlab_empty_segment_rejected(self):
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            AnalyzePrRequest(
+                pr_number=7, repository="group//project",
+                provider="gitlab", connection_id="conn-1",
+            )
+
+    def test_gitlab_without_connection_id_rejected(self):
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            AnalyzePrRequest(
+                pr_number=7, repository="group/project",
+                provider="gitlab",
+            )
+
+
+class TestGitLabCheckJobQueueing:
+    """CheckJob wire shape + queue embedding for gitlab."""
+
+    def test_check_job_carries_gitlab_fields(self):
+        job = CheckJob(
+            check_type=CheckType.ADR_COMPLIANCE,
+            pr_number=7,
+            repository="group/subgroup/project",
+            changed_files=["src/x.py"],
+            provider="gitlab",
+            connection_id="conn-1",
+        )
+        round_tripped = CheckJob(**json.loads(job.json()))
+        assert round_tripped.provider == "gitlab"
+        assert round_tripped.connection_id == "conn-1"
+        assert round_tripped.repository == "group/subgroup/project"
+
+    @patch('analyze_pr_handler.sqs_client')
+    @patch('analyze_pr_handler.ssm_client')
+    def test_gitlab_context_embedded_in_queued_message(self, mock_ssm, mock_sqs):
+        mock_ssm.get_parameter.return_value = {"Parameter": {"Value": "https://sqs/q"}}
+        queued = handler_module.queue_check_jobs(
+            "group/subgroup/project", 7, ["ADR_COMPLIANCE"], ["src/x.py"],
+            provider="gitlab", connection_id="conn-1",
+        )
+        assert queued == 1
+        body = json.loads(mock_sqs.send_message.call_args.kwargs["MessageBody"])
+        assert body["provider"] == "gitlab"
+        assert body["connection_id"] == "conn-1"
+        assert body["repository"] == "group/subgroup/project"
+
+    @patch('analyze_pr_handler._handle_gitlab')
+    def test_gitlab_event_routes_to_gitlab_branch(self, mock_gitlab_handler):
+        mock_gitlab_handler.return_value = {
+            "message": "ok", "pr_number": 7, "checks_queued": 0,
+        }
+        handler_module.handler({
+            "pr_number": 7,
+            "repository": "group/project",
+            "provider": "gitlab",
+            "connection_id": "conn-1",
+        }, None)
+        mock_gitlab_handler.assert_called_once()

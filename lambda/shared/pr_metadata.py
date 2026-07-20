@@ -109,12 +109,16 @@ def fetch_pr_metadata(
     ado_project: Optional[str] = None,
     ado_repo: Optional[str] = None,
     ado_access_token: Optional[str] = None,
+    # gitlab branch
+    gitlab_project_path: Optional[str] = None,
+    gitlab_access_token: Optional[str] = None,
 ) -> PRMetadata:
     """Fetch a PR's metadata + changed-file list from the source provider.
 
     Args:
-        provider: ``"github"`` or ``"azure_devops"``.
+        provider: ``"github"``, ``"azure_devops"``, or ``"gitlab"``.
         pr_number: The PR number as it appears in the customer's UI.
+            For GitLab this is the MR ``iid`` (project-scoped number).
         repository: GitHub ``owner/repo``. Required for github.
         github_token: GitHub PAT. Required for github.
         ado_org: ADO org name. Required for azure_devops.
@@ -122,6 +126,11 @@ def fetch_pr_metadata(
         ado_repo: ADO repo name. Required for azure_devops.
         ado_access_token: ADO OAuth access token, pre-refreshed by
             caller. Required for azure_devops.
+        gitlab_project_path: GitLab full project path
+            (``group/{...subgroups}/project``). Required for gitlab.
+        gitlab_access_token: GitLab user-scoped OAuth access token
+            (pre-refreshed via the cached single-flight path). Required
+            for gitlab.
 
     Returns:
         PRMetadata NamedTuple.
@@ -152,6 +161,18 @@ def fetch_pr_metadata(
             ado_repo=ado_repo,
             pr_number=pr_number,
             ado_access_token=ado_access_token,
+        )
+
+    if provider == "gitlab":
+        if not (gitlab_project_path and gitlab_access_token):
+            raise PRMetadataError(
+                "gitlab fetch_pr_metadata needs gitlab_project_path + "
+                "gitlab_access_token",
+            )
+        return _fetch_pr_from_gitlab(
+            project_path=gitlab_project_path,
+            mr_iid=pr_number,
+            access_token=gitlab_access_token,
         )
 
     raise PRMetadataError(f"Unknown provider for fetch_pr_metadata: {provider}")
@@ -311,6 +332,102 @@ def _fetch_pr_from_ado(
             file_change_types[path] = _ado_change_type_to_github_status(
                 entry.get("changeType"),
             )
+
+    return PRMetadata(
+        head_sha=head_sha,
+        base_sha=base_sha,
+        base_branch=base_branch,
+        changed_files=changed_files,
+        author=author,
+        title=title,
+        file_change_types=file_change_types,
+    )
+
+
+def _gitlab_diff_to_github_status(entry: Dict) -> str:
+    """Map a GitLab MR-diff entry to GitHub's ``status`` vocabulary.
+
+    GitLab's diffs endpoint carries EXPLICIT booleans (``new_file`` /
+    ``deleted_file`` / ``renamed_file``) rather than a string vocabulary,
+    so unlike ADO's ``changeType`` there is nothing to parse. Precedence
+    mirrors ``_ado_change_type_to_github_status``: delete > add > rename
+    (a file can't legitimately be more than one, but defensive ordering
+    keeps a malformed entry conservative).
+    """
+    if entry.get("deleted_file"):
+        return "removed"
+    if entry.get("new_file"):
+        return "added"
+    if entry.get("renamed_file"):
+        return "renamed"
+    return "modified"
+
+
+def _fetch_pr_from_gitlab(
+    *,
+    project_path: str,
+    mr_iid: int,
+    access_token: str,
+) -> PRMetadata:
+    """Fetch MR metadata + changed files from GitLab.
+
+    Two API calls through the shared client:
+      GET /projects/{enc}/merge_requests/{iid}        — SHAs, target branch, author, title
+      GET /projects/{enc}/merge_requests/{iid}/diffs  — changed-file list (paginated)
+
+    Notable shape deltas from GitHub:
+
+    - Head/base SHAs live under ``diff_refs`` (``head_sha`` /
+      ``base_sha``). ``base_sha`` is the merge-base — the correct base
+      for a snapshot analysis (same semantics as GitHub's ``base.sha``
+      for the check pipeline's purposes).
+    - Target branch is a bare name (``target_branch``) — no
+      ``refs/heads/`` prefix to strip.
+    - Author is ``author.username``.
+    - The path for a deleted file lives in ``old_path``; for everything
+      else ``new_path`` is the current path (``old_path`` differs only
+      on renames).
+    """
+    from shared import gitlab_api  # deferred: keeps this module import-light
+
+    try:
+        mr = gitlab_api.get_merge_request(access_token, project_path, mr_iid)
+    except Exception as e:
+        raise PRMetadataError(
+            f"GitLab MR fetch failed for {project_path}!{mr_iid}: {e}",
+        )
+
+    try:
+        diff_refs = mr.get("diff_refs") or {}
+        head_sha = diff_refs["head_sha"]
+        base_sha = diff_refs["base_sha"]
+        base_branch = mr["target_branch"]
+        author = (mr.get("author") or {}).get("username") or ""
+        title = mr.get("title") or ""
+    except (KeyError, TypeError) as e:
+        raise PRMetadataError(
+            f"unexpected GitLab MR shape for {project_path}!{mr_iid}: {e}",
+        )
+
+    try:
+        diff_entries = gitlab_api.get_merge_request_diffs(
+            access_token, project_path, mr_iid)
+    except Exception as e:
+        raise PRMetadataError(
+            f"GitLab MR diffs fetch failed for {project_path}!{mr_iid}: {e}",
+        )
+
+    changed_files: List[str] = []
+    file_change_types: Dict[str, str] = {}
+    for entry in diff_entries or []:
+        status = _gitlab_diff_to_github_status(entry)
+        path = (
+            entry.get("old_path") if status == "removed"
+            else entry.get("new_path")
+        )
+        if path:
+            changed_files.append(path)
+            file_change_types[path] = status
 
     return PRMetadata(
         head_sha=head_sha,

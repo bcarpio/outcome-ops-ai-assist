@@ -480,3 +480,87 @@ class TestParseGitHubLinkNext:
     def test_returns_none_when_next_absent(self):
         header = '<https://api.github.com/x?page=5>; rel="last"'
         assert pr_metadata._parse_github_link_next(header) is None
+
+
+# ---------------------------------------------------------------------------
+# GitLab branch (chunk 05: MR-analysis parity).
+# ---------------------------------------------------------------------------
+
+
+class TestFetchPRMetadataGitLab:
+
+    def test_gitlab_requires_project_path_and_token(self):
+        with pytest.raises(pr_metadata.PRMetadataError):
+            pr_metadata.fetch_pr_metadata(
+                "gitlab", 1, gitlab_project_path="g/p")
+        with pytest.raises(pr_metadata.PRMetadataError):
+            pr_metadata.fetch_pr_metadata(
+                "gitlab", 1, gitlab_access_token="tok")
+
+    def test_gitlab_mr_shape_normalized(self):
+        mr = {
+            "diff_refs": {"head_sha": "h" * 40, "base_sha": "b" * 40},
+            "target_branch": "main",
+            "author": {"username": "bcarpio"},
+            "title": "Add licensing tier",
+        }
+        diffs = [
+            {"new_path": "src/added.py", "old_path": "src/added.py",
+             "new_file": True, "deleted_file": False, "renamed_file": False},
+            {"new_path": "src/edited.py", "old_path": "src/edited.py",
+             "new_file": False, "deleted_file": False, "renamed_file": False},
+            {"new_path": "src/renamed_to.py", "old_path": "src/renamed_from.py",
+             "new_file": False, "deleted_file": False, "renamed_file": True},
+            {"new_path": "src/gone.py", "old_path": "src/gone.py",
+             "new_file": False, "deleted_file": True, "renamed_file": False},
+        ]
+        with patch("shared.gitlab_api.get_merge_request", return_value=mr), \
+             patch("shared.gitlab_api.get_merge_request_diffs",
+                   return_value=diffs):
+            meta = pr_metadata.fetch_pr_metadata(
+                "gitlab", 7,
+                gitlab_project_path="group/subgroup/project",
+                gitlab_access_token="tok",
+            )
+        assert meta.head_sha == "h" * 40
+        assert meta.base_sha == "b" * 40
+        assert meta.base_branch == "main"
+        assert meta.author == "bcarpio"
+        assert meta.title == "Add licensing tier"
+        # Explicit booleans -> GitHub status vocab; delete keys on
+        # old_path, rename keys on new_path.
+        assert meta.file_change_types["src/added.py"] == "added"
+        assert meta.file_change_types["src/edited.py"] == "modified"
+        assert meta.file_change_types["src/renamed_to.py"] == "renamed"
+        assert meta.file_change_types["src/gone.py"] == "removed"
+        assert "src/renamed_from.py" not in meta.file_change_types
+        assert set(meta.changed_files) == {
+            "src/added.py", "src/edited.py", "src/renamed_to.py",
+            "src/gone.py",
+        }
+
+    def test_gitlab_missing_diff_refs_raises(self):
+        with patch("shared.gitlab_api.get_merge_request",
+                   return_value={"target_branch": "main"}):
+            with pytest.raises(pr_metadata.PRMetadataError):
+                pr_metadata.fetch_pr_metadata(
+                    "gitlab", 7,
+                    gitlab_project_path="g/p",
+                    gitlab_access_token="tok",
+                )
+
+
+class TestGitlabDiffToGithubStatus:
+
+    def test_precedence_delete_over_all(self):
+        assert pr_metadata._gitlab_diff_to_github_status(
+            {"deleted_file": True, "new_file": True, "renamed_file": True},
+        ) == "removed"
+
+    def test_add_over_rename(self):
+        assert pr_metadata._gitlab_diff_to_github_status(
+            {"new_file": True, "renamed_file": True},
+        ) == "added"
+
+    def test_plain_edit_is_modified(self):
+        assert pr_metadata._gitlab_diff_to_github_status({}) == "modified"

@@ -59,17 +59,24 @@ def fetch_pr_commits(
     ado_project: Optional[str] = None,
     ado_repo: Optional[str] = None,
     ado_access_token: Optional[str] = None,
+    # gitlab branch
+    gitlab_project_path: Optional[str] = None,
+    gitlab_access_token: Optional[str] = None,
 ) -> List[PRCommit]:
     """Fetch the ordered list of commits in a PR from the source provider.
 
     Args:
-        provider: ``"github"`` or ``"azure_devops"``.
-        pr_number: PR number.
+        provider: ``"github"``, ``"azure_devops"``, or ``"gitlab"``.
+        pr_number: PR number (GitLab: the MR ``iid``).
         repository: GitHub ``owner/repo``. Required for github.
         github_token: GitHub PAT. Required for github.
         ado_org / ado_project / ado_repo: ADO context. Required for ADO.
         ado_access_token: ADO OAuth access token (pre-refreshed).
             Required for ADO.
+        gitlab_project_path / gitlab_access_token: GitLab context.
+            Required for gitlab. GitLab's MR-commits endpoint returns
+            the FULL ``message`` field, so no ADO-style truncation
+            refetch is needed.
 
     Returns:
         List of ``PRCommit`` in the order the provider returns them.
@@ -102,7 +109,52 @@ def fetch_pr_commits(
             ado_access_token=ado_access_token,
         )
 
+    if provider == "gitlab":
+        if not (gitlab_project_path and gitlab_access_token):
+            raise PRCommitsError(
+                "gitlab fetch_pr_commits needs gitlab_project_path + "
+                "gitlab_access_token",
+            )
+        return _fetch_from_gitlab(
+            project_path=gitlab_project_path,
+            mr_iid=pr_number,
+            access_token=gitlab_access_token,
+        )
+
     raise PRCommitsError(f"Unknown provider for fetch_pr_commits: {provider}")
+
+
+def _fetch_from_gitlab(
+    *,
+    project_path: str,
+    mr_iid: int,
+    access_token: str,
+) -> List[PRCommit]:
+    """GET /projects/{enc}/merge_requests/{iid}/commits via the shared
+    GitLab client. ``message`` is full (subject + body + trailers), so
+    Co-Authored-By detection works without a per-commit refetch."""
+    from shared import gitlab_api  # deferred: keeps this module import-light
+
+    try:
+        entries = gitlab_api.get_merge_request_commits(
+            access_token, project_path, mr_iid)
+    except Exception as e:
+        raise PRCommitsError(
+            f"GitLab MR commits fetch failed for {project_path}!{mr_iid}: {e}",
+        )
+
+    commits: List[PRCommit] = []
+    for entry in entries or []:
+        try:
+            sha = entry["id"]
+            message = entry.get("message") or entry.get("title") or ""
+            author = entry.get("author_name") or ""
+        except (KeyError, TypeError) as e:
+            raise PRCommitsError(
+                f"unexpected GitLab commit shape for {project_path}!{mr_iid}: {e}",
+            )
+        commits.append(PRCommit(sha=sha, message=message, author=author))
+    return commits
 
 
 def _fetch_from_github(

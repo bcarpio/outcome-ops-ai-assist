@@ -272,6 +272,37 @@ def _fetch_readme_diff(
             head_bytes = None
         return compute_file_diff(base_bytes, head_bytes, "README.md")
 
+    if provider == "gitlab":
+        from shared.pr_metadata import fetch_pr_metadata
+        from shared.source_fetch import fetch_file_at_sha, SourceFetchError
+        from shared.pr_diff import compute_file_diff
+        from .gitlab_context import get_gitlab_token
+
+        # ``repository`` IS the full project path (variable-depth slug).
+        access_token = get_gitlab_token(connection_id)
+        pr = fetch_pr_metadata(
+            "gitlab", pr_number,
+            gitlab_project_path=repository,
+            gitlab_access_token=access_token,
+        )
+        try:
+            base_bytes = fetch_file_at_sha(
+                "gitlab", "README.md", pr.base_sha,
+                gitlab_project_path=repository,
+                gitlab_access_token=access_token,
+            )
+        except SourceFetchError:
+            base_bytes = None
+        try:
+            head_bytes = fetch_file_at_sha(
+                "gitlab", "README.md", pr.head_sha,
+                gitlab_project_path=repository,
+                gitlab_access_token=access_token,
+            )
+        except SourceFetchError:
+            head_bytes = None
+        return compute_file_diff(base_bytes, head_bytes, "README.md")
+
     raise ValueError(f"Unknown provider: {provider}")
 
 
@@ -300,7 +331,7 @@ def check_readme_freshness(
     fetch. Fires ``NotImplementedError`` for unknown providers as a
     safety net.
     """
-    if provider not in ("github", "azure_devops"):
+    if provider not in ("github", "azure_devops", "gitlab"):
         raise NotImplementedError(
             f"check_readme_freshness does not support provider={provider!r}."
         )

@@ -76,14 +76,18 @@ class AnalyzePrRequest(BaseModel):
     ``connection_id`` + ``ado_org`` + ``ado_project`` + ``ado_repo``;
     ``repository`` in that shape is a 3-segment slug
     (``{org}/{project}/{repo}``) matching the CheckJob wire format
-    downstream.
+    downstream. When ``provider="gitlab"``, the caller MUST provide
+    ``connection_id``; ``repository`` is the FULL project path
+    (``group/{...subgroups}/project`` — variable depth, so validation
+    checks segments, never slash-count) and ``pr_number`` is the MR
+    ``iid``.
     """
     pr_number: int = Field(..., gt=0, description="Pull Request number")
 
     # Provider MUST be declared before ``repository`` so pydantic's
     # in-order field validation populates ``info.data['provider']``
     # before ``validate_repository_format`` runs.
-    provider: Literal["github", "azure_devops"] = "github"
+    provider: Literal["github", "azure_devops", "gitlab"] = "github"
     connection_id: Optional[str] = None
     ado_org: Optional[str] = None
     ado_project: Optional[str] = None
@@ -102,8 +106,18 @@ class AnalyzePrRequest(BaseModel):
 
         GitHub: ``owner/repo`` (exactly 1 slash).
         Azure DevOps: ``org/project/repo`` (exactly 2 slashes).
+        GitLab: ``group/{...subgroups}/project`` — at least 1 slash,
+        variable depth (nested subgroups), every segment non-empty.
         """
         provider = (info.data or {}).get("provider", "github")
+        if provider == "gitlab":
+            segments = v.split("/")
+            if len(segments) < 2 or not all(segments):
+                raise ValueError(
+                    "GitLab repository must be a full project path "
+                    "'group/.../project' with non-empty segments"
+                )
+            return v
         if provider == "azure_devops":
             if v.count("/") != 2:
                 raise ValueError(
@@ -123,7 +137,12 @@ class AnalyzePrRequest(BaseModel):
 
     @model_validator(mode="after")
     def _require_ado_context_for_azure_devops(self):
-        """Cross-field: ADO provider requires connection_id + org + project + repo."""
+        """Cross-field: ADO provider requires connection_id + org + project + repo.
+        GitLab requires only connection_id (repository IS the project path)."""
+        if self.provider == "gitlab":
+            if not self.connection_id:
+                raise ValueError("provider='gitlab' requires: connection_id")
+            return self
         if self.provider != "azure_devops":
             return self
         missing = []
@@ -163,9 +182,9 @@ class CheckJob(BaseModel):
     repository: str
     changed_files: List[str] = Field(..., alias="changedFiles")
 
-    # ADO-specific fields. All optional so GitHub-shape messages
-    # continue to validate.
-    provider: Literal["github", "azure_devops"] = "github"
+    # Provider context. All optional so GitHub-shape messages continue
+    # to validate. GitLab needs only ``connection_id``.
+    provider: Literal["github", "azure_devops", "gitlab"] = "github"
     connection_id: Optional[str] = None
     azure_devops_slug: Optional[str] = Field(None, alias="slug")
     azure_devops_org: Optional[str] = Field(None, alias="org")
@@ -672,6 +691,58 @@ def _upsert_ado_comment(
     )
 
 
+def _upsert_gitlab_comment(
+    *,
+    repository: str,
+    pr_number: int,
+    access_token: str,
+    role: str,
+    body: str,
+) -> None:
+    """PUT the existing GitLab MR note for this (MR × role) if we have one;
+    otherwise POST a new note. Stores the note ID (providerCommentId --
+    same single-id model as GitHub) for the next run."""
+    from shared import gitlab_api
+
+    pk = _build_comment_pk("gitlab", repository, pr_number)
+    sk = f"COMMENT#{role}"
+
+    existing_row = _get_existing_comment_row(pk, sk)
+    existing_id = (existing_row or {}).get("providerCommentId")
+
+    if existing_id is not None:
+        try:
+            gitlab_api.update_merge_request_note(
+                access_token, repository, pr_number, int(existing_id), body,
+            )
+            _store_comment_row(
+                pk=pk, sk=sk,
+                provider_comment_id=int(existing_id),
+            )
+            return
+        except Exception as e:
+            logger.warning(
+                f"[analyze-pr.upsert] GitLab note update failed for note "
+                f"{existing_id} on {repository} !{pr_number} ({role}): {e}. "
+                f"Falling back to POST."
+            )
+
+    try:
+        response = gitlab_api.post_merge_request_note(
+            access_token, repository, pr_number, body,
+        )
+    except Exception as e:
+        logger.error(
+            f"[analyze-pr.upsert] GitLab note POST failed for {repository} "
+            f"!{pr_number} ({role}): {e}"
+        )
+        return
+    _store_comment_row(
+        pk=pk, sk=sk,
+        provider_comment_id=response.get("id"),
+    )
+
+
 @dataclass
 class BackendPatterns:
     """File patterns for a specific backend type."""
@@ -989,6 +1060,13 @@ def queue_check_jobs(
                 azure_devops_project=ado_project,
                 azure_devops_repo=ado_repo,
             )
+        elif provider == "gitlab":
+            # GitLab needs only the connection -- ``repository`` IS the
+            # full project path the downstream consumer uses.
+            job_kwargs.update(
+                provider="gitlab",
+                connection_id=connection_id,
+            )
         job = CheckJob(**job_kwargs)
 
         # Message group ensures ordered processing per PR
@@ -1056,6 +1134,9 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
         if request.provider == "azure_devops":
             return _handle_azure_devops(request, start_time)
+
+        if request.provider == "gitlab":
+            return _handle_gitlab(request, start_time)
 
         # ==== GitHub flow (unchanged from pre-widening) ====
         # Fetch GitHub token
@@ -1429,6 +1510,145 @@ def _handle_azure_devops(
     )
     return AnalyzePrResponse(
         message=f"Analysis started for PR #{request.pr_number}",
+        pr_number=request.pr_number,
+        checks_queued=jobs_queued,
+    ).dict()
+
+
+def _handle_gitlab(
+    request: AnalyzePrRequest, start_time: float,
+) -> Dict[str, Any]:
+    """Handle a GitLab analyze-pr (MR) request.
+
+    Mirrors ``_handle_azure_devops`` through the shared primitives:
+    - Obtain the customer's access token via the cached single-flight
+      path (ADR-050 v1.1 -- GitLab rotates refresh tokens on every
+      refresh; a parallel raw refresh here would race the sync workers).
+    - Fetch MR metadata (head/base SHAs, target branch, changed files
+      with explicit change-type booleans) via shared.pr_metadata.
+    - Fetch .outcomeops.yaml at the target-branch tip (GitLab's ref
+      slot takes a branch name or SHA uniformly).
+    - Parse changed files -> checks to run.
+    - Upsert the "analysis started" note (collapsed <details>; PUT the
+      previous run's note in place on re-runs).
+    - Queue CheckJobs with provider="gitlab" + connection_id.
+
+    Structural-impact block is NOT posted for GitLab in v1 (same as
+    ADO -- it depends on GitHub-specific data plumbing).
+    """
+    from shared.oauth.gitlab import get_valid_access_token
+    from shared.pr_metadata import fetch_pr_metadata
+    from shared.source_fetch import fetch_file_at_sha, SourceFetchError
+
+    repository = request.repository  # full project path
+    connection_id = request.connection_id
+
+    workspaces_table = os.environ.get("WORKSPACES_TABLE", "")
+    kms_key_arn = os.environ.get("OAUTH_KMS_KEY_ARN", "")
+    if not (workspaces_table and kms_key_arn):
+        raise RuntimeError(
+            "GitLab OAuth not configured "
+            "(WORKSPACES_TABLE / OAUTH_KMS_KEY_ARN env vars missing)"
+        )
+    access_token = get_valid_access_token(
+        workspaces_table, kms_key_arn, connection_id,
+    )
+    if not access_token:
+        raise RuntimeError(
+            "Failed to obtain GitLab access token; reconnect_required"
+        )
+
+    pr_meta = fetch_pr_metadata(
+        "gitlab",
+        request.pr_number,
+        gitlab_project_path=repository,
+        gitlab_access_token=access_token,
+    )
+    base_branch = pr_meta.base_branch
+
+    repo_config: Optional[Dict[str, Any]] = None
+    try:
+        yaml_bytes = fetch_file_at_sha(
+            "gitlab",
+            ".outcomeops.yaml",
+            base_branch,
+            gitlab_project_path=repository,
+            gitlab_access_token=access_token,
+        )
+        repo_config = yaml.safe_load(yaml_bytes.decode("utf-8", errors="replace"))
+    except SourceFetchError:
+        logger.info(
+            "[analyze-pr.gitlab] no .outcomeops.yaml at %s in %s",
+            base_branch, repository,
+        )
+
+    backend = get_backend_from_config(repo_config)
+    logger.info(f"[analyze-pr.gitlab] Detected backend type: {backend}")
+
+    # GitLab's diffs endpoint carries explicit change-type booleans,
+    # already translated to GitHub status vocab by the shared shim.
+    files = [
+        GitHubFile(
+            filename=path,
+            status=pr_meta.file_change_types.get(path, "modified"),
+            additions=0,
+            deletions=0,
+            changes=0,
+        )
+        for path in pr_meta.changed_files
+    ]
+
+    parse_result = parse_changed_files(files, backend=backend)
+    changed_files = parse_result["changed_files"]
+    checks_to_run = parse_result["checks_to_run"]
+
+    logger.info(
+        f"[analyze-pr.gitlab] Changed files: {len(changed_files)}, "
+        f"Checks to run: {len(checks_to_run)}"
+    )
+
+    if not checks_to_run:
+        comment_body = (
+            "**OutcomeOps Analysis:** No checks needed for this MR "
+            "(no relevant files changed)\n\n---\n"
+            "*Powered by [OutcomeOps AI Assist](https://outcomeops.ai)*"
+        )
+        _upsert_gitlab_comment(
+            repository=repository,
+            pr_number=request.pr_number,
+            access_token=access_token,
+            role=COMMENT_ROLE_NO_CHECKS_NEEDED,
+            body=comment_body,
+        )
+        return AnalyzePrResponse(
+            message="No checks needed for this MR",
+            pr_number=request.pr_number,
+            checks_queued=0,
+        ).dict()
+
+    _upsert_gitlab_comment(
+        repository=repository,
+        pr_number=request.pr_number,
+        access_token=access_token,
+        role=COMMENT_ROLE_ANALYSIS_STARTED,
+        body=_build_analysis_started_comment(checks_to_run),
+    )
+
+    jobs_queued = queue_check_jobs(
+        repository,
+        request.pr_number,
+        checks_to_run,
+        changed_files,
+        provider="gitlab",
+        connection_id=connection_id,
+    )
+
+    logger.info(
+        f"[analyze-pr.gitlab] Successfully queued {jobs_queued} checks "
+        f"for MR !{request.pr_number} in {repository}"
+    )
+    return AnalyzePrResponse(
+        message=f"Analysis started for MR !{request.pr_number}",
         pr_number=request.pr_number,
         checks_queued=jobs_queued,
     ).dict()

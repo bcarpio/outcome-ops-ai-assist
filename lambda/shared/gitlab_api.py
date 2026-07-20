@@ -136,3 +136,78 @@ def get_file_content(access_token: str, project_path: str, file_path: str,
         f"{_enc(file_path)}/raw") + "?" + urllib.parse.urlencode({"ref": ref})
     body, _ = _request(access_token, url, raw=True)
     return body
+
+
+# =============================================================================
+# Merge requests (chunk 05: MR-analysis parity)
+# =============================================================================
+
+
+def _send(access_token: str, path: str, payload: Dict, method: str) -> Dict:
+    """JSON-body POST/PUT returning parsed JSON."""
+    req = urllib.request.Request(
+        _api(path),
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+        },
+        method=method,
+    )
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        return json.loads(resp.read())
+
+
+def get_merge_request(access_token: str, project_path: str,
+                      mr_iid: int) -> Dict:
+    """One MR by project-scoped iid (the number shown in the GitLab UI).
+
+    Callers rely on: ``diff_refs.base_sha`` / ``diff_refs.head_sha``,
+    ``target_branch``, ``author.username``, ``title``.
+    """
+    return _get(
+        access_token, f"/projects/{_enc(project_path)}/merge_requests/{mr_iid}")
+
+
+def get_merge_request_diffs(access_token: str, project_path: str,
+                            mr_iid: int) -> List[Dict]:
+    """The MR's changed files (paginated).
+
+    Each entry carries ``new_path`` / ``old_path`` plus EXPLICIT booleans
+    ``new_file`` / ``deleted_file`` / ``renamed_file`` -- unlike ADO's
+    changeType string vocabulary there is nothing to parse (the ADO
+    iteration-changes endpoint live-burned on a missing field; GitLab's
+    booleans are documented and always present).
+    """
+    return _get_paginated(
+        access_token,
+        f"/projects/{_enc(project_path)}/merge_requests/{mr_iid}/diffs")
+
+
+def get_merge_request_commits(access_token: str, project_path: str,
+                              mr_iid: int) -> List[Dict]:
+    """The MR's commits. ``message`` is the FULL commit message (GitLab does
+    not truncate like ADO's pull-request-commits ``comment`` field)."""
+    return _get_paginated(
+        access_token,
+        f"/projects/{_enc(project_path)}/merge_requests/{mr_iid}/commits")
+
+
+def post_merge_request_note(access_token: str, project_path: str,
+                            mr_iid: int, body: str) -> Dict:
+    """Create an MR note (comment). Returns the note object; callers store
+    ``id`` to target update_merge_request_note on later runs."""
+    return _send(
+        access_token,
+        f"/projects/{_enc(project_path)}/merge_requests/{mr_iid}/notes",
+        {"body": body}, "POST")
+
+
+def update_merge_request_note(access_token: str, project_path: str,
+                              mr_iid: int, note_id: int, body: str) -> Dict:
+    """Update an existing MR note in place (the upsert-comment UX)."""
+    return _send(
+        access_token,
+        f"/projects/{_enc(project_path)}/merge_requests/{mr_iid}"
+        f"/notes/{note_id}",
+        {"body": body}, "PUT")

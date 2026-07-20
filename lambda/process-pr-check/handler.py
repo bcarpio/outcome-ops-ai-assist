@@ -136,9 +136,10 @@ class CheckJob(BaseModel):
     repository: str
     changed_files: List[str] = Field(..., alias="changedFiles")
 
-    # ADO-specific fields. All optional so GitHub-shape messages
-    # continue to validate.
-    provider: Literal["github", "azure_devops"] = "github"
+    # Provider context. All optional so GitHub-shape messages continue
+    # to validate. GitLab needs only ``connection_id`` -- ``repository``
+    # IS the full project path (variable-depth slug).
+    provider: Literal["github", "azure_devops", "gitlab"] = "github"
     connection_id: Optional[str] = None
     azure_devops_slug: Optional[str] = Field(None, alias="slug")
     azure_devops_org: Optional[str] = Field(None, alias="org")
@@ -458,6 +459,74 @@ def _try_patch_ado_comment(
         return None
 
 
+def _gitlab_note_url(repository: str, pr_number: int, note_id) -> str:
+    """Human-followable URL for an MR note."""
+    from shared import gitlab_api
+    return (
+        f"{gitlab_api.base_url()}/{repository}/-/merge_requests/"
+        f"{pr_number}#note_{note_id}"
+    )
+
+
+def _post_gitlab_note(
+    repository: str,
+    pr_number: int,
+    body: str,
+    connection_id: str,
+) -> Dict[str, Any]:
+    """Post a comment (note) on a GitLab MR.
+
+    Token comes from the cached single-flight path (ADR-050 v1.1) --
+    GitLab rotates refresh tokens on every refresh, so a parallel raw
+    refresh here would race the sync workers. Raises on failure; the
+    caller's batch-item-failure path retries via SQS.
+    """
+    if not connection_id:
+        raise ValueError("connection_id required for GitLab PR-check")
+    from check_handlers.gitlab_context import get_gitlab_token
+    from shared import gitlab_api
+
+    access_token = get_gitlab_token(connection_id)
+    response = gitlab_api.post_merge_request_note(
+        access_token, repository, pr_number, body,
+    )
+    logger.info(
+        "Posted GitLab MR note on %s !%s", repository, pr_number,
+    )
+    return response
+
+
+def _try_patch_gitlab_comment(
+    *,
+    repository: str,
+    pr_number: int,
+    connection_id: str,
+    existing_row: Dict[str, Any],
+    comment_body: str,
+) -> Optional[str]:
+    """Try to update the existing GitLab MR note in place. Returns the
+    note URL on success; ``None`` if there's no stored note ID or the
+    update failed (caller falls back to POST)."""
+    note_id = existing_row.get("providerCommentId")
+    if note_id is None:
+        return None
+    try:
+        from check_handlers.gitlab_context import get_gitlab_token
+        from shared import gitlab_api
+
+        access_token = get_gitlab_token(connection_id)
+        gitlab_api.update_merge_request_note(
+            access_token, repository, pr_number, int(note_id), comment_body,
+        )
+        return _gitlab_note_url(repository, pr_number, note_id)
+    except Exception as e:
+        logger.warning(
+            f"[upsert] GitLab note update failed for note {note_id} on "
+            f"{repository} !{pr_number}: {e}. Falling back to POST."
+        )
+        return None
+
+
 def store_check_result(result: CheckResult) -> None:
     """
     Store check result in DynamoDB.
@@ -731,6 +800,14 @@ def process_check_job(job: CheckJob) -> CheckResult:
                 existing_row=existing_row,
                 comment_body=comment,
             )
+        elif job.provider == "gitlab":
+            patched_url = _try_patch_gitlab_comment(
+                repository=job.repository,
+                pr_number=job.pr_number,
+                connection_id=job.connection_id,
+                existing_row=existing_row,
+                comment_body=comment,
+            )
         else:  # github
             patched_url = _try_patch_github_comment(
                 repository=job.repository,
@@ -749,6 +826,18 @@ def process_check_job(job: CheckJob) -> CheckResult:
         logger.info(
             f"[upsert] Updated existing comment for {job.check_type.value} "
             f"on {job.provider} PR #{job.pr_number}"
+        )
+    elif job.provider == "gitlab":
+        # POST new MR note. Store the note ID so the next run can PUT
+        # (same single-id model as GitHub; reuses providerCommentId).
+        comment_response = _post_gitlab_note(
+            job.repository, job.pr_number, comment, job.connection_id,
+        )
+        note_id = comment_response.get("id")
+        result.provider_comment_id = note_id
+        comment_url = (
+            _gitlab_note_url(job.repository, job.pr_number, note_id)
+            if note_id else ""
         )
     elif job.provider == "azure_devops":
         # POST new ADO thread. Extract thread ID + first comment ID so
