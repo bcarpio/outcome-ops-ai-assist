@@ -231,9 +231,7 @@ module "file_ingestion_lambda" {
           "kms:Decrypt",
           "kms:GenerateDataKey*"
         ]
-        resources = [
-          aws_kms_key.oauth_tokens[0].arn
-        ]
+        resources = local.oauth_kms_token_key_arns
       }
 
       # KMS for SSM parameter decryption

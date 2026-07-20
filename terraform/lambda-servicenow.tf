@@ -96,11 +96,9 @@ module "servicenow_integration_lambda" {
       }
 
       kms_oauth = {
-        effect  = "Allow"
-        actions = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
-        resources = [
-          aws_kms_key.oauth_tokens[0].arn
-        ]
+        effect    = "Allow"
+        actions   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
+        resources = local.oauth_kms_token_key_arns
       }
 
       kms_ssm = {
@@ -292,11 +290,9 @@ module "servicenow_sync_lambda" {
       }
 
       kms_oauth = {
-        effect  = "Allow"
-        actions = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
-        resources = [
-          aws_kms_key.oauth_tokens[0].arn
-        ]
+        effect    = "Allow"
+        actions   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
+        resources = local.oauth_kms_token_key_arns
       }
 
       kms_ssm = {

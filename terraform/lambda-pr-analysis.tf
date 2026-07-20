@@ -179,7 +179,7 @@ module "analyze_pr_lambda" {
       kms_oauth = {
         effect    = "Allow"
         actions   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
-        resources = [aws_kms_key.oauth_tokens[0].arn]
+        resources = local.oauth_kms_token_key_arns
       }
     } : {},
   )
@@ -394,7 +394,7 @@ module "process_pr_check_lambda" {
       kms_oauth = {
         effect    = "Allow"
         actions   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
-        resources = [aws_kms_key.oauth_tokens[0].arn]
+        resources = local.oauth_kms_token_key_arns
       }
     } : {},
     # HA dual-write: events:PutEvents on the local replication bus.

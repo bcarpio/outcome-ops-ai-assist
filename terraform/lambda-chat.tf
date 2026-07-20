@@ -253,9 +253,7 @@ module "chat_streaming_lambda" {
       actions = [
         "kms:Decrypt"
       ]
-      resources = [
-        aws_kms_key.oauth_tokens[0].arn
-      ]
+      resources = local.oauth_kms_token_key_arns
     }
 
     # Bedrock Rerank API for post-retrieval reranking

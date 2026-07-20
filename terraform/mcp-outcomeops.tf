@@ -342,10 +342,13 @@ resource "aws_iam_role_policy" "mcp_outcomeops_ado_kms" {
         # never persisted rotations because Encrypt was absent and
         # save_tokens swallowed the failure -- quietly poisoning the
         # connection for the next consumer.
-        Sid      = "KMSOAuthTokens"
-        Effect   = "Allow"
-        Action   = ["kms:Decrypt", "kms:Encrypt"]
-        Resource = [aws_kms_key.oauth_tokens[0].arn]
+        Sid    = "KMSOAuthTokens"
+        Effect = "Allow"
+        Action = ["kms:Decrypt", "kms:Encrypt"]
+        # Both regional ARNs under HA: tokens refreshed while the secondary
+        # was active are encrypted under the replica ARN and must stay
+        # decryptable here after failback.
+        Resource = local.oauth_kms_token_key_arns
       }
     ]
   })

@@ -241,9 +241,7 @@ module "workspace_management_lambda" {
         "kms:Decrypt",
         "kms:GenerateDataKey"
       ]
-      resources = [
-        aws_kms_key.oauth_tokens[0].arn
-      ]
+      resources = local.oauth_kms_token_key_arns
     }
 
     # SQS for sending delete messages (primary + secondary queue under HA).

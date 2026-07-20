@@ -166,3 +166,18 @@ output "oauth_kms_key_arn_secondary" {
   description = "ARN of the secondary-region KMS replica for OAuth token encryption (null when HA disabled)"
   value       = (var.enable_workspaces && var.secondary_region != "") ? aws_kms_replica_key.oauth_tokens_secondary[0].arn : null
 }
+
+# IAM resource list for OAuth-token crypto grants on PRIMARY-region Lambdas:
+# both regional ARNs when HA is on. Ciphertext embeds the ID of the key that
+# encrypted it, and tokens refreshed while the SECONDARY was active are
+# encrypted under the replica ARN -- without the replica in the primary
+# grants, failback leaves those tokens undecryptable in the primary
+# (kms:Decrypt AccessDenied; the 2026-07-09 incident class). Mirror-image of
+# the both-ARN grants the secondary Lambdas already carry. Single-region
+# deploys resolve to just the primary ARN (no-op).
+locals {
+  oauth_kms_token_key_arns = var.enable_workspaces ? concat(
+    [aws_kms_key.oauth_tokens[0].arn],
+    var.secondary_region != "" ? [aws_kms_replica_key.oauth_tokens_secondary[0].arn] : [],
+  ) : []
+}

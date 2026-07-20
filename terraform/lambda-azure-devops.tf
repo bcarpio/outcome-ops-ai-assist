@@ -128,9 +128,7 @@ module "azure_devops_integration_lambda" {
           "kms:Decrypt",
           "kms:GenerateDataKey*"
         ]
-        resources = [
-          aws_kms_key.oauth_tokens[0].arn
-        ]
+        resources = local.oauth_kms_token_key_arns
       }
 
       # KMS for the SSM SecureString that holds the client secret.
@@ -491,7 +489,7 @@ module "azure_devops_sync_lambda" {
       kms_oauth = {
         effect    = "Allow"
         actions   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
-        resources = [aws_kms_key.oauth_tokens[0].arn]
+        resources = local.oauth_kms_token_key_arns
       }
 
       kms_ssm = {
