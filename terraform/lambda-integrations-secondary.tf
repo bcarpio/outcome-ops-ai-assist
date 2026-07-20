@@ -1258,7 +1258,11 @@ module "azure_devops_integration_lambda_secondary" {
 
       AZURE_DEVOPS_SYNC_QUEUE = aws_sqs_queue.azure_devops_sync_secondary[0].url
       DELETE_QUEUE            = aws_sqs_queue.delete_queue_secondary[0].url
-      AUDIT_TABLE             = module.audit_logs_table_secondary[0].dynamodb_table_id
+      # ADR-052 dual-region delete contract (757c38c added this to the
+      # primary; mirrored here so post-failover ADO deletes clean BOTH
+      # regions). Name is region-neutral: "the other region's queue".
+      DELETE_QUEUE_SECONDARY = aws_sqs_queue.delete_queue[0].url
+      AUDIT_TABLE            = module.audit_logs_table_secondary[0].dynamodb_table_id
     },
     local.outcomeops_license_env,
     local.ha_writer_env_secondary,
@@ -1311,6 +1315,8 @@ module "azure_devops_integration_lambda_secondary" {
         resources = [
           aws_sqs_queue.azure_devops_sync_secondary[0].arn,
           aws_sqs_queue.delete_queue_secondary[0].arn,
+          # Cross-region delete fan-out (ADR-052) back to the primary.
+          aws_sqs_queue.delete_queue[0].arn,
         ]
       }
       dynamodb_audit = {

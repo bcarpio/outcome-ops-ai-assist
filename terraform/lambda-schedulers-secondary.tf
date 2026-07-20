@@ -51,6 +51,8 @@ module "github_scheduler_lambda_secondary" {
     APP_NAME          = var.app_name
     WORKSPACES_TABLE  = module.workspaces_table_secondary[0].dynamodb_table_id
     GITHUB_SYNC_QUEUE = aws_sqs_queue.github_sync_secondary[0].url
+    # fable-scale 08 mirror: scan fan-out worker pool.
+    GITHUB_SCHEDULER_PARALLEL_WORKERS = tostring(var.github_scheduler_parallel_workers)
     },
     local.ha_scheduler_env_secondary,
   )

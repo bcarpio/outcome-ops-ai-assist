@@ -77,13 +77,19 @@ module "chat_streaming_lambda_secondary" {
 
   environment_variables = merge(
     {
-      ENV                                = var.environment
-      APP_NAME                           = var.app_name
-      AWS_LAMBDA_EXEC_WRAPPER            = "/opt/bootstrap"
-      AWS_LWA_INVOKE_MODE                = "RESPONSE_STREAM"
-      AWS_LWA_READINESS_CHECK_PATH       = "/health"
-      PORT                               = "8000"
-      AUDIT_TABLE                        = module.audit_logs_table_secondary[0].dynamodb_table_id
+      ENV                          = var.environment
+      APP_NAME                     = var.app_name
+      AWS_LAMBDA_EXEC_WRAPPER      = "/opt/bootstrap"
+      AWS_LWA_INVOKE_MODE          = "RESPONSE_STREAM"
+      AWS_LWA_READINESS_CHECK_PATH = "/health"
+      PORT                         = "8000"
+      AUDIT_TABLE                  = module.audit_logs_table_secondary[0].dynamodb_table_id
+      # fable-scale 10 mirror (chat TTL + content cap + prompt-cache
+      # scaffold). Missing here = secondary chat silently diverges from
+      # primary data-hygiene behavior post-failover.
+      CHAT_MESSAGE_TTL_SECONDS           = tostring(var.chat_message_ttl_seconds)
+      CHAT_MAX_MESSAGE_CONTENT_CHARS     = tostring(var.chat_max_message_content_chars)
+      BEDROCK_PROMPT_CACHE_ENABLED       = tostring(var.bedrock_prompt_cache_enabled)
       BEDROCK_ADVANCED_MODEL_ID          = var.bedrock_advanced_model_id
       BEDROCK_DEFAULT_BACKEND            = var.bedrock_default_backend
       BEDROCK_RESPONSES_REASONING_EFFORT = var.bedrock_responses_reasoning_effort
@@ -340,6 +346,9 @@ module "workspace_management_lambda_secondary" {
       INTEGRATION_ONEDRIVE_ENABLED            = tostring(var.enable_onedrive_integration)
       INTEGRATION_ONENOTE_ENABLED             = tostring(var.enable_onenote_integration)
       INTEGRATION_DATABASE_ENABLED            = tostring(var.enable_database_integration)
+      INTEGRATION_GITLAB_ENABLED              = tostring(var.enable_gitlab_integration)
+      INTEGRATION_SERVICENOW_ENABLED          = tostring(var.enable_servicenow_integration)
+      INTEGRATION_SALESFORCE_ENABLED          = tostring(var.enable_salesforce_integration)
 
       # ADR-048 v1.1 (primary/secondary parity): Azure AD group selection UX.
       # Graph creds default to the OIDC login app via the locals in

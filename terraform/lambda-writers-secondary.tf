@@ -464,6 +464,16 @@ module "process_batch_summary_lambda_secondary" {
       CODE_MAPS_TABLE                    = module.code_maps_table_secondary[0].dynamodb_table_id
       PENDING_WORK_TABLE                 = module.code_map_pending_work_table_secondary[0].dynamodb_table_id
       FAILED_FILES_TABLE                 = module.code_map_failed_files_table_secondary[0].dynamodb_table_id
+      # Splitter-pipeline mirror (chunks 02-07 + tuning). CODE_MAPS_QUEUE_URL
+      # is FUNCTIONAL, not tuning: without it the merge fan-in cannot
+      # requeue-with-delay ("CODE_MAPS_QUEUE_URL not configured") and every
+      # sharded merge gives up on its first attempt post-failover.
+      CODE_MAPS_QUEUE_URL               = module.code_maps_queue_secondary.queue_url
+      BATCH_SUMMARY_MSG_COOLDOWN_MS     = tostring(var.batch_summary_msg_cooldown_ms)
+      BATCH_SUMMARY_MERGE_ATTEMPTS      = tostring(var.batch_summary_merge_attempts)
+      BATCH_SUMMARY_MERGE_DELAY_SECONDS = tostring(var.batch_summary_merge_delay_s)
+      CODE_MAP_TARGET_SHARD_TOKENS      = tostring(var.code_map_target_shard_tokens)
+      CODE_MAP_MAX_PROMPT_TOKENS        = tostring(var.code_map_max_prompt_tokens)
       # chunk 09 (HA parity, chunk-08a mirror): fetch_file_content(provider=
       # azure_devops) reads from the S3 mirror at workspaces/{ws}/
       # azure_devops/{slug}/{path} that azure-devops-sync wrote in this
@@ -554,6 +564,13 @@ module "process_batch_summary_lambda_secondary" {
       sqs_receive = {
         effect    = "Allow"
         actions   = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"]
+        resources = [module.code_maps_queue_secondary.queue_arn]
+      }
+      # Merge fan-in requeue-with-delay sends the merge message back to
+      # the same queue it consumes (primary parity: sqs_send_merge_requeue).
+      sqs_send_merge_requeue = {
+        effect    = "Allow"
+        actions   = ["sqs:SendMessage"]
         resources = [module.code_maps_queue_secondary.queue_arn]
       }
       dynamodb_audit = {
@@ -648,7 +665,11 @@ module "process_repo_summary_lambda_secondary" {
       COMPREHEND_PII_PRICE_PER_1M_CHARS  = tostring(var.comprehend_pii_price_per_1m_chars)
       PII_REDACTION_SKIP_TYPES           = join(",", var.pii_redaction_skip_types)
       PENDING_WORK_TABLE                 = module.code_map_pending_work_table_secondary[0].dynamodb_table_id
-      FAILED_FILES_TABLE                 = module.code_map_failed_files_table_secondary[0].dynamodb_table_id
+      # Splitter sizing mirror -- shard-count decisions must match the
+      # primary or expected-key sets drift across a failover boundary.
+      CODE_MAP_TARGET_SHARD_TOKENS = tostring(var.code_map_target_shard_tokens)
+      CODE_MAP_MAX_PROMPT_TOKENS   = tostring(var.code_map_max_prompt_tokens)
+      FAILED_FILES_TABLE           = module.code_map_failed_files_table_secondary[0].dynamodb_table_id
       # chunk 09 (HA cleanup): CODE_MAPS_QUEUE_URL and KB_BUCKET removed.
       # Handler discovers both via SSM (/env/app/sqs/code-maps-queue-url and
       # /env/app/s3/knowledge-base-bucket) -- these envs had no consumer
