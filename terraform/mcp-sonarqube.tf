@@ -49,9 +49,13 @@ module "mcp_sonarqube" {
   # Single, low-traffic, connection-sensitive service -- on-demand FARGATE (not
   # Spot). The container is stateless + robust, but on-demand avoids restart
   # blips for a near-free task.
-  ondemand_base   = 1
-  ondemand_weight = 1
-  spot_weight     = 0
+  # Follows the fleet-wide spot posture (was hardcoded on-demand from
+  # the container-only template). Stateless SonarCloud API wrapper --
+  # a spot reclamation costs one brief reconnect, acceptable wherever
+  # fargate_enable_spot is true.
+  ondemand_base   = var.fargate_enable_spot ? 0 : 1
+  ondemand_weight = var.fargate_enable_spot ? 0 : 1
+  spot_weight     = var.fargate_enable_spot ? 100 : 0
 
   # SonarCloud org/url as plain env; the token is injected as a secret from SSM
   # (SONARQUBE_TOKEN) and read by the container -- callers never see it.
