@@ -652,6 +652,20 @@ variable "ui_fargate_ondemand_base" {
   default     = 1
 }
 
+# ============================================================================
+# ECS capacity master switch (all Fargate services: UI + MCP servers, both
+# regions). Spot is a sandbox/cost posture -- tasks can be reclaimed with a
+# two-minute warning, which interrupts in-flight SSE chat streams and MCP
+# sessions on the reclaimed task. Enterprise deploys set this false for
+# 100% on-demand; the per-service *_spot_weight vars below then have no
+# effect. Default true preserves the existing mixed strategy.
+# ============================================================================
+variable "fargate_enable_spot" {
+  description = "Allow FARGATE_SPOT capacity for ECS services (UI proxy + MCP servers, primary and secondary). false = 100% on-demand (enterprise posture: no spot reclamation of interactive tasks)."
+  type        = bool
+  default     = true
+}
+
 variable "ui_fargate_ondemand_weight" {
   description = "FARGATE (on-demand) weight in the capacity provider strategy. Combined with spot_weight, controls the on-demand:spot ratio above the base."
   type        = number

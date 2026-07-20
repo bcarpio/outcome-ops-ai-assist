@@ -52,6 +52,13 @@ module "mcp_snyk" {
   cpu             = 512
   memory          = 1024
 
+  # Module default is 100% spot (base 0 / on-demand weight 0 / spot 100).
+  # When the master switch disables spot, flip to a 1-task on-demand base
+  # -- otherwise the strategy would have zero usable capacity.
+  ondemand_base   = var.fargate_enable_spot ? 0 : 1
+  ondemand_weight = var.fargate_enable_spot ? 0 : 1
+  spot_weight     = var.fargate_enable_spot ? 100 : 0
+
   environment_variables = merge(
     {},
     var.mcp_snyk_org != "" ? { SNYK_CFG_ORG = var.mcp_snyk_org } : {},

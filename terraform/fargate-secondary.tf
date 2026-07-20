@@ -89,7 +89,7 @@ module "mcp_outcomeops_secondary" {
   desired_count                        = var.mcp_server_desired_count
   ondemand_base                        = var.mcp_server_ondemand_base
   ondemand_weight                      = var.mcp_server_ondemand_weight
-  spot_weight                          = var.mcp_server_spot_weight
+  spot_weight                          = var.fargate_enable_spot ? var.mcp_server_spot_weight : 0
   min_healthy_percent                  = var.mcp_server_min_healthy_percent
   enable_autoscaling                   = var.mcp_server_enable_autoscaling
   autoscaling_min_capacity             = var.mcp_server_min_count

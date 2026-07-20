@@ -479,6 +479,18 @@ audit_stream_export_enabled = true
 # gitlab_redirect_uri = ""
 
 # ============================================================================
+# ECS capacity: Fargate Spot master switch
+# ============================================================================
+
+# Allow FARGATE_SPOT for the ECS services (UI proxy + MCP servers, both
+# regions). Spot cuts container cost ~70% but tasks can be reclaimed with a
+# two-minute warning, interrupting in-flight chat streams / MCP sessions on
+# the reclaimed task. Enterprise deploys should set false (100% on-demand);
+# sandbox/trial deploys can leave the default (true, mixed strategy with an
+# on-demand base -- see ui_fargate_* / mcp_server_* weight vars).
+# fargate_enable_spot = true
+
+# ============================================================================
 # ServiceNow Knowledge Base integration
 # ============================================================================
 #

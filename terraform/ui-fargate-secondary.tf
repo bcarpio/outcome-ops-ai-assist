@@ -68,7 +68,7 @@ module "ui_ecs_secondary" {
     }
     FARGATE_SPOT = {
       base   = 0
-      weight = var.ui_fargate_spot_weight
+      weight = var.fargate_enable_spot ? var.ui_fargate_spot_weight : 0
     }
   }
 
@@ -95,7 +95,7 @@ module "ui_ecs_secondary" {
         fargate_spot = {
           capacity_provider = "FARGATE_SPOT"
           base              = 0
-          weight            = var.ui_fargate_spot_weight
+          weight            = var.fargate_enable_spot ? var.ui_fargate_spot_weight : 0
         }
       }
 

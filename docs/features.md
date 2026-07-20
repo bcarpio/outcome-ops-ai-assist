@@ -506,6 +506,12 @@ to the `/audit` page, and ADR-018 for schema design.
   SQS, SNS, EventBridge, KMS, SSM, ALB, Cognito-free OIDC. No EC2,
   no Kubernetes, no ECS for the data plane (only the UI runs on
   Fargate).
+- **Fargate Spot master switch** — `fargate_enable_spot` tfvar
+  gates FARGATE_SPOT across every ECS service (UI proxy + MCP
+  servers, both regions). Default true (mixed on-demand base +
+  weighted spot, cost posture); enterprise deploys set false for
+  100% on-demand so interactive chat/MCP tasks never spot-reclaim.
+  Per-service `*_spot_weight` vars tune the ratio when enabled.
 - **HA active/passive multi-region** — `secondary_region` tfvar
   provisions every stateful resource in both regions with cross-
   region replication driven by EventBridge; per-region AppConfig
