@@ -106,10 +106,14 @@ secondary:
   surfaces missing values rather than letting the Lambda silently fail to import).
 - Any new resource that the failover runbook (`docs/HA.md`) mentions or relies on.
 
-Before opening a PR that adds or modifies a primary-region resource, do a
-`diff terraform/<file>.tf terraform/<file>-secondary.tf` (or the equivalent module-block
-diff) for the impacted modules. If anything intentional is left primary-only, document
-why in an ADR — don't leave a silent divergence.
+Before opening a PR that adds or modifies a primary-region resource, run
+`make check-ha-parity` — it mechanically compares env-var keys, IAM statement
+names, and merge()'d locals for every `*_secondary` module pair, and CI runs
+the same check. It does NOT catch everything (values inside statements,
+event-source-mapping settings, standalone resources without a `module` block),
+so still eyeball the mirror for those. If anything intentional is left
+primary-only, document why in an ADR AND add it to the allowlist in
+`scripts/check-ha-parity.py` with the reason — don't leave a silent divergence.
 
 ### Communicating Deploy Impact
 
