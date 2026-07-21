@@ -27,6 +27,15 @@ except ImportError:
         sys.path.insert(0, backends_dir)
     from base import CodeMapBackend, CodeUnit, ChangeDetectionResult  # noqa: F401
 
+
+def _github_api() -> str:
+    """GHES-aware REST base (shared.github_base). SaaS default is
+    byte-identical to the old hardcoded api.github.com. Deferred import
+    so module load order (check_handlers before sys.path fix) is safe."""
+    from shared.github_base import github_api_base
+    return github_api_base()
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -56,7 +65,7 @@ class PythonBackend(CodeMapBackend):
             - max_file_size_tokens: Skip files larger than this (default: 7000)
             - source_roots: Override default source roots for code unit discovery
             - github_token: GitHub API token (required for change detection)
-            - github_api_url: GitHub API base URL (default: "https://api.github.com")
+            - github_api_url: GitHub API base URL (default: f"{_github_api()}")
         """
         super().__init__(config)
         self.lambda_directory = config.get("lambda_directory", "lambda")
@@ -64,7 +73,7 @@ class PythonBackend(CodeMapBackend):
         self.include_submodules = config.get("include_submodules", True)
         self.max_file_size_tokens = config.get("max_file_size_tokens", 7000)
         self.github_token = config.get("github_token")
-        self.github_api_url = config.get("github_api_url", "https://api.github.com")
+        self.github_api_url = config.get("github_api_url", f"{_github_api()}")
 
     def get_backend_name(self) -> str:
         return "Lambda Serverless Backend"

@@ -437,8 +437,9 @@ module "process_batch_summary_lambda_secondary" {
 
   environment_variables = merge(
     {
-      ENV      = var.environment
-      APP_NAME = var.app_name
+      ENV             = var.environment
+      APP_NAME        = var.app_name
+      GITHUB_BASE_URL = var.github_base_url
       # chunk 09 (HA cleanup): EVENT_BUS_NAME removed (dead env). See
       # primary lambda-knowledge-base.tf.
       ENABLE_BEDROCK_COOLDOWN            = tostring(var.enable_bedrock_cooldown)
@@ -655,6 +656,7 @@ module "process_repo_summary_lambda_secondary" {
     {
       ENV                                = var.environment
       APP_NAME                           = var.app_name
+      GITHUB_BASE_URL                    = var.github_base_url
       AUDIT_TABLE                        = module.audit_logs_table_secondary[0].dynamodb_table_id
       WORKSPACES_TABLE                   = module.workspaces_table_secondary[0].dynamodb_table_id
       DELETE_QUEUE                       = aws_sqs_queue.delete_queue_secondary[0].url

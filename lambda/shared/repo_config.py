@@ -25,6 +25,15 @@ from typing import List, Optional
 import yaml
 from pydantic import BaseModel, Field, field_validator
 
+
+def _github_api() -> str:
+    """GHES-aware REST base (shared.github_base). SaaS default is
+    byte-identical to the old hardcoded api.github.com. Deferred import
+    so module load order (check_handlers before sys.path fix) is safe."""
+    from shared.github_base import github_api_base
+    return github_api_base()
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -270,7 +279,7 @@ def load_repo_config_from_github(
 
     config_path = ".outcomeops.yaml"
     api_url = (
-        f"https://api.github.com/repos/{repo_full_name}/contents/{config_path}"
+        f"{_github_api()}/repos/{repo_full_name}/contents/{config_path}"
         f"?ref={branch_name}"
     )
 

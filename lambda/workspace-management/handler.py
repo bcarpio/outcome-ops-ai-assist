@@ -78,6 +78,15 @@ import json
 import logging
 import os
 import posixpath
+
+
+def _github_api() -> str:
+    """GHES-aware REST base (shared.github_base). SaaS default is
+    byte-identical to the old hardcoded api.github.com. Deferred import
+    so module load order (check_handlers before sys.path fix) is safe."""
+    from shared.github_base import github_api_base
+    return github_api_base()
+
 import secrets
 import time
 import urllib.error
@@ -1936,7 +1945,7 @@ def list_available_repos(user_email: str, workspace_id: str) -> Dict:
         import urllib.request
 
         req = urllib.request.Request(
-            "https://api.github.com/user/repos?per_page=100&sort=updated",
+            f"{_github_api()}/user/repos?per_page=100&sort=updated",
             headers={
                 "Authorization": f"Bearer {github_pat}",
                 "Accept": "application/vnd.github+json",

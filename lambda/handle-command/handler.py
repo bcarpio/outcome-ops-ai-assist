@@ -39,6 +39,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared.audit import log_audit_entry
 from shared.model_client import invoke as invoke_model
 
+
+def _github_api() -> str:
+    """GHES-aware REST base (shared.github_base). SaaS default is
+    byte-identical to the old hardcoded api.github.com. Deferred import
+    so module load order (check_handlers before sys.path fix) is safe."""
+    from shared.github_base import github_api_base
+    return github_api_base()
+
+
 # Setup logging
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -188,7 +197,7 @@ def get_default_branch(repo: str, github_token: str) -> str:
     Used by the /fix-tests and /fix-readme PR commands to stop
     hardcoding "main" for repos still on master / develop / trunk.
     """
-    url = f"https://api.github.com/repos/{repo}"
+    url = f"{_github_api()}/repos/{repo}"
     headers = {
         "Authorization": f"Bearer {github_token}",
         "Accept": "application/vnd.github+json",
@@ -209,7 +218,7 @@ def get_default_branch(repo: str, github_token: str) -> str:
 
 def post_pr_comment(repo: str, pr_number: int, body: str, github_token: str) -> bool:
     """Post a comment to a GitHub PR."""
-    url = f"https://api.github.com/repos/{repo}/issues/{pr_number}/comments"
+    url = f"{_github_api()}/repos/{repo}/issues/{pr_number}/comments"
     headers = {
         "Authorization": f"Bearer {github_token}",
         "Accept": "application/vnd.github.v3+json",
@@ -235,7 +244,7 @@ def fetch_test_failure_comment(repo: str, pr_number: int, github_token: str) -> 
     Returns:
         Test output string if found, None otherwise
     """
-    url = f"https://api.github.com/repos/{repo}/issues/{pr_number}/comments"
+    url = f"{_github_api()}/repos/{repo}/issues/{pr_number}/comments"
     headers = {
         "Authorization": f"Bearer {github_token}",
         "Accept": "application/vnd.github.v3+json",
@@ -389,7 +398,7 @@ def fetch_test_analysis_comment(repo: str, pr_number: int, github_token: str) ->
     Returns:
         Analysis content if found, None otherwise
     """
-    url = f"https://api.github.com/repos/{repo}/issues/{pr_number}/comments"
+    url = f"{_github_api()}/repos/{repo}/issues/{pr_number}/comments"
     headers = {
         "Authorization": f"Bearer {github_token}",
         "Accept": "application/vnd.github.v3+json",

@@ -99,6 +99,7 @@ module "mcp_outcomeops_secondary" {
 
   environment_variables = merge({
     PORT               = "8080"
+    GITHUB_BASE_URL    = var.github_base_url
     AWS_DEFAULT_REGION = var.secondary_region
     DYNAMODB_TABLE     = module.workspaces_table_secondary[0].dynamodb_table_id
     S3_VECTORS_BUCKET  = aws_s3vectors_vector_bucket.knowledge_base_secondary[0].vector_bucket_name

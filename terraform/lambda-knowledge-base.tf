@@ -56,8 +56,9 @@ module "process_batch_summary_lambda" {
 
   # Environment variables
   environment_variables = merge({
-    ENV      = var.environment
-    APP_NAME = var.app_name
+    ENV             = var.environment
+    APP_NAME        = var.app_name
+    GITHUB_BASE_URL = var.github_base_url
     # chunk 09 (HA cleanup): EVENT_BUS_NAME removed. shared.dual_write
     # only reads REPLICATION_EVENT_BUS_NAME; EVENT_BUS_NAME had no
     # consumer and its value diverged primary vs secondary (automation
@@ -384,6 +385,7 @@ module "process_repo_summary_lambda" {
     {
       ENV                                = var.environment
       APP_NAME                           = var.app_name
+      GITHUB_BASE_URL                    = var.github_base_url
       AUDIT_TABLE                        = module.audit_logs_table.dynamodb_table_id
       WORKSPACES_TABLE                   = module.workspaces_table[0].dynamodb_table_id
       DELETE_QUEUE                       = aws_sqs_queue.delete_queue[0].url

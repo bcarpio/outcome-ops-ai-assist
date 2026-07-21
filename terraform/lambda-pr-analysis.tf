@@ -70,6 +70,7 @@ module "analyze_pr_lambda" {
   environment_variables = {
     ENV                     = var.environment
     APP_NAME                = var.app_name
+    GITHUB_BASE_URL         = var.github_base_url
     SYMBOL_GRAPH_TABLE      = module.symbol_graph_table.dynamodb_table_id
     CODE_MAPS_TABLE         = module.code_maps_table.dynamodb_table_id
     GRAPH_RETRIEVAL_ENABLED = "true"
@@ -234,6 +235,7 @@ module "process_pr_check_lambda" {
   environment_variables = merge({
     ENV                                = var.environment
     APP_NAME                           = var.app_name
+    GITHUB_BASE_URL                    = var.github_base_url
     AUDIT_TABLE                        = module.audit_logs_table.dynamodb_table_id
     BEDROCK_ADVANCED_MODEL_ID          = var.bedrock_advanced_model_id
     BEDROCK_DEFAULT_BACKEND            = var.bedrock_default_backend

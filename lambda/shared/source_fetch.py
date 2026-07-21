@@ -169,6 +169,41 @@ def _fetch_from_s3_mirror(
     return body.decode("utf-8", errors="replace")
 
 
+def _github_raw_request(
+    *,
+    repo: str,
+    ref: str,
+    file_path: str,
+    github_token: str,
+    user_agent: str,
+) -> "Request":
+    """Build the raw-content request, GHES-aware.
+
+    SaaS keeps the raw.githubusercontent.com host (its own rate-limit
+    posture, unchanged from pre-GHES behavior). GHES has NO raw host —
+    the documented equivalent is the contents API with
+    ``Accept: application/vnd.github.raw``, which streams the file body
+    verbatim. ``ref`` is a branch name or commit SHA; both hosts accept
+    either uniformly in their ref slot.
+    """
+    from shared import github_base
+
+    encoded_path = quote(file_path.lstrip("/"), safe="/")
+    headers = {
+        "Authorization": f"Bearer {github_token}",
+        "User-Agent": user_agent,
+    }
+    if github_base.is_saas():
+        url = f"{github_base.github_raw_base()}/{repo}/{ref}/{encoded_path}"
+    else:
+        url = (
+            f"{github_base.github_api_base()}/repos/{repo}/contents/"
+            f"{encoded_path}?ref={quote(ref, safe='')}"
+        )
+        headers["Accept"] = "application/vnd.github.raw"
+    return Request(url, headers=headers)
+
+
 def _fetch_from_raw_github(
     *,
     repo_project: str,
@@ -176,26 +211,21 @@ def _fetch_from_raw_github(
     file_path: str,
     github_token: str,
 ) -> str:
-    encoded_path = quote(file_path, safe="/")
-    url = (
-        f"https://raw.githubusercontent.com/{repo_project}/"
-        f"{default_branch}/{encoded_path}"
-    )
-    headers = {
-        "Authorization": f"Bearer {github_token}",
-        "User-Agent": "outcome-ops-process-batch-summary",
-    }
     # fable-scale chunk 06: route through the shared backoff so a rate-limit
     # 403 or 429 sleeps + retries instead of failing the sync and shipping
     # the file to DLQ.
     from shared import github_backoff
-    request = Request(url, headers=headers)
+    request = _github_raw_request(
+        repo=repo_project, ref=default_branch, file_path=file_path,
+        github_token=github_token,
+        user_agent="outcome-ops-process-batch-summary",
+    )
     try:
         with github_backoff.github_urllib_request(request, timeout=30) as response:
             return response.read().decode("utf-8")
     except Exception as e:
         raise SourceFetchError(
-            f"raw.githubusercontent.com fetch failed for {repo_project}/{file_path}: {e}",
+            f"github raw fetch failed for {repo_project}/{file_path}: {e}",
         )
 
 
@@ -333,19 +363,14 @@ def _fetch_from_raw_github_at_sha(
     binary files (LICENSE_COMPLIANCE walks .lock/.jar/.zip in some
     ecosystems) round-trip losslessly.
     """
-    encoded_path = quote(file_path.lstrip("/"), safe="/")
-    url = (
-        f"https://raw.githubusercontent.com/{repository}/"
-        f"{sha}/{encoded_path}"
-    )
-    headers = {
-        "Authorization": f"Bearer {github_token}",
-        "User-Agent": "outcome-ops-process-pr-check",
-    }
     # fable-scale chunk 06: rate-limit-aware backoff for the PR-check
     # SHA-specific read path too.
     from shared import github_backoff
-    request = Request(url, headers=headers)
+    request = _github_raw_request(
+        repo=repository, ref=sha, file_path=file_path,
+        github_token=github_token,
+        user_agent="outcome-ops-process-pr-check",
+    )
     try:
         with github_backoff.github_urllib_request(
             request, timeout=_PR_FETCH_TIMEOUT_SECONDS,
@@ -353,7 +378,7 @@ def _fetch_from_raw_github_at_sha(
             return response.read()
     except Exception as e:
         raise SourceFetchError(
-            f"raw.githubusercontent.com fetch@{sha[:8]} failed for "
+            f"github raw fetch@{sha[:8]} failed for "
             f"{repository}/{file_path}: {e}",
         )
 

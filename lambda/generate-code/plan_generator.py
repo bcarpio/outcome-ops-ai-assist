@@ -96,6 +96,12 @@ Return ONLY valid JSON in this exact format:
 }"""
 
 
+def _github_base() -> str:
+    """GHES-aware instance base URL (shared.github_base); github.com default."""
+    from shared.github_base import github_base_url
+    return github_base_url()
+
+
 def build_plan_generation_prompt(
     issue_number: int,
     issue_title: str,
@@ -592,8 +598,8 @@ def handle_webhook(
             github_token=github_token
         )
 
-    branch_url = f"https://github.com/{plan.repo_full_name}/tree/{plan.branch_name}"
-    plan_url = f"https://github.com/{plan.repo_full_name}/blob/{plan.branch_name}/{plan_file_path}"
+    branch_url = f"{_github_base()}/{plan.repo_full_name}/tree/{plan.branch_name}"
+    plan_url = f"{_github_base()}/{plan.repo_full_name}/blob/{plan.branch_name}/{plan_file_path}"
 
     # Plan-only mode: Create PR immediately without code generation
     if plan_only:

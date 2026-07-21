@@ -35,7 +35,16 @@ from github_api import (
 )
 from models import StepExecutionMessage
 
-GITHUB_API_BASE = "https://api.github.com"
+
+def _github_api() -> str:
+    """GHES-aware REST base (shared.github_base). SaaS default is
+    byte-identical to the old hardcoded api.github.com. Deferred import
+    so module load order (check_handlers before sys.path fix) is safe."""
+    from shared.github_base import github_api_base
+    return github_api_base()
+
+
+GITHUB_API_BASE = f"{_github_api()}"
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)

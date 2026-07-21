@@ -83,6 +83,14 @@ AZURE_DEVOPS_CLIENT_SECRET_SSM_PARAM = os.environ.get(
 _ado_client_secret: Optional[str] = None
 
 
+def _github_api() -> str:
+    """GHES-aware REST base (shared.github_base). SaaS default is
+    byte-identical to the old hardcoded api.github.com. Deferred import
+    keeps module load order safe."""
+    from shared.github_base import github_api_base
+    return github_api_base()
+
+
 def _get_ado_client_secret() -> str:
     """One-shot SSM read of the ADO Entra ID app client secret.
     Mirrors the integration Lambda's helper -- operator owns the
@@ -236,7 +244,7 @@ def post_pr_comment(repository: str, pr_number: int, body: str, token: str) -> D
     Raises:
         Exception: If API request fails
     """
-    url = f"https://api.github.com/repos/{repository}/issues/{pr_number}/comments"
+    url = f"{_github_api()}/repos/{repository}/issues/{pr_number}/comments"
 
     headers = {
         "Authorization": f"Bearer {token}",
@@ -280,7 +288,7 @@ def patch_pr_comment(
     Raises:
         Exception: If API request fails
     """
-    url = f"https://api.github.com/repos/{repository}/issues/comments/{comment_id}"
+    url = f"{_github_api()}/repos/{repository}/issues/comments/{comment_id}"
 
     headers = {
         "Authorization": f"Bearer {token}",

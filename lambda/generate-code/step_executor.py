@@ -67,6 +67,12 @@ FILE_DELIMITER_PATTERN = re.compile(r'^===FILE:\s*(.+?)\s*===$', re.MULTILINE)
 # ============================================================================
 
 
+def _github_host() -> str:
+    """GHES-aware git host for clone URLs (shared.github_base)."""
+    from shared.github_base import github_host
+    return github_host()
+
+
 def parse_json_fallback(response_text: str) -> List[GeneratedFile]:
     """
     Fallback parser for when Claude returns JSON instead of delimiters.
@@ -248,7 +254,7 @@ def format_terraform_files(
         # Create temp directory for repo
         with tempfile.TemporaryDirectory() as tmp_dir:
             repo_dir = Path(tmp_dir) / "repo"
-            repo_url = f"https://x-access-token:{github_token}@github.com/{repo_full_name}.git"
+            repo_url = f"https://x-access-token:{github_token}@{_github_host()}/{repo_full_name}.git"
 
             # Clone repo and checkout branch
             subprocess.run(

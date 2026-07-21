@@ -39,6 +39,15 @@ APP_NAME = os.environ.get("APP_NAME", "outcome-ops-ai-assist")
 # Shared model client (dispatches Converse / Mantle Responses per ADR-035).
 from shared.model_client import invoke as invoke_model
 
+
+def _github_api() -> str:
+    """GHES-aware REST base (shared.github_base). SaaS default is
+    byte-identical to the old hardcoded api.github.com. Deferred import
+    so module load order (check_handlers before sys.path fix) is safe."""
+    from shared.github_base import github_api_base
+    return github_api_base()
+
+
 lambda_client = boto3.client("lambda")
 
 CLAUDE_MODEL_ID = os.environ.get(
@@ -126,7 +135,7 @@ def get_existing_adrs(
     adrs = []
 
     # Try to list the docs/adr directory
-    url = f"https://api.github.com/repos/{repo_full_name}/contents/docs/adr"
+    url = f"{_github_api()}/repos/{repo_full_name}/contents/docs/adr"
     headers = {
         "Authorization": f"Bearer {github_token}",
         "Accept": "application/vnd.github+json",

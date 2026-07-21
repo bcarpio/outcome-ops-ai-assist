@@ -71,6 +71,14 @@ _s3 = None
 _github_config = None
 
 
+def _github_api() -> str:
+    """GHES-aware REST base (shared.github_base). SaaS default is
+    byte-identical to the old hardcoded api.github.com. Deferred import
+    keeps module load order safe."""
+    from shared.github_base import github_api_base
+    return github_api_base()
+
+
 def _get_dynamodb():
     global _dynamodb
     if _dynamodb is None:
@@ -174,7 +182,7 @@ def _mint_installation_token(installation_id: str) -> str:
     import urllib.request
 
     jwt_token = generate_jwt()
-    url = f"https://api.github.com/app/installations/{installation_id}/access_tokens"
+    url = f"{_github_api()}/app/installations/{installation_id}/access_tokens"
 
     req = urllib.request.Request(
         url,
@@ -231,7 +239,7 @@ def get_repo_tree(token: str, owner: str, repo: str, ref: str = "HEAD") -> List[
     import urllib.request
     from shared import github_backoff
 
-    url = f"https://api.github.com/repos/{owner}/{repo}/git/trees/{ref}?recursive=1"
+    url = f"{_github_api()}/repos/{owner}/{repo}/git/trees/{ref}?recursive=1"
 
     req = urllib.request.Request(
         url,
@@ -257,7 +265,7 @@ def get_default_branch(token: str, owner: str, repo: str) -> str:
     """Get the default branch of a repository."""
     import urllib.request
 
-    url = f"https://api.github.com/repos/{owner}/{repo}"
+    url = f"{_github_api()}/repos/{owner}/{repo}"
 
     req = urllib.request.Request(
         url,
@@ -305,7 +313,7 @@ def get_latest_commit(
     import urllib.request
     from datetime import datetime, timezone
 
-    url = f"https://api.github.com/repos/{owner}/{repo}/commits/{branch}"
+    url = f"{_github_api()}/repos/{owner}/{repo}/commits/{branch}"
 
     req = urllib.request.Request(
         url,
@@ -352,7 +360,7 @@ def get_file_content(token: str, owner: str, repo: str, path: str, ref: str) -> 
     import urllib.request
 
     encoded_path = urllib.parse.quote(path, safe="/")
-    url = f"https://api.github.com/repos/{owner}/{repo}/contents/{encoded_path}?ref={ref}"
+    url = f"{_github_api()}/repos/{owner}/{repo}/contents/{encoded_path}?ref={ref}"
 
     req = urllib.request.Request(
         url,
@@ -408,7 +416,7 @@ def fetch_changed_files(
     import urllib.request
 
     url = (
-        f"https://api.github.com/repos/{owner}/{repo_short}/compare/"
+        f"{_github_api()}/repos/{owner}/{repo_short}/compare/"
         f"{base_sha}...{head_sha}"
     )
 

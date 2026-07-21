@@ -39,6 +39,15 @@ import yaml
 from botocore.exceptions import ClientError
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+
+def _github_api() -> str:
+    """GHES-aware REST base (shared.github_base). SaaS default is
+    byte-identical to the old hardcoded api.github.com. Deferred import
+    so module load order (check_handlers before sys.path fix) is safe."""
+    from shared.github_base import github_api_base
+    return github_api_base()
+
+
 # Setup logging
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -263,7 +272,7 @@ def fetch_pull_request(repository: str, pr_number: int, token: str) -> GitHubPul
     Raises:
         Exception: If API request fails
     """
-    url = f"https://api.github.com/repos/{repository}/pulls/{pr_number}"
+    url = f"{_github_api()}/repos/{repository}/pulls/{pr_number}"
 
     headers = {
         "Authorization": f"Bearer {token}",
@@ -307,7 +316,7 @@ def fetch_pr_files(repository: str, pr_number: int, token: str) -> List[GitHubFi
     # rate-limit 403s and 429s back off rather than hard-fail.
     from shared import github_backoff
 
-    url = f"https://api.github.com/repos/{repository}/pulls/{pr_number}/files"
+    url = f"{_github_api()}/repos/{repository}/pulls/{pr_number}/files"
 
     headers = {
         "Authorization": f"Bearer {token}",
@@ -361,7 +370,7 @@ def fetch_file_contents(
     Returns None for missing files (e.g. removed-in-PR), binary blobs,
     or any error -- callers degrade gracefully.
     """
-    url = f"https://api.github.com/repos/{repository}/contents/{file_path}"
+    url = f"{_github_api()}/repos/{repository}/contents/{file_path}"
     headers = {
         "Authorization": f"Bearer {token}",
         # Raw media type so we skip the base64-encoded JSON envelope.
@@ -398,7 +407,7 @@ def post_pr_comment(repository: str, pr_number: int, body: str, token: str) -> D
     Raises:
         Exception: If API request fails
     """
-    url = f"https://api.github.com/repos/{repository}/issues/{pr_number}/comments"
+    url = f"{_github_api()}/repos/{repository}/issues/{pr_number}/comments"
 
     headers = {
         "Authorization": f"Bearer {token}",
@@ -442,7 +451,7 @@ def patch_pr_comment(
     Raises:
         Exception: If API request fails
     """
-    url = f"https://api.github.com/repos/{repository}/issues/comments/{comment_id}"
+    url = f"{_github_api()}/repos/{repository}/issues/comments/{comment_id}"
 
     headers = {
         "Authorization": f"Bearer {token}",
@@ -795,7 +804,7 @@ def fetch_repo_config(repository: str, token: str, ref: str = "main") -> Optiona
     Returns:
         Parsed YAML config dict, or None if not found
     """
-    url = f"https://api.github.com/repos/{repository}/contents/.outcomeops.yaml"
+    url = f"{_github_api()}/repos/{repository}/contents/.outcomeops.yaml"
 
     headers = {
         "Authorization": f"Bearer {token}",

@@ -104,6 +104,14 @@ _MERGE_REQUEUE_DELAY_SECONDS = int(
 )
 
 
+def _github_api() -> str:
+    """GHES-aware REST base (shared.github_base). SaaS default is
+    byte-identical to the old hardcoded api.github.com. Deferred import
+    keeps module load order safe."""
+    from shared.github_base import github_api_base
+    return github_api_base()
+
+
 def _get_workspaces_table():
     """Lazy-init DDB table handle for workspace privacy_mode lookups."""
     name = os.environ.get("WORKSPACES_TABLE", "")
@@ -122,7 +130,7 @@ VECTOR_BUCKET = None
 VECTOR_INDEX = None
 KB_BUCKET = os.environ.get("KB_BUCKET")
 
-GITHUB_API_URL = "https://api.github.com"
+GITHUB_API_URL = f"{_github_api()}"
 
 
 def load_config():

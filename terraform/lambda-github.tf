@@ -55,6 +55,7 @@ module "github_integration_lambda" {
     {
       ENV               = var.environment
       APP_NAME          = var.app_name
+      GITHUB_BASE_URL   = var.github_base_url
       WORKSPACES_TABLE  = module.workspaces_table[0].dynamodb_table_id
       GITHUB_SYNC_QUEUE = aws_sqs_queue.github_sync[0].url
       DELETE_QUEUE      = aws_sqs_queue.delete_queue[0].url
@@ -286,6 +287,7 @@ module "github_sync_lambda" {
     {
       ENV                  = var.environment
       APP_NAME             = var.app_name
+      GITHUB_BASE_URL      = var.github_base_url
       WORKSPACES_TABLE     = module.workspaces_table[0].dynamodb_table_id
       FILE_INGESTION_QUEUE = aws_sqs_queue.file_ingestion[0].url
       REPO_SUMMARIES_QUEUE = module.repo_summaries_queue.queue_url

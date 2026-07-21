@@ -27,12 +27,21 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 
+def _github_api() -> str:
+    """GHES-aware REST base (shared.github_base). SaaS default is
+    byte-identical to the old hardcoded api.github.com. Deferred import
+    so module load order (check_handlers before sys.path fix) is safe."""
+    from shared.github_base import github_api_base
+    return github_api_base()
+
+
+
 logger = logging.getLogger(__name__)
 
 
 _REPO_METADATA_TIMEOUT_SECONDS = 60
 _ADO_API_VERSION = "7.0"
-_GITHUB_API = "https://api.github.com"
+_GITHUB_API = f"{_github_api()}"
 _ADO_API = "https://dev.azure.com"
 
 

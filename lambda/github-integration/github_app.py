@@ -31,7 +31,11 @@ _ssm_client = None
 _github_config = None
 
 # GitHub API endpoints
-GITHUB_API_BASE = "https://api.github.com"
+# GHES-aware (shared.github_base): api.github.com on SaaS, {base}/api/v3
+# on GHES. Import-time resolution is fine -- env is static per deploy.
+from shared.github_base import github_api_base as _github_api_base
+
+GITHUB_API_BASE = _github_api_base()
 
 
 def _get_ssm_client():

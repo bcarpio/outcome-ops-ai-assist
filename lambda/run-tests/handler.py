@@ -43,6 +43,18 @@ import importlib.util
 _run_tests_dir = os.path.dirname(os.path.abspath(__file__))
 
 
+def _github_host() -> str:
+    """GHES-aware git host for clone URLs (shared.github_base)."""
+    from shared.github_base import github_host
+    return github_host()
+
+
+def _github_base() -> str:
+    """GHES-aware instance base URL (shared.github_base); github.com default."""
+    from shared.github_base import github_base_url
+    return github_base_url()
+
+
 def _import_backends_module():
     """Import run-tests backends avoiding conflicts with other backends packages."""
     backends_init = os.path.join(_run_tests_dir, "backends", "__init__.py")
@@ -292,7 +304,7 @@ def clone_repository(
     command_outputs: List[CommandResult]
 ) -> str:
     """Clone repository and checkout generated branch."""
-    repo_url = f"https://x-access-token:{github_token}@github.com/{detail.repoFullName}.git"
+    repo_url = f"https://x-access-token:{github_token}@{_github_host()}/{detail.repoFullName}.git"
     repo_dir = os.path.join(workspace, "repo")
 
     env = os.environ.copy()
@@ -328,7 +340,7 @@ def clone_repository(
 
     # Remove token from remote to avoid leaking credentials in future logs
     remote_update = run_command(
-        ["git", "remote", "set-url", "origin", f"https://github.com/{detail.repoFullName}.git"],
+        ["git", "remote", "set-url", "origin", f"{_github_base()}/{detail.repoFullName}.git"],
         cwd=repo_dir,
         env=env
     )
@@ -801,7 +813,7 @@ def update_plan_with_autofix_cost(
             return True
 
         # Push the change
-        repo_url_with_token = f"https://x-access-token:{github_token}@github.com/{detail.repoFullName}.git"
+        repo_url_with_token = f"https://x-access-token:{github_token}@{_github_host()}/{detail.repoFullName}.git"
         run_command(["git", "remote", "set-url", "origin", repo_url_with_token], cwd=repo_dir, env=env)
 
         push_result = run_command(
@@ -813,7 +825,7 @@ def update_plan_with_autofix_cost(
 
         # Remove token from remote
         run_command(
-            ["git", "remote", "set-url", "origin", f"https://github.com/{detail.repoFullName}.git"],
+            ["git", "remote", "set-url", "origin", f"{_github_base()}/{detail.repoFullName}.git"],
             cwd=repo_dir,
             env=env
         )
@@ -932,7 +944,7 @@ def attempt_import_fix(error_output: str, repo_dir: str, github_token: str, deta
             return False
 
         # Temporarily add token back for push
-        repo_url_with_token = f"https://x-access-token:{github_token}@github.com/{detail.repoFullName}.git"
+        repo_url_with_token = f"https://x-access-token:{github_token}@{_github_host()}/{detail.repoFullName}.git"
         run_command(
             ["git", "remote", "set-url", "origin", repo_url_with_token],
             cwd=repo_dir,
@@ -949,7 +961,7 @@ def attempt_import_fix(error_output: str, repo_dir: str, github_token: str, deta
 
         # Remove token from remote again
         run_command(
-            ["git", "remote", "set-url", "origin", f"https://github.com/{detail.repoFullName}.git"],
+            ["git", "remote", "set-url", "origin", f"{_github_base()}/{detail.repoFullName}.git"],
             cwd=repo_dir,
             env=env
         )
@@ -1033,7 +1045,7 @@ def attempt_syntax_fix(error_output: str, repo_dir: str, github_token: str, deta
             return False
 
         # Temporarily add token back for push
-        repo_url_with_token = f"https://x-access-token:{github_token}@github.com/{detail.repoFullName}.git"
+        repo_url_with_token = f"https://x-access-token:{github_token}@{_github_host()}/{detail.repoFullName}.git"
         run_command(
             ["git", "remote", "set-url", "origin", repo_url_with_token],
             cwd=repo_dir,
@@ -1050,7 +1062,7 @@ def attempt_syntax_fix(error_output: str, repo_dir: str, github_token: str, deta
 
         # Remove token from remote again
         run_command(
-            ["git", "remote", "set-url", "origin", f"https://github.com/{detail.repoFullName}.git"],
+            ["git", "remote", "set-url", "origin", f"{_github_base()}/{detail.repoFullName}.git"],
             cwd=repo_dir,
             env=env
         )

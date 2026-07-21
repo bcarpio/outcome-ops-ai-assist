@@ -31,6 +31,15 @@ except ImportError:
         sys.path.insert(0, backends_dir)
     from base import CodeMapBackend, CodeUnit, ChangeDetectionResult  # noqa: F401
 
+
+def _github_api() -> str:
+    """GHES-aware REST base (shared.github_base). SaaS default is
+    byte-identical to the old hardcoded api.github.com. Deferred import
+    so module load order (check_handlers before sys.path fix) is safe."""
+    from shared.github_base import github_api_base
+    return github_api_base()
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -63,7 +72,7 @@ class TypeScriptBackend(CodeMapBackend):
               Default: ["src/", "handlers/", "lambda/", "functions/"]
               Example: ["api/"] discovers api/login/, api/register/, etc.
             - github_token: GitHub API token (required for change detection)
-            - github_api_url: GitHub API base URL (default: "https://api.github.com")
+            - github_api_url: GitHub API base URL (default: f"{_github_api()}")
         """
         super().__init__(config)
         self.include_javascript = config.get("include_javascript", True)
@@ -81,7 +90,7 @@ class TypeScriptBackend(CodeMapBackend):
             "functions/",
         ])
         self.github_token = config.get("github_token")
-        self.github_api_url = config.get("github_api_url", "https://api.github.com")
+        self.github_api_url = config.get("github_api_url", f"{_github_api()}")
 
     def get_backend_name(self) -> str:
         return "TypeScript Backend"

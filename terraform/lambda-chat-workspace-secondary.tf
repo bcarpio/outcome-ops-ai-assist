@@ -316,6 +316,7 @@ module "workspace_management_lambda_secondary" {
     {
       ENV                          = var.environment
       APP_NAME                     = var.app_name
+      GITHUB_BASE_URL              = var.github_base_url
       AWS_LAMBDA_EXEC_WRAPPER      = "/opt/bootstrap"
       AWS_LWA_READINESS_CHECK_PATH = "/health"
       PORT                         = "8000"

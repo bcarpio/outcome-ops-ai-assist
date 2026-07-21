@@ -110,6 +110,14 @@ s3vectors_client = boto3.client("s3vectors")
 sts_client = boto3.client("sts")
 
 
+def _github_api() -> str:
+    """GHES-aware REST base (shared.github_base). SaaS default is
+    byte-identical to the old hardcoded api.github.com. Deferred import
+    keeps module load order safe."""
+    from shared.github_base import github_api_base
+    return github_api_base()
+
+
 def _get_workspaces_table():
     """Lazy-init DDB table handle for workspace privacy_mode lookups."""
     name = os.environ.get("WORKSPACES_TABLE", "")
@@ -187,7 +195,7 @@ GITHUB_TOKEN = None
 VECTOR_BUCKET = None
 VECTOR_INDEX = None
 
-GITHUB_API_URL = "https://api.github.com"
+GITHUB_API_URL = f"{_github_api()}"
 
 
 def load_config():
@@ -272,7 +280,7 @@ def get_installation_token(installation_id: str) -> str:
     jwt_token = jwt.encode(jwt_payload, private_key, algorithm="RS256")
 
     # Exchange for installation token
-    url = f"https://api.github.com/app/installations/{installation_id}/access_tokens"
+    url = f"{_github_api()}/app/installations/{installation_id}/access_tokens"
     req = Request(
         url,
         method="POST",
@@ -299,7 +307,7 @@ def get_installation_token(installation_id: str) -> str:
 
 def fetch_repo_config(token: str, repo_project: str) -> Dict:
     """Fetch .outcomeops.yaml from repository."""
-    url = f"https://api.github.com/repos/{repo_project}/contents/.outcomeops.yaml"
+    url = f"{_github_api()}/repos/{repo_project}/contents/.outcomeops.yaml"
     req = Request(
         url,
         headers={

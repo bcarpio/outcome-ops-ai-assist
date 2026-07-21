@@ -18,6 +18,15 @@ from botocore.exceptions import ClientError
 from .bedrock_utils import call_bedrock, UsageTracker, SONNET_MODEL_ID
 from .ado_context import refresh_ado_token
 
+
+def _github_api() -> str:
+    """GHES-aware REST base (shared.github_base). SaaS default is
+    byte-identical to the old hardcoded api.github.com. Deferred import
+    so module load order (check_handlers before sys.path fix) is safe."""
+    from shared.github_base import github_api_base
+    return github_api_base()
+
+
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
@@ -46,7 +55,7 @@ def get_github_token(parameter_name: str) -> str:
 
 def fetch_pr_file_diff(repository: str, pr_number: int, file_path: str, token: str) -> str:
     """Fetch a single file's diff from GitHub PR."""
-    url = f"https://api.github.com/repos/{repository}/pulls/{pr_number}"
+    url = f"{_github_api()}/repos/{repository}/pulls/{pr_number}"
 
     headers = {
         "Authorization": f"Bearer {token}",

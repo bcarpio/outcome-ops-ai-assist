@@ -50,6 +50,12 @@ sqs_client = boto3.client("sqs")
 # ============================================================================
 
 
+def _github_base() -> str:
+    """GHES-aware instance base URL (shared.github_base); github.com default."""
+    from shared.github_base import github_base_url
+    return github_base_url()
+
+
 def get_customer_id_from_cache() -> Optional[str]:
     """Get customer ID from cached license claims for usage tracking."""
     try:
@@ -587,7 +593,7 @@ def handle_sqs_event(event: Dict[str, Any]) -> Dict[str, Any]:
                         number=step_message.issue_number,
                         title=step_message.issue_title,
                         body=step_message.issue_description,
-                        html_url=f"https://github.com/{step_message.repo_full_name}/issues/{step_message.issue_number}",
+                        html_url=f"{_github_base()}/{step_message.repo_full_name}/issues/{step_message.issue_number}",
                         state="open"
                     ),
                     'repository': GitHubRepository(

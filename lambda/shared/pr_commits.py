@@ -30,7 +30,11 @@ logger = logging.getLogger(__name__)
 
 _PR_COMMITS_TIMEOUT_SECONDS = 30
 _ADO_API_VERSION = "7.0"
-_GITHUB_API = "https://api.github.com"
+# GHES-aware (shared.github_base): api.github.com on SaaS, {base}/api/v3
+# on GHES. Env is static per deploy so import-time resolution is fine.
+from shared.github_base import github_api_base as _github_api_base
+
+_GITHUB_API = _github_api_base()
 _ADO_API = "https://dev.azure.com"
 
 

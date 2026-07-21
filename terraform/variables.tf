@@ -159,6 +159,12 @@ variable "enable_github_integration" {
 # when the config values are populated AND enable_gitlab_integration is true.
 # ============================================================================
 
+variable "github_base_url" {
+  description = "GitHub instance base URL. Default/empty = github.com (SaaS). Set to https://github.example.com for GitHub Enterprise Server -- the REST API is derived as {base}/api/v3 and raw content routes through the contents API. The GitHub App must be registered ON the GHES instance."
+  type        = string
+  default     = ""
+}
+
 variable "gitlab_base_url" {
   type        = string
   description = "GitLab instance base URL (no trailing slash). Defaults to the SaaS host; a later chunk makes self-managed GitLab a first-class base URL."

@@ -31,6 +31,15 @@ from botocore.exceptions import ClientError
 from .bedrock_utils import UsageTracker, BedrockUsage, HAIKU_MODEL_ID
 from .ado_context import refresh_ado_token
 
+
+def _github_api() -> str:
+    """GHES-aware REST base (shared.github_base). SaaS default is
+    byte-identical to the old hardcoded api.github.com. Deferred import
+    so module load order (check_handlers before sys.path fix) is safe."""
+    from shared.github_base import github_api_base
+    return github_api_base()
+
+
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
@@ -125,7 +134,7 @@ def fetch_outcomeops_yaml(
     Returns:
         Parsed YAML dict or None if not found
     """
-    url = f"https://api.github.com/repos/{repository}/contents/.outcomeops.yaml"
+    url = f"{_github_api()}/repos/{repository}/contents/.outcomeops.yaml"
     if ref:
         url = f"{url}?ref={ref}"
     headers = {
@@ -165,7 +174,7 @@ def fetch_repo_test_files(repository: str, token: str, test_patterns: List[str])
         List of test file paths in the repository
     """
     # First get the default branch's SHA
-    url = f"https://api.github.com/repos/{repository}"
+    url = f"{_github_api()}/repos/{repository}"
     headers = {
         "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github.v3+json",
@@ -178,7 +187,7 @@ def fetch_repo_test_files(repository: str, token: str, test_patterns: List[str])
         default_branch = response.json().get("default_branch", "main")
 
         # Get the tree recursively
-        tree_url = f"https://api.github.com/repos/{repository}/git/trees/{default_branch}?recursive=1"
+        tree_url = f"{_github_api()}/repos/{repository}/git/trees/{default_branch}?recursive=1"
         tree_response = requests.get(tree_url, headers=headers, timeout=30)
         tree_response.raise_for_status()
 

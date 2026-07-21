@@ -64,6 +64,7 @@ module "github_integration_lambda_secondary" {
     {
       ENV               = var.environment
       APP_NAME          = var.app_name
+      GITHUB_BASE_URL   = var.github_base_url
       WORKSPACES_TABLE  = module.workspaces_table_secondary[0].dynamodb_table_id
       GITHUB_SYNC_QUEUE = aws_sqs_queue.github_sync_secondary[0].url
       DELETE_QUEUE      = aws_sqs_queue.delete_queue_secondary[0].url

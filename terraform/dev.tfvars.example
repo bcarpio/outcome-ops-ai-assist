@@ -401,6 +401,18 @@ github_usernames_to_tag = "yourusername"
 # fargate_enable_spot = false
 
 # ============================================================================
+# GitHub Enterprise Server (GHES)
+# ============================================================================
+
+# GitHub instance base URL. Leave unset for github.com (SaaS). For GHES set
+# e.g. "https://github.example.com" -- the REST API is derived as
+# {base}/api/v3, raw content routes through the contents API, and clone URLs
+# use the instance host. The GitHub App must be registered ON the GHES
+# instance (App IDs / keys / webhook secrets are per-instance). Configurable
+# but not yet certified against a live GHES -- see plan chunk 06.
+# github_base_url = ""
+
+# ============================================================================
 # ServiceNow Knowledge Base integration
 # ============================================================================
 #

@@ -56,6 +56,7 @@ module "generate_code_lambda" {
     {
       ENV                                = var.environment
       APP_NAME                           = var.app_name
+      GITHUB_BASE_URL                    = var.github_base_url
       EVENT_BUS_NAME                     = aws_cloudwatch_event_bus.automation.name
       ENABLE_BEDROCK_COOLDOWN            = tostring(var.enable_bedrock_cooldown)
       AUDIT_TABLE                        = module.audit_logs_table.dynamodb_table_id
@@ -296,9 +297,10 @@ module "generate_code_dlq_lambda" {
   # Environment variables
   environment_variables = merge(
     {
-      ENV         = var.environment
-      APP_NAME    = var.app_name
-      AUDIT_TABLE = module.audit_logs_table.dynamodb_table_id
+      ENV             = var.environment
+      APP_NAME        = var.app_name
+      GITHUB_BASE_URL = var.github_base_url
+      AUDIT_TABLE     = module.audit_logs_table.dynamodb_table_id
     },
     local.outcomeops_license_env,
   )
@@ -525,6 +527,7 @@ module "run_tests_lambda" {
     {
       ENV                                = var.environment
       APP_NAME                           = var.app_name
+      GITHUB_BASE_URL                    = var.github_base_url
       TEST_RESULTS_BUCKET                = module.knowledge_base_bucket.s3_bucket_id
       TEST_RESULTS_PREFIX                = "test-results"
       EVENT_BUS_NAME                     = aws_cloudwatch_event_bus.automation.name
@@ -639,6 +642,7 @@ module "handle_command_lambda" {
     {
       ENV                                = var.environment
       APP_NAME                           = var.app_name
+      GITHUB_BASE_URL                    = var.github_base_url
       AUDIT_TABLE                        = module.audit_logs_table.dynamodb_table_id
       BEDROCK_BASIC_MODEL_ID             = var.bedrock_basic_model_id
       BEDROCK_DEFAULT_BACKEND            = var.bedrock_default_backend

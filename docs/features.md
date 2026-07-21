@@ -61,7 +61,10 @@ webhook entry), `*-scheduler` (EventBridge cron driver), `*-sync`
 (SQS-driven worker that ingests).
 
 - **GitHub** — ingests ADRs, READMEs, `docs/lambda-*.md`, and code
-  maps. GitHub App OAuth. On-demand webhook + hourly cron.
+  maps. GitHub App OAuth. On-demand webhook + hourly cron. GHES
+  (Enterprise Server) base URL configurable via `github_base_url`
+  (API `{base}/api/v3`, raw via contents API; App registered on the
+  instance) — not yet certified against a live GHES.
 - **Confluence** — ingests pages from configured spaces. Atlassian
   OAuth. On-demand + cron.
 - **Jira** — ingests issues; also drives the code-gen trigger via

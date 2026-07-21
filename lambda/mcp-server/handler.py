@@ -123,6 +123,14 @@ MCP_SESSION_TTL = 1800  # 30 minutes — TTL on upstream MCP proxy sessions
 _UPSTREAM_PREFIX = "upstream#"
 
 
+def _github_api() -> str:
+    """GHES-aware REST base (shared.github_base). SaaS default is
+    byte-identical to the old hardcoded api.github.com. Deferred import
+    keeps module load order safe."""
+    from shared.github_base import github_api_base
+    return github_api_base()
+
+
 def _get_session_store():
     """Lazy import + init so unit tests can override MCP_SESSION_STORE=memory
     without triggering a boto3 client build at import time. Passes the
@@ -2123,7 +2131,7 @@ def _read_source_installation_token(installation_id):
     now = int(time.time())
     payload = {"iat": now - 60, "exp": now + 600, "iss": cfg["app_id"]}
     jwt_token = jwt.encode(payload, cfg["private_key"], algorithm="RS256")
-    url = f"https://api.github.com/app/installations/{installation_id}/access_tokens"
+    url = f"{_github_api()}/app/installations/{installation_id}/access_tokens"
     req = urllib.request.Request(
         url,
         method="POST",
@@ -2826,7 +2834,7 @@ def _read_source_fetch_file(repo, file_path, token, ref=None):
     return a silently-truncated window.
     """
     quoted = urllib.parse.quote(file_path, safe="/")
-    url = f"https://api.github.com/repos/{repo}/contents/{quoted}"
+    url = f"{_github_api()}/repos/{repo}/contents/{quoted}"
     if ref:
         url += f"?ref={urllib.parse.quote(ref, safe='')}"
     req = urllib.request.Request(
