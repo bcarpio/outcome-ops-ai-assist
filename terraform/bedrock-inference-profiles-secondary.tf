@@ -75,25 +75,29 @@ resource "aws_ssm_parameter" "bedrock_profile_arn_secondary" {
 # Same shape as primary; empty map when HA is off so secondary-region
 # Lambda modules can merge unconditionally without a null check.
 locals {
+  # Claude app-profile gating mirrors the primary (see
+  # bedrock-inference-profiles.tf for the SCP region-less-ARN rationale).
   bedrock_chat_env_secondary = var.secondary_region == "" ? {} : merge(
     {
-      BEDROCK_CHAT_ADVANCED_PROFILE_ARN    = aws_bedrock_inference_profile.workload_secondary["chat-sonnet"].arn
-      BEDROCK_CHAT_BASIC_PROFILE_ARN       = aws_bedrock_inference_profile.workload_secondary["chat-haiku"].arn
       BEDROCK_CHAT_TITAN_EMBED_PROFILE_ARN = aws_bedrock_inference_profile.workload_secondary["chat-titan-embed"].arn
     },
+    var.bedrock_claude_app_profiles_enabled ? {
+      BEDROCK_CHAT_ADVANCED_PROFILE_ARN = aws_bedrock_inference_profile.workload_secondary["chat-sonnet"].arn
+      BEDROCK_CHAT_BASIC_PROFILE_ARN    = aws_bedrock_inference_profile.workload_secondary["chat-haiku"].arn
+    } : {},
     var.bedrock_rerank_enabled ? {
       BEDROCK_CHAT_COHERE_RERANK_PROFILE_ARN = aws_bedrock_inference_profile.workload_secondary["chat-cohere-rerank"].arn
     } : {},
   )
-  bedrock_code_maps_env_secondary = var.secondary_region != "" ? {
+  bedrock_code_maps_env_secondary = var.secondary_region != "" && var.bedrock_claude_app_profiles_enabled ? {
     BEDROCK_CODE_MAPS_ADVANCED_PROFILE_ARN = aws_bedrock_inference_profile.workload_secondary["code-maps-sonnet"].arn
     BEDROCK_CODE_MAPS_BASIC_PROFILE_ARN    = aws_bedrock_inference_profile.workload_secondary["code-maps-haiku"].arn
   } : {}
-  bedrock_code_gen_env_secondary = var.secondary_region != "" ? {
+  bedrock_code_gen_env_secondary = var.secondary_region != "" && var.bedrock_claude_app_profiles_enabled ? {
     BEDROCK_CODE_GEN_ADVANCED_PROFILE_ARN = aws_bedrock_inference_profile.workload_secondary["code-gen-sonnet"].arn
     BEDROCK_CODE_GEN_BASIC_PROFILE_ARN    = aws_bedrock_inference_profile.workload_secondary["code-gen-haiku"].arn
   } : {}
-  bedrock_pr_analyzer_env_secondary = var.secondary_region != "" ? {
+  bedrock_pr_analyzer_env_secondary = var.secondary_region != "" && var.bedrock_claude_app_profiles_enabled ? {
     BEDROCK_PR_ANALYZER_ADVANCED_PROFILE_ARN = aws_bedrock_inference_profile.workload_secondary["pr-analyzer-sonnet"].arn
     BEDROCK_PR_ANALYZER_BASIC_PROFILE_ARN    = aws_bedrock_inference_profile.workload_secondary["pr-analyzer-haiku"].arn
   } : {}

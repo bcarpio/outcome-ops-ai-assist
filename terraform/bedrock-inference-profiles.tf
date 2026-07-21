@@ -156,26 +156,38 @@ locals {
   # Conditionally include the cohere-rerank profile ARN only when
   # rerank is enabled. Merging an empty map is a no-op; when enabled,
   # the env var is set for retrieval callers to resolve.
+  # Claude (sonnet/haiku) app-profile env vars are gated: their profile
+  # authorization expands to the REGION-LESS foundation-model ARN
+  # (arn:aws:bedrock:::foundation-model/...), which Control Tower's
+  # region-deny SCP explicit-denies (aws:RequestedRegion is absent in
+  # that authorization context -- live-burned 2026-07-21, first Bedrock
+  # call after org enrollment). With the flag false, resolve_profile_arn
+  # returns None and callers fall back to the us.* system profiles,
+  # whose authorization is regional-ARNs-only and passes the SCP.
+  # Titan/Cohere app profiles wrap plain regional models (no region-less
+  # expansion) and stay wired unconditionally.
   bedrock_chat_env = merge(
     {
-      BEDROCK_CHAT_ADVANCED_PROFILE_ARN    = aws_bedrock_inference_profile.workload["chat-sonnet"].arn
-      BEDROCK_CHAT_BASIC_PROFILE_ARN       = aws_bedrock_inference_profile.workload["chat-haiku"].arn
       BEDROCK_CHAT_TITAN_EMBED_PROFILE_ARN = aws_bedrock_inference_profile.workload["chat-titan-embed"].arn
     },
+    var.bedrock_claude_app_profiles_enabled ? {
+      BEDROCK_CHAT_ADVANCED_PROFILE_ARN = aws_bedrock_inference_profile.workload["chat-sonnet"].arn
+      BEDROCK_CHAT_BASIC_PROFILE_ARN    = aws_bedrock_inference_profile.workload["chat-haiku"].arn
+    } : {},
     var.bedrock_rerank_enabled ? {
       BEDROCK_CHAT_COHERE_RERANK_PROFILE_ARN = aws_bedrock_inference_profile.workload["chat-cohere-rerank"].arn
     } : {},
   )
-  bedrock_code_maps_env = {
+  bedrock_code_maps_env = var.bedrock_claude_app_profiles_enabled ? {
     BEDROCK_CODE_MAPS_ADVANCED_PROFILE_ARN = aws_bedrock_inference_profile.workload["code-maps-sonnet"].arn
     BEDROCK_CODE_MAPS_BASIC_PROFILE_ARN    = aws_bedrock_inference_profile.workload["code-maps-haiku"].arn
-  }
-  bedrock_code_gen_env = {
+  } : {}
+  bedrock_code_gen_env = var.bedrock_claude_app_profiles_enabled ? {
     BEDROCK_CODE_GEN_ADVANCED_PROFILE_ARN = aws_bedrock_inference_profile.workload["code-gen-sonnet"].arn
     BEDROCK_CODE_GEN_BASIC_PROFILE_ARN    = aws_bedrock_inference_profile.workload["code-gen-haiku"].arn
-  }
-  bedrock_pr_analyzer_env = {
+  } : {}
+  bedrock_pr_analyzer_env = var.bedrock_claude_app_profiles_enabled ? {
     BEDROCK_PR_ANALYZER_ADVANCED_PROFILE_ARN = aws_bedrock_inference_profile.workload["pr-analyzer-sonnet"].arn
     BEDROCK_PR_ANALYZER_BASIC_PROFILE_ARN    = aws_bedrock_inference_profile.workload["pr-analyzer-haiku"].arn
-  }
+  } : {}
 }

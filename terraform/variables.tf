@@ -454,6 +454,12 @@ variable "bedrock_rerank_model_id" {
   default     = "cohere.rerank-v3-5:0"
 }
 
+variable "bedrock_claude_app_profiles_enabled" {
+  description = "Route Claude (advanced/basic tier) invocations through workload-tagged application inference profiles (ADR-016). Set false when an org SCP (e.g. Control Tower region-deny) explicit-denies the region-less foundation-model ARN that Claude app-profile authorization expands to -- callers then fall back to the us.* system inference profiles directly (regional-ARN-only authorization). Titan/Cohere app profiles are unaffected either way (they wrap regional models). Cost impact when false: Claude spend loses the Cost Explorer workload-tag split; audit-table attribution is unaffected."
+  type        = bool
+  default     = true
+}
+
 variable "bedrock_rerank_enabled" {
   type        = bool
   description = <<-EOT
