@@ -80,6 +80,7 @@ vi.mock('../../../src/lib/api', () => ({
   disconnectAzureDevOps: vi.fn(),
   getGitLabAuthUrl: vi.fn(),
   listGitLabConnections: vi.fn(),
+  listGitLabInstances: vi.fn(),
   listGitLabGroups: vi.fn(),
   listGitLabProjects: vi.fn(),
   listGitLabRepos: vi.fn(),

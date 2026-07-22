@@ -142,6 +142,7 @@ import {
   listAzureDevOpsRepoBranches,
   getGitLabAuthUrl,
   listGitLabConnections,
+  listGitLabInstances,
   listGitLabGroups,
   listGitLabProjects,
   listGitLabRepos,
@@ -157,6 +158,7 @@ import {
   type AzureDevOpsRepo,
   type AzureDevOpsRepoType,
   type GitLabConnection,
+  type GitLabInstance,
   type GitLabGroup,
   type GitLabProject,
   type GitLabRepo,
@@ -528,6 +530,8 @@ export default function WorkspaceSettings() {
   // shallower: connection -> group -> project, where the project IS the
   // enrollable repo. No org->project->repo third hop.
   const [gitlabConnections, setGitlabConnections] = useState<GitLabConnection[]>([])
+  const [gitlabInstances, setGitlabInstances] = useState<GitLabInstance[]>([])
+  const [gitlabMultiInstance, setGitlabMultiInstance] = useState(false)
   const [gitlabRepos, setGitlabRepos] = useState<GitLabRepo[]>([])
   const [loadingGitlab, setLoadingGitlab] = useState(false)
   const [connectingGitlab, setConnectingGitlab] = useState(false)
@@ -962,12 +966,15 @@ export default function WorkspaceSettings() {
     if (!workspaceId) return
     setLoadingGitlab(true)
     try {
-      const [connections, repos] = await Promise.all([
+      const [connections, repos, instancesResp] = await Promise.all([
         listGitLabConnections(workspaceId).catch(() => []),
         listGitLabRepos(workspaceId).catch(() => []),
+        listGitLabInstances().catch(() => ({ instances: [], multi_instance: false })),
       ])
       setGitlabConnections(connections)
       setGitlabRepos(repos)
+      setGitlabInstances(instancesResp.instances)
+      setGitlabMultiInstance(instancesResp.multi_instance)
     } catch (err) {
       console.error('Failed to load GitLab data:', err)
     } finally {
@@ -975,11 +982,11 @@ export default function WorkspaceSettings() {
     }
   }
 
-  async function handleConnectGitLab() {
+  async function handleConnectGitLab(instanceId?: string) {
     if (!workspaceId) return
     setConnectingGitlab(true)
     try {
-      const authUrl = await getGitLabAuthUrl(workspaceId)
+      const authUrl = await getGitLabAuthUrl(workspaceId, instanceId)
       // Redirect the browser to GitLab's consent screen. The callback
       // writes the connection row + tokens then redirects back to
       // /workspaces/{id}/settings?tab=integrations.
@@ -3691,9 +3698,9 @@ export default function WorkspaceSettings() {
                     <p className="text-sm text-gray-500">Connect GitLab to sync repositories for chat search</p>
                   </div>
                 </div>
-                {isAdmin && gitlabConnections.length === 0 && (
+                {isAdmin && !gitlabMultiInstance && gitlabConnections.length === 0 && (
                   <MutationButton
-                    onClick={handleConnectGitLab}
+                    onClick={() => handleConnectGitLab()}
                     disabled={connectingGitlab}
                     className="flex items-center gap-2 px-3 py-1.5 text-sm bg-gray-900 text-white rounded-lg hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                   >
@@ -3704,6 +3711,28 @@ export default function WorkspaceSettings() {
                     )}
                     Connect GitLab
                   </MutationButton>
+                )}
+                {/* Multi-instance: one connect button per instance (each is a
+                    separate GitLab host, so both can be connected at once). */}
+                {isAdmin && gitlabMultiInstance && (
+                  <div className="flex flex-wrap items-center gap-2 justify-end">
+                    {gitlabInstances.map((inst) => (
+                      <MutationButton
+                        key={inst.id}
+                        onClick={() => handleConnectGitLab(inst.id)}
+                        disabled={connectingGitlab}
+                        className="flex items-center gap-2 px-3 py-1.5 text-sm bg-gray-900 text-white rounded-lg hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                        title={inst.base_url}
+                      >
+                        {connectingGitlab ? (
+                          <Loader2 size={16} className="animate-spin" />
+                        ) : (
+                          <Plus size={16} />
+                        )}
+                        Connect {inst.display_name}
+                      </MutationButton>
+                    ))}
+                  </div>
                 )}
               </div>
               {loadingGitlab ? (
@@ -3725,7 +3754,12 @@ export default function WorkspaceSettings() {
                           <GitBranch className="text-gray-600" size={20} />
                           <div>
                             <p className="font-medium text-gray-900">{conn.display_name}</p>
-                            <p className="text-sm text-gray-500">{conn.gitlab_username}</p>
+                            <p className="text-sm text-gray-500">
+                              {conn.gitlab_username}
+                              {gitlabMultiInstance && conn.instance_label
+                                ? ` · ${conn.instance_label}`
+                                : ''}
+                            </p>
                           </div>
                         </div>
                         {isAdmin && (

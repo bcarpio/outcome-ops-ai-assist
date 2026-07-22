@@ -2868,11 +2868,24 @@ export async function disconnectAzureDevOps(workspaceId: string, connectionId: s
 // (e.g. ``group/subgroup/project``) and can carry more than two segments
 // because GitLab supports nested subgroups.
 
+export interface GitLabInstance {
+  id: string
+  display_name: string
+  base_url: string
+}
+
+export interface GitLabInstancesResponse {
+  instances: GitLabInstance[]
+  multi_instance: boolean
+}
+
 export interface GitLabConnection {
   connection_id: string
   display_name: string
   gitlab_username: string
   base_url: string
+  instance_id: string
+  instance_label: string | null
   created_at: string
 }
 
@@ -2910,11 +2923,30 @@ export interface GitLabRepo {
   added_by: string
 }
 
-/** Get the GitLab OAuth authorize URL for connecting GitLab to a workspace. */
-export async function getGitLabAuthUrl(workspaceId: string): Promise<string> {
-  const response = await fetch(
-    `${API_BASE}/gitlab/authorize?workspace_id=${encodeURIComponent(workspaceId)}`,
-  )
+/** List the GitLab instances this deploy can connect (drives the picker). */
+export async function listGitLabInstances(): Promise<GitLabInstancesResponse> {
+  const response = await fetch(`${API_BASE}/gitlab/instances`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to list GitLab instances: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return {
+    instances: (data?.instances as GitLabInstance[]) || [],
+    multi_instance: Boolean(data?.multi_instance),
+  }
+}
+
+/** Get the GitLab OAuth authorize URL for connecting GitLab to a workspace.
+ *  Pass instanceId on a multi-instance deploy to choose which GitLab. */
+export async function getGitLabAuthUrl(
+  workspaceId: string,
+  instanceId?: string,
+): Promise<string> {
+  const q = instanceId
+    ? `workspace_id=${encodeURIComponent(workspaceId)}&instance=${encodeURIComponent(instanceId)}`
+    : `workspace_id=${encodeURIComponent(workspaceId)}`
+  const response = await fetch(`${API_BASE}/gitlab/authorize?${q}`)
   if (!response.ok) {
     const data = await safeJson(response)
     throw new Error((data?.error as string) || `Failed to get GitLab auth URL: ${response.status}`)
