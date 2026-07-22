@@ -116,6 +116,7 @@ def fetch_pr_metadata(
     # gitlab branch
     gitlab_project_path: Optional[str] = None,
     gitlab_access_token: Optional[str] = None,
+    gitlab_base_url: Optional[str] = None,
 ) -> PRMetadata:
     """Fetch a PR's metadata + changed-file list from the source provider.
 
@@ -177,6 +178,7 @@ def fetch_pr_metadata(
             project_path=gitlab_project_path,
             mr_iid=pr_number,
             access_token=gitlab_access_token,
+            base_url=gitlab_base_url,
         )
 
     raise PRMetadataError(f"Unknown provider for fetch_pr_metadata: {provider}")
@@ -372,6 +374,7 @@ def _fetch_pr_from_gitlab(
     project_path: str,
     mr_iid: int,
     access_token: str,
+    base_url: Optional[str] = None,
 ) -> PRMetadata:
     """Fetch MR metadata + changed files from GitLab.
 
@@ -395,7 +398,8 @@ def _fetch_pr_from_gitlab(
     from shared import gitlab_api  # deferred: keeps this module import-light
 
     try:
-        mr = gitlab_api.get_merge_request(access_token, project_path, mr_iid)
+        mr = gitlab_api.get_merge_request(
+            access_token, project_path, mr_iid, base_url=base_url)
     except Exception as e:
         raise PRMetadataError(
             f"GitLab MR fetch failed for {project_path}!{mr_iid}: {e}",
@@ -415,7 +419,7 @@ def _fetch_pr_from_gitlab(
 
     try:
         diff_entries = gitlab_api.get_merge_request_diffs(
-            access_token, project_path, mr_iid)
+            access_token, project_path, mr_iid, base_url=base_url)
     except Exception as e:
         raise PRMetadataError(
             f"GitLab MR diffs fetch failed for {project_path}!{mr_iid}: {e}",

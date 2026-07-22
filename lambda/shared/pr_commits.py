@@ -66,6 +66,7 @@ def fetch_pr_commits(
     # gitlab branch
     gitlab_project_path: Optional[str] = None,
     gitlab_access_token: Optional[str] = None,
+    gitlab_base_url: Optional[str] = None,
 ) -> List[PRCommit]:
     """Fetch the ordered list of commits in a PR from the source provider.
 
@@ -123,6 +124,7 @@ def fetch_pr_commits(
             project_path=gitlab_project_path,
             mr_iid=pr_number,
             access_token=gitlab_access_token,
+            base_url=gitlab_base_url,
         )
 
     raise PRCommitsError(f"Unknown provider for fetch_pr_commits: {provider}")
@@ -133,6 +135,7 @@ def _fetch_from_gitlab(
     project_path: str,
     mr_iid: int,
     access_token: str,
+    base_url: Optional[str] = None,
 ) -> List[PRCommit]:
     """GET /projects/{enc}/merge_requests/{iid}/commits via the shared
     GitLab client. ``message`` is full (subject + body + trailers), so
@@ -141,7 +144,7 @@ def _fetch_from_gitlab(
 
     try:
         entries = gitlab_api.get_merge_request_commits(
-            access_token, project_path, mr_iid)
+            access_token, project_path, mr_iid, base_url=base_url)
     except Exception as e:
         raise PRCommitsError(
             f"GitLab MR commits fetch failed for {project_path}!{mr_iid}: {e}",

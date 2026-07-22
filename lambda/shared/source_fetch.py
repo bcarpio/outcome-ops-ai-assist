@@ -259,6 +259,7 @@ def fetch_file_at_sha(
     # gitlab branch
     gitlab_project_path: Optional[str] = None,
     gitlab_access_token: Optional[str] = None,
+    gitlab_base_url: Optional[str] = None,
 ) -> bytes:
     """Return one file's raw bytes at a specific ref position.
 
@@ -341,6 +342,7 @@ def fetch_file_at_sha(
             file_path=file_path,
             sha=sha,
             access_token=gitlab_access_token,
+            base_url=gitlab_base_url,
         )
 
     raise SourceFetchError(
@@ -442,6 +444,7 @@ def _fetch_from_gitlab_at_sha(
     file_path: str,
     sha: str,
     access_token: str,
+    base_url: Optional[str] = None,
 ) -> bytes:
     """Fetch a file at a specific ref position from GitLab.
 
@@ -458,6 +461,7 @@ def _fetch_from_gitlab_at_sha(
     try:
         return gitlab_api.get_file_content(
             access_token, project_path, file_path.lstrip("/"), sha,
+            base_url=base_url,
         )
     except Exception as e:
         raise SourceFetchError(

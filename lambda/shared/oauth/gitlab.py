@@ -11,12 +11,14 @@ specific OAuth HTTP lives here (authorize URL, code exchange, refresh, profile) 
 GitLab is not a Microsoft IdP, so Entra's token exchange cannot be reused.
 
 Env / config:
-- ``GITLAB_BASE_URL``   -- instance base, default ``https://gitlab.com`` (SaaS).
-                           A later chunk makes this a per-deploy tfvar for
-                           self-managed GitLab.
-- ``GITLAB_CLIENT_ID``  -- OAuth application id (non-secret).
-- ``GITLAB_CLIENT_SECRET_SSM_PARAM`` -- SSM SecureString path holding the app
-                           secret (operator-managed; terraform does not create it).
+Multi-instance (ADR-050 v2.0): the config-consuming functions accept an
+``instance`` (a ``shared.gitlab_instances.GitLabInstance``) carrying
+base_url + client_id + client_secret_ssm_param. Passing ``None`` resolves
+to the single configured instance and RAISES on a multi-instance deploy,
+so a caller that forgot to thread the connection's instance fails loudly.
+The legacy env vars below are the single-instance fallback:
+- ``GITLAB_BASE_URL`` / ``GITLAB_CLIENT_ID`` / ``GITLAB_CLIENT_SECRET_SSM_PARAM``
+  -- synthesized into one instance with id "default" by gitlab_instances.
 - ``WORKSPACES_TABLE`` / ``OAUTH_KMS_KEY_ARN`` -- consumed by the shared storage.
 """
 
@@ -85,7 +87,22 @@ def base_url() -> str:
 
 
 def get_client_id() -> str:
+    """Legacy single-instance client id (env). Prefer instance.client_id."""
     return os.environ.get("GITLAB_CLIENT_ID", "")
+
+
+def _resolve_instance(instance):
+    """Return the GitLabInstance for this call.
+
+    ``None`` resolves to the sole configured instance (raising on a
+    multi-instance deploy, so a caller that forgot to pass the connection's
+    instance fails loudly rather than authorizing against the wrong
+    GitLab). Chunk 03 passes the instance derived from the connection row.
+    """
+    if instance is not None:
+        return instance
+    from shared.gitlab_instances import get_instance
+    return get_instance(None)
 
 
 def _get_ssm():
@@ -95,9 +112,12 @@ def _get_ssm():
     return _ssm_client
 
 
-def _load_client_secret() -> str:
-    """Read the OAuth app secret from SSM (cached per process). Never logged."""
-    path = os.environ.get("GITLAB_CLIENT_SECRET_SSM_PARAM", "")
+def _load_client_secret(ssm_param: Optional[str] = None) -> str:
+    """Read the OAuth app secret from SSM (cached per path). Never logged.
+
+    ``ssm_param`` comes from the resolved instance; falls back to the legacy
+    env var for single-instance back-compat."""
+    path = ssm_param or os.environ.get("GITLAB_CLIENT_SECRET_SSM_PARAM", "")
     if not path:
         raise RuntimeError("GITLAB_CLIENT_SECRET_SSM_PARAM not set")
     if path not in _secret_cache:
@@ -106,23 +126,25 @@ def _load_client_secret() -> str:
     return _secret_cache[path]
 
 
-def build_authorize_url(redirect_uri: str, state: str) -> str:
+def build_authorize_url(redirect_uri: str, state: str, *,
+                        instance=None) -> str:
     """The GitLab consent URL the user is sent to (one-click authorize)."""
+    inst = _resolve_instance(instance)
     params = {
-        "client_id": get_client_id(),
+        "client_id": inst.client_id or get_client_id(),
         "redirect_uri": redirect_uri,
         "response_type": "code",
         "scope": SCOPES,
         "state": state,
     }
-    return f"{base_url()}/oauth/authorize?" + urllib.parse.urlencode(params)
+    return f"{inst.base_url}/oauth/authorize?" + urllib.parse.urlencode(params)
 
 
-def _post_token(form: Dict[str, str]) -> Dict:
+def _post_token(form: Dict[str, str], *, base: Optional[str] = None) -> Dict:
     """POST application/x-www-form-urlencoded to GitLab's token endpoint."""
     data = urllib.parse.urlencode(form).encode()
     req = urllib.request.Request(
-        f"{base_url()}/oauth/token", data=data,
+        f"{(base or base_url())}/oauth/token", data=data,
         headers={"Content-Type": "application/x-www-form-urlencoded",
                  "Accept": "application/json"})
     with urllib.request.urlopen(req, timeout=15) as resp:
@@ -135,16 +157,19 @@ def exchange_code_for_tokens(
     workspaces_table: str,
     kms_key_arn: str,
     connection_id: str,
+    *,
+    instance=None,
 ) -> str:
     """Exchange an authorization code, persist the (rotating) refresh token, and
     return the access token."""
+    inst = _resolve_instance(instance)
     body = _post_token({
-        "client_id": get_client_id(),
-        "client_secret": _load_client_secret(),
+        "client_id": inst.client_id or get_client_id(),
+        "client_secret": _load_client_secret(inst.client_secret_ssm_param),
         "code": code,
         "grant_type": "authorization_code",
         "redirect_uri": redirect_uri,
-    })
+    }, base=inst.base_url)
     entra_id_oauth.save_tokens(
         workspaces_table=workspaces_table,
         kms_key_arn=kms_key_arn,
@@ -224,7 +249,8 @@ def _release_lock(table, connection_id: str) -> None:
         pass
 
 
-def _raw_refresh(workspaces_table: str, connection_id: str) -> Optional[Dict]:
+def _raw_refresh(workspaces_table: str, connection_id: str,
+                 inst=None) -> Optional[Dict]:
     """POST the stored refresh token to GitLab. Returns the token body
     (access_token / refresh_token / expires_in) or None when no refresh
     token is stored."""
@@ -232,12 +258,13 @@ def _raw_refresh(workspaces_table: str, connection_id: str) -> Optional[Dict]:
         workspaces_table, PK_PREFIX, connection_id)
     if not refresh_token:
         return None
+    inst = _resolve_instance(inst)
     return _post_token({
-        "client_id": get_client_id(),
-        "client_secret": _load_client_secret(),
+        "client_id": inst.client_id or get_client_id(),
+        "client_secret": _load_client_secret(inst.client_secret_ssm_param),
         "refresh_token": refresh_token,
         "grant_type": "refresh_token",
-    })
+    }, base=inst.base_url)
 
 
 def _persist_refresh(
@@ -272,6 +299,7 @@ def get_valid_access_token(
     connection_id: str,
     *,
     force_refresh: bool = False,
+    instance=None,
 ) -> Optional[str]:
     """Return a usable GitLab access token, refreshing only when needed and
     only one caller at a time per connection.
@@ -306,7 +334,7 @@ def get_valid_access_token(
                 _read_cred_row(table, connection_id), time.time())
             if cached:
                 return cached
-        body = _raw_refresh(workspaces_table, connection_id)
+        body = _raw_refresh(workspaces_table, connection_id, instance)
         if not body or not body.get("access_token"):
             return None
         _persist_refresh(table, kms_key_arn, connection_id, body)
@@ -324,22 +352,25 @@ def refresh_access_token(
     workspaces_table: str,
     kms_key_arn: str,
     connection_id: str,
+    *,
+    instance=None,
 ) -> Optional[str]:
     """Back-compat shim: force a fresh access token through the cached,
     single-flight path. Prefer ``get_valid_access_token`` (cache-first) in
     new code."""
     return get_valid_access_token(
-        workspaces_table, kms_key_arn, connection_id, force_refresh=True)
+        workspaces_table, kms_key_arn, connection_id,
+        force_refresh=True, instance=instance)
 
 
 def delete_tokens(workspaces_table: str, connection_id: str) -> None:
     entra_id_oauth.delete_tokens(workspaces_table, PK_PREFIX, connection_id)
 
 
-def get_user_profile(access_token: str) -> Tuple[str, str]:
+def get_user_profile(access_token: str, *, base_url_arg: Optional[str] = None) -> Tuple[str, str]:
     """Return ``(user_id, username)`` for the authorized user (GET /api/v4/user)."""
     req = urllib.request.Request(
-        f"{base_url()}/api/v4/user",
+        f"{(base_url_arg or base_url())}/api/v4/user",
         headers={"Authorization": f"Bearer {access_token}"})
     with urllib.request.urlopen(req, timeout=15) as resp:
         body = json.loads(resp.read())

@@ -74,6 +74,7 @@ def fetch_repo_metadata(
     # gitlab branch
     gitlab_project_path: Optional[str] = None,
     gitlab_access_token: Optional[str] = None,
+    gitlab_base_url: Optional[str] = None,
 ) -> RepoMetadata:
     """Fetch default branch + recursive file tree from the source provider.
 
@@ -129,6 +130,7 @@ def fetch_repo_metadata(
         return _fetch_repo_from_gitlab(
             project_path=gitlab_project_path,
             access_token=gitlab_access_token,
+            base_url=gitlab_base_url,
         )
 
     raise RepoMetadataError(f"Unknown provider for fetch_repo_metadata: {provider}")
@@ -246,6 +248,7 @@ def _fetch_repo_from_gitlab(
     *,
     project_path: str,
     access_token: str,
+    base_url: Optional[str] = None,
 ) -> RepoMetadata:
     """Fetch default branch + recursive tree from GitLab.
 
@@ -260,7 +263,8 @@ def _fetch_repo_from_gitlab(
     """
     from shared import gitlab_api  # noqa: WPS433 -- defer import
     try:
-        default_branch = gitlab_api.get_default_branch(access_token, project_path)
+        default_branch = gitlab_api.get_default_branch(
+            access_token, project_path, base_url=base_url)
     except Exception as e:
         raise RepoMetadataError(
             f"GitLab default-branch fetch failed for {project_path}: {e}",
@@ -270,7 +274,8 @@ def _fetch_repo_from_gitlab(
             f"GitLab project {project_path} has no default_branch",
         )
     try:
-        tree = gitlab_api.get_tree(access_token, project_path, default_branch)
+        tree = gitlab_api.get_tree(
+            access_token, project_path, default_branch, base_url=base_url)
     except Exception as e:
         raise RepoMetadataError(
             f"GitLab tree fetch failed for {project_path}: {e}",

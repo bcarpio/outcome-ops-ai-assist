@@ -43,7 +43,7 @@ class TestListing:
     def test_list_groups_uses_reporter_floor(self):
         captured = {}
 
-        def stub(access_token, path, params=None):
+        def stub(access_token, path, params=None, *, base=None):
             captured["params"] = params
             return [{"id": 1, "full_path": "g", "name": "g"}]
         with patch.object(gitlab_api, "_get_paginated", stub):

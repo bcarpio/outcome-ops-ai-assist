@@ -19,11 +19,29 @@ _DEFAULT_BASE_URL = "https://gitlab.com"
 
 
 def base_url() -> str:
+    """Legacy single-instance base URL (env). Prefer passing an explicit
+    ``base_url`` from the connection's instance -- see _resolve_base."""
     return (os.environ.get("GITLAB_BASE_URL") or _DEFAULT_BASE_URL).rstrip("/")
 
 
-def _api(path: str) -> str:
-    return f"{base_url()}/api/v4{path}"
+def _resolve_base(base_url_arg: Optional[str]) -> str:
+    """Resolve which GitLab instance this call targets.
+
+    An explicit ``base_url`` (from the connection's instance) always wins.
+    Falling back is legal ONLY when the deploy has exactly one instance
+    configured; on a multi-instance deploy an un-threaded call site raises
+    instead of silently hitting whichever instance the legacy env var
+    happens to name. That makes a missed call site a loud failure during
+    multi-instance rollout rather than a wrong-instance read.
+    """
+    if base_url_arg:
+        return base_url_arg.rstrip("/")
+    from shared.gitlab_instances import get_instance
+    return get_instance(None).base_url
+
+
+def _api(path: str, base: str) -> str:
+    return f"{base}/api/v4{path}"
 
 
 def _enc(project_path: str) -> str:
@@ -42,8 +60,9 @@ def _request(access_token: str, url: str, raw: bool = False):
     return json.loads(body), headers
 
 
-def _get(access_token: str, path: str, params: Optional[Dict] = None):
-    url = _api(path)
+def _get(access_token: str, path: str, params: Optional[Dict] = None,
+         *, base: str):
+    url = _api(path, base)
     if params:
         url += "?" + urllib.parse.urlencode(params)
     data, _ = _request(access_token, url)
@@ -51,7 +70,7 @@ def _get(access_token: str, path: str, params: Optional[Dict] = None):
 
 
 def _get_paginated(access_token: str, path: str,
-                   params: Optional[Dict] = None) -> List[Dict]:
+                   params: Optional[Dict] = None, *, base: str) -> List[Dict]:
     """Offset-paginate a list endpoint until a short/empty page (per_page=100)."""
     out: List[Dict] = []
     page = 1
@@ -59,7 +78,7 @@ def _get_paginated(access_token: str, path: str,
     params["per_page"] = 100
     while True:
         params["page"] = page
-        url = _api(path) + "?" + urllib.parse.urlencode(params)
+        url = _api(path, base) + "?" + urllib.parse.urlencode(params)
         items, headers = _request(access_token, url)
         if not isinstance(items, list) or not items:
             break
@@ -71,7 +90,7 @@ def _get_paginated(access_token: str, path: str,
     return out
 
 
-def list_groups(access_token: str) -> List[Dict]:
+def list_groups(access_token: str, *, base_url: Optional[str] = None) -> List[Dict]:
     """Groups the user belongs to with at least REPORTER access.
 
     min_access_level=20 (Reporter) is the correct floor for a read-only
@@ -83,11 +102,13 @@ def list_groups(access_token: str) -> List[Dict]:
         {"id": g["id"], "full_path": g["full_path"], "name": g["name"]}
         for g in _get_paginated(
             access_token, "/groups",
-            {"min_access_level": 20, "all_available": "false"})
+            {"min_access_level": 20, "all_available": "false"},
+            base=_resolve_base(base_url))
     ]
 
 
-def list_group_projects(access_token: str, group_id) -> List[Dict]:
+def list_group_projects(access_token: str, group_id, *,
+                        base_url: Optional[str] = None) -> List[Dict]:
     """Projects in a group INCLUDING nested subgroups (the slug can have >2
     segments). ``path_with_namespace`` is the enrollable slug."""
     return [
@@ -98,42 +119,52 @@ def list_group_projects(access_token: str, group_id) -> List[Dict]:
         for p in _get_paginated(
             access_token, f"/groups/{group_id}/projects",
             {"include_subgroups": "true", "with_shared": "false",
-             "archived": "false"})
+             "archived": "false"},
+            base=_resolve_base(base_url))
     ]
 
 
-def get_project(access_token: str, project_path: str) -> Dict:
-    return _get(access_token, f"/projects/{_enc(project_path)}")
+def get_project(access_token: str, project_path: str, *,
+                base_url: Optional[str] = None) -> Dict:
+    return _get(access_token, f"/projects/{_enc(project_path)}",
+                base=_resolve_base(base_url))
 
 
-def get_default_branch(access_token: str, project_path: str) -> Optional[str]:
-    return get_project(access_token, project_path).get("default_branch")
+def get_default_branch(access_token: str, project_path: str, *,
+                       base_url: Optional[str] = None) -> Optional[str]:
+    return get_project(access_token, project_path,
+                       base_url=base_url).get("default_branch")
 
 
 def get_latest_commit_sha(access_token: str, project_path: str,
-                          ref: str) -> Optional[str]:
+                          ref: str, *,
+                          base_url: Optional[str] = None) -> Optional[str]:
     commits = _get(
         access_token,
         f"/projects/{_enc(project_path)}/repository/commits",
-        {"ref_name": ref, "per_page": 1})
+        {"ref_name": ref, "per_page": 1},
+        base=_resolve_base(base_url))
     return commits[0]["id"] if commits else None
 
 
-def get_tree(access_token: str, project_path: str, ref: str) -> List[str]:
+def get_tree(access_token: str, project_path: str, ref: str, *,
+             base_url: Optional[str] = None) -> List[str]:
     """Recursive tree -> list of blob (file) paths."""
     entries = _get_paginated(
         access_token,
         f"/projects/{_enc(project_path)}/repository/tree",
-        {"ref": ref, "recursive": "true"})
+        {"ref": ref, "recursive": "true"},
+        base=_resolve_base(base_url))
     return [e["path"] for e in entries if e.get("type") == "blob"]
 
 
 def get_file_content(access_token: str, project_path: str, file_path: str,
-                     ref: str) -> bytes:
+                     ref: str, *, base_url: Optional[str] = None) -> bytes:
     """Raw file bytes at ``ref``."""
     url = _api(
         f"/projects/{_enc(project_path)}/repository/files/"
-        f"{_enc(file_path)}/raw") + "?" + urllib.parse.urlencode({"ref": ref})
+        f"{_enc(file_path)}/raw",
+        _resolve_base(base_url)) + "?" + urllib.parse.urlencode({"ref": ref})
     body, _ = _request(access_token, url, raw=True)
     return body
 
@@ -143,10 +174,11 @@ def get_file_content(access_token: str, project_path: str, file_path: str,
 # =============================================================================
 
 
-def _send(access_token: str, path: str, payload: Dict, method: str) -> Dict:
+def _send(access_token: str, path: str, payload: Dict, method: str,
+          *, base: str) -> Dict:
     """JSON-body POST/PUT returning parsed JSON."""
     req = urllib.request.Request(
-        _api(path),
+        _api(path, base),
         data=json.dumps(payload).encode("utf-8"),
         headers={
             "Authorization": f"Bearer {access_token}",
@@ -159,18 +191,21 @@ def _send(access_token: str, path: str, payload: Dict, method: str) -> Dict:
 
 
 def get_merge_request(access_token: str, project_path: str,
-                      mr_iid: int) -> Dict:
+                      mr_iid: int, *,
+                      base_url: Optional[str] = None) -> Dict:
     """One MR by project-scoped iid (the number shown in the GitLab UI).
 
     Callers rely on: ``diff_refs.base_sha`` / ``diff_refs.head_sha``,
     ``target_branch``, ``author.username``, ``title``.
     """
     return _get(
-        access_token, f"/projects/{_enc(project_path)}/merge_requests/{mr_iid}")
+        access_token, f"/projects/{_enc(project_path)}/merge_requests/{mr_iid}",
+        base=_resolve_base(base_url))
 
 
 def get_merge_request_diffs(access_token: str, project_path: str,
-                            mr_iid: int) -> List[Dict]:
+                            mr_iid: int, *,
+                            base_url: Optional[str] = None) -> List[Dict]:
     """The MR's changed files (paginated).
 
     Each entry carries ``new_path`` / ``old_path`` plus EXPLICIT booleans
@@ -181,33 +216,38 @@ def get_merge_request_diffs(access_token: str, project_path: str,
     """
     return _get_paginated(
         access_token,
-        f"/projects/{_enc(project_path)}/merge_requests/{mr_iid}/diffs")
+        f"/projects/{_enc(project_path)}/merge_requests/{mr_iid}/diffs",
+        base=_resolve_base(base_url))
 
 
 def get_merge_request_commits(access_token: str, project_path: str,
-                              mr_iid: int) -> List[Dict]:
+                              mr_iid: int, *,
+                              base_url: Optional[str] = None) -> List[Dict]:
     """The MR's commits. ``message`` is the FULL commit message (GitLab does
     not truncate like ADO's pull-request-commits ``comment`` field)."""
     return _get_paginated(
         access_token,
-        f"/projects/{_enc(project_path)}/merge_requests/{mr_iid}/commits")
+        f"/projects/{_enc(project_path)}/merge_requests/{mr_iid}/commits",
+        base=_resolve_base(base_url))
 
 
 def post_merge_request_note(access_token: str, project_path: str,
-                            mr_iid: int, body: str) -> Dict:
+                            mr_iid: int, body: str, *,
+                            base_url: Optional[str] = None) -> Dict:
     """Create an MR note (comment). Returns the note object; callers store
     ``id`` to target update_merge_request_note on later runs."""
     return _send(
         access_token,
         f"/projects/{_enc(project_path)}/merge_requests/{mr_iid}/notes",
-        {"body": body}, "POST")
+        {"body": body}, "POST", base=_resolve_base(base_url))
 
 
 def update_merge_request_note(access_token: str, project_path: str,
-                              mr_iid: int, note_id: int, body: str) -> Dict:
+                              mr_iid: int, note_id: int, body: str, *,
+                              base_url: Optional[str] = None) -> Dict:
     """Update an existing MR note in place (the upsert-comment UX)."""
     return _send(
         access_token,
         f"/projects/{_enc(project_path)}/merge_requests/{mr_iid}"
         f"/notes/{note_id}",
-        {"body": body}, "PUT")
+        {"body": body}, "PUT", base=_resolve_base(base_url))
