@@ -467,11 +467,11 @@ def _try_patch_ado_comment(
         return None
 
 
-def _gitlab_note_url(repository: str, pr_number: int, note_id) -> str:
-    """Human-followable URL for an MR note."""
-    from shared import gitlab_api
+def _gitlab_note_url(repository: str, pr_number: int, note_id,
+                     base_url: str) -> str:
+    """Human-followable URL for an MR note on the connection's instance."""
     return (
-        f"{gitlab_api.base_url()}/{repository}/-/merge_requests/"
+        f"{base_url}/{repository}/-/merge_requests/"
         f"{pr_number}#note_{note_id}"
     )
 
@@ -491,12 +491,14 @@ def _post_gitlab_note(
     """
     if not connection_id:
         raise ValueError("connection_id required for GitLab PR-check")
-    from check_handlers.gitlab_context import get_gitlab_token
+    from check_handlers.gitlab_context import (
+        get_gitlab_token, get_gitlab_base_url)
     from shared import gitlab_api
 
     access_token = get_gitlab_token(connection_id)
     response = gitlab_api.post_merge_request_note(
         access_token, repository, pr_number, body,
+        base_url=get_gitlab_base_url(connection_id),
     )
     logger.info(
         "Posted GitLab MR note on %s !%s", repository, pr_number,
@@ -519,14 +521,17 @@ def _try_patch_gitlab_comment(
     if note_id is None:
         return None
     try:
-        from check_handlers.gitlab_context import get_gitlab_token
+        from check_handlers.gitlab_context import (
+            get_gitlab_token, get_gitlab_base_url)
         from shared import gitlab_api
 
+        base = get_gitlab_base_url(connection_id)
         access_token = get_gitlab_token(connection_id)
         gitlab_api.update_merge_request_note(
             access_token, repository, pr_number, int(note_id), comment_body,
+            base_url=base,
         )
-        return _gitlab_note_url(repository, pr_number, note_id)
+        return _gitlab_note_url(repository, pr_number, note_id, base)
     except Exception as e:
         logger.warning(
             f"[upsert] GitLab note update failed for note {note_id} on "
@@ -843,10 +848,13 @@ def process_check_job(job: CheckJob) -> CheckResult:
         )
         note_id = comment_response.get("id")
         result.provider_comment_id = note_id
-        comment_url = (
-            _gitlab_note_url(job.repository, job.pr_number, note_id)
-            if note_id else ""
-        )
+        if note_id:
+            from check_handlers.gitlab_context import get_gitlab_base_url
+            comment_url = _gitlab_note_url(
+                job.repository, job.pr_number, note_id,
+                get_gitlab_base_url(job.connection_id))
+        else:
+            comment_url = ""
     elif job.provider == "azure_devops":
         # POST new ADO thread. Extract thread ID + first comment ID so
         # the next run can PATCH.

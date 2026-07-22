@@ -2292,10 +2292,18 @@ async function proxyGitLabRequest(req, res, method, path) {
   }
 }
 
+// Instance list (drives the connect picker for multi-instance deploys)
+app.get("/api/gitlab/instances", (req, res) =>
+  proxyGitLabRequest(req, res, "GET", "/gitlab/instances"));
+
 // OAuth authorize + callback
 app.get("/api/gitlab/authorize", (req, res) => {
   const workspaceId = req.query.workspace_id;
-  proxyGitLabRequest(req, res, "GET", `/gitlab/authorize?workspace_id=${encodeURIComponent(workspaceId)}`);
+  const instance = req.query.instance;
+  const q = instance
+    ? `workspace_id=${encodeURIComponent(workspaceId)}&instance=${encodeURIComponent(instance)}`
+    : `workspace_id=${encodeURIComponent(workspaceId)}`;
+  proxyGitLabRequest(req, res, "GET", `/gitlab/authorize?${q}`);
 });
 
 app.get("/api/gitlab/callback", async (req, res) => {

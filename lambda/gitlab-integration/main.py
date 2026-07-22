@@ -57,6 +57,13 @@ def _parse_response(result: dict):
 # ---------------------------------------------------------------------------
 
 
+@app.get("/gitlab/instances")
+async def gitlab_instances(request: Request):
+    from handler import lambda_handler
+    event = _build_event(request, "GET", "/gitlab/instances")
+    return _parse_response(lambda_handler(event, None))
+
+
 @app.get("/gitlab/authorize")
 async def gitlab_authorize(request: Request):
     from handler import lambda_handler

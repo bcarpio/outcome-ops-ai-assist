@@ -97,12 +97,26 @@ def _resolve_instance(instance):
     ``None`` resolves to the sole configured instance (raising on a
     multi-instance deploy, so a caller that forgot to pass the connection's
     instance fails loudly rather than authorizing against the wrong
-    GitLab). Chunk 03 passes the instance derived from the connection row.
+    GitLab).
     """
     if instance is not None:
         return instance
     from shared.gitlab_instances import get_instance
     return get_instance(None)
+
+
+def instance_for_connection(workspaces_table: str, connection_id: str):
+    """Resolve the GitLabInstance a connection targets, from the instance id
+    stamped on its CREDENTIALS row. Consumers that hold only a connection_id
+    (CI-triggered MR checks, read_source) use this instead of a workspace
+    lookup. Falls back to the sole instance for pre-multi-instance rows."""
+    from shared.gitlab_instances import get_instance
+    try:
+        row = _get_ddb().Table(workspaces_table).get_item(
+            Key=_cred_key(connection_id)).get("Item") or {}
+    except ClientError:
+        row = {}
+    return get_instance(row.get("gl_instance_id"))
 
 
 def _get_ssm():
@@ -179,6 +193,17 @@ def exchange_code_for_tokens(
         refresh_token=body["refresh_token"],
         expires_in=int(body.get("expires_in", 7200)),
     )
+    # Stamp the instance id on the CREDENTIALS row so consumers holding only
+    # a connection_id (MR checks, read_source) can resolve which GitLab this
+    # connection targets without a workspace lookup.
+    try:
+        _get_ddb().Table(workspaces_table).update_item(
+            Key=_cred_key(connection_id),
+            UpdateExpression="SET gl_instance_id = :iid",
+            ExpressionAttributeValues={":iid": inst.id},
+        )
+    except ClientError:
+        logger.warning("Failed to stamp instance id on GitLab CREDENTIALS row")
     return body["access_token"]
 
 
@@ -312,6 +337,15 @@ def get_valid_access_token(
     Returns None when the connection has no refresh token (caller must
     prompt reconnect)."""
     table = _get_ddb().Table(workspaces_table)
+
+    # Resolve which instance to refresh against. An explicit instance wins;
+    # otherwise derive it from the connection's stamped id so a caller with
+    # only a connection_id still refreshes against the right GitLab on a
+    # multi-instance deploy.
+    if instance is None:
+        from shared.gitlab_instances import is_multi_instance
+        if is_multi_instance():
+            instance = instance_for_connection(workspaces_table, connection_id)
 
     if not force_refresh:
         cached = _cached_access_if_valid(

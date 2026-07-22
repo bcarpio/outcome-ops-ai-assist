@@ -117,6 +117,7 @@ def _fetch_arch_dup_file_diff(
     ado_repo: Optional[str] = None,
     ado_access_token: Optional[str] = None,
     gitlab_access_token: Optional[str] = None,
+    gitlab_base_url: Optional[str] = None,
     base_sha: Optional[str] = None,
     head_sha: Optional[str] = None,
 ) -> str:
@@ -140,6 +141,7 @@ def _fetch_arch_dup_file_diff(
             fetch_kwargs = dict(
                 gitlab_project_path=repository,
                 gitlab_access_token=gitlab_access_token,
+                gitlab_base_url=gitlab_base_url,
             )
 
         base_bytes: Optional[bytes]
@@ -586,6 +588,7 @@ def check_architectural_duplication(
         github_token: Optional[str] = None
         ado_access_token: Optional[str] = None
         gitlab_access_token: Optional[str] = None
+        gitlab_base_url: Optional[str] = None
         base_sha: Optional[str] = None
         head_sha: Optional[str] = None
 
@@ -605,14 +608,16 @@ def check_architectural_duplication(
             head_sha = pr.head_sha
         elif provider == "gitlab":
             from shared.pr_metadata import fetch_pr_metadata
-            from .gitlab_context import get_gitlab_token
+            from .gitlab_context import get_gitlab_token, get_gitlab_base_url
 
             # ``repository`` IS the full project path (variable-depth slug).
             gitlab_access_token = get_gitlab_token(connection_id)
+            gitlab_base_url = get_gitlab_base_url(connection_id)
             pr = fetch_pr_metadata(
                 "gitlab", pr_number,
                 gitlab_project_path=repository,
                 gitlab_access_token=gitlab_access_token,
+                gitlab_base_url=gitlab_base_url,
             )
             base_sha = pr.base_sha
             head_sha = pr.head_sha
@@ -634,6 +639,7 @@ def check_architectural_duplication(
                     ado_repo=ado_repo,
                     ado_access_token=ado_access_token,
                     gitlab_access_token=gitlab_access_token,
+                    gitlab_base_url=gitlab_base_url,
                     base_sha=base_sha,
                     head_sha=head_sha,
                 )

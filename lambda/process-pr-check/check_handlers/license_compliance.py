@@ -406,6 +406,7 @@ def _fetch_license_file_diff(
     ado_repo: Optional[str] = None,
     ado_access_token: Optional[str] = None,
     gitlab_access_token: Optional[str] = None,
+    gitlab_base_url: Optional[str] = None,
     base_sha: Optional[str] = None,
     head_sha: Optional[str] = None,
 ) -> str:
@@ -431,6 +432,7 @@ def _fetch_license_file_diff(
             fetch_kwargs = dict(
                 gitlab_project_path=repository,
                 gitlab_access_token=gitlab_access_token,
+                gitlab_base_url=gitlab_base_url,
             )
 
         base_bytes: Optional[bytes]
@@ -464,6 +466,7 @@ def get_ai_generated_files(
     ado_repo: Optional[str] = None,
     ado_access_token: Optional[str] = None,
     gitlab_access_token: Optional[str] = None,
+    gitlab_base_url: Optional[str] = None,
 ) -> List[str]:
     """
     Filter changed files to only those from AI-generated commits.
@@ -487,6 +490,7 @@ def get_ai_generated_files(
                 commits_kwargs = dict(
                     gitlab_project_path=repository,
                     gitlab_access_token=gitlab_access_token,
+                    gitlab_base_url=gitlab_base_url,
                 )
             shared_commits = _fetch_commits_shared(
                 provider, pr_number, **commits_kwargs,
@@ -863,6 +867,7 @@ def check_license_compliance(
     github_token: Optional[str] = None
     ado_access_token: Optional[str] = None
     gitlab_access_token: Optional[str] = None
+    gitlab_base_url: Optional[str] = None
     base_sha: Optional[str] = None
     head_sha: Optional[str] = None
 
@@ -881,14 +886,16 @@ def check_license_compliance(
         head_sha = pr.head_sha
     else:  # gitlab
         from shared.pr_metadata import fetch_pr_metadata
-        from .gitlab_context import get_gitlab_token
+        from .gitlab_context import get_gitlab_token, get_gitlab_base_url
 
         # ``repository`` IS the full project path (variable-depth slug).
         gitlab_access_token = get_gitlab_token(connection_id)
+        gitlab_base_url = get_gitlab_base_url(connection_id)
         pr = fetch_pr_metadata(
             "gitlab", pr_number,
             gitlab_project_path=repository,
             gitlab_access_token=gitlab_access_token,
+            gitlab_base_url=gitlab_base_url,
         )
         base_sha = pr.base_sha
         head_sha = pr.head_sha
@@ -947,6 +954,7 @@ def check_license_compliance(
             ado_org=ado_org, ado_project=ado_project, ado_repo=ado_repo,
             ado_access_token=ado_access_token,
             gitlab_access_token=gitlab_access_token,
+            gitlab_base_url=gitlab_base_url,
         )
     logger.info(f"Scanning {len(source_files)} source files ({len(ai_generated_files)} AI-generated)")
 
@@ -969,6 +977,7 @@ def check_license_compliance(
                 ado_repo=ado_repo,
                 ado_access_token=ado_access_token,
                 gitlab_access_token=gitlab_access_token,
+                gitlab_base_url=gitlab_base_url,
                 base_sha=base_sha,
                 head_sha=head_sha,
             )

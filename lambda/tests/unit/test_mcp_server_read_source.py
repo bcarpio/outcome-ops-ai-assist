@@ -1649,19 +1649,29 @@ class TestReadSourceGitLabAccessToken:
 
         # ADR-050 v1.1: read_source now routes through the cached,
         # single-flight get_valid_access_token (not raw refresh).
+        # v2.0: resolves the connection's instance + returns its base_url.
+        from shared.gitlab_instances import GitLabInstance
+        _inst = GitLabInstance("default", "GitLab.com", "https://gitlab.com", "", "")
         with patch.object(gitlab_oauth, "get_valid_access_token",
-                          side_effect=_fake_get_valid):
-            token = mcp_module._read_source_gitlab_access_token(
+                          side_effect=_fake_get_valid), \
+             patch.object(gitlab_oauth, "instance_for_connection",
+                          return_value=_inst):
+            token, base_url = mcp_module._read_source_gitlab_access_token(
                 GITLAB_CONNECTION_ID,
             )
         assert token == "gitlab-access-token-value"
+        assert base_url == "https://gitlab.com"
         assert captured["connection_id"] == GITLAB_CONNECTION_ID
         assert captured["workspaces_table"] == WORKSPACES_TABLE
 
     def test_refresh_failure_raises_runtime(self, monkeypatch):
         import shared.oauth.gitlab as gitlab_oauth  # noqa: WPS433
+        from shared.gitlab_instances import GitLabInstance
+        _inst = GitLabInstance("default", "GitLab.com", "https://gitlab.com", "", "")
         with patch.object(gitlab_oauth, "get_valid_access_token",
-                          return_value=None):
+                          return_value=None), \
+             patch.object(gitlab_oauth, "instance_for_connection",
+                          return_value=_inst):
             with pytest.raises(RuntimeError, match="reauth"):
                 mcp_module._read_source_gitlab_access_token(GITLAB_CONNECTION_ID)
 
@@ -1694,7 +1704,8 @@ class TestReadSourceFetchFileGitLab:
             mcp_module._read_source_fetch_file_gitlab(
                 GITLAB_SLUG_NESTED, "src/main.py", "gl-token", ref=None,
             )
-        mock_branch.assert_called_once_with("gl-token", GITLAB_SLUG_NESTED)
+        mock_branch.assert_called_once_with(
+            "gl-token", GITLAB_SLUG_NESTED, base_url=None)
         # default-branch tip used as the ref.
         assert mock_get.call_args.args[3] == "main"
 
@@ -1721,7 +1732,7 @@ class TestReadSourceRouterGitLab:
             patch.object(gitlab_api, "get_file_content",
                          return_value=file_text.encode()),
             patch.object(mcp_module, "_read_source_gitlab_access_token",
-                         return_value="gl-token"),
+                         return_value=("gl-token", "https://gitlab.com")),
         ]
 
     def test_nested_slug_workspace_dispatches_to_gitlab(self, workspaces_table):
@@ -1817,7 +1828,7 @@ class TestReadSourceRouterGitLab:
         import shared.gitlab_api as gitlab_api  # noqa: WPS433
         captured = {}
 
-        def _fake_get_file_content(token, slug, path, ref):
+        def _fake_get_file_content(token, slug, path, ref, base_url=None):
             captured["slug"] = slug
             captured["ref"] = ref
             return b"1\n2\n3\n4\n5\n6\n7\n"
@@ -1826,7 +1837,7 @@ class TestReadSourceRouterGitLab:
             patch.object(gitlab_api, "get_file_content",
                          side_effect=_fake_get_file_content),
             patch.object(mcp_module, "_read_source_gitlab_access_token",
-                         return_value="gl-token"),
+                         return_value=("gl-token", "https://gitlab.com")),
         ]
         _enter(patches)
         try:

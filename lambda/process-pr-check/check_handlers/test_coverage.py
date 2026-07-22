@@ -530,11 +530,13 @@ def check_test_coverage(
                     ado_repo=ado_repo, ado_access_token=access_token,
                 )
             else:  # gitlab
-                from .gitlab_context import get_gitlab_token
+                from .gitlab_context import get_gitlab_token, get_gitlab_base_url
                 access_token = get_gitlab_token(connection_id)
+                gitlab_base = get_gitlab_base_url(connection_id)
                 fetch_kwargs = dict(
                     gitlab_project_path=repository,
                     gitlab_access_token=access_token,
+                    gitlab_base_url=gitlab_base,
                 )
             repo_meta = fetch_repo_metadata(provider, **fetch_kwargs)
             repo_default_branch = repo_meta.default_branch

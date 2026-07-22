@@ -53,3 +53,12 @@ def get_gitlab_token(connection_id: str, *, force_refresh: bool = False) -> str:
             "Failed to obtain GitLab access token; reconnect_required"
         )
     return access_token
+
+
+def get_gitlab_base_url(connection_id: str) -> str:
+    """The base URL of the GitLab instance this connection targets, resolved
+    from the instance id stamped on the connection's CREDENTIALS row. Used to
+    build MR-note API calls + human-followable note URLs for the right host."""
+    workspaces_table = os.environ.get("WORKSPACES_TABLE", "")
+    from shared.oauth.gitlab import instance_for_connection
+    return instance_for_connection(workspaces_table, connection_id).base_url

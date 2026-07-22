@@ -82,6 +82,7 @@ from shared.gitlab_api import (  # noqa: E402
     get_tree,
 )
 from shared.oauth.gitlab import get_valid_access_token  # noqa: E402
+from shared import gitlab_instances  # noqa: E402
 
 
 logger = logging.getLogger()
@@ -448,6 +449,10 @@ def process_sync_message(message: Dict[str, Any]) -> Dict[str, Any]:
         return {"slug": slug, "status": "skip-disabled", "sync_id": sync_id}
 
     repo_type = repo_row.get("repo_type", "application")
+    # Which GitLab instance this repo belongs to (chunk 03 stores it on the
+    # row; absent on pre-multi-instance rows -> the sole "default" instance).
+    instance = gitlab_instances.get_instance(repo_row.get("instance_id"))
+    _base = instance.base_url
 
     # Dedup concurrent messages for the same repo (belt-and-suspenders on top
     # of the single-flight token cache): only one worker syncs a repo at a
@@ -463,11 +468,12 @@ def process_sync_message(message: Dict[str, Any]) -> Dict[str, Any]:
     _update_sync_status(workspace_id, slug, status="in_progress")
 
     def _do_sync(access_token: str) -> Dict[str, Any]:
-        default_branch = get_default_branch(access_token, slug)
+        default_branch = get_default_branch(access_token, slug, base_url=_base)
         if not default_branch:
             raise RuntimeError("default_branch_missing")
 
-        latest_sha = get_latest_commit_sha(access_token, slug, default_branch)
+        latest_sha = get_latest_commit_sha(
+            access_token, slug, default_branch, base_url=_base)
         if not latest_sha:
             raise RuntimeError("no_commits_on_default_branch")
 
@@ -490,14 +496,15 @@ def process_sync_message(message: Dict[str, Any]) -> Dict[str, Any]:
             }
 
         # Changed (or manual): walk tree, upload each indexable file.
-        tree_paths = get_tree(access_token, slug, default_branch)
+        tree_paths = get_tree(access_token, slug, default_branch, base_url=_base)
         indexable = [p for p in tree_paths if _is_indexable(p)]
 
         uploaded = 0
         upload_errors = 0
         for path in indexable:
             try:
-                content = get_file_content(access_token, slug, path, default_branch)
+                content = get_file_content(
+                    access_token, slug, path, default_branch, base_url=_base)
             except urllib.error.HTTPError as e:
                 # 401/403 mid-walk: token may have expired -- bail and let
                 # SQS retry the whole message.
@@ -575,6 +582,7 @@ def process_sync_message(message: Dict[str, Any]) -> Dict[str, Any]:
             workspaces_table=WORKSPACES_TABLE,
             kms_key_arn=OAUTH_KMS_KEY_ARN,
             connection_id=connection_id,
+            instance=instance,
         )
         if not access_token:
             raise RuntimeError("reconnect_required")
@@ -595,6 +603,7 @@ def process_sync_message(message: Dict[str, Any]) -> Dict[str, Any]:
                     kms_key_arn=OAUTH_KMS_KEY_ARN,
                     connection_id=connection_id,
                     force_refresh=True,
+                    instance=instance,
                 )
                 if not access_token:
                     raise RuntimeError("reconnect_required")

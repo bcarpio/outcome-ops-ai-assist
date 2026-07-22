@@ -2280,17 +2280,22 @@ def _read_source_gitlab_access_token(connection_id):
         raise ValueError("connection_id required for GitLab token refresh")
 
     from shared.oauth import gitlab as gitlab_oauth  # noqa: WPS433
+    # Resolve the instance this connection targets (multi-instance, ADR-050
+    # v2.0) so read_source hits the right GitLab host + refreshes against
+    # the right OAuth app.
+    instance = gitlab_oauth.instance_for_connection(DYNAMODB_TABLE, connection_id)
     access_token = gitlab_oauth.get_valid_access_token(
         workspaces_table=DYNAMODB_TABLE,
         kms_key_arn=os.environ.get("OAUTH_KMS_KEY_ARN"),
         connection_id=connection_id,
+        instance=instance,
     )
     if not access_token:
         raise RuntimeError(
             "Failed to refresh GitLab access token; the workspace's "
             "GitLab OAuth connection may need to be reauthorized"
         )
-    return access_token
+    return access_token, instance.base_url
 
 
 def _read_source_resolve_full_ado_triplet(workspace_id, bare_repo):
@@ -2789,7 +2794,7 @@ def _read_source_fetch_file_ado(org, project, repo, file_path, token, ref=None):
     return raw
 
 
-def _read_source_fetch_file_gitlab(slug, file_path, token, ref=None):
+def _read_source_fetch_file_gitlab(slug, file_path, token, ref=None, base_url=None):
     """Fetch the raw bytes of a file from GitLab.
 
     Delegates to the shared GitLab API v4 client
@@ -2811,13 +2816,13 @@ def _read_source_fetch_file_gitlab(slug, file_path, token, ref=None):
     after this returns.
     """
     from shared import gitlab_api  # noqa: WPS433 -- defer import
-    effective_ref = ref or gitlab_api.get_default_branch(token, slug)
+    effective_ref = ref or gitlab_api.get_default_branch(token, slug, base_url=base_url)
     if not effective_ref:
         raise ValueError(
             f"could not resolve a ref for GitLab project {slug!r} "
             "(no ref supplied and no default branch found)"
         )
-    raw = gitlab_api.get_file_content(token, slug, file_path, effective_ref)
+    raw = gitlab_api.get_file_content(token, slug, file_path, effective_ref, base_url=base_url)
     if len(raw) > _READ_SOURCE_MAX_FILE_BYTES:
         raise ValueError(
             f"file {file_path} exceeds {_READ_SOURCE_MAX_FILE_BYTES}-byte "
@@ -3023,13 +3028,14 @@ def handle_read_source(params, email):
             )
             raw = _read_source_fetch_file(repo, file_path, token, ref=ref)
         elif platform == "gitlab":
-            token = _read_source_gitlab_access_token(
+            token, gl_base = _read_source_gitlab_access_token(
                 platform_info["connection_id"],
             )
             # `repo` is the full GitLab slug (group/.../project) -- from
             # the caller in explicit mode, or the graph-resolved slug in
             # at_graph_sha mode.
-            raw = _read_source_fetch_file_gitlab(repo, file_path, token, ref=ref)
+            raw = _read_source_fetch_file_gitlab(
+                repo, file_path, token, ref=ref, base_url=gl_base)
         else:  # azure_devops
             org, project, repo_bare = repo.split("/")
             token = _read_source_ado_access_token(

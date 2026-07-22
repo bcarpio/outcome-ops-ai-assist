@@ -2435,12 +2435,14 @@ class TestGitLabCheckJob:
         assert job.connection_id == "conn-1"
         assert job.azure_devops_org is None
 
+    @patch('check_handlers.gitlab_context.get_gitlab_base_url',
+           return_value="https://gitlab.com")
     @patch('process_pr_check_handler.store_check_result')
     @patch('process_pr_check_handler._post_gitlab_note')
     @patch('process_pr_check_handler._get_existing_check_result_row', return_value=None)
     @patch('process_pr_check_handler.run_check')
     def test_gitlab_first_run_posts_note_and_stores_id(
-        self, mock_run, _mock_exist, mock_post_note, mock_store,
+        self, mock_run, _mock_exist, mock_post_note, mock_store, _mock_base,
     ):
         mock_run.return_value = {"status": "PASS", "message": "ok", "details": []}
         mock_post_note.return_value = {"id": 314}

@@ -542,7 +542,7 @@ class TestUpsertGitlabComment:
              patch("shared.gitlab_api.update_merge_request_note"):
             handler_module._upsert_gitlab_comment(
                 repository="group/subgroup/project",
-                pr_number=7, access_token="tok",
+                pr_number=7, access_token="tok", base_url="https://gitlab.com",
                 role=handler_module.COMMENT_ROLE_ANALYSIS_STARTED,
                 body="hi",
             )
@@ -560,7 +560,7 @@ class TestUpsertGitlabComment:
                    return_value={"id": 314}) as put_mock:
             handler_module._upsert_gitlab_comment(
                 repository="group/subgroup/project",
-                pr_number=7, access_token="tok",
+                pr_number=7, access_token="tok", base_url="https://gitlab.com",
                 role=handler_module.COMMENT_ROLE_ANALYSIS_STARTED,
                 body="new body",
             )
@@ -581,7 +581,7 @@ class TestUpsertGitlabComment:
                    side_effect=Exception("410 note gone")):
             handler_module._upsert_gitlab_comment(
                 repository="group/project",
-                pr_number=7, access_token="tok",
+                pr_number=7, access_token="tok", base_url="https://gitlab.com",
                 role=handler_module.COMMENT_ROLE_ANALYSIS_STARTED,
                 body="b",
             )

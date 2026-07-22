@@ -504,6 +504,50 @@ class TestAddRepos:
         assert any(s["reason"] == "already exists" for s in body["skipped"])
         assert not mock_dual.ddb_put_item.called
 
+    @patch.object(handler.gitlab_api, "get_default_branch")
+    @patch.object(handler, "_connection_access_token")
+    @patch.object(handler, "dual_write")
+    def test_refuses_same_bare_name_from_a_different_instance(
+        self, mock_dual, mock_token, mock_branch, mock_table, monkeypatch,
+    ):
+        """ADR-050 v2.0 collision guard: a project whose bare name is already
+        enrolled from a DIFFERENT GitLab instance is refused, because the
+        vector / symbol-graph keys have no instance discriminator and would
+        silently collide. Two instances configured; the connection targets
+        'saas', an existing repo with the same bare name belongs to
+        'internal'."""
+        monkeypatch.setenv("GITLAB_INSTANCES", json.dumps([
+            {"id": "saas", "base_url": "https://gitlab.com",
+             "client_id": "s", "client_secret_ssm_param": "/p/s"},
+            {"id": "internal", "base_url": "https://gitlab.example.com",
+             "client_id": "i", "client_secret_ssm_param": "/p/i"},
+        ]))
+        mock_token.return_value = "at"
+        mock_branch.return_value = "main"
+
+        def gi(Key, **_):
+            if Key["SK"].startswith("WS_MEMBER#"):
+                return {"Item": {"role": "workspace_admin"}}
+            if Key["SK"].startswith("GITLAB_CONNECTION#"):
+                return {"Item": {"connection_id": "c1", "instance_id": "saas"}}
+            return {}
+        mock_table.get_item.side_effect = gi
+        # Existing enrolled repo: SAME bare name ('api'), DIFFERENT instance.
+        mock_table.query.return_value = {"Items": [
+            {"SK": "GITLAB_REPO#othergroup/api", "instance_id": "internal"},
+        ]}
+
+        event = _make_event(
+            "POST", "/workspaces/w1/gitlab/repos",
+            body={"connection_id": "c1", "repos": [{"slug": "acme/sub/api"}]},
+        )
+        result = handler.lambda_handler(event, None)
+        body = json.loads(result["body"])
+        assert body["added"] == 0
+        assert any("different GitLab instance" in s["reason"]
+                   for s in body["skipped"])
+        assert not mock_dual.ddb_put_item.called
+
     @patch.object(handler.gitlab_api, "get_latest_commit_sha")
     @patch.object(handler.gitlab_api, "get_default_branch")
     @patch.object(handler, "_connection_access_token")

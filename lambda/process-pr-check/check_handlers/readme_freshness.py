@@ -285,20 +285,23 @@ def _fetch_readme_diff(
         from shared.pr_metadata import fetch_pr_metadata
         from shared.source_fetch import fetch_file_at_sha, SourceFetchError
         from shared.pr_diff import compute_file_diff
-        from .gitlab_context import get_gitlab_token
+        from .gitlab_context import get_gitlab_token, get_gitlab_base_url
 
         # ``repository`` IS the full project path (variable-depth slug).
         access_token = get_gitlab_token(connection_id)
+        gitlab_base = get_gitlab_base_url(connection_id)
         pr = fetch_pr_metadata(
             "gitlab", pr_number,
             gitlab_project_path=repository,
             gitlab_access_token=access_token,
+            gitlab_base_url=gitlab_base,
         )
         try:
             base_bytes = fetch_file_at_sha(
                 "gitlab", "README.md", pr.base_sha,
                 gitlab_project_path=repository,
                 gitlab_access_token=access_token,
+                gitlab_base_url=gitlab_base,
             )
         except SourceFetchError:
             base_bytes = None
@@ -307,6 +310,7 @@ def _fetch_readme_diff(
                 "gitlab", "README.md", pr.head_sha,
                 gitlab_project_path=repository,
                 gitlab_access_token=access_token,
+                gitlab_base_url=gitlab_base,
             )
         except SourceFetchError:
             head_bytes = None

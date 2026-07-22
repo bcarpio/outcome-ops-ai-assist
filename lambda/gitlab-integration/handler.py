@@ -58,7 +58,8 @@ _BOTO_CONFIG = Config(connect_timeout=10, read_timeout=60, retries={"max_attempt
 # Make shared/ importable; deploy package bundles lambda/shared/.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared import dual_write  # noqa: E402
-from shared import gitlab_api  # noqa: E402
+from shared import gitlab_api
+from shared import gitlab_instances  # noqa: E402
 from shared.audit_writer import (  # noqa: E402
     ACTION_OAUTH_CONNECTION_ESTABLISHED,
     log_admin_action,
@@ -315,13 +316,28 @@ def handle_authorize(event: Dict) -> Dict:
     if not _is_workspace_admin(table, user_email, workspace_id):
         return _error(403, "Only workspace admins can connect GitLab")
 
-    if not (gitlab_oauth.get_client_id() and GITLAB_REDIRECT_URI):
+    # Which GitLab instance are we connecting? The UI passes ?instance=<id>
+    # on a multi-instance deploy; single-instance deploys omit it and get
+    # the sole "default" instance. Unknown id -> loud 400 rather than
+    # authorizing against the wrong GitLab.
+    requested = (event.get("queryStringParameters") or {}).get("instance")
+    try:
+        instance = gitlab_instances.get_instance(requested)
+    except gitlab_instances.GitLabInstanceError as e:
+        return _error(400, f"Unknown GitLab instance: {e}")
+
+    if not (instance.client_id and GITLAB_REDIRECT_URI):
         return _error(500, "GitLab OAuth app not configured")
 
-    state = json.dumps({"workspace_id": workspace_id, "user_email": user_email})
+    state = json.dumps({
+        "workspace_id": workspace_id,
+        "user_email": user_email,
+        "instance_id": instance.id,
+    })
     auth_url = gitlab_oauth.build_authorize_url(
         redirect_uri=GITLAB_REDIRECT_URI,
         state=urllib.parse.quote(state),
+        instance=instance,
     )
     return _response(200, {"auth_url": auth_url})
 
@@ -355,7 +371,15 @@ def handle_callback(event: Dict) -> Dict:
         state_data = json.loads(state)
         workspace_id = state_data["workspace_id"]
         callback_user_email = state_data["user_email"]
+        # Absent on connections started before multi-instance -> "default".
+        instance_id = state_data.get("instance_id")
     except (json.JSONDecodeError, KeyError):
+        return _redirect(f"{base_redirect}?gitlab_error=invalid_state")
+
+    try:
+        instance = gitlab_instances.get_instance(instance_id)
+    except gitlab_instances.GitLabInstanceError:
+        logger.exception("GitLab callback for unknown instance %s", instance_id)
         return _redirect(f"{base_redirect}?gitlab_error=invalid_state")
 
     # The connection_id is minted BEFORE the exchange because the shared
@@ -370,6 +394,7 @@ def handle_callback(event: Dict) -> Dict:
             workspaces_table=WORKSPACES_TABLE,
             kms_key_arn=OAUTH_KMS_KEY_ARN,
             connection_id=connection_id,
+            instance=instance,
         )
     except Exception:
         logger.exception("GitLab token exchange failed")
@@ -378,7 +403,8 @@ def handle_callback(event: Dict) -> Dict:
         return _redirect(f"{base_redirect}?gitlab_error=token_exchange_failed")
 
     try:
-        gitlab_user_id, gitlab_username = gitlab_oauth.get_user_profile(access_token)
+        gitlab_user_id, gitlab_username = gitlab_oauth.get_user_profile(
+            access_token, base_url_arg=instance.base_url)
     except Exception:
         logger.exception("GitLab profile lookup failed")
         return _redirect(f"{base_redirect}?gitlab_error=profile_lookup_failed")
@@ -395,7 +421,9 @@ def handle_callback(event: Dict) -> Dict:
         "gitlab_user_id": gitlab_user_id,
         "gitlab_username": gitlab_username,
         "display_name": display_name,
-        "base_url": gitlab_oauth.base_url(),
+        "instance_id": instance.id,
+        "instance_label": instance.display_name,
+        "base_url": instance.base_url,
         "created_at": now,
         "updated_at": now,
     }
@@ -454,21 +482,50 @@ def _get_connection(workspace_id: str, connection_id: str) -> Optional[Dict]:
     return response.get("Item")
 
 
-def _connection_access_token(connection_id: str) -> Optional[str]:
+def _resolve_connection_instance(workspace_id: str, connection_id: str):
+    """The GitLabInstance a connection belongs to, from its stored
+    instance_id (absent on pre-multi-instance rows -> resolves to the sole
+    instance). Returns None if the connection row is missing."""
+    row = _get_connection(workspace_id, connection_id)
+    if not row:
+        return None
+    return gitlab_instances.get_instance(row.get("instance_id"))
+
+
+def _connection_access_token(connection_id: str,
+                             instance=None) -> Optional[str]:
     """Get a usable access token for the connection via the cached,
-    single-flight path (ADR-050 v1.1) -- reuses a cached token when valid
-    and only refreshes (rotating the stored refresh token) under a
-    per-connection lock, so concurrent callers never collide. The shared
-    module reads the client secret from SSM itself."""
+    single-flight path (ADR-050 v1.1). ``instance`` selects which GitLab's
+    OAuth app + secret the refresh uses; None resolves to the sole
+    instance (raising on a multi-instance deploy so a caller that forgot
+    to pass it fails loudly)."""
     try:
         return gitlab_oauth.get_valid_access_token(
             workspaces_table=WORKSPACES_TABLE,
             kms_key_arn=OAUTH_KMS_KEY_ARN,
             connection_id=connection_id,
+            instance=instance,
         )
     except Exception:
         logger.exception("Failed to obtain GitLab access token")
         return None
+
+
+def handle_list_instances(event: Dict) -> Dict:
+    """GET /gitlab/instances -- the GitLab instances this deploy can connect.
+    Drives the UI's instance picker; single-instance deploys return one entry
+    (the UI then shows a plain "Connect GitLab" button)."""
+    try:
+        instances = gitlab_instances.list_instances()
+    except gitlab_instances.GitLabInstanceError as e:
+        return _error(500, f"GitLab instance config error: {e}")
+    return _response(200, {
+        "instances": [
+            {"id": i.id, "display_name": i.display_name, "base_url": i.base_url}
+            for i in instances
+        ],
+        "multi_instance": gitlab_instances.is_multi_instance(),
+    })
 
 
 def handle_list_connections(event: Dict) -> Dict:
@@ -495,6 +552,8 @@ def handle_list_connections(event: Dict) -> Dict:
             "display_name": item.get("display_name"),
             "gitlab_username": item.get("gitlab_username"),
             "base_url": item.get("base_url"),
+            "instance_id": item.get("instance_id", gitlab_instances.DEFAULT_INSTANCE_ID),
+            "instance_label": item.get("instance_label"),
             "created_at": item.get("created_at"),
         })
     return _response(200, {"connections": connections})
@@ -513,15 +572,16 @@ def handle_list_groups(event: Dict) -> Dict:
     if not _can_access_workspace(table, user_email, workspace_id):
         return _error(403, "Not a member of this workspace")
 
-    if not _get_connection(workspace_id, connection_id):
+    instance = _resolve_connection_instance(workspace_id, connection_id)
+    if instance is None:
         return _error(404, "Connection not found")
 
-    access_token = _connection_access_token(connection_id)
+    access_token = _connection_access_token(connection_id, instance)
     if not access_token:
         return _error(401, "Failed to refresh access token. Please reconnect.")
 
     try:
-        groups = gitlab_api.list_groups(access_token)
+        groups = gitlab_api.list_groups(access_token, base_url=instance.base_url)
     except Exception as e:
         logger.exception("GitLab list_groups error")
         return _error(502, f"GitLab API error: {e}")
@@ -559,12 +619,17 @@ def handle_list_group_projects(event: Dict) -> Dict:
     if not _get_connection(workspace_id, connection_id):
         return _error(404, "Connection not found")
 
-    access_token = _connection_access_token(connection_id)
+    instance = _resolve_connection_instance(workspace_id, connection_id)
+    if instance is None:
+        return _error(404, "Connection not found")
+
+    access_token = _connection_access_token(connection_id, instance)
     if not access_token:
         return _error(401, "Failed to refresh access token. Please reconnect.")
 
     try:
-        projects = gitlab_api.list_group_projects(access_token, group_id)
+        projects = gitlab_api.list_group_projects(
+            access_token, group_id, base_url=instance.base_url)
     except Exception as e:
         logger.exception("GitLab list_group_projects error")
         return _error(502, f"GitLab API error: {e}")
@@ -659,9 +724,24 @@ def handle_add_repos(event: Dict) -> Dict:
     if not connection:
         return _error(404, "Connection not found")
 
-    access_token = _connection_access_token(connection_id)
+    instance = gitlab_instances.get_instance(connection.get("instance_id"))
+    access_token = _connection_access_token(connection_id, instance)
     if not access_token:
         return _error(401, "Failed to refresh access token. Please reconnect.")
+
+    # Same-bare-name guard (ADR-050 v2.0 decision): the vector /
+    # symbol-graph / code-map keys are {ws}#gitlab#{bare-name}#... with no
+    # instance discriminator, so enrolling group/project from gitlab.com AND
+    # from a self-managed instance into ONE workspace would silently collide
+    # in retrieval. Refuse at enroll time with a clear error rather than
+    # corrupt the KB. Precompute the bare names already enrolled from a
+    # DIFFERENT instance.
+    _bare_from_other_instance = {}
+    for existing in _list_workspace_repos(workspace_id):
+        ex_slug = existing.get("slug") or ""
+        ex_inst = existing.get("instance_id", gitlab_instances.DEFAULT_INSTANCE_ID)
+        if ex_slug and ex_inst != instance.id:
+            _bare_from_other_instance[ex_slug.rsplit("/", 1)[-1]] = ex_inst
 
     added: List[Dict] = []
     skipped: List[Dict] = []
@@ -694,12 +774,27 @@ def handle_add_repos(event: Dict) -> Dict:
             skipped.append({"slug": slug, "reason": "already exists"})
             continue
 
+        bare = slug.rsplit("/", 1)[-1]
+        if bare in _bare_from_other_instance:
+            skipped.append({
+                "slug": slug,
+                "reason": (
+                    f"a project named '{bare}' is already enrolled in this "
+                    f"workspace from a different GitLab instance "
+                    f"({_bare_from_other_instance[bare]}); enroll it in a "
+                    f"separate workspace to avoid a knowledge-base collision"
+                ),
+            })
+            continue
+
         try:
             default_branch = branch_override or gitlab_api.get_default_branch(
-                access_token, slug,
+                access_token, slug, base_url=instance.base_url,
             )
             latest_sha = (
-                gitlab_api.get_latest_commit_sha(access_token, slug, default_branch)
+                gitlab_api.get_latest_commit_sha(
+                    access_token, slug, default_branch,
+                    base_url=instance.base_url)
                 if default_branch else None
             )
         except Exception as e:
@@ -717,6 +812,8 @@ def handle_add_repos(event: Dict) -> Dict:
             "project": project,
             "slug": slug,
             "connection_id": connection_id,
+            "instance_id": instance.id,
+            "base_url": instance.base_url,
             "default_branch": default_branch,
             "last_commit_sha": latest_sha,
             "enabled": True,
@@ -974,6 +1071,11 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     parts = _parse_path(path)
 
     try:
+        # Deploy-level GitLab instance list (unauthenticated -- it is just
+        # public config: which GitLab hosts this deploy can connect).
+        if parts == ("gitlab", "instances") and http_method == "GET":
+            return handle_list_instances(event)
+
         # OAuth (unauthenticated)
         if parts == ("gitlab", "authorize") and http_method == "GET":
             return handle_authorize(event)

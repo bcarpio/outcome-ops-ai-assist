@@ -705,6 +705,7 @@ def _upsert_gitlab_comment(
     repository: str,
     pr_number: int,
     access_token: str,
+    base_url: str,
     role: str,
     body: str,
 ) -> None:
@@ -723,6 +724,7 @@ def _upsert_gitlab_comment(
         try:
             gitlab_api.update_merge_request_note(
                 access_token, repository, pr_number, int(existing_id), body,
+                base_url=base_url,
             )
             _store_comment_row(
                 pk=pk, sk=sk,
@@ -739,6 +741,7 @@ def _upsert_gitlab_comment(
     try:
         response = gitlab_api.post_merge_request_note(
             access_token, repository, pr_number, body,
+            base_url=base_url,
         )
     except Exception as e:
         logger.error(
@@ -1545,7 +1548,8 @@ def _handle_gitlab(
     Structural-impact block is NOT posted for GitLab in v1 (same as
     ADO -- it depends on GitHub-specific data plumbing).
     """
-    from shared.oauth.gitlab import get_valid_access_token
+    from shared.oauth.gitlab import (
+        get_valid_access_token, instance_for_connection)
     from shared.pr_metadata import fetch_pr_metadata
     from shared.source_fetch import fetch_file_at_sha, SourceFetchError
 
@@ -1559,8 +1563,14 @@ def _handle_gitlab(
             "GitLab OAuth not configured "
             "(WORKSPACES_TABLE / OAUTH_KMS_KEY_ARN env vars missing)"
         )
+    # Which GitLab instance this connection targets (multi-instance, ADR-050
+    # v2.0). base_url flows into every API + note call so a self-managed
+    # connection is analyzed against the right host.
+    gl_instance = instance_for_connection(workspaces_table, connection_id)
+    gl_base = gl_instance.base_url
     access_token = get_valid_access_token(
         workspaces_table, kms_key_arn, connection_id,
+        instance=gl_instance,
     )
     if not access_token:
         raise RuntimeError(
@@ -1572,6 +1582,7 @@ def _handle_gitlab(
         request.pr_number,
         gitlab_project_path=repository,
         gitlab_access_token=access_token,
+        gitlab_base_url=gl_base,
     )
     base_branch = pr_meta.base_branch
 
@@ -1583,6 +1594,7 @@ def _handle_gitlab(
             base_branch,
             gitlab_project_path=repository,
             gitlab_access_token=access_token,
+            gitlab_base_url=gl_base,
         )
         repo_config = yaml.safe_load(yaml_bytes.decode("utf-8", errors="replace"))
     except SourceFetchError:
@@ -1626,6 +1638,7 @@ def _handle_gitlab(
             repository=repository,
             pr_number=request.pr_number,
             access_token=access_token,
+            base_url=gl_base,
             role=COMMENT_ROLE_NO_CHECKS_NEEDED,
             body=comment_body,
         )
@@ -1639,6 +1652,7 @@ def _handle_gitlab(
         repository=repository,
         pr_number=request.pr_number,
         access_token=access_token,
+        base_url=gl_base,
         role=COMMENT_ROLE_ANALYSIS_STARTED,
         body=_build_analysis_started_comment(checks_to_run),
     )
