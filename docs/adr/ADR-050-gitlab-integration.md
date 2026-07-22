@@ -35,6 +35,30 @@
   GitLab gap. PR checks are CI-triggered against the primary region's
   function name; post-failover PR checks are accepted as unavailable until
   that posture changes deliberately (future work, all providers at once).
+- v2.0 (2026-07-22) — **Multiple GitLab instances per deploy** (Decision 8).
+  gitlab.com AND self-managed instances can be connected simultaneously —
+  acquisitions (acquirer on SaaS, acquired self-managed), months-long
+  migrations, and regulated splits all need both live. Config moved from the
+  deploy-wide `GITLAB_BASE_URL`/`GITLAB_CLIENT_ID`/secret env vars to a LIST:
+  the `gitlab_instances` tfvar serialises to one `GITLAB_INSTANCES` JSON env
+  var, resolved by `shared.gitlab_instances`. Each connection stores an
+  `instance_id` (on the `GITLAB_CONNECTION#` row AND stamped on the token
+  `CREDENTIALS` row so CI-triggered consumers resolve it from a connection_id
+  alone); every `gitlab_api`/OAuth call takes an explicit `base_url`/instance.
+  Back-compat is total: the legacy single-instance vars synthesise one
+  instance with id `default`, and pre-existing rows without `instance_id` read
+  as `default` — no migration, no reconnect, and the full test suite passes
+  unchanged. **Collision guard:** the vector/symbol-graph/code-map keys carry
+  no instance discriminator (`{ws}#gitlab#{bare-name}#…`), so enrolling the
+  same bare project name from two instances into ONE workspace would silently
+  collide in retrieval. Rather than re-shape keys (rejected: a week of
+  key-shape bugs had just been fixed), add-repos REFUSES such an enrollment
+  with a clear error directing the operator to a separate workspace. Missed
+  call sites fail LOUDLY: an un-threaded call resolves `None` → raises on a
+  multi-instance deploy rather than hitting the wrong host. UI: the GitLab
+  card renders one connect button per instance and labels each connection.
+  This is GitLab-only; GitHub/GHES can adopt the same pattern later (the base
+  URL plumbing from the GHES work is already in place).
 
 ## Context
 

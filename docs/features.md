@@ -88,8 +88,12 @@ webhook entry), `*-scheduler` (EventBridge cron driver), `*-sync`
   only projects they can already access. Nested subgroups (variable-
   depth slugs) supported everywhere via DDB `GITLAB_REPO#` lookup,
   never slash-count. Cached single-flight token refresh (GitLab
-  rotates refresh tokens per use). `enable_gitlab_integration` +
-  `gitlab_client_id` tfvars. ADR-050.
+  rotates refresh tokens per use). Multiple GitLab instances per deploy
+  (gitlab.com + self-managed together) via the `gitlab_instances` tfvar
+  list -- connections are instance-scoped; same-bare-name enrollment
+  across instances into one workspace is refused (key-collision guard).
+  `enable_gitlab_integration` + `gitlab_client_id` (or `gitlab_instances`)
+  tfvars. ADR-050 (v2.0 multi-instance).
 - **Salesforce** — Account / Contact / Opportunity records +
   embedded recent Task / Event activity + attached files (Notes and
   Attachments via ContentVersion). Shared Connected App OAuth per
