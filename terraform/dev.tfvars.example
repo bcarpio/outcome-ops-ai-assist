@@ -388,6 +388,34 @@ github_usernames_to_tag = "yourusername"
 # empty; must match the OAuth application registration exactly.
 # gitlab_redirect_uri = ""
 
+# ---------------------------------------------------------------------------
+# Multiple GitLab instances (ADR-050 v2.0)
+# ---------------------------------------------------------------------------
+# Connect gitlab.com AND self-managed instances at the same time -- an
+# acquirer on SaaS absorbing a self-managed company, a migration where both
+# are live, or a regulated split. Leave EMPTY to keep the single-instance
+# behaviour above (gitlab_base_url / gitlab_client_id / secret param), which
+# needs no migration and no reconnect.
+#
+# Each instance needs its OWN OAuth application registered on that instance
+# and its OWN secret parameter -- never point two instances at one secret.
+# gitlab_instances = [
+#   {
+#     id                      = "saas"
+#     display_name            = "GitLab.com"
+#     base_url                = "https://gitlab.com"
+#     client_id               = "<gitlab.com app id>"
+#     client_secret_ssm_param = "/prd/outcome-ops-ai-assist/gitlab/client-secret"
+#   },
+#   {
+#     id                      = "internal"
+#     display_name            = "GitLab (internal)"
+#     base_url                = "https://gitlab.example.com"
+#     client_id               = "<self-managed app id>"
+#     client_secret_ssm_param = "/prd/outcome-ops-ai-assist/gitlab/client-secret-internal"
+#   },
+# ]
+
 # ============================================================================
 # ECS capacity: Fargate Spot master switch
 # ============================================================================

@@ -1462,6 +1462,7 @@ module "gitlab_integration_lambda_secondary" {
       GITLAB_BASE_URL                = var.gitlab_base_url
       GITLAB_CLIENT_ID               = var.gitlab_client_id
       GITLAB_CLIENT_SECRET_SSM_PARAM = local.gitlab_secret_ssm_path
+      GITLAB_INSTANCES               = local.gitlab_instances_env
       GITLAB_REDIRECT_URI            = local.gitlab_redirect_uri
 
       GITLAB_SYNC_QUEUE      = aws_sqs_queue.gitlab_sync_secondary[0].url

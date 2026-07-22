@@ -42,6 +42,32 @@ locals {
   )
   # terraform owns the secret only when the operator did NOT override the path.
   gitlab_manage_secret = var.enable_workspaces && var.enable_gitlab_integration && var.gitlab_client_secret_ssm_param == ""
+
+  # Multi-instance (ADR-050 v2.0). Serialized to ONE env var so every
+  # consumer reads the same shape; empty string when the deploy uses the
+  # legacy single-instance vars, which shared.gitlab_instances then
+  # synthesizes into a lone "default" entry.
+  gitlab_instances_env = length(var.gitlab_instances) == 0 ? "" : jsonencode([
+    for i in var.gitlab_instances : {
+      id                      = i.id
+      display_name            = i.display_name
+      base_url                = i.base_url
+      client_id               = i.client_id
+      client_secret_ssm_param = i.client_secret_ssm_param
+    }
+  ])
+
+  # Every secret path any instance might read -- the legacy one plus each
+  # configured instance's. Used to scope ssm:GetParameter without a wildcard
+  # over the whole app namespace.
+  gitlab_secret_ssm_arns = distinct([
+    for path in concat(
+      [local.gitlab_secret_ssm_path],
+      [for i in var.gitlab_instances : i.client_secret_ssm_param],
+    ) :
+    "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${path}"
+    if path != ""
+  ])
 }
 
 # Placeholder secret -- overwrite the value post-apply; ignore_changes keeps your
@@ -117,6 +143,7 @@ module "gitlab_integration_lambda" {
       GITLAB_CLIENT_ID               = var.gitlab_client_id
       GITLAB_CLIENT_SECRET_SSM_PARAM = local.gitlab_secret_ssm_path
       GITLAB_REDIRECT_URI            = local.gitlab_redirect_uri
+      GITLAB_INSTANCES               = local.gitlab_instances_env
 
       # chunk-03: the handler enqueues the initial sync job on add-repos
       # and full repo-delete cleanup on delete-repo / disconnect (ADR-052,
@@ -159,9 +186,7 @@ module "gitlab_integration_lambda" {
         actions = [
           "ssm:GetParameter",
         ]
-        resources = [
-          "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${local.gitlab_secret_ssm_path}",
-        ]
+        resources = local.gitlab_secret_ssm_arns
       }
 
       # chunk-03: enqueue the initial sync job (gitlab sync queue) + full
@@ -482,6 +507,7 @@ module "gitlab_sync_lambda" {
       GITLAB_BASE_URL                = var.gitlab_base_url
       GITLAB_CLIENT_ID               = var.gitlab_client_id
       GITLAB_CLIENT_SECRET_SSM_PARAM = local.gitlab_secret_ssm_path
+      GITLAB_INSTANCES               = local.gitlab_instances_env
 
       # chunk-03: sync worker writes files DIRECTLY to S3 (not via
       # file-ingestion / repo-summaries) so we don't contaminate the
@@ -522,11 +548,9 @@ module "gitlab_sync_lambda" {
       # SSM for the client secret (read by shared.oauth.gitlab during token
       # refresh). Scope to the exact derived (or overridden) parameter name.
       ssm_secret = {
-        effect  = "Allow"
-        actions = ["ssm:GetParameter"]
-        resources = [
-          "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${local.gitlab_secret_ssm_path}",
-        ]
+        effect    = "Allow"
+        actions   = ["ssm:GetParameter"]
+        resources = local.gitlab_secret_ssm_arns
       }
 
       kms_oauth = {

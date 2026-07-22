@@ -105,6 +105,7 @@ module "analyze_pr_lambda" {
     GITLAB_BASE_URL                = var.gitlab_base_url
     GITLAB_CLIENT_ID               = var.gitlab_client_id
     GITLAB_CLIENT_SECRET_SSM_PARAM = local.gitlab_secret_ssm_path
+    GITLAB_INSTANCES               = local.gitlab_instances_env
   }
 
   # IAM permissions
@@ -267,6 +268,7 @@ module "process_pr_check_lambda" {
     GITLAB_BASE_URL                = var.gitlab_base_url
     GITLAB_CLIENT_ID               = var.gitlab_client_id
     GITLAB_CLIENT_SECRET_SSM_PARAM = local.gitlab_secret_ssm_path
+    GITLAB_INSTANCES               = local.gitlab_instances_env
     },
     # HA dual-write: emit replication events for the check-result row.
     local.ha_writer_env,

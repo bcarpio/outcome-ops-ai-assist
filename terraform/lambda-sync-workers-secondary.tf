@@ -1325,6 +1325,7 @@ module "gitlab_sync_lambda_secondary" {
       GITLAB_BASE_URL                = var.gitlab_base_url
       GITLAB_CLIENT_ID               = var.gitlab_client_id
       GITLAB_CLIENT_SECRET_SSM_PARAM = local.gitlab_secret_ssm_path
+      GITLAB_INSTANCES               = local.gitlab_instances_env
 
       # Mirror of the primary's direct-to-S3 + repo-summaries fan-out.
       # Without REPO_SUMMARIES_QUEUE + its grant, post-failover GitLab
