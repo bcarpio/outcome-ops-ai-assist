@@ -519,6 +519,12 @@ to the `/audit` page, and ADR-018 for schema design.
   box so interactive chat/MCP tasks never spot-reclaim (safe-default
   philosophy, like `ui_alb_internal`). Sandbox deploys opt in with
   true; per-service `*_spot_weight` vars tune the ratio.
+- **Per-service Fargate task sizing** — every ECS service's cpu/memory
+  is an independent tfvar: `ui_fargate_cpu`/`_memory`, `mcp_server_cpu`/
+  `_memory` (OutcomeOps MCP), `mcp_snyk_cpu`/`_memory`,
+  `mcp_sonarqube_cpu`/`_memory`. Cost-sensitive deploys right-size down
+  (256 = 0.25 vCPU); heavy enterprise load scales up. No hardcoded task
+  dimensions remain.
 - **HA active/passive multi-region** — `secondary_region` tfvar
   provisions every stateful resource in both regions with cross-
   region replication driven by EventBridge; per-region AppConfig
