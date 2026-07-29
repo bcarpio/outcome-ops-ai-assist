@@ -165,6 +165,33 @@ variable "github_base_url" {
   default     = ""
 }
 
+variable "gitlab_instances" {
+  description = <<-EOT
+    Multiple GitLab instances for one deploy (gitlab.com AND self-managed
+    together). Each entry: id (stable key stored on connection rows),
+    display_name (UI label), base_url, client_id, client_secret_ssm_param.
+
+    Leave EMPTY to keep the single-instance behaviour driven by
+    gitlab_base_url / gitlab_client_id / gitlab_client_secret_ssm_param --
+    those synthesize one instance with id "default", so existing deploys
+    need no migration and no reconnect.
+
+    Example:
+      gitlab_instances = [
+        { id = "saas",     display_name = "GitLab.com",         base_url = "https://gitlab.com",              client_id = "...", client_secret_ssm_param = "/prd/outcome-ops-ai-assist/gitlab/client-secret" },
+        { id = "internal", display_name = "GitLab (internal)",  base_url = "https://gitlab.example.com",      client_id = "...", client_secret_ssm_param = "/prd/outcome-ops-ai-assist/gitlab/client-secret-internal" },
+      ]
+  EOT
+  type = list(object({
+    id                      = string
+    display_name            = optional(string, "")
+    base_url                = string
+    client_id               = string
+    client_secret_ssm_param = string
+  }))
+  default = []
+}
+
 variable "gitlab_base_url" {
   type        = string
   description = "GitLab instance base URL (no trailing slash). Defaults to the SaaS host; a later chunk makes self-managed GitLab a first-class base URL."
@@ -386,10 +413,10 @@ variable "bedrock_default_backend" {
     family to _DISPATCH before using it. This is the no-silent-fallback
     safety per ADR-035.
 
-    "responses": the openai workspace's posture. Mantle-only deploys
-    that exclusively use bedrock-mantle.{region}.api.aws can opt every
-    unknown family (qwen/deepseek/mistral/etc.) into the Responses
-    backend without needing a code change per new vendor.
+    "responses": the OpenAI-on-Mantle posture. Deploys that run OpenAI
+    (or otherwise exclusively use bedrock-mantle.{region}.api.aws) can
+    opt every unknown family (qwen/deepseek/mistral/etc.) into the
+    Responses backend without needing a code change per new vendor.
 
     "converse": symmetric case; unlikely to be useful on its own.
   EOT
@@ -719,6 +746,30 @@ variable "mcp_server_memory" {
   default     = 2048
 }
 
+variable "mcp_snyk_cpu" {
+  description = "CPU units for the Snyk MCP Fargate task (256 = 0.25 vCPU). Low-traffic scanner proxy; the 512 default is halvable to 256 on cost-sensitive deploys, or raise for heavier scan volume."
+  type        = number
+  default     = 512
+}
+
+variable "mcp_snyk_memory" {
+  description = "Memory (MB) for the Snyk MCP Fargate task. Default 1024; safe to drop to 512 on light usage, or raise for large dependency graphs."
+  type        = number
+  default     = 1024
+}
+
+variable "mcp_sonarqube_cpu" {
+  description = "CPU units for the SonarQube MCP Fargate task (256 = 0.25 vCPU). Single, low-traffic, connection-sensitive service; the 512 default is halvable to 256, or raise for busier code-quality workloads."
+  type        = number
+  default     = 512
+}
+
+variable "mcp_sonarqube_memory" {
+  description = "Memory (MB) for the SonarQube MCP Fargate task. Default 1024; safe to drop to 512 on light usage, or raise if the workload grows."
+  type        = number
+  default     = 1024
+}
+
 variable "mcp_server_desired_count" {
   description = "Initial desired task count for the MCP server service. Requires DDB-backed sessions (fable-scale chunk 02); with in-memory sessions, second+ tasks won't share state."
   type        = number
@@ -994,7 +1045,7 @@ variable "ui_subdomain" {
 }
 
 variable "append_environment_to_fqdn" {
-  description = "When true, the chat-UI FQDN is {ui_subdomain}-{environment}.{domain} (dev/test style). When false, it's {ui_subdomain}.{domain} (production-style, first-class subdomain). prd.tfvars and openai.tfvars set this to false."
+  description = "When true, the chat-UI FQDN is {ui_subdomain}-{environment}.{domain} (dev/test style). When false, it's {ui_subdomain}.{domain} (production-style, first-class subdomain). Production tfvars (e.g. prd.tfvars) set this to false."
   type        = bool
   default     = true
 }
@@ -1226,4 +1277,22 @@ variable "bedrock_workload_tag_name" {
     condition     = length(trimspace(var.bedrock_workload_tag_name)) > 0
     error_message = "bedrock_workload_tag_name must not be empty."
   }
+}
+
+variable "enable_deletion_protection" {
+  type        = bool
+  description = <<-EOT
+    Enables DynamoDB deletion protection on every table.
+
+    Defaults to TRUE so a durable environment is protected by default and
+    an accidental destroy fails loudly instead of taking data with it.
+    This is a native table argument (unlike the lifecycle `prevent_destroy`
+    meta-argument, which only accepts literals and cannot be toggled per
+    deployment), so it also blocks deletion from the console and CLI --
+    not just Terraform.
+
+    Ephemeral deployments that are meant to be torn down (PoC / sandbox
+    accounts) set this to false so `terraform destroy` can complete.
+  EOT
+  default     = true
 }
