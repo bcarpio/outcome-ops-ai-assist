@@ -10,6 +10,7 @@ This guide covers deployment, operations, and maintenance for OutcomeOps AI Assi
 - [Deployment Options](#deployment-options)
 - [Supported Regions](#supported-regions)
 - [Root User Warning](#root-user-warning)
+- [Initial Deployment](#initial-deployment)
 - [Billable Services](#billable-services)
 - [Cost Estimation](#cost-estimation)
 - [License Management](#license-management)
@@ -193,6 +194,115 @@ aws bedrock create-foundation-model-agreement \
 - Follow the [AWS Root User Best Practices](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_root-user.html)
 
 The Terraform deployment requires permissions to create Lambda functions, DynamoDB tables, S3 buckets, SQS queues, IAM roles/policies, KMS keys, and optionally ECS/ALB/VPC resources.
+
+---
+
+## Initial Deployment
+
+The first deploy of an environment follows a fixed order: **validate → build
+artifacts → select the matching Terraform workspace → apply.** Two ordering
+mistakes account for almost every failed first deploy:
+
+- Skipping the build step leaves Terraform packaging a Lambda layer or
+  referencing a container image that does not exist yet.
+- Skipping the workspace step trips the built-in
+  `terraform.workspace == var.environment` guard, which **fails the plan and
+  apply** with a `BLOCKED:` message until the workspace matches.
+
+> Throughout, `ENVIRONMENT` and the Terraform workspace name **must both equal**
+> the `environment` value in your tfvars (`dev`, `prd`, or your own). All
+> commands run from the repo root unless noted.
+
+### 1. Validate locally (run the make targets first)
+
+These are the same gates CI enforces; running them up front catches
+formatting, type, test, and dependency issues before you spend time deploying:
+
+```bash
+make all               # fmt + validate-tf + unit tests + UI tests
+make audit             # npm audit (UI) + pip-audit (every lambda requirements.txt)
+make check-ha-parity   # only when secondary_region is set (HA); CI runs it too
+```
+
+### 2. Build the Lambda layers and container images
+
+Terraform packages a Lambda layer (`build/platform-ca-layer/layer.zip`) and
+references images in ECR (UI, MCP servers, database, run-tests). Build them all
+for the target environment in one shot — this also auto-creates the ECR repos
+on first run:
+
+```bash
+ENVIRONMENT=prd make pre-deploy    # all Lambda layers + all images + platform-CA layer
+```
+
+To rebuild a single artifact later, use its specific target instead
+(`make build-ui-image`, `make build-mcp-server-image`,
+`make build-database-images`, `make build-platform-layer`, ...). See
+[Patching and Upgrades](#patching-and-upgrades).
+
+### 3. Configure the environment tfvars
+
+```bash
+cp terraform/prd.tfvars.example terraform/prd.tfvars
+# Edit terraform/prd.tfvars. The three variables with NO default that you
+# MUST set: aws_region, environment, outcomeops_license_layer_arn. Then the
+# topology/integration options (ALB mode, subnets, which integrations, sizing).
+```
+
+`terraform/*.tfvars` are environment-specific and must never be committed —
+only the `.example` files are tracked.
+
+### 4. Create and select the Terraform workspace
+
+State is keyed on a Terraform workspace whose name must match the `environment`
+tfvar. The guard fails the apply otherwise.
+
+```bash
+cd terraform
+terraform init                  # configures the S3 backend + downloads providers
+terraform workspace new prd     # first time only; use `terraform workspace select prd` after
+terraform workspace show        # must print: prd
+```
+
+### 5. Plan and apply
+
+```bash
+terraform plan  -var-file=prd.tfvars    # on a fresh environment, expect creates only
+terraform apply -var-file=prd.tfvars
+```
+
+A full first apply provisions everything: DynamoDB, S3 + S3 Vectors, KMS,
+Lambdas, the Fargate UI + MCP services, and — if `secondary_region` is set —
+the active/passive HA mirror.
+
+### 6. Post-apply: populate secrets and finish setup
+
+Terraform creates OAuth/app secrets as SecureString **placeholders**
+(`CHANGE_ME`) with `ignore_changes`, so your real values survive later applies.
+Overwrite each parameter for the integrations you enabled:
+
+```bash
+aws ssm put-parameter --overwrite --type SecureString \
+  --name /prd/outcome-ops-ai-assist/github/client-secret --value '<secret>'
+# Repeat for the integrations in use: gitlab/client-secret,
+# oauth/microsoft/client-secret, oauth/atlassian/client-secret,
+# oauth/salesforce/client-secret, oauth/servicenow/client-secret, ...
+# The full parameter list is in "Credential Rotation" below.
+```
+
+Then complete the one-time setup covered elsewhere in this guide:
+
+- Accept the **Bedrock marketplace agreements** for the models you use
+  (see [Bedrock Model Access](#bedrock-model-access-and-marketplace-agreements)
+  above) — chat/codegen fail until the agreement is active.
+- Store the **license JWT** (see [License Management](#license-management)).
+- Register each integration's OAuth app + callback URL as needed.
+
+**Redeploys** after code changes: rebuild only the affected artifact
+([Patching and Upgrades](#patching-and-upgrades)), then `terraform apply`
+again — the workspace and tfvars stay as configured. A plain
+`terraform apply` from a tree behind `origin/main` silently packages stale
+code, so verify with the `CodeSha256` / image-digest checks noted per artifact.
 
 ---
 
