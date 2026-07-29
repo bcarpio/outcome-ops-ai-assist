@@ -195,8 +195,16 @@ test-ui:
 audit: audit-ui audit-py
 
 audit-ui:
-	@echo "Running npm audit on UI dependencies..."
-	cd ui && npm audit --audit-level=high
+	@echo "Running npm audit on UI dependencies (high+, with allowlist)..."
+	@# Allowlist -- advisories NOT applicable to this deploy AND with no available
+	@# fix. Keep it tiny + justified; any other high/critical fails the gate.
+	@#   GHSA-qwww-vcr4-c8h2  react-router RSC-mode CSRF. This UI is a client SPA
+	@#   (BrowserRouter/Routes, no RSC/server mode) so the vulnerable endpoint is
+	@#   never served. react-router-dom has NO fixed 7.x (only a downgrade to
+	@#   7.11.0, which reintroduces the 7.18.0 DoS fix) and no 8.x line exists for
+	@#   -dom. Revisit if react-router-dom ships a patched 7.x.
+	@cd ui && r=$$(npm audit --json | jq -c '[.vulnerabilities[] | select(.severity=="high" or .severity=="critical") | .via[] | select(type=="object") | .url | sub(".*/"; "")] | unique - ["GHSA-qwww-vcr4-c8h2"]'); \
+	if [ "$$r" = "[]" ]; then echo "npm audit OK (only allowlisted advisories remain)."; else echo "FAIL: high/critical advisories beyond allowlist: $$r"; npm audit --audit-level=high; exit 1; fi
 
 # Fast parallel pip-audit across every lambda/*/requirements.txt.
 # Serial `pip-audit -r <file>` on 58 requirements files takes 5-15

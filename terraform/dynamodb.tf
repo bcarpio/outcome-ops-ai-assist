@@ -1,7 +1,10 @@
 # ============================================================================
 # DynamoDB Tables
-# NOTE: All tables have deletion_protection_enabled = true to prevent
-# accidental destruction. This must be explicitly disabled before deletion.
+# NOTE: Deletion protection on every table is driven by
+# var.enable_deletion_protection (default true). Ephemeral sandbox/PoC
+# deploys set it false so terraform destroy can complete; durable
+# environments leave it on, which blocks deletion from the console and
+# CLI as well as from Terraform.
 #
 # With S3 Vectors migration, this table is now used for STATE TRACKING ONLY:
 # - Commit SHAs for incremental processing (ingest-docs, generate-code-maps)
@@ -18,7 +21,7 @@ module "code_maps_table" {
   range_key = "SK"
 
   # Prevent accidental deletion of production data
-  deletion_protection_enabled = false
+  deletion_protection_enabled = var.enable_deletion_protection
 
   # Only PK and SK needed for state tracking
   # GSIs removed - vector queries now use S3 Vectors
@@ -108,7 +111,7 @@ module "code_maps_table_secondary" {
   hash_key  = "PK"
   range_key = "SK"
 
-  deletion_protection_enabled = false
+  deletion_protection_enabled = var.enable_deletion_protection
 
   attributes = [
     {

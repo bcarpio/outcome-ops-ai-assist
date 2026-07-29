@@ -32,7 +32,7 @@ module "mcp_sessions_table" {
   name     = "${var.environment}-${var.app_name}-mcp-sessions"
   hash_key = "PK"
 
-  deletion_protection_enabled = false
+  deletion_protection_enabled = var.enable_deletion_protection
 
   attributes = [
     {
@@ -96,7 +96,7 @@ module "mcp_sessions_table_secondary" {
   name     = "${var.environment}-${var.app_name}-mcp-sessions"
   hash_key = "PK"
 
-  deletion_protection_enabled = false
+  deletion_protection_enabled = var.enable_deletion_protection
 
   attributes = [
     {

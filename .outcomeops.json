@@ -1,0 +1,71 @@
+{
+  "planDir": "plan",
+  "chunkNaming": "NN-<slug>.md",
+  "overviewFile": "OVERVIEW.md",
+  "progressFile": "PROGRESS.md",
+  "localAdrPath": "docs/adr",
+  "retrieval": {
+    "top_k": 5,
+    "min_score": 0.35,
+    "max_tokens": 4000
+  },
+  "workspaces": {
+    "standards": {
+      "label": "Standards and ADRs",
+      "id": null,
+      "note": "null = omit workspace_id, search all accessible workspaces including Global"
+    }
+  },
+  "chunkTypes": {
+    "lambda": {
+      "description": "Lambda handlers in lambda/ — API Gateway, event-driven, or internal worker",
+      "queries": [
+        "Lambda handler standards by invocation type API Gateway event-driven internal worker",
+        "Pydantic request validation requirements for Lambda handlers",
+        "Lambda error handling retry semantics and partial batch failure",
+        "structured logging and container-scope client initialization",
+        "SSM SecureString parameter access at module init"
+      ]
+    },
+    "terraform": {
+      "description": "Infrastructure in terraform/ — including secondary-region mirrors",
+      "queries": [
+        "Terraform module versioning and pinning standards",
+        "resource naming conventions and environment parameterization",
+        "least-privilege IAM policy patterns for Lambda execution roles",
+        "active-passive multi-region HA primary and secondary parity requirements",
+        "CloudWatch log retention and Lambda event source mapping configuration"
+      ]
+    },
+    "test": {
+      "description": "Centralized pytest suite in lambda/tests/",
+      "queries": [
+        "Python testing standards structure and framework",
+        "mocking discipline for boto3 paginators and DynamoDB query pagination",
+        "test timeout and unbounded loop prevention in unit tests",
+        "test coverage gates for new code"
+      ]
+    },
+    "ui": {
+      "description": "React frontend and Express proxy in ui/",
+      "queries": [
+        "React component structure and state management standards",
+        "vitest mocking conventions for API modules and component props",
+        "frontend API client and error surface conventions"
+      ]
+    },
+    "docs": {
+      "description": "ADRs and customer-facing documentation in docs/",
+      "queries": [
+        "ADR authoring format and when a decision warrants an ADR",
+        "documentation-driven decisions over hardcoded platform logic"
+      ]
+    }
+  },
+  "notes": {
+    "haParity": "Any chunk touching a primary-region Terraform resource MUST include the mirrored terraform/*-secondary.tf change and run make check-ha-parity. Divergence is invisible until failover.",
+    "threeSurface": "A chunk that ships a user-visible feature must update docs/features.md, ../marketing-for-outcomeops/feature-list.md, and Confluence page 57835580 in the same session.",
+    "preCommit": "make test-unit, make test-ui (if ui/ touched), make fmt + make validate-tf (if .tf touched), make audit.",
+    "planQueue": "plan-<name>/ dirs are user-created queue slots. Claude does not create them; it promotes them into plan/ when the active plan ships."
+  }
+}

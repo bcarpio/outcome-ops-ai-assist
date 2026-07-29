@@ -22,7 +22,7 @@ module "code_map_failed_files_table" {
   hash_key  = "PK"
   range_key = "SK"
 
-  deletion_protection_enabled = false
+  deletion_protection_enabled = var.enable_deletion_protection
 
   attributes = [
     {
@@ -88,7 +88,7 @@ module "code_map_failed_files_table_secondary" {
   hash_key  = "PK"
   range_key = "SK"
 
-  deletion_protection_enabled = false
+  deletion_protection_enabled = var.enable_deletion_protection
 
   attributes = [
     {

@@ -43,8 +43,8 @@ module "mcp_sonarqube" {
   server_name     = "sonarqube"
   container_image = "${aws_ecr_repository.mcp_sonarqube[0].repository_url}:latest"
   container_port  = 8080
-  cpu             = 512
-  memory          = 1024
+  cpu             = var.mcp_sonarqube_cpu
+  memory          = var.mcp_sonarqube_memory
 
   # Single, low-traffic, connection-sensitive service -- on-demand FARGATE (not
   # Spot). The container is stateless + robust, but on-demand avoids restart

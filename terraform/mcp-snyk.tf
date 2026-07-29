@@ -49,8 +49,8 @@ module "mcp_snyk" {
   server_name     = "snyk"
   container_image = "${aws_ecr_repository.mcp_snyk[0].repository_url}:latest"
   container_port  = 8080
-  cpu             = 512
-  memory          = 1024
+  cpu             = var.mcp_snyk_cpu
+  memory          = var.mcp_snyk_memory
 
   # Module default is 100% spot (base 0 / on-demand weight 0 / spot 100).
   # When the master switch disables spot, flip to a 1-task on-demand base

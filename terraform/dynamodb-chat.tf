@@ -12,7 +12,7 @@ module "chat_table" {
   range_key = "SK"
 
   # Single-tenant, customer-deployed - less critical than SaaS
-  deletion_protection_enabled = false
+  deletion_protection_enabled = var.enable_deletion_protection
 
   attributes = [
     {
@@ -126,7 +126,7 @@ module "chat_table_secondary" {
   hash_key  = "PK"
   range_key = "SK"
 
-  deletion_protection_enabled = false
+  deletion_protection_enabled = var.enable_deletion_protection
 
   attributes = [
     {
