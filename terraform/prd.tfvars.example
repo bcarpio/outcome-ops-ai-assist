@@ -101,6 +101,28 @@ github_usernames_to_tag = "yourusername"
 # bedrock_basic_model_id     = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 # bedrock_embedding_model_id = "amazon.titan-embed-text-v2:0"
 
+# --- OpenAI GPT instead of Claude (model choice, NOT a separate environment) ---
+# To run on OpenAI frontier models (GPT-5.5 / GPT-5.4 on Amazon Bedrock, GA
+# 2026-06-03) rather than Anthropic Claude, override the two model IDs below in
+# THIS prd deploy -- there is no separate "openai" environment or workspace.
+# Typical driver: compliance customers who must retire Anthropic Claude entirely
+# from the inference path (embedding + rerank stay on Titan + Cohere, which are
+# not Anthropic).
+#
+# REGION: GPT-5.5 is US East (Ohio, us-east-2) ONLY; GPT-5.4 is us-east-2 +
+# us-west-2. To use GPT-5.5 as the advanced tier, set aws_region = "us-east-2".
+# Under HA, the secondary region must also carry the model or downgrade its
+# bedrock_advanced_model_id to GPT-5.4. Verify exact model IDs with
+# `aws bedrock list-foundation-models`.
+# bedrock_advanced_model_id = "us.openai.gpt-5-5:0"
+# bedrock_basic_model_id    = "us.openai.gpt-5-5:0"   # until gpt-5-mini lands in us-east-2
+# Pricing tfvars mirror the model choice (per 1M tokens; see the AWS Bedrock
+# pricing page, OpenAI section, and update if AWS adjusts):
+# bedrock_advanced_input_price  = 5.50
+# bedrock_advanced_output_price = 33.00
+# bedrock_basic_input_price     = 5.50    # match advanced until a cheaper tier-2 model lands
+# bedrock_basic_output_price    = 33.00
+
 # Cooldown between Bedrock API calls to avoid throttling on small accounts.
 # Default: true. Disable for enterprise accounts with high quotas.
 # enable_bedrock_cooldown = true
@@ -478,6 +500,34 @@ audit_stream_export_enabled = true
 # empty; must match the OAuth application registration exactly.
 # gitlab_redirect_uri = ""
 
+# ---------------------------------------------------------------------------
+# Multiple GitLab instances (ADR-050 v2.0)
+# ---------------------------------------------------------------------------
+# Connect gitlab.com AND self-managed instances at the same time -- an
+# acquirer on SaaS absorbing a self-managed company, a migration where both
+# are live, or a regulated split. Leave EMPTY to keep the single-instance
+# behaviour above (gitlab_base_url / gitlab_client_id / secret param), which
+# needs no migration and no reconnect.
+#
+# Each instance needs its OWN OAuth application registered on that instance
+# and its OWN secret parameter -- never point two instances at one secret.
+# gitlab_instances = [
+#   {
+#     id                      = "saas"
+#     display_name            = "GitLab.com"
+#     base_url                = "https://gitlab.com"
+#     client_id               = "<gitlab.com app id>"
+#     client_secret_ssm_param = "/prd/outcome-ops-ai-assist/gitlab/client-secret"
+#   },
+#   {
+#     id                      = "internal"
+#     display_name            = "GitLab (internal)"
+#     base_url                = "https://gitlab.example.com"
+#     client_id               = "<self-managed app id>"
+#     client_secret_ssm_param = "/prd/outcome-ops-ai-assist/gitlab/client-secret-internal"
+#   },
+# ]
+
 # ============================================================================
 # ECS capacity: Fargate Spot master switch
 # ============================================================================
@@ -577,6 +627,19 @@ audit_stream_export_enabled = true
 # ui_fargate_max_count           = 40
 # mcp_server_min_count           = 4
 # mcp_server_max_count           = 40
+
+# --- Fargate task sizing (per service; 256 = 0.25 vCPU) ---
+# Every Fargate service is independently sizable. Defaults suit a light /
+# sandbox deploy; raise for heavier enterprise load. cpu/memory must be a
+# valid Fargate combo (e.g. 256 -> 512/1024/2048; 512 -> 1024..4096).
+# ui_fargate_cpu       = 512    # UI proxy; default 512/1024
+# ui_fargate_memory    = 1024
+# mcp_server_cpu       = 1024   # OutcomeOps MCP (KB/code-map backend); memory-
+# mcp_server_memory    = 2048   #   spiky under code-map load -- step down cautiously
+# mcp_snyk_cpu         = 512    # Snyk MCP; low-traffic, halvable to 256/512
+# mcp_snyk_memory      = 1024
+# mcp_sonarqube_cpu    = 512    # SonarQube MCP; low-traffic, halvable to 256/512
+# mcp_sonarqube_memory = 1024
 
 # --- Bedrock fairness (fable-scale chunk 05) ---
 # pr_check_max_concurrency  = 40
