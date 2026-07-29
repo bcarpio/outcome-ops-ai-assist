@@ -3,11 +3,11 @@ locals {
   workspace_is_prd = terraform.workspace == "prd"
 
   # FQDN for UI: {ui_subdomain}.{domain} when append_environment_to_fqdn=false
-  # (production-style: outcomeops.outcomeops.ai, openai.outcomeops.ai),
-  # otherwise {ui_subdomain}-{environment}.{domain} (dev-style:
+  # (production-style: outcomeops.outcomeops.ai), otherwise
+  # {ui_subdomain}-{environment}.{domain} (dev-style:
   # outcomeops-dev.outcomeops.ai). Default true so dev/test envs auto-
-  # disambiguate; prd.tfvars and openai.tfvars opt out so they sit on
-  # first-class subdomains.
+  # disambiguate; production tfvars opt out so they sit on first-class
+  # subdomains.
   fqdn = var.domain != "" ? (
     var.append_environment_to_fqdn
     ? "${var.ui_subdomain}-${var.environment}.${var.domain}"
