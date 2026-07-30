@@ -161,7 +161,10 @@ Some Bedrock models (including third-party models like Cohere Rerank 3.5) requir
 | Anthropic Claude (Sonnet/Haiku) | `anthropic.claude-*` | All Lambda functions | Bedrock Console (Model Access) |
 | Amazon Titan Embeddings v2 | `amazon.titan-embed-text-v2:0` | query-kb, chat-streaming, process-documents | Auto-enabled (first-party) |
 
-**Enable via CLI:**
+**Enable via CLI:** (requires **AWS CLI ≥ 2.27.42** — the
+`list-foundation-model-agreement-offers` subcommand was added then; older CLIs
+fail with `Invalid choice`. Accept agreements up front so a model's first
+invocation doesn't stall on the just-in-time agreement prompt.)
 
 ```bash
 # 1. Get the offer token for the model
@@ -205,23 +208,23 @@ The Terraform deployment requires permissions to create Lambda functions, Dynamo
 The first deploy of an environment follows a fixed order — **do not
 reorder it**, because the build step is not self-contained:
 
-1. Validate → 2. Configure tfvars → 3. State bucket + backend → 4. init +
-select workspace → 5. Build layers/images → 6. Plan + apply → 7. Post-apply.
+1. Configure tfvars → 2. State bucket + backend → 3. init + select workspace →
+4. Build layers/images → 5. Plan + apply → 6. Post-apply.
 
 Why the order is strict (each has burned a first deploy):
 
 - **`make pre-deploy` is not step 1.** The `build-*` targets run targeted
-  `terraform apply -var-file=<env>.tfvars` calls, so the **tfvars (step 2)**
-  and the **S3 backend (step 3)** must already exist. (The build targets
+  `terraform apply -var-file=<env>.tfvars` calls, so the **tfvars (step 1)**
+  and the **S3 backend (step 2)** must already exist. (The build targets
   select/create the workspace themselves — `terraform workspace select <env>
   || terraform workspace new <env>` — so the ECR repos land in the *env*
-  workspace, not `default`; step 4 just makes that explicit and satisfies the
-  guard for step 6.)
+  workspace, not `default`; step 3 just makes that explicit and satisfies the
+  guard for step 5.)
 - **`backend.tf` is gitignored** (it points at a bucket in *your* account).
   A fresh clone has no backend block, so `terraform init` silently falls back
   to **local** state — and the build targets run `terraform init` with output
-  discarded, so this happens invisibly. Create it from the example (step 3),
-  then run `terraform init` yourself in step 4 (with visible output) so a
+  discarded, so this happens invisibly. Create it from the example (step 2),
+  then run `terraform init` yourself in step 3 (with visible output) so a
   missing/misconfigured backend surfaces before the build swallows it.
 - The **workspace must equal `environment`** or the built-in
   `terraform.workspace == var.environment` guard fails plan/apply with
@@ -231,20 +234,14 @@ Why the order is strict (each has burned a first deploy):
 > `environment` value in your tfvars (`dev`, `prd`, or your own). Commands run
 > from the repo root unless noted.
 
-### 1. Validate locally (the CI gate)
+> **Optional — validate only if you're modifying the repo.** The CI gate
+> (`make fmt && make validate-tf && make test-unit && make test-ui && make
+> audit`) is **not** part of a deploy. If you do run it, run it **after**
+> `terraform init` (step 3): `terraform validate` needs the installed modules,
+> so it fails with `Module not installed` when run first. A green run only
+> proves the repo is internally consistent, which it already is as shipped.
 
-The same checks CI enforces (per CLAUDE.md) — catches formatting/type/test/dep
-issues before you spend time deploying:
-
-```bash
-make fmt && make validate-tf && make test-unit && make test-ui && make audit
-make check-ha-parity   # only when secondary_region is set (HA); CI runs it too
-```
-
-(`make all` also exists but bundles `make validate-docs`, whose whole-file size
-check can flag large committed files; the targets above are the actual gate.)
-
-### 2. Configure the environment tfvars
+### 1. Configure the environment tfvars
 
 ```bash
 cp terraform/prd.tfvars.example terraform/prd.tfvars
@@ -256,7 +253,7 @@ cp terraform/prd.tfvars.example terraform/prd.tfvars
 `terraform/*.tfvars` are environment-specific and must never be committed —
 only the `.example` files are tracked.
 
-### 3. Create the state bucket + backend config
+### 2. Create the state bucket + backend config
 
 `backend.tf` is gitignored (it points at a state bucket in *your* account), so
 this must be done before any `terraform init` or build:
@@ -278,17 +275,17 @@ aws s3api put-bucket-versioning --bucket "$BUCKET" \
 cp terraform/backend.tf.example terraform/backend.tf   # then set bucket + region to yours
 ```
 
-### 4. Initialize and select the workspace
+### 3. Initialize and select the workspace
 
 ```bash
 cd terraform
-terraform init                  # configures the S3 backend (from step 3) + downloads providers
+terraform init                  # wires the S3 backend from step 2 (backend.tf) + downloads modules
 terraform workspace new prd     # first time only; `terraform workspace select prd` after
 terraform workspace show        # must print: prd
 cd ..
 ```
 
-### 5. Build the Lambda layers and container images
+### 4. Build the Lambda layers and container images
 
 Now that tfvars, the backend, and the `prd` workspace are in place, build all
 layers + images in one shot (auto-creates the ECR repos, into the correct
@@ -303,7 +300,7 @@ To rebuild a single artifact later, use its specific target
 `make build-database-images`, `make build-platform-layer`, ...). See
 [Patching and Upgrades](#patching-and-upgrades).
 
-### 6. Plan and apply
+### 5. Plan and apply
 
 ```bash
 terraform plan  -var-file=prd.tfvars -out=terraform.prd.out   # ADR-004: plan to a file (fresh env = creates only)
@@ -314,7 +311,7 @@ A full first apply provisions everything: DynamoDB, S3 + S3 Vectors, KMS,
 Lambdas, the Fargate UI + MCP services, and — if `secondary_region` is set —
 the active/passive HA mirror.
 
-### 7. Post-apply: populate secrets and finish setup
+### 6. Post-apply: populate secrets and finish setup
 
 Terraform creates OAuth/app secrets as SecureString **placeholders**
 (`CHANGE_ME`) with `ignore_changes`, so your real values survive later applies.
