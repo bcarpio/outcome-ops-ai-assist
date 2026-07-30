@@ -233,7 +233,7 @@ step?
 **Verification command**:
 
 ```bash
-grep -rn 'ingest\|document\|process' lambda/retrieveit-integration/ \
+grep -rn 'ingest\|document\|process' lambda/github-sync/ \
   lambda/process-documents/ lambda/file-ingestion/ \
   2>/dev/null | head -30
 ```
