@@ -265,8 +265,14 @@ this must be done before any `terraform init` or build:
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 REGION="us-west-2"
 BUCKET="terraform-state-${ACCOUNT_ID}-${REGION}"
-aws s3api create-bucket --bucket "$BUCKET" --region "$REGION" \
-  --create-bucket-configuration LocationConstraint="$REGION"
+# us-east-1 is the S3 default and REJECTS a LocationConstraint; every other
+# region REQUIRES one. Branch on it so the command works in any region.
+if [ "$REGION" = "us-east-1" ]; then
+  aws s3api create-bucket --bucket "$BUCKET" --region "$REGION"
+else
+  aws s3api create-bucket --bucket "$BUCKET" --region "$REGION" \
+    --create-bucket-configuration LocationConstraint="$REGION"
+fi
 aws s3api put-bucket-versioning --bucket "$BUCKET" \
   --versioning-configuration Status=Enabled
 cp terraform/backend.tf.example terraform/backend.tf   # then set bucket + region to yours
