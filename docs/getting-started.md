@@ -17,6 +17,15 @@ WSL2 distribution, not PowerShell.
    ```bash
    pyenv install 3.12 && pyenv local 3.12
    ```
+   Using your distro's packaged Python instead of pyenv is fine (Ubuntu 24.04
+   already ships 3.12), but `make setup` builds C-extension dependencies that
+   need the Python **development headers** (`Python.h`) plus a C toolchain —
+   without them the install fails with fatal `Python.h: No such file or
+   directory` errors. On Ubuntu/WSL2, install them first:
+   ```bash
+   sudo apt install python3.12-dev build-essential
+   ```
+   (pyenv-built interpreters bundle these headers, so pyenv users can skip this.)
 2. **Terraform 1.5+** — install with your platform's package manager per the
    [HashiCorp install guide](https://developer.hashicorp.com/terraform/install):
    `apt` on Ubuntu/WSL2, `brew install terraform` on macOS.
