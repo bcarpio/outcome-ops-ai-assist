@@ -133,10 +133,12 @@ aws ssm put-parameter --type SecureString --overwrite \
 
 ### 5. Initialize, select the workspace, then build
 
-The build targets run targeted `terraform apply`s, so the backend (step 3),
-tfvars (step 4), and the `prd` workspace must all be in place **first** —
-otherwise the auto-created ECR repos land in the wrong (`default`) workspace's
-state and step 6 recreates them.
+The build targets run targeted `terraform apply`s that need the backend
+(step 3) and tfvars (step 4) in place **first**. They select/create the `prd`
+workspace themselves, but their `terraform init` runs with output discarded —
+so a missing `backend.tf` silently falls back to local state. Running
+`terraform init` yourself here surfaces that before the build hides it, and
+leaves the `prd` workspace selected for step 6.
 
 ```bash
 cd terraform

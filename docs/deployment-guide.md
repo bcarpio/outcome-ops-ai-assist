@@ -212,14 +212,17 @@ Why the order is strict (each has burned a first deploy):
 
 - **`make pre-deploy` is not step 1.** The `build-*` targets run targeted
   `terraform apply -var-file=<env>.tfvars` calls, so the **tfvars (step 2)**
-  and the **S3 backend (step 3)** must already exist, and the **workspace
-  (step 4)** must be selected — otherwise the auto-created ECR repos land in
-  the wrong (`default`) workspace's state and step 6 recreates them.
+  and the **S3 backend (step 3)** must already exist. (The build targets
+  select/create the workspace themselves — `terraform workspace select <env>
+  || terraform workspace new <env>` — so the ECR repos land in the *env*
+  workspace, not `default`; step 4 just makes that explicit and satisfies the
+  guard for step 6.)
 - **`backend.tf` is gitignored** (it points at a bucket in *your* account).
   A fresh clone has no backend block, so `terraform init` silently falls back
   to **local** state — and the build targets run `terraform init` with output
-  discarded, so this happens invisibly. Create it from the example (step 3)
-  before any init.
+  discarded, so this happens invisibly. Create it from the example (step 3),
+  then run `terraform init` yourself in step 4 (with visible output) so a
+  missing/misconfigured backend surfaces before the build swallows it.
 - The **workspace must equal `environment`** or the built-in
   `terraform.workspace == var.environment` guard fails plan/apply with
   `BLOCKED:`.
