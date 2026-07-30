@@ -393,7 +393,7 @@ github_usernames_to_tag = "yourusername"
 # outcomeops_license_server_url = "https://license.example.com"
 
 # SSM parameter path for the license key.
-# outcomeops_license_ssm_param = "/prd/outcome-ops-ai-assist/license/key"  # /<env>/<app>/license/key
+# outcomeops_license_ssm_param = "/prd/outcome-ops-ai-assist/license/key"  # OPTIONAL -- defaults to /<env>/<app>/license/key
 
 # ============================================================================
 # Encryption (CMK)

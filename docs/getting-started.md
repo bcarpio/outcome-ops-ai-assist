@@ -163,21 +163,38 @@ third-party models (e.g. Cohere Rerank) fail *silently* without them. See
 Then overwrite the SSM SecureString placeholders for your enabled integrations
 and store the license JWT.
 
-### 7. Verify
+### 7. Verify the deploy
 
-Run the gates CI enforces (the exact pre-commit checks from CLAUDE.md):
+Confirm the platform actually came up in **your** account. (A green unit-test
+run only proves the repo is internally consistent — something you had before
+you started; it does not tell you the deploy worked.) Replace `prd` with your
+environment:
 
 ```bash
-make fmt          # format Terraform
-make validate-tf  # validate Terraform config
-make test-unit    # Python unit suite (several thousand tests)
-make test-ui      # React/Vitest UI suite (needs Node 20+)
-make audit        # npm audit (UI) + pip-audit (Python)
+# 1. Lambdas landed with the code you just built -- catches a stale-tree apply:
+aws lambda get-function-configuration \
+  --function-name prd-outcome-ops-ai-assist-chat --query CodeSha256 --output text
+
+# 2. Backend reachable -- grab the URLs the apply emitted, then hit them:
+terraform output
+
+# 3. UI + auth: open the UI URL in a browser and complete Azure AD sign-in
+#    (public-ALB deploys). Internal-ALB deploys: reach it over your VPC path.
+
+# 4. License accepted -- no license errors in a gated Lambda's recent logs:
+aws logs tail /aws/lambda/prd-outcome-ops-ai-assist-chat --since 10m \
+  | grep -i licen || echo "no license errors"
 ```
 
-A clean run ends with every suite passing. (`make all` also exists but bundles
-`make validate-docs`, whose stricter whole-file size check can flag large
-committed files; the five targets above are the actual CI gate.)
+See [Health Check and Monitoring](deployment-guide.md#health-check-and-monitoring)
+for the full set (MCP health, CloudWatch, audit alerting).
+
+**Optional — verifying the _code_ (only if you'll modify the repo):** run the
+developer suite, the same gates CI enforces:
+
+```bash
+make fmt && make validate-tf && make test-unit && make test-ui && make audit
+```
 
 ## Configure the code-generation trigger
 
