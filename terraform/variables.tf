@@ -796,7 +796,7 @@ variable "azure_ad_tenant_id" {
 }
 
 variable "mcp_jwt_audience" {
-  description = "Expected `aud` claim for MCP Azure AD access tokens -- the MCP server's App Registration client ID or Application ID URI. Empty disables JWT auth."
+  description = "Expected `aud` claim for MCP Azure AD access tokens -- the MCP server's App Registration client ID (BARE GUID). The required requestedAccessTokenVersion=2 manifest setting makes v2 tokens carry the bare GUID in `aud`, NOT the api:// Application ID URI. Empty disables JWT auth."
   type        = string
   default     = ""
 }

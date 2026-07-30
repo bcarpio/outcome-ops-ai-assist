@@ -16,7 +16,10 @@ The ALB handles the entire OIDC flow. After authentication, it forwards requests
 
 ## Prerequisites
 
-- A Route53 hosted zone for your domain in the same AWS account
+- A Route53 hosted zone for your domain in the same AWS account — **or** bring
+  your own DNS + certificate (`manage_dns_in_route53 = false` +
+  `ui_acm_certificate_arn`) for cross-account Route53, Infoblox/AD-DNS, or an
+  internal-CA cert; see [BYO TLS Certificate + BYO DNS](byo-cert-and-dns.md)
 - An Azure AD (Entra ID) tenant
 - `deploy_ui = true` in your tfvars
 

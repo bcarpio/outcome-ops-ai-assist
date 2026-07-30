@@ -154,9 +154,9 @@ If you have an existing GitHub App (e.g., from another deployment), you can reus
 
 2. Copy credentials from the existing SSM parameters:
    ```bash
-   # Source environment
-   SRC_ENV=prd
-   SRC_APP=app.retrieveit.ai
+   # Source environment (an existing deployment of THIS app you're copying from)
+   SRC_ENV=dev
+   SRC_APP=outcome-ops-ai-assist
 
    # Target environment
    TGT_ENV=prd

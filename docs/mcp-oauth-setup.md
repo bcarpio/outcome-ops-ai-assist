@@ -14,8 +14,10 @@ API keys still work until you disable them, so migration is incremental.
    like `api://outcomeops-mcp` — most tenants' default policy rejects it with
    `AADSTS` *"All newly added URIs must contain a tenant verified domain, tenant
    ID, or app ID"* (unless you set `requestedAccessTokenVersion = 2` in the
-   manifest). This URI is the **audience** (`aud`) clients request tokens for and
-   the value you put in `mcp_jwt_audience`.
+   manifest). This URI is what clients **request** tokens for
+   (`--resource api://<client-id>`) — it is NOT what goes in `mcp_jwt_audience`.
+   Because the required v2 setting (step 3) makes the token's `aud` the bare
+   client-id GUID, that GUID is what `mcp_jwt_audience` must be.
 3. **Set the app to issue v2 access tokens (required).** App **Manifest** → set
    `"requestedAccessTokenVersion": 2` (or via
    `az rest --method PATCH --uri https://graph.microsoft.com/v1.0/applications/<object-id> --body '{"api":{"requestedAccessTokenVersion":2}}'`).
@@ -56,7 +58,7 @@ Set in `terraform/<env>.tfvars`:
 
 ```hcl
 azure_ad_tenant_id      = "d83d3279-....-............"    # your Entra tenant GUID
-mcp_jwt_audience        = "api://<mcp-app-client-id>"    # the App ID URI from step 1.2
+mcp_jwt_audience        = "<mcp-app-client-id>"    # BARE client-id GUID (v2 token aud) -- NOT the api:// URI; see step 3
 mcp_static_keys_enabled = true                           # keep true during migration
 ```
 

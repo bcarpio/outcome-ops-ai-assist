@@ -46,7 +46,10 @@ Deploying and operating OutcomeOps AI Assist requires familiarity with:
 
 - Python 3.12+
 - Terraform 1.5+
-- AWS CLI v2
+- AWS CLI v2 (configured)
+- Docker — the Lambda layer + container-image builds (`make pre-deploy`)
+  compile inside Amazon Linux 2 / Python 3.12 containers; a running daemon is
+  required and is the single biggest first-deploy time sink
 - GitHub PAT or GitHub App credentials
 
 ---
@@ -199,48 +202,46 @@ The Terraform deployment requires permissions to create Lambda functions, Dynamo
 
 ## Initial Deployment
 
-The first deploy of an environment follows a fixed order: **validate → build
-artifacts → select the matching Terraform workspace → apply.** Two ordering
-mistakes account for almost every failed first deploy:
+The first deploy of an environment follows a fixed order — **do not
+reorder it**, because the build step is not self-contained:
 
-- Skipping the build step leaves Terraform packaging a Lambda layer or
-  referencing a container image that does not exist yet.
-- Skipping the workspace step trips the built-in
-  `terraform.workspace == var.environment` guard, which **fails the plan and
-  apply** with a `BLOCKED:` message until the workspace matches.
+1. Validate → 2. Configure tfvars → 3. State bucket + backend → 4. init +
+select workspace → 5. Build layers/images → 6. Plan + apply → 7. Post-apply.
 
-> Throughout, `ENVIRONMENT` and the Terraform workspace name **must both equal**
-> the `environment` value in your tfvars (`dev`, `prd`, or your own). All
-> commands run from the repo root unless noted.
+Why the order is strict (each has burned a first deploy):
 
-### 1. Validate locally (run the make targets first)
+- **`make pre-deploy` is not step 1.** The `build-*` targets run targeted
+  `terraform apply -var-file=<env>.tfvars` calls, so the **tfvars (step 2)**
+  and the **S3 backend (step 3)** must already exist, and the **workspace
+  (step 4)** must be selected — otherwise the auto-created ECR repos land in
+  the wrong (`default`) workspace's state and step 6 recreates them.
+- **`backend.tf` is gitignored** (it points at a bucket in *your* account).
+  A fresh clone has no backend block, so `terraform init` silently falls back
+  to **local** state — and the build targets run `terraform init` with output
+  discarded, so this happens invisibly. Create it from the example (step 3)
+  before any init.
+- The **workspace must equal `environment`** or the built-in
+  `terraform.workspace == var.environment` guard fails plan/apply with
+  `BLOCKED:`.
 
-These are the same gates CI enforces; running them up front catches
-formatting, type, test, and dependency issues before you spend time deploying:
+> `ENVIRONMENT` and the Terraform workspace name **must both equal** the
+> `environment` value in your tfvars (`dev`, `prd`, or your own). Commands run
+> from the repo root unless noted.
+
+### 1. Validate locally (the CI gate)
+
+The same checks CI enforces (per CLAUDE.md) — catches formatting/type/test/dep
+issues before you spend time deploying:
 
 ```bash
-make all               # fmt + validate-tf + unit tests + UI tests
-make audit             # npm audit (UI) + pip-audit (every lambda requirements.txt)
+make fmt && make validate-tf && make test-unit && make test-ui && make audit
 make check-ha-parity   # only when secondary_region is set (HA); CI runs it too
 ```
 
-### 2. Build the Lambda layers and container images
+(`make all` also exists but bundles `make validate-docs`, whose whole-file size
+check can flag large committed files; the targets above are the actual gate.)
 
-Terraform packages a Lambda layer (`build/platform-ca-layer/layer.zip`) and
-references images in ECR (UI, MCP servers, database, run-tests). Build them all
-for the target environment in one shot — this also auto-creates the ECR repos
-on first run:
-
-```bash
-ENVIRONMENT=prd make pre-deploy    # all Lambda layers + all images + platform-CA layer
-```
-
-To rebuild a single artifact later, use its specific target instead
-(`make build-ui-image`, `make build-mcp-server-image`,
-`make build-database-images`, `make build-platform-layer`, ...). See
-[Patching and Upgrades](#patching-and-upgrades).
-
-### 3. Configure the environment tfvars
+### 2. Configure the environment tfvars
 
 ```bash
 cp terraform/prd.tfvars.example terraform/prd.tfvars
@@ -252,19 +253,48 @@ cp terraform/prd.tfvars.example terraform/prd.tfvars
 `terraform/*.tfvars` are environment-specific and must never be committed —
 only the `.example` files are tracked.
 
-### 4. Create and select the Terraform workspace
+### 3. Create the state bucket + backend config
 
-State is keyed on a Terraform workspace whose name must match the `environment`
-tfvar. The guard fails the apply otherwise.
+`backend.tf` is gitignored (it points at a state bucket in *your* account), so
+this must be done before any `terraform init` or build:
+
+```bash
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+REGION="us-west-2"
+BUCKET="terraform-state-${ACCOUNT_ID}-${REGION}"
+aws s3api create-bucket --bucket "$BUCKET" --region "$REGION" \
+  --create-bucket-configuration LocationConstraint="$REGION"
+aws s3api put-bucket-versioning --bucket "$BUCKET" \
+  --versioning-configuration Status=Enabled
+cp terraform/backend.tf.example terraform/backend.tf   # then set bucket + region to yours
+```
+
+### 4. Initialize and select the workspace
 
 ```bash
 cd terraform
-terraform init                  # configures the S3 backend + downloads providers
-terraform workspace new prd     # first time only; use `terraform workspace select prd` after
+terraform init                  # configures the S3 backend (from step 3) + downloads providers
+terraform workspace new prd     # first time only; `terraform workspace select prd` after
 terraform workspace show        # must print: prd
+cd ..
 ```
 
-### 5. Plan and apply
+### 5. Build the Lambda layers and container images
+
+Now that tfvars, the backend, and the `prd` workspace are in place, build all
+layers + images in one shot (auto-creates the ECR repos, into the correct
+workspace's state):
+
+```bash
+ENVIRONMENT=prd make pre-deploy    # all Lambda layers + all images + platform-CA layer
+```
+
+To rebuild a single artifact later, use its specific target
+(`make build-ui-image`, `make build-mcp-server-image`,
+`make build-database-images`, `make build-platform-layer`, ...). See
+[Patching and Upgrades](#patching-and-upgrades).
+
+### 6. Plan and apply
 
 ```bash
 terraform plan  -var-file=prd.tfvars -out=terraform.prd.out   # ADR-004: plan to a file (fresh env = creates only)
@@ -275,7 +305,7 @@ A full first apply provisions everything: DynamoDB, S3 + S3 Vectors, KMS,
 Lambdas, the Fargate UI + MCP services, and — if `secondary_region` is set —
 the active/passive HA mirror.
 
-### 6. Post-apply: populate secrets and finish setup
+### 7. Post-apply: populate secrets and finish setup
 
 Terraform creates OAuth/app secrets as SecureString **placeholders**
 (`CHANGE_ME`) with `ignore_changes`, so your real values survive later applies.

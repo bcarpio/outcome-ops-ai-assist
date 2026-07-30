@@ -131,10 +131,19 @@ aws ssm put-parameter --type SecureString --overwrite \
   --value "ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 ```
 
-### 5. Build layers + images
+### 5. Initialize, select the workspace, then build
+
+The build targets run targeted `terraform apply`s, so the backend (step 3),
+tfvars (step 4), and the `prd` workspace must all be in place **first** —
+otherwise the auto-created ECR repos land in the wrong (`default`) workspace's
+state and step 6 recreates them.
 
 ```bash
-ENVIRONMENT=prd make pre-deploy    # all Lambda layers + all container images + platform-CA layer
+cd terraform
+terraform init                 # uses the backend.tf from step 3
+terraform workspace new prd    # match `environment` in tfvars; `select prd` after first time
+cd ..
+ENVIRONMENT=prd make pre-deploy   # all layers + images, into the prd workspace's state
 ```
 
 Rebuild via `pre-deploy` (or a specific `make build-*` target) whenever you pull
@@ -143,16 +152,11 @@ SecureString, or bump `outcomeops_license_layer_arn`.
 
 ### 6. Deploy
 
-Follow the [Deployment Guide → Initial Deployment](deployment-guide.md#initial-deployment)
-for the gated sequence — critically it covers the **Terraform workspace** step
-(`terraform workspace new prd`), which the built-in
-`terraform.workspace == var.environment` guard *requires* or the apply is
-blocked. In brief:
+Init + workspace are done (step 5), so plan and apply. Full gated sequence and
+rationale: [Deployment Guide → Initial Deployment](deployment-guide.md#initial-deployment).
 
 ```bash
 cd terraform
-terraform init
-terraform workspace new prd            # must match environment in tfvars
 terraform plan  -var-file=prd.tfvars -out=terraform.prd.out   # ADR-004: always plan to a file
 terraform apply terraform.prd.out                             # apply the reviewed plan
 ```
