@@ -569,7 +569,7 @@ All secrets are managed through AWS Systems Manager Parameter Store. No secrets 
 | GitHub PAT | `/{env}/{app_name}/github/token` | SecureString |
 | GitHub Webhook Secret | `/{env}/{app_name}/github/webhook-secret` | SecureString |
 | OIDC Client Secret | `/{env}/{app_name}/oidc/client-secret` | SecureString |
-| License Key (optional) | `/{env}/{app_name}/outcomeops/license/key` | SecureString |
+| License Key (optional) | `/{env}/{app_name}/license/key` | SecureString |
 | SonarQube MCP Token | `/{env}/{app_name}/mcp/sonarqube-token` | SecureString |
 | Snyk MCP Token | `/{env}/{app_name}/mcp/snyk-token` | SecureString |
 

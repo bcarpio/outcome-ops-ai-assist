@@ -632,7 +632,7 @@ Usage tracking happens when **work is completed**, not when PRs are created:
 |----------|-------------|---------|
 | `OUTCOMEOPS_LICENSE_SERVER_URL` | License server endpoint | `https://license.example.com` |
 | `OUTCOMEOPS_USAGE_ENABLED` | Enable/disable tracking | `true` |
-| `OUTCOMEOPS_LICENSE_PARAM` | SSM param for license key | `/outcomeops/license/key` |
+| `OUTCOMEOPS_LICENSE_PARAM` | SSM param for license key | `/outcome-ops-ai-assist/license/key` |
 
 ### Tracked Metrics
 

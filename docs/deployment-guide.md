@@ -267,8 +267,8 @@ terraform workspace show        # must print: prd
 ### 5. Plan and apply
 
 ```bash
-terraform plan  -var-file=prd.tfvars    # on a fresh environment, expect creates only
-terraform apply -var-file=prd.tfvars
+terraform plan  -var-file=prd.tfvars -out=terraform.prd.out   # ADR-004: plan to a file (fresh env = creates only)
+terraform apply terraform.prd.out                             # apply exactly what you reviewed
 ```
 
 A full first apply provisions everything: DynamoDB, S3 + S3 Vectors, KMS,
@@ -459,7 +459,7 @@ The license key and Lambda layer ARN are provided by OutcomeOps during onboardin
 ```bash
 # Store the JWT license key in SSM
 aws ssm put-parameter \
-  --name "/${ENV}/outcomeops/license/key" \
+  --name "/${ENV}/outcome-ops-ai-assist/license/key" \
   --value "${JWT_LICENSE_KEY}" \
   --type SecureString \
   --overwrite
@@ -469,7 +469,7 @@ The layer ARN is configured in Terraform via the `outcomeops_license_layer_arn` 
 
 ```hcl
 outcomeops_license_layer_arn  = "arn:aws:lambda:us-west-2:123456789012:layer:prd-outcomeops-license-validator-v1-5-0:1"
-outcomeops_license_ssm_param  = "/prd/outcomeops/license/key"
+outcomeops_license_ssm_param  = "/prd/outcome-ops-ai-assist/license/key"
 outcomeops_license_server_url = "https://license.example.com"
 ```
 
@@ -481,7 +481,7 @@ License renewals are handled by OutcomeOps. When a new license is issued:
 2. Update the SSM parameter:
    ```bash
    aws ssm put-parameter \
-     --name "/${ENV}/outcomeops/license/key" \
+     --name "/${ENV}/outcome-ops-ai-assist/license/key" \
      --value "${NEW_JWT_LICENSE_KEY}" \
      --type SecureString \
      --overwrite

@@ -148,8 +148,8 @@ blocked. In brief:
 cd terraform
 terraform init
 terraform workspace new prd            # must match environment in tfvars
-terraform plan  -var-file=prd.tfvars
-terraform apply -var-file=prd.tfvars
+terraform plan  -var-file=prd.tfvars -out=terraform.prd.out   # ADR-004: always plan to a file
+terraform apply terraform.prd.out                             # apply the reviewed plan
 ```
 
 **After apply — accept Bedrock marketplace agreements** for the models you use;
@@ -161,12 +161,15 @@ and store the license JWT.
 ### 7. Verify
 
 ```bash
-make all       # fmt + validate-tf + unit tests + UI tests
+make all       # fmt + validate (tf/docs/ha-parity) + UNIT tests only
+make test-ui   # UI tests -- NOT part of `make all`; run separately (needs Node 20+)
 make audit     # npm audit (UI) + pip-audit (Python)
 ```
 
-The full suite runs several thousand tests across the Lambda and UI trees; a
-clean run ends with all suites passing.
+`make all` covers formatting, Terraform validation, and the Python unit suite;
+the React/Vitest UI tests are a separate `make test-ui` (CI runs both, so run
+`make test-ui` too before you commit UI changes). The unit suite alone is
+several thousand tests; a clean run ends with all suites passing.
 
 ## Configure the code-generation trigger
 
@@ -179,7 +182,7 @@ OutcomeOps can be triggered from **GitHub Issues** or **Jira**.
 
 ### Option A — GitHub Issues
 
-**7a. Create a webhook secret**
+**1. Create a webhook secret**
 
 ```bash
 WEBHOOK_SECRET=$(openssl rand -hex 32)
@@ -188,7 +191,7 @@ aws ssm put-parameter --type SecureString --overwrite \
   --name /prd/outcome-ops-ai-assist/github/webhook-secret --value "$WEBHOOK_SECRET"
 ```
 
-**7b. Configure the repo webhook**
+**2. Configure the repo webhook**
 
 Repo **Settings → Webhooks → Add webhook**:
 - **Payload URL:** `https://YOUR_API_GATEWAY_URL/webhooks/github`
@@ -242,7 +245,8 @@ This project follows
 Before committing:
 
 ```bash
-make all       # fmt + validate-tf + tests
+make all       # fmt + validate + unit tests
+make test-ui   # UI tests (separate from `make all`; CI runs both)
 ```
 
 Commit with Conventional Commits; branch and open a PR (direct pushes to `main`

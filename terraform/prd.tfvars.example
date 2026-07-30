@@ -382,15 +382,18 @@ github_usernames_to_tag = "yourusername"
 # License Telemetry
 # ============================================================================
 
-# OutcomeOps license validator Lambda layer ARN. Empty = telemetry disabled.
-# outcomeops_license_layer_arn = ""
+# OutcomeOps license validator Lambda layer ARN. REQUIRED -- no default, and
+# terraform plan BLOCKS without it (length > 0 validation). Obtain it from
+# OutcomeOps: email support@outcomeops.ai with the AWS account number(s) you
+# deploy into; they cross-account-share the layer and issue your JWT key.
+# outcomeops_license_layer_arn = "arn:aws:lambda:<region>:<acct>:layer:prd-outcomeops-license-validator-vX-Y-Z:N"
 
 # License server URL (defaulted; override only for testing against a
 # non-production license server).
 # outcomeops_license_server_url = "https://license.example.com"
 
 # SSM parameter path for the license key.
-# outcomeops_license_ssm_param = "/outcome-ops-ai-assist/license/key"
+# outcomeops_license_ssm_param = "/prd/outcome-ops-ai-assist/license/key"  # /<env>/<app>/license/key
 
 # ============================================================================
 # Encryption (CMK)
