@@ -8,6 +8,9 @@ terraform/builds/
 # Ignore actual tfvars files (use .example files as templates)
 terraform/*.tfvars
 !terraform/*.tfvars.example
+# Ignore the real S3 backend (points at YOUR account); use the .example
+terraform/backend.tf
+!terraform/backend.tf.example
 
 # Node
 node_modules/

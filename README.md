@@ -93,7 +93,6 @@ Once licensed, deployment takes approximately 5 minutes:
 
 **New to ADRs?** [Start here →](docs/getting-started-with-adrs.md)
 
-**Want to see it in action first?** [Watch demo video →](docs/demo.md)
 
 ---
 
@@ -132,13 +131,12 @@ OutcomeOps applies the same playbook to AI-assisted development:
 **Getting Started**
 - [Getting Started Guide](docs/getting-started.md) - Prerequisites, setup, first steps
 - [Getting Started with ADRs](docs/getting-started-with-adrs.md) - Learn about Architecture Decision Records
-- [Demo Video](docs/demo.md) - See OutcomeOps in action
 
 **Core Documentation**
 - [Architecture Overview](docs/architecture.md) - System design and data flows
 - [Technical Reference](docs/technical-reference.md) - Detailed technical documentation
 - [CLI Usage Guide](docs/cli-usage.md) - Using the outcome-ops-assist CLI
-- [Deployment Guide](docs/deployment.md) - Operations and troubleshooting
+- [Deployment Guide](docs/deployment-guide.md) - Operations and troubleshooting
 
 **Integrations**
 - [OutcomeOps MCP Server](docs/mcp-server.md) - Connect Claude Code, VS Code, and other MCP clients
@@ -150,8 +148,6 @@ OutcomeOps applies the same playbook to AI-assisted development:
 **Lambda Documentation**
 - [Lambda: Query KB](docs/lambda-query-kb.md) - RAG orchestrator (vector search + reranking + answer generation)
 - [Lambda: Ask Claude](docs/lambda-ask-claude.md) - RAG answer generation
-- [Lambda: Ingest Docs](docs/lambda-ingest-docs.md) - Knowledge base ingestion
-- [Lambda: Generate Code Maps](docs/lambda-generate-code-maps.md) - Code analysis
 - [Lambda: Generate Code](docs/lambda-generate-code.md) - AI-powered code generation from issues
 - [Lambda: Analyze PR](docs/lambda-analyze-pr.md) - PR analysis orchestration
 - [Lambda: Process PR Check](docs/lambda-process-pr-check.md) - PR check worker
@@ -162,7 +158,7 @@ OutcomeOps applies the same playbook to AI-assisted development:
 - [ADR Template](docs/adr/TEMPLATE.md) - Template for new ADRs
 
 **For Developers**
-- [Claude Guidance](docs/claude-guidance.md) - AI assistant development best practices
+- [Claude Guidance](CLAUDE.md) - AI assistant development best practices
 - [Backstory](docs/backstory.md) - Why OutcomeOps exists
 
 ---
@@ -173,7 +169,6 @@ OutcomeOps applies the same playbook to AI-assisted development:
 
 - **[Learn the Methodology](https://www.outcomeops.ai)** - Understand the OutcomeOps approach
 - **[Learn ADRs](docs/getting-started-with-adrs.md)** - New to Architecture Decision Records?
-- **[Watch Demo](docs/demo.md)** - See OutcomeOps in action
 - **[Technical Documentation](docs/getting-started.md)** - Implementation guide for licensed users
 - **Licensing & Support** - [Get in touch](https://www.linkedin.com/in/briancarpio/)
 

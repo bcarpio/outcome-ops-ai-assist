@@ -1,0 +1,26 @@
+# Terraform S3 remote-state backend.
+#
+# COPY THIS TO backend.tf AND FILL IN YOUR VALUES. backend.tf itself is
+# gitignored because it points at a state bucket in YOUR AWS account --
+# it must never carry another account's bucket/ID. Terraform backends
+# cannot use variables, so this stays a per-deploy file (like *.tfvars).
+#
+# One-time bucket setup (per deploy account + region):
+#   aws s3api create-bucket --bucket <your-tf-state-bucket> --region <region> \
+#     --create-bucket-configuration LocationConstraint=<region>
+#   aws s3api put-bucket-versioning --bucket <your-tf-state-bucket> \
+#     --versioning-configuration Status=Enabled
+#
+# Then: terraform init
+terraform {
+  backend "s3" {
+    bucket = "REPLACE-WITH-YOUR-TF-STATE-BUCKET"
+    key    = "outcome-ops-ai-assist.tfstate"
+    region = "REPLACE-WITH-YOUR-REGION" # e.g. us-west-2
+
+    # Optional (recommended for teams): S3-native state locking is on by
+    # default in Terraform 1.10+. For older Terraform, add a DynamoDB lock
+    # table with a "LockID" (String) partition key and set:
+    #   dynamodb_table = "your-tf-lock-table"
+  }
+}

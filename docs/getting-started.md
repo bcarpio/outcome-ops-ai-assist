@@ -1,655 +1,261 @@
 # Getting Started
 
+This is the onboarding quick-start: prerequisites, the GitHub token, and the
+first-deploy outline. The **authoritative, step-by-step deploy + Day-2
+operations** live in the [Deployment Guide](deployment-guide.md) — this page
+hands off to it rather than duplicating (and drifting from) it.
+
 ## Prerequisites
 
-Before you begin, ensure you have the following installed:
+### Tools on your machine
 
 1. **Python 3.12+**
    ```bash
-   pyenv install 3.12
-   pyenv local 3.12
+   pyenv install 3.12 && pyenv local 3.12
    ```
+2. **Terraform 1.5+** — `brew install terraform`
+3. **AWS CLI v2, configured** — `aws configure` (or an SSO/Identity Center
+   profile). Every step from the state bucket onward uses it.
+4. **Docker** — the layer/image builds (`make pre-deploy`) compile inside
+   Amazon Linux 2 / Python 3.12 containers for Lambda ABI compatibility, so a
+   running Docker daemon is required.
+5. **GitHub Personal Access Token** — see [Creating the GitHub token](#creating-the-github-token) below.
 
-2. **Terraform 1.5+**
-   ```bash
-   brew install terraform
-   ```
+### Things you must obtain before you can deploy
 
-3. **GitHub Personal Access Token (Classic)** - Required for repository operations
+These are not in the repo and will block `terraform plan`/`apply` if missing:
 
-   OutcomeOps AI Assist needs a GitHub PAT to:
-   - Read repository content and issues
-   - Create branches and commits
-   - Create and update pull requests
-   - Post comments on issues and PRs
+- **OutcomeOps license layer ARN + license JWT** — a commercial artifact issued
+  by OutcomeOps. `outcomeops_license_layer_arn` is a required variable with no
+  default; `terraform plan` prompts for it and cannot proceed without it.
+  Request both from OutcomeOps. See [License Management](deployment-guide.md#license-management).
+- **A VPC with subnets** — if deploying the Chat UI (`deploy_ui = true`), you
+  supply `ui_vpc_id` + subnet IDs. See the Deployment Guide's network topology.
+- **A domain + ACM/IAM TLS certificate** — for the UI's ALB (BYO DNS + cert).
+- **Azure AD (Entra ID) app registration** — the UI authenticates via Azure AD
+  OIDC. Set this up per [Azure AD Setup](azure-ad-setup.md) before enabling a
+  public ALB. (Headless deploys with `deploy_ui = false` skip the last three.)
 
-   **Creating the Token:**
+### Creating the GitHub token
 
-   1. Go to [GitHub Settings > Developer settings > Personal access tokens > Tokens (classic)](https://github.com/settings/tokens)
-   2. Click **Generate new token (classic)**
-   3. Give it a descriptive name (e.g., "OutcomeOps AI Assist - Dev")
-   4. Set expiration (recommend 90 days for security, or "No expiration" for convenience)
-   5. Select the following scopes:
+OutcomeOps needs a GitHub PAT to read repos/issues, create branches/commits/PRs,
+and post PR comments.
+
+1. [GitHub Settings → Developer settings → Personal access tokens → Tokens (classic)](https://github.com/settings/tokens)
+2. **Generate new token (classic)**, name it (e.g. "OutcomeOps AI Assist — Dev"),
+   set an expiration.
+3. Select scopes:
 
    | Scope | Required | Purpose |
    |-------|----------|---------|
-   | `repo` | Yes | Full control of private repositories (read/write code, create branches, PRs) |
-   | `workflow` | If using GitHub Actions | Allows triggering workflow runs |
+   | `repo` | Yes | Read/write code, branches, PRs on private repos |
+   | `workflow` | If using GitHub Actions | Trigger workflow runs |
 
-   6. Click **Generate token** and copy it immediately (you won't see it again)
+4. **Generate token** and copy it immediately.
 
-   **Fine-grained PAT Alternative:**
+**Fine-grained PAT alternative:** select specific repositories, with Contents,
+Issues, and Pull requests = Read and write (Metadata read-only is automatic).
 
-   For more restrictive access, you can use a fine-grained PAT with these permissions:
-   - **Repository access:** Select specific repositories
-   - **Permissions:**
-     - Contents: Read and write
-     - Issues: Read and write
-     - Pull requests: Read and write
-     - Metadata: Read-only (automatically included)
+## Quick Start
 
-## Quick Start (5 Minutes)
+> First deploy is roughly **30–45 minutes** end to end — most of it is
+> `make pre-deploy` building six container images and the Lambda layers, not
+> the Terraform apply. This is an outline; the
+> [Deployment Guide → Initial Deployment](deployment-guide.md#initial-deployment)
+> is the authoritative, gated sequence.
 
-### Step 1: Clone the Repository
+### 1. Clone
 
 ```bash
-git clone git@github.com:bcarpio/outcome-ops-ai-assist.git
-cd outcome-ops-ai-assist
+git clone git@github.com:bcarpio/outcome-ops-ai-assist-private.git
+cd outcome-ops-ai-assist-private
 ```
 
-### Step 2: Set Up Python Environment
+### 2. Python environment
 
 ```bash
-# Create virtual environment and install dependencies
-make setup
-
-# Activate the virtual environment
+make setup                 # creates the repo-root venv/ and installs deps
 source venv/bin/activate
 ```
 
-This runs:
-- Creates Python 3.12 virtual environment
-- Installs all Lambda handler dependencies
-- Ready for testing and development
+### 3. Terraform state bucket + backend
 
-### Step 3: Create Terraform State Bucket
-
-Terraform requires an S3 bucket to store its state file. This bucket must be created manually before running any Terraform commands.
+Create an S3 bucket for state (per account + region):
 
 ```bash
-# Set your variables
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 REGION="us-west-2"
-ENV="prd"
-BUCKET_NAME="terraform-state-${ACCOUNT_ID}-${REGION}-${ENV}"
+BUCKET_NAME="terraform-state-${ACCOUNT_ID}-${REGION}"
 
-# Create the bucket
-aws s3api create-bucket \
-  --bucket "${BUCKET_NAME}" \
-  --region "${REGION}" \
-  --create-bucket-configuration LocationConstraint="${REGION}"
-
-# Enable versioning (required for state recovery)
-aws s3api put-bucket-versioning \
-  --bucket "${BUCKET_NAME}" \
+aws s3api create-bucket --bucket "$BUCKET_NAME" --region "$REGION" \
+  --create-bucket-configuration LocationConstraint="$REGION"
+aws s3api put-bucket-versioning --bucket "$BUCKET_NAME" \
   --versioning-configuration Status=Enabled
-
-# Block all public access
-aws s3api put-public-access-block \
-  --bucket "${BUCKET_NAME}" \
-  --public-access-block-configuration \
-    BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
-
-# Enable server-side encryption
-aws s3api put-bucket-encryption \
-  --bucket "${BUCKET_NAME}" \
-  --server-side-encryption-configuration \
-    '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
+aws s3api put-public-access-block --bucket "$BUCKET_NAME" \
+  --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
 ```
 
-Then update `terraform/backend.tf` to match your bucket name:
-
-```hcl
-terraform {
-  backend "s3" {
-    bucket = "terraform-state-ACCOUNT_ID-us-west-2-prd"  # Replace with your bucket name
-    key    = "outcome-ops-ai-assist.tfstate"
-    region = "us-west-2"                                  # Replace with your region
-  }
-}
-```
-
-### Step 4: Configure Terraform
-
-Create your local Terraform variables file (not committed to git):
+Then create your backend config from the template (`backend.tf` is gitignored —
+it points at *your* bucket):
 
 ```bash
-# Copy from example template
-cp terraform/.tfvars.example terraform/prd.tfvars
-
-# Edit terraform/prd.tfvars with your values:
-# - aws_region (e.g., us-west-2)
-# - repos_to_ingest (which repos to ingest into knowledge base)
+cp terraform/backend.tf.example terraform/backend.tf
+# edit terraform/backend.tf: set bucket + region to yours
 ```
 
-Store your GitHub token (created in Prerequisites) securely in AWS SSM Parameter Store:
+### 4. Configure tfvars
 
 ```bash
-# Replace YOUR_GITHUB_TOKEN with the PAT you created earlier
-aws ssm put-parameter \
+cp terraform/prd.tfvars.example terraform/prd.tfvars
+# Edit terraform/prd.tfvars. The three variables with NO default you MUST set:
+#   aws_region, environment, outcomeops_license_layer_arn (from OutcomeOps)
+# plus topology (ALB mode, VPC/subnets) and which integrations to enable.
+```
+
+Store your GitHub token in SSM:
+
+```bash
+aws ssm put-parameter --type SecureString --overwrite \
   --name /prd/outcome-ops-ai-assist/github/token \
-  --value "ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" \
-  --type SecureString \
-  --overwrite
+  --value "ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 ```
 
-Verify the token was stored correctly:
-```bash
-# This should return the parameter metadata (not the value, for security)
-aws ssm get-parameter --name /prd/outcome-ops-ai-assist/github/token
-
-# To verify the token works with GitHub (optional but recommended)
-curl -H "Authorization: token $(aws ssm get-parameter --name /prd/outcome-ops-ai-assist/github/token --with-decryption --query Parameter.Value --output text)" \
-  https://api.github.com/user
-```
-
-### Step 5: Build Lambda Layers, Container Images, and Platform-CA Layer
-
-Before `terraform apply`, every Lambda layer and container image referenced by terraform must exist locally (zips on disk) or in ECR (container tags). One command builds all of them:
+### 5. Build layers + images
 
 ```bash
-ENVIRONMENT=prd make pre-deploy
+ENVIRONMENT=prd make pre-deploy    # all Lambda layers + all container images + platform-CA layer
 ```
 
-This runs, in order:
+Rebuild via `pre-deploy` (or a specific `make build-*` target) whenever you pull
+code that changes a handler/`requirements.txt`, edit a Dockerfile, rotate a CA
+SecureString, or bump `outcomeops_license_layer_arn`.
 
-1. **`make build-all-layers`** — builds the runtime-tools layer (git/make/tar) and the terraform-CLI layer used by generate-code. Each script builds inside the Amazon Linux 2 / Python 3.12 Docker image so native binaries are ABI-compatible with the Lambda runtime.
-2. **`make build-all-images`** — builds every container image (run-tests, chat UI, OutcomeOps MCP server, Snyk MCP server, database-integration, database-sync), auto-creating each ECR repo via targeted terraform apply and pushing tags to SSM so the main apply references them.
-3. **`make build-platform-layer`** — builds the platform-CA Lambda layer. Always succeeds: with the default empty `platform_ca_bundle_ssm_param_arns` the layer ships pure Mozilla certifi (passthrough); with customer roots configured, the layer concatenates each PEM and validates it with `openssl x509`.
+### 6. Deploy
 
-Rebuild via `pre-deploy` whenever you:
-- Pull new code that changes a Lambda handler or `requirements.txt`
-- Edit a Dockerfile or `lambda/db-introspection-requirements.txt`
-- Rotate a SecureString referenced by `customer_ca_bundle_ssm_param_arns` or `platform_ca_bundle_ssm_param_arns`
-- Bump `outcomeops_license_layer_arn` in your tfvars to a new version
-- Deploy to a fresh environment for the first time
-
-The individual `make build-*` targets remain documented in the "Available Make Commands" reference further down -- invoke them directly when iterating on a single failed step.
-
-### Step 6: Deploy Infrastructure
+Follow the [Deployment Guide → Initial Deployment](deployment-guide.md#initial-deployment)
+for the gated sequence — critically it covers the **Terraform workspace** step
+(`terraform workspace new prd`), which the built-in
+`terraform.workspace == var.environment` guard *requires* or the apply is
+blocked. In brief:
 
 ```bash
 cd terraform
-
-# Plan the full infrastructure
-terraform plan -var-file=prd.tfvars -out=terraform.prd.out
-
-# Review the plan output, then apply
-terraform apply terraform.prd.out
+terraform init
+terraform workspace new prd            # must match environment in tfvars
+terraform plan  -var-file=prd.tfvars
+terraform apply -var-file=prd.tfvars
 ```
 
-This creates:
-- S3 bucket for knowledge base documents
-- S3 Vectors bucket and index for embeddings
-- DynamoDB table for state tracking
-- Lambda functions for ingestion, query, and code generation
-- EventBridge schedule for hourly ingestion
-- SSM parameters for configuration
-- API Gateway endpoint for webhooks
+**After apply — accept Bedrock marketplace agreements** for the models you use;
+third-party models (e.g. Cohere Rerank) fail *silently* without them. See
+[Deployment Guide → Bedrock Model Access](deployment-guide.md#bedrock-model-access-and-marketplace-agreements).
+Then overwrite the SSM SecureString placeholders for your enabled integrations
+and store the license JWT.
 
-**Enable Bedrock Model Access:** After deployment, ensure all required Bedrock models have their marketplace agreements accepted. Third-party models like Cohere Rerank 3.5 require this step or reranking will fail silently. See [Deployment Guide - Bedrock Model Access](deployment-guide.md#bedrock-model-access-and-marketplace-agreements) for CLI and Console instructions.
-
-After deployment, note the API Gateway URL from the Terraform output:
-```
-api_gateway_url = "https://xxxxxx.execute-api.us-west-2.amazonaws.com"
-```
-
-### Step 7: Configure Code Generation Trigger
-
-OutcomeOps AI Assist can be triggered from either **GitHub Issues** or **Jira**. Choose the option that fits your workflow:
-
-| Trigger Source | Best For | Setup Complexity |
-|----------------|----------|------------------|
-| **GitHub Issues** | Teams already using GitHub for issue tracking | Simple (webhook only) |
-| **Jira** | Teams using Jira for project management | Moderate (automation rule + webhook) |
-
----
-
-#### Option A: GitHub Issues (Recommended for GitHub-native workflows)
-
-**Step 6a: Create Webhook Secret**
-
-Generate and store a webhook secret for GitHub webhook verification:
+### 7. Verify
 
 ```bash
-# Generate a random secret
+make all       # fmt + validate-tf + unit tests + UI tests
+make audit     # npm audit (UI) + pip-audit (Python)
+```
+
+The full suite runs several thousand tests across the Lambda and UI trees; a
+clean run ends with all suites passing.
+
+## Configure the code-generation trigger
+
+OutcomeOps can be triggered from **GitHub Issues** or **Jira**.
+
+| Trigger | Best for | Setup |
+|---------|----------|-------|
+| GitHub Issues | GitHub-native teams | Webhook only |
+| Jira | Jira-based teams | Automation rule + webhook |
+
+### Option A — GitHub Issues
+
+**7a. Create a webhook secret**
+
+```bash
 WEBHOOK_SECRET=$(openssl rand -hex 32)
-echo "Save this webhook secret for GitHub configuration: $WEBHOOK_SECRET"
-
-# Store in SSM Parameter Store
-aws ssm put-parameter \
-  --name /prd/outcome-ops-ai-assist/github/webhook-secret \
-  --value "$WEBHOOK_SECRET" \
-  --type SecureString \
-  --overwrite
+echo "Save this for the GitHub webhook config: $WEBHOOK_SECRET"
+aws ssm put-parameter --type SecureString --overwrite \
+  --name /prd/outcome-ops-ai-assist/github/webhook-secret --value "$WEBHOOK_SECRET"
 ```
 
-**Step 6b: Configure GitHub Webhook**
+**7b. Configure the repo webhook**
 
-Configure a webhook on each repository you want to enable code generation for:
+Repo **Settings → Webhooks → Add webhook**:
+- **Payload URL:** `https://YOUR_API_GATEWAY_URL/webhooks/github`
+- **Content type:** `application/json`
+- **Secret:** the value above
+- **Events:** "Let me select individual events" → **Issues** only
+- **Active:** checked
 
-1. Go to your repository's **Settings > Webhooks > Add webhook**
+**Usage:** label an issue `approved-for-generation` (full code-gen → PR) or
+`approved-for-plan` (plan-only PR, cheap, for testing).
 
-2. Configure the webhook:
-   - **Payload URL:** `https://YOUR_API_GATEWAY_URL/webhooks/github`
-   - **Content type:** `application/json`
-   - **Secret:** The webhook secret you generated above
-   - **Which events:** Select "Let me select individual events" and check only **Issues**
-   - **Active:** Checked
+### Option B — Jira
 
-3. Click **Add webhook**
+See the [Jira Integration Setup Guide](jira-integration-setup.md). The GitHub
+PAT is still required (it creates the branches/commits/PRs).
 
-4. GitHub will send a ping event. Check CloudWatch logs to verify it was received:
-   ```bash
-   aws logs tail /aws/lambda/prd-outcome-ops-ai-assist-generate-code --follow
-   ```
+## Optional: MCP servers
 
-**Usage:** Add the `approved-for-generation` or `approved-for-plan` label to an issue to trigger code generation:
-- `approved-for-generation`: Full code generation (creates plan, generates code, creates PR)
-- `approved-for-plan`: Plan-only mode (creates plan and PR without generating code - useful for testing)
+### OutcomeOps MCP (Claude Code, VS Code, Cursor)
 
----
-
-#### Option B: Jira Integration
-
-If your team uses Jira for issue tracking, you can trigger code generation from Jira issues instead.
-
-See the **[Jira Integration Setup Guide](jira-integration-setup.md)** for complete instructions on:
-- Creating the Jira automation rule
-- Configuring the webhook endpoint
-- Mapping Jira fields to code generation parameters
-
-**Note:** The GitHub PAT (configured in Step 3) is still required for Jira integration - it's used to create branches, commits, and pull requests in GitHub.
-
----
-
-### Step 8: Verify Installation
-
-Run tests to confirm everything works:
-
-```bash
-# From repo root
-make test
-```
-
-You should see:
-```
-✓ 17 unit tests passed
-✓ All checks complete
-```
-
-## Development Workflow
-
-This project follows **[ADR-002: Development Workflow Standards](../fatacyai-adrs/docs/adr/ADR-002-development-workflow.md)**.
-
-Before committing any changes:
-
-```bash
-# Format code
-make fmt
-
-# Validate Terraform
-make validate
-
-# Run tests
-make test
-
-# Or all at once
-make all
-```
-
-Then commit with conventional commit format:
-```bash
-git add .
-git commit -m "feat(component): description of change"
-git push origin main
-```
-
-Then deploy infrastructure changes:
-```bash
-cd terraform
-terraform plan -var-file=prd.tfvars -out=terraform.prd.out
-# Review the plan
-terraform apply terraform.prd.out
-```
-
-## Available Make Commands
-
-```bash
-make help                  # Show all available commands
-make setup                 # Create venv and install dependencies
-make install               # Install dependencies (venv must exist)
-make fmt                   # Format Terraform code
-make validate              # Validate Terraform configuration
-make test                  # Run all tests
-make test-unit             # Run only unit tests
-make test-coverage         # Run tests with coverage report
-make audit                 # Run npm audit on UI dependencies
-
-# Container images (ECR) - require ENVIRONMENT=dev|prd
-ENVIRONMENT=prd make build-run-tests-image     # Run-tests Lambda container
-ENVIRONMENT=prd make build-ui-image            # Chat UI Fargate container
-ENVIRONMENT=prd make build-mcp-server-image    # OutcomeOps MCP server container
-ENVIRONMENT=prd make build-snyk-image          # Snyk MCP server container
-ENVIRONMENT=prd make build-database-images     # database-integration + database-sync Lambda containers
-
-# Container images (combined)
-ENVIRONMENT=prd make build-all-images          # Builds every container image in one shot
-
-# Lambda layers (zipped packages, distinct from container images)
-make build-runtime-layer   # git/make/tar for generate-code Lambda
-make build-terraform-layer # terraform CLI for generate-code fmt/validate
-make build-all-layers      # Both layers in one shot
-make build-platform-layer  # Platform-CA trust layer (certifi + platform_ca_bundle_ssm_param_arns)
-
-# Combined deployment shortcut
-ENVIRONMENT=prd make pre-deploy                # Builds all layers + all images + platform-CA layer
-
-make clean                 # Clean build artifacts
-make all                   # Run fmt, validate, and test
-```
-
-## Troubleshooting
-
-### Python Version Issues
-```bash
-# Verify you're using the right Python
-python --version  # Should be 3.12.x
-
-# Reset pyenv if needed
-pyenv local 3.12
-python --version
-```
-
-### Virtual Environment Not Activating
-```bash
-# Ensure venv exists
-ls -la venv/
-
-# Try creating it manually
-python3.12 -m venv venv
-source venv/bin/activate
-make install
-```
-
-### Terraform Errors
-
-**"Backend initialization required"**
-```bash
-cd terraform
-terraform init -reconfigure
-```
-
-**"AWS credentials not found"**
-```bash
-# Configure AWS credentials
-aws configure
-
-# Or set environment variables
-export AWS_ACCESS_KEY_ID=your-key
-export AWS_SECRET_ACCESS_KEY=your-secret
-export AWS_REGION=us-west-2
-```
-
-**"GitHub token not found in SSM"**
-```bash
-# Store the token
-aws ssm put-parameter \
-  --name /prd/outcome-ops-ai-assist/github/token \
-  --value "YOUR_TOKEN" \
-  --type SecureString \
-  --overwrite
-```
-
-### GitHub Token Errors
-
-**"Resource not accessible by integration" or 403 errors**
-
-This usually means your PAT doesn't have the required scopes:
-1. Go to [GitHub Settings > Personal access tokens](https://github.com/settings/tokens)
-2. Find your token and click on it
-3. Ensure the `repo` scope is selected (full control of private repositories)
-4. If you modified scopes, regenerate and update SSM:
-   ```bash
-   aws ssm put-parameter \
-     --name /prd/outcome-ops-ai-assist/github/token \
-     --value "ghp_your_new_token" \
-     --type SecureString \
-     --overwrite
-   ```
-
-**"Bad credentials" or 401 errors**
-
-Your token may have expired or been revoked:
-```bash
-# Test your token
-TOKEN=$(aws ssm get-parameter --name /prd/outcome-ops-ai-assist/github/token --with-decryption --query Parameter.Value --output text)
-curl -H "Authorization: token $TOKEN" https://api.github.com/user
-
-# If it returns an error, generate a new token and update SSM
-```
-
-**Token doesn't have access to a specific repository**
-
-For fine-grained PATs, you must explicitly grant access to each repository:
-1. Go to [GitHub Settings > Personal access tokens > Fine-grained tokens](https://github.com/settings/tokens?type=beta)
-2. Edit your token
-3. Under "Repository access", add the repositories you need
-
-## Updating Infrastructure
-
-### Change Repository Allowlist
-
-Update `prd.tfvars`:
-
-```hcl
-repos_to_ingest = [
-  # Add new repo here
-  {
-    name    = "new-repo"
-    project = "bcarpio/new-repo"
-    type    = "standards"
-  }
-]
-```
-
-Then:
-
-```bash
-terraform plan -var-file=prd.tfvars -out=terraform.prd.out
-terraform apply terraform.prd.out
-```
-
-This updates the SSM parameter without redeploying Lambda.
-
-### Update Lambda Code
-
-Changes to Lambda handler files or `requirements.txt` trigger Lambda redeploy:
-
-```bash
-terraform plan -var-file=prd.tfvars
-# Shows: aws_lambda_function will be updated
-terraform apply -var-file=prd.tfvars
-```
-
-## Terraform State Management
-
-### Remote State
-
-State is stored in S3 with locking via DynamoDB. Configuration in `terraform/backend.tf`.
-
-### Viewing State
-
-```bash
-# List all resources
-terraform state list
-
-# Show specific resource
-terraform state show module.ingest_docs_lambda.aws_lambda_function.this[0]
-
-# Backup state
-terraform state pull > terraform-backup.json
-```
-
-## Destroying Infrastructure
-
-### Delete Specific Resources
-
-```bash
-# Delete only Lambda, keep S3 and DynamoDB
-terraform destroy \
-  -target=module.ingest_docs_lambda \
-  -var-file=prd.tfvars
-```
-
-### Delete Everything
-
-**Warning**: This deletes all data in S3 and DynamoDB!
-
-```bash
-# First, empty S3 bucket
-aws s3 rm s3://prd-outcome-ops-ai-assist-kb --recursive
-
-# Then destroy all infrastructure
-terraform destroy -var-file=prd.tfvars
-```
-
-## Monitoring
-
-### CloudWatch Logs
-
-```bash
-# Real-time logs from Lambda
-aws logs tail /aws/lambda/prd-outcome-ops-ai-assist-ingest-docs --follow
-
-# Filter for errors
-aws logs tail /aws/lambda/prd-outcome-ops-ai-assist-ingest-docs \
-  --filter-pattern "ERROR"
-```
-
-### Lambda Metrics
-
-View in AWS Console:
-- Invocations (hourly ingestion)
-- Duration (how long ingestion takes)
-- Errors (failed documents)
-- Throttles (rate limiting)
-
-## Rollback Procedure
-
-If something goes wrong:
-
-```bash
-# Fastest fix: revert handler code in git and redeploy
-git revert HEAD~1
-terraform apply -var-file=prd.tfvars
-```
-
-For state rollback, restore from S3 versioned state bucket.
-
-## Production Checklist
-
-Before deploying to production (`prd.tfvars`):
-
-- [ ] Test in dev environment completely
-- [ ] Review Terraform plan (no surprises)
-- [ ] Backup state: `terraform state pull > backup.json`
-- [ ] Create prd.tfvars with production settings
-- [ ] Store GitHub token in SSM for prd environment
-- [ ] Plan production: `terraform plan -var-file=prd.tfvars`
-- [ ] Apply production: `terraform apply -var-file=prd.tfvars`
-- [ ] Test production Lambda manually
-- [ ] Verify production data appears in DynamoDB/S3
-- [ ] Set up CloudWatch alarms
-
-## Optional: Enable MCP Server Integration
-
-OutcomeOps supports [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) servers
-for integrating external tools and connecting developer environments.
-
-### OutcomeOps MCP Server (Connect Claude Code, VS Code, etc.)
-
-The OutcomeOps MCP server lets developers query the knowledge base directly from
-MCP-compatible tools like Claude Code, VS Code, and Cursor.
-
-1. Add to your `prd.tfvars`:
-   ```hcl
-   mcp_server_enabled = true
-   ```
-
-2. Deploy infrastructure, build and push the container image, then deploy again:
-   ```bash
-   ENVIRONMENT=prd make build-mcp-server-image
-   ```
-
-3. Generate an API key in the web UI: **Settings > API Keys**
-
-4. Configure your MCP client (e.g., Claude Code):
+1. `mcp_server_enabled = true` in `prd.tfvars`, then
+   `ENVIRONMENT=prd make build-mcp-server-image` and re-apply.
+2. Generate an API key in the UI: **Settings → API Keys**.
+3. Add it to your client:
    ```bash
    claude mcp add --transport http outcomeops \
      https://your-outcomeops-domain.com/mcp/v1 \
      --header "Authorization: Bearer ooa_your_key_here"
    ```
 
-See the full guide: **[OutcomeOps MCP Server](mcp-server.md)**
+Full guide: [OutcomeOps MCP Server](mcp-server.md).
 
-### SonarQube MCP Server (Code Quality Tools in Chat)
+### SonarQube MCP (code-quality tools in chat)
 
-The SonarQube MCP server gives the chat AI access to code quality and security data.
+```bash
+aws ssm put-parameter --type SecureString \
+  --name /prd/outcome-ops-ai-assist/mcp/sonarqube-token --value "your-token"
+```
+```hcl
+mcp_sonarqube_enabled = true
+mcp_sonarqube_url     = "https://sonarcloud.io"
+mcp_sonarqube_org     = "your-org-key"   # SonarCloud only
+```
+Full guide: [SonarQube MCP Server Setup](sonarqube-mcp.md). Org admins assign
+MCP servers to workspaces in the UI after deploy.
 
-To enable SonarQube MCP:
+## Development workflow
 
-1. Store your SonarQube API token in SSM:
-   ```bash
-   aws ssm put-parameter \
-     --name "/prd/outcome-ops-ai-assist/mcp/sonarqube-token" \
-     --type SecureString \
-     --value "your-sonarqube-token"
-   ```
+This project follows
+[ADR-002: Development Workflow Standards](adr/ADR-002-development-workflow.md).
+Before committing:
 
-2. Add to your `prd.tfvars`:
-   ```hcl
-   mcp_sonarqube_enabled = true
-   mcp_sonarqube_url     = "https://sonarcloud.io"
-   mcp_sonarqube_org     = "your-org-key"  # SonarCloud only
-   ```
+```bash
+make all       # fmt + validate-tf + tests
+```
 
-3. Deploy and activate in the UI
+Commit with Conventional Commits; branch and open a PR (direct pushes to `main`
+require a PR per the repo ruleset).
 
-See the full guide: **[SonarQube MCP Server Setup](sonarqube-mcp.md)**
+## Operations & troubleshooting
 
-Org admins assign MCP servers to workspaces via the UI after the infrastructure is deployed.
+Deploy verification, monitoring, credential rotation, backups/PITR, fault
+handling, and recovery procedures are all in the
+**[Deployment Guide](deployment-guide.md)** — it is the single source of truth
+for Day-2. For architecture and data flows, see
+[Architecture Overview](architecture.md).
 
-## Next Steps
+## Next steps
 
-1. **Read the Documentation**
-   - [Architecture Overview](architecture.md) - System design and data flows
-   - [Lambda: Ingest Docs](lambda-ingest-docs.md) - Knowledge base ingestion
-   - [SonarQube MCP Server](sonarqube-mcp.md) - Enable code quality tools in chat
-
-2. **Review Standards**
-   - [ADR-001: Creating ADRs](../fatacyai-adrs/docs/adr/ADR-001-create-adrs.md) - How to write architectural decisions
-   - [ADR-002: Development Workflow](../fatacyai-adrs/docs/adr/ADR-002-development-workflow.md) - Development standards
-
-3. **Start Development**
-   - Make code changes following ADR-002 workflow
-   - Run `make all` before committing
-   - Create Terraform plans for infrastructure changes
-   - Test in dev before deploying to production
-
-## Getting Help
-
-- Review existing ADRs for architectural questions
-- Check CloudWatch logs: `aws logs tail /aws/lambda/prd-outcome-ops-ai-assist-* --follow`
+- [Architecture Overview](architecture.md) — system design and data flows
+- [Deployment Guide](deployment-guide.md) — full deploy + operations
+- [ADR-001: Creating ADRs](adr/ADR-001-create-adrs.md) and
+  [ADR-002: Development Workflow](adr/ADR-002-development-workflow.md)
+- [SonarQube MCP Server](sonarqube-mcp.md) — code-quality tools in chat
 
 <!-- Confluence sync -->
