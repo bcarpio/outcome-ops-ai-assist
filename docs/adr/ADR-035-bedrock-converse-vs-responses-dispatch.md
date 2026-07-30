@@ -72,6 +72,29 @@ loudly. Per the platform's structural-attribution discipline (ADR-031, ADR-033),
 the LLM is grounded by retrieval; routing the wrong model silently invalidates
 that grounding.
 
+**Update 2026-07-30 — GPT-5.6 (Terra / Luna / Sol).** AWS published the GPT-5.6
+line. All three variants match the existing `us.openai.gpt-5-*` prefix, so they
+route to the Responses backend with **no dispatch change** — the table above
+already covers them; adopting them is a tfvars-only change (model IDs + pricing).
+Tier / region / price facts (per-1M tokens, verified on the Bedrock pricing page
+2026-07-30):
+
+| Variant | Input | Output | Regions | Role |
+|---|---|---|---|---|
+| Sol | $5.50 | $33.00 | us-east-1, us-east-2 | premium flagship (= old 5.5 price) |
+| Terra | $2.20 | $13.20 | us-east-1, us-east-2, **us-west-2** | 5.5-level quality, lower cost → advanced tier |
+| Luna | $0.22 | $1.32 | us-east-1, us-east-2, **us-west-2** | fast/cheap high-volume → basic tier |
+
+Because Terra + Luna reach **us-west-2** (the default region), an all-GPT deploy
+can run advanced=Terra / basic=Luna in the home region without the us-east-2
+relocation the us-east-2-only GPT-5.5 forced — the region obstacle behind the
+demo-only OpenAI scope is removed. Two caveats remain: (1) Sol is still
+us-east-1/us-east-2 only; (2) cost attribution — `audit.py` hardcodes per-model
+pricing and ignores the `bedrock_*_price` tfvars (see `docs/tech-debt.md`), so a
+GPT-5.6 deploy mis-attributes `cost_usd` until that is reconciled. Exact Mantle
+model-ID strings are not returned by `list-foundation-models` (Mantle-served);
+confirm them in the Bedrock console model catalog before deploying.
+
 ### 2. Unified request/response shape
 
 The unified shape mirrors **Converse** (the existing dialect), so call-site

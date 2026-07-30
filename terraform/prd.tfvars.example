@@ -102,26 +102,45 @@ github_usernames_to_tag = "yourusername"
 # bedrock_embedding_model_id = "amazon.titan-embed-text-v2:0"
 
 # --- OpenAI GPT instead of Claude (model choice, NOT a separate environment) ---
-# To run on OpenAI frontier models (GPT-5.5 / GPT-5.4 on Amazon Bedrock, GA
-# 2026-06-03) rather than Anthropic Claude, override the two model IDs below in
-# THIS prd deploy -- there is no separate "openai" environment or workspace.
+# To run on OpenAI frontier models (GPT-5.6 on Amazon Bedrock) rather than
+# Anthropic Claude, override the two model IDs below in THIS prd deploy -- there
+# is no separate "openai" environment or workspace.
 # Typical driver: compliance customers who must retire Anthropic Claude entirely
 # from the inference path (embedding + rerank stay on Titan + Cohere, which are
 # not Anthropic).
 #
-# REGION: GPT-5.5 is US East (Ohio, us-east-2) ONLY; GPT-5.4 is us-east-2 +
-# us-west-2. To use GPT-5.5 as the advanced tier, set aws_region = "us-east-2".
-# Under HA, the secondary region must also carry the model or downgrade its
-# bedrock_advanced_model_id to GPT-5.4. Verify exact model IDs with
-# `aws bedrock list-foundation-models`.
-# bedrock_advanced_model_id = "us.openai.gpt-5-5:0"
-# bedrock_basic_model_id    = "us.openai.gpt-5-5:0"   # until gpt-5-mini lands in us-east-2
-# Pricing tfvars mirror the model choice (per 1M tokens; see the AWS Bedrock
-# pricing page, OpenAI section, and update if AWS adjusts):
-# bedrock_advanced_input_price  = 5.50
-# bedrock_advanced_output_price = 33.00
-# bedrock_basic_input_price     = 5.50    # match advanced until a cheaper tier-2 model lands
-# bedrock_basic_output_price    = 33.00
+# MODEL FAMILY (GPT-5.6, prices per 1M tokens verified on the AWS Bedrock
+# pricing page 2026-07-30 -- re-check before deploying):
+#   - Sol   -- premium flagship. $5.50 in / $33.00 out. us-east-1 + us-east-2
+#              ONLY (same price as the older GPT-5.5).
+#   - Terra -- balanced: GPT-5.5-level quality at lower cost. $2.20 in /
+#              $13.20 out. Available us-east-1, us-east-2, AND us-west-2.
+#   - Luna  -- fast/cheap, high-volume. $0.22 in / $1.32 out. Same regions as
+#              Terra (incl. us-west-2). This is the gpt-mini-equivalent basic tier.
+# Older GPT-5.5 ($5.50/$33.00, us-east-2 only) and GPT-5.4 ($2.75/$16.50,
+# us-east-2 + us-west-2) remain selectable.
+#
+# REGION: because Terra + Luna are now in us-west-2 (the default region), an
+# all-GPT deploy can run advanced=Terra / basic=Luna in us-west-2 WITHOUT
+# relocating to us-east-2 (which the us-east-2-only GPT-5.5 previously forced).
+# Choose Sol only if you accept us-east-1/us-east-2. Under HA, the secondary
+# region must also carry the chosen models.
+#
+# MODEL IDs: the frontier GPT-5.x models are served by Bedrock Mantle (Responses
+# API) and are NOT returned by `aws bedrock list-foundation-models` (that lists
+# only the openai.gpt-oss-* Converse models). Confirm the exact model-ID string
+# in the Bedrock console model catalog or via the Mantle /v1/models endpoint --
+# the strings below follow the 5.5 naming pattern but are UNVERIFIED.
+# bedrock_advanced_model_id = "us.openai.gpt-5-6-terra:0"   # VERIFY exact ID
+# bedrock_basic_model_id    = "us.openai.gpt-5-6-luna:0"    # VERIFY exact ID
+# Pricing tfvars mirror the model choice (Terra advanced / Luna basic). NOTE:
+# per docs/tech-debt.md, audit.py currently HARDCODES per-model pricing and
+# ignores these tfvars, so cost_usd on audit rows will mis-attribute a GPT-5.6
+# deploy until that tech-debt is reconciled.
+# bedrock_advanced_input_price  = 2.20    # Terra
+# bedrock_advanced_output_price = 13.20   # Terra
+# bedrock_basic_input_price     = 0.22    # Luna
+# bedrock_basic_output_price    = 1.32    # Luna
 
 # Cooldown between Bedrock API calls to avoid throttling on small accounts.
 # Default: true. Disable for enterprise accounts with high quotas.
