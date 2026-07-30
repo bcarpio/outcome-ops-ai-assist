@@ -14,9 +14,14 @@ locals {
     : "${var.ui_subdomain}.${var.domain}"
   ) : ""
 
+  # License SSM path: honor an explicit override, else derive the canonical
+  # /<env>/<app>/license/key (var default is "" so terraform-create, the
+  # Lambda read, and the docs never disagree by env prefix).
+  outcomeops_license_ssm_param = var.outcomeops_license_ssm_param != "" ? var.outcomeops_license_ssm_param : "/${var.environment}/${var.app_name}/license/key"
+
   # ADR-019: shared license layer attach values for every gated Lambda.
   outcomeops_license_env = {
-    OUTCOMEOPS_LICENSE_PARAM      = var.outcomeops_license_ssm_param
+    OUTCOMEOPS_LICENSE_PARAM      = local.outcomeops_license_ssm_param
     OUTCOMEOPS_LICENSE_SERVER_URL = var.outcomeops_license_server_url
     OUTCOMEOPS_USAGE_ENABLED      = "true"
   }
@@ -32,8 +37,8 @@ locals {
       effect  = "Allow"
       actions = ["ssm:GetParameter"]
       resources = compact([
-        "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${var.outcomeops_license_ssm_param}",
-        var.secondary_region != "" ? "arn:aws:ssm:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:parameter${var.outcomeops_license_ssm_param}" : "",
+        "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${local.outcomeops_license_ssm_param}",
+        var.secondary_region != "" ? "arn:aws:ssm:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:parameter${local.outcomeops_license_ssm_param}" : "",
       ])
     }
     outcomeops_license_kms_decrypt = {

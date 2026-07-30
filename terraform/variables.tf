@@ -361,8 +361,8 @@ variable "outcomeops_license_layer_arn_secondary" {
 
 variable "outcomeops_license_ssm_param" {
   type        = string
-  description = "SSM parameter path for the OutcomeOps license key"
-  default     = "/outcome-ops-ai-assist/license/key"
+  description = "SSM parameter path for the OutcomeOps license key. Leave empty (default) to derive /<environment>/<app_name>/license/key -- the canonical /<env>/<app>/ convention that terraform-create, the Lambda read, and the docs all agree on. Set explicitly only to override."
+  default     = ""
 }
 
 variable "outcomeops_license_server_url" {
