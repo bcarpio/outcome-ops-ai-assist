@@ -9,11 +9,17 @@ hands off to it rather than duplicating (and drifting from) it.
 
 ### Tools on your machine
 
+These steps assume a Unix-like shell — macOS, Linux, or **Windows via WSL2**
+(Ubuntu). WSL2 is a fully supported environment; run everything below inside the
+WSL2 distribution, not PowerShell.
+
 1. **Python 3.12+**
    ```bash
    pyenv install 3.12 && pyenv local 3.12
    ```
-2. **Terraform 1.5+** — `brew install terraform`
+2. **Terraform 1.5+** — install with your platform's package manager per the
+   [HashiCorp install guide](https://developer.hashicorp.com/terraform/install):
+   `apt` on Ubuntu/WSL2, `brew install terraform` on macOS.
 3. **AWS CLI v2, configured** — `aws configure` (or an SSO/Identity Center
    profile). Every step from the state bucket onward uses it.
 4. **Docker** — the layer/image builds (`make pre-deploy`) compile inside
