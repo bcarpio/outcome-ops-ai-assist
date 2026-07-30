@@ -25,10 +25,16 @@ hands off to it rather than duplicating (and drifting from) it.
 
 These are not in the repo and will block `terraform plan`/`apply` if missing:
 
-- **OutcomeOps license layer ARN + license JWT** — a commercial artifact issued
+- **OutcomeOps license key + license layer ARN** — a commercial artifact issued
   by OutcomeOps. `outcomeops_license_layer_arn` is a required variable with no
   default; `terraform plan` prompts for it and cannot proceed without it.
-  Request both from OutcomeOps. See [License Management](deployment-guide.md#license-management).
+  **If you have not already received a license, email
+  [support@outcomeops.ai](mailto:support@outcomeops.ai)** and include the **AWS
+  account number(s)** you will deploy into — OutcomeOps shares the license
+  validator Lambda layer to those specific accounts (cross-account layer grant)
+  and issues your signed JWT license key. You cannot deploy until the layer is
+  shared to your account and you have the key. See
+  [License Management](deployment-guide.md#license-management).
 - **A VPC with subnets** — if deploying the Chat UI (`deploy_ui = true`), you
   supply `ui_vpc_id` + subnet IDs. See the Deployment Guide's network topology.
 - **A domain + ACM/IAM TLS certificate** — for the UI's ALB (BYO DNS + cert).

@@ -447,6 +447,13 @@ OutcomeOps AI Assist uses JWT-based licensing with tiered plans (Pilot, Team, Di
 
 ### Customer Setup
 
+**Requesting a license.** If you have not already received one, email
+[support@outcomeops.ai](mailto:support@outcomeops.ai) with the **AWS account
+number(s)** you will deploy into. OutcomeOps shares the license-validator Lambda
+layer to those specific accounts (a cross-account layer grant, so the
+`outcomeops_license_layer_arn` resolves from your account) and issues your
+signed JWT license key. Deployment cannot proceed until both are in place.
+
 The license key and Lambda layer ARN are provided by OutcomeOps during onboarding:
 
 ```bash
