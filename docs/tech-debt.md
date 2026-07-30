@@ -113,3 +113,39 @@ Options 1 + 2 + 3 together are one prompt-rule commit. No code change, no per-mo
 - Grok basic is **NOT** customer-shippable as a basic-tier default until this ships. Any customer demo of the Grok chat surface should route to advanced (Claude Sonnet 4.6) instead.
 - Do NOT branch per-model in the prompt path to work around it (per feedback discipline).
 
+## `ask-claude` is a model-specific resource name in a model-agnostic platform
+
+**Discovered:** 2026-07-30
+**Severity:** Low (cosmetic, procurement-facing)
+**Component:** `terraform/lambda-query.tf` (`module.ask_claude_lambda`), the SSM ARN parameter it publishes
+
+`terraform/lambda-query.tf:15` deploys `${environment}-${app_name}-ask-claude`
+(e.g. `prd-outcome-ops-ai-assist-ask-claude`) and publishes its ARN to an SSM
+parameter at `/<env>/<app_name>/lambda/ask-claude-arn`. The Lambda's *code* is
+model-agnostic (it dispatches via the shared model client / tfvars-driven model
+selection), but the **resource name** bakes in a specific vendor model family.
+
+**Why this matters:**
+
+- The platform is sold as model-agnostic. A procurement or architecture reviewer
+  grepping the deployed infrastructure for `claude` gets a hit on a function name
+  — which is exactly the wrong signal for a customer that has standardized away
+  from a given model vendor. The naming contradicts the positioning even though
+  the behavior does not.
+- It is purely cosmetic — no functional impact — but it is the kind of detail
+  that snags a model-agnostic story during a review.
+
+**Why it is not a drive-by fix:**
+
+- Renaming the Terraform resource / `function_name` is a destroy/create (or a
+  `terraform state mv` in every workspace's state) — the destroy/create path
+  takes the chat-synthesis Lambda offline for a few minutes, so it is a
+  deliberate, scheduled change, not an incidental rename.
+- Downstream consumers read the ARN from the SSM parameter path above; a rename
+  has to update the parameter name and every reader in lockstep.
+
+**Suggested fix:** rename to a model-neutral identifier (e.g. `rag-answer` /
+`chat-synthesis`) before any public marketing push of the model-agnostic story;
+sequence it as a planned maintenance-window change. See also the related entry in
+`docs/backlog.md`.
+
