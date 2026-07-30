@@ -539,7 +539,7 @@ or retry the generation by re-adding the `approved-for-generation` label.
 
 ## Example Issue Template
 
-See [docs/example-code-generation-issue.md](example-code-generation-issue.md) for a detailed template showing:
+See docs/example-code-generation-issue.md for a detailed template showing:
 - User story format
 - Handler specifications
 - Request/response schemas
@@ -643,7 +643,7 @@ Usage tracking happens when **work is completed**, not when PRs are created:
 
 ## Related Documentation
 
-- [Example Code Generation Issue Template](example-code-generation-issue.md)
+- Example Code Generation Issue Template
 - [Lambda: Query KB](lambda-query-kb.md) - Knowledge base search
 - [Lambda: Ask Claude](lambda-ask-claude.md) - Haiku summarization for standards
 - [ADR-003: Git Commit Standards](adr/ADR-003-git-commit-standards.md) - Commit conventions

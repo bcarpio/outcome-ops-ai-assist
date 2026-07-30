@@ -374,6 +374,6 @@ cd lambda/tests
 - [Lambda: Query KB](lambda-query-kb.md) - RAG pipeline used by ADR compliance check
 - [Architecture Overview](architecture.md) - System design and data flows
 - [ADR-002: Development Workflow](adr/ADR-002-development-workflow.md) - PR analysis workflow
-- [ADR-003: Testing Standards](adr/ADR-003-testing-standards.md) - Test patterns
+- [ADR-003: Testing Standards](adr/ADR-005-testing-standards.md) - Test patterns
 
 <!-- Confluence sync -->

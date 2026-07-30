@@ -70,11 +70,16 @@ Issues, and Pull requests = Read and write (Metadata read-only is automatic).
 > [Deployment Guide → Initial Deployment](deployment-guide.md#initial-deployment)
 > is the authoritative, gated sequence.
 
-### 1. Clone
+### 1. Get the code
+
+OutcomeOps delivers the platform source into **your own** repository — GitHub,
+GitLab, or Azure DevOps — and the exact mechanism varies by customer. If you're
+reading these docs you already have the repo by some means; clone your copy. If
+not, email [support@outcomeops.ai](mailto:support@outcomeops.ai) for access.
 
 ```bash
-git clone git@github.com:bcarpio/outcome-ops-ai-assist-private.git
-cd outcome-ops-ai-assist-private
+git clone <your-outcomeops-repo-url>
+cd outcome-ops-ai-assist-private        # or whatever your repo is named
 ```
 
 ### 2. Python environment
@@ -160,16 +165,19 @@ and store the license JWT.
 
 ### 7. Verify
 
+Run the gates CI enforces (the exact pre-commit checks from CLAUDE.md):
+
 ```bash
-make all       # fmt + validate (tf/docs/ha-parity) + UNIT tests only
-make test-ui   # UI tests -- NOT part of `make all`; run separately (needs Node 20+)
-make audit     # npm audit (UI) + pip-audit (Python)
+make fmt          # format Terraform
+make validate-tf  # validate Terraform config
+make test-unit    # Python unit suite (several thousand tests)
+make test-ui      # React/Vitest UI suite (needs Node 20+)
+make audit        # npm audit (UI) + pip-audit (Python)
 ```
 
-`make all` covers formatting, Terraform validation, and the Python unit suite;
-the React/Vitest UI tests are a separate `make test-ui` (CI runs both, so run
-`make test-ui` too before you commit UI changes). The unit suite alone is
-several thousand tests; a clean run ends with all suites passing.
+A clean run ends with every suite passing. (`make all` also exists but bundles
+`make validate-docs`, whose stricter whole-file size check can flag large
+committed files; the five targets above are the actual CI gate.)
 
 ## Configure the code-generation trigger
 
@@ -245,8 +253,8 @@ This project follows
 Before committing:
 
 ```bash
-make all       # fmt + validate + unit tests
-make test-ui   # UI tests (separate from `make all`; CI runs both)
+# the CI gate, before committing:
+make fmt && make validate-tf && make test-unit && make test-ui && make audit
 ```
 
 Commit with Conventional Commits; branch and open a PR (direct pushes to `main`

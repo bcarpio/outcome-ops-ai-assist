@@ -357,12 +357,12 @@ Files in `docs_paths` → `doc_type="doc"` → Available for queries but not cod
 
 - [ADR GitHub Org](https://adr.github.io/) - ADR documentation and tools
 - [Joel Parker Henderson's ADR repo](https://github.com/joelparkerhenderson/architecture-decision-record) - Hundreds of ADR examples
-- [OutcomeOps ADR Template](../adr/TEMPLATE.md) - Our template
+- [OutcomeOps ADR Template](adr/TEMPLATE.md) - Our template
 
 ---
 
 **Next Steps:**
-- [Create your first ADR](../adr/TEMPLATE.md)
+- [Create your first ADR](adr/TEMPLATE.md)
 - [Deploy OutcomeOps](getting-started.md)
 - [Test ADR ingestion](technical-reference.md#knowledge-base-ingestion)
 

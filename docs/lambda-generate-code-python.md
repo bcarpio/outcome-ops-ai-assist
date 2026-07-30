@@ -356,8 +356,8 @@ The system will:
 ## Related Documentation
 
 - [Lambda: Generate Code](lambda-generate-code.md) - Main code generation documentation
-- [Lambda: Generate Code Maps](lambda-generate-code-maps.md) - Code map generation
-- [ADR-004: Lambda Handler Standards](adr/ADR-004-lambda-handler-standards.md)
+- Lambda: Generate Code Maps - Code map generation
+- ADR-004: Lambda Handler Standards
 - [ADR-009: Code Unit Discovery Pattern](adr/ADR-009-code-unit-discovery-pattern.md)
 
 <!-- Confluence sync -->

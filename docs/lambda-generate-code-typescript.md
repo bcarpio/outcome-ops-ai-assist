@@ -597,7 +597,7 @@ These directories are automatically excluded from discovery:
 ## Related Documentation
 
 - [Lambda: Generate Code](lambda-generate-code.md) - Main code generation documentation
-- [Lambda: Generate Code Maps](lambda-generate-code-maps.md) - Code map generation
+- Lambda: Generate Code Maps - Code map generation
 - [ADR-009: Code Unit Discovery Pattern](adr/ADR-009-code-unit-discovery-pattern.md)
 
 <!-- Confluence sync -->

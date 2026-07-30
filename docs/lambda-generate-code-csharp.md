@@ -547,7 +547,7 @@ The system will:
 
 - [Lambda: Generate Code](lambda-generate-code.md) - Main code generation
   documentation
-- [Lambda: Generate Code Maps](lambda-generate-code-maps.md) - Code map
+- Lambda: Generate Code Maps - Code map
   generation
 - [ADR-009: Code Unit Discovery Pattern](adr/ADR-009-code-unit-discovery-pattern.md)
 - [ADR-010: Backend Naming Conventions](adr/ADR-010-backend-naming-conventions.md)

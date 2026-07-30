@@ -121,7 +121,7 @@ aws lambda invoke \
 
 **Stored in S3 Vectors with embeddings** for semantic search and RAG pipelines.
 
-**Full details:** See [lambda-ingest-docs.md](lambda-ingest-docs.md)
+**Full details:** See lambda-ingest-docs.md
 
 ---
 
@@ -141,7 +141,7 @@ Analyze your repositories to extract architectural patterns and code organizatio
 - **Kubernetes**: Coming soon
 - **Monolith**: Coming soon
 
-**Full details:** See [lambda-generate-code-maps.md](lambda-generate-code-maps.md)
+**Full details:** See lambda-generate-code-maps.md
 
 ---
 

@@ -739,7 +739,7 @@ outcome-ops-assist "What SSM parameters are required?"
 **General:**
 - **[Architecture Overview](architecture.md)** - System design and components
 - **[Getting Started](getting-started.md)** - Initial setup guide
-- **[Claude Guidance](claude-guidance.md)** - Development best practices
+- **[Claude Guidance](../CLAUDE.md)** - Development best practices
 
 ---
 

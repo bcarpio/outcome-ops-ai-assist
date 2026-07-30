@@ -387,6 +387,6 @@ This ensures each PR is analyzed exactly once, regardless of who created it.
 
 - [Architecture Overview](architecture.md)
 - [ADR-002: Development Workflow](adr/ADR-002-development-workflow.md)
-- [ADR-003: Testing Standards](adr/ADR-003-testing-standards.md)
+- [ADR-003: Testing Standards](adr/ADR-005-testing-standards.md)
 
 <!-- Confluence sync -->

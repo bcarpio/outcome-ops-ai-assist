@@ -99,6 +99,9 @@ check-ha-parity:
 	python3 scripts/check-ha-parity.py
 
 validate-docs:
+	@echo "Checking documentation links resolve..."
+	@bash scripts/check-doc-links.sh
+	@echo ""
 	@echo "Validating file sizes for code map embedding..."
 	@echo "Token limit: 12000 tokens (~48KB file size)"
 	@echo "Estimate: 1 token ≈ 4 bytes (rough approximation)"
