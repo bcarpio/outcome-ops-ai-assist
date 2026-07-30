@@ -1,4 +1,4 @@
-package com.hyatt.collisions;
+package com.acme.collisions;
 
 public class NameCollisions {
 

@@ -151,7 +151,7 @@ convention.
 - **`callers(X)`** — every direct caller of a symbol, with file path
   and line.
 - **`importers(X)`** — every importer of a package or subpath
-  (e.g. `@hyatt-hpe/hpe-utils/http2`); exact-match and prefix /
+  (e.g. `@acme-corp/shared-utils/http2`); exact-match and prefix /
   wildcard modes.
 - **`implementers(I)`** — every class implementing an interface.
 - **`definitions(X)`** — where a symbol is defined.

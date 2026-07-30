@@ -6,7 +6,7 @@
 
 The platform's chat synthesis layer answers enumeration questions
 ("which Lambdas call require_auth", "which services import
-@hyatt/hpe-utils", "which classes implement IBookingClient") by
+@acme-corp/shared-utils", "which classes implement IBookingClient") by
 issuing list-returning tool calls and walking the responses. ADR-024
 split chat questions into router-resolvable and synthesis;
 ADR-025/027/028 hardened narrative answers against fabrication;

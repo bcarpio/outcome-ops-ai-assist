@@ -449,7 +449,7 @@ def handler(event, context):
         "statusCode": 200,
         "body": {
             "answer": "API routes should be defined using Terraform...",
-            "sources": ["ADR: api-gateway-standards", "README.md - hpe-journey"]
+            "sources": ["ADR: api-gateway-standards", "README.md - acme-journey"]
         }
     }
 

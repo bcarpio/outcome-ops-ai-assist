@@ -5,7 +5,7 @@ Covers:
 - Lighthouse demo classifications (Q1-Q7) -- the router's "Definition of
   done" requires every fixture in this file to classify correctly.
 - The two proof-case structural questions (``report_repos_snapshot``
-  and ``@hyatt-hpe/hpe-utils/http2``).
+  and ``@acme-corp/shared-utils/http2``).
 - The PII / ISO 27018 hybrid example.
 - Symbol-candidate extraction from the structured Haiku response.
 - Tolerant parsing (Markdown fences, prose-wrapped JSON, single-word
@@ -419,9 +419,9 @@ LIGHTHOUSE_DEMO_FIXTURES = [
         "report_repos_snapshot",
     ),
     (
-        "Which applications use `@hyatt-hpe/hpe-utils/http2`?",
+        "Which applications use `@acme-corp/shared-utils/http2`?",
         "structural",
-        "@hyatt-hpe/hpe-utils/http2",
+        "@acme-corp/shared-utils/http2",
     ),
     # PII / ISO hybrid example
     (

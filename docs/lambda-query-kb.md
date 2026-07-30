@@ -67,7 +67,7 @@ User Query
   "statusCode": 200,
   "body": {
     "answer": "API routes should be defined using Terraform with inline integrations in infra/apigw.tf, in accordance with ADR-APIGW-V5 v2.1. This approach centralizes route definitions and ensures consistency across deployments.",
-    "sources": ["ADR: api-gateway-standards", "README.md - hpe-journey"]
+    "sources": ["ADR: api-gateway-standards", "README.md - acme-journey"]
   }
 }
 ```

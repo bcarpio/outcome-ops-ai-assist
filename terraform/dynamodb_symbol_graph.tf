@@ -11,7 +11,7 @@
 #   target-kind-index   - callers(X) / importers(X) / implementers(X) by
 #                         (workspace_id, target_symbol_id) + kind prefix.
 #   target-prefix-index - subpath wildcards like
-#                         "@hyatt-hpe/hpe-utils/*" by (workspace_id,
+#                         "@acme-corp/shared-utils/*" by (workspace_id,
 #                         target_prefix) with kind/repo in the sort key.
 #   target-name-index   - fuzzy resolution by bare name (the tail of
 #                         a canonical symbol id) for the chat-side

@@ -288,7 +288,7 @@ def test_derive_bare_name_strips_language_prefix_and_namespace():
         ("typescript:src.lib.api.requestMagicLink", "requestMagicLink"),
         ("java:com.acme.Booking::confirm", "confirm"),
         ("abap:Z_CL_BOOKING::CONFIRM", "CONFIRM"),
-        ("@hyatt-hpe/hpe-utils/http2", "http2"),
+        ("@acme-corp/shared-utils/http2", "http2"),
         ("bare_name_only", "bare_name_only"),
         ("", ""),
     ]
@@ -394,9 +394,9 @@ def test_subpath_importers_query_via_gsi2(tables):
     from shared.symbol_graph_writer import write_facts  # type: ignore
 
     targets = [
-        "typescript:@hyatt-hpe/hpe-utils/http2::*",
-        "typescript:@hyatt-hpe/hpe-utils/logger::*",
-        "typescript:@hyatt-hpe/hpe-utils/auth::*",
+        "typescript:@acme-corp/shared-utils/http2::*",
+        "typescript:@acme-corp/shared-utils/logger::*",
+        "typescript:@acme-corp/shared-utils/auth::*",
     ]
     facts = [_imports_fact(i, target=t) for i, t in enumerate(targets)]
 
@@ -413,7 +413,7 @@ def test_subpath_importers_query_via_gsi2(tables):
     response = table.query(
         IndexName="target-prefix-index",
         KeyConditionExpression=Key("GSI2PK").eq(
-            f"{WORKSPACE_ID}#typescript:@hyatt-hpe/hpe-utils"
+            f"{WORKSPACE_ID}#typescript:@acme-corp/shared-utils"
         ),
     )
     assert response["Count"] == 3
@@ -465,7 +465,7 @@ def test_write_facts_large_round_trip(tables):
     target_callee = "python:lambda.shared.outcomeops_license::report_repos_snapshot"
     facts.extend(_calls_fact(i, target=target_callee) for i in range(30))
 
-    import_target = "typescript:@hyatt-hpe/hpe-utils/http2::*"
+    import_target = "typescript:@acme-corp/shared-utils/http2::*"
     facts.extend(_imports_fact(i, target=import_target) for i in range(20))
 
     facts.extend(_implements_fact(i) for i in range(10))
@@ -499,7 +499,7 @@ def test_write_facts_large_round_trip(tables):
     importers = table.query(
         IndexName="target-prefix-index",
         KeyConditionExpression=Key("GSI2PK").eq(
-            f"{WORKSPACE_ID}#typescript:@hyatt-hpe/hpe-utils"
+            f"{WORKSPACE_ID}#typescript:@acme-corp/shared-utils"
         ),
     )
     assert importers["Count"] == 20

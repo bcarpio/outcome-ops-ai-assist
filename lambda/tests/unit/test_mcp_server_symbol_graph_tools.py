@@ -447,7 +447,7 @@ class TestFindImporters:
         assert payload["truncated"] is False
 
     def test_single_result_exact(self, tables):
-        target = "typescript:@hyatt-hpe/hpe-utils/http2"
+        target = "typescript:@acme-corp/shared-utils/http2"
         _put_fact(
             tables.Table(SYMBOL_GRAPH_TABLE),
             workspace_id=WORKSPACE_ID,
@@ -472,7 +472,7 @@ class TestFindImporters:
     def test_truncation(self, tables):
         table = tables.Table(SYMBOL_GRAPH_TABLE)
         # Use distinct subpaths so each row hits the prefix GSI cleanly.
-        target_prefix = "typescript:@hyatt-hpe/hpe-utils"
+        target_prefix = "typescript:@acme-corp/shared-utils"
         limit = 4
         for i in range(limit + 3):
             _put_fact(

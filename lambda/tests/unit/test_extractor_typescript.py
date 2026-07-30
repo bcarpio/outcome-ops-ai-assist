@@ -65,7 +65,7 @@ class TestAllEdges:
 
 
 class TestSubpathImports:
-    """The @hyatt-hpe/hpe-utils/http2 subpath-import case.
+    """The @acme-corp/shared-utils/http2 subpath-import case.
 
     The plan calls this out explicitly — RAG cannot retrieve consumers
     of a subpath import because there's no prose document. Graph
@@ -81,8 +81,8 @@ class TestSubpathImports:
             f.target_symbol_id
             for f in _by_kind(facts, "imports")
         ]
-        assert any("@hyatt-hpe/hpe-utils/http2::http2Client" in t for t in targets)
-        assert any("@hyatt-hpe/hpe-utils/logging::logger" in t for t in targets)
+        assert any("@acme-corp/shared-utils/http2::http2Client" in t for t in targets)
+        assert any("@acme-corp/shared-utils/logging::logger" in t for t in targets)
 
     def test_side_effect_import_emits_wildcard(self, facts):
         targets = [

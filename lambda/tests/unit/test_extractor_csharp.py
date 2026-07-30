@@ -36,13 +36,13 @@ class TestAllEdges:
 
     def test_namespace_module(self, facts):
         defines = _by_kind(facts, "defines")
-        assert any("Hyatt.Booking" in f.source_symbol_id for f in defines)
+        assert any("Acme.Booking" in f.source_symbol_id for f in defines)
 
     def test_usings_emit_imports(self, facts):
         imports = _by_kind(facts, "imports")
         targets = [f.target_symbol_id for f in imports]
         assert any("System::*" in t for t in targets)
-        assert any("Hyatt::Util" in t for t in targets)
+        assert any("Acme::Util" in t for t in targets)
 
     def test_first_base_is_extends_rest_are_implements(self, facts):
         extends = _by_kind(facts, "extends")

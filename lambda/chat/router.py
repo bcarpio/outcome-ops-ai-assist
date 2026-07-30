@@ -75,7 +75,7 @@ class RouterDecision:
 
     ``symbol_candidate`` is the user-visible symbol name pulled from
     the question (e.g. ``report_repos_snapshot``,
-    ``@hyatt-hpe/hpe-utils/http2``). May be ``None`` for pure
+    ``@acme-corp/shared-utils/http2``). May be ``None`` for pure
     pattern / dependency / unknown classifications, or for structural
     queries where the model could not isolate a symbol — the context
     builder treats both as "no graph lookup possible".
@@ -120,7 +120,7 @@ DEPENDENCY: about packages, versions, vulnerabilities, manifests
 STRUCTURAL: about code relationships - callers, references,
   implementations, subpath imports of a specific symbol
   Examples: "Who calls validate_input?", "What implements
-  IBookingClient?", "Which apps import @hyatt-hpe/hpe-utils/http2?"
+  IBookingClient?", "Which apps import @acme-corp/shared-utils/http2?"
 
 HYBRID: requires more than one of the above
   Examples: "Which functions access PII and need ISO 27018
@@ -131,7 +131,7 @@ UNKNOWN: ambiguous or doesn't fit cleanly
 
 Also extract the single symbol the question is about (a function name,
 class name, interface, package, or subpath like
-"@hyatt-hpe/hpe-utils/http2"). If the question is not about a specific
+"@acme-corp/shared-utils/http2"). If the question is not about a specific
 symbol, set "symbol" to null.
 
 Respond with strict JSON in exactly this shape (no prose, no markdown):
@@ -165,7 +165,7 @@ DEPENDENCY: about packages, versions, vulnerabilities, manifests
 STRUCTURAL: about code relationships - callers, references,
   implementations, subpath imports of a specific symbol
   Examples: "Who calls validate_input?", "What implements
-  IBookingClient?", "Which apps import @hyatt-hpe/hpe-utils/http2?"
+  IBookingClient?", "Which apps import @acme-corp/shared-utils/http2?"
 
 HYBRID: requires more than one of the above. In particular, any
   question that VERIFIES, AUDITS, or GAP-ANALYZES an implementation
@@ -181,7 +181,7 @@ UNKNOWN: ambiguous or doesn't fit cleanly
 
 Also extract the single symbol the question is about (a function name,
 class name, interface, package, subsystem, or subpath like
-"@hyatt-hpe/hpe-utils/http2"). Verification/audit questions usually name
+"@acme-corp/shared-utils/http2"). Verification/audit questions usually name
 a subsystem ("magic_link", "auth_flow", "audit_logging") — extract it.
 If the question is not about a specific symbol, set "symbol" to null.
 

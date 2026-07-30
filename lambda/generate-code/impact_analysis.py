@@ -312,7 +312,7 @@ def extract_modify_targets(
     shape). We grep for both Python-style symbols (``foo.bar::baz``) and
     TS-style subpath imports (``@scope/pkg/subpath``) — covering the
     two failure cases the plan documents
-    (``report_repos_snapshot`` and ``@hyatt-hpe/hpe-utils/http2``).
+    (``report_repos_snapshot`` and ``@acme-corp/shared-utils/http2``).
 
     Duplicate mentions are collapsed; ``raw_mentions`` carries the
     count for logging.

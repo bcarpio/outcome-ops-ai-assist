@@ -177,7 +177,7 @@ def _derive_bare_name(target_symbol_id: str) -> str:
         python:lambda.auth.handler::require_auth -> require_auth
         typescript:src.lib.api.requestMagicLink  -> requestMagicLink
         java:com.acme.Booking::confirm           -> confirm
-        @hyatt-hpe/hpe-utils/http2               -> http2
+        @acme-corp/shared-utils/http2               -> http2
         bare_name_only                           -> bare_name_only
 
     The empty-string defence keeps malformed targets from polluting
@@ -204,7 +204,7 @@ def _split_target_prefix(target_symbol_id: str) -> Optional[Dict[str, str]]:
     Subpath imports use the canonical form
     ``<lang>:<package>/<subpath>::<symbol>``. The prefix is everything up
     to the last ``/`` (or last ``::``) -- that's what an enterprise
-    "find every consumer of ``@hyatt-hpe/hpe-utils/*``" query keys on.
+    "find every consumer of ``@acme-corp/shared-utils/*``" query keys on.
     Symbols without a delimiter (single-module function calls) skip the
     GSI2 row entirely.
     """

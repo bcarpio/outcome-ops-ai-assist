@@ -246,7 +246,7 @@ def handler(event, context):
         "statusCode": 200,
         "body": {
             "answer": "API routes should be defined...",
-            "sources": ["ADR: api-gateway-standards", "README.md - hpe-journey"],
+            "sources": ["ADR: api-gateway-standards", "README.md - acme-journey"],
             "usage": {"input_tokens": 100, "output_tokens": 50, "cost_usd": 0.001, "model": "haiku"}
         }
     }

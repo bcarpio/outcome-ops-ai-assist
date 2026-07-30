@@ -16,7 +16,7 @@ Emits:
 Path-alias resolution (the plan's open question on ``@/lib/api`` via
 ``tsconfig.json``) is deferred — for v1 we emit the literal import
 specifier and let the query layer normalize aliases. Subpath imports
-(``@hyatt-hpe/hpe-utils/http2``) flow through unchanged so the prefix-
+(``@acme-corp/shared-utils/http2``) flow through unchanged so the prefix-
 match query in chunk 04 works.
 """
 

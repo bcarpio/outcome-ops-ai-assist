@@ -1,4 +1,4 @@
-namespace Hyatt.Collisions
+namespace Acme.Collisions
 {
     public class A
     {

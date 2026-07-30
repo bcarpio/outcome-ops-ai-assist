@@ -1,7 +1,7 @@
-package com.hyatt.booking;
+package com.acme.booking;
 
-import com.hyatt.util.Logger;
-import com.hyatt.util.Helper;
+import com.acme.util.Logger;
+import com.acme.util.Helper;
 import java.util.List;
 
 public class BookingService extends BaseService implements IBookable, Reportable {

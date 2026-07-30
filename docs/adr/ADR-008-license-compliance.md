@@ -11,7 +11,7 @@ Enterprise organizations face significant legal and financial risks from imprope
 - Missing or improper copyright notices expose organizations to legal liability
 - **AI-generated code may inadvertently copy copyrighted OSS code**, creating IP infringement risks
 
-**Critical Gap Identified (Hyatt Customer Requirements):**
+**Critical Gap Identified (Acme Customer Requirements):**
 The highest-value compliance check is **not** detecting license headers in source files (reactive), but rather detecting when AI-generated code is similar to copyrighted open source code (proactive). This addresses the core risk: AI models trained on public repositories may generate code that closely resembles copyrighted OSS implementations.
 
 We need automated license compliance checking to:
@@ -247,7 +247,7 @@ Files analyzed: 3 (all AI-generated)
 Version History:
 
 - v1.0 (2025-11-24): Initial decision - Phase 1 source file scanning
-- v1.1 (2025-11-24): Roadmap update - Reprioritized Phase 2 to focus on AI code similarity detection based on customer requirements (Hyatt use case)
+- v1.1 (2025-11-24): Roadmap update - Reprioritized Phase 2 to focus on AI code similarity detection based on customer requirements (Acme use case)
 - v1.2 (2025-11-24): Phase 2 implementation complete - Tiered code similarity detection (quick pattern matching + Claude semantic analysis) for AI-generated code. Addresses highest-value risk: structural similarity to copyrighted OSS.
 
 <!-- Confluence sync -->

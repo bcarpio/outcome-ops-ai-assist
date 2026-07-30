@@ -181,8 +181,8 @@ Find every call-site of a symbol across the workspace. Answers questions like
 #### find_importers
 
 Find every importer of a module or package. Accepts an exact subpath
-(`@hyatt-hpe/hpe-utils/http2`) for exact match, or a package prefix
-(`@hyatt-hpe/hpe-utils` or `@hyatt-hpe/hpe-utils/*`) for all consumers
+(`@acme-corp/shared-utils/http2`) for exact match, or a package prefix
+(`@acme-corp/shared-utils` or `@acme-corp/shared-utils/*`) for all consumers
 of any subpath.
 
 **Parameters:**

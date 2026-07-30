@@ -1,8 +1,8 @@
 using System;
 using System.Linq;
-using Hyatt.Util;
+using Acme.Util;
 
-namespace Hyatt.Booking
+namespace Acme.Booking
 {
     public class BookingService : BaseService, IBookable
     {

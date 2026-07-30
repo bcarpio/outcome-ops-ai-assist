@@ -36,7 +36,7 @@ The ask-claude Lambda function implements Retrieval Augmented Generation (RAG) b
     {
       "score": 0.89,
       "text": "All routes must use inline integrations per ADR-APIGW-V5...",
-      "source": "README.md - hpe-journey"
+      "source": "README.md - acme-journey"
     }
   ]
 }
@@ -50,8 +50,8 @@ The ask-claude Lambda function implements Retrieval Augmented Generation (RAG) b
 
 ```json
 {
-  "answer": "API routes in hpe-journey are defined using Terraform with inline integrations in infra/apigw.tf, in accordance with ADR-APIGW-V5 v2.1. This approach centralizes route definitions and ensures consistency across deployments.",
-  "sources": ["ADR: api-gateway-standards", "README.md - hpe-journey"]
+  "answer": "API routes in acme-journey are defined using Terraform with inline integrations in infra/apigw.tf, in accordance with ADR-APIGW-V5 v2.1. This approach centralizes route definitions and ensures consistency across deployments.",
+  "sources": ["ADR: api-gateway-standards", "README.md - acme-journey"]
 }
 ```
 
@@ -87,7 +87,7 @@ CONTEXT:
 [Document 1] (Relevance: 0.93) - Source: ADR: api-gateway-standards
 API Gateway routes are defined inline in infra/apigw.tf...
 
-[Document 2] (Relevance: 0.89) - Source: README.md - hpe-journey
+[Document 2] (Relevance: 0.89) - Source: README.md - acme-journey
 All routes must use inline integrations per ADR-APIGW-V5...
 
 INSTRUCTIONS:

@@ -476,7 +476,7 @@ def test_callers_not_truncated_when_under_limit(tables):
 
 
 def test_importers_prefix_returns_all_subpath_consumers(tables):
-    """``importers("typescript:@hyatt-hpe/hpe-utils")`` -> every consumer
+    """``importers("typescript:@acme-corp/shared-utils")`` -> every consumer
     of any subpath under the package."""
     from shared.symbol_graph_reader import importers  # type: ignore
 
@@ -490,7 +490,7 @@ def test_importers_prefix_returns_all_subpath_consumers(tables):
             commit_sha=SHA,
             kind="imports",
             source_symbol_id=f"typescript:apps/app{i}/src/index::default",
-            target_symbol_id=f"typescript:@hyatt-hpe/hpe-utils/{sub}",
+            target_symbol_id=f"typescript:@acme-corp/shared-utils/{sub}",
             file_path=f"apps/app{i}/src/index.ts",
             line=1,
             language="typescript",
@@ -498,7 +498,7 @@ def test_importers_prefix_returns_all_subpath_consumers(tables):
 
     result = importers(
         WORKSPACE_ID,
-        "typescript:@hyatt-hpe/hpe-utils",
+        "typescript:@acme-corp/shared-utils",
         symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
         code_maps_table_name=CODE_MAPS_TABLE,
     )
@@ -508,7 +508,7 @@ def test_importers_prefix_returns_all_subpath_consumers(tables):
 
 
 def test_importers_exact_subpath_returns_only_that_subpath(tables):
-    """``importers("typescript:@hyatt-hpe/hpe-utils/http2")`` -> only the
+    """``importers("typescript:@acme-corp/shared-utils/http2")`` -> only the
     http2 consumer."""
     from shared.symbol_graph_reader import importers  # type: ignore
 
@@ -522,7 +522,7 @@ def test_importers_exact_subpath_returns_only_that_subpath(tables):
             commit_sha=SHA,
             kind="imports",
             source_symbol_id=f"typescript:apps/app{i}/src/index::default",
-            target_symbol_id=f"typescript:@hyatt-hpe/hpe-utils/{sub}",
+            target_symbol_id=f"typescript:@acme-corp/shared-utils/{sub}",
             file_path=f"apps/app{i}/src/index.ts",
             line=1,
             language="typescript",
@@ -530,7 +530,7 @@ def test_importers_exact_subpath_returns_only_that_subpath(tables):
 
     result = importers(
         WORKSPACE_ID,
-        "typescript:@hyatt-hpe/hpe-utils/http2",
+        "typescript:@acme-corp/shared-utils/http2",
         symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
         code_maps_table_name=CODE_MAPS_TABLE,
     )
@@ -550,7 +550,7 @@ def test_importers_wildcard_suffix_forces_prefix(tables):
         commit_sha=SHA,
         kind="imports",
         source_symbol_id="typescript:apps/app0/src/index::default",
-        target_symbol_id="typescript:@hyatt-hpe/hpe-utils/http2",
+        target_symbol_id="typescript:@acme-corp/shared-utils/http2",
         file_path="apps/app0/src/index.ts",
         line=1,
         language="typescript",
@@ -558,7 +558,7 @@ def test_importers_wildcard_suffix_forces_prefix(tables):
 
     result = importers(
         WORKSPACE_ID,
-        "typescript:@hyatt-hpe/hpe-utils/*",
+        "typescript:@acme-corp/shared-utils/*",
         symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
         code_maps_table_name=CODE_MAPS_TABLE,
     )

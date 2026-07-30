@@ -139,7 +139,7 @@ def test_facts_block_importers_label_and_singular_count():
     )
     block = build_symbol_facts_block(
         relation="importers",
-        target_symbol_id="@hyatt-hpe/hpe-utils/http2",
+        target_symbol_id="@acme-corp/shared-utils/http2",
         result=result,
     )
     assert "Importers (1 site in this workspace" in block

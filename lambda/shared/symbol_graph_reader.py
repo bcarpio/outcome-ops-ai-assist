@@ -5,7 +5,7 @@ The public surface is intentionally narrow — four query shapes that
 cover the proven structural failure cases:
 
 - ``callers(X)``        : "Which Lambdas call ``report_repos_snapshot``?"
-- ``importers(X)``      : "Which apps use ``@hyatt-hpe/hpe-utils/http2``?"
+- ``importers(X)``      : "Which apps use ``@acme-corp/shared-utils/http2``?"
 - ``implementers(I)``   : "What classes implement ``IBookingClient``?"
 - ``definitions(X)``    : "Where is ``report_repos_snapshot`` defined?"
 
@@ -373,13 +373,13 @@ def _is_prefix_query(target: str) -> bool:
 
     Rules:
 
-    - ``"@hyatt-hpe/hpe-utils"``         : prefix (no slash AFTER the
+    - ``"@acme-corp/shared-utils"``         : prefix (no slash AFTER the
       package boundary) — returns every consumer of any subpath. The
       writer's GSI2PK encodes the package portion as the prefix, so
       any input WITHOUT a trailing slash and WITHOUT an additional
       path segment after the package is a prefix query.
-    - ``"@hyatt-hpe/hpe-utils/*"``       : explicit wildcard — prefix.
-    - ``"@hyatt-hpe/hpe-utils/http2"``   : exact subpath match.
+    - ``"@acme-corp/shared-utils/*"``       : explicit wildcard — prefix.
+    - ``"@acme-corp/shared-utils/http2"``   : exact subpath match.
 
     The writer's ``_split_target_prefix`` splits on the LAST ``/`` or
     ``::``. An exact-subpath consumer's GSI2PK is the prefix WITHOUT
@@ -388,7 +388,7 @@ def _is_prefix_query(target: str) -> bool:
 
     Heuristic:
     - trailing ``/*``    -> prefix
-    - language-prefixed (``ts:@hyatt-hpe/hpe-utils``) and contains no
+    - language-prefixed (``ts:@acme-corp/shared-utils``) and contains no
       additional ``/`` after the package boundary -> prefix
     - otherwise -> exact
     """
@@ -397,7 +397,7 @@ def _is_prefix_query(target: str) -> bool:
         return True
     # Strip the optional language prefix (``ts:``, ``typescript:``,
     # ``python:``, etc.) before counting slashes. The writer treats
-    # ``typescript:@hyatt-hpe/hpe-utils`` as a prefix when used as
+    # ``typescript:@acme-corp/shared-utils`` as a prefix when used as
     # GSI2PK, so the same shape on the read side is the prefix form.
     body = target
     if ":" in body:
@@ -663,10 +663,10 @@ def importers(
 
     Two modes (see ``_is_prefix_query``):
 
-    - **Prefix** (``"@hyatt-hpe/hpe-utils"`` or ``".../*"``): uses
+    - **Prefix** (``"@acme-corp/shared-utils"`` or ``".../*"``): uses
       ``target-prefix-index`` (GSI2) keyed on the package prefix.
       Returns consumers of any subpath under that prefix.
-    - **Exact** (``"@hyatt-hpe/hpe-utils/http2"``): uses
+    - **Exact** (``"@acme-corp/shared-utils/http2"``): uses
       ``target-kind-index`` (GSI1) with the ``imports#`` SK prefix.
       Returns only consumers of that exact subpath.
 

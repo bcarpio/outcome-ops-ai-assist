@@ -120,28 +120,28 @@ matching file paths.
 
 ---
 
-## Validation 2 — Subpath import query (Hyatt)
+## Validation 2 — Subpath import query (Acme)
 
-**Workspace**: Hyatt Engineering equivalent (deferred to phase 3 if
+**Workspace**: Acme Engineering equivalent (deferred to phase 3 if
 the workspace isn't in this account).
 
 **Input**:
 
 ```
-Which applications use @hyatt-hpe/hpe-utils/http2?
+Which applications use @acme-corp/shared-utils/http2?
 ```
 
 **Expected output**:
 
 - Every consumer listed (verifiable against
-  `grep -rn "@hyatt-hpe/hpe-utils/http2"` in the customer checkout).
+  `grep -rn "@acme-corp/shared-utils/http2"` in the customer checkout).
 - Each entry has file path + line of the import statement.
 - Empty-set discipline: repos with zero subpath imports do not appear.
 
 **Verification command** (customer checkout, NOT this repo):
 
 ```bash
-grep -rn '@hyatt-hpe/hpe-utils/http2' <customer-checkout-root>/ \
+grep -rn '@acme-corp/shared-utils/http2' <customer-checkout-root>/ \
   --include='*.ts' --include='*.tsx' --include='*.js'
 ```
 

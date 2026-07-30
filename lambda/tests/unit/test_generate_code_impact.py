@@ -399,10 +399,10 @@ class TestExtractModifyTargets:
     def test_typescript_subpath_extracted(self):
         from impact_analysis import extract_modify_targets  # type: ignore
 
-        plan = "Migrate consumers off @hyatt-hpe/hpe-utils/http2 to /http3."
+        plan = "Migrate consumers off @acme-corp/shared-utils/http2 to /http3."
         targets = extract_modify_targets(plan)
         sids = [t.symbol_id for t in targets]
-        assert "typescript:@hyatt-hpe/hpe-utils/http2" in sids
+        assert "typescript:@acme-corp/shared-utils/http2" in sids
 
     def test_dedup_collapses_duplicate_mentions(self):
         from impact_analysis import extract_modify_targets  # type: ignore
@@ -513,7 +513,7 @@ class TestAnalyzeCallerImpact:
         )
 
         table = tables.Table(SYMBOL_GRAPH_TABLE)
-        # Seed two importers of @hyatt-hpe/hpe-utils/http2. The reader
+        # Seed two importers of @acme-corp/shared-utils/http2. The reader
         # treats the language-prefixed target as the GSI1PK partition,
         # so the writer-stored target_symbol_id must carry the same
         # prefix (mirrors test_symbol_graph_reader.py seeding).
@@ -525,13 +525,13 @@ class TestAnalyzeCallerImpact:
                 commit_sha="sha",
                 kind="imports",
                 source_symbol_id=f"ts:apps/app-{i}::index",
-                target_symbol_id="typescript:@hyatt-hpe/hpe-utils/http2",
+                target_symbol_id="typescript:@acme-corp/shared-utils/http2",
                 file_path=f"apps/app-{i}/index.ts",
                 line=4,
                 language="typescript",
             )
         target = ModifyTarget(
-            symbol_id="typescript:@hyatt-hpe/hpe-utils/http2",
+            symbol_id="typescript:@acme-corp/shared-utils/http2",
             signature_change=False,
             raw_mentions=1,
         )

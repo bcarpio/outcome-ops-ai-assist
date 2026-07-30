@@ -36,13 +36,13 @@ class TestAllEdges:
 
     def test_package_in_module(self, facts):
         defines = _by_kind(facts, "defines")
-        assert any("com.hyatt.booking" in f.source_symbol_id for f in defines)
+        assert any("com.acme.booking" in f.source_symbol_id for f in defines)
 
     def test_imports_split_by_last_dot(self, facts):
         imports = _by_kind(facts, "imports")
         targets = [f.target_symbol_id for f in imports]
-        assert "java:com.hyatt.util::Logger" in targets
-        assert "java:com.hyatt.util::Helper" in targets
+        assert "java:com.acme.util::Logger" in targets
+        assert "java:com.acme.util::Helper" in targets
         assert "java:java.util::List" in targets
 
     def test_class_extends_and_implements(self, facts):

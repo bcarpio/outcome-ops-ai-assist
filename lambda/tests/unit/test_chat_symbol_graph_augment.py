@@ -3,7 +3,7 @@ against a moto-backed symbol-graph table.
 
 This is the chat-augmentation "Definition of done" gate:
 
-> ``report_repos_snapshot`` and ``@hyatt-hpe/hpe-utils/http2`` queries
+> ``report_repos_snapshot`` and ``@acme-corp/shared-utils/http2`` queries
 > return correct caller / importer lists (verified end-to-end on dev
 > workspace after backfill).
 
@@ -666,13 +666,13 @@ def test_augment_multi_canonical_runs_callers_per_canonical_and_merges(
 
 def test_augment_importer_routes_on_subpath_symbol(_inject_clients):
     """A slash-shaped symbol switches the query from callers() to
-    importers() -- the Hyatt proof case."""
+    importers() -- the Acme proof case."""
     _create_symbol_graph_table()
     _create_code_maps_table()
 
     bedrock_stub = _inject_clients
     bedrock_stub.converse.return_value = _bedrock_response(
-        "structural", "@hyatt-hpe/hpe-utils/http2"
+        "structural", "@acme-corp/shared-utils/http2"
     )
 
     # Seed one importer.
@@ -682,7 +682,7 @@ def test_augment_importer_routes_on_subpath_symbol(_inject_clients):
         commit_sha=SHA,
         kind="imports",
         source_symbol_id="typescript:apps.app1::index",
-        target_symbol_id="@hyatt-hpe/hpe-utils/http2",
+        target_symbol_id="@acme-corp/shared-utils/http2",
         file_path="apps/app1/index.ts",
         line=7,
         language="typescript",
@@ -690,7 +690,7 @@ def test_augment_importer_routes_on_subpath_symbol(_inject_clients):
 
     handler = _import_augment()
     out = handler._augment_context_with_symbol_graph(
-        question="Which applications use `@hyatt-hpe/hpe-utils/http2`?",
+        question="Which applications use `@acme-corp/shared-utils/http2`?",
         workspace_ids=[WORKSPACE_ID],
         user_id="user@x.com",
     )

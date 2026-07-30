@@ -388,9 +388,9 @@ MCP_TOOLS = [
         "name": "find_importers",
         "description": (
             "Find every importer of a target module/package across the workspace. "
-            "Pass an exact subpath (e.g., '@hyatt-hpe/hpe-utils/http2') for exact "
-            "match, or a package prefix (e.g., '@hyatt-hpe/hpe-utils' or "
-            "'@hyatt-hpe/hpe-utils/*') for all consumers of any subpath."
+            "Pass an exact subpath (e.g., '@acme-corp/shared-utils/http2') for exact "
+            "match, or a package prefix (e.g., '@acme-corp/shared-utils' or "
+            "'@acme-corp/shared-utils/*') for all consumers of any subpath."
         ),
         "inputSchema": {
             "type": "object",

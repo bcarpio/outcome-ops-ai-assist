@@ -13,7 +13,7 @@ symbol-graph table — backed by two Global Secondary Indexes (GSIs):
   generate-code Lambdas issue against the graph.
 - `target-prefix-index` — GSI2 partition by `<workspace_id>#<package_head>`,
   range by `<subpath>#<kind>#<repo>#<file_path>#<line>`. Powers the
-  subpath-import queries (e.g. `@hyatt-hpe/hpe-utils/http2`).
+  subpath-import queries (e.g. `@acme-corp/shared-utils/http2`).
 
 The OutcomeOps platform's Terraform infrastructure standards ADR
 (`ADR-001` in the KB workspace — distinct from this repo's `ADR-001`
