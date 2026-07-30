@@ -34,9 +34,9 @@ This creates a divergence the existing tfvars-swap pattern doesn't span:
 
 The platform must support both backends behind a single tfvars-driven swap:
 
-- Boeing PoC has explicitly retired Anthropic Claude across all services. The
-  openai-workspace deploy needs OpenAI frontier (not OSS) to be a credible
-  alternative.
+- A lighthouse PoC customer has explicitly standardized away from Anthropic
+  Claude across all services. The openai-workspace deploy needs OpenAI frontier
+  (not OSS) to be a credible alternative.
 - The broader customer base treats model swappability as a procurement
   requirement, particularly in regulated industries where the
   cloud-and-model-of-record is set by enterprise architecture, not by us.
@@ -387,7 +387,7 @@ fixes (commits `9aebe19`, `fb31a24`, `6e3535a`, `c2ef76b`).
 
 - `[[project_model_swappability]]` — tfvars-driven model swap contract
 - `[[project_regulated_data_stack]]` — regulated-industry buyer constraints
-- `[[project_gtm_strategy]]` — Boeing lighthouse, AWS GAM motion
+- `[[project_gtm_strategy]]` — lighthouse customer, AWS GAM motion
 - `[[project_billing_model]]` — $2M enterprise-unlimited tier, no per-deploy
   segmentation
 - ADR-031 — Line-citation grounding (the structural-attribution discipline

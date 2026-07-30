@@ -146,7 +146,7 @@ MEMORY_TOP_K = 3  # Number of memory chunks to retrieve
 # `package.json` chunks that answer "which apps run the vulnerable
 # version"; a "what does the CHANGELOG say" question needs the
 # `.txt`; an "what fields does this spreadsheet have" question needs
-# the xlsx/csv. Restored to the tuple 2026-07-02 after the Boeing-
+# the xlsx/csv. Restored to the tuple 2026-07-02 after the lighthouse-
 # demo-shaped query regression was traced to their absence.
 #
 # `unknown` (text-decodable fallback for unrecognized extensions)

@@ -1068,12 +1068,12 @@ class TestHandler:
         ACTION_PR_ANALYZED with repo / pr_number / pr_title / shas /
         backend / checks_run / duration. This is the parent event for
         the per-check Bedrock rows that process-pr-check writes."""
-        event = {"pr_number": 142, "repository": "boeing/avionics"}
+        event = {"pr_number": 142, "repository": "acme/avionics"}
         mock_get_token.return_value = "tok"
         mock_fetch_pr.return_value = GitHubPullRequest(
             number=142,
             title="Bump cert chain handling",
-            html_url="https://github.com/boeing/avionics/pull/142",
+            html_url="https://github.com/acme/avionics/pull/142",
             base={"ref": "main", "sha": "9f8e7d"},
             head={"ref": "feature", "sha": "a1b2c3"},
         )
@@ -1092,7 +1092,7 @@ class TestHandler:
         args, kwargs = mock_audit.call_args
         assert args[1] == "PR_ANALYZED"
         d = kwargs["details"]
-        assert d["repo"] == "boeing/avionics"
+        assert d["repo"] == "acme/avionics"
         assert d["pr_number"] == 142
         assert d["pr_title"] == "Bump cert chain handling"
         assert d["head_sha"] == "a1b2c3"

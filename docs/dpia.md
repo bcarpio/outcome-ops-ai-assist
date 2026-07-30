@@ -29,7 +29,7 @@ Organizations deploying OutcomeOps are responsible for establishing their own le
 
 | Role | Entity |
 |------|--------|
-| Data Controller | The deploying organization (e.g., Boeing) |
+| Data Controller | The deploying organization (e.g., a large enterprise) |
 | Data Processor | AWS (infrastructure and AI model hosting) |
 | Software Provider | OutcomeOps (provides the platform software; no access to customer data or AWS accounts) |
 

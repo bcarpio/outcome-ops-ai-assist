@@ -2,7 +2,7 @@
 
 Covers:
 
-- Boeing demo classifications (Q1-Q7) -- the router's "Definition of
+- Lighthouse demo classifications (Q1-Q7) -- the router's "Definition of
   done" requires every fixture in this file to classify correctly.
 - The two proof-case structural questions (``report_repos_snapshot``
   and ``@hyatt-hpe/hpe-utils/http2``).
@@ -377,7 +377,7 @@ def test_classify_bedrock_failure_still_emits_audit(stub_bedrock, monkeypatch):
 
 
 # ===========================================================================
-# Boeing demo fixtures -- router "Definition of done"
+# Lighthouse demo fixtures -- router "Definition of done"
 #
 # These tests parametrize the (question -> expected intent) table from
 # the router spec. The classifier is mocked to return the expected
@@ -389,7 +389,7 @@ def test_classify_bedrock_failure_still_emits_audit(stub_bedrock, monkeypatch):
 # ===========================================================================
 
 
-BOEING_DEMO_FIXTURES = [
+LIGHTHOUSE_DEMO_FIXTURES = [
     # (question, expected_intent, expected_symbol_or_None)
     ("Search existing codebase for analytics capabilities", "pattern", None),
     ("Gap analysis on analytics platform", "pattern", None),
@@ -438,9 +438,9 @@ BOEING_DEMO_FIXTURES = [
 
 
 @pytest.mark.parametrize(
-    "question,expected_intent,expected_symbol", BOEING_DEMO_FIXTURES
+    "question,expected_intent,expected_symbol", LIGHTHOUSE_DEMO_FIXTURES
 )
-def test_boeing_demo_classifications(
+def test_lighthouse_demo_classifications(
     stub_bedrock, question, expected_intent, expected_symbol
 ):
     """Plan-gkg/05 DoD: every demo question classifies correctly.

@@ -152,9 +152,9 @@ grep -rn '@hyatt-hpe/hpe-utils/http2' <customer-checkout-root>/ \
 
 ---
 
-## Validation 3 — Boeing CVE response (regression check)
+## Validation 3 — Lighthouse CVE response (regression check)
 
-**Workspace**: Boeing demo workspace.
+**Workspace**: Lighthouse demo workspace.
 
 **Input**:
 
@@ -182,9 +182,9 @@ versions, lost citations).
 
 ---
 
-## Validation 4 — Pattern-shaped Boeing demo question (regression check)
+## Validation 4 — Pattern-shaped Lighthouse demo question (regression check)
 
-**Workspace**: Boeing demo workspace.
+**Workspace**: Lighthouse demo workspace.
 
 **Input**:
 
@@ -323,8 +323,8 @@ called by something.
 
 1. **Phase 1 — Dev validation**: run validations 1, 4, 5, 6, 7, 8
    against the dev `outcome-ops-ai-assist-private` workspace after
-   the dev backfill completes. Validations 2 and 3 require Hyatt /
-   Boeing workspaces; defer to phase 3.
+   the dev backfill completes. Validations 2 and 3 require the
+   enterprise-subpath and lighthouse workspaces; defer to phase 3.
 
 2. **Phase 2 — Prd validation (owner-driven)**: run validations 1, 4,
    5 against prd. Confirm parity with dev.

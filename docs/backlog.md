@@ -93,7 +93,7 @@ audit narrative can use (`SYNTHESIZE_QUERY` audit actions read cleanly).
   cycle (the second is brutal -- it'd take the chat-synthesis Lambda
   offline for a few minutes).
 
-**Not blocking the Boeing PoC** -- the name is a cosmetic embarrassment
+**Not blocking the lighthouse PoC** -- the name is a cosmetic embarrassment
 during demos but doesn't affect platform behavior. Worth doing before
 a public marketing push of the model-agnostic story; deferred until
 then.

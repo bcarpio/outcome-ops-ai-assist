@@ -1407,7 +1407,7 @@ class TestSearchKbDualChannel:
         fix, dependency / CVE / plaintext / spreadsheet queries silently
         returned 0 chunks despite the vectors being correctly ingested.
 
-        The Boeing CVE demo shape ("which apps run react-router
+        The lighthouse CVE demo shape ("which apps run react-router
         <version>?") depends specifically on `json` being here so
         `package.json` chunks are reachable via the docs lane.
         """
