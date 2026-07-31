@@ -154,7 +154,7 @@ output "chat_ui_ecr_repository_arn" {
 # ============================================================================
 
 resource "aws_ecr_repository" "database_integration" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_database_integration ? 1 : 0
 
   name                 = "${var.environment}-${var.app_name}-database-integration"
   image_tag_mutability = "IMMUTABLE"
@@ -175,7 +175,7 @@ resource "aws_ecr_repository" "database_integration" {
 }
 
 resource "aws_ecr_lifecycle_policy" "database_integration" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_database_integration ? 1 : 0
 
   repository = aws_ecr_repository.database_integration[0].name
 
@@ -196,7 +196,7 @@ resource "aws_ecr_lifecycle_policy" "database_integration" {
 }
 
 resource "aws_ecr_repository" "database_sync" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_database_integration ? 1 : 0
 
   name                 = "${var.environment}-${var.app_name}-database-sync"
   image_tag_mutability = "IMMUTABLE"
@@ -217,7 +217,7 @@ resource "aws_ecr_repository" "database_sync" {
 }
 
 resource "aws_ecr_lifecycle_policy" "database_sync" {
-  count = var.enable_workspaces ? 1 : 0
+  count = var.enable_workspaces && var.enable_database_integration ? 1 : 0
 
   repository = aws_ecr_repository.database_sync[0].name
 
@@ -239,12 +239,12 @@ resource "aws_ecr_lifecycle_policy" "database_sync" {
 
 output "database_integration_ecr_repository_url" {
   description = "ECR repository URL for database-integration Lambda container image"
-  value       = var.enable_workspaces ? aws_ecr_repository.database_integration[0].repository_url : null
+  value       = var.enable_workspaces && var.enable_database_integration ? aws_ecr_repository.database_integration[0].repository_url : null
 }
 
 output "database_sync_ecr_repository_url" {
   description = "ECR repository URL for database-sync Lambda container image"
-  value       = var.enable_workspaces ? aws_ecr_repository.database_sync[0].repository_url : null
+  value       = var.enable_workspaces && var.enable_database_integration ? aws_ecr_repository.database_sync[0].repository_url : null
 }
 
 # ============================================================================
@@ -339,7 +339,7 @@ resource "aws_ecr_lifecycle_policy" "chat_ui_secondary" {
 }
 
 resource "aws_ecr_repository" "database_integration_secondary" {
-  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count = var.enable_workspaces && var.enable_database_integration && var.secondary_region != "" ? 1 : 0
 
   provider = aws.secondary
 
@@ -360,7 +360,7 @@ resource "aws_ecr_repository" "database_integration_secondary" {
 }
 
 resource "aws_ecr_lifecycle_policy" "database_integration_secondary" {
-  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count = var.enable_workspaces && var.enable_database_integration && var.secondary_region != "" ? 1 : 0
 
   provider = aws.secondary
 
@@ -381,7 +381,7 @@ resource "aws_ecr_lifecycle_policy" "database_integration_secondary" {
 }
 
 resource "aws_ecr_repository" "database_sync_secondary" {
-  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count = var.enable_workspaces && var.enable_database_integration && var.secondary_region != "" ? 1 : 0
 
   provider = aws.secondary
 
@@ -402,7 +402,7 @@ resource "aws_ecr_repository" "database_sync_secondary" {
 }
 
 resource "aws_ecr_lifecycle_policy" "database_sync_secondary" {
-  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
+  count = var.enable_workspaces && var.enable_database_integration && var.secondary_region != "" ? 1 : 0
 
   provider = aws.secondary
 
@@ -429,12 +429,12 @@ output "chat_ui_ecr_repository_url_secondary" {
 
 output "database_integration_ecr_repository_url_secondary" {
   description = "Secondary-region ECR repository URL for database-integration Lambda container image (null when HA disabled)"
-  value       = (var.enable_workspaces && var.secondary_region != "") ? aws_ecr_repository.database_integration_secondary[0].repository_url : null
+  value       = (var.enable_workspaces && var.enable_database_integration && var.secondary_region != "") ? aws_ecr_repository.database_integration_secondary[0].repository_url : null
 }
 
 output "database_sync_ecr_repository_url_secondary" {
   description = "Secondary-region ECR repository URL for database-sync Lambda container image (null when HA disabled)"
-  value       = (var.enable_workspaces && var.secondary_region != "") ? aws_ecr_repository.database_sync_secondary[0].repository_url : null
+  value       = (var.enable_workspaces && var.enable_database_integration && var.secondary_region != "") ? aws_ecr_repository.database_sync_secondary[0].repository_url : null
 }
 
 resource "aws_ecr_replication_configuration" "ha" {

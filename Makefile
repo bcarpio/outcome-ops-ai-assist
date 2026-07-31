@@ -519,8 +519,9 @@ build-database-images:
 		exit 1; \
 	fi
 	@WS_ENABLED=$$(awk -F'=' '/^[[:space:]]*enable_workspaces[[:space:]]*=/ {gsub(/[[:space:]]/, "", $$2); print $$2; exit}' terraform/$$ENVIRONMENT.tfvars 2>/dev/null); \
-	 if [ "$$WS_ENABLED" = "false" ]; then \
-	   echo "Skipping build-database-images — enable_workspaces=false in terraform/$$ENVIRONMENT.tfvars (database-integration ECR repos not created)."; \
+	 DB_ENABLED=$$(awk -F'=' '/^[[:space:]]*enable_database_integration[[:space:]]*=/ {gsub(/[[:space:]]/, "", $$2); print $$2; exit}' terraform/$$ENVIRONMENT.tfvars 2>/dev/null); \
+	 if [ "$$WS_ENABLED" = "false" ] || [ "$$DB_ENABLED" != "true" ]; then \
+	   echo "Skipping build-database-images — needs BOTH enable_workspaces (not false) AND enable_database_integration=true in terraform/$$ENVIRONMENT.tfvars (the DB ECR repos + Lambda only exist then)."; \
 	   exit 0; \
 	 fi
 	@echo "Ensuring ECR repositories exist for environment: $$ENVIRONMENT"

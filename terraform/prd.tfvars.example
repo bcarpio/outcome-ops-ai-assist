@@ -216,6 +216,17 @@ github_usernames_to_tag = "yourusername"
 # cost_alert_workspace_monthly_usd = 0
 
 # ============================================================================
+# Database Integration (MSSQL / MySQL / Postgres schema introspection)
+# ============================================================================
+
+# Provision the workspace Database integration (introspect_database + schema
+# drift). Default: false. Requires enable_workspaces = true. Turning this ON is
+# also what builds + pushes the database-integration / database-sync container
+# images -- with it off, `make pre-deploy` skips those two images entirely
+# (they'd have no Lambda to run in). Turn it on only if you'll connect databases.
+# enable_database_integration = true
+
+# ============================================================================
 # Database Drift Notifications
 # ============================================================================
 
