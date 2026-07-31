@@ -149,3 +149,33 @@ selection), but the **resource name** bakes in a specific vendor model family.
 sequence it as a planned maintenance-window change. See also the related entry in
 `docs/backlog.md`.
 
+## `ui_private_subnet_ids` is misnamed — it accepts public OR private subnets
+
+**Discovered:** 2026-07-31
+**Severity:** Low (cosmetic / clarity — mitigated by docs)
+**Component:** `terraform/variables.tf` (`ui_private_subnet_ids`,
+`ui_private_subnet_ids_secondary`), consumed by `ui-fargate.tf`,
+`ui-fargate-secondary.tf`, `mcp-outcomeops.tf`, `mcp-snyk.tf`,
+`mcp-sonarqube.tf`, `fargate-secondary.tf`
+
+The variable name says "private," but the subnets it takes may be **public or
+private** — the actual outbound model is governed by `ui_fargate_assign_public_ip`
+(true = public subnets on an IGW, no NAT; false = private subnets with
+NAT/Transit Gateway/Direct Connect). A customer with public subnets (the
+cheap, no-NAT path) is steered wrong by the name. The description, validation
+message, tfvars example, and getting-started were clarified (commit `9be3b5d`),
+but the **name itself** still misleads.
+
+**Why it is deferred, not a drive-by rename:** renaming `ui_private_subnet_ids`
+→ `ui_subnet_ids` touches 7 `.tf` files plus the `_secondary` variant, the
+`prd.tfvars.example`, the docs, **and every existing `<env>.tfvars`** — terraform
+errors on the old name once the variable is renamed, so it must be changed in
+lockstep with the maintainer's live `prd`/`dev`/`openai` tfvars on the next
+apply. It is a clean breaking change with a small blast radius **while there are
+no production customers** (ADR-019), so it is cheapest to do soon.
+
+**Suggested fix:** rename to `ui_subnet_ids` (+ `ui_subnet_ids_secondary`),
+update all terraform references + example + docs, and update the maintainer's
+tfvars in the same change. Do it before the first production customer locks the
+name in.
+
