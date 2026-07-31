@@ -247,10 +247,14 @@ github_usernames_to_tag = "yourusername"
 # these two network vars are REQUIRED (terraform errors if they are unset):
 
 ui_vpc_id             = "vpc-REPLACE_ME"                                 # REQUIRED
+# ui_private_subnet_ids: >= 2 subnets in different AZs. They can be PUBLIC or
+# PRIVATE despite the name -- pair with ui_fargate_assign_public_ip below
+# (true = public/IGW subnets, no NAT; false = private + NAT/TGW/Direct Connect).
 ui_private_subnet_ids = ["subnet-REPLACE_ME_A", "subnet-REPLACE_ME_B"]   # REQUIRED: >= 2 AZs
 
 # deploy_ui          = true    # default; set false ONLY for a deliberate headless (CLI+GitHub) deploy
 # ui_container_image = "123456789012.dkr.ecr.us-west-2.amazonaws.com/outcome-ops-ai-assist-ui:latest"  # optional pin
+# ui_fargate_assign_public_ip = true    # set true when ui_private_subnet_ids are PUBLIC subnets (IGW, no NAT)
 
 # ALB Access Mode (see docs/adr/ADR-042 for the design rationale):
 #   true  = Internal ALB. RECOMMENDED for customer / enterprise deploys.

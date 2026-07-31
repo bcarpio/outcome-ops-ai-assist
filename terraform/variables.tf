@@ -592,12 +592,12 @@ variable "ui_vpc_id" {
 }
 
 variable "ui_private_subnet_ids" {
-  description = "Private subnet IDs (>= 2, in different AZs) for the Fargate tasks and the ALB. REQUIRED (no default)."
+  description = "Subnet IDs (>= 2, in different AZs) for the UI + MCP Fargate tasks and the ALB. May be PUBLIC or PRIVATE subnets -- the choice is governed by ui_fargate_assign_public_ip (true = public subnets on an IGW, no NAT needed; false = private subnets with NAT/Transit Gateway/Direct Connect). REQUIRED (no default). (Name retained for backward-compat; it is NOT restricted to private subnets.)"
   type        = list(string)
 
   validation {
     condition     = length(var.ui_private_subnet_ids) >= 2
-    error_message = "ui_private_subnet_ids is required and must list at least 2 subnets in different AZs (the ALB spans multiple AZs). Set it in your <env>.tfvars."
+    error_message = "ui_private_subnet_ids is required and must list at least 2 subnets in different AZs (the ALB spans multiple AZs). They may be public or private -- set ui_fargate_assign_public_ip accordingly (true for public/IGW subnets). Set it in your <env>.tfvars."
   }
 }
 

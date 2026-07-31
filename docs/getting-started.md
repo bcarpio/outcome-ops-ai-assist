@@ -52,11 +52,14 @@ These are not in the repo and will block `terraform plan`/`apply` if missing:
   and issues your signed JWT license key. You cannot deploy until the layer is
   shared to your account and you have the key. See
   [License Management](deployment-guide.md#license-management).
-- **A VPC with ≥2 private subnets** — the Chat UI **and** the MCP server are
-  deployed **by default** (`deploy_ui` and `mcp_server_enabled` default to
-  `true`) and both run on Fargate in your VPC, so `ui_vpc_id` and
+- **A VPC with ≥2 subnets in different AZs** — the Chat UI **and** the MCP
+  server are deployed **by default** (`deploy_ui` and `mcp_server_enabled`
+  default to `true`) and both run on Fargate in your VPC, so `ui_vpc_id` and
   `ui_private_subnet_ids` are **required** — `terraform` errors if they're
-  unset. See the Deployment Guide's network topology.
+  unset. The subnets may be **public or private** (despite the variable name):
+  set `ui_fargate_assign_public_ip = true` for public/IGW subnets (no NAT — the
+  cheap path), or `false` for private subnets with NAT/Transit Gateway/Direct
+  Connect. See the Deployment Guide's network topology.
 - **A domain + ACM/IAM TLS certificate** — for the UI's ALB (BYO DNS + cert).
 - **Azure AD (Entra ID) app registration** — the UI authenticates via Azure AD
   OIDC. Set this up per [Azure AD Setup](azure-ad-setup.md) before enabling a
