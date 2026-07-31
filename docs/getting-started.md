@@ -209,6 +209,10 @@ terraform plan  -var-file=prd.tfvars -out=terraform.prd.out   # ADR-004: always 
 terraform apply terraform.prd.out                             # apply the reviewed plan
 ```
 
+If `apply` reports the **saved plan is stale** ("Saved plan is stale" / the plan
+no longer matches state — common after the build step or a partial first apply),
+just re-run the `plan -out` and `apply` again; it's expected, not an error.
+
 **After apply — accept Bedrock marketplace agreements** for the models you use;
 third-party models (e.g. Cohere Rerank) fail *silently* without them. See
 [Deployment Guide → Bedrock Model Access](deployment-guide.md#bedrock-model-access-and-marketplace-agreements).
@@ -225,7 +229,7 @@ environment:
 ```bash
 # 1. Lambdas landed with the code you just built -- catches a stale-tree apply:
 aws lambda get-function-configuration \
-  --function-name prd-outcome-ops-ai-assist-chat --query CodeSha256 --output text
+  --function-name prd-outcome-ops-ai-assist-chat-streaming --query CodeSha256 --output text
 
 # 2. Backend reachable -- grab the URLs the apply emitted, then hit them:
 terraform output
@@ -234,7 +238,7 @@ terraform output
 #    (public-ALB deploys). Internal-ALB deploys: reach it over your VPC path.
 
 # 4. License accepted -- no license errors in a gated Lambda's recent logs:
-aws logs tail /aws/lambda/prd-outcome-ops-ai-assist-chat --since 10m \
+aws logs tail /aws/lambda/prd-outcome-ops-ai-assist-chat-streaming --since 10m \
   | grep -i licen || echo "no license errors"
 ```
 

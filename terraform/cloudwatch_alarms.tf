@@ -60,7 +60,7 @@ locals {
   # entries is picker fatigue for on-call and buries the actual
   # signal. Add here as new critical functions land.
   lambda_error_alarm_functions = [
-    "${var.environment}-${var.app_name}-chat",
+    "${var.environment}-${var.app_name}-chat-streaming",
     "${var.environment}-${var.app_name}-query-kb",
     "${var.environment}-${var.app_name}-ask-claude",
     "${var.environment}-${var.app_name}-workspace-management",

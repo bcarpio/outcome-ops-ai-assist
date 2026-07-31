@@ -36,7 +36,7 @@ locals {
   # NB: generate-code, analyze-pr are primary-only per ADR-043 --
   # excluded from the secondary error alarm set.
   lambda_error_alarm_functions_secondary = [
-    "${var.environment}-${var.app_name}-chat",
+    "${var.environment}-${var.app_name}-chat-streaming",
     "${var.environment}-${var.app_name}-workspace-management",
     "${var.environment}-${var.app_name}-file-ingestion",
     "${var.environment}-${var.app_name}-process-batch-summary",
