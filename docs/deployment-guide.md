@@ -251,9 +251,16 @@ Why the order is strict (each has burned a first deploy):
 
 ```bash
 cp terraform/prd.tfvars.example terraform/prd.tfvars
-# Edit terraform/prd.tfvars. The three variables with NO default that you
-# MUST set: aws_region, environment, outcomeops_license_layer_arn. Then the
-# topology/integration options (ALB mode, subnets, which integrations, sizing).
+# Edit terraform/prd.tfvars. FIVE variables have NO default -- you MUST set them:
+#   aws_region, environment, outcomeops_license_layer_arn (from OutcomeOps),
+#   ui_vpc_id, ui_private_subnet_ids (>= 2 subnets in different AZs).
+# WHY the VPC/subnets: the chat UI, the MCP server, AND workspaces deploy BY
+#   DEFAULT (deploy_ui, mcp_server_enabled, enable_workspaces all default true);
+#   the UI + MCP run on Fargate in that VPC. Set any of the three to false to
+#   skip that surface (headless).
+# If ui_private_subnet_ids are PUBLIC subnets, also set
+#   ui_fargate_assign_public_ip = true (IGW, no NAT). For a cheap trial/PoC, add
+#   fargate_enable_spot = true. Then ALB mode + which integrations + sizing.
 ```
 
 `terraform/*.tfvars` are environment-specific and must never be committed —

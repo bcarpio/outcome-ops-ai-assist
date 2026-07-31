@@ -148,9 +148,14 @@ cp terraform/backend.tf.example terraform/backend.tf
 
 ```bash
 cp terraform/prd.tfvars.example terraform/prd.tfvars
-# Edit terraform/prd.tfvars. The three variables with NO default you MUST set:
-#   aws_region, environment, outcomeops_license_layer_arn (from OutcomeOps)
-# plus topology (ALB mode, VPC/subnets) and which integrations to enable.
+# Edit terraform/prd.tfvars. FIVE variables have NO default -- you MUST set them:
+#   aws_region, environment, outcomeops_license_layer_arn (from OutcomeOps),
+#   ui_vpc_id, ui_private_subnet_ids (>= 2 subnets across AZs).
+# The UI + MCP server + workspaces deploy BY DEFAULT (deploy_ui,
+#   mcp_server_enabled, enable_workspaces = true) -- that's why the VPC/subnets
+#   are required; set any to false to skip that surface.
+# PUBLIC subnets? also add ui_fargate_assign_public_ip = true. Cheap trial? add
+#   fargate_enable_spot = true. Then ALB mode + which integrations.
 ```
 
 Store your GitHub token in SSM:
