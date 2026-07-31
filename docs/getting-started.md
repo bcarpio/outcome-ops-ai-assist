@@ -65,6 +65,9 @@ These are not in the repo and will block `terraform plan`/`apply` if missing:
   OIDC. Set this up per [Azure AD Setup](azure-ad-setup.md) before enabling a
   public ALB. (For a headless deploy, set `deploy_ui = false` and
   `mcp_server_enabled = false` explicitly to skip the UI/MCP and the last three.)
+- **Putting the UI on your own hostname** (custom domain + TLS) is a post-apply
+  step — note that a custom domain turns on HTTPS *and* Azure AD OIDC together.
+  See [Deployment Guide → Binding the UI to a Custom Domain](deployment-guide.md#binding-the-ui-to-a-custom-domain-tls--azure-ad-oidc).
 
 ### Creating the GitHub token
 

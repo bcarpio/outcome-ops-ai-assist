@@ -129,6 +129,64 @@ The Chat UI and MCP server deploy **by default** (`deploy_ui` and
 (point them at any VPC + two subnets in your account; they're simply unused when
 both services are off).
 
+### Binding the UI to a Custom Domain (TLS + Azure AD OIDC)
+
+Out of the box the UI answers over HTTP at the raw ALB DNS name
+(`prd-...elb.amazonaws.com`). To put it on your own hostname with TLS, set the
+`domain` variable — but note the coupling:
+
+> **A custom domain turns on HTTPS *and* Azure AD OIDC — they are one switch.**
+> The ACM cert, the HTTPS listener, and the Route53 record are all gated on
+> `oidc_enabled = true`. Setting `domain` alone does nothing. There is no
+> "custom domain + HTTPS but no auth" path today — binding a domain means
+> standing up Azure AD OIDC ([Azure AD Setup](azure-ad-setup.md)) as well.
+
+Baseline tfvars for a public, domain-bound UI:
+
+```hcl
+deploy_ui       = true
+ui_alb_internal = false                 # public ALB (OIDC-guarded)
+oidc_enabled    = true
+domain          = "example.com"
+# ui_subdomain defaults to "outcomeops" -> FQDN = outcomeops.example.com
+```
+
+...plus an Azure AD app registration whose redirect URI is
+`https://<fqdn>/oauth2/idpresponse`.
+
+**The deciding factor is where the Route53 hosted zone lives.** Check in the
+deploy account:
+
+```bash
+aws route53 list-hosted-zones --query "HostedZones[?Name=='example.com.']"
+```
+
+**Same account as the deploy (all Terraform).** Keep the default
+`manage_dns_in_route53 = true`. Terraform looks up the zone, **auto-issues an
+ACM public cert** (DNS-validated by writing records into the zone),
+**auto-creates the A-ALIAS** `<fqdn> -> ALB`, and stands up the HTTPS listener.
+No manual DNS or cert handling.
+
+**Zone in a different account (BYO cert + DNS).** Terraform cannot manage a zone
+in another account, so:
+
+1. Request a **new** ACM public cert **in the deploy account, in the ALB's
+   region** (e.g. `us-east-1`), for the FQDN. ACM returns a validation CNAME —
+   add it to the hosted zone in whichever account owns the domain. Once it
+   validates, note the cert ARN.
+2. Set `manage_dns_in_route53 = false` and `ui_acm_certificate_arn = "<arn>"`.
+3. Terraform outputs the ALB DNS name (`fqdn_to_cname`); add a **CNAME** in the
+   domain's zone: `<fqdn> -> <ALB DNS name>`.
+
+Full BYO cert/DNS matrix (public CA, internal CA, external DNS) is in
+[BYO TLS Certificate + BYO DNS](byo-cert-and-dns.md).
+
+> **You do not export the ACM certificate** for the cross-account case — that is
+> not the mechanism (ACM public certs are account+region-scoped). Request a fresh
+> cert in the account where the ALB lives and DNS-validate it with a CNAME in the
+> account where the zone lives. The cert stays put; only the validation record
+> crosses accounts.
+
 ---
 
 ## Supported Regions
