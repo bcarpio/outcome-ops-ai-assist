@@ -315,6 +315,15 @@ To rebuild a single artifact later, use its specific target
 
 ### 5. Plan and apply
 
+> **Keep the venv active for this step.** `terraform apply` packages each Lambda
+> by invoking `python3.12 -m pip install` from `PATH`. Without the venv active it
+> uses the *system* Python, and on Ubuntu 24.04 that interpreter is PEP-668
+> "externally-managed" — pip refuses, and every Lambda archive fails with
+> `zip: Error during zip archive creation` / `CalledProcessError` (and the
+> dependent CloudWatch metric filters then fail with "log group does not exist"
+> because those Lambdas never got created). Run `source venv/bin/activate` from
+> the repo root first; `which python3.12` should resolve into `venv/`.
+
 ```bash
 terraform plan  -var-file=prd.tfvars -out=terraform.prd.out   # ADR-004: plan to a file (fresh env = creates only)
 terraform apply terraform.prd.out                             # apply exactly what you reviewed

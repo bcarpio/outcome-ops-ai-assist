@@ -192,6 +192,17 @@ SecureString, or bump `outcomeops_license_layer_arn`.
 Init + workspace are done (step 5), so plan and apply. Full gated sequence and
 rationale: [Deployment Guide → Initial Deployment](deployment-guide.md#initial-deployment).
 
+> **The venv must be ACTIVE for this step.** `terraform apply` packages each
+> Lambda by shelling out to `python3.12 -m pip install` (from `PATH`). If the
+> venv isn't active it uses your *system* Python — and on Ubuntu 24.04 that
+> interpreter is PEP-668 "externally-managed," so the pip install fails and
+> **every** Lambda archive errors with `zip: Error during zip archive creation`
+> / `CalledProcessError`. Activate it first:
+> ```bash
+> source venv/bin/activate      # from the repo root
+> which python3.12              # sanity: should be .../venv/bin/python3.12
+> ```
+
 ```bash
 cd terraform
 terraform plan  -var-file=prd.tfvars -out=terraform.prd.out   # ADR-004: always plan to a file
