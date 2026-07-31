@@ -26,7 +26,9 @@ locals {
   ui_container_image_for_secondary = (
     var.ui_container_image_secondary != ""
     ? var.ui_container_image_secondary
-    : replace(var.ui_container_image, var.aws_region, var.secondary_region)
+    : var.ui_container_image != ""
+    ? replace(var.ui_container_image, var.aws_region, var.secondary_region)
+    : (var.deploy_ui && var.secondary_region != "" ? "${aws_ecr_repository.chat_ui_secondary[0].repository_url}:latest" : "")
   )
 }
 

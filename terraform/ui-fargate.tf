@@ -767,8 +767,11 @@ module "ui_ecs" {
       # Container definition
       container_definitions = {
         ui = {
-          essential                              = true
-          image                                  = var.ui_container_image
+          essential = true
+          # Default to the image make build-ui-image pushed to ECR (:latest,
+          # mutable tag) -- same auto-wiring the MCP server uses. Set
+          # var.ui_container_image only to pin a specific image/digest.
+          image                                  = var.ui_container_image != "" ? var.ui_container_image : (var.deploy_ui ? "${aws_ecr_repository.chat_ui[0].repository_url}:latest" : "")
           readonlyRootFilesystem                 = true
           create_cloudwatch_log_group            = true
           cloudwatch_log_group_name              = "/ecs/${var.environment}-${var.app_name}-ui"

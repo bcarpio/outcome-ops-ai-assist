@@ -264,7 +264,10 @@ ui_vpc_id             = "vpc-REPLACE_ME"                                 # REQUI
 ui_private_subnet_ids = ["subnet-REPLACE_ME_A", "subnet-REPLACE_ME_B"]   # REQUIRED: >= 2 AZs
 
 # deploy_ui          = true    # default; set false ONLY for a deliberate headless (CLI+GitHub) deploy
-# ui_container_image = "123456789012.dkr.ecr.us-west-2.amazonaws.com/outcome-ops-ai-assist-ui:latest"  # optional pin
+# ui_container_image: OPTIONAL. Leave unset -- the UI ECS task auto-uses the
+#   image `make build-ui-image` pushes to ECR (:latest). Only set this to pin a
+#   specific image/digest, e.g.:
+# ui_container_image = "123456789012.dkr.ecr.us-west-2.amazonaws.com/prd-outcome-ops-ai-assist-chat-ui:sometag"
 # ui_fargate_assign_public_ip = true    # set true when ui_private_subnet_ids are PUBLIC subnets (IGW, no NAT)
 
 # ALB Access Mode (see docs/adr/ADR-042 for the design rationale):
