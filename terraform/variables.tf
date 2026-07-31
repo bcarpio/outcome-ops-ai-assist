@@ -72,8 +72,8 @@ variable "github_usernames_to_tag" {
 
 variable "enable_workspaces" {
   type        = bool
-  description = "Enable workspaces feature for team/project groupings with OAuth integrations (Confluence, Jira, Outlook)"
-  default     = false
+  description = "Enable workspaces feature for team/project groupings with OAuth integrations (Confluence, Jira, Outlook). Default true -- gates workspace-scoped repo connections and the database-integration surfaces."
+  default     = true
 }
 
 variable "initial_org_admin_email" {
@@ -576,21 +576,29 @@ variable "tags" {
 # ============================================================================
 
 variable "deploy_ui" {
-  description = "Whether to deploy the chat UI (Fargate + ALB)"
+  description = "Deploy the chat UI (Fargate + ALB). Default true -- the UI is the primary product surface. Requires ui_vpc_id + ui_private_subnet_ids. Set false only for a deliberate headless (CLI + GitHub-only) deploy."
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "ui_vpc_id" {
-  description = "VPC ID for UI deployment"
+  description = "VPC ID for the UI + MCP Fargate services. REQUIRED (no default) -- both the chat UI and the MCP server run in this VPC."
   type        = string
-  default     = ""
+
+  validation {
+    condition     = can(regex("^vpc-", var.ui_vpc_id))
+    error_message = "ui_vpc_id is required and must be a VPC id (vpc-...). The chat UI and MCP server run in this VPC; set it in your <env>.tfvars."
+  }
 }
 
 variable "ui_private_subnet_ids" {
-  description = "Private subnet IDs for Fargate tasks and internal ALB"
+  description = "Private subnet IDs (>= 2, in different AZs) for the Fargate tasks and the ALB. REQUIRED (no default)."
   type        = list(string)
-  default     = []
+
+  validation {
+    condition     = length(var.ui_private_subnet_ids) >= 2
+    error_message = "ui_private_subnet_ids is required and must list at least 2 subnets in different AZs (the ALB spans multiple AZs). Set it in your <env>.tfvars."
+  }
 }
 
 variable "ui_container_image" {
@@ -1103,9 +1111,9 @@ variable "mcp_snyk_org" {
 }
 
 variable "mcp_server_enabled" {
-  description = "Deploy the MCP server for external MCP client access (Claude Code, VS Code, Cursor)"
+  description = "Deploy the MCP server for external MCP client access (Claude Code, VS Code, Cursor). Default true -- core integration surface. Runs on Fargate and shares ui_vpc_id/ui_private_subnet_ids with the UI."
   type        = bool
-  default     = false
+  default     = true
 }
 
 

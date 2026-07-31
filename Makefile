@@ -338,6 +338,11 @@ build-ui-image:
 		echo "       ENVIRONMENT=prd make build-ui-image"; \
 		exit 1; \
 	fi
+	@DEPLOY_UI=$$(awk -F'=' '/^[[:space:]]*deploy_ui[[:space:]]*=/ {gsub(/[[:space:]]/, "", $$2); print $$2; exit}' terraform/$$ENVIRONMENT.tfvars 2>/dev/null); \
+	 if [ "$$DEPLOY_UI" = "false" ]; then \
+	   echo "Skipping build-ui-image — deploy_ui=false in terraform/$$ENVIRONMENT.tfvars (headless deploy)."; \
+	   exit 0; \
+	 fi
 	@echo "Ensuring ECR repository exists for environment: $$ENVIRONMENT"
 	@SR=$$(awk -F'"' '/^[[:space:]]*secondary_region[[:space:]]*=/ {print $$2; exit}' terraform/$$ENVIRONMENT.tfvars 2>/dev/null); \
 	 EXTRA=""; \
@@ -369,6 +374,11 @@ build-mcp-server-image:
 		echo "       ENVIRONMENT=prd make build-mcp-server-image"; \
 		exit 1; \
 	fi
+	@MCP_ENABLED=$$(awk -F'=' '/^[[:space:]]*mcp_server_enabled[[:space:]]*=/ {gsub(/[[:space:]]/, "", $$2); print $$2; exit}' terraform/$$ENVIRONMENT.tfvars 2>/dev/null); \
+	 if [ "$$MCP_ENABLED" = "false" ]; then \
+	   echo "Skipping build-mcp-server-image — mcp_server_enabled=false in terraform/$$ENVIRONMENT.tfvars."; \
+	   exit 0; \
+	 fi
 	@echo "Ensuring ECR repository exists for environment: $$ENVIRONMENT"
 	@SR=$$(awk -F'"' '/^[[:space:]]*secondary_region[[:space:]]*=/ {print $$2; exit}' terraform/$$ENVIRONMENT.tfvars 2>/dev/null); \
 	 EXTRA=""; \
@@ -508,6 +518,11 @@ build-database-images:
 		echo "       ENVIRONMENT=prd make build-database-images"; \
 		exit 1; \
 	fi
+	@WS_ENABLED=$$(awk -F'=' '/^[[:space:]]*enable_workspaces[[:space:]]*=/ {gsub(/[[:space:]]/, "", $$2); print $$2; exit}' terraform/$$ENVIRONMENT.tfvars 2>/dev/null); \
+	 if [ "$$WS_ENABLED" = "false" ]; then \
+	   echo "Skipping build-database-images — enable_workspaces=false in terraform/$$ENVIRONMENT.tfvars (database-integration ECR repos not created)."; \
+	   exit 0; \
+	 fi
 	@echo "Ensuring ECR repositories exist for environment: $$ENVIRONMENT"
 	@SR=$$(awk -F'"' '/^[[:space:]]*secondary_region[[:space:]]*=/ {print $$2; exit}' terraform/$$ENVIRONMENT.tfvars 2>/dev/null); \
 	 EXTRA=""; \

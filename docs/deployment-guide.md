@@ -121,7 +121,13 @@ justification to hand them.
 
 ### Headless Mode
 
-Set `deploy_ui = false` to skip the Chat UI entirely. The platform operates via CLI (`./scripts/outcome-ops-assist`) and GitHub integrations only.
+The Chat UI and MCP server deploy **by default** (`deploy_ui` and
+`mcp_server_enabled` default to `true`). For a headless deploy — CLI
+(`./scripts/outcome-ops-assist`) and GitHub integrations only — set **both**
+`deploy_ui = false` and `mcp_server_enabled = false` explicitly. Note that
+`ui_vpc_id` and `ui_private_subnet_ids` are **required variables regardless**
+(point them at any VPC + two subnets in your account; they're simply unused when
+both services are off).
 
 ---
 

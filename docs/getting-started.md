@@ -23,8 +23,10 @@ WSL2 distribution, not PowerShell.
    without them the install fails with fatal `Python.h: No such file or
    directory` errors. On Ubuntu/WSL2, install them first:
    ```bash
-   sudo apt install python3.12-dev build-essential
+   sudo apt install python3.12-dev build-essential zip
    ```
+   (`zip` is also used by `make pre-deploy` to package the Lambda layers — a
+   vanilla Ubuntu image doesn't ship it, and the layer build fails without it.)
    (pyenv-built interpreters bundle these headers, so pyenv users can skip this.)
 2. **Terraform 1.5+** — install with your platform's package manager per the
    [HashiCorp install guide](https://developer.hashicorp.com/terraform/install):
@@ -50,12 +52,16 @@ These are not in the repo and will block `terraform plan`/`apply` if missing:
   and issues your signed JWT license key. You cannot deploy until the layer is
   shared to your account and you have the key. See
   [License Management](deployment-guide.md#license-management).
-- **A VPC with subnets** — if deploying the Chat UI (`deploy_ui = true`), you
-  supply `ui_vpc_id` + subnet IDs. See the Deployment Guide's network topology.
+- **A VPC with ≥2 private subnets** — the Chat UI **and** the MCP server are
+  deployed **by default** (`deploy_ui` and `mcp_server_enabled` default to
+  `true`) and both run on Fargate in your VPC, so `ui_vpc_id` and
+  `ui_private_subnet_ids` are **required** — `terraform` errors if they're
+  unset. See the Deployment Guide's network topology.
 - **A domain + ACM/IAM TLS certificate** — for the UI's ALB (BYO DNS + cert).
 - **Azure AD (Entra ID) app registration** — the UI authenticates via Azure AD
   OIDC. Set this up per [Azure AD Setup](azure-ad-setup.md) before enabling a
-  public ALB. (Headless deploys with `deploy_ui = false` skip the last three.)
+  public ALB. (For a headless deploy, set `deploy_ui = false` and
+  `mcp_server_enabled = false` explicitly to skip the UI/MCP and the last three.)
 
 ### Creating the GitHub token
 

@@ -33,8 +33,8 @@ github_usernames_to_tag = "yourusername"
 # ============================================================================
 
 # Enable workspaces (team/project groupings with OAuth integrations:
-# Confluence, Jira, Outlook, Teams, SharePoint). Default: false.
-# enable_workspaces = false
+# Confluence, Jira, Outlook, Teams, SharePoint). Default: TRUE.
+# enable_workspaces = true    # set false for a minimal single-tenant deploy
 
 # ============================================================================
 # Integration Toggles
@@ -240,13 +240,17 @@ github_usernames_to_tag = "yourusername"
 # cost_alert_schedule_expression   = "cron(0 13 * * ? *)"
 
 # ============================================================================
-# Chat UI Deployment
+# Chat UI + MCP server (Fargate) -- deployed by DEFAULT
 # ============================================================================
+# deploy_ui and mcp_server_enabled BOTH default to true -- the chat UI and the
+# MCP server are the core product. Both run on Fargate inside the VPC below, so
+# these two network vars are REQUIRED (terraform errors if they are unset):
 
-# deploy_ui             = false
-# ui_vpc_id             = "vpc-xxxxxxxx"
-# ui_private_subnet_ids = ["subnet-xxxxxxxx", "subnet-yyyyyyyy"]
-# ui_container_image    = "123456789012.dkr.ecr.us-west-2.amazonaws.com/outcome-ops-ai-assist-ui:latest"
+ui_vpc_id             = "vpc-REPLACE_ME"                                 # REQUIRED
+ui_private_subnet_ids = ["subnet-REPLACE_ME_A", "subnet-REPLACE_ME_B"]   # REQUIRED: >= 2 AZs
+
+# deploy_ui          = true    # default; set false ONLY for a deliberate headless (CLI+GitHub) deploy
+# ui_container_image = "123456789012.dkr.ecr.us-west-2.amazonaws.com/outcome-ops-ai-assist-ui:latest"  # optional pin
 
 # ALB Access Mode (see docs/adr/ADR-042 for the design rationale):
 #   true  = Internal ALB. RECOMMENDED for customer / enterprise deploys.
@@ -383,10 +387,11 @@ github_usernames_to_tag = "yourusername"
 # mcp_snyk_org     = ""
 
 # OutcomeOps MCP server (knowledge base access for Claude Code, VS Code, Cursor).
-# Requires deploy_ui = true and Docker for building the container image.
+# Default: TRUE. Runs on Fargate in ui_vpc_id/ui_private_subnet_ids (required
+# above); needs Docker for the container image build.
 # First-time deploy: ENVIRONMENT=prd make build-mcp-server-image
 # See docs/mcp-server.md for full setup instructions.
-# mcp_server_enabled = false
+# mcp_server_enabled = true    # set false to skip the MCP server
 
 # ============================================================================
 # Security Scanner
@@ -560,7 +565,11 @@ audit_stream_export_enabled = true
 # the reclaimed task. Default FALSE = 100% on-demand (the enterprise
 # posture; leave it unset). Sandbox/trial deploys opt in with true; the
 # ui_fargate_* / mcp_server_* weight + base vars then tune the mix.
-# fargate_enable_spot = false
+#
+# LEAN / TESTING: set this true to run the UI + MCP on Spot for a cheap
+# trial/PoC deploy -- the fastest way to keep container cost down while kicking
+# the tires.
+# fargate_enable_spot = true    # cheap testing; omit (false) for production
 
 # ============================================================================
 # GitHub Enterprise Server (GHES)
