@@ -8,11 +8,18 @@
 # ECR Repository for the custom container image
 # -----------------------------------------------------------------------------
 
+# Immutable image tag written by the build-mcp-server-image make target. The ECR
+# repo is IMMUTABLE, so the task def pulls this unique tag rather than :latest.
+data "aws_ssm_parameter" "mcp_image_tag" {
+  count = var.mcp_server_enabled ? 1 : 0
+  name  = "/${var.environment}/${var.app_name}/mcp-outcomeops/image-tag"
+}
+
 resource "aws_ecr_repository" "mcp_outcomeops" {
   count = var.mcp_server_enabled ? 1 : 0
 
   name                 = "${var.environment}-${var.app_name}-mcp-outcomeops"
-  image_tag_mutability = "MUTABLE"
+  image_tag_mutability = "IMMUTABLE"
   force_delete         = true
 
   image_scanning_configuration {
@@ -42,7 +49,7 @@ module "mcp_outcomeops" {
   aws_region  = var.aws_region
 
   server_name     = "outcomeops"
-  container_image = "${aws_ecr_repository.mcp_outcomeops[0].repository_url}:latest"
+  container_image = "${aws_ecr_repository.mcp_outcomeops[0].repository_url}:${data.aws_ssm_parameter.mcp_image_tag[0].value}"
   container_port  = 8080
 
   # fable-scale chunk 01: sizing + autoscaling driven by tfvars. Autoscaling
@@ -404,7 +411,7 @@ resource "aws_ecr_repository" "mcp_outcomeops_secondary" {
   provider = aws.secondary
 
   name                 = "${var.environment}-${var.app_name}-mcp-outcomeops"
-  image_tag_mutability = "MUTABLE"
+  image_tag_mutability = "IMMUTABLE"
   force_delete         = true
 
   image_scanning_configuration {

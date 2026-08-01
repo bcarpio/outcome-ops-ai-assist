@@ -398,20 +398,24 @@ build-mcp-server-image:
 	$(eval BUILD_SECONDARY_REGION := $(shell awk -F'"' '/^[[:space:]]*secondary_region[[:space:]]*=/ {print $$2; exit}' terraform/$(ENVIRONMENT).tfvars 2>/dev/null))
 	$(eval BUILD_AWS_REGION := $(shell awk -F'"' '/^[[:space:]]*aws_region[[:space:]]*=/ {print $$2; exit}' terraform/$(ENVIRONMENT).tfvars 2>/dev/null))
 	$(eval BUILD_AWS_REGION := $(or $(BUILD_AWS_REGION),$(AWS_REGION)))
+	$(eval MCP_IMAGE_TAG := $(shell date +%Y%m%d-%H%M%S)-$(shell git rev-parse --short HEAD 2>/dev/null || echo unknown))
 	@if [ -z "$(ECR_REPO)" ] || [ "$(ECR_REPO)" = "null" ]; then \
 	   echo "Skipping build-mcp-server-image — mcp_server_ecr_url output is empty (mcp_server_enabled=false?)."; \
 	   exit 0; \
 	 fi; \
 	 aws ecr get-login-password --region $(BUILD_AWS_REGION) | docker login --username AWS --password-stdin $(AWS_ACCOUNT).dkr.ecr.$(BUILD_AWS_REGION).amazonaws.com && \
-	 docker build -f lambda/mcp-server/Dockerfile -t $(ECR_REPO):latest lambda/ && \
-	 docker push $(ECR_REPO):latest
+	 docker build -f lambda/mcp-server/Dockerfile -t $(ECR_REPO):$(MCP_IMAGE_TAG) lambda/ && \
+	 docker push $(ECR_REPO):$(MCP_IMAGE_TAG) && \
+	 echo "Storing image tag in SSM ($(BUILD_AWS_REGION)): /$(ENVIRONMENT)/$(APP_NAME)/mcp-outcomeops/image-tag = $(MCP_IMAGE_TAG)" && \
+	 aws ssm put-parameter --name "/$(ENVIRONMENT)/$(APP_NAME)/mcp-outcomeops/image-tag" --value "$(MCP_IMAGE_TAG)" --type String --overwrite --region $(BUILD_AWS_REGION) > /dev/null
 	@if [ -n "$(BUILD_SECONDARY_REGION)" ] && [ -n "$(ECR_REPO_SECONDARY)" ] && [ "$(ECR_REPO_SECONDARY)" != "null" ]; then \
 	   echo ""; \
 	   echo "HA multi-region push: ${BUILD_SECONDARY_REGION}"; \
 	   aws ecr get-login-password --region $(BUILD_SECONDARY_REGION) \
 	     | docker login --username AWS --password-stdin $(AWS_ACCOUNT).dkr.ecr.$(BUILD_SECONDARY_REGION).amazonaws.com; \
-	   docker tag $(ECR_REPO):latest $(ECR_REPO_SECONDARY):latest; \
-	   docker push $(ECR_REPO_SECONDARY):latest; \
+	   docker tag $(ECR_REPO):$(MCP_IMAGE_TAG) $(ECR_REPO_SECONDARY):$(MCP_IMAGE_TAG); \
+	   docker push $(ECR_REPO_SECONDARY):$(MCP_IMAGE_TAG); \
+	   aws ssm put-parameter --name "/$(ENVIRONMENT)/$(APP_NAME)/mcp-outcomeops/image-tag" --value "$(MCP_IMAGE_TAG)" --type String --overwrite --region $(BUILD_SECONDARY_REGION) > /dev/null; \
 	 fi
 
 # Build Snyk MCP server container image

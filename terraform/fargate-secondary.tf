@@ -64,6 +64,14 @@ resource "aws_service_discovery_private_dns_namespace" "mcp_secondary" {
 # OutcomeOps MCP server (secondary)
 # ----------------------------------------------------------------------------
 
+# Secondary-region copy of the MCP image tag (the build target writes it to SSM
+# in the secondary region too). Consumed only by the secondary MCP task below.
+data "aws_ssm_parameter" "mcp_image_tag_secondary" {
+  count    = local.deploy_ui_secondary && var.mcp_server_enabled ? 1 : 0
+  provider = aws.secondary
+  name     = "/${var.environment}/${var.app_name}/mcp-outcomeops/image-tag"
+}
+
 module "mcp_outcomeops_secondary" {
   source = "./modules/mcp-server"
   count  = local.deploy_ui_secondary && var.mcp_server_enabled ? 1 : 0
@@ -79,7 +87,7 @@ module "mcp_outcomeops_secondary" {
   server_name = "outcomeops"
   # Same repo name as primary; us-east-2 ECR copy populated via the
   # cross-region replication config from chunk 9a.
-  container_image = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.secondary_region}.amazonaws.com/${var.environment}-${var.app_name}-mcp-outcomeops:latest"
+  container_image = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.secondary_region}.amazonaws.com/${var.environment}-${var.app_name}-mcp-outcomeops:${data.aws_ssm_parameter.mcp_image_tag_secondary[0].value}"
   container_port  = 8080
 
   # fable-scale chunk 01 (HA parity): tfvars-driven sizing + autoscaling,
