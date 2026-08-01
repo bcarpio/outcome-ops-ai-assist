@@ -1,5 +1,5 @@
 import ReactDOM from 'react-dom/client'
-import { BrowserRouter, Routes, Route } from 'react-router-dom'
+import { BrowserRouter, Routes, Route } from 'react-router'
 import Chat from './pages/Chat'
 import Workspaces from './pages/Workspaces'
 import WorkspaceSettings from './pages/WorkspaceSettings'

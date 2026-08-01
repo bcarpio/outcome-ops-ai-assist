@@ -1,5 +1,5 @@
 import { render, type RenderOptions } from '@testing-library/react'
-import { MemoryRouter, Routes, Route } from 'react-router-dom'
+import { MemoryRouter, Routes, Route } from 'react-router'
 import type { ReactElement } from 'react'
 
 interface RouterOptions extends RenderOptions {

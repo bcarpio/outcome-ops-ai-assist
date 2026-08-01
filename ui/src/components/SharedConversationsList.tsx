@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router'
 import { Loader2, MessageSquare, Users } from 'lucide-react'
 import {
   listSharedConversations,
