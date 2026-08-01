@@ -47,11 +47,6 @@ du -sh lambda/runtime-layer 2>/dev/null || true
 du -sh build/platform-ca-layer 2>/dev/null || true
 du -sh lambda/terraform-layer 2>/dev/null || true
 echo ""
-echo "Note: the database integration ships as Lambda container images,"
-echo "not a Lambda layer. To build those, run:"
-echo "  ENVIRONMENT=<dev|prd> make build-database-images"
-echo ""
-echo "Run 'terraform plan' to see the changes."
-echo ""
-echo "NOTE: For run-tests Lambda, build the container image:"
-echo "  ./scripts/build-run-tests-image.sh --env <dev|prd>"
+echo "(Layers only. Container images — run-tests, UI, MCP, database — build"
+echo " separately via 'make build-all-images'. 'make pre-deploy' runs both back to"
+echo " back, so nothing above needs a manual follow-up step.)"
