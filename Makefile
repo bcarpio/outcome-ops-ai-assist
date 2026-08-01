@@ -1,4 +1,4 @@
-.PHONY: help setup install fmt lint validate check-ha-parity test test-unit test-coverage test-ui audit build-run-tests-image build-ui-image build-mcp-server-image build-snyk-image build-database-images build-runtime-layer build-terraform-layer build-all-layers build-platform-layer build-all-images pre-deploy deliver clean all ha-status ha-replay-dlq ha-list-secrets ha-sync-secrets ha-bootstrap ha-kms-migrate _ha-env-check
+.PHONY: help setup install fmt lint validate check-ha-parity test test-unit test-coverage test-ui audit build-run-tests-image build-ui-image build-mcp-server-image build-snyk-image build-database-images build-runtime-layer build-terraform-layer build-all-layers build-platform-layer build-all-images _ensure-image-tag-params pre-deploy deliver clean all ha-status ha-replay-dlq ha-list-secrets ha-sync-secrets ha-bootstrap ha-kms-migrate _ha-env-check
 
 APP_NAME ?= outcome-ops-ai-assist
 AWS_REGION ?= us-west-2
@@ -567,6 +567,33 @@ build-platform-layer:
 
 # Build every customer-image container in one shot. Each underlying target
 # already validates ENVIRONMENT and ensures its own ECR repo, so this is
+# Ensure the per-container image-tag SSM params EXIST before any terraform runs.
+# The ECR repos are IMMUTABLE and the UI/MCP/Snyk/SonarQube task defs read their
+# image tag from these SSM params via a data source -- which terraform reads on
+# EVERY refresh, including the targeted ECR-repo applies each build target does.
+# On a first deploy the params don't exist yet, so terraform errors
+# ParameterNotFound and the build dies at the very first image. Seed a
+# placeholder (ONLY if missing; each image build then overwrites it with the real
+# timestamp-sha tag). Idempotent -- safe to run every pre-deploy.
+_ensure-image-tag-params:
+	@if [ -z "$$ENVIRONMENT" ]; then echo "Error: ENVIRONMENT variable not set."; exit 1; fi
+	@REGION=$$(awk -F'"' '/^[[:space:]]*aws_region[[:space:]]*=/ {print $$2; exit}' terraform/$$ENVIRONMENT.tfvars 2>/dev/null); \
+	 REGION=$${REGION:-$(AWS_REGION)}; \
+	 SR=$$(awk -F'"' '/^[[:space:]]*secondary_region[[:space:]]*=/ {print $$2; exit}' terraform/$$ENVIRONMENT.tfvars 2>/dev/null); \
+	 for triple in deploy_ui:chat-ui:true mcp_server_enabled:mcp-outcomeops:true mcp_snyk_enabled:mcp-snyk:false mcp_sonarqube_enabled:mcp-sonarqube:false; do \
+	   flag=$$(echo "$$triple" | cut -d: -f1); svc=$$(echo "$$triple" | cut -d: -f2); def=$$(echo "$$triple" | cut -d: -f3); \
+	   val=$$(grep -E "^[[:space:]]*$$flag[[:space:]]*=" terraform/$$ENVIRONMENT.tfvars 2>/dev/null | head -1 | sed 's/.*=[[:space:]]*//; s/[[:space:]#].*//'); \
+	   eff=$${val:-$$def}; \
+	   [ "$$eff" != "true" ] && continue; \
+	   param="/$$ENVIRONMENT/$(APP_NAME)/$$svc/image-tag"; \
+	   for r in $$REGION $$SR; do \
+	     [ -z "$$r" ] && continue; \
+	     aws ssm get-parameter --name "$$param" --region "$$r" >/dev/null 2>&1 || { \
+	       echo "  seeding placeholder SSM param $$param ($$r) -- build will overwrite with the real tag"; \
+	       aws ssm put-parameter --name "$$param" --value bootstrap --type String --region "$$r" >/dev/null; }; \
+	   done; \
+	 done
+
 # just an ordering wrapper -- a field engineer should not have to remember
 # the full per-container list. Parallels build-all-layers.
 build-all-images:
@@ -576,6 +603,7 @@ build-all-images:
 		echo "       ENVIRONMENT=prd make build-all-images"; \
 		exit 1; \
 	fi
+	ENVIRONMENT=$$ENVIRONMENT $(MAKE) _ensure-image-tag-params
 	ENVIRONMENT=$$ENVIRONMENT $(MAKE) build-run-tests-image
 	ENVIRONMENT=$$ENVIRONMENT $(MAKE) build-ui-image
 	ENVIRONMENT=$$ENVIRONMENT $(MAKE) build-mcp-server-image
