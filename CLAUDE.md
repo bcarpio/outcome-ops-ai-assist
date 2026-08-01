@@ -150,6 +150,13 @@ When in doubt about whether something is a Lambda zip vs Fargate image, grep ter
 for `aws_ecs_service` / `container_image`; anything that ships as an image runs on
 Fargate, not Lambda, and needs the image rebuild path.
 
+**Never recommend a targeted apply.** The operator does not use `terraform apply
+-target=...`. Always recommend a **full `terraform apply`** — it refreshes every data
+source and shows the complete plan, so nothing lands silently. When only one thing
+should change (e.g. a Fargate task-def image bump after an SSM tag moved), say which
+single change the operator should expect to see in the plan and to stop if the plan
+shows more — do NOT hand over a `-target` command to make it "quick."
+
 ### Plans Drive Implementation; ADRs Capture Decisions
 
 Two distinct artifact families with no overlap:
