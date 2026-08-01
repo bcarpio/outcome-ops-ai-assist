@@ -639,9 +639,14 @@ The `--execute` step:
 1. Creates a new multi-region KMS key in the primary region (tagged
    for idempotency — re-running the script reuses the same pending
    key).
-2. Scans the workspaces table for every OAuth token row
-   (`{GITHUB,CONFLUENCE,JIRA,OUTLOOK,TEAMS,SHAREPOINT,ONEDRIVE,ONENOTE}_TOKEN#*`)
-   and every database-credential row (`DB_CREDENTIAL#*`).
+2. Scans the workspaces table for every row carrying an `encrypted_*`
+   attribute (the OAuth key), and separately every database-credential
+   row (`DB_CREDENTIAL#*`, which lives under its own key). The OAuth
+   sweep matches on the attribute's presence, not a per-provider
+   allowlist, so every integration that encrypts under the OAuth key is
+   covered automatically — GitHub, Confluence, Jira, Outlook, Teams,
+   SharePoint, OneDrive, OneNote, GitLab, Salesforce, ServiceNow, Azure
+   DevOps, and the MCP catalog rows — plus any future one.
 3. Decrypts each `encrypted_*` attribute under the OLD key,
    re-encrypts it under the NEW MRK, and writes the row back.
 4. Prints the new MRK ARN for the next steps.

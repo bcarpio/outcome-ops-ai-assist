@@ -64,13 +64,16 @@ is needed — there are no existing tokens to re-encrypt.
 
 WHAT THIS SCRIPT TOUCHES
 ------------------------
-- ``WORKSPACES`` DynamoDB table rows with PK matching:
-    GITHUB_TOKEN#*  CONFLUENCE_TOKEN#*  JIRA_TOKEN#*
-    OUTLOOK_TOKEN#*  TEAMS_TOKEN#*  SHAREPOINT_TOKEN#*
-    ONEDRIVE_TOKEN#*  ONENOTE_TOKEN#*  DB_CREDENTIAL#*
-  Specifically: any attribute named ``encrypted_*`` is decrypted under
-  the old key and re-encrypted under the new key. Other attributes
-  are untouched.
+- ``WORKSPACES`` DynamoDB table rows that carry any ``encrypted_*``
+  attribute. The OAuth sweep matches on that attribute's PRESENCE, not a
+  per-provider PK allowlist, so every integration that encrypts under the
+  OAuth key is covered automatically -- GitHub, Confluence, Jira, Outlook,
+  Teams, SharePoint, OneDrive, OneNote, GitLab, Salesforce, ServiceNow,
+  Azure DevOps, and the MCP catalog rows -- plus any future one. Each
+  ``encrypted_*`` attribute is decrypted under the old key and re-encrypted
+  under the new key; other attributes are untouched.
+- Database credentials (PK ``DB_CREDENTIAL#*``) live under a SEPARATE key
+  and are handled by their own branch (``--skip-db-credentials`` opts out).
 
 - NEW KMS key created in PRIMARY region via boto3 (NOT terraform).
   Terraform will reconcile on the next apply via state import.
@@ -98,16 +101,15 @@ from typing import Any, Dict, Iterable, List, Tuple
 import boto3
 from botocore.exceptions import ClientError
 
-OAUTH_PK_PREFIXES = (
-    "GITHUB_TOKEN#",
-    "CONFLUENCE_TOKEN#",
-    "JIRA_TOKEN#",
-    "OUTLOOK_TOKEN#",
-    "TEAMS_TOKEN#",
-    "SHAREPOINT_TOKEN#",
-    "ONEDRIVE_TOKEN#",
-    "ONENOTE_TOKEN#",
-)
+# OAuth-key ciphertext is identified by the PRESENCE of an ``encrypted_*``
+# attribute, NOT by a per-provider PK allowlist. A hardcoded allowlist here
+# previously skipped GitLab / Salesforce / ServiceNow / Azure DevOps and the
+# MCP catalog rows -- all of which encrypt under the OAuth key
+# (OAUTH_KMS_KEY_ARN, see workspace-management _encrypt_credentials) -- which
+# orphaned exactly those tokens on a re-key and forced a disconnect/reconnect
+# (destroying their vectors). DB credentials are the one carve-out: they live
+# under a SEPARATE key, so they are excluded from the OAuth sweep and handled
+# by their own branch.
 DB_CRED_PK_PREFIX = "DB_CREDENTIAL#"
 
 
@@ -146,6 +148,40 @@ def _scan_affected_rows(
 
 def _encrypted_attrs(item: Dict[str, Any]) -> List[str]:
     return [k for k in item.keys() if k.startswith("encrypted_")]
+
+
+def _scan_encrypted_rows(
+    table_name: str, region: str, exclude_prefixes: Tuple[str, ...] = ()
+) -> List[Dict[str, Any]]:
+    """Scan the workspaces table once and return every item that carries at
+    least one ``encrypted_*`` attribute, except rows whose PK starts with one
+    of ``exclude_prefixes``.
+
+    Self-maintaining by design: any current or future integration that stores
+    an ``encrypted_*`` ciphertext under the OAuth key is picked up
+    automatically -- there is no per-provider allowlist to keep in sync (the
+    old allowlist silently skipped GitLab/Salesforce/ServiceNow/Azure DevOps
+    and the MCP catalog rows). Paginated -- no truncation at enterprise
+    scale."""
+    ddb = boto3.resource("dynamodb", region_name=region)
+    table = ddb.Table(table_name)
+    affected: List[Dict[str, Any]] = []
+    last_key = None
+    while True:
+        kwargs: Dict[str, Any] = {}
+        if last_key:
+            kwargs["ExclusiveStartKey"] = last_key
+        resp = table.scan(**kwargs)
+        for item in resp.get("Items", []):
+            pk = item.get("PK", "")
+            if any(pk.startswith(p) for p in exclude_prefixes):
+                continue
+            if _encrypted_attrs(item):
+                affected.append(item)
+        last_key = resp.get("LastEvaluatedKey")
+        if not last_key:
+            break
+    return affected
 
 
 def _ensure_new_mrk(
@@ -231,12 +267,19 @@ def _migrate_rows(
         try:
             new_values: Dict[str, str] = {}
             for attr in encrypted_attrs:
+                # Decrypt under the CURRENT key first, to prove the row is
+                # recoverable before anything is written. In --plan there is
+                # no new key yet, so stop after the decrypt-verify (the old
+                # code tried to encrypt with an empty KeyId and failed every
+                # row in plan mode).
                 plaintext = _decrypt(kms, item[attr])
+                if dry_run:
+                    continue
                 new_values[attr] = _encrypt(kms, new_key_id, plaintext)
             if dry_run:
                 print(
-                    f"  [DRY-RUN] would re-encrypt {len(encrypted_attrs)} "
-                    f"attr(s) on PK={pk}"
+                    f"  [DRY-RUN] decrypt-verified {len(encrypted_attrs)} "
+                    f"attr(s) on PK={pk} (would re-encrypt on --execute)"
                 )
                 migrated += 1
                 continue
@@ -308,7 +351,9 @@ def main() -> int:
 
     if not args.skip_oauth:
         print("== OAuth tokens ==")
-        rows = _scan_affected_rows(table_name, primary, OAUTH_PK_PREFIXES)
+        rows = _scan_encrypted_rows(
+            table_name, primary, exclude_prefixes=(DB_CRED_PK_PREFIX,)
+        )
         print(f"Found {len(rows)} OAuth-token row(s) needing migration.")
         if rows:
             new_key_id = ""
