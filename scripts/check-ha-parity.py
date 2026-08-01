@@ -71,7 +71,12 @@ def _find_module_block(name: str, files: list[str]) -> str | None:
         if not m:
             continue
         tail = text[m.end():]
-        end = re.search(r"\n  tags = \{|\ntags = \{", tail)
+        # Body runs to the module's tags block OR its closing brace (a "}" at
+        # column 0), whichever comes first. Not every module sets tags -- the
+        # mcp-server catalog servers (snyk/sonarqube) don't -- and keying only
+        # on a tags block made those return None and report a false
+        # "primary module block not found".
+        end = re.search(r"\n  tags = \{|\ntags = \{|\n\}", tail)
         if not end:
             return None
         return tail[: end.start()]

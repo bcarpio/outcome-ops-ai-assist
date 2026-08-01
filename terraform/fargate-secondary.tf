@@ -565,5 +565,5 @@ output "mcp_server_url_secondary" {
 
 output "mcp_sonarqube_url_secondary" {
   description = "URL of the SonarQube MCP server in secondary region (null when HA / Sonar disabled)"
-  value       = (local.deploy_ui_secondary && var.mcp_sonarqube_enabled) ? "${local.mcp_base_url_secondary}/mcp" : null
+  value       = (local.deploy_ui_secondary && var.mcp_sonarqube_enabled) ? "${local.mcp_base_url_secondary}/mcp/sonarqube" : null
 }

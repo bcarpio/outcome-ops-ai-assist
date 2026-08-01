@@ -32,6 +32,7 @@ help:
 	@echo "  make build-ui-image             Build chat UI container (auto-creates ECR, ENVIRONMENT=dev|prd)"
 	@echo "  make build-mcp-server-image     Build OutcomeOps MCP server container (ENVIRONMENT=dev|prd)"
 	@echo "  make build-snyk-image           Build Snyk MCP server container (ENVIRONMENT=dev|prd)"
+	@echo "  make build-sonarqube-image      Build SonarQube MCP server container (ENVIRONMENT=dev|prd)"
 	@echo "  make build-database-images      Build database-integration + database-sync container images (ENVIRONMENT=dev|prd)"
 	@echo "  make build-all-images           Build every container image in one shot (ENVIRONMENT=dev|prd)"
 	@echo ""
@@ -452,7 +453,12 @@ build-snyk-image:
 	 docker build -t $(ECR_REPO):$$IMAGE_TAG containers/mcp-snyk/ && \
 	 docker push $(ECR_REPO):$$IMAGE_TAG && \
 	 echo "Storing image tag in SSM: /$(ENVIRONMENT)/$(APP_NAME)/mcp-snyk/image-tag = $$IMAGE_TAG" && \
-	 aws ssm put-parameter --name "/$(ENVIRONMENT)/$(APP_NAME)/mcp-snyk/image-tag" --value "$$IMAGE_TAG" --type String --overwrite --region $(BUILD_AWS_REGION) > /dev/null
+	 aws ssm put-parameter --name "/$(ENVIRONMENT)/$(APP_NAME)/mcp-snyk/image-tag" --value "$$IMAGE_TAG" --type String --overwrite --region $(BUILD_AWS_REGION) > /dev/null && \
+	 SR=$$(awk -F'"' '/^[[:space:]]*secondary_region[[:space:]]*=/ {print $$2; exit}' terraform/$(ENVIRONMENT).tfvars 2>/dev/null); \
+	 if [ -n "$$SR" ]; then \
+	   echo "HA enabled (secondary_region=$$SR); mirroring mcp-snyk image tag to $$SR (image replicates via ECR replication)."; \
+	   aws ssm put-parameter --name "/$(ENVIRONMENT)/$(APP_NAME)/mcp-snyk/image-tag" --value "$$IMAGE_TAG" --type String --overwrite --region "$$SR" > /dev/null; \
+	 fi
 
 build-sonarqube-image:
 	@if [ -z "$$ENVIRONMENT" ]; then \
@@ -488,7 +494,12 @@ build-sonarqube-image:
 	 docker build -t $(ECR_REPO):$$IMAGE_TAG containers/mcp-sonarqube/ && \
 	 docker push $(ECR_REPO):$$IMAGE_TAG && \
 	 echo "Storing image tag in SSM: /$(ENVIRONMENT)/$(APP_NAME)/mcp-sonarqube/image-tag = $$IMAGE_TAG" && \
-	 aws ssm put-parameter --name "/$(ENVIRONMENT)/$(APP_NAME)/mcp-sonarqube/image-tag" --value "$$IMAGE_TAG" --type String --overwrite --region $(BUILD_AWS_REGION) > /dev/null
+	 aws ssm put-parameter --name "/$(ENVIRONMENT)/$(APP_NAME)/mcp-sonarqube/image-tag" --value "$$IMAGE_TAG" --type String --overwrite --region $(BUILD_AWS_REGION) > /dev/null && \
+	 SR=$$(awk -F'"' '/^[[:space:]]*secondary_region[[:space:]]*=/ {print $$2; exit}' terraform/$(ENVIRONMENT).tfvars 2>/dev/null); \
+	 if [ -n "$$SR" ]; then \
+	   echo "HA enabled (secondary_region=$$SR); mirroring mcp-sonarqube image tag to $$SR (image replicates via ECR replication)."; \
+	   aws ssm put-parameter --name "/$(ENVIRONMENT)/$(APP_NAME)/mcp-sonarqube/image-tag" --value "$$IMAGE_TAG" --type String --overwrite --region "$$SR" > /dev/null; \
+	 fi
 
 # ============================================================================
 # Lambda layers — installed packages / binaries published as Lambda layer
@@ -605,6 +616,7 @@ build-all-images:
 	ENVIRONMENT=$$ENVIRONMENT $(MAKE) build-ui-image
 	ENVIRONMENT=$$ENVIRONMENT $(MAKE) build-mcp-server-image
 	ENVIRONMENT=$$ENVIRONMENT $(MAKE) build-snyk-image
+	ENVIRONMENT=$$ENVIRONMENT $(MAKE) build-sonarqube-image
 	ENVIRONMENT=$$ENVIRONMENT $(MAKE) build-database-images
 
 # Single catch-all before `terraform apply`. Builds every Lambda layer,
