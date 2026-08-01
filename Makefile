@@ -1,4 +1,4 @@
-.PHONY: help setup install fmt lint validate check-ha-parity test test-unit test-coverage test-ui audit build-run-tests-image build-ui-image build-mcp-server-image build-snyk-image build-database-images build-runtime-layer build-terraform-layer build-all-layers build-platform-layer build-all-images pre-deploy clean all ha-status ha-replay-dlq ha-list-secrets ha-sync-secrets ha-bootstrap ha-kms-migrate _ha-env-check
+.PHONY: help setup install fmt lint validate check-ha-parity test test-unit test-coverage test-ui audit build-run-tests-image build-ui-image build-mcp-server-image build-snyk-image build-database-images build-runtime-layer build-terraform-layer build-all-layers build-platform-layer build-all-images pre-deploy deliver clean all ha-status ha-replay-dlq ha-list-secrets ha-sync-secrets ha-bootstrap ha-kms-migrate _ha-env-check
 
 APP_NAME ?= outcome-ops-ai-assist
 AWS_REGION ?= us-west-2
@@ -582,6 +582,19 @@ build-all-images:
 pre-deploy: build-all-layers build-all-images
 	@echo ""
 	@echo "All pre-terraform builds complete. Next: terraform apply."
+
+# ============================================================================
+# Delivery: ship a HISTORY-FREE snapshot to a customer
+# ============================================================================
+# Scrubbed customer names live only in git HISTORY; delivering a history-free
+# snapshot means a customer never receives it. Default: a tarball in dist/.
+#   make deliver                                   # tarball of HEAD -> dist/
+#   make deliver REF=origin/main                   # tarball of a specific ref
+#   make deliver CUSTOMER_REMOTE=<git-url>         # push ONE orphan commit to
+#                                                  # the customer's repo (main)
+# The script refuses to ship if any scrubbed name is still in the delivered tree.
+deliver:
+	@bash scripts/build-delivery-snapshot.sh
 
 # ============================================================================
 # Utilities: Clean up build artifacts

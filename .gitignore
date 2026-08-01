@@ -105,3 +105,6 @@ lambda/.ca-bundles-staging/*.pem
 # Ad-hoc experiment outputs (Haiku vs Sonnet code-map comparison etc.)
 # Contents are throwaway — regenerate from scripts/*.
 experiment/
+
+# Maintainer-local delivery name-scrub patterns (never committed/delivered)
+.delivery-forbidden
