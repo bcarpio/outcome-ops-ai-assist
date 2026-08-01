@@ -18,7 +18,8 @@ describe('AiDisclosureModal', () => {
 
     expect(screen.getByText('AI-Powered Assistant')).toBeInTheDocument()
     expect(screen.getByText('Important notice before you begin')).toBeInTheDocument()
-    expect(screen.getByText('I Understand')).toBeInTheDocument()
+    expect(screen.getByText('I Accept')).toBeInTheDocument()
+    expect(screen.getByText('Not Now')).toBeInTheDocument()
   })
 
   it('shows all disclosure items', () => {
@@ -44,10 +45,37 @@ describe('AiDisclosureModal', () => {
     expect(screen.getByText('AI-Powered Assistant')).toBeInTheDocument()
 
     const user = userEvent.setup()
-    await user.click(screen.getByText('I Understand'))
+    await user.click(screen.getByText('I Accept'))
 
     expect(localStorage.getItem(STORAGE_KEY)).toBe('true')
     expect(screen.queryByText('AI-Powered Assistant')).not.toBeInTheDocument()
+  })
+
+  it('signs the user out via /api/logout when "Not Now" is clicked', async () => {
+    const original = window.location
+    const hrefSetter = vi.fn()
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: {
+        set href(v: string) {
+          hrefSetter(v)
+        },
+      },
+    })
+
+    render(<AiDisclosureModal />)
+
+    const user = userEvent.setup()
+    await user.click(screen.getByText('Not Now'))
+
+    expect(hrefSetter).toHaveBeenCalledWith('/api/logout')
+    // Declining must NOT record acceptance
+    expect(localStorage.getItem(STORAGE_KEY)).toBeNull()
+
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: original,
+    })
   })
 
   it('renders nothing when feature is disabled', () => {

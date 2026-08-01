@@ -18,6 +18,14 @@ export default function AiDisclosureModal() {
     setAccepted(true)
   }
 
+  // Declining the AI-use notice means the user may not proceed. Route through
+  // the normal /api/logout, which clears the ALB session cookies AND redirects
+  // through Azure AD's end_session endpoint -- clearing cookies alone would let
+  // the ALB silently re-authenticate them on the next request.
+  const handleDecline = () => {
+    window.location.href = '/api/logout'
+  }
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
       <div className="bg-white rounded-xl shadow-xl w-full max-w-md mx-4">
@@ -52,12 +60,18 @@ export default function AiDisclosureModal() {
           </p>
         </div>
 
-        <div className="border-t px-6 py-4">
+        <div className="border-t px-6 py-4 flex gap-3">
+          <button
+            onClick={handleDecline}
+            className="flex-1 px-4 py-2.5 bg-white text-gray-700 text-sm font-medium rounded-lg border border-gray-300 hover:bg-gray-50 transition-colors focus:outline-none focus:ring-2 focus:ring-gray-400 focus:ring-offset-2"
+          >
+            Not Now
+          </button>
           <button
             onClick={handleAccept}
-            className="w-full px-4 py-2.5 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+            className="flex-1 px-4 py-2.5 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
           >
-            I Understand
+            I Accept
           </button>
         </div>
       </div>
