@@ -8,11 +8,18 @@
 # ECR Repository for the Snyk MCP container image
 # -----------------------------------------------------------------------------
 
+# Immutable image tag written by build-snyk-image. The ECR repo is IMMUTABLE, so
+# the task def pulls this unique tag rather than :latest.
+data "aws_ssm_parameter" "mcp_snyk_image_tag" {
+  count = var.mcp_snyk_enabled ? 1 : 0
+  name  = "/${var.environment}/${var.app_name}/mcp-snyk/image-tag"
+}
+
 resource "aws_ecr_repository" "mcp_snyk" {
   count = var.mcp_snyk_enabled ? 1 : 0
 
   name                 = "${var.environment}-${var.app_name}-mcp-snyk"
-  image_tag_mutability = "MUTABLE"
+  image_tag_mutability = "IMMUTABLE"
   force_delete         = true
 
   image_scanning_configuration {
@@ -47,7 +54,7 @@ module "mcp_snyk" {
   aws_region  = var.aws_region
 
   server_name     = "snyk"
-  container_image = "${aws_ecr_repository.mcp_snyk[0].repository_url}:latest"
+  container_image = "${aws_ecr_repository.mcp_snyk[0].repository_url}:${data.aws_ssm_parameter.mcp_snyk_image_tag[0].value}"
   container_port  = 8080
   cpu             = var.mcp_snyk_cpu
   memory          = var.mcp_snyk_memory

@@ -7,11 +7,18 @@
 # Reference template for future container-only MCP servers a customer adds.
 # ============================================================================
 
+# Immutable image tag written by build-sonarqube-image. The ECR repo is
+# IMMUTABLE, so the task def pulls this unique tag rather than :latest.
+data "aws_ssm_parameter" "mcp_sonarqube_image_tag" {
+  count = var.mcp_sonarqube_enabled ? 1 : 0
+  name  = "/${var.environment}/${var.app_name}/mcp-sonarqube/image-tag"
+}
+
 resource "aws_ecr_repository" "mcp_sonarqube" {
   count = var.mcp_sonarqube_enabled ? 1 : 0
 
   name                 = "${var.environment}-${var.app_name}-mcp-sonarqube"
-  image_tag_mutability = "MUTABLE"
+  image_tag_mutability = "IMMUTABLE"
   force_delete         = true
 
   image_scanning_configuration {
@@ -41,7 +48,7 @@ module "mcp_sonarqube" {
   aws_region  = var.aws_region
 
   server_name     = "sonarqube"
-  container_image = "${aws_ecr_repository.mcp_sonarqube[0].repository_url}:latest"
+  container_image = "${aws_ecr_repository.mcp_sonarqube[0].repository_url}:${data.aws_ssm_parameter.mcp_sonarqube_image_tag[0].value}"
   container_port  = 8080
   cpu             = var.mcp_sonarqube_cpu
   memory          = var.mcp_sonarqube_memory

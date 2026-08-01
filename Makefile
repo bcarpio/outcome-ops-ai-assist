@@ -450,9 +450,12 @@ build-snyk-image:
 	   echo "Skipping build-snyk-image — mcp_snyk_ecr_url output is empty (mcp_snyk_enabled=false?)."; \
 	   exit 0; \
 	 fi; \
+	 IMAGE_TAG="$$(date +%Y%m%d-%H%M%S)-$$(git rev-parse --short HEAD 2>/dev/null || echo unknown)" && \
 	 aws ecr get-login-password --region $(BUILD_AWS_REGION) | docker login --username AWS --password-stdin $(AWS_ACCOUNT).dkr.ecr.$(BUILD_AWS_REGION).amazonaws.com && \
-	 docker build -t $(ECR_REPO):latest containers/mcp-snyk/ && \
-	 docker push $(ECR_REPO):latest
+	 docker build -t $(ECR_REPO):$$IMAGE_TAG containers/mcp-snyk/ && \
+	 docker push $(ECR_REPO):$$IMAGE_TAG && \
+	 echo "Storing image tag in SSM: /$(ENVIRONMENT)/$(APP_NAME)/mcp-snyk/image-tag = $$IMAGE_TAG" && \
+	 aws ssm put-parameter --name "/$(ENVIRONMENT)/$(APP_NAME)/mcp-snyk/image-tag" --value "$$IMAGE_TAG" --type String --overwrite --region $(BUILD_AWS_REGION) > /dev/null
 
 build-sonarqube-image:
 	@if [ -z "$$ENVIRONMENT" ]; then \
@@ -483,9 +486,12 @@ build-sonarqube-image:
 	   echo "Skipping build-sonarqube-image — mcp_sonarqube_ecr_url output is empty (mcp_sonarqube_enabled=false?)."; \
 	   exit 0; \
 	 fi; \
+	 IMAGE_TAG="$$(date +%Y%m%d-%H%M%S)-$$(git rev-parse --short HEAD 2>/dev/null || echo unknown)" && \
 	 aws ecr get-login-password --region $(BUILD_AWS_REGION) | docker login --username AWS --password-stdin $(AWS_ACCOUNT).dkr.ecr.$(BUILD_AWS_REGION).amazonaws.com && \
-	 docker build -t $(ECR_REPO):latest containers/mcp-sonarqube/ && \
-	 docker push $(ECR_REPO):latest
+	 docker build -t $(ECR_REPO):$$IMAGE_TAG containers/mcp-sonarqube/ && \
+	 docker push $(ECR_REPO):$$IMAGE_TAG && \
+	 echo "Storing image tag in SSM: /$(ENVIRONMENT)/$(APP_NAME)/mcp-sonarqube/image-tag = $$IMAGE_TAG" && \
+	 aws ssm put-parameter --name "/$(ENVIRONMENT)/$(APP_NAME)/mcp-sonarqube/image-tag" --value "$$IMAGE_TAG" --type String --overwrite --region $(BUILD_AWS_REGION) > /dev/null
 
 # ============================================================================
 # Lambda layers — installed packages / binaries published as Lambda layer
