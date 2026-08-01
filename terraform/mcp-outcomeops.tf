@@ -49,7 +49,7 @@ module "mcp_outcomeops" {
   aws_region  = var.aws_region
 
   server_name     = "outcomeops"
-  container_image = "${aws_ecr_repository.mcp_outcomeops[0].repository_url}:${data.aws_ssm_parameter.mcp_image_tag[0].value}"
+  container_image = "${aws_ecr_repository.mcp_outcomeops[0].repository_url}:${nonsensitive(data.aws_ssm_parameter.mcp_image_tag[0].value)}"
   container_port  = 8080
 
   # fable-scale chunk 01: sizing + autoscaling driven by tfvars. Autoscaling

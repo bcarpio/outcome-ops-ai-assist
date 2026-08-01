@@ -48,7 +48,7 @@ module "mcp_sonarqube" {
   aws_region  = var.aws_region
 
   server_name     = "sonarqube"
-  container_image = "${aws_ecr_repository.mcp_sonarqube[0].repository_url}:${data.aws_ssm_parameter.mcp_sonarqube_image_tag[0].value}"
+  container_image = "${aws_ecr_repository.mcp_sonarqube[0].repository_url}:${nonsensitive(data.aws_ssm_parameter.mcp_sonarqube_image_tag[0].value)}"
   container_port  = 8080
   cpu             = var.mcp_sonarqube_cpu
   memory          = var.mcp_sonarqube_memory

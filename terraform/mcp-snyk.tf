@@ -54,7 +54,7 @@ module "mcp_snyk" {
   aws_region  = var.aws_region
 
   server_name     = "snyk"
-  container_image = "${aws_ecr_repository.mcp_snyk[0].repository_url}:${data.aws_ssm_parameter.mcp_snyk_image_tag[0].value}"
+  container_image = "${aws_ecr_repository.mcp_snyk[0].repository_url}:${nonsensitive(data.aws_ssm_parameter.mcp_snyk_image_tag[0].value)}"
   container_port  = 8080
   cpu             = var.mcp_snyk_cpu
   memory          = var.mcp_snyk_memory
