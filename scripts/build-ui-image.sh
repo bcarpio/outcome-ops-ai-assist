@@ -64,18 +64,24 @@ IMAGE_TAG="${TIMESTAMP}-${GIT_SHA}"
 docker build \
   --platform linux/amd64 \
   -t "${ECR_REPO}:${IMAGE_TAG}" \
-  -t "${ECR_REPO}:latest" \
   .
 
-# Push image
+# Push image (repo is IMMUTABLE -- unique tag only, no :latest)
 echo "Pushing to ECR (${AWS_REGION})..."
 docker push "${ECR_REPO}:${IMAGE_TAG}"
-docker push "${ECR_REPO}:latest"
+
+# Record the tag for terraform (ui-fargate reads this SSM param)
+echo "Storing image tag in SSM (${AWS_REGION}): /${ENVIRONMENT}/${APP_NAME}/chat-ui/image-tag = ${IMAGE_TAG}"
+aws ssm put-parameter \
+  --name "/${ENVIRONMENT}/${APP_NAME}/chat-ui/image-tag" \
+  --value "${IMAGE_TAG}" \
+  --type String \
+  --overwrite \
+  --region "${AWS_REGION}" > /dev/null
 
 echo ""
 echo "Successfully pushed:"
 echo "  ${ECR_REPO}:${IMAGE_TAG}"
-echo "  ${ECR_REPO}:latest"
 
 if [[ -n "${SECONDARY_REGION}" ]]; then
   SECONDARY_REPO="${AWS_ACCOUNT_ID}.dkr.ecr.${SECONDARY_REGION}.amazonaws.com/${ENVIRONMENT}-${APP_NAME}-chat-ui"
@@ -86,15 +92,20 @@ if [[ -n "${SECONDARY_REGION}" ]]; then
 
   echo "Re-tagging for ${SECONDARY_REGION}..."
   docker tag "${ECR_REPO}:${IMAGE_TAG}" "${SECONDARY_REPO}:${IMAGE_TAG}"
-  docker tag "${ECR_REPO}:latest" "${SECONDARY_REPO}:latest"
 
   echo "Pushing to ECR (${SECONDARY_REGION})..."
   docker push "${SECONDARY_REPO}:${IMAGE_TAG}"
-  docker push "${SECONDARY_REPO}:latest"
+
+  echo "Storing image tag in SSM (${SECONDARY_REGION})..."
+  aws ssm put-parameter \
+    --name "/${ENVIRONMENT}/${APP_NAME}/chat-ui/image-tag" \
+    --value "${IMAGE_TAG}" \
+    --type String \
+    --overwrite \
+    --region "${SECONDARY_REGION}" > /dev/null
 
   echo "Successfully pushed:"
   echo "  ${SECONDARY_REPO}:${IMAGE_TAG}"
-  echo "  ${SECONDARY_REPO}:latest"
 fi
 
 echo ""

@@ -28,8 +28,17 @@ locals {
     ? var.ui_container_image_secondary
     : var.ui_container_image != ""
     ? replace(var.ui_container_image, var.aws_region, var.secondary_region)
-    : (var.deploy_ui && var.secondary_region != "" ? "${aws_ecr_repository.chat_ui_secondary[0].repository_url}:latest" : "")
+    : (var.deploy_ui && var.secondary_region != "" ? "${aws_ecr_repository.chat_ui_secondary[0].repository_url}:${data.aws_ssm_parameter.chat_ui_image_tag_secondary[0].value}" : "")
   )
+}
+
+# Secondary-region copy of the chat-ui image tag (build-ui-image.sh writes it to
+# SSM in the secondary region too). Mirrors the primary; consumed only by the
+# secondary UI task def's image above.
+data "aws_ssm_parameter" "chat_ui_image_tag_secondary" {
+  count    = var.deploy_ui && var.secondary_region != "" ? 1 : 0
+  provider = aws.secondary
+  name     = "/${var.environment}/${var.app_name}/chat-ui/image-tag"
 }
 
 module "ui_ecs_secondary" {

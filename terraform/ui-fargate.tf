@@ -13,6 +13,15 @@ data "aws_vpc" "ui" {
   id    = var.ui_vpc_id
 }
 
+# Immutable image tag written by build-ui-image.sh. The ECR repo is IMMUTABLE,
+# so the task def pulls this unique tag rather than :latest. (Read only by the
+# task def below; pruned from the -target=aws_ecr_repository.chat_ui build apply,
+# so a first deploy doesn't hit ParameterNotFound before the build writes it.)
+data "aws_ssm_parameter" "chat_ui_image_tag" {
+  count = var.deploy_ui ? 1 : 0
+  name  = "/${var.environment}/${var.app_name}/chat-ui/image-tag"
+}
+
 # -----------------------------------------------------------------------------
 # Security Groups
 # -----------------------------------------------------------------------------
@@ -771,7 +780,7 @@ module "ui_ecs" {
           # Default to the image make build-ui-image pushed to ECR (:latest,
           # mutable tag) -- same auto-wiring the MCP server uses. Set
           # var.ui_container_image only to pin a specific image/digest.
-          image                                  = var.ui_container_image != "" ? var.ui_container_image : (var.deploy_ui ? "${aws_ecr_repository.chat_ui[0].repository_url}:latest" : "")
+          image                                  = var.ui_container_image != "" ? var.ui_container_image : (var.deploy_ui ? "${aws_ecr_repository.chat_ui[0].repository_url}:${data.aws_ssm_parameter.chat_ui_image_tag[0].value}" : "")
           readonlyRootFilesystem                 = true
           create_cloudwatch_log_group            = true
           cloudwatch_log_group_name              = "/ecs/${var.environment}-${var.app_name}-ui"

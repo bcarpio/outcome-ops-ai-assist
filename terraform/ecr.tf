@@ -84,7 +84,7 @@ resource "aws_ecr_repository" "chat_ui" {
   count = var.deploy_ui ? 1 : 0
 
   name                 = "${var.environment}-${var.app_name}-chat-ui"
-  image_tag_mutability = "MUTABLE" # Allow :latest for simpler deploys
+  image_tag_mutability = "IMMUTABLE" # unique tag via SSM (chat-ui/image-tag); see build-ui-image.sh
   force_delete         = true
 
   image_scanning_configuration {
@@ -302,7 +302,7 @@ resource "aws_ecr_repository" "chat_ui_secondary" {
   provider = aws.secondary
 
   name                 = "${var.environment}-${var.app_name}-chat-ui"
-  image_tag_mutability = "MUTABLE"
+  image_tag_mutability = "IMMUTABLE"
   force_delete         = true
 
   image_scanning_configuration {
