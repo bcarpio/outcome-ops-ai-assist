@@ -97,7 +97,7 @@ aws ssm put-parameter \
 
 ### Step 3: Enable in Terraform
 
-Add to your `prd.tfvars` (or `dev.tfvars`):
+Add to your `prd.tfvars`:
 
 ```hcl
 # SonarCloud

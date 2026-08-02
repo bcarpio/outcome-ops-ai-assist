@@ -1,6 +1,8 @@
 # Deployment Guide
 
-This guide covers deployment, operations, and maintenance for OutcomeOps AI Assist. For initial setup steps, see [Getting Started](getting-started.md). For security details, see [Security Overview](security-overview.md). For customer-managed DNS or TLS certificates (cross-account Route53, Infoblox / AD-DNS, internal-CA certs), see [BYO TLS Certificate + BYO DNS](byo-cert-and-dns.md).
+This guide covers deployment, operations, and maintenance for OutcomeOps AI Assist. For initial setup steps, see [Getting Started](getting-started.md). For security details, see [Security Overview](security-overview.md). For customer-managed DNS or TLS certificates (cross-account Route53, Infoblox / AD-DNS, internal-CA certs), see [BYO TLS Certificate + BYO DNS](byo-cert-and-dns.md). To validate a new release in an isolated environment before applying it to production, see [Testing Environment](testing-environment.md).
+
+> **This guide deploys production (`prd`).** Everything here uses `prd.tfvars` and the `prd` workspace. If you want a separate, isolated environment to test a release first, that is the [Testing Environment](testing-environment.md) — do not point these production steps at `dev.tfvars`.
 
 ---
 

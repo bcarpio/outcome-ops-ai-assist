@@ -348,6 +348,8 @@ for Day-2. For architecture and data flows, see
 
 - [Architecture Overview](architecture.md) — system design and data flows
 - [Deployment Guide](deployment-guide.md) — full deploy + operations
+- [Testing Environment](testing-environment.md) — stand up an isolated `dev`
+  deploy to validate a new release before applying it to production
 - [ADR-001: Creating ADRs](adr/ADR-001-create-adrs.md) and
   [ADR-002: Development Workflow](adr/ADR-002-development-workflow.md)
 - [SonarQube MCP Server](sonarqube-mcp.md) — code-quality tools in chat

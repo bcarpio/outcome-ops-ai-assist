@@ -12,7 +12,7 @@ hatches let you take over either or both:
 
 These three variables are defined in `terraform/variables.tf` and
 `terraform/ca_bundles.tf`. Example values are commented out in
-`terraform/prd.tfvars.example` and `terraform/dev.tfvars.example`.
+`terraform/prd.tfvars.example`.
 
 ## When to use what
 

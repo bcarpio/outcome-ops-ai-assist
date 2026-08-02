@@ -25,7 +25,9 @@ The ALB handles the entire OIDC flow. After authentication, it forwards requests
 
 ## Step 1: Create Azure App Registration
 
-1. Go to [Azure Portal](https://portal.azure.com) > **Microsoft Entra ID** > **App registrations**
+1. Open **App registrations** in Microsoft Entra ID. Either entry point works:
+   - [Entra admin center](https://entra.microsoft.com) > **App registrations** — use this if your organization has Entra ID through a **Microsoft 365** subscription and no standalone Azure subscription (common). Everything in this guide is doable here.
+   - [Azure Portal](https://portal.azure.com) > **Microsoft Entra ID** > **App registrations** — if you have an Azure subscription.
 2. Click **New registration**
 3. Configure:
    - **Name**: `OutcomeOps AI Assist`
@@ -46,13 +48,6 @@ The ALB handles the entire OIDC flow. After authentication, it forwards requests
 Store the secret in AWS SSM Parameter Store before running Terraform:
 
 ```bash
-# For dev environment
-aws ssm put-parameter \
-  --name "/dev/outcome-ops-ai-assist/oidc/client-secret" \
-  --type SecureString \
-  --value "your-client-secret-value-here"
-
-# For prd environment
 aws ssm put-parameter \
   --name "/prd/outcome-ops-ai-assist/oidc/client-secret" \
   --type SecureString \
@@ -70,15 +65,22 @@ oidc_client_id = "your-app-client-id"
 oidc_tenant_id = "your-azure-tenant-id"
 ```
 
-The FQDN is derived automatically using the `ui_subdomain` variable (default: `outcomeops`):
-- **prd** workspace: `{ui_subdomain}.{domain}` (e.g., `outcomeops.example.com`)
-- **dev** workspace: `{ui_subdomain}-dev.{domain}` (e.g., `outcomeops-dev.example.com`)
+The FQDN is derived from `ui_subdomain` (default: `outcomeops`) and `domain`.
+With `append_environment_to_fqdn = false` it is `{ui_subdomain}.{domain}` —
+e.g. `outcomeops.example.com` — which is what you want for production. The
+default (`true`) appends the environment (e.g. `outcomeops-prd.example.com`);
+that is how a separate testing deploy gets its own hostname without colliding
+with production — see [Testing Environment](testing-environment.md).
 
 ## Step 5: Run Terraform Apply
 
+Via your CI/CD pipeline (recommended), or locally. Always plan to a file and
+apply exactly that reviewed plan (ADR-004) — do not run a bare `terraform
+apply`, and note the command below is `plan` *then* `apply`, not plan alone:
+
 ```bash
-# Via CI/CD (recommended) or:
-terraform plan -var-file=dev.tfvars
+terraform plan  -var-file=prd.tfvars -out=terraform.prd.out
+terraform apply terraform.prd.out
 ```
 
 This creates:

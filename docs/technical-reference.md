@@ -492,7 +492,7 @@ All resources created by Terraform include these tags:
 
 **Adding Custom Tags**
 
-Add custom tags in your environment's tfvars file (`dev.tfvars` or `prd.tfvars`):
+Add custom tags in your `prd.tfvars`:
 
 ```hcl
 # Additional Tags
