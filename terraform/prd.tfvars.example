@@ -348,6 +348,17 @@ ui_private_subnet_ids = ["subnet-REPLACE_ME_A", "subnet-REPLACE_ME_B"]   # REQUI
 # oidc_enabled   = true
 # oidc_client_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"  # Azure App (client) ID
 # oidc_tenant_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"  # Azure Directory (tenant) ID
+#
+# UI SIGN-IN REDIRECT URI: on THIS OIDC app registration (oidc_client_id), add
+# the redirect URI
+#     https://<your-deploy-fqdn>/oauth2/idpresponse
+# That path is the ALB's built-in OIDC callback -- see docs/azure-ad-setup.md
+# Step 6. It is the *login* callback and is NOT the same as the
+# /api/<integration>/callback URIs further down this file: those belong to the
+# separate data-source integration apps (Azure DevOps, GitLab, ServiceNow,
+# Salesforce), not to signing into the UI. Putting an /api/... callback on your
+# sign-in app is a common mix-up -- the actual login redirect is
+# /oauth2/idpresponse.
 
 # Before enabling OIDC, store the client secret in SSM:
 #   aws ssm put-parameter --name "/prd/outcome-ops-ai-assist/oidc/client-secret" \
@@ -513,9 +524,14 @@ audit_stream_export_enabled = true
 # `aws ssm put-parameter --type SecureString` per the customer runbook.
 # azure_devops_client_secret_ssm_param = ""
 
-# OAuth callback URI registered on the Entra ID app. Must match
+# Azure DevOps *integration* OAuth callback -- for connecting ADO repos as a
+# data source, NOT for UI sign-in. Registered on the Azure DevOps integration's
+# Entra app (azure_devops_client_id), which is separate from the UI sign-in app
+# (oidc_client_id). Must match
 # https://<your-deploy-fqdn>/api/azure-devops/callback exactly (no trailing
-# slash, no query string). Mismatch is the most common setup failure.
+# slash, no query string). Mismatch is the most common setup failure for this
+# integration. (The UI login redirect is /oauth2/idpresponse -- see the oidc_*
+# block above.)
 # azure_devops_redirect_uri = ""
 
 # ============================================================================

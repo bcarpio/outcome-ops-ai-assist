@@ -102,7 +102,13 @@ After Terraform creates the ALB, add the redirect URI to your App Registration:
    (Use your actual FQDN from the Terraform output `ui_url`)
 4. Click **Configure**
 
-The path `/oauth2/idpresponse` is the ALB's built-in OIDC callback endpoint.
+The path `/oauth2/idpresponse` is the ALB's built-in OIDC callback endpoint —
+this is the **sign-in** redirect. Do **not** use an `/api/<something>/callback`
+URI here: those (e.g. `/api/azure-devops/callback`, `/api/gitlab/callback`)
+belong to the separate **data-source integrations** and are registered on
+*those* integrations' own app registrations, not on the UI sign-in app. Using
+an integration callback as your sign-in redirect will get you a valid-looking
+tfvars line but a broken login.
 
 ## Step 7: Configure API Permissions (Optional)
 
