@@ -11,6 +11,15 @@ locals {
   # multi-region path); fall back to the legacy "arn is non-empty"
   # derivation for single-region callers that haven't been updated.
   use_alb = var.use_alb != null ? var.use_alb : var.alb_listener_arn != ""
+
+  # Read-only root filesystem hardening (Prowler
+  # ecs_task_definitions_containers_readonly_access). Fargate does NOT support
+  # linuxParameters.tmpfs, so writable scratch is provided as task-scoped
+  # ephemeral volumes mounted at var.writable_paths. Map: path -> sanitized
+  # volume name (Fargate volume names allow alnum / - / _ only).
+  scratch_volumes = var.readonly_root_filesystem ? {
+    for p in var.writable_paths : p => "scratch-${replace(trim(p, "/"), "/[^a-zA-Z0-9]+/", "-")}"
+  } : {}
 }
 
 # -----------------------------------------------------------------------------
@@ -232,6 +241,19 @@ resource "aws_ecs_task_definition" "mcp" {
         }
       ]
 
+      # Prowler ecs_task_definitions_containers_readonly_access: read-only root
+      # with writable scratch mounted from task-scoped ephemeral volumes
+      # (Fargate has no tmpfs). See local.scratch_volumes / var.writable_paths.
+      readonlyRootFilesystem = var.readonly_root_filesystem
+
+      mountPoints = [
+        for path, name in local.scratch_volumes : {
+          sourceVolume  = name
+          containerPath = path
+          readOnly      = false
+        }
+      ]
+
       logConfiguration = {
         logDriver = "awslogs"
         options = {
@@ -242,6 +264,16 @@ resource "aws_ecs_task_definition" "mcp" {
       }
     }
   ])
+
+  # Ephemeral, task-scoped writable volumes backing the read-only root's scratch
+  # paths (Fargate ephemeral storage). One per var.writable_paths; none when
+  # readonly_root_filesystem = false.
+  dynamic "volume" {
+    for_each = local.scratch_volumes
+    content {
+      name = volume.value
+    }
+  }
 
   tags = {
     Purpose = "mcp-${var.server_name}"

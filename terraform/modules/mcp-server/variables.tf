@@ -224,3 +224,19 @@ variable "allowed_security_group_ids" {
   description = "Map of label → security group ID. Labels are arbitrary stable strings used as for_each keys; values are the SG IDs allowed to reach this MCP server."
   default     = {}
 }
+
+# Container hardening
+# Prowler/CIS ecs_task_definitions_containers_readonly_access. Fargate does NOT
+# support linuxParameters.tmpfs, so writable scratch is provided as task-scoped
+# ephemeral volumes at var.writable_paths (see local.scratch_volumes in main.tf).
+variable "readonly_root_filesystem" {
+  type        = bool
+  description = "Run the container with a read-only root filesystem. Writable scratch is mounted from ephemeral volumes at var.writable_paths. Set false only for a container proven incompatible with a read-only root."
+  default     = true
+}
+
+variable "writable_paths" {
+  type        = list(string)
+  description = "Container paths mounted as writable ephemeral volumes when readonly_root_filesystem = true. Default covers /tmp; add per-service paths a container writes to (e.g. a CLI's config/cache dir). Ignored when readonly_root_filesystem = false."
+  default     = ["/tmp"]
+}
