@@ -64,7 +64,7 @@
   },
   "notes": {
     "haParity": "Any chunk touching a primary-region Terraform resource MUST include the mirrored terraform/*-secondary.tf change and run make check-ha-parity. Divergence is invisible until failover.",
-    "threeSurface": "A chunk that ships a user-visible feature must update docs/features.md, ../marketing-for-outcomeops/feature-list.md, and Confluence page 57835580 in the same session.",
+    "threeSurface": "A chunk that ships a user-visible feature must update docs/features.md, ../marketing-for-outcomeops/outcomeops-feature-list.md, and Confluence page 57835580 in the same session.",
     "preCommit": "make test-unit, make test-ui (if ui/ touched), make fmt + make validate-tf (if .tf touched), make audit.",
     "planQueue": "plan-<name>/ dirs are user-created queue slots. Claude does not create them; it promotes them into plan/ when the active plan ships."
   }

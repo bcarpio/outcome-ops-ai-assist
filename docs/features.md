@@ -4,6 +4,16 @@ A running catalogue of what the platform does. One line per feature.
 Skim this when onboarding, when a customer asks "do you support X",
 when prepping a demo, or before scoping a new request.
 
+**What the platform is, in one line:** a grounded **PR review +
+organizational knowledge base** that runs entirely in the customer's
+own AWS account — every review is judged against *their* ADRs and
+standards, with an audit trail. Code generation is an **optional**
+capability on top of the same knowledge base, not the headline: most
+customers adopt review + KB first, and many prefer to run codegen
+through their own coding agent (the MCP server exposes the governed
+KB — `query_knowledge_base`, `read_source`, symbol graph — to any
+agent they already use). Order this doc accordingly: review + KB lead.
+
 **When you ship a new feature, add a line here in the same commit.**
 Cross-link the lambda(s), ADR, or operator guide that explains it.
 Keep entries terse — this is the index, not the spec.
@@ -53,6 +63,45 @@ Keep entries terse — this is the index, not the spec.
   with workspaces, list / delete via `lambda/chat`.
 - **System prompt customization per workspace** — the "custom voice"
   feature; admin-set, audited via `SYSTEM_PROMPT_UPDATED`/`_RESET`.
+
+## PR review and governance
+
+Grounded, auditable PR/MR review judged against the customer's own
+ingested standards — the most-adopted capability. Runs in the
+customer's account; no diff leaves their boundary.
+
+- **`analyze-pr` + `process-pr-check`** — the orchestrator fetches the
+  diff + changed files, selects applicable checks by changed-file
+  glob, posts an initial status comment, and fans check jobs to an SQS
+  FIFO queue ordered per PR (`MessageGroupId =
+  pr-{owner}-{repo}-{pr_number}`); the worker runs the analysis, posts
+  result comments, and persists them (`PK=PR#<n>`, `SK=CHECK#<type>`).
+- **Six grounded checks** (verdicts PASS / WARN / FAIL): ADR
+  compliance, breaking changes, architectural duplication, README
+  freshness, test coverage, license/copyleft (ADR-008). ADR
+  compliance, duplication, and license checks query the KB for the
+  relevant standards and judge the diff against the *retrieved ADRs*,
+  not hardcoded rules (ADR-007).
+- **Symbol-graph structural impact** — `diff_symbol_resolver` +
+  `structural_review.build_impact_block` resolve mutated symbols and
+  query the symbol-graph reader for callers/importers **as of the PR
+  base SHA**, fold the impact into the reviewer prompt, and post a
+  `structural_impact` comment. Honest empty-sets: a symbol with zero
+  callers renders "no known callers" rather than being omitted or
+  fabricated — audit-grade. Fail-soft + disclosed on an
+  unavailable/stale graph, never silently wrong.
+- **Cross-SCM parity** — GitHub PRs, Azure DevOps PRs, and GitLab MRs
+  (ADR-050 v1.2) get the same checks and the same collapsed
+  `<details>` comments **upserted in place per push** (one per check,
+  PATCHed/PUT, never duplicated). `shared/pr_metadata.py` maps ADO
+  `changeType` → GitHub status vocab so BREAKING_CHANGES behaves
+  identically across platforms.
+- **Enterprise scale** — symbol lookups use the `target-name-index`
+  GSI (scales with matches, not workspace size); global workspaces
+  (`is_global`) inject org-wide standards into every check.
+- Triggered by a customer-installed CI workflow (GitHub Action via
+  OIDC; ADO/GitLab equivalents) on PR/MR open + synchronize;
+  AI-generated PRs are analyzed automatically.
 
 ## Source integrations
 
@@ -272,10 +321,15 @@ symbol-graph table says X calls Y) vs vector-grounded
 (probabilistic — the chunk that matched the question contained
 text about Y).
 
-## Code generation pipeline (Jira → Code → PR → Analyze)
+## Code generation (optional)
 
-End-to-end loop that turns a Jira ticket into a reviewed PR with
-tests, ADR-aware, with auto-fix retry.
+An optional capability layered on the same knowledge base — not the
+primary draw. Turns a Jira ticket (or a labelled issue) into a
+plan+code+tests+PR, ADR-grounded, with auto-fix retry. Customers can
+leave it off entirely and use review + KB alone, or point their own
+coding agent at the governed KB via the MCP server instead of using
+this pipeline. Backends ship for Python, Java, TypeScript, and React
+(C# is code-map extraction only, not generation).
 
 - **`generate-code`** — dispatches to language backend (`python-lambda`,
   `java-spring`, `typescript-express`, `react`); selected via
@@ -289,12 +343,9 @@ tests, ADR-aware, with auto-fix retry.
   if all retries fail.
 - **Truncation recovery** — kicks in on SQS retry when the
   `max_tokens=32000` ceiling is hit, splits the work.
-- **`analyze-pr`** — AI-powered PR review against ADRs. GitHub PRs,
-  ADO PRs, and GitLab MRs (ADR-050 v1.2) all get the same six checks
-  with collapsed `<details>` comments upserted in place per push
-  (one comment per check, PATCHed/PUT, never a duplicate).
-- **`process-pr-check`** — feedback loop on CI check results;
-  pricing env-var-driven so customers can plug in negotiated rates.
+- **PR review** on the generated PR runs automatically — see the
+  "PR review and governance" section above (`analyze-pr` /
+  `process-pr-check`, the six grounded checks, symbol-graph impact).
 - **`run-tests`** — EventBridge-driven (`OutcomeOps.CodeGeneration.Completed`)
   → emits `OutcomeOps.Tests.Completed`. Auto-fix steps include
   `adr_fixer.py`, `readme_fixer.py`, `tests_fixer.py`.

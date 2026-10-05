@@ -228,13 +228,13 @@ on. Keep them in sync — update all three in the same PR / session.
 1. **`docs/features.md`** (this repo) — dev/technical reference. ADR
    numbers, Lambda names, tfvar keys, resource paths. Terse. See file
    header for the "one line per feature" style.
-2. **`../marketing-for-outcomeops/feature-list.md`** — sales-team-
+2. **`../marketing-for-outcomeops/outcomeops-feature-list.md`** — sales-team-
    facing mirror. Customer-value framing (not ADR#s), categorized like
    the Confluence page. Ingested into the marketing.outcomeops.ai
    chatbot so sales partners can answer prospects.
 3. **Confluence "OutcomeOps AI Assist - Feature List"** page (Space
    `OutcomeOps`, ID `57835580`) — sales-team + GTM-partner reference.
-   Same content shape as `feature-list.md`, Confluence-formatted.
+   Same content shape as `outcomeops-feature-list.md`, Confluence-formatted.
 
 You can update Confluence via the Atlassian MCP
 (`mcp__claude_ai_Atlassian__updateConfluencePage`, cloudId
