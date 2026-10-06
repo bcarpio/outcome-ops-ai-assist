@@ -412,6 +412,72 @@ def post_pull_request_thread(
     return body
 
 
+def post_pull_request_inline_thread(
+    access_token: str,
+    org: str,
+    project: str,
+    repo: str,
+    pull_request_id: int,
+    comment_markdown: str,
+    *,
+    file_path: str,
+    line: int,
+) -> Dict[str, Any]:
+    """Create a line-anchored PR comment thread via ``threadContext``.
+
+    Like post_pull_request_thread, but anchors the thread to a file+line so it
+    renders inline on the diff. ADO line anchors are 1-based and ``filePath``
+    must be repo-absolute (leading ``/``), which this normalizes.
+
+    ADO's line-anchored thread shape adds ``threadContext``::
+
+        {"filePath": "/path", "rightFileStart": {"line": N, "offset": 1},
+         "rightFileEnd": {"line": N, "offset": 1}}
+
+    Updates reuse update_pull_request_thread_comment (thread id from the
+    returned body's ``id``; comment id from ``comments[0].id``).
+    """
+    url = _add_query(
+        f"{DEV_AZURE_HOST}/{org}/{project}/_apis/git/repositories/{repo}/pullRequests/{pull_request_id}/threads",
+        {"api-version": API_VERSION},
+    )
+    fp = file_path if file_path.startswith("/") else f"/{file_path}"
+    payload = {
+        "comments": [{"content": comment_markdown, "commentType": 1}],
+        "status": 1,
+        "threadContext": {
+            "filePath": fp,
+            "rightFileStart": {"line": line, "offset": 1},
+            "rightFileEnd": {"line": line, "offset": 1},
+        },
+    }
+    body, _ = _request("POST", url, access_token, body=payload)
+    return body
+
+
+def delete_pull_request_thread_comment(
+    access_token: str,
+    org: str,
+    project: str,
+    repo: str,
+    pull_request_id: int,
+    thread_id: int,
+    comment_id: int,
+) -> None:
+    """Delete a comment from a PR thread (stale inline-finding cleanup).
+
+    Deleting the sole comment in an inline thread removes that thread, so a
+    fixed line stops showing an orphaned finding. ADO returns 204; ``_request``
+    tolerates the empty body.
+    """
+    url = _add_query(
+        f"{DEV_AZURE_HOST}/{org}/{project}/_apis/git/repositories/{repo}/"
+        f"pullRequests/{pull_request_id}/threads/{thread_id}/comments/{comment_id}",
+        {"api-version": API_VERSION},
+    )
+    _request("DELETE", url, access_token)
+
+
 def update_pull_request_thread_comment(
     access_token: str,
     org: str,

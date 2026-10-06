@@ -429,6 +429,7 @@ def check_test_coverage(
     ado_org: str | None = None,
     ado_project: str | None = None,
     ado_repo: str | None = None,
+    anchors: Optional[Dict[str, int]] = None,
 ) -> Dict[str, Any]:
     """
     Language-agnostic test coverage check.
@@ -699,6 +700,9 @@ def check_test_coverage(
                 "```",
                 "Or set `code_generation.backend` to use language defaults (python, java, typescript, go)."
             ],
+            # The check could not run (no config), so there is nothing to
+            # anchor. See the final return for why findings is file-level-only.
+            "findings": [],
             "usage": usage_tracker
         }
 
@@ -730,6 +734,10 @@ def check_test_coverage(
     # Process changed files based on config format
     suggestions = []
     skipped_files = []
+    # Missing-test source files paired with the requiring pattern (when
+    # readily available). Used below to emit one line-anchored Finding per
+    # file via the caller-supplied ``anchors`` map (shared.pr_findings).
+    missing_test_files: List[Tuple[str, Optional[str]]] = []
 
     if use_new_format:
         # New format: use require_tests and exclude_from_tests
@@ -765,6 +773,9 @@ def check_test_coverage(
                 if adr_reference:
                     desc = f"{adr_reference}: {desc}"
 
+                missing_test_files.append(
+                    (source_file, requirement.pattern if requirement else None)
+                )
                 suggestions.append(
                     f"**{source_file}**: Missing test file\n"
                     f"  - {desc}\n"
@@ -800,6 +811,7 @@ def check_test_coverage(
                 else:
                     adr_msg = "Project testing standards require tests for new code"
 
+                missing_test_files.append((source_file, None))
                 suggestions.append(
                     f"**{source_file}**: Missing test file\n"
                     f"  - {adr_msg}\n"
@@ -850,10 +862,52 @@ def check_test_coverage(
                 "Check compliance against both standards."
             )
 
+    # Line-anchored findings for inline PR comments (shared.pr_findings /
+    # ADR-031). check_test_coverage is a FILE-LEVEL check: per changed file it
+    # decides whether that file requires tests (file_requires_tests) and lacks
+    # them (is_file_excluded). The caller now supplies ``anchors`` -- a map of
+    # repo-relative path -> 1-based first added (RIGHT-side) line in the PR
+    # diff -- so each missing-test file can be anchored to the new untested
+    # code rather than left file-level-only. We emit ONE Finding per
+    # missing-test source file that appears in ``anchors``. A file that is not
+    # in ``anchors`` (anchor computation failed, or the file has no added
+    # lines) is NOT fabricated a line -- ADR-031 forbids guessing -- so it
+    # emits no Finding and stays in the <details> summary above. Severity
+    # tracks the overall check status (error on FAIL, warning otherwise);
+    # enclosing_symbol stays None (never guessed, per ADR-031).
+    from shared.pr_findings import Finding
+
+    findings: List[Dict[str, Any]] = []
+    anchor_map = anchors or {}
+    finding_severity = "error" if status == "FAIL" else "warning"
+    for source_file, pattern in missing_test_files:
+        anchor_line = anchor_map.get(source_file)
+        if anchor_line is None:
+            # No safe line anchor -- leave this file in the summary only.
+            continue
+        if pattern:
+            message = (
+                f"This file requires tests (pattern `{pattern}`) but none "
+                "were found in the PR."
+            )
+        else:
+            message = "This file requires tests but none were found in the PR."
+        findings.append(
+            Finding(
+                path=source_file,
+                line=anchor_line,
+                side="RIGHT",
+                severity=finding_severity,
+                message=message,
+                enclosing_symbol=None,
+            ).model_dump()
+        )
+
     return {
         "checkType": check_type,
         "status": status,
         "message": message,
         "details": details,
+        "findings": findings,
         "usage": usage_tracker
     }

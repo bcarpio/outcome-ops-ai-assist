@@ -251,3 +251,61 @@ def update_merge_request_note(access_token: str, project_path: str,
         f"/projects/{_enc(project_path)}/merge_requests/{mr_iid}"
         f"/notes/{note_id}",
         {"body": body}, "PUT", base=_resolve_base(base_url))
+
+
+def post_merge_request_discussion(access_token: str, project_path: str,
+                                  mr_iid: int, body: str, position: Dict, *,
+                                  base_url: Optional[str] = None) -> Dict:
+    """Create a line-anchored MR discussion (inline comment).
+
+    ``position`` is GitLab's diff-position object, built from the MR's
+    ``diff_refs`` (see get_merge_request)::
+
+        {"position_type": "text",
+         "base_sha": <diff_refs.base_sha>,
+         "start_sha": <diff_refs.start_sha>,
+         "head_sha": <diff_refs.head_sha>,
+         "new_path": "<file>", "new_line": <int>}
+
+    Returns the discussion object; callers store its ``id`` plus the first
+    note's ``id`` (``notes[0].id``) to target
+    update_merge_request_discussion_note on later runs (inline upsert; plan
+    chunk 02).
+    """
+    return _send(
+        access_token,
+        f"/projects/{_enc(project_path)}/merge_requests/{mr_iid}/discussions",
+        {"body": body, "position": position}, "POST",
+        base=_resolve_base(base_url))
+
+
+def update_merge_request_discussion_note(access_token: str, project_path: str,
+                                         mr_iid: int, discussion_id: str,
+                                         note_id: int, body: str, *,
+                                         base_url: Optional[str] = None) -> Dict:
+    """Update a note inside an MR discussion in place (inline upsert UX)."""
+    return _send(
+        access_token,
+        f"/projects/{_enc(project_path)}/merge_requests/{mr_iid}"
+        f"/discussions/{discussion_id}/notes/{note_id}",
+        {"body": body}, "PUT", base=_resolve_base(base_url))
+
+
+def delete_merge_request_discussion_note(access_token: str, project_path: str,
+                                         mr_iid: int, discussion_id: str,
+                                         note_id: int, *,
+                                         base_url: Optional[str] = None) -> None:
+    """Delete a note inside an MR discussion (stale inline-finding cleanup).
+
+    GitLab returns 204 No Content for this endpoint, so unlike ``_send`` this
+    does not attempt to parse a response body.
+    """
+    req = urllib.request.Request(
+        _api(f"/projects/{_enc(project_path)}/merge_requests/{mr_iid}"
+             f"/discussions/{discussion_id}/notes/{note_id}",
+             _resolve_base(base_url)),
+        headers={"Authorization": f"Bearer {access_token}"},
+        method="DELETE",
+    )
+    with urllib.request.urlopen(req, timeout=20):
+        return None

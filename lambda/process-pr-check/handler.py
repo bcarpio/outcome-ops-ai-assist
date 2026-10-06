@@ -311,6 +311,115 @@ def patch_pr_comment(
         raise Exception(f"GitHub API error: {str(e)}")
 
 
+def post_pr_review_comment(
+    repository: str,
+    pr_number: int,
+    body: str,
+    token: str,
+    *,
+    commit_id: str,
+    path: str,
+    line: int,
+    side: str = "RIGHT",
+) -> Dict[str, Any]:
+    """
+    Post a line-level review comment on a PR diff (GitHub pulls API).
+
+    Unlike post_pr_comment (issue-level), this anchors the comment to a specific
+    file+line via the pull-request review-comments endpoint. Callers store the
+    returned ``id`` to target patch_pr_review_comment on later runs (the inline
+    upsert bookkeeping; see plan chunk 02).
+
+    Args:
+        commit_id: PR head SHA the line is anchored to (from pr_metadata).
+        path: Repo-relative file path.
+        line: 1-based line number on the post-change (RIGHT) side.
+        side: "RIGHT" (added/changed) or "LEFT" (removed); default RIGHT.
+    """
+    url = f"{_github_api()}/repos/{repository}/pulls/{pr_number}/comments"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github.v3+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "body": body,
+        "commit_id": commit_id,
+        "path": path,
+        "line": line,
+        "side": side,
+    }
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=30)
+        response.raise_for_status()
+        logger.info(
+            f"Posted review comment on {path}:{line} in PR #{pr_number} ({repository})"
+        )
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Failed to post review comment to GitHub: {e}")
+        raise Exception(f"GitHub API error: {str(e)}")
+
+
+def patch_pr_review_comment(
+    repository: str,
+    comment_id: int,
+    body: str,
+    token: str,
+) -> Dict[str, Any]:
+    """Update an existing line-level PR review comment in place (upsert UX).
+
+    Endpoint differs from patch_pr_comment: review comments live under
+    ``/pulls/comments/{id}``, not ``/issues/comments/{id}``.
+    """
+    url = f"{_github_api()}/repos/{repository}/pulls/comments/{comment_id}"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github.v3+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "Content-Type": "application/json",
+    }
+    payload = {"body": body}
+    try:
+        response = requests.patch(url, headers=headers, json=payload, timeout=30)
+        response.raise_for_status()
+        logger.info(f"Updated review comment {comment_id} in {repository}")
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        logger.error(
+            f"Failed to update review comment {comment_id} in {repository}: {e}"
+        )
+        raise Exception(f"GitHub API error: {str(e)}")
+
+
+def delete_pr_review_comment(
+    repository: str,
+    comment_id: int,
+    token: str,
+) -> None:
+    """Delete a line-level PR review comment (stale inline-finding cleanup).
+
+    Used when a prior inline finding no longer applies (line removed or issue
+    fixed) so a fixed line doesn't keep an orphaned comment.
+    """
+    url = f"{_github_api()}/repos/{repository}/pulls/comments/{comment_id}"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github.v3+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    try:
+        response = requests.delete(url, headers=headers, timeout=30)
+        response.raise_for_status()
+        logger.info(f"Deleted review comment {comment_id} in {repository}")
+    except requests.exceptions.RequestException as e:
+        logger.error(
+            f"Failed to delete review comment {comment_id} in {repository}: {e}"
+        )
+        raise Exception(f"GitHub API error: {str(e)}")
+
+
 def _post_azure_devops_thread(
     org: str,
     project: str,
@@ -578,7 +687,7 @@ def store_check_result(result: CheckResult) -> None:
         raise
 
 
-def run_check(job: CheckJob) -> Dict[str, Any]:
+def run_check(job: CheckJob, anchors: Optional[Dict[str, int]] = None) -> Dict[str, Any]:
     """
     Route to appropriate check handler based on check type.
 
@@ -638,6 +747,7 @@ def run_check(job: CheckJob) -> Dict[str, Any]:
             changed_files=job.changed_files,
             github_token_param=github_token_param,
             query_kb_lambda_name=QUERY_KB_LAMBDA_NAME,
+            anchors=anchors,
             **provider_kwargs,
         )
 
@@ -648,6 +758,7 @@ def run_check(job: CheckJob) -> Dict[str, Any]:
             repository=job.repository,
             changed_files=job.changed_files,
             query_kb_lambda_name=QUERY_KB_LAMBDA_NAME,
+            anchors=anchors,
             **provider_kwargs,
         )
 
@@ -745,6 +856,327 @@ def format_check_comment(result: CheckResult, usage: UsageTracker | None = None)
     )
 
 
+# =============================================================================
+# Inline (line-level) findings sync
+#
+# A check may return, alongside status/message/details, a ``findings`` list of
+# shared.pr_findings.Finding items (as dicts) anchored to a file+line. Each is
+# posted as a line-level review comment (GitHub review comment / GitLab
+# discussion with a diff position / ADO thread with threadContext), upserted and
+# stale-resolved per (check, file, line) using INLINE# bookkeeping rows:
+#     PK = PR#{provider}#{repo}#{pr_number}
+#     SK = INLINE#{check}#{path}#{line}
+# This is additive: the per-check <details> summary comment is unchanged, so a
+# check with no line-anchorable findings behaves exactly as before.
+# =============================================================================
+
+
+def _compute_anchors(job: CheckJob) -> Dict[str, int]:
+    """First-added-line per changed file, for file-level checks that anchor
+    inline findings (BREAKING_CHANGES, TEST_COVERAGE).
+
+    Provider-aware (github/gitlab/azure_devops). Best-effort: returns ``{}`` on
+    any failure so the check still runs and simply posts no inline findings (it
+    keeps its per-check <details> summary either way).
+    """
+    from shared import pr_diff
+    from shared.pr_metadata import fetch_pr_metadata
+
+    try:
+        if job.provider == "gitlab":
+            from check_handlers.gitlab_context import (
+                get_gitlab_base_url, get_gitlab_token)
+
+            token = get_gitlab_token(job.connection_id)
+            base = get_gitlab_base_url(job.connection_id)
+            meta = fetch_pr_metadata(
+                "gitlab", job.pr_number, gitlab_project_path=job.repository,
+                gitlab_access_token=token, gitlab_base_url=base)
+            return pr_diff.first_added_lines(
+                "gitlab", job.repository, meta.base_sha, meta.head_sha,
+                job.changed_files, gitlab_access_token=token,
+                gitlab_base_url=base)
+        if job.provider == "azure_devops":
+            access_token = _ado_refresh_access_token(
+                connection_id=job.connection_id,
+                tenant_id=AZURE_DEVOPS_TENANT_ID,
+                client_id=AZURE_DEVOPS_CLIENT_ID,
+                client_secret=_get_ado_client_secret(),
+            )
+            meta = fetch_pr_metadata(
+                "azure_devops", job.pr_number, ado_org=job.azure_devops_org,
+                ado_project=job.azure_devops_project, ado_repo=job.azure_devops_repo,
+                ado_access_token=access_token)
+            return pr_diff.first_added_lines(
+                "azure_devops", job.repository, meta.base_sha, meta.head_sha,
+                job.changed_files, ado_org=job.azure_devops_org,
+                ado_project=job.azure_devops_project, ado_repo=job.azure_devops_repo,
+                ado_access_token=access_token)
+        # github
+        token = get_github_token()
+        meta = fetch_pr_metadata(
+            "github", job.pr_number, repository=job.repository, github_token=token)
+        return pr_diff.first_added_lines(
+            "github", job.repository, meta.base_sha, meta.head_sha,
+            job.changed_files, github_token=token)
+    except Exception as e:
+        logger.warning(
+            "[inline] anchor computation failed for %s (checks fall back to "
+            "summary-only): %s", job.check_type.value, e)
+        return {}
+
+
+def _github_pr_head_sha(repository: str, pr_number: int, token: str) -> str:
+    """Head commit SHA of a GitHub PR (the ``commit_id`` review comments anchor to)."""
+    url = f"{_github_api()}/repos/{repository}/pulls/{pr_number}"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github.v3+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    response = requests.get(url, headers=headers, timeout=30)
+    response.raise_for_status()
+    return response.json()["head"]["sha"]
+
+
+def _query_inline_rows(pk: str, sk_prefix: str) -> Dict[str, Dict[str, Any]]:
+    """All INLINE# bookkeeping rows for this (PR, check), keyed by SK."""
+    from boto3.dynamodb.conditions import Key
+
+    table = dynamodb.Table(DYNAMODB_TABLE)
+    rows: Dict[str, Dict[str, Any]] = {}
+    kwargs: Dict[str, Any] = {
+        "KeyConditionExpression": Key("PK").eq(pk) & Key("SK").begins_with(sk_prefix)
+    }
+    while True:
+        resp = table.query(**kwargs)
+        for item in resp.get("Items", []) or []:
+            rows[item["SK"]] = item
+        last = resp.get("LastEvaluatedKey")
+        if not last:
+            break
+        kwargs["ExclusiveStartKey"] = last
+    return rows
+
+
+def _format_inline_comment(check_name: str, fd: "Finding") -> str:
+    """Render one Finding as an inline comment body (no aggregate counts)."""
+    glyph = {"error": "❌", "warning": "⚠️", "info": "ℹ️"}.get(fd.severity, "⚠️")
+    where = f" in `{fd.enclosing_symbol}`" if fd.enclosing_symbol else ""
+    return (
+        f"{glyph} <b>{check_name}</b>{where}: {fd.message}\n\n"
+        "---\n*Powered by [OutcomeOps AI Assist](https://outcomeops.ai)*"
+    )
+
+
+def _inline_provider_context(job: CheckJob) -> Dict[str, Any]:
+    """Resolve the token + diff anchors an inline post needs, once per job."""
+    if job.provider == "gitlab":
+        from check_handlers.gitlab_context import (
+            get_gitlab_base_url, get_gitlab_token)
+        from shared import gitlab_api
+
+        token = get_gitlab_token(job.connection_id)
+        base = get_gitlab_base_url(job.connection_id)
+        mr = gitlab_api.get_merge_request(
+            token, job.repository, job.pr_number, base_url=base)
+        return {"token": token, "base_url": base,
+                "diff_refs": mr.get("diff_refs", {}) or {}}
+    if job.provider == "azure_devops":
+        access_token = _ado_refresh_access_token(
+            connection_id=job.connection_id,
+            tenant_id=AZURE_DEVOPS_TENANT_ID,
+            client_id=AZURE_DEVOPS_CLIENT_ID,
+            client_secret=_get_ado_client_secret(),
+        )
+        if not access_token:
+            raise RuntimeError(
+                "Failed to refresh Azure DevOps access token; reconnect_required")
+        return {"access_token": access_token, "org": job.azure_devops_org,
+                "project": job.azure_devops_project, "repo": job.azure_devops_repo}
+    # github
+    token = get_github_token()
+    return {"token": token,
+            "head_sha": _github_pr_head_sha(job.repository, job.pr_number, token)}
+
+
+def _post_inline(job: CheckJob, ctx: Dict[str, Any], body: str,
+                 fd: "Finding") -> Dict[str, Any]:
+    """POST a new inline comment; return the provider id(s) to persist."""
+    if job.provider == "gitlab":
+        from shared import gitlab_api
+
+        dr = ctx["diff_refs"]
+        position: Dict[str, Any] = {
+            "position_type": "text",
+            "base_sha": dr.get("base_sha"),
+            "start_sha": dr.get("start_sha"),
+            "head_sha": dr.get("head_sha"),
+            "new_path": fd.path,
+        }
+        if fd.side == "LEFT":
+            position["old_path"] = fd.path
+            position["old_line"] = fd.line
+        else:
+            position["new_line"] = fd.line
+        resp = gitlab_api.post_merge_request_discussion(
+            ctx["token"], job.repository, job.pr_number, body, position,
+            base_url=ctx["base_url"])
+        notes = resp.get("notes") or []
+        return {"providerDiscussionId": resp.get("id"),
+                "providerCommentId": notes[0].get("id") if notes else None}
+    if job.provider == "azure_devops":
+        from shared.azure_devops_api import post_pull_request_inline_thread
+
+        resp = post_pull_request_inline_thread(
+            ctx["access_token"], ctx["org"], ctx["project"], ctx["repo"],
+            job.pr_number, body, file_path=fd.path, line=fd.line)
+        comments = resp.get("comments") or []
+        return {"providerThreadId": resp.get("id"),
+                "providerThreadCommentId": comments[0].get("id") if comments else None}
+    # github
+    resp = post_pr_review_comment(
+        job.repository, job.pr_number, body, ctx["token"],
+        commit_id=ctx["head_sha"], path=fd.path, line=fd.line, side=fd.side)
+    return {"providerCommentId": resp.get("id")}
+
+
+def _patch_inline(job: CheckJob, ctx: Dict[str, Any], body: str,
+                  row: Dict[str, Any]) -> None:
+    """PATCH an existing inline comment in place."""
+    if job.provider == "gitlab":
+        from shared import gitlab_api
+
+        gitlab_api.update_merge_request_discussion_note(
+            ctx["token"], job.repository, job.pr_number,
+            row["providerDiscussionId"], int(row["providerCommentId"]), body,
+            base_url=ctx["base_url"])
+        return
+    if job.provider == "azure_devops":
+        from shared.azure_devops_api import update_pull_request_thread_comment
+
+        update_pull_request_thread_comment(
+            ctx["access_token"], ctx["org"], ctx["project"], ctx["repo"],
+            job.pr_number, int(row["providerThreadId"]),
+            int(row["providerThreadCommentId"]), body)
+        return
+    patch_pr_review_comment(
+        job.repository, int(row["providerCommentId"]), body, ctx["token"])
+
+
+def _delete_inline(job: CheckJob, ctx: Dict[str, Any], row: Dict[str, Any]) -> None:
+    """Resolve a stale inline comment (finding no longer applies)."""
+    if job.provider == "gitlab":
+        from shared import gitlab_api
+
+        gitlab_api.delete_merge_request_discussion_note(
+            ctx["token"], job.repository, job.pr_number,
+            row["providerDiscussionId"], int(row["providerCommentId"]),
+            base_url=ctx["base_url"])
+        return
+    if job.provider == "azure_devops":
+        from shared.azure_devops_api import delete_pull_request_thread_comment
+
+        delete_pull_request_thread_comment(
+            ctx["access_token"], ctx["org"], ctx["project"], ctx["repo"],
+            job.pr_number, int(row["providerThreadId"]),
+            int(row["providerThreadCommentId"]))
+        return
+    delete_pr_review_comment(job.repository, int(row["providerCommentId"]), ctx["token"])
+
+
+def _store_inline_row(pk: str, sk: str, job: CheckJob, fd: "Finding",
+                      ids: Dict[str, Any]) -> None:
+    item: Dict[str, Any] = {
+        "PK": pk,
+        "SK": sk,
+        "checkType": job.check_type.value,
+        "path": fd.path,
+        "line": fd.line,
+        "side": fd.side,
+        "severity": fd.severity,
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+    }
+    for k, v in ids.items():
+        if v is not None:
+            item[k] = v
+    dual_write.ddb_put_item(DYNAMODB_TABLE, item)
+
+
+def _delete_inline_row(pk: str, sk: str) -> None:
+    dynamodb.Table(DYNAMODB_TABLE).delete_item(Key={"PK": pk, "SK": sk})
+
+
+def _sync_inline_findings(job: CheckJob, findings_raw: List[Dict[str, Any]]) -> None:
+    """Reconcile this check's line-anchored findings with inline PR comments.
+
+    Best-effort and non-fatal: the per-check summary comment has already been
+    posted by the caller, so a failure to post/patch/resolve a single inline
+    finding is logged and swallowed rather than failing the check (which would
+    trigger an SQS retry of the whole check).
+    """
+    from shared.pr_findings import Finding
+
+    pk = f"PR#{job.provider}#{job.repository}#{job.pr_number}"
+    check = job.check_type.value.lower()
+    sk_prefix = f"INLINE#{check}#"
+    check_name = job.check_type.value.replace("_", " ")
+
+    findings: List[Finding] = []
+    for raw in findings_raw or []:
+        try:
+            findings.append(Finding(**raw))
+        except Exception as e:  # malformed finding -> skip, don't fail the check
+            logger.warning("[inline] dropping malformed finding %r: %s", raw, e)
+
+    desired = {(fd.path, fd.line): fd for fd in findings}
+    existing = _query_inline_rows(pk, sk_prefix)
+    existing_by_key: Dict[tuple, tuple] = {}
+    for sk, row in existing.items():
+        try:
+            existing_by_key[(row.get("path"), int(row.get("line", 0)))] = (sk, row)
+        except (TypeError, ValueError):
+            continue
+
+    if not desired and not existing:
+        return
+
+    ctx: Optional[Dict[str, Any]] = None
+
+    def _get_ctx() -> Dict[str, Any]:
+        nonlocal ctx
+        if ctx is None:
+            ctx = _inline_provider_context(job)
+        return ctx
+
+    # Upsert desired findings.
+    for key, fd in desired.items():
+        body = _format_inline_comment(check_name, fd)
+        prior = existing_by_key.get(key)
+        try:
+            if prior:
+                _patch_inline(job, _get_ctx(), body, prior[1])
+            else:
+                ids = _post_inline(job, _get_ctx(), body, fd)
+                _store_inline_row(pk, f"{sk_prefix}{fd.path}#{fd.line}", job, fd, ids)
+        except Exception as e:
+            logger.warning(
+                "[inline] upsert failed for %s %s:%s: %s", check, fd.path, fd.line, e)
+
+    # Resolve stale rows (posted before, not among this run's findings).
+    for key, (sk, row) in existing_by_key.items():
+        if key in desired:
+            continue
+        try:
+            _delete_inline(job, _get_ctx(), row)
+        except Exception as e:
+            logger.warning("[inline] stale-resolve failed for %s: %s", sk, e)
+        try:
+            _delete_inline_row(pk, sk)
+        except Exception as e:
+            logger.warning("[inline] stale-row delete failed for %s: %s", sk, e)
+
+
 def process_check_job(job: CheckJob) -> CheckResult:
     """
     Main processing logic for a PR check job.
@@ -769,7 +1201,13 @@ def process_check_job(job: CheckJob) -> CheckResult:
     # ADO to a PASS with a "not yet implemented" comment was removed
     # in chunk 05; ADO jobs now run the same check pipeline GitHub
     # jobs do.
-    check_result = run_check(job)
+    # File-level checks (breaking changes, test coverage) can anchor inline
+    # findings only if given a first-added-line map; compute it provider-aware
+    # for just those checks (other checks don't need it and skip the fetch).
+    anchors: Optional[Dict[str, int]] = None
+    if job.check_type in (CheckType.BREAKING_CHANGES, CheckType.TEST_COVERAGE):
+        anchors = _compute_anchors(job)
+    check_result = run_check(job, anchors)
     usage = check_result.get("usage")
 
     # Build full result. PK is self-contained per (provider, repo, PR)
@@ -890,6 +1328,14 @@ def process_check_job(job: CheckJob) -> CheckResult:
 
     # Update DynamoDB with comment URL + provider comment identifiers
     store_check_result(result)
+
+    # Post/patch/resolve any line-anchored findings as inline comments. Additive
+    # and non-fatal: the summary comment above already landed, so an inline
+    # failure must not fail the check (which would trigger an SQS retry).
+    try:
+        _sync_inline_findings(job, check_result.get("findings") or [])
+    except Exception as e:
+        logger.warning("[inline] finding sync failed (non-fatal): %s", e)
 
     logger.info(f"Check complete: {result.status.value} - {result.message}")
     return result

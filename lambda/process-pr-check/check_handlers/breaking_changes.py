@@ -207,6 +207,7 @@ def check_breaking_changes(
     changed_files: List[str],
     query_kb_lambda_name: str,
     *,
+    anchors: Optional[Dict[str, int]] = None,
     provider: str = "github",
     connection_id: str | None = None,
     ado_org: str | None = None,
@@ -228,6 +229,14 @@ def check_breaking_changes(
     per the ADO Repos plan chunk 05a). The ADO-specific kwargs
     (``connection_id``, ``ado_org``, ``ado_project``, ``ado_repo``)
     are accepted for parity with sibling handlers but not used.
+
+    ``anchors`` maps repo-relative file path -> 1-based first added
+    RIGHT-side line in the PR diff. When supplied, each distinct
+    high-confidence breaking change on a changed file whose path is in
+    ``anchors`` is emitted as a line-anchored inline Finding
+    (shared.pr_findings). Files absent from ``anchors`` (pure deletions,
+    or when anchor computation failed and ``anchors`` is {}/None) are not
+    anchored and stay in the ``details`` summary only.
     """
     logger.info(
         f"Running breaking changes check for PR #{pr_number} "
@@ -249,6 +258,11 @@ def check_breaking_changes(
             "status": "PASS",
             "message": "No schema, logic, or infrastructure changes detected",
             "details": [],
+            # No line-anchored findings: BREAKING_CHANGES works off file paths
+            # and KB summaries only -- it never sees the PR diff, so there is no
+            # RIGHT-side line to anchor to. Per shared.pr_findings / ADR-031 we
+            # return [] rather than guess a line; the summary carries the result.
+            "findings": [],
             "usage": UsageTracker()
         }
 
@@ -377,11 +391,56 @@ def check_breaking_changes(
         details.append("These may be new handlers, internal-only, or not yet documented.")
         details.append("Changes appear safe to merge.")
 
+    # Line-anchored findings for inline PR comments (shared.pr_findings).
+    # Each HIGH-confidence dependency is a distinct breaking change attributed
+    # to a changed handler. The caller now supplies `anchors` (repo-relative
+    # file path -> 1-based first added RIGHT-side line), so we anchor each
+    # distinct breaking change to the changed file(s) of its handler that
+    # appear in the diff. Per ADR-031 we NEVER guess a line: a flagged file
+    # absent from `anchors` (pure deletion, or anchors is {}/None because
+    # anchor computation failed) gets no Finding and stays in the `details`
+    # summary above. BREAKING_CHANGES verdicts are PASS/WARN only -- no FAIL --
+    # so severity is always "warning". enclosing_symbol stays None (ADR-031:
+    # never guessed).
+    from shared.pr_findings import Finding
+
+    findings: List[Dict[str, Any]] = []
+    if anchors:
+        # Group the flagged breaking changes by handler (same grouping the
+        # summary uses), then map each handler back to its changed files.
+        deps_for_findings: Dict[str, List[Dependency]] = defaultdict(list)
+        for dep in high_confidence_dependencies:
+            deps_for_findings[dep.handler_name].append(dep)
+
+        for handler_name, deps in deps_for_findings.items():
+            handler_files = changes_by_handler[handler_name]["files"]
+            # Only files that are in the PR diff with a resolvable first-added
+            # line can be anchored; others stay in the summary.
+            anchorable_files = [f for f in handler_files if f in anchors]
+            for path in anchorable_files:
+                for dep in deps:
+                    message = (
+                        f"Potential breaking change in '{handler_name}': "
+                        f"direct consumer '{dep.source}' depends on this and "
+                        f"may be affected."
+                    )
+                    findings.append(
+                        Finding(
+                            path=path,
+                            line=anchors[path],
+                            side="RIGHT",
+                            severity="warning",
+                            message=message,
+                            enclosing_symbol=None,
+                        ).model_dump()
+                    )
+
     # BREAKING_CHANGES doesn't use Claude, return empty usage tracker
     return {
         "checkType": check_type,
         "status": status,
         "message": message,
         "details": details,
+        "findings": findings,
         "usage": UsageTracker()
     }

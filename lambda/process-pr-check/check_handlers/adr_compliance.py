@@ -111,6 +111,106 @@ def extract_file_diff_from_full_diff(full_diff: str, file_path: str) -> str:
     return "\n".join(file_diff_lines) if file_diff_lines else ""
 
 
+def _added_line_numbers(file_diff: str) -> List[int]:
+    """1-based RIGHT-side line numbers of added ("+") lines in a unified diff.
+
+    Walks the hunk headers (``@@ -a,b +c,d @@``) to track the post-change line
+    counter, collecting the line number of every added line in order. Used to
+    (a) validate a model-supplied violation line against an actual changed line
+    and (b) supply the first added line as an anchor fallback -- ADR-031 forbids
+    anchoring a finding to a guessed line.
+    """
+    added: List[int] = []
+    new_line = 0
+    in_hunk = False
+
+    for raw in file_diff.split("\n"):
+        if raw.startswith("@@"):
+            # @@ -a,b +c,d @@  -- post-change side starts at c
+            try:
+                plus = raw.split("+", 1)[1].strip()
+                new_line = int(plus.split(",", 1)[0].split()[0])
+                in_hunk = True
+            except (IndexError, ValueError):
+                in_hunk = False
+            continue
+        if not in_hunk:
+            continue
+        if raw.startswith("+++") or raw.startswith("---"):
+            continue
+        if raw.startswith("+"):
+            added.append(new_line)
+            new_line += 1
+        elif raw.startswith("-"):
+            # Removed line -- no advance on the post-change side.
+            continue
+        elif raw.startswith(" "):
+            # Context line -- advances the post-change side.
+            new_line += 1
+        # Anything else (blank split artifact, "\ No newline...") is ignored.
+
+    return added
+
+
+def _build_findings(
+    file_path: str,
+    file_diff: str,
+    analysis: Dict[str, Any],
+    severity: Literal["info", "warning", "error"],
+) -> List[Dict[str, Any]]:
+    """Turn a file's Claude ``violations`` into inline-comment Findings.
+
+    One :class:`shared.pr_findings.Finding` per concrete violation, anchored to
+    the model-supplied line when it matches an actual added ("+") line, else to
+    the file's first added line; a violation with neither available is omitted
+    (never fabricate a line). Returns ``model_dump()`` dicts.
+    """
+    from shared.pr_findings import Finding
+
+    added = _added_line_numbers(file_diff)
+    added_set = set(added)
+    first_added = added[0] if added else None
+
+    findings: List[Dict[str, Any]] = []
+    for violation in analysis.get("violations", []):
+        if not isinstance(violation, dict):
+            continue
+
+        message = violation.get("message") or analysis.get("explanation") or ""
+        message = str(message).strip()
+        if not message:
+            continue
+
+        line = violation.get("line")
+        if isinstance(line, bool):
+            line = None  # guard: bool is an int subclass
+        elif isinstance(line, float):
+            line = int(line)
+        elif isinstance(line, str):
+            line = int(line) if line.strip().isdigit() else None
+
+        if isinstance(line, int) and line in added_set:
+            anchor = line
+        elif first_added is not None:
+            anchor = first_added
+        else:
+            # No model line and no added line to fall back to -- omit.
+            continue
+
+        findings.append(
+            Finding(
+                path=file_path,
+                line=anchor,
+                side="RIGHT",
+                severity=severity,
+                message=message,
+                enclosing_symbol=None,
+            ).model_dump()
+        )
+
+    return findings
+
+
 def _fetch_file_diff(
     *,
     provider: str,
@@ -233,7 +333,12 @@ def analyze_code_with_claude(
     Ask Claude to analyze code against ADR standards.
 
     Returns:
-        dict with keys: compliant (bool), explanation (str), suggestions (list)
+        dict with keys: compliant (bool), explanation (str),
+        suggestions (list), violations (list). Each ``violations`` entry is a
+        dict ``{"line": <int|None>, "message": <str>}`` naming one concrete ADR
+        violation and the 1-based RIGHT-side (post-change) line number of the
+        offending added ("+") diff line, so the caller can post it as an inline
+        PR comment. ``line`` is ``None`` when the model could not pin one.
     """
     file_type_label = "Lambda handler" if file_type == "lambda" else "Terraform file"
 
@@ -264,20 +369,29 @@ IMPORTANT RULES:
 3. Do NOT hallucinate or invent code that isn't in the diff
 4. Focus on what's being ADDED (+ lines) in the diff
 5. Look for: {focus_areas}
+6. For EACH distinct ADR violation, record the exact line number of the
+   offending ADDED ("+") line. Use the 1-based line number on the NEW
+   (post-change / RIGHT) side of the file, as implied by the diff hunk
+   headers (@@ -old,n +new,n @@). If you genuinely cannot pin a single line
+   for a violation, set its "line" to null -- do NOT guess a line.
 
 RESPONSE FORMAT:
 Respond with ONLY a JSON object (no markdown, no code blocks):
-{{"compliant": true/false, "explanation": "brief explanation", "suggestions": ["suggestion 1", "suggestion 2"]}}
+{{"compliant": true/false, "explanation": "brief explanation", "suggestions": ["suggestion 1", "suggestion 2"], "violations": [{{"line": 42, "message": "the one concrete ADR violation at this line"}}]}}
 
-IMPORTANT: Only set compliant to false and provide suggestions if there are ACTUAL ADR violations visible in the diff. Do NOT make suggestions for:
+Each "violations" entry describes ONE concrete issue at ONE line. Do NOT put
+aggregate counts (e.g. "3 violations") in any message -- enumerate each issue
+as its own entry instead.
+
+IMPORTANT: Only set compliant to false and provide suggestions/violations if there are ACTUAL ADR violations visible in the diff. Do NOT make suggestions for:
 - Things that cannot be verified from the diff alone
 - General best practices that are not ADR requirements
 - Assumptions about code outside the diff
 
 Examples:
-- If code follows standards: {{"compliant": true, "explanation": "Handler uses Pydantic schemas and proper error handling", "suggestions": []}}
-- If missing standards: {{"compliant": false, "explanation": "Handler is missing Pydantic schema validation", "suggestions": ["Add a Pydantic model for request validation", "Add try-except error handling"]}}
-- If cannot determine from diff: {{"compliant": true, "explanation": "Changes maintain existing patterns, no violations detected in diff", "suggestions": []}}"""
+- If code follows standards: {{"compliant": true, "explanation": "Handler uses Pydantic schemas and proper error handling", "suggestions": [], "violations": []}}
+- If missing standards: {{"compliant": false, "explanation": "Handler is missing Pydantic schema validation", "suggestions": ["Add a Pydantic model for request validation", "Add try-except error handling"], "violations": [{{"line": 17, "message": "Request body parsed with json.loads instead of a Pydantic model"}}, {{"line": 23, "message": "Handler body has no try-except error handling"}}]}}
+- If cannot determine from diff: {{"compliant": true, "explanation": "Changes maintain existing patterns, no violations detected in diff", "suggestions": [], "violations": []}}"""
 
     logger.info(f"Calling Claude to analyze {file_type} compliance for {file_path}...")
 
@@ -309,7 +423,8 @@ Examples:
             return {
                 "compliant": parsed.get("compliant", False),
                 "explanation": parsed.get("explanation", "No explanation provided"),
-                "suggestions": parsed.get("suggestions", []) if isinstance(parsed.get("suggestions"), list) else []
+                "suggestions": parsed.get("suggestions", []) if isinstance(parsed.get("suggestions"), list) else [],
+                "violations": parsed.get("violations", []) if isinstance(parsed.get("violations"), list) else []
             }
 
         except json.JSONDecodeError as e:
@@ -323,7 +438,8 @@ Examples:
             return {
                 "compliant": compliant,
                 "explanation": "Could not parse compliance analysis",
-                "suggestions": []
+                "suggestions": [],
+                "violations": []
             }
 
     except Exception as e:
@@ -362,7 +478,8 @@ def analyze_lambda_handlers(
         return {
             "status": "PASS",
             "message": "No Lambda handler files changed",
-            "details": []
+            "details": [],
+            "findings": []
         }
 
     # Query KB for Lambda standards, scoped to the workspaces the
@@ -378,6 +495,7 @@ def analyze_lambda_handlers(
 
     # Analyze each handler file with Claude
     details = []
+    findings: List[Dict[str, Any]] = []
     has_non_compliant = False
 
     for file in handler_files:
@@ -411,6 +529,11 @@ def analyze_lambda_handlers(
                     details.append("  Suggestions:")
                     for suggestion in analysis["suggestions"]:
                         details.append(f"  - {suggestion}")
+                # Line-anchored inline findings. Non-compliant file == WARN
+                # verdict for this advisory check, so severity is "warning".
+                findings.extend(
+                    _build_findings(file, file_diff, analysis, "warning")
+                )
             # Don't show details for compliant files - keep output clean
 
         except Exception as e:
@@ -428,7 +551,8 @@ def analyze_lambda_handlers(
     return {
         "status": status,
         "message": message,
-        "details": details
+        "details": details,
+        "findings": findings
     }
 
 
@@ -458,7 +582,8 @@ def analyze_terraform_files(
         return {
             "status": "PASS",
             "message": "No Terraform files changed",
-            "details": []
+            "details": [],
+            "findings": []
         }
 
     # Query KB for Terraform standards, scoped to the workspaces the
@@ -474,6 +599,7 @@ def analyze_terraform_files(
 
     # Analyze each Terraform file with Claude
     details = []
+    findings: List[Dict[str, Any]] = []
     has_non_compliant = False
 
     for file in terraform_files:
@@ -507,6 +633,11 @@ def analyze_terraform_files(
                     details.append("  Suggestions:")
                     for suggestion in analysis["suggestions"]:
                         details.append(f"  - {suggestion}")
+                # Line-anchored inline findings. Non-compliant file == WARN
+                # verdict for this advisory check, so severity is "warning".
+                findings.extend(
+                    _build_findings(file, file_diff, analysis, "warning")
+                )
             # Don't show details for compliant files - keep output clean
 
         except Exception as e:
@@ -524,7 +655,8 @@ def analyze_terraform_files(
     return {
         "status": status,
         "message": message,
-        "details": details
+        "details": details,
+        "findings": findings
     }
 
 
@@ -653,6 +785,9 @@ def check_adr_compliance(
 
         # Combine results
         all_details = lambda_result["details"] + terraform_result["details"]
+        all_findings = (
+            lambda_result.get("findings", []) + terraform_result.get("findings", [])
+        )
 
         # Determine overall status (FAIL > WARN > PASS)
         if lambda_result["status"] == "FAIL" or terraform_result["status"] == "FAIL":
@@ -673,6 +808,7 @@ def check_adr_compliance(
             "status": overall_status,
             "message": message,
             "details": all_details,
+            "findings": all_findings,
             "usage": usage_tracker
         }
 
@@ -687,5 +823,6 @@ def check_adr_compliance(
                 "Please manually review code for ADR compliance",
                 f"Error: {str(e)}"
             ],
+            "findings": [],
             "usage": usage_tracker
         }

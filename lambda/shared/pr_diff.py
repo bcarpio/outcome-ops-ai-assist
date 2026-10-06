@@ -30,7 +30,7 @@ Design decisions:
 
 import difflib
 import logging
-from typing import Optional
+from typing import Dict, List, Optional
 
 
 logger = logging.getLogger(__name__)
@@ -134,3 +134,106 @@ def compute_file_diff(
     if body and not body.endswith("\n"):
         body += "\n"
     return header + body
+
+
+def added_line_numbers(file_diff: str) -> List[int]:
+    """1-based RIGHT-side line numbers of added ("+") lines in a unified diff.
+
+    Walks the hunk headers (``@@ -a,b +c,d @@``) tracking the post-change line
+    counter, collecting each added line's number in order. Used to anchor an
+    inline PR finding on a real changed line -- ADR-031 forbids anchoring to a
+    guessed line, so a diff with no added lines yields an empty list and the
+    caller emits no inline finding.
+    """
+    added: List[int] = []
+    new_line = 0
+    in_hunk = False
+    for raw in file_diff.split("\n"):
+        if raw.startswith("@@"):
+            try:
+                plus = raw.split("+", 1)[1].strip()
+                new_line = int(plus.split(",", 1)[0].split()[0])
+                in_hunk = True
+            except (IndexError, ValueError):
+                in_hunk = False
+            continue
+        if not in_hunk:
+            continue
+        if raw.startswith("+++") or raw.startswith("---"):
+            continue
+        if raw.startswith("+"):
+            added.append(new_line)
+            new_line += 1
+        elif raw.startswith("-"):
+            # Removed line -- no advance on the post-change side.
+            continue
+        elif raw.startswith(" "):
+            # Context line -- advances the post-change side.
+            new_line += 1
+    return added
+
+
+def first_added_lines(
+    provider: str,
+    repository: str,
+    base_sha: str,
+    head_sha: str,
+    changed_files: List[str],
+    *,
+    github_token: Optional[str] = None,
+    ado_org: Optional[str] = None,
+    ado_project: Optional[str] = None,
+    ado_repo: Optional[str] = None,
+    ado_access_token: Optional[str] = None,
+    gitlab_access_token: Optional[str] = None,
+    gitlab_base_url: Optional[str] = None,
+) -> Dict[str, int]:
+    """Map each changed file -> its first added (RIGHT-side) line in the PR diff.
+
+    Provider-agnostic (github / azure_devops / gitlab): fetches base + head bytes
+    via ``shared.source_fetch.fetch_file_at_sha`` and diffs them with
+    ``compute_file_diff``, then takes the first added line. This lets file-level
+    checks (e.g. BREAKING_CHANGES, TEST_COVERAGE) anchor an inline comment on the
+    changed code without a GitHub-only server-side diff endpoint.
+
+    Best-effort: a per-file fetch/parse failure is logged and skipped, never
+    raised. Files with no added lines (pure deletion, binary, or unchanged) are
+    omitted from the result.
+    """
+    from shared.source_fetch import SourceFetchError, fetch_file_at_sha
+
+    if provider == "github":
+        fetch_kwargs = {"repository": repository, "github_token": github_token}
+    elif provider == "azure_devops":
+        fetch_kwargs = {
+            "ado_org": ado_org, "ado_project": ado_project,
+            "ado_repo": ado_repo, "ado_access_token": ado_access_token,
+        }
+    elif provider == "gitlab":
+        fetch_kwargs = {
+            "gitlab_project_path": repository,
+            "gitlab_access_token": gitlab_access_token,
+            "gitlab_base_url": gitlab_base_url,
+        }
+    else:
+        logger.warning("first_added_lines: unknown provider %r", provider)
+        return {}
+
+    result: Dict[str, int] = {}
+    for path in changed_files or []:
+        try:
+            try:
+                base_bytes = fetch_file_at_sha(provider, path, base_sha, **fetch_kwargs)
+            except SourceFetchError:
+                base_bytes = None  # file added -- absent at base
+            try:
+                head_bytes = fetch_file_at_sha(provider, path, head_sha, **fetch_kwargs)
+            except SourceFetchError:
+                head_bytes = None  # file deleted in head
+            added = added_line_numbers(
+                compute_file_diff(base_bytes, head_bytes, path))
+            if added:
+                result[path] = added[0]
+        except Exception as e:  # provider/network/parse -- skip this file
+            logger.warning("first_added_lines: skipping %s: %s", path, e)
+    return result

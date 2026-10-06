@@ -485,8 +485,11 @@ class TestProcessCheckJob:
             "html_url": "https://github.com/owner/repo/pull/123#issuecomment-456"
         }
 
-        # Act
-        result = process_check_job(job)
+        # Act -- isolate from the inline-findings subsystem: anchor computation
+        # runs for TEST_COVERAGE/BREAKING_CHANGES and resolves its own token,
+        # which is orthogonal to the comment-post flow under test here.
+        with patch('process_pr_check_handler._compute_anchors', return_value={}):
+            result = process_check_job(job)
 
         # Assert -- PK is self-contained per (provider, repo, PR)
         # per chunk 02 of the update-in-place plan.
