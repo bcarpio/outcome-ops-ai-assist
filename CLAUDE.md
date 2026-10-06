@@ -274,6 +274,14 @@ make audit         # runs BOTH npm audit (ui/) + pip-audit (lambda/*/requirement
 # `for i in $(find . | grep requirements.txt); do pip-audit -r $i; done`
 # is 5-15 minutes SERIAL and re-hits the vuln DB per file.
 # `make audit-py` closes it to <1 minute -- always use it.
+#
+# If audit-py hangs or every file reports `FAIL:`, suspect a sandboxed temp dir:
+# pip-audit builds an isolated venv per requirements file under TMPDIR, and on
+# hosts that restrict execution or network egress from /tmp (common on hardened
+# CI / corp builders) that venv's interpreter sits under /tmp and its PyPI
+# fetches are blocked -- a scan that looks like it ran but checked nothing. Point
+# TMPDIR off /tmp and re-run:
+#     mkdir -p ~/.cache/py-audit-tmp && TMPDIR=$HOME/.cache/py-audit-tmp make audit-py
 ```
 
 **CI will fail if you skip these steps.** Run them every time before committing.
