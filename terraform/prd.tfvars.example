@@ -715,3 +715,12 @@ audit_stream_export_enabled = true
 # repo_summary_max_conc             = 100
 # batch_summary_max_conc            = 100
 # github_scheduler_parallel_workers = 64
+
+# --- PR analysis CI trigger ---
+# IAM role ARN(s) your CI assumes (e.g. a GitHub Actions OIDC role) that may
+# invoke the analyze-pr and handle-command Lambdas directly. PR analysis uses
+# CI direct-invoke, NOT a public webhook (see docs/getting-started.md "Trigger
+# PR analysis"). The role is customer-managed (e.g. AFT global customizations);
+# this stack only adds it to the functions' resource policies. Empty = no CI
+# trigger.
+# ci_invoker_role_arns = ["arn:aws:iam::<ACCOUNT_ID>:role/github-actions-role"]

@@ -733,3 +733,13 @@ output "handle_command_lambda_name" {
   description = "Name of the handle-command Lambda function"
   value       = module.handle_command_lambda.lambda_function_name
 }
+
+# Same CI-invoke grant as analyze-pr, for handle-command (PR slash-commands via
+# .github/workflows/pr-commands.yml). See var.ci_invoker_role_arns.
+resource "aws_lambda_permission" "handle_command_ci_invoke" {
+  for_each      = toset(var.ci_invoker_role_arns)
+  statement_id  = "AllowCIInvoke-${substr(sha1(each.value), 0, 12)}"
+  action        = "lambda:InvokeFunction"
+  function_name = module.handle_command_lambda.lambda_function_name
+  principal     = each.value
+}

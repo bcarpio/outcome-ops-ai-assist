@@ -1,0 +1,76 @@
+name: PR Analysis
+
+# Invokes the analyze-pr Lambda directly via OIDC (no public API Gateway
+# webhook). The product deploys into the customer's own AWS account, where an
+# internet-facing webhook endpoint is unwanted inbound attack surface and GHES
+# runners often cannot reach one; CI already holds a scoped identity, so it
+# calls the Lambda directly. Mirrors pr-commands.yml (slash-command path).
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  id-token: write      # Required for OIDC
+  contents: read       # Required to checkout code
+  pull-requests: read  # Required to read PR details
+
+env:
+  AWS_REGION: us-west-2
+  ENVIRONMENT: prd
+
+# One analysis per PR at a time; a new push supersedes an in-flight run so
+# analyze-pr's upserted comments reflect the latest head.
+concurrency:
+  group: pr-analysis-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  analyze-pr:
+    name: Analyze PR
+    runs-on: ubuntu-latest
+    environment: prd
+    steps:
+      - name: Configure AWS credentials using OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: GitHubActions-PR-Analysis
+
+      - name: Invoke analyze-pr Lambda
+        run: |
+          FUNCTION_NAME="${{ env.ENVIRONMENT }}-outcome-ops-ai-assist-analyze-pr"
+
+          PAYLOAD=$(jq -n \
+            --arg repo "${{ github.repository }}" \
+            --argjson pr_num "${{ github.event.pull_request.number }}" \
+            '{
+              repository: $repo,
+              pr_number: $pr_num,
+              provider: "github"
+            }')
+
+          echo "Invoking Lambda: $FUNCTION_NAME"
+          echo "Payload: $PAYLOAD"
+
+          aws lambda invoke \
+            --function-name "$FUNCTION_NAME" \
+            --payload "$PAYLOAD" \
+            --cli-binary-format raw-in-base64-out \
+            /tmp/response.json
+
+          echo "Lambda response:"
+          cat /tmp/response.json
+
+          if grep -q '"statusCode": 4' /tmp/response.json; then
+            echo "analyze-pr failed with client error"
+            exit 1
+          fi
+
+          if grep -q '"statusCode": 5' /tmp/response.json; then
+            echo "analyze-pr failed with server error"
+            exit 1
+          fi
+
+          echo "PR analysis dispatched successfully"

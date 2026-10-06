@@ -201,6 +201,18 @@ output "analyze_pr_lambda_name" {
   value       = module.analyze_pr_lambda.lambda_function_name
 }
 
+# Allow customer-defined CI role(s) to invoke analyze-pr directly -- the
+# CI-triggered PR-analysis path (no public webhook; see var.ci_invoker_role_arns
+# and .github/workflows/pr-analysis.yml). A resource-policy grant per listed
+# role, so the CI role's own identity policy (often read-only) is untouched.
+resource "aws_lambda_permission" "analyze_pr_ci_invoke" {
+  for_each      = toset(var.ci_invoker_role_arns)
+  statement_id  = "AllowCIInvoke-${substr(sha1(each.value), 0, 12)}"
+  action        = "lambda:InvokeFunction"
+  function_name = module.analyze_pr_lambda.lambda_function_name
+  principal     = each.value
+}
+
 # ============================================================================
 # Process PR Check Lambda (SQS Consumer)
 # ============================================================================

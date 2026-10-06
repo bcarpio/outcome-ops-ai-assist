@@ -292,6 +292,57 @@ Repo **Settings → Webhooks → Add webhook**:
 See the [Jira Integration Setup Guide](jira-integration-setup.md). The GitHub
 PAT is still required (it creates the branches/commits/PRs).
 
+## Trigger PR analysis (CI, no public webhook)
+
+PR analysis (`analyze-pr` -> `process-pr-check`: the ADR / README / test-coverage /
+breaking-change / duplication / license checks, posted as review comments including
+inline line-level comments) is triggered by **your CI invoking the Lambda directly
+via OIDC** -- deliberately not a public webhook. The product runs in your own AWS
+account, so an internet-facing webhook endpoint would be unwanted inbound attack
+surface, and GitHub Enterprise Server runners often cannot reach one; your CI
+already holds a scoped identity, so it calls the Lambda directly.
+
+See ADR-053 for the full rationale. Pick ONE identity setup:
+
+**A. Hub/spoke via AFT (recommended for Control Tower / multi-account).** A GitHub
+Actions OIDC role in your Shared Services account assumes a per-account
+`outcomeops-ci` spoke role (global customization) that holds `terraform plan` read
+plus `lambda:InvokeFunction` on the PR Lambdas. The spoke role is in the same
+account as the Lambdas, so its own identity policy authorizes the invoke -- **this
+stack needs no extra config.** (Mirrors your monitoring/prowler hub-spoke roles.)
+
+**B. Bring your own principal.** If your CI identity already exists and you'd
+rather authorize it on the function side, list its ARN in `prd.tfvars`:
+
+```hcl
+ci_invoker_role_arns = ["arn:aws:iam::<ACCOUNT_ID>:role/<your-ci-role>"]
+```
+
+This adds it to the `analyze-pr` + `handle-command` resource policies (an IAM-only
+apply; two statements per listed role). Accepts any principal -- a cross-account
+spoke role, a single-account OIDC role, a CI instance role, etc.
+
+**C. Self-contained OIDC role (no Shared Services / AFT).** Have this stack create
+a GitHub-OIDC-assumable, invoke-only role in the deployment account:
+
+```hcl
+ci_oidc_role_enabled    = true
+ci_oidc_github_subjects = ["repo:<your-org>/<your-repo>:pull_request",
+                           "repo:<your-org>/<your-repo>:ref:refs/heads/main"]
+# ci_oidc_create_provider = false   # if the account already has the GitHub OIDC provider
+# ci_oidc_provider_arn    = "arn:aws:iam::<ACCOUNT_ID>:oidc-provider/token.actions.githubusercontent.com"
+```
+
+After `terraform apply`, use the `ci_oidc_role_arn` output as the workflow's
+`AWS_OIDC_ROLE_ARN` secret.
+
+**2. Add the workflow to each repo you want analyzed.** Copy
+`.github/workflows/pr-analysis.yml` into the repo and set the repo's
+`AWS_OIDC_ROLE_ARN` secret (and the `prd` GitHub Environment). It invokes
+`analyze-pr` on `pull_request` (opened / synchronize / reopened). The sibling
+`.github/workflows/pr-commands.yml` (PR slash-commands -> `handle-command`) uses the
+same OIDC direct-invoke mechanism.
+
 ## Optional: MCP servers
 
 ### OutcomeOps MCP (Claude Code, VS Code, Cursor)

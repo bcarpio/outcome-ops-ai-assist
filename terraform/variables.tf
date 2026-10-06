@@ -1304,3 +1304,87 @@ variable "enable_deletion_protection" {
   EOT
   default     = true
 }
+
+variable "ci_invoker_role_arns" {
+  type        = list(string)
+  description = <<-EOT
+    IAM role ARNs permitted to invoke the CI-triggered PR Lambdas:
+    analyze-pr (PR analysis) and handle-command (PR slash-commands).
+
+    PR analysis is triggered by the customer's CI invoking the Lambda
+    directly via OIDC -- deliberately NOT a public API Gateway webhook --
+    because the product runs in the customer's own AWS account, where an
+    internet-facing webhook endpoint is unwanted inbound attack surface and
+    GitHub Enterprise Server runners often cannot reach one. Each ARN here is
+    added to those functions' resource-based policies as an allowed invoke
+    principal, so the CI role's own (typically read-only) identity policy is
+    left unchanged.
+
+    The roles themselves are CUSTOMER-MANAGED infrastructure (e.g. a GitHub
+    Actions OIDC role provisioned via AFT global customizations); this stack
+    does NOT create them. Empty (the default) grants no external invoke
+    principals -- PR analysis is not CI-triggerable until the customer opts in
+    by listing their CI role ARN(s). Example:
+      ci_invoker_role_arns = ["arn:aws:iam::123456789012:role/github-actions-role"]
+  EOT
+  default     = []
+}
+
+# ----------------------------------------------------------------------------
+# Optional self-contained GitHub Actions OIDC role (non-AFT customers)
+# See ci_oidc_role.tf and ADR-053. AFT customers leave all of these off and use
+# the hub/spoke identity (and, if needed, ci_invoker_role_arns) instead.
+# ----------------------------------------------------------------------------
+
+variable "ci_oidc_role_enabled" {
+  type        = bool
+  description = <<-EOT
+    Create a GitHub-Actions-OIDC-assumable IAM role IN THIS (the OutcomeOps
+    deployment) account that can invoke the PR Lambdas (analyze-pr,
+    handle-command). This is the self-contained fallback for customers who do
+    NOT have a SharedServices/AFT hub-spoke CI identity: GitHub Actions assumes
+    this role directly via OIDC, no cross-account hop. AFT customers leave this
+    false (their cross-account spoke role carries the invoke permission).
+  EOT
+  default     = false
+}
+
+variable "ci_oidc_create_provider" {
+  type        = bool
+  description = <<-EOT
+    When ci_oidc_role_enabled, also create the GitHub Actions OIDC provider
+    (token.actions.githubusercontent.com) in this account. An account may hold
+    only ONE provider for that URL, so set this false and supply
+    ci_oidc_provider_arn if the account already has one.
+  EOT
+  default     = true
+}
+
+variable "ci_oidc_provider_arn" {
+  type        = string
+  description = <<-EOT
+    ARN of an existing GitHub Actions OIDC provider to trust, used instead of
+    creating one (set ci_oidc_create_provider=false). Ignored when
+    ci_oidc_create_provider is true.
+  EOT
+  default     = ""
+}
+
+variable "ci_oidc_github_subjects" {
+  type        = list(string)
+  description = <<-EOT
+    GitHub OIDC `sub` claim patterns allowed to assume the CI role (StringLike),
+    scoping it to specific org/repo/branch/environment. Required when
+    ci_oidc_role_enabled. Examples:
+      ["repo:my-org/my-repo:ref:refs/heads/main",
+       "repo:my-org/my-repo:pull_request",
+       "repo:my-org/my-repo:environment:prd"]
+  EOT
+  default     = []
+}
+
+variable "ci_oidc_role_name" {
+  type        = string
+  description = "Name for the self-contained GitHub Actions OIDC CI role (when ci_oidc_role_enabled)."
+  default     = "outcomeops-ci"
+}

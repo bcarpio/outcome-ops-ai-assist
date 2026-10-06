@@ -487,3 +487,15 @@ github_usernames_to_tag = "yourusername"
 
 # Custom tags merged with default tags (Environment, Application, ManagedBy).
 # tags = {}
+
+# ============================================================================
+# PR analysis CI trigger
+# ============================================================================
+
+# IAM role ARN(s) your CI assumes (e.g. a GitHub Actions OIDC role) that may
+# invoke the analyze-pr and handle-command Lambdas directly. PR analysis uses
+# CI direct-invoke, NOT a public webhook (see docs/getting-started.md "Trigger
+# PR analysis"). The role is customer-managed (e.g. AFT global customizations);
+# this stack only adds it to the functions' resource policies. Empty = no CI
+# trigger.
+# ci_invoker_role_arns = ["arn:aws:iam::<ACCOUNT_ID>:role/github-actions-role"]
