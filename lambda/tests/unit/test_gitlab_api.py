@@ -111,3 +111,101 @@ class TestRepoReads:
         with patch.object(gitlab_api, "_request", stub):
             assert gitlab_api.get_file_content("at", "g/p", "a/b.py", "main") == \
                 b"print('hi')"
+
+
+class _UrlopenResp:
+    """Context-manager stub matching urllib.request.urlopen's contract.
+
+    ``read`` raises if invoked -- the delete path (204 No Content) must NOT
+    try to parse an empty body.
+    """
+
+    def __init__(self, body=b""):
+        self._body = body
+        self.read_called = False
+
+    def read(self):
+        self.read_called = True
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class TestDiscussionNotes:
+    """Inline (line-anchored) MR discussion note CRUD -- the inline-review
+    machinery. ``base_url`` is passed explicitly so ``_resolve_base`` never
+    hits the gitlab_instances registry.
+    """
+
+    _BASE = "https://gitlab.example.com"
+
+    def test_post_discussion_hits_discussions_endpoint_with_body_and_position(self):
+        captured = {}
+
+        def fake_send(access_token, path, payload, method, *, base):
+            captured["path"] = path
+            captured["payload"] = payload
+            captured["method"] = method
+            captured["base"] = base
+            return {"id": "disc-1", "notes": [{"id": 55}]}
+
+        position = {
+            "position_type": "text",
+            "base_sha": "b", "start_sha": "s", "head_sha": "h",
+            "new_path": "src/a.py", "new_line": 12,
+        }
+        with patch.object(gitlab_api, "_send", fake_send):
+            out = gitlab_api.post_merge_request_discussion(
+                "at", "group/sub/project", 7, "the body", position,
+                base_url=self._BASE)
+
+        assert captured["method"] == "POST"
+        assert captured["path"].endswith("/merge_requests/7/discussions")
+        assert "group%2Fsub%2Fproject" in captured["path"]
+        assert captured["payload"] == {"body": "the body", "position": position}
+        assert captured["base"] == self._BASE
+        assert out == {"id": "disc-1", "notes": [{"id": 55}]}
+
+    def test_update_discussion_note_puts_to_notes_endpoint(self):
+        captured = {}
+
+        def fake_send(access_token, path, payload, method, *, base):
+            captured["path"] = path
+            captured["payload"] = payload
+            captured["method"] = method
+            return {"id": 55}
+
+        with patch.object(gitlab_api, "_send", fake_send):
+            gitlab_api.update_merge_request_discussion_note(
+                "at", "g/p", 7, "disc-1", 55, "new body", base_url=self._BASE)
+
+        assert captured["method"] == "PUT"
+        assert captured["path"].endswith(
+            "/merge_requests/7/discussions/disc-1/notes/55")
+        assert captured["payload"] == {"body": "new body"}
+
+    def test_delete_discussion_note_issues_delete_and_does_not_read_body(self):
+        resp = _UrlopenResp(body=b"")  # 204 No Content
+
+        captured = {}
+
+        def fake_urlopen(req, timeout=None):
+            captured["req"] = req
+            return resp
+
+        with patch.object(gitlab_api.urllib.request, "urlopen", fake_urlopen):
+            out = gitlab_api.delete_merge_request_discussion_note(
+                "at", "group/sub/project", 7, "disc-1", 55, base_url=self._BASE)
+
+        assert out is None
+        # 204 path must not attempt to parse an empty body.
+        assert resp.read_called is False
+        req = captured["req"]
+        assert req.get_method() == "DELETE"
+        assert req.full_url.endswith(
+            "/merge_requests/7/discussions/disc-1/notes/55")
+        assert "group%2Fsub%2Fproject" in req.full_url

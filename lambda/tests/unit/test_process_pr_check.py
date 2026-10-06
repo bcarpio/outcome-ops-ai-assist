@@ -2480,3 +2480,601 @@ class TestGitLabCheckJob:
             repository="g/p", pr_number=7, connection_id="c",
             existing_row={}, comment_body="b",
         ) is None
+
+
+# ===========================================================================
+# Inline (line-level) review comment machinery (commit 24d1790)
+# ===========================================================================
+
+from types import SimpleNamespace  # noqa: E402
+from shared.pr_findings import Finding  # noqa: E402
+
+
+class TestFinding:
+    """shared.pr_findings.Finding contract (ADR-031/032)."""
+
+    def test_line_must_be_positive(self):
+        with pytest.raises(ValidationError):
+            Finding(path="a.py", line=0, message="m")
+        with pytest.raises(ValidationError):
+            Finding(path="a.py", line=-3, message="m")
+
+    def test_defaults_side_right_and_severity_warning(self):
+        f = Finding(path="a.py", line=1, message="m")
+        assert f.side == "RIGHT"
+        assert f.severity == "warning"
+        assert f.enclosing_symbol is None
+
+    def test_accepts_explicit_fields(self):
+        f = Finding(path="a.py", line=5, side="LEFT", severity="error",
+                    message="bad", enclosing_symbol="my_func")
+        assert f.side == "LEFT"
+        assert f.severity == "error"
+        assert f.enclosing_symbol == "my_func"
+
+
+class TestGithubReviewCommentHelpers:
+    """GitHub line-level (pulls) review-comment POST/PATCH/DELETE helpers."""
+
+    @patch('process_pr_check_handler.requests.post')
+    def test_post_pr_review_comment(self, mock_post):
+        resp = Mock()
+        resp.json.return_value = {"id": 42}
+        resp.raise_for_status = Mock()
+        mock_post.return_value = resp
+
+        out = handler_module.post_pr_review_comment(
+            "owner/repo", 7, "body text", "tok",
+            commit_id="sha1", path="src/a.py", line=12, side="RIGHT",
+        )
+        assert out == {"id": 42}
+        call = mock_post.call_args
+        assert call.args[0] == (
+            "https://api.github.com/repos/owner/repo/pulls/7/comments"
+        )
+        assert call.kwargs["json"] == {
+            "body": "body text", "commit_id": "sha1",
+            "path": "src/a.py", "line": 12, "side": "RIGHT",
+        }
+        assert call.kwargs["headers"]["Authorization"] == "Bearer tok"
+
+    @patch('process_pr_check_handler.requests.post')
+    def test_post_pr_review_comment_raises_on_error(self, mock_post):
+        resp = Mock()
+        resp.raise_for_status.side_effect = (
+            handler_module.requests.exceptions.HTTPError("422")
+        )
+        mock_post.return_value = resp
+        with pytest.raises(Exception, match="GitHub API error"):
+            handler_module.post_pr_review_comment(
+                "owner/repo", 7, "b", "tok",
+                commit_id="s", path="a.py", line=1,
+            )
+
+    @patch('process_pr_check_handler.requests.patch')
+    def test_patch_pr_review_comment(self, mock_patch_req):
+        resp = Mock()
+        resp.json.return_value = {"id": 42, "body": "new"}
+        resp.raise_for_status = Mock()
+        mock_patch_req.return_value = resp
+
+        out = handler_module.patch_pr_review_comment(
+            "owner/repo", 42, "new", "tok",
+        )
+        assert out["id"] == 42
+        call = mock_patch_req.call_args
+        # review comments live under /pulls/comments/{id}, NOT /issues/comments/{id}
+        assert call.args[0] == (
+            "https://api.github.com/repos/owner/repo/pulls/comments/42"
+        )
+        assert call.kwargs["json"] == {"body": "new"}
+
+    @patch('process_pr_check_handler.requests.patch')
+    def test_patch_pr_review_comment_raises_on_error(self, mock_patch_req):
+        resp = Mock()
+        resp.raise_for_status.side_effect = (
+            handler_module.requests.exceptions.HTTPError("404")
+        )
+        mock_patch_req.return_value = resp
+        with pytest.raises(Exception, match="GitHub API error"):
+            handler_module.patch_pr_review_comment("owner/repo", 42, "b", "tok")
+
+    @patch('process_pr_check_handler.requests.delete')
+    def test_delete_pr_review_comment(self, mock_delete):
+        resp = Mock()
+        resp.raise_for_status = Mock()
+        mock_delete.return_value = resp
+
+        out = handler_module.delete_pr_review_comment("owner/repo", 42, "tok")
+        assert out is None
+        call = mock_delete.call_args
+        assert call.args[0] == (
+            "https://api.github.com/repos/owner/repo/pulls/comments/42"
+        )
+
+    @patch('process_pr_check_handler.requests.delete')
+    def test_delete_pr_review_comment_raises_on_error(self, mock_delete):
+        resp = Mock()
+        resp.raise_for_status.side_effect = (
+            handler_module.requests.exceptions.HTTPError("404")
+        )
+        mock_delete.return_value = resp
+        with pytest.raises(Exception, match="GitHub API error"):
+            handler_module.delete_pr_review_comment("owner/repo", 42, "tok")
+
+
+class TestFormatInlineComment:
+    """_format_inline_comment renders one Finding; no aggregate counts."""
+
+    def test_error_glyph_and_message(self):
+        fd = Finding(path="a.py", line=5, severity="error", message="boom here")
+        body = handler_module._format_inline_comment("TEST COVERAGE", fd)
+        assert "❌" in body
+        assert "TEST COVERAGE" in body
+        assert "boom here" in body
+        # No enclosing symbol -> no "in `...`" clause.
+        assert "in `" not in body
+
+    def test_warning_glyph_default(self):
+        fd = Finding(path="a.py", line=5, message="watch out")
+        body = handler_module._format_inline_comment("BREAKING CHANGES", fd)
+        assert "⚠️" in body
+
+    def test_info_glyph(self):
+        fd = Finding(path="a.py", line=5, severity="info", message="fyi")
+        body = handler_module._format_inline_comment("X", fd)
+        assert "ℹ️" in body
+
+    def test_includes_enclosing_symbol_when_present(self):
+        fd = Finding(path="a.py", line=5, message="m", enclosing_symbol="do_thing")
+        body = handler_module._format_inline_comment("CHECK", fd)
+        assert "in `do_thing`" in body
+
+    def test_no_aggregate_count(self):
+        # ADR-031/032: one concrete finding, no "N issues found" rollup.
+        fd = Finding(path="a.py", line=5, message="a single concrete problem")
+        body = handler_module._format_inline_comment("CHECK", fd)
+        assert body.count("a single concrete problem") == 1
+        lowered = body.lower()
+        assert "issues found" not in lowered
+        assert "findings" not in lowered
+
+
+class _InlineJobMixin:
+    def _github_job(self):
+        return CheckJob(
+            checkType="TEST_COVERAGE",
+            pr_number=7,
+            repository="owner/repo",
+            changedFiles=["src/x.py"],
+        )
+
+
+class TestSyncInlineFindings(_InlineJobMixin):
+    """_sync_inline_findings: upsert + stale-resolution per (path, line)."""
+
+    def _patches(self):
+        """Patch all provider-facing leaf helpers + the provider context."""
+        return {
+            "_inline_provider_context": patch(
+                "process_pr_check_handler._inline_provider_context",
+                return_value={"token": "t", "head_sha": "h"}),
+            "_post_inline": patch("process_pr_check_handler._post_inline"),
+            "_patch_inline": patch("process_pr_check_handler._patch_inline"),
+            "_delete_inline": patch("process_pr_check_handler._delete_inline"),
+        }
+
+    def test_new_finding_posts_and_stores_row(self):
+        job = self._github_job()
+        findings = [{"path": "src/x.py", "line": 10, "message": "bad"}]
+        with patch("process_pr_check_handler._query_inline_rows", return_value={}), \
+             patch("process_pr_check_handler._inline_provider_context",
+                   return_value={"token": "t", "head_sha": "h"}), \
+             patch("process_pr_check_handler._post_inline",
+                   return_value={"providerCommentId": 55}) as mock_post, \
+             patch("process_pr_check_handler._patch_inline") as mock_patch, \
+             patch("process_pr_check_handler.dual_write.ddb_put_item") as mock_put:
+            handler_module._sync_inline_findings(job, findings)
+
+        mock_post.assert_called_once()
+        mock_patch.assert_not_called()
+        # INLINE#{check}#{path}#{line} row stored via dual_write.
+        item = mock_put.call_args.args[1]
+        assert item["SK"] == "INLINE#test_coverage#src/x.py#10"
+        assert item["PK"] == "PR#github#owner/repo#7"
+        assert item["path"] == "src/x.py"
+        assert item["line"] == 10
+        assert item["providerCommentId"] == 55
+
+    def test_existing_matching_row_patches_not_posts(self):
+        job = self._github_job()
+        sk = "INLINE#test_coverage#src/x.py#10"
+        existing = {sk: {"PK": "PR#github#owner/repo#7", "SK": sk,
+                         "path": "src/x.py", "line": 10, "providerCommentId": 55}}
+        findings = [{"path": "src/x.py", "line": 10, "message": "still bad"}]
+        with patch("process_pr_check_handler._query_inline_rows", return_value=existing), \
+             patch("process_pr_check_handler._inline_provider_context",
+                   return_value={"token": "t", "head_sha": "h"}), \
+             patch("process_pr_check_handler._post_inline") as mock_post, \
+             patch("process_pr_check_handler._patch_inline") as mock_patch, \
+             patch("process_pr_check_handler.dual_write.ddb_put_item") as mock_put:
+            handler_module._sync_inline_findings(job, findings)
+
+        mock_patch.assert_called_once()
+        mock_post.assert_not_called()
+        mock_put.assert_not_called()  # no new row on a patch
+
+    def test_stale_row_deleted_when_not_in_findings(self):
+        job = self._github_job()
+        sk = "INLINE#test_coverage#src/old.py#3"
+        existing = {sk: {"PK": "PR#github#owner/repo#7", "SK": sk,
+                         "path": "src/old.py", "line": 3, "providerCommentId": 99}}
+        with patch("process_pr_check_handler._query_inline_rows", return_value=existing), \
+             patch("process_pr_check_handler._inline_provider_context",
+                   return_value={"token": "t", "head_sha": "h"}), \
+             patch("process_pr_check_handler._delete_inline") as mock_del, \
+             patch("process_pr_check_handler.dynamodb") as mock_ddb:
+            mock_table = Mock()
+            mock_ddb.Table.return_value = mock_table
+            handler_module._sync_inline_findings(job, [])  # no current findings
+
+        mock_del.assert_called_once()
+        # Bookkeeping row removed too.
+        mock_table.delete_item.assert_called_once_with(
+            Key={"PK": "PR#github#owner/repo#7", "SK": sk})
+
+    def test_malformed_finding_is_skipped(self):
+        job = self._github_job()
+        # line=0 fails the Finding validator; message missing on the second.
+        findings = [{"path": "a.py", "line": 0, "message": "m"},
+                    {"path": "b.py", "line": 2}]
+        with patch("process_pr_check_handler._query_inline_rows", return_value={}), \
+             patch("process_pr_check_handler._inline_provider_context") as mock_ctx, \
+             patch("process_pr_check_handler._post_inline") as mock_post, \
+             patch("process_pr_check_handler.dual_write.ddb_put_item"):
+            # Both findings malformed -> desired empty, existing empty -> early return.
+            handler_module._sync_inline_findings(job, findings)
+        mock_ctx.assert_not_called()
+        mock_post.assert_not_called()
+
+    def test_empty_findings_and_no_rows_short_circuits(self):
+        job = self._github_job()
+        with patch("process_pr_check_handler._query_inline_rows", return_value={}), \
+             patch("process_pr_check_handler._inline_provider_context") as mock_ctx, \
+             patch("process_pr_check_handler._post_inline") as mock_post, \
+             patch("process_pr_check_handler._patch_inline") as mock_patch, \
+             patch("process_pr_check_handler._delete_inline") as mock_del:
+            handler_module._sync_inline_findings(job, [])
+        mock_ctx.assert_not_called()
+        mock_post.assert_not_called()
+        mock_patch.assert_not_called()
+        mock_del.assert_not_called()
+
+    def test_provider_post_exception_is_swallowed(self):
+        job = self._github_job()
+        findings = [{"path": "src/x.py", "line": 10, "message": "bad"}]
+        with patch("process_pr_check_handler._query_inline_rows", return_value={}), \
+             patch("process_pr_check_handler._inline_provider_context",
+                   return_value={"token": "t", "head_sha": "h"}), \
+             patch("process_pr_check_handler._post_inline",
+                   side_effect=RuntimeError("provider 500")), \
+             patch("process_pr_check_handler._store_inline_row") as mock_store:
+            # Must not raise -- inline sync is best-effort/non-fatal.
+            handler_module._sync_inline_findings(job, findings)
+        # Store never reached because POST raised first.
+        mock_store.assert_not_called()
+
+
+class TestComputeAnchors:
+    """_compute_anchors threads the right provider args; any failure -> {}."""
+
+    def _job(self, provider, **extra):
+        kwargs = dict(
+            checkType="TEST_COVERAGE",
+            pr_number=7,
+            repository="owner/repo",
+            changedFiles=["f.py"],
+            provider=provider,
+        )
+        kwargs.update(extra)
+        return CheckJob(**kwargs)
+
+    def test_github(self):
+        job = self._job("github")
+        with patch("process_pr_check_handler.get_github_token", return_value="ghp"), \
+             patch("shared.pr_metadata.fetch_pr_metadata",
+                   return_value=SimpleNamespace(base_sha="b", head_sha="h")) as mock_meta, \
+             patch("shared.pr_diff.first_added_lines",
+                   return_value={"f.py": 3}) as mock_fal:
+            out = handler_module._compute_anchors(job)
+        assert out == {"f.py": 3}
+        mock_meta.assert_called_once_with(
+            "github", 7, repository="owner/repo", github_token="ghp")
+        mock_fal.assert_called_once_with(
+            "github", "owner/repo", "b", "h", ["f.py"], github_token="ghp")
+
+    def test_gitlab(self):
+        job = self._job("gitlab", repository="group/sub/proj", connection_id="c1")
+        with patch("check_handlers.gitlab_context.get_gitlab_token",
+                   return_value="glpat"), \
+             patch("check_handlers.gitlab_context.get_gitlab_base_url",
+                   return_value="https://gl.example"), \
+             patch("shared.pr_metadata.fetch_pr_metadata",
+                   return_value=SimpleNamespace(base_sha="b", head_sha="h")) as mock_meta, \
+             patch("shared.pr_diff.first_added_lines",
+                   return_value={"f.py": 2}) as mock_fal:
+            out = handler_module._compute_anchors(job)
+        assert out == {"f.py": 2}
+        mock_meta.assert_called_once_with(
+            "gitlab", 7, gitlab_project_path="group/sub/proj",
+            gitlab_access_token="glpat", gitlab_base_url="https://gl.example")
+        mock_fal.assert_called_once_with(
+            "gitlab", "group/sub/proj", "b", "h", ["f.py"],
+            gitlab_access_token="glpat", gitlab_base_url="https://gl.example")
+
+    def test_azure_devops(self):
+        job = self._job(
+            "azure_devops", repository="example-repo", connection_id="c1",
+            org="example-org", project="example-project", repo="example-repo")
+        with patch("process_pr_check_handler._ado_refresh_access_token",
+                   return_value="adotok"), \
+             patch("process_pr_check_handler._get_ado_client_secret",
+                   return_value="secret"), \
+             patch("shared.pr_metadata.fetch_pr_metadata",
+                   return_value=SimpleNamespace(base_sha="b", head_sha="h")) as mock_meta, \
+             patch("shared.pr_diff.first_added_lines",
+                   return_value={"f.py": 9}) as mock_fal:
+            out = handler_module._compute_anchors(job)
+        assert out == {"f.py": 9}
+        mock_meta.assert_called_once_with(
+            "azure_devops", 7, ado_org="example-org",
+            ado_project="example-project", ado_repo="example-repo",
+            ado_access_token="adotok")
+        mock_fal.assert_called_once_with(
+            "azure_devops", "example-repo", "b", "h", ["f.py"],
+            ado_org="example-org", ado_project="example-project",
+            ado_repo="example-repo", ado_access_token="adotok")
+
+    def test_any_exception_returns_empty_dict(self):
+        job = self._job("github")
+        with patch("process_pr_check_handler.get_github_token",
+                   side_effect=RuntimeError("SSM down")):
+            out = handler_module._compute_anchors(job)
+        assert out == {}
+
+
+def _github_job():
+    return CheckJob(checkType="TEST_COVERAGE", pr_number=7,
+                    repository="owner/repo", changedFiles=["src/x.py"])
+
+
+def _gitlab_job():
+    return CheckJob(checkType="TEST_COVERAGE", pr_number=7,
+                    repository="group/sub/proj", changedFiles=["src/x.py"],
+                    provider="gitlab", connection_id="c1")
+
+
+def _ado_job():
+    return CheckJob(checkType="TEST_COVERAGE", pr_number=7,
+                    repository="example-repo", changedFiles=["src/x.py"],
+                    provider="azure_devops", connection_id="c1",
+                    org="example-org", project="example-project", repo="example-repo")
+
+
+class TestGithubPrHeadSha:
+    @patch('process_pr_check_handler.requests.get')
+    def test_returns_head_sha(self, mock_get):
+        resp = Mock()
+        resp.json.return_value = {"head": {"sha": "abc123"}}
+        resp.raise_for_status = Mock()
+        mock_get.return_value = resp
+        out = handler_module._github_pr_head_sha("owner/repo", 7, "tok")
+        assert out == "abc123"
+        assert mock_get.call_args.args[0] == (
+            "https://api.github.com/repos/owner/repo/pulls/7"
+        )
+
+
+class TestQueryInlineRows:
+    @patch('process_pr_check_handler.dynamodb')
+    def test_paginates_and_keys_by_sk(self, mock_ddb):
+        table = Mock()
+        mock_ddb.Table.return_value = table
+        table.query.side_effect = [
+            {"Items": [{"SK": "INLINE#tc#a.py#1", "path": "a.py", "line": 1}],
+             "LastEvaluatedKey": {"PK": "p", "SK": "INLINE#tc#a.py#1"}},
+            {"Items": [{"SK": "INLINE#tc#b.py#2", "path": "b.py", "line": 2}]},
+        ]
+        rows = handler_module._query_inline_rows(
+            "PR#github#owner/repo#7", "INLINE#tc#")
+        assert set(rows.keys()) == {"INLINE#tc#a.py#1", "INLINE#tc#b.py#2"}
+        assert table.query.call_count == 2
+
+
+class TestInlineProviderContext:
+    def test_github(self):
+        job = _github_job()
+        with patch("process_pr_check_handler.get_github_token", return_value="t"), \
+             patch("process_pr_check_handler._github_pr_head_sha", return_value="h"):
+            ctx = handler_module._inline_provider_context(job)
+        assert ctx == {"token": "t", "head_sha": "h"}
+
+    def test_gitlab(self):
+        job = _gitlab_job()
+        with patch("check_handlers.gitlab_context.get_gitlab_token",
+                   return_value="glpat"), \
+             patch("check_handlers.gitlab_context.get_gitlab_base_url",
+                   return_value="https://gl.example"), \
+             patch("shared.gitlab_api.get_merge_request",
+                   return_value={"diff_refs": {"base_sha": "b", "start_sha": "s",
+                                               "head_sha": "h"}}):
+            ctx = handler_module._inline_provider_context(job)
+        assert ctx["token"] == "glpat"
+        assert ctx["base_url"] == "https://gl.example"
+        assert ctx["diff_refs"] == {"base_sha": "b", "start_sha": "s", "head_sha": "h"}
+
+    def test_azure_devops(self):
+        job = _ado_job()
+        with patch("process_pr_check_handler._ado_refresh_access_token",
+                   return_value="adotok"), \
+             patch("process_pr_check_handler._get_ado_client_secret",
+                   return_value="secret"):
+            ctx = handler_module._inline_provider_context(job)
+        assert ctx == {"access_token": "adotok", "org": "example-org",
+                       "project": "example-project", "repo": "example-repo"}
+
+    def test_azure_devops_no_token_raises(self):
+        job = _ado_job()
+        with patch("process_pr_check_handler._ado_refresh_access_token",
+                   return_value=None), \
+             patch("process_pr_check_handler._get_ado_client_secret",
+                   return_value="secret"):
+            with pytest.raises(RuntimeError, match="reconnect_required"):
+                handler_module._inline_provider_context(job)
+
+
+class TestPostInline:
+    def test_github(self):
+        job = _github_job()
+        fd = Finding(path="src/x.py", line=12, message="m")
+        ctx = {"token": "t", "head_sha": "h"}
+        with patch("process_pr_check_handler.post_pr_review_comment",
+                   return_value={"id": 55}) as mock_post:
+            ids = handler_module._post_inline(job, ctx, "body", fd)
+        assert ids == {"providerCommentId": 55}
+        assert mock_post.call_args.kwargs == {
+            "commit_id": "h", "path": "src/x.py", "line": 12, "side": "RIGHT"}
+
+    def test_gitlab_right_side_uses_new_line(self):
+        job = _gitlab_job()
+        fd = Finding(path="src/x.py", line=12, message="m")  # RIGHT default
+        ctx = {"token": "glpat", "base_url": "https://gl.example",
+               "diff_refs": {"base_sha": "b", "start_sha": "s", "head_sha": "h"}}
+        with patch("shared.gitlab_api.post_merge_request_discussion",
+                   return_value={"id": "disc-1", "notes": [{"id": 7}]}) as mock_post:
+            ids = handler_module._post_inline(job, ctx, "body", fd)
+        assert ids == {"providerDiscussionId": "disc-1", "providerCommentId": 7}
+        position = mock_post.call_args.args[4]
+        assert position["new_line"] == 12
+        assert position["new_path"] == "src/x.py"
+        assert "old_line" not in position
+
+    def test_gitlab_left_side_uses_old_line(self):
+        job = _gitlab_job()
+        fd = Finding(path="src/x.py", line=4, side="LEFT", message="m")
+        ctx = {"token": "glpat", "base_url": "https://gl.example",
+               "diff_refs": {"base_sha": "b", "start_sha": "s", "head_sha": "h"}}
+        with patch("shared.gitlab_api.post_merge_request_discussion",
+                   return_value={"id": "disc-1", "notes": []}) as mock_post:
+            ids = handler_module._post_inline(job, ctx, "body", fd)
+        # notes empty -> providerCommentId None
+        assert ids == {"providerDiscussionId": "disc-1", "providerCommentId": None}
+        position = mock_post.call_args.args[4]
+        assert position["old_line"] == 4
+        assert position["old_path"] == "src/x.py"
+        assert "new_line" not in position
+
+    def test_azure_devops(self):
+        job = _ado_job()
+        fd = Finding(path="src/x.py", line=9, message="m")
+        ctx = {"access_token": "adotok", "org": "example-org",
+               "project": "example-project", "repo": "example-repo"}
+        with patch("shared.azure_devops_api.post_pull_request_inline_thread",
+                   return_value={"id": 99, "comments": [{"id": 1}]}) as mock_post:
+            ids = handler_module._post_inline(job, ctx, "body", fd)
+        assert ids == {"providerThreadId": 99, "providerThreadCommentId": 1}
+        assert mock_post.call_args.kwargs == {"file_path": "src/x.py", "line": 9}
+
+
+class TestPatchInline:
+    def test_github(self):
+        job = _github_job()
+        ctx = {"token": "t", "head_sha": "h"}
+        row = {"providerCommentId": 55}
+        with patch("process_pr_check_handler.patch_pr_review_comment") as mock_patch:
+            handler_module._patch_inline(job, ctx, "body", row)
+        mock_patch.assert_called_once_with("owner/repo", 55, "body", "t")
+
+    def test_gitlab(self):
+        job = _gitlab_job()
+        ctx = {"token": "glpat", "base_url": "https://gl.example"}
+        row = {"providerDiscussionId": "disc-1", "providerCommentId": 7}
+        with patch("shared.gitlab_api.update_merge_request_discussion_note") as mock_u:
+            handler_module._patch_inline(job, ctx, "body", row)
+        mock_u.assert_called_once()
+        assert mock_u.call_args.args[3] == "disc-1"  # discussion_id
+        assert mock_u.call_args.args[4] == 7  # note_id
+
+    def test_azure_devops(self):
+        job = _ado_job()
+        ctx = {"access_token": "adotok", "org": "example-org",
+               "project": "example-project", "repo": "example-repo"}
+        row = {"providerThreadId": 99, "providerThreadCommentId": 1}
+        with patch("shared.azure_devops_api.update_pull_request_thread_comment") as mock_u:
+            handler_module._patch_inline(job, ctx, "body", row)
+        mock_u.assert_called_once()
+
+
+class TestDeleteInline:
+    def test_github(self):
+        job = _github_job()
+        ctx = {"token": "t"}
+        row = {"providerCommentId": 55}
+        with patch("process_pr_check_handler.delete_pr_review_comment") as mock_del:
+            handler_module._delete_inline(job, ctx, row)
+        mock_del.assert_called_once_with("owner/repo", 55, "t")
+
+    def test_gitlab(self):
+        job = _gitlab_job()
+        ctx = {"token": "glpat", "base_url": "https://gl.example"}
+        row = {"providerDiscussionId": "disc-1", "providerCommentId": 7}
+        with patch("shared.gitlab_api.delete_merge_request_discussion_note") as mock_del:
+            handler_module._delete_inline(job, ctx, row)
+        mock_del.assert_called_once()
+
+    def test_azure_devops(self):
+        job = _ado_job()
+        ctx = {"access_token": "adotok", "org": "example-org",
+               "project": "example-project", "repo": "example-repo"}
+        row = {"providerThreadId": 99, "providerThreadCommentId": 1}
+        with patch("shared.azure_devops_api.delete_pull_request_thread_comment") as mock_del:
+            handler_module._delete_inline(job, ctx, row)
+        mock_del.assert_called_once()
+
+
+class TestSyncInlineFindingsExtraBranches(_InlineJobMixin):
+    """Remaining defensive branches in _sync_inline_findings."""
+
+    def test_existing_row_with_unparseable_line_is_skipped(self):
+        job = self._github_job()
+        existing = {"INLINE#test_coverage#bad.py#x": {
+            "path": "bad.py", "line": "not-an-int"}}
+        findings = [{"path": "src/x.py", "line": 10, "message": "m"}]
+        with patch("process_pr_check_handler._query_inline_rows", return_value=existing), \
+             patch("process_pr_check_handler._inline_provider_context",
+                   return_value={"token": "t", "head_sha": "h"}), \
+             patch("process_pr_check_handler._post_inline",
+                   return_value={"providerCommentId": 1}), \
+             patch("process_pr_check_handler._delete_inline") as mock_del, \
+             patch("process_pr_check_handler.dual_write.ddb_put_item"):
+            handler_module._sync_inline_findings(job, findings)
+        # The malformed existing row is dropped from existing_by_key, so it is
+        # NOT treated as a stale row to resolve.
+        mock_del.assert_not_called()
+
+    def test_stale_resolve_failures_are_swallowed(self):
+        job = self._github_job()
+        sk = "INLINE#test_coverage#old.py#3"
+        existing = {sk: {"PK": "PR#github#owner/repo#7", "SK": sk,
+                         "path": "old.py", "line": 3}}
+        with patch("process_pr_check_handler._query_inline_rows", return_value=existing), \
+             patch("process_pr_check_handler._inline_provider_context",
+                   return_value={"token": "t", "head_sha": "h"}), \
+             patch("process_pr_check_handler._delete_inline",
+                   side_effect=RuntimeError("provider down")), \
+             patch("process_pr_check_handler.dynamodb") as mock_ddb:
+            table = Mock()
+            table.delete_item.side_effect = RuntimeError("ddb down")
+            mock_ddb.Table.return_value = table
+            # Both the provider delete AND the row delete raise -> both swallowed.
+            handler_module._sync_inline_findings(job, [])

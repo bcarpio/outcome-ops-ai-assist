@@ -654,3 +654,98 @@ class TestApiVersionPinning:
             "tok", "example-org", "example-project", "example-repo", 1, "x",
         )
         assert "api-version=7.0" in mock_urlopen.call_args.args[0].full_url
+
+
+# ---------------------------------------------------------------------------
+# Inline (line-anchored) PR thread -- the inline-review machinery
+# ---------------------------------------------------------------------------
+
+
+class TestPostPullRequestInlineThread:
+
+    @patch("azdo_int_api.urllib.request.urlopen")
+    def test_sets_right_file_start_end_at_line(self, mock_urlopen):
+        mock_urlopen.return_value = _resp({"id": 99, "comments": [{"id": 1}]})
+        api.post_pull_request_inline_thread(
+            "tok", "example-org", "example-project", "example-repo",
+            42, "the finding", file_path="/src/foo.py", line=17,
+        )
+        req = mock_urlopen.call_args.args[0]
+        payload = json.loads(req.data.decode("utf-8"))
+        tc = payload["threadContext"]
+        assert tc["rightFileStart"] == {"line": 17, "offset": 1}
+        assert tc["rightFileEnd"] == {"line": 17, "offset": 1}
+        assert payload["comments"] == [{"content": "the finding", "commentType": 1}]
+        assert payload["status"] == 1
+
+    @patch("azdo_int_api.urllib.request.urlopen")
+    def test_normalizes_file_path_to_leading_slash(self, mock_urlopen):
+        mock_urlopen.return_value = _resp({"id": 99})
+        api.post_pull_request_inline_thread(
+            "tok", "org", "proj", "repo",
+            42, "x", file_path="src/no_leading_slash.py", line=3,
+        )
+        req = mock_urlopen.call_args.args[0]
+        payload = json.loads(req.data.decode("utf-8"))
+        assert payload["threadContext"]["filePath"] == "/src/no_leading_slash.py"
+
+    @patch("azdo_int_api.urllib.request.urlopen")
+    def test_preserves_already_absolute_file_path(self, mock_urlopen):
+        mock_urlopen.return_value = _resp({"id": 99})
+        api.post_pull_request_inline_thread(
+            "tok", "org", "proj", "repo",
+            42, "x", file_path="/already/abs.py", line=3,
+        )
+        req = mock_urlopen.call_args.args[0]
+        payload = json.loads(req.data.decode("utf-8"))
+        assert payload["threadContext"]["filePath"] == "/already/abs.py"
+
+    @patch("azdo_int_api.urllib.request.urlopen")
+    def test_posts_to_threads_endpoint(self, mock_urlopen):
+        mock_urlopen.return_value = _resp({"id": 99})
+        api.post_pull_request_inline_thread(
+            "tok", "example-org", "example-project", "example-repo",
+            42, "x", file_path="a.py", line=1,
+        )
+        req = mock_urlopen.call_args.args[0]
+        assert "/pullRequests/42/threads" in req.full_url
+        assert "api-version=7.0" in req.full_url
+        assert req.get_method() == "POST"
+
+    @patch("azdo_int_api.urllib.request.urlopen")
+    def test_returns_body(self, mock_urlopen):
+        mock_urlopen.return_value = _resp({"id": 99, "comments": [{"id": 7}]})
+        out = api.post_pull_request_inline_thread(
+            "tok", "org", "proj", "repo", 42, "x", file_path="a.py", line=1,
+        )
+        assert out["id"] == 99
+        assert out["comments"][0]["id"] == 7
+
+
+class TestDeletePullRequestThreadComment:
+
+    @patch("azdo_int_api.urllib.request.urlopen")
+    def test_issues_delete_to_comment_endpoint(self, mock_urlopen):
+        # 204 No Content -- _request tolerates the empty body.
+        mock_urlopen.return_value = _resp()  # empty body
+        out = api.delete_pull_request_thread_comment(
+            "tok", "example-org", "example-project", "example-repo",
+            pull_request_id=42, thread_id=5, comment_id=9,
+        )
+        assert out is None
+        req = mock_urlopen.call_args.args[0]
+        assert req.get_method() == "DELETE"
+        assert (
+            "repositories/example-repo/pullRequests/42/threads/5/comments/9"
+            in req.full_url
+        )
+        assert "api-version=7.0" in req.full_url
+
+    @patch("azdo_int_api.urllib.request.urlopen")
+    def test_404_maps_to_not_found(self, mock_urlopen):
+        mock_urlopen.side_effect = _http_error(404)
+        with pytest.raises(api.AzureDevOpsNotFoundError):
+            api.delete_pull_request_thread_comment(
+                "tok", "org", "proj", "repo",
+                pull_request_id=1, thread_id=1, comment_id=1,
+            )
