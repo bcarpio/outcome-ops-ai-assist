@@ -1320,9 +1320,10 @@ variable "ci_invoker_role_arns" {
     principal, so the CI role's own (typically read-only) identity policy is
     left unchanged.
 
-    The roles themselves are CUSTOMER-MANAGED infrastructure (e.g. a GitHub
-    Actions OIDC role provisioned via AFT global customizations); this stack
-    does NOT create them. Empty (the default) grants no external invoke
+    The roles themselves are CUSTOMER-MANAGED infrastructure (however you
+    provision CI identities -- a central hub/spoke, a single-account OIDC role,
+    etc.); this stack does NOT create them and needs no knowledge of how they
+    were built. Empty (the default) grants no external invoke
     principals -- PR analysis is not CI-triggerable until the customer opts in
     by listing their CI role ARN(s). Example:
       ci_invoker_role_arns = ["arn:aws:iam::123456789012:role/github-actions-role"]
@@ -1331,9 +1332,9 @@ variable "ci_invoker_role_arns" {
 }
 
 # ----------------------------------------------------------------------------
-# Optional self-contained GitHub Actions OIDC role (non-AFT customers)
-# See ci_oidc_role.tf and ADR-053. AFT customers leave all of these off and use
-# the hub/spoke identity (and, if needed, ci_invoker_role_arns) instead.
+# Optional self-contained GitHub Actions OIDC role (option 2 in ADR-053)
+# See ci_oidc_role.tf. Leave all of these off if you instead point OutcomeOps at
+# an existing CI role via ci_invoker_role_arns.
 # ----------------------------------------------------------------------------
 
 variable "ci_oidc_role_enabled" {
@@ -1341,10 +1342,10 @@ variable "ci_oidc_role_enabled" {
   description = <<-EOT
     Create a GitHub-Actions-OIDC-assumable IAM role IN THIS (the OutcomeOps
     deployment) account that can invoke the PR Lambdas (analyze-pr,
-    handle-command). This is the self-contained fallback for customers who do
-    NOT have a SharedServices/AFT hub-spoke CI identity: GitHub Actions assumes
-    this role directly via OIDC, no cross-account hop. AFT customers leave this
-    false (their cross-account spoke role carries the invoke permission).
+    handle-command). This is the self-contained option for customers with no
+    existing CI role to point OutcomeOps at: GitHub Actions assumes this role
+    directly via OIDC. Leave this false if you instead grant an existing role
+    via ci_invoker_role_arns.
   EOT
   default     = false
 }

@@ -302,28 +302,25 @@ account, so an internet-facing webhook endpoint would be unwanted inbound attack
 surface, and GitHub Enterprise Server runners often cannot reach one; your CI
 already holds a scoped identity, so it calls the Lambda directly.
 
-See ADR-053 for the full rationale. Pick ONE identity setup:
+See ADR-053 for the rationale. OutcomeOps is identity-agnostic -- it does not know
+or care how you provision CI identities. Two options:
 
-**A. Hub/spoke via AFT (recommended for Control Tower / multi-account).** A GitHub
-Actions OIDC role in your Shared Services account assumes a per-account
-`outcomeops-ci` spoke role (global customization) that holds `terraform plan` read
-plus `lambda:InvokeFunction` on the PR Lambdas. The spoke role is in the same
-account as the Lambdas, so its own identity policy authorizes the invoke -- **this
-stack needs no extra config.** (Mirrors your monitoring/prowler hub-spoke roles.)
-
-**B. Bring your own principal.** If your CI identity already exists and you'd
-rather authorize it on the function side, list its ARN in `prd.tfvars`:
+**1. Bring your own CI role.** You already have (or centrally provision) a role your
+CI assumes. Give OutcomeOps its ARN; it grants that role invoke on its own
+functions (a resource-policy grant) -- your role is untouched and stays generic:
 
 ```hcl
 ci_invoker_role_arns = ["arn:aws:iam::<ACCOUNT_ID>:role/<your-ci-role>"]
 ```
 
-This adds it to the `analyze-pr` + `handle-command` resource policies (an IAM-only
-apply; two statements per listed role). Accepts any principal -- a cross-account
-spoke role, a single-account OIDC role, a CI instance role, etc.
+Accepts any principal, however provisioned -- a cross-account role from your own
+hub/spoke CI setup, a single-account OIDC role, a CI instance role. OutcomeOps
+needs no knowledge of that setup. IAM-only apply (one statement per role on
+`analyze-pr` + `handle-command`).
 
-**C. Self-contained OIDC role (no Shared Services / AFT).** Have this stack create
-a GitHub-OIDC-assumable, invoke-only role in the deployment account:
+**2. Let OutcomeOps create the role.** No CI role to point at? Have this stack build
+a GitHub-OIDC-assumable, invoke-only role in the deployment account, for OutcomeOps
+only:
 
 ```hcl
 ci_oidc_role_enabled    = true

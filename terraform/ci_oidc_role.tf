@@ -1,18 +1,18 @@
 # ============================================================================
 # Optional: GitHub Actions OIDC role for CI-triggered PR analysis
 #
-# Self-contained fallback for customers WITHOUT a SharedServices / AFT hub-spoke
-# CI identity (see docs/getting-started.md "Trigger PR analysis" and ADR-053).
+# Self-contained option for customers with no existing CI role to point
+# OutcomeOps at (see docs/getting-started.md "Trigger PR analysis" and ADR-053).
 # When enabled, creates an IAM role in THIS (the OutcomeOps deployment) account
 # that GitHub Actions can assume directly via OIDC -- scoped to the customer's
 # org/repo via the `sub` claim -- with permission to invoke ONLY the PR Lambdas
 # (analyze-pr, handle-command). Put the role's ARN (output ci_oidc_role_arn) in
 # each repo's AWS_OIDC_ROLE_ARN secret; see .github/workflows/pr-analysis.yml.
 #
-# AFT customers leave ci_oidc_role_enabled=false: their CI assumes a
-# cross-account spoke role whose own identity policy grants invoke, so this
-# role would be redundant. PR analysis is triggered by CI invoking the Lambda
-# directly (OIDC), never a public webhook -- see ADR-053 for why.
+# Leave ci_oidc_role_enabled=false and use ci_invoker_role_arns instead if you
+# already have a CI role to grant. OutcomeOps is identity-agnostic -- how you
+# provision CI roles is out of scope here. PR analysis is triggered by CI
+# invoking the Lambda directly (OIDC), never a public webhook; see ADR-053.
 # ============================================================================
 
 locals {

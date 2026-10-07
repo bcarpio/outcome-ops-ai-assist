@@ -35,50 +35,33 @@ applies to `handle-command` (PR slash-commands).
   `pr-commands.yml` does the same for `handle-command` on `issue_comment`. The
   `/webhooks/github` API Gateway route is unrelated -- it serves only the GitHub
   Issues -> codegen path and subscribes `issues`, not `pull_request`.
-- **Recommended identity model: hub/spoke (AFT).** A GitHub Actions OIDC role in
-  the customer's Shared Services account (account customization) is allowed to
-  `sts:AssumeRole` on an account-agnostic `*:role/outcomeops-ci`; a per-account
-  `outcomeops-ci` spoke role (global customization) trusts that hub role and
-  carries `terraform plan` read plus `lambda:InvokeFunction` on the PR Lambdas.
-  Because the spoke role lives in the same account as the Lambda, its own
-  identity policy authorizes the invoke -- **the product stack needs to create
-  nothing.** (Mirrors the existing monitoring/prowler hub-spoke customizations.)
-- **Configurability for customers without that pattern.** The product stack
-  offers two opt-in hooks, both off by default:
+- **Identity-agnostic product.** OutcomeOps does not provision, name, or know how
+  the customer runs CI. It exposes two off-by-default hooks and nothing more:
   - `ci_invoker_role_arns` -- a resource-policy allow-list on `analyze-pr` and
-    `handle-command`. Accepts *any* principal ARN (a cross-account spoke role, a
-    single-account OIDC role, a Jenkins instance role, GitLab CI, ...). The CI
-    role's own identity policy stays untouched.
+    `handle-command`. The customer names any CI principal ARN (however
+    provisioned -- a central hub/spoke CI role, a single-account OIDC role, a
+    Jenkins instance role, GitLab CI, ...) and the product grants it invoke on
+    its own functions. The named role is never modified and carries no knowledge
+    of OutcomeOps.
   - `ci_oidc_role_enabled` (+ `ci_oidc_github_subjects`, `ci_oidc_create_provider`
-    / `ci_oidc_provider_arn`) -- creates a GitHub-OIDC-assumable, invoke-only role
-    *in the deployment account* so a customer with no Shared Services / AFT can
-    onboard without hand-rolling IAM.
-- **The product never creates the CI identity for an AFT customer.** Those roles
-  are customer-managed infrastructure; the stack only grants invoke (resource
-  policy) or, when explicitly enabled, provisions the standalone fallback role.
+    / `ci_oidc_provider_arn`) -- for a customer with no CI role to point at, the
+    product creates a GitHub-OIDC-assumable, invoke-only role in its own
+    deployment account.
+- **The grant lives on the product's side, never the customer's role.** Invoke is
+  authorized by a resource policy on the OutcomeOps functions (or on the role the
+  product itself creates). The product never writes OutcomeOps Lambda ARNs into a
+  customer-managed role. How the customer provisions CI identities (AFT hub/spoke
+  or otherwise) is their own infrastructure concern and stays out of this repo.
 
 ### Example Implementation
 
 ```hcl
-# Spoke role (customer's AFT global customization), same-account invoke:
-resource "aws_iam_role_policy" "outcomeops_ci_invoke" {
-  role = aws_iam_role.outcomeops_ci.id
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect   = "Allow"
-      Action   = "lambda:InvokeFunction"
-      Resource = [
-        "arn:aws:lambda:*:${local.account_id}:function:*-analyze-pr",
-        "arn:aws:lambda:*:${local.account_id}:function:*-handle-command",
-      ]
-    }]
-  })
-}
+# terraform.tfvars -- point OutcomeOps at an existing CI role (option 1):
+ci_invoker_role_arns = ["arn:aws:iam::<ACCOUNT_ID>:role/<your-ci-role>"]
 
-# OR, product-side allow-list for a bring-your-own principal:
-# terraform.tfvars
-ci_invoker_role_arns = ["arn:aws:iam::<ACCOUNT_ID>:role/outcomeops-ci"]
+# OR have OutcomeOps create its own OIDC role (option 2):
+ci_oidc_role_enabled    = true
+ci_oidc_github_subjects = ["repo:<org>/<repo>:pull_request"]
 ```
 
 ## Consequences
@@ -91,8 +74,9 @@ ci_invoker_role_arns = ["arn:aws:iam::<ACCOUNT_ID>:role/outcomeops-ci"]
   webhook could never be delivered.
 - Least privilege and auditable: the invoker is a named IAM role scoped to
   invoking exactly two functions; every trigger is an AWS API call in CloudTrail.
-- Topology-agnostic: the same product supports AFT hub/spoke, single-account
-  OIDC, or any other CI identity without code changes.
+- Topology-agnostic: the same product supports a hub/spoke CI identity, a
+  single-account OIDC role, or any other CI identity without code changes, and
+  without the customer's CI design touching this repo.
 
 ### Tradeoffs
 
@@ -109,9 +93,9 @@ ci_invoker_role_arns = ["arn:aws:iam::<ACCOUNT_ID>:role/outcomeops-ci"]
 
 1. Add `.github/workflows/pr-analysis.yml` to each repo to analyze; set its
    `AWS_OIDC_ROLE_ARN` secret.
-2. Grant invoke by ONE of: the spoke role's identity policy (AFT),
-   `ci_invoker_role_arns` (allow-list), or `ci_oidc_role_enabled` (fallback role).
-3. Full `terraform apply` (IAM-only when using the product-side hooks).
+2. Grant invoke by ONE of: `ci_invoker_role_arns` (name your existing CI role) or
+   `ci_oidc_role_enabled` (let OutcomeOps create the role).
+3. Full `terraform apply` (IAM-only).
 
 ### Next phases
 
