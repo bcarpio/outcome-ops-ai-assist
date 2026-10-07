@@ -131,7 +131,7 @@ DOC
 
 module "atlassian_automation_role" {
   source  = "terraform-aws-modules/iam/aws//modules/iam-assumable-role"
-  version = "~> 5.0"
+  version = "5.60.0"
 
   count = var.enable_jira_integration ? 1 : 0
 

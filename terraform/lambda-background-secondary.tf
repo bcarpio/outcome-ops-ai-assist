@@ -32,7 +32,7 @@
 # trivy:ignore:AVD-AWS-0136 -- CMK encryption is optional via enable_cmk_encryption toggle
 module "audit_alerts_sns_secondary" {
   source  = "terraform-aws-modules/sns/aws"
-  version = "~> 7.1"
+  version = "7.1.0"
 
   count = var.secondary_region != "" ? 1 : 0
 
@@ -56,7 +56,7 @@ module "audit_alerts_sns_secondary" {
 # trivy:ignore:AVD-AWS-0136 -- CMK encryption is optional via enable_cmk_encryption toggle
 module "cost_alerts_sns_secondary" {
   source  = "terraform-aws-modules/sns/aws"
-  version = "~> 7.1"
+  version = "7.1.0"
 
   count = var.secondary_region != "" && var.cost_alert_enabled ? 1 : 0
 

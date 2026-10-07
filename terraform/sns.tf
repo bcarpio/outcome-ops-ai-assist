@@ -68,7 +68,7 @@ resource "aws_kms_alias" "sns_alerts" {
 
 module "audit_alerts_sns" {
   source  = "terraform-aws-modules/sns/aws"
-  version = "~> 7.1"
+  version = "7.1.0"
 
   name              = "${var.environment}-${var.app_name}-audit-alerts"
   kms_master_key_id = aws_kms_key.sns_alerts.arn
@@ -99,7 +99,7 @@ output "audit_alerts_sns_topic_arn" {
 
 module "cost_alerts_sns" {
   source  = "terraform-aws-modules/sns/aws"
-  version = "~> 7.1"
+  version = "7.1.0"
 
   count = var.cost_alert_enabled ? 1 : 0
 
