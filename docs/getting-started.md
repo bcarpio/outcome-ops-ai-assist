@@ -340,6 +340,12 @@ After `terraform apply`, use the `ci_oidc_role_arn` output as the workflow's
 `.github/workflows/pr-commands.yml` (PR slash-commands -> `handle-command`) uses the
 same OIDC direct-invoke mechanism.
 
+If your CI identity is a hub/spoke (`AWS_OIDC_ROLE_ARN` is a hub role that can
+only assume a workload-account role), also set a repo/org variable
+`CI_SPOKE_ROLE_ARN` to that workload role's ARN -- the workflow then assumes it
+(role-chaining) before invoking. Leave the variable unset for a single-account /
+direct-OIDC role, where the first assume already holds invoke rights.
+
 ## Optional: MCP servers
 
 ### OutcomeOps MCP (Claude Code, VS Code, Cursor)

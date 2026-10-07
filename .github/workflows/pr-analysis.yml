@@ -38,6 +38,21 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: GitHubActions-PR-Analysis
 
+      # Optional second assume for a hub/spoke identity: if the CI_SPOKE_ROLE_ARN
+      # repo/org variable is set, assume the workload-account role that can invoke
+      # analyze-pr, using the credentials from the step above (role-chaining).
+      # Leave the variable unset for a single-account / direct-OIDC role, where the
+      # first assume already holds invoke rights. Keeps this workflow topology-
+      # agnostic -- no hub/spoke assumptions baked in, it is pure config.
+      - name: Assume workload CI role (hub/spoke)
+        if: ${{ vars.CI_SPOKE_ROLE_ARN != '' }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.CI_SPOKE_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-chaining: true
+          role-session-name: GitHubActions-PR-Analysis-Spoke
+
       - name: Invoke analyze-pr Lambda
         run: |
           FUNCTION_NAME="${{ env.ENVIRONMENT }}-outcome-ops-ai-assist-analyze-pr"
