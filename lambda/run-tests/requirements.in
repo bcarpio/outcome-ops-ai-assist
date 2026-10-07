@@ -6,4 +6,4 @@ openai==2.44.0  # ADR-035: Mantle Responses-API client
 pydantic==2.13.4
 pyyaml==6.0.3
 requests==2.34.2
-urllib3==2.7.0
+urllib3==2.8.0

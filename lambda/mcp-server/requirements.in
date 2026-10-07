@@ -2,7 +2,7 @@
 # --only-binary=:all:; unpinned ranges make image builds non-reproducible
 # (SonarQube docker:S8544). Bump versions deliberately.
 boto3==1.43.40
-urllib3==2.7.0
+urllib3==2.8.0
 # read_source mints GitHub App installation tokens via signed JWT (ADR-030).
-PyJWT==2.13.0
+PyJWT==2.14.0
 cryptography==50.0.0

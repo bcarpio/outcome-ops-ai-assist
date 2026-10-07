@@ -1,0 +1,12 @@
+# Trivy ignore file -- accepted, UNFIXABLE findings only. Each entry needs a
+# reason and is removed the moment an upstream fix ships. This is deliberately
+# per-CVE (not a blanket --ignore-unfixed), so any new unfixed CRITICAL/HIGH
+# still fails CI and gets a conscious triage decision.
+
+# CVE-2026-93687 -- braces 3.0.3: DoS (stack overflow) from deeply nested glob
+# patterns. No fixed version exists upstream (3.0.3 is the latest published
+# release as of 2026-10-07). braces is a transitive dev/build dependency
+# (micromatch glob matching in the Vite/test toolchain), not reachable with
+# attacker-controlled input in the deployed UI. Accepted until a fixed braces
+# release is available, then delete this entry.
+CVE-2026-93687
