@@ -43,6 +43,20 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: GitHubActions-PR-Commands
 
+      # Optional second assume for a hub/spoke identity (same pattern as
+      # pr-analysis.yml): if CI_SPOKE_ROLE_ARN is set, chain into the
+      # workload-account role that can invoke handle-command. Unset = single
+      # assume (direct/self-contained OIDC role). Keeps this workflow
+      # topology-agnostic.
+      - name: Assume workload CI role (hub/spoke)
+        if: ${{ vars.CI_SPOKE_ROLE_ARN != '' }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.CI_SPOKE_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-chaining: true
+          role-session-name: GitHubActions-PR-Commands-Spoke
+
       - name: Invoke Handle Command Lambda
         run: |
           FUNCTION_NAME="${{ env.ENVIRONMENT }}-outcome-ops-ai-assist-handle-command"
