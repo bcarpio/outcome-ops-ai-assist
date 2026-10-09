@@ -322,6 +322,61 @@ def query_knowledge_base(
         raise
 
 
+def _extract_adr_json(text: str) -> Optional[Dict[str, Any]]:
+    """Extract the ADR-analysis JSON object from a model response.
+
+    The model is asked for JSON only, but sometimes preambles with reasoning
+    prose or a numbered list -- and that prose can itself contain braces (e.g. a
+    quoted ``{"statusCode": 200, ...}`` code snippet), which defeats a naive
+    first-'{'-to-last-'}' slice (that was the 2026-10-09 PR #92 failure: the
+    slice spanned a prose snippet brace through the real JSON and would not
+    parse). Scan each '{' as a candidate start, do a string-aware balanced-brace
+    match to its close, and return the first object that parses AND carries a
+    "compliant" key (our answer shape); a braceful prose snippet lacks that key
+    and is skipped.
+    """
+    cleaned = text.replace("```json", "").replace("```", "")
+    i, n = 0, len(cleaned)
+    while i < n:
+        if cleaned[i] != "{":
+            i += 1
+            continue
+        depth, in_str, esc, close = 0, False, False, -1
+        for j in range(i, n):
+            c = cleaned[j]
+            if in_str:
+                if esc:
+                    esc = False
+                elif c == "\\":
+                    esc = True
+                elif c == '"':
+                    in_str = False
+                continue
+            if c == '"':
+                in_str = True
+            elif c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    close = j
+                    break
+        if close == -1:
+            break
+        try:
+            obj = json.loads(cleaned[i:close + 1])
+        except json.JSONDecodeError:
+            obj = None
+        # Only the real answer object carries "compliant"; braceful prose
+        # snippets (e.g. a quoted {"statusCode": 200}) are skipped. If none is
+        # found, return None so the caller takes its explicit parse-failure path
+        # rather than treating a snippet as a verdict.
+        if isinstance(obj, dict) and "compliant" in obj:
+            return obj
+        i = close + 1
+    return None
+
+
 def analyze_code_with_claude(
     file_path: str,
     file_diff: str,
@@ -376,7 +431,9 @@ IMPORTANT RULES:
    for a violation, set its "line" to null -- do NOT guess a line.
 
 RESPONSE FORMAT:
-Respond with ONLY a JSON object (no markdown, no code blocks):
+Respond with ONLY a JSON object (no markdown, no code blocks). Begin your reply
+with {{ and write nothing before or after the JSON -- no reasoning, no preamble,
+no numbered list:
 {{"compliant": true/false, "explanation": "brief explanation", "suggestions": ["suggestion 1", "suggestion 2"], "violations": [{{"line": 42, "message": "the one concrete ADR violation at this line"}}]}}
 
 Each "violations" entry describes ONE concrete issue at ONE line. Do NOT put
@@ -406,41 +463,27 @@ Examples:
 
         logger.info(f"Claude response for {file_path}: {response_text}")
 
-        # Parse JSON response (handle markdown code blocks)
-        json_text = response_text
-
-        # Remove markdown code blocks if present
-        json_text = json_text.replace("```json", "").replace("```", "").strip()
-
-        # Extract JSON object if surrounded by other text
-        if "{" in json_text and "}" in json_text:
-            start = json_text.index("{")
-            end = json_text.rindex("}") + 1
-            json_text = json_text[start:end]
-
-        try:
-            parsed = json.loads(json_text)
+        # Parse JSON response -- tolerant of preamble prose and braces inside
+        # that prose (see _extract_adr_json); returns the object with "compliant".
+        parsed = _extract_adr_json(response_text)
+        if parsed is not None:
             return {
                 "compliant": parsed.get("compliant", False),
                 "explanation": parsed.get("explanation", "No explanation provided"),
                 "suggestions": parsed.get("suggestions", []) if isinstance(parsed.get("suggestions"), list) else [],
-                "violations": parsed.get("violations", []) if isinstance(parsed.get("violations"), list) else []
+                "violations": parsed.get("violations", []) if isinstance(parsed.get("violations"), list) else [],
             }
 
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse Claude response as JSON: {response_text}")
-            logger.error(f"Attempted to parse: {json_text}")
-            logger.error(f"Parse error: {e}")
-
-            # Fallback: try to extract fields from text
-            compliant = "compliant" in response_text.lower() and "true" in response_text.lower()
-
-            return {
-                "compliant": compliant,
-                "explanation": "Could not parse compliance analysis",
-                "suggestions": [],
-                "violations": []
-            }
+        logger.error(
+            f"Failed to extract ADR JSON from Claude response for {file_path}: "
+            f"{response_text[:800]}"
+        )
+        return {
+            "compliant": "compliant" in response_text.lower() and "true" in response_text.lower(),
+            "explanation": "Could not parse compliance analysis",
+            "suggestions": [],
+            "violations": [],
+        }
 
     except Exception as e:
         logger.error(f"Error calling Claude: {e}")

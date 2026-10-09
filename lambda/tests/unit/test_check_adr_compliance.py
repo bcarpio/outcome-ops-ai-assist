@@ -76,6 +76,7 @@ extract_file_diff_from_full_diff = handler_module.extract_file_diff_from_full_di
 query_knowledge_base = handler_module.query_knowledge_base
 analyze_code_with_claude = handler_module.analyze_code_with_claude
 check_adr_compliance = handler_module.check_adr_compliance
+_extract_adr_json = handler_module._extract_adr_json
 
 
 class TestGetGitHubToken:
@@ -484,3 +485,31 @@ class TestCheckAdrCompliance:
         assert result["checkType"] == "ADR_COMPLIANCE"
         assert result["status"] == "PASS"
         assert "follow" in result["message"].lower() or "pass" in result["status"].lower()
+
+
+def test_extract_adr_json_skips_prose_brace_snippet():
+    # Reproduces the 2026-10-09 PR #92 failure: reasoning prose + a numbered list
+    # containing a quoted {"statusCode": 200, ...} snippet BEFORE the real JSON.
+    # The old first-'{'-to-last-'}' slice spanned the snippet brace -> unparseable.
+    resp = (
+        "I need to determine what type of Lambda this is first.\n"
+        '6. Error handling: returns `{"statusCode": 200, "body": x}` instead of '
+        "using _response(). No CORS headers present.\n"
+        '{"compliant": false, "explanation": "missing JWT auth and CORS", '
+        '"suggestions": ["add decode_token(event)"], '
+        '"violations": [{"line": 17, "message": "no JWT authentication"}, '
+        '{"line": 22, "message": "exception swallowed without logging"}]}'
+    )
+    out = _extract_adr_json(resp)
+    assert out is not None
+    assert out["compliant"] is False
+    assert [v["line"] for v in out["violations"]] == [17, 22]
+    assert out["violations"][1]["message"] == "exception swallowed without logging"
+
+
+def test_extract_adr_json_plain_and_fenced():
+    assert _extract_adr_json('{"compliant": true, "violations": []}')["compliant"] is True
+    fenced = '```json\n{"compliant": true, "violations": []}\n```'
+    assert _extract_adr_json(fenced)["compliant"] is True
+    # A response with only prose braces and no compliant-object returns None.
+    assert _extract_adr_json('see `{"foo": 1}` for details') is None
