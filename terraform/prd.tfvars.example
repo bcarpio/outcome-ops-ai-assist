@@ -97,8 +97,8 @@ github_usernames_to_tag = "yourusername"
 # Model IDs for the three Bedrock invocation paths. Defaults are the latest
 # Claude Haiku/Sonnet + Titan v2 embeddings. Override only when AWS releases
 # a newer model or when running in a region with limited model availability.
-# bedrock_advanced_model_id  = "us.anthropic.claude-sonnet-4-6"
-# bedrock_basic_model_id     = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+# bedrock_advanced_model_id  = "us.anthropic.claude-sonnet-5-5"
+# bedrock_basic_model_id     = "us.anthropic.claude-haiku-5-5"
 # bedrock_embedding_model_id = "amazon.titan-embed-text-v2:0"
 
 # --- OpenAI GPT instead of Claude (model choice, NOT a separate environment) ---

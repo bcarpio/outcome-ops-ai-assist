@@ -73,8 +73,8 @@ locals {
   # -- Titan embed and Cohere rerank wrap the raw foundation-model ARN
   #    (regional, no account segment in the ARN).
   bedrock_model_copy_from_primary = {
-    haiku         = "arn:aws:bedrock:${var.aws_region}:${data.aws_caller_identity.current.account_id}:inference-profile/global.anthropic.claude-haiku-4-5-20251001-v1:0"
-    sonnet        = "arn:aws:bedrock:${var.aws_region}:${data.aws_caller_identity.current.account_id}:inference-profile/global.anthropic.claude-sonnet-4-6"
+    haiku         = "arn:aws:bedrock:${var.aws_region}:${data.aws_caller_identity.current.account_id}:inference-profile/global.anthropic.claude-haiku-5-5"
+    sonnet        = "arn:aws:bedrock:${var.aws_region}:${data.aws_caller_identity.current.account_id}:inference-profile/global.anthropic.claude-sonnet-5-5"
     titan-embed   = "arn:aws:bedrock:${var.aws_region}::foundation-model/amazon.titan-embed-text-v2:0"
     cohere-rerank = "arn:aws:bedrock:${var.aws_region}::foundation-model/cohere.rerank-v3-5:0"
   }

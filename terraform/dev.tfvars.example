@@ -97,8 +97,8 @@ github_usernames_to_tag = "yourusername"
 # Model IDs for the three Bedrock invocation paths. Defaults are the latest
 # Claude Haiku/Sonnet + Titan v2 embeddings. Override only when AWS releases
 # a newer model or when running in a region with limited model availability.
-# bedrock_advanced_model_id  = "us.anthropic.claude-sonnet-4-6"
-# bedrock_basic_model_id     = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+# bedrock_advanced_model_id  = "us.anthropic.claude-sonnet-5-5"
+# bedrock_basic_model_id     = "us.anthropic.claude-haiku-5-5"
 # bedrock_embedding_model_id = "amazon.titan-embed-text-v2:0"
 
 # Cooldown between Bedrock API calls to avoid throttling on small accounts.
@@ -126,10 +126,10 @@ github_usernames_to_tag = "yourusername"
 # ============================================================================
 
 # Update these when changing models to ensure accurate cost tracking.
-# bedrock_advanced_input_price  = 3.0   # Sonnet input
-# bedrock_advanced_output_price = 15.0  # Sonnet output
-# bedrock_basic_input_price     = 0.80  # Haiku input
-# bedrock_basic_output_price    = 4.0   # Haiku output
+# bedrock_advanced_input_price  = 2.0   # Sonnet 5.5 input
+# bedrock_advanced_output_price = 10.0  # Sonnet 5.5 output
+# bedrock_basic_input_price     = 0.10  # Haiku 5.5 input  (<=100k-token tier; 5x above)
+# bedrock_basic_output_price    = 0.50  # Haiku 5.5 output (<=100k-token tier; 5x above)
 
 # Max characters per document in RAG context.
 # Increase for larger code maps; decrease to reduce token costs.

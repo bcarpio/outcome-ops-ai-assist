@@ -112,6 +112,42 @@ def test_converse_top_p_and_stop_sequences_passed_when_set():
     assert ic["stopSequences"] == ["STOP"]
 
 
+def test_converse_omits_sampling_for_claude_5x():
+    # Claude 5.x deprecated caller-controlled sampling on Bedrock: temperature
+    # and topP must be omitted or Converse raises ValidationException. maxTokens
+    # and stopSequences are still allowed.
+    fake_client = MagicMock()
+    fake_client.converse.return_value = _converse_resp_text_only()
+    with patch("boto3.client", return_value=fake_client):
+        _converse_backend.invoke(Request(
+            model_id="us.anthropic.claude-sonnet-5-5",
+            messages=[{"role": "user", "content": [{"text": "hi"}]}],
+            max_tokens=64,
+            temperature=0.3,
+            top_p=0.9,
+            stop_sequences=["STOP"],
+        ))
+    ic = fake_client.converse.call_args.kwargs["inferenceConfig"]
+    assert "temperature" not in ic
+    assert "topP" not in ic
+    assert ic["maxTokens"] == 64
+    assert ic["stopSequences"] == ["STOP"]
+
+
+def test_converse_keeps_sampling_for_claude_4x():
+    # The 4.x models we run today (haiku-4-5 / sonnet-4-6) still accept sampling.
+    fake_client = MagicMock()
+    fake_client.converse.return_value = _converse_resp_text_only()
+    with patch("boto3.client", return_value=fake_client):
+        _converse_backend.invoke(Request(
+            model_id="us.anthropic.claude-haiku-4-5-20251001-v1:0",
+            messages=[{"role": "user", "content": [{"text": "hi"}]}],
+            temperature=0.1,
+        ))
+    ic = fake_client.converse.call_args.kwargs["inferenceConfig"]
+    assert ic["temperature"] == 0.1
+
+
 def test_converse_tools_translate_to_toolconfig():
     fake_client = MagicMock()
     fake_client.converse.return_value = _converse_resp_text_only()

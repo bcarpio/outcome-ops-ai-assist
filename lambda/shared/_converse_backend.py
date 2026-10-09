@@ -93,19 +93,45 @@ def _get_client():
     return _client
 
 
+# Anthropic's Claude 5.x family (and newer) deprecated caller-controlled
+# sampling on Bedrock: passing temperature or topP returns a
+# ValidationException ("temperature is deprecated for this model") on BOTH
+# invoke_model and Converse -- it is not silently ignored, the call fails. Omit
+# those fields for such models; they run at the model's fixed server-side
+# default. Mirrors the GPT-5 temperature lock handled in _responses_backend.
+# Matches the configured id (us.anthropic.claude-sonnet-5-5), the bare id, and
+# the global./us. inference-profile ARN forms. Extend as new families ship.
+_NO_CALLER_SAMPLING_SUBSTR = (
+    "claude-sonnet-5",
+    "claude-haiku-5",
+    "claude-opus-5",
+)
+
+
+def _supports_caller_sampling(model_id: str) -> bool:
+    mid = model_id or ""
+    return not any(s in mid for s in _NO_CALLER_SAMPLING_SUBSTR)
+
+
 def _build_converse_kwargs(req: Request) -> dict[str, Any]:
+    inference: dict[str, Any] = {"maxTokens": req.max_tokens}
+    if _supports_caller_sampling(req.model_id):
+        inference["temperature"] = req.temperature
+        if req.top_p is not None:
+            inference["topP"] = req.top_p
+    elif req.temperature != 0.0 or req.top_p is not None:
+        logger.warning(
+            "model %s dropped caller sampling; omitting temperature=%r "
+            "top_p=%r (model runs at its server-side default).",
+            req.model_id, req.temperature, req.top_p,
+        )
+    if req.stop_sequences:
+        inference["stopSequences"] = req.stop_sequences
     kwargs: dict[str, Any] = {
         "modelId": req.model_id,
         "messages": req.messages,
-        "inferenceConfig": {
-            "maxTokens": req.max_tokens,
-            "temperature": req.temperature,
-        },
+        "inferenceConfig": inference,
     }
-    if req.top_p is not None:
-        kwargs["inferenceConfig"]["topP"] = req.top_p
-    if req.stop_sequences:
-        kwargs["inferenceConfig"]["stopSequences"] = req.stop_sequences
     if req.system:
         system = req.system if isinstance(req.system, list) else [req.system]
         system_blocks: list[dict] = [{"text": s} for s in system]

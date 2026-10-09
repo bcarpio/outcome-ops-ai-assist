@@ -400,7 +400,7 @@ variable "code_map_max_prompt_tokens" {
 variable "bedrock_advanced_model_id" {
   type        = string
   description = "Bedrock model ID for advanced/primary inference (e.g., Claude Sonnet)"
-  default     = "us.anthropic.claude-sonnet-4-6"
+  default     = "us.anthropic.claude-sonnet-5-5"
 }
 
 variable "bedrock_default_backend" {
@@ -466,7 +466,7 @@ variable "bedrock_responses_reasoning_effort" {
 variable "bedrock_basic_model_id" {
   type        = string
   description = "Bedrock model ID for fast/default inference (e.g., Claude Haiku)"
-  default     = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+  default     = "us.anthropic.claude-haiku-5-5"
 }
 
 variable "bedrock_embedding_model_id" {
@@ -516,25 +516,25 @@ variable "rerank_min_score" {
 variable "bedrock_advanced_input_price" {
   type        = number
   description = "Price per million input tokens for the advanced model"
-  default     = 3.0
+  default     = 2.0
 }
 
 variable "bedrock_advanced_output_price" {
   type        = number
   description = "Price per million output tokens for the advanced model"
-  default     = 15.0
+  default     = 10.0
 }
 
 variable "bedrock_basic_input_price" {
   type        = number
   description = "Price per million input tokens for the basic model"
-  default     = 0.80
+  default     = 0.10
 }
 
 variable "bedrock_basic_output_price" {
   type        = number
   description = "Price per million output tokens for the basic model"
-  default     = 4.0
+  default     = 0.50
 }
 
 variable "bedrock_embedding_input_price" {

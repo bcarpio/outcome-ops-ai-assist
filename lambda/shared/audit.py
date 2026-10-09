@@ -139,6 +139,16 @@ MODEL_PRICING["anthropic.claude-sonnet-4-5-20250929-v1:0"] = ADVANCED_PRICING
 MODEL_PRICING["us.anthropic.claude-3-5-haiku-20241022-v1:0"] = BASIC_PRICING
 MODEL_PRICING["anthropic.claude-3-5-haiku-20241022-v1:0"] = BASIC_PRICING
 
+# Claude 5.5 family. The advanced/basic env-driven keys already price the
+# active model, but register these explicitly so both the outgoing (4.x)
+# and incoming (5.5) models stay priced throughout the migration -- audit
+# rows carrying either id get a non-zero cost regardless of which model id
+# the env happens to resolve to at module-load time.
+MODEL_PRICING["us.anthropic.claude-sonnet-5-5"] = ADVANCED_PRICING
+MODEL_PRICING["anthropic.claude-sonnet-5-5"] = ADVANCED_PRICING
+MODEL_PRICING["us.anthropic.claude-haiku-5-5"] = BASIC_PRICING
+MODEL_PRICING["anthropic.claude-haiku-5-5"] = BASIC_PRICING
+
 
 def _calculate_cost(
     model_id: str,

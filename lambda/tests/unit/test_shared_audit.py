@@ -119,6 +119,10 @@ class TestModelPricing:
 
     def test_model_pricing_contains_sonnet(self):
         """Test Claude Sonnet models are in pricing table."""
+        # Current (incoming) 5.5 generation.
+        assert "us.anthropic.claude-sonnet-5-5" in MODEL_PRICING
+        assert "anthropic.claude-sonnet-5-5" in MODEL_PRICING
+        # Outgoing 4.6 generation stays priced across the migration.
         assert "us.anthropic.claude-sonnet-4-6" in MODEL_PRICING
         assert "anthropic.claude-sonnet-4-6" in MODEL_PRICING
         # Backward compat for previous version
@@ -127,6 +131,10 @@ class TestModelPricing:
 
     def test_model_pricing_contains_haiku(self):
         """Test Claude Haiku models are in pricing table."""
+        # Current (incoming) 5.5 generation.
+        assert "us.anthropic.claude-haiku-5-5" in MODEL_PRICING
+        assert "anthropic.claude-haiku-5-5" in MODEL_PRICING
+        # Outgoing 4.5 generation stays priced across the migration.
         assert "us.anthropic.claude-haiku-4-5-20251001-v1:0" in MODEL_PRICING
         assert "anthropic.claude-haiku-4-5-20251001-v1:0" in MODEL_PRICING
         # Backward compat for previous version
