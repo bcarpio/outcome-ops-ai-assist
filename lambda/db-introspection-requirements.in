@@ -22,3 +22,9 @@ mssql-python==1.6.0   # MS SQL Server (Microsoft's new driver). Pinned early bec
 # image, but pinning here as a defense against image regressions.
 boto3==1.43.40
 PyYAML==6.0.3
+
+# Security pins for transitive deps with HIGH Dependabot alerts. Pulled in
+# transitively (pyjwt via mcp/msal; urllib3 via botocore/requests) but pinned
+# explicitly here to force a patched floor across both image builds.
+pyjwt==2.14.0
+urllib3==2.8.0
