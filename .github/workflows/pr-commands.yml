@@ -56,6 +56,9 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           role-chaining: true
           role-session-name: GitHubActions-PR-Commands-Spoke
+          # Hub->spoke chained AssumeRole lacks sts:TagSession; skip session tags
+          # (unused here). See pr-analysis.yml.
+          role-skip-session-tagging: true
 
       - name: Invoke Handle Command Lambda
         run: |

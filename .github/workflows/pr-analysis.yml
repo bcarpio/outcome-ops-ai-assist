@@ -52,6 +52,10 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           role-chaining: true
           role-session-name: GitHubActions-PR-Analysis-Spoke
+          # The hub->spoke chained AssumeRole is not granted sts:TagSession; skip
+          # the default session tags (they are unused here -- ADR-016 cost
+          # attribution is on the Bedrock inference profiles, not STS sessions).
+          role-skip-session-tagging: true
 
       - name: Invoke analyze-pr Lambda
         run: |
