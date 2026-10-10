@@ -10,7 +10,8 @@
 #   delete-worker          - SWEEP path. Workspace/repo deletion enumerates
 #                            and batch-deletes partitions.
 #   chat / analyze-pr /    - READ-only path. Consumers are wired now so
-#   generate-code            the infrastructure is ready.
+#   generate-code /          the infrastructure is ready. process-pr-check reads
+#   process-pr-check         callers/importers for BREAKING_CHANGES (ADR-054).
 #
 # Resource ARNs are exact (table + each GSI; GSI names governed by
 # ADR-021). No wildcards. The bundled IAM in each Lambda's existing
@@ -149,6 +150,14 @@ resource "aws_iam_role_policy_attachment" "analyze_pr_symbol_graph_reader" {
 
 resource "aws_iam_role_policy_attachment" "generate_code_symbol_graph_reader" {
   role       = module.generate_code_lambda.lambda_role_name
+  policy_arn = aws_iam_policy.symbol_graph_reader.arn
+}
+
+# process-pr-check runs the BREAKING_CHANGES plane-1 consumer lookup (ADR-054):
+# it resolves a changed symbol's callers/importers from the symbol graph.
+# Query-only, identical to the other readers.
+resource "aws_iam_role_policy_attachment" "process_pr_check_symbol_graph_reader" {
+  role       = module.process_pr_check_lambda.lambda_role_name
   policy_arn = aws_iam_policy.symbol_graph_reader.arn
 }
 

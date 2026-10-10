@@ -246,10 +246,18 @@ module "process_pr_check_lambda" {
 
   # Environment variables
   environment_variables = merge({
-    ENV                                = var.environment
-    APP_NAME                           = var.app_name
-    GITHUB_BASE_URL                    = var.github_base_url
-    AUDIT_TABLE                        = module.audit_logs_table.dynamodb_table_id
+    ENV             = var.environment
+    APP_NAME        = var.app_name
+    GITHUB_BASE_URL = var.github_base_url
+    AUDIT_TABLE     = module.audit_logs_table.dynamodb_table_id
+
+    # Plane-1 breaking-change detection (ADR-054): shared.symbol_graph_reader
+    # resolves a changed symbol's callers/importers from the symbol-graph table;
+    # CODE_MAPS_TABLE feeds the per-(workspace,repo) pointer for staleness
+    # reporting (best-effort). Query-only IAM is attached in iam_symbol_graph.tf
+    # (process_pr_check_symbol_graph_reader). Mirrors analyze-pr's wiring.
+    SYMBOL_GRAPH_TABLE                 = module.symbol_graph_table.dynamodb_table_id
+    CODE_MAPS_TABLE                    = module.code_maps_table.dynamodb_table_id
     BEDROCK_ADVANCED_MODEL_ID          = var.bedrock_advanced_model_id
     BEDROCK_DEFAULT_BACKEND            = var.bedrock_default_backend
     BEDROCK_RESPONSES_REASONING_EFFORT = var.bedrock_responses_reasoning_effort
