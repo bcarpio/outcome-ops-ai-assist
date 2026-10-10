@@ -8,7 +8,7 @@ confidence (handler name + queue/topic/invocation explicitly mentioned).
 
 import json
 import logging
-from typing import Dict, List, Any, Literal, Optional, Set
+from typing import Dict, List, Any, Literal, Optional, Set, Tuple
 from collections import defaultdict
 
 import boto3
@@ -234,6 +234,106 @@ def create_tailored_query(handler_name: str, change_type: ChangeType) -> str:
         return f"services that depend on {handler_name} infrastructure"
     else:
         return f"handlers that depend on {handler_name}"
+
+
+def symbol_graph_consumers(
+    workspace_ids: List[str],
+    repo: str,
+    changed_lines_by_file: Dict[str, List[int]],
+    *,
+    reader: Any = None,
+) -> Tuple[List[Dict[str, Any]], List[str]]:
+    """Plane 1 (ADR-054): real code-symbol consumers of the changed symbols.
+
+    Resolves the symbols whose body the PR changed (``symbol_at_line`` on each
+    changed RIGHT-side line) and returns their callers + importers from the
+    symbol graph -- precise, and cross-repo because the graph spans ingested
+    repos. This replaces the retired prose-similarity heuristic for the
+    code-symbol plane.
+
+    Args:
+        workspace_ids: candidate scope (the repo's workspace + is_global ones);
+            a changed symbol resolves in exactly one, we take the first hit.
+        repo: bare repo name of the changed files (symbol-graph key --
+            see reference_app_vs_repo_naming: BARE repo, not the full slug).
+        changed_lines_by_file: {repo_relative_path: [changed RIGHT-side lines]}.
+
+    Returns:
+        ``(consumers, undetermined_files)``.
+        ``consumers`` -- one dict per distinct external caller/importer:
+        ``{changed_file, changed_symbol_id, relation, consumer_repo,
+        consumer_file, consumer_line, truncated}``.
+        ``undetermined_files`` -- files whose consumers could NOT be determined
+        because the graph was unavailable or errored. Per ADR-054 the caller
+        MUST fail closed on these (manual-review WARN), never report "safe".
+
+    ``reader`` is injectable for tests; in production it defaults to the shared
+    ``symbol_graph_reader`` module.
+    """
+    if reader is None:
+        from shared import symbol_graph_reader as reader
+
+    consumers: List[Dict[str, Any]] = []
+    undetermined: List[str] = []
+    seen = set()
+
+    for file_path, lines in changed_lines_by_file.items():
+        try:
+            # 1. Resolve the enclosing symbols the PR actually changed. A symbol
+            #    lives in one workspace; take the first scope that resolves it.
+            resolved: Dict[str, str] = {}  # target_symbol_id -> workspace_id
+            for line in sorted(set(lines)):
+                for ws in workspace_ids:
+                    enc = reader.symbol_at_line(ws, repo, file_path, line)
+                    if enc and enc.target_symbol_id:
+                        resolved[enc.target_symbol_id] = ws
+                        break
+
+            # No resolvable symbol (comment/whitespace change, or a graph gap
+            # such as a decorated fn) is NOT "undetermined" -- the graph was
+            # reachable, there is simply no code-symbol signal for this file.
+            if not resolved:
+                continue
+
+            # 2. Callers + importers of each changed symbol are its consumers.
+            for sid, ws in resolved.items():
+                for relation, result in (
+                    ("caller", reader.callers(ws, sid)),
+                    ("importer", reader.importers(ws, sid)),
+                ):
+                    for site in result.sites:
+                        # Exclude self-references inside the changed file itself.
+                        if site.repo == repo and site.file_path == file_path:
+                            continue
+                        key = (relation, site.repo, site.file_path, site.line, sid)
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        consumers.append({
+                            "changed_file": file_path,
+                            "changed_symbol_id": sid,
+                            "relation": relation,
+                            "consumer_repo": site.repo,
+                            "consumer_file": site.file_path,
+                            "consumer_line": site.line,
+                            "truncated": not result.complete,
+                        })
+
+        except reader.SymbolGraphUnavailable:
+            # Fail closed: graph unreachable -> we do not know the consumers.
+            logger.warning(
+                f"[breaking_changes] symbol graph unavailable for {file_path}; "
+                f"failing closed (manual review)."
+            )
+            undetermined.append(file_path)
+        except Exception as e:  # noqa: BLE001 -- any reader error fails closed
+            logger.warning(
+                f"[breaking_changes] symbol-graph consumer lookup failed for "
+                f"{file_path}: {e}; failing closed (manual review)."
+            )
+            undetermined.append(file_path)
+
+    return consumers, undetermined
 
 
 def check_breaking_changes(
@@ -471,6 +571,67 @@ def check_breaking_changes(
                             enclosing_symbol=None,
                         ).model_dump()
                     )
+
+    # Plane 1 (ADR-054): precise code-symbol consumers via the symbol graph.
+    # Additive to the summary heuristic above (that heuristic is retired in a
+    # later chunk): plane 1 can upgrade PASS -> WARN but never the reverse.
+    # `anchors` gives us the changed line to resolve the enclosing symbol; with
+    # no anchors we cannot anchor a Finding (ADR-031), so plane 1 is skipped.
+    # Fail CLOSED: a file whose consumers cannot be determined becomes a
+    # manual-review WARN, never a silent "safe".
+    #
+    # NOTE (chunk-01 WIP): we resolve the symbol at each file's first-added line
+    # (the available anchor). Threading the FULL changed-line set so multiple
+    # changed symbols per file are covered is a follow-up refinement.
+    if anchors and scope_workspace_ids:
+        # Symbol graph keys on the BARE repo name (reference_app_vs_repo_naming),
+        # not the owner/repo (or org/project/repo) slug.
+        bare_repo = repository.split("/")[-1]
+        changed_lines_by_file = {
+            f: [anchors[f]] for f in relevant_files if f in anchors
+        }
+        plane1_consumers, plane1_undetermined = symbol_graph_consumers(
+            scope_workspace_ids, bare_repo, changed_lines_by_file
+        )
+
+        if plane1_consumers:
+            status = "WARN"
+            if "safe to modify" in message:
+                message = "Direct consumers detected (symbol graph)"
+            details.append("")
+            details.append("**Code-symbol consumers (symbol graph):**")
+            for c in plane1_consumers:
+                details.append(
+                    f"- {c['relation']}: {c['consumer_repo']}/"
+                    f"{c['consumer_file']}:{c['consumer_line']} uses "
+                    f"`{c['changed_symbol_id']}`"
+                )
+                findings.append(
+                    Finding(
+                        path=c["changed_file"],
+                        line=anchors[c["changed_file"]],
+                        side="RIGHT",
+                        severity="warning",
+                        message=(
+                            f"Potential breaking change to "
+                            f"`{c['changed_symbol_id']}`: {c['relation']} "
+                            f"{c['consumer_repo']}/{c['consumer_file']}:"
+                            f"{c['consumer_line']} depends on it."
+                        ),
+                        enclosing_symbol=None,
+                    ).model_dump()
+                )
+
+        if plane1_undetermined:
+            status = "WARN"
+            if "safe to modify" in message:
+                message = "Consumer analysis incomplete - manual review required"
+            details.append("")
+            details.append(
+                "**Could not determine code-symbol consumers for "
+                f"{', '.join(sorted(set(plane1_undetermined)))}** "
+                "(symbol graph unavailable) - manual review required."
+            )
 
     # BREAKING_CHANGES doesn't use Claude, return empty usage tracker
     return {

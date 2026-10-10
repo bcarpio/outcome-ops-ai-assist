@@ -20,7 +20,7 @@ from unittest.mock import Mock, patch
 from moto import mock_aws
 import boto3
 from botocore.exceptions import ClientError
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 
 # First, load bedrock_utils module (dependency for breaking_changes)
 bedrock_utils_path = os.path.join(
@@ -64,6 +64,7 @@ filter_handler_summaries = handler_module.filter_handler_summaries
 calculate_confidence = handler_module.calculate_confidence
 create_tailored_query = handler_module.create_tailored_query
 check_breaking_changes = handler_module.check_breaking_changes
+symbol_graph_consumers = handler_module.symbol_graph_consumers
 
 
 class TestKbVectorResult:
@@ -518,3 +519,99 @@ class TestCheckBreakingChanges:
         assert result["checkType"] == "BREAKING_CHANGES"
         assert result["status"] == "PASS"
         # Should still return PASS since no high confidence dependencies were found
+
+
+class TestSymbolGraphConsumers:
+    """Plane 1 (ADR-054): code-symbol consumer detection via the symbol graph."""
+
+    class _FakeSGR:
+        """Minimal stand-in for shared.symbol_graph_reader (injected via reader=)."""
+
+        class SymbolGraphUnavailable(Exception):
+            pass
+
+        def __init__(self, at_line=None, callers_result=None,
+                     importers_result=None, raise_exc=None):
+            self._at_line = at_line
+            self._callers = callers_result or SimpleNamespace(sites=[], complete=True)
+            self._importers = importers_result or SimpleNamespace(sites=[], complete=True)
+            self._raise = raise_exc
+
+        def symbol_at_line(self, ws, repo, file_path, line):
+            if self._raise:
+                raise self._raise
+            return self._at_line
+
+        def callers(self, ws, sid):
+            return self._callers
+
+        def importers(self, ws, sid):
+            return self._importers
+
+    def test_callers_and_importers_become_consumers(self):
+        """A changed symbol's external callers + importers are reported."""
+        fake = self._FakeSGR(
+            at_line=SimpleNamespace(target_symbol_id="pkg.mod::func"),
+            callers_result=SimpleNamespace(
+                sites=[SimpleNamespace(repo="other-repo",
+                                       file_path="lambda/x/handler.py",
+                                       line=42, source_symbol_id="x::f")],
+                complete=True),
+            importers_result=SimpleNamespace(
+                sites=[SimpleNamespace(repo="other-repo",
+                                       file_path="lambda/y/handler.py",
+                                       line=7, source_symbol_id="y::g")],
+                complete=True),
+        )
+        consumers, undetermined = symbol_graph_consumers(
+            ["ws1"], "myrepo", {"lambda/myrepo/handler.py": [10, 11]}, reader=fake)
+
+        assert undetermined == []
+        assert sorted(c["relation"] for c in consumers) == ["caller", "importer"]
+        assert {c["consumer_file"] for c in consumers} == {
+            "lambda/x/handler.py", "lambda/y/handler.py"}
+        assert all(c["changed_symbol_id"] == "pkg.mod::func" for c in consumers)
+
+    def test_self_references_excluded(self):
+        """A caller inside the changed file itself is not a breaking consumer."""
+        fake = self._FakeSGR(
+            at_line=SimpleNamespace(target_symbol_id="pkg.mod::func"),
+            callers_result=SimpleNamespace(
+                sites=[
+                    SimpleNamespace(repo="myrepo",
+                                    file_path="lambda/myrepo/handler.py",
+                                    line=99, source_symbol_id="self::caller"),
+                    SimpleNamespace(repo="other-repo",
+                                    file_path="lambda/x/handler.py",
+                                    line=42, source_symbol_id="x::f"),
+                ], complete=True),
+        )
+        consumers, undetermined = symbol_graph_consumers(
+            ["ws1"], "myrepo", {"lambda/myrepo/handler.py": [10]}, reader=fake)
+        assert undetermined == []
+        assert len(consumers) == 1
+        assert consumers[0]["consumer_repo"] == "other-repo"
+
+    def test_no_symbol_resolved_is_not_undetermined(self):
+        """No enclosing symbol (comment/whitespace) -> no consumers, NOT fail-closed."""
+        fake = self._FakeSGR(at_line=None)
+        consumers, undetermined = symbol_graph_consumers(
+            ["ws1"], "myrepo", {"lambda/myrepo/handler.py": [3]}, reader=fake)
+        assert consumers == []
+        assert undetermined == []
+
+    def test_graph_unavailable_fails_closed(self):
+        """Graph unavailable -> file undetermined (manual review), never silent safe."""
+        fake = self._FakeSGR(raise_exc=self._FakeSGR.SymbolGraphUnavailable("down"))
+        consumers, undetermined = symbol_graph_consumers(
+            ["ws1"], "myrepo", {"lambda/myrepo/handler.py": [10]}, reader=fake)
+        assert consumers == []
+        assert undetermined == ["lambda/myrepo/handler.py"]
+
+    def test_reader_error_fails_closed(self):
+        """Any reader error -> fail closed to undetermined."""
+        fake = self._FakeSGR(raise_exc=RuntimeError("boom"))
+        consumers, undetermined = symbol_graph_consumers(
+            ["ws1"], "myrepo", {"lambda/myrepo/handler.py": [10]}, reader=fake)
+        assert consumers == []
+        assert undetermined == ["lambda/myrepo/handler.py"]
