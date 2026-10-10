@@ -455,8 +455,11 @@ Examples:
     try:
         response_text, usage = call_bedrock(
             prompt=prompt,
+            # 5.x models are more verbose; 1000 tokens truncated the
+            # explanation+suggestions+violations JSON mid-stream (stop_reason
+            # MAX_TOKENS), which dropped real violations. Give ample headroom.
             model_id=SONNET_MODEL_ID,
-            max_tokens=1000,
+            max_tokens=4000,
             temperature=0.1
         )
         usage_tracker.add(usage)
@@ -478,16 +481,29 @@ Examples:
             f"Failed to extract ADR JSON from Claude response for {file_path}: "
             f"{response_text[:800]}"
         )
+        # Fail CLOSED. An unparseable/truncated response must NOT be guessed as
+        # compliant: the old substring check matched "true" inside a suggestion
+        # (e.g. "attach_policy_statements = true") and passed files whose JSON
+        # explicitly said "compliant": false. Surface a manual-review WARN.
         return {
-            "compliant": "compliant" in response_text.lower() and "true" in response_text.lower(),
-            "explanation": "Could not parse compliance analysis",
+            "compliant": False,
+            "explanation": "Could not parse automated ADR analysis (response may be truncated); manual review required.",
             "suggestions": [],
             "violations": [],
         }
 
     except Exception as e:
-        logger.error(f"Error calling Claude: {e}")
-        raise
+        # Governance check: an analysis error (MAX_TOKENS/no-text, transient
+        # model failure) must never become a silent pass. Fail CLOSED to a
+        # manual-review WARN instead of propagating and letting the caller skip
+        # the file (which read as compliant).
+        logger.error(f"Error analyzing {file_path} for ADR compliance: {e}")
+        return {
+            "compliant": False,
+            "explanation": f"Automated ADR analysis could not complete ({e}); manual review required.",
+            "suggestions": [],
+            "violations": [],
+        }
 
 
 def analyze_lambda_handlers(

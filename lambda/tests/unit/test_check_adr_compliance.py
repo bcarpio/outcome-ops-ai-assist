@@ -363,13 +363,18 @@ class TestAnalyzeCodeWithClaude:
         )
         usage_tracker = bedrock_module.UsageTracker()
 
-        # Act & Assert
-        with pytest.raises(ClientError):
-            analyze_code_with_claude("file.py", "+code", "standards", "lambda", usage_tracker)
+        # Act: a governance check must fail CLOSED on a model error, not raise
+        # and let the caller skip the file (which read as compliant).
+        result = analyze_code_with_claude("file.py", "+code", "standards", "lambda", usage_tracker)
+
+        # Assert: fail-closed manual-review WARN, no fabricated violations
+        assert result["compliant"] is False
+        assert "manual review" in result["explanation"].lower()
+        assert result["violations"] == []
 
     @patch.object(bedrock_module, 'invoke_model')
     def test_analyze_code_with_claude_invalid_json_response(self, mock_invoke):
-        """Test: Claude returns invalid JSON (fallback to text parsing)"""
+        """Test: Claude returns invalid JSON -> fails closed (manual review)"""
         # Arrange
         mock_invoke.return_value = _LegacyDictResponse({
             "output": {
@@ -386,10 +391,10 @@ class TestAnalyzeCodeWithClaude:
         # Act
         result = analyze_code_with_claude("file.py", "+code", "standards", "lambda", usage_tracker)
 
-        # Assert - Should fallback gracefully
-        assert "compliant" in result
-        assert "explanation" in result
-        assert result["explanation"] == "Could not parse compliance analysis"
+        # Assert: unparseable response fails CLOSED (never guessed compliant)
+        assert result["compliant"] is False
+        assert "manual review" in result["explanation"].lower()
+        assert result["violations"] == []
 
 
 class TestCheckAdrCompliance:
