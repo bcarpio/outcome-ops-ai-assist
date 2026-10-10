@@ -118,7 +118,7 @@ class TestQueryVectorSearch:
         mock_lambda.invoke.return_value = mock_response
 
         # Act
-        results = query_vector_search("query-kb", "search query", 5)
+        results = query_vector_search("query-kb", "search query", 5, workspace_ids=["ws-1"])
 
         # Assert: parsed out of the envelope body
         assert len(results) == 1
@@ -126,12 +126,15 @@ class TestQueryVectorSearch:
         assert results[0].text == "handler text"
         assert results[0].source == "repo/handler.py"
 
-        # Assert: invoked query-kb directly (not a removed vector-query) in raw mode
+        # Assert: invoked query-kb directly (not a removed vector-query) in raw mode,
+        # scoped to the resolved workspace(s) and to handler-group-summaries only.
         _, kwargs = mock_lambda.invoke.call_args
         assert kwargs["FunctionName"] == "query-kb"
         sent = json.loads(kwargs["Payload"])
         assert sent["raw"] is True
         assert sent["topK"] == 5
+        assert sent["workspaceIds"] == ["ws-1"]
+        assert sent["docTypes"] == ["handler-group-summary"]
 
     @mock_aws()
     @patch('breaking_changes_handler.lambda_client')
@@ -145,7 +148,7 @@ class TestQueryVectorSearch:
 
         # Act & Assert
         with pytest.raises(ClientError):
-            query_vector_search("query-kb", "search query", 5)
+            query_vector_search("query-kb", "search query", 5, workspace_ids=["ws-1"])
 
     @mock_aws()
     @patch('breaking_changes_handler.lambda_client')
@@ -162,7 +165,37 @@ class TestQueryVectorSearch:
 
         # Act & Assert
         with pytest.raises(RuntimeError):
-            query_vector_search("query-kb", "search query", 5)
+            query_vector_search("query-kb", "search query", 5, workspace_ids=["ws-1"])
+
+    @mock_aws()
+    @patch('breaking_changes_handler.lambda_client')
+    def test_query_vector_search_fails_closed_without_scope(self, mock_lambda):
+        """Security: None/empty scope must NOT issue an unscoped cross-workspace query"""
+        # Act: no scope (resolution failed) and empty scope (unmapped repo)
+        none_results = query_vector_search("query-kb", "search query", 5, workspace_ids=None)
+        empty_results = query_vector_search("query-kb", "search query", 5, workspace_ids=[])
+
+        # Assert: zero results and query-kb was never invoked (fail closed)
+        assert none_results == []
+        assert empty_results == []
+        mock_lambda.invoke.assert_not_called()
+
+    @mock_aws()
+    @patch('breaking_changes_handler.lambda_client')
+    def test_query_vector_search_function_error_preserves_cause(self, mock_lambda):
+        """Robustness: a Lambda FunctionError surfaces its payload, not 'Unknown error'"""
+        # Arrange: unhandled exception in query-kb -> FunctionError + error payload
+        mock_lambda.invoke.return_value = {
+            "FunctionError": "Unhandled",
+            "Payload": Mock(read=Mock(return_value=json.dumps({
+                "errorType": "KeyError",
+                "errorMessage": "'results'",
+            }).encode())),
+        }
+
+        # Act & Assert: the cause ('results') is preserved in the exception
+        with pytest.raises(RuntimeError, match="results"):
+            query_vector_search("query-kb", "search query", 5, workspace_ids=["ws-1"])
 
 
 class TestExtractHandlerName:

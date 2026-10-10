@@ -54,32 +54,54 @@ def query_vector_search(
         lambda_name: query-kb Lambda name
         query: Search query
         top_k: Number of results to return
-        workspace_ids: Optional per-check retrieval scope (chunk 04
-            of the workspace-scope plan). BREAKING_CHANGES is a
-            "standards" check: walks the repo's workspace + all
-            is_global workspaces.
+        workspace_ids: REQUIRED per-check retrieval scope. BREAKING_CHANGES is a
+            "standards" check scoped to the repo's workspace(s) + is_global
+            workspaces. An empty/None scope means resolution failed or the repo
+            maps to no workspace; we fail CLOSED (return no results) rather than
+            query unscoped -- see the security note below.
 
     Returns:
         List of KbVectorResult objects with score, text, and source metadata
     """
-    # Invoke query-kb in RAW mode. The standalone vector-query Lambda was folded
-    # into query-kb (S3 Vectors search now runs in-process there), so we call
-    # query-kb directly and skip Claude synthesis -- the same raw-mode pattern
-    # architectural_duplication uses. process-pr-check already holds invoke on
-    # query-kb; there is no separate vector-query function to grant or target.
+    # Scope is mandatory. query-kb treats a missing ``workspaceIds`` as "no
+    # filter" and searches EVERY workspace, so an unscoped raw query would paste
+    # other teams'/tenants' KB chunk text into the PR comment. If the caller
+    # could not resolve a scope (None, or [] for an unmapped repo) we fail CLOSED
+    # -- report no consumers rather than leak cross-workspace content. Never send
+    # an unscoped query from here.
+    if not workspace_ids:
+        logger.warning(
+            "BREAKING_CHANGES vector search skipped: no workspace scope resolved; "
+            "failing closed (no consumers) to avoid an unscoped cross-workspace query."
+        )
+        return []
+
+    # Invoke query-kb in RAW mode, scoped to handler-group-summaries only so that
+    # docs/markdown/yaml cannot masquerade as consumers (name + "invoke" in a doc
+    # is not a real dependency). The standalone vector-query Lambda was folded
+    # into query-kb (S3 Vectors search runs in-process there); process-pr-check
+    # already holds invoke on query-kb, so there is no separate function to grant.
     payload: Dict[str, Any] = {
         "query": query,
         "topK": top_k,
         "raw": True,
+        "docTypes": ["handler-group-summary"],
+        "workspaceIds": workspace_ids,
     }
-    if workspace_ids:
-        payload["workspaceIds"] = workspace_ids
 
     try:
         response = lambda_client.invoke(
             FunctionName=lambda_name,
             Payload=json.dumps(payload)
         )
+
+        # A Lambda-level failure (unhandled exception in query-kb) returns
+        # FunctionError with the error payload in Payload. Surface its cause
+        # instead of masking it as "Unknown error" in the envelope check below.
+        if response.get("FunctionError"):
+            raw = response["Payload"].read()
+            detail = raw.decode("utf-8", "replace") if isinstance(raw, (bytes, bytearray)) else str(raw)
+            raise RuntimeError(f"query-kb invocation error ({response['FunctionError']}): {detail[:500]}")
 
         response_payload = json.loads(response["Payload"].read())
 
@@ -282,8 +304,9 @@ def check_breaking_changes(
 
     # Resolve per-check retrieval scope. BREAKING_CHANGES is a
     # "standards" check: walks the repo's workspace(s) + all
-    # is_global workspaces. Fail-soft: falls back to
-    # workspace-blind on any error.
+    # is_global workspaces. If scope cannot be resolved we fail CLOSED --
+    # query_vector_search skips the query and reports no consumers rather
+    # than issue an unscoped (cross-workspace) search. Never workspace-blind.
     scope_workspace_ids: Optional[List[str]] = None
     try:
         from shared.pr_check_scope import resolve_pr_check_workspace_scope
@@ -293,7 +316,7 @@ def check_breaking_changes(
     except Exception as scope_exc:
         logger.warning(
             f"Could not resolve workspace scope for BREAKING_CHANGES: "
-            f"{scope_exc}. Falling back to workspace-blind retrieval."
+            f"{scope_exc}. Failing closed -- consumer detection skipped."
         )
 
     # Group files by handler and change type
