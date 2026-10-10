@@ -62,36 +62,50 @@ def query_vector_search(
     Returns:
         List of KbVectorResult objects with score, text, and source metadata
     """
-    # Query the vector-query Lambda directly (not query-kb orchestrator)
-    vector_lambda_name = lambda_name.replace("query-kb", "vector-query")
-
+    # Invoke query-kb in RAW mode. The standalone vector-query Lambda was folded
+    # into query-kb (S3 Vectors search now runs in-process there), so we call
+    # query-kb directly and skip Claude synthesis -- the same raw-mode pattern
+    # architectural_duplication uses. process-pr-check already holds invoke on
+    # query-kb; there is no separate vector-query function to grant or target.
     payload: Dict[str, Any] = {
         "query": query,
         "topK": top_k,
+        "raw": True,
     }
     if workspace_ids:
         payload["workspaceIds"] = workspace_ids
 
     try:
         response = lambda_client.invoke(
-            FunctionName=vector_lambda_name,
+            FunctionName=lambda_name,
             Payload=json.dumps(payload)
         )
 
-        results = json.loads(response["Payload"].read())
+        response_payload = json.loads(response["Payload"].read())
 
-        # Parse results into KbVectorResult objects
-        if isinstance(results, list):
-            return [
-                KbVectorResult(
-                    score=r.get("score", 0.0),
-                    text=r.get("text", ""),
-                    source=r.get("source", "")
-                )
-                for r in results
-            ]
+        # query-kb returns an API-Gateway-style envelope: {statusCode, body}.
+        if response_payload.get("statusCode") != 200:
+            error_body = response_payload.get("body", "{}")
+            if isinstance(error_body, str):
+                error_body = json.loads(error_body)
+            raise RuntimeError(
+                f"query-kb raw search failed: {error_body.get('error', 'Unknown error')}"
+            )
 
-        return []
+        body = response_payload.get("body", "{}")
+        if isinstance(body, str):
+            body = json.loads(body)
+
+        # Raw mode returns {"results": [{source, text, score}, ...]}
+        results = body.get("results", [])
+        return [
+            KbVectorResult(
+                score=r.get("score", 0.0),
+                text=r.get("text", ""),
+                source=r.get("source", "")
+            )
+            for r in results
+        ]
 
     except ClientError as e:
         logger.error(f"Failed to query vector search: {e}")

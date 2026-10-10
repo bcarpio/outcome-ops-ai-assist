@@ -101,23 +101,37 @@ class TestQueryVectorSearch:
     @mock_aws()
     @patch('breaking_changes_handler.lambda_client')
     def test_query_vector_search_success(self, mock_lambda):
-        """Test: Successfully query vector search"""
-        # Arrange
+        """Test: Successfully query vector search via query-kb raw mode"""
+        # Arrange: query-kb returns an API-Gateway-style envelope whose body is
+        # the raw ranked results (the standalone vector-query Lambda was folded
+        # into query-kb, so there is no separate function to invoke).
         mock_response = {
-            "Payload": Mock(read=Mock(return_value=json.dumps([
-                {"score": 0.95, "text": "handler text", "source": "repo/handler.py"}
-            ]).encode()))
+            "Payload": Mock(read=Mock(return_value=json.dumps({
+                "statusCode": 200,
+                "body": json.dumps({
+                    "results": [
+                        {"score": 0.95, "text": "handler text", "source": "repo/handler.py"}
+                    ]
+                }),
+            }).encode()))
         }
         mock_lambda.invoke.return_value = mock_response
 
         # Act
         results = query_vector_search("query-kb", "search query", 5)
 
-        # Assert
+        # Assert: parsed out of the envelope body
         assert len(results) == 1
         assert results[0].score == 0.95
         assert results[0].text == "handler text"
         assert results[0].source == "repo/handler.py"
+
+        # Assert: invoked query-kb directly (not a removed vector-query) in raw mode
+        _, kwargs = mock_lambda.invoke.call_args
+        assert kwargs["FunctionName"] == "query-kb"
+        sent = json.loads(kwargs["Payload"])
+        assert sent["raw"] is True
+        assert sent["topK"] == 5
 
     @mock_aws()
     @patch('breaking_changes_handler.lambda_client')
@@ -131,6 +145,23 @@ class TestQueryVectorSearch:
 
         # Act & Assert
         with pytest.raises(ClientError):
+            query_vector_search("query-kb", "search query", 5)
+
+    @mock_aws()
+    @patch('breaking_changes_handler.lambda_client')
+    def test_query_vector_search_non_200_raises(self, mock_lambda):
+        """Test: a non-200 envelope from query-kb raw mode raises"""
+        # Arrange
+        mock_response = {
+            "Payload": Mock(read=Mock(return_value=json.dumps({
+                "statusCode": 500,
+                "body": json.dumps({"error": "boom"}),
+            }).encode()))
+        }
+        mock_lambda.invoke.return_value = mock_response
+
+        # Act & Assert
+        with pytest.raises(RuntimeError):
             query_vector_search("query-kb", "search query", 5)
 
 
