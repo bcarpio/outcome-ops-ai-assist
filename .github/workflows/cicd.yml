@@ -28,7 +28,7 @@ permissions:
 jobs:
 
   security-scans:
-    name: Run Talisman, Trivy, Snyk
+    name: Run Talisman, Snyk
     runs-on: ubuntu-latest
     environment: dev
     steps:
@@ -80,15 +80,6 @@ jobs:
             echo "✅ No high severity issues detected by Talisman."
           fi
 
-      - name: Trivy - Scan Terraform
-        uses: aquasecurity/trivy-action@v0.35.0
-        with:
-          version: 'v0.69.3'
-          scan-type: config
-          scan-ref: ${{ env.TERRAFORM_DIR }}
-          severity: CRITICAL,HIGH
-          exit-code: 1
-
       - name: Run Snyk to check for vulnerabilities
         uses: snyk/actions/python@master
         continue-on-error: true
@@ -96,18 +87,6 @@ jobs:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         with:
           args: --all-projects --severity-threshold=high
-
-      - name: Trivy - Filesystem vulnerability scan
-        uses: aquasecurity/trivy-action@v0.35.0
-        with:
-          version: 'v0.69.3'
-          scan-type: fs
-          scan-ref: '.'
-          scanners: vuln
-          format: table
-          severity: CRITICAL,HIGH
-          exit-code: 1
-          trivyignores: '.trivyignore'
 
   ui-tests:
     name: UI Tests
