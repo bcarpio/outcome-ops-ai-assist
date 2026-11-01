@@ -218,23 +218,6 @@ jobs:
           name: ui-coverage
           path: ui/coverage
 
-      - name: SonarCloud Scan
-        uses: SonarSource/sonarqube-scan-action@v6.0.0
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-
-      - name: SonarCloud Quality Gate check
-        uses: SonarSource/sonarqube-quality-gate-action@v1
-        continue-on-error: true
-        timeout-minutes: 5
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-      #   uses: SonarSource/sonarqube-quality-gate-action@v1.1.0
-      #   timeout-minutes: 5
-      #   env:
-      #     SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-
-
   terraform-validate:
     name: Terraform Init & Validate
     runs-on: ubuntu-latest
