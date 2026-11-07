@@ -2640,6 +2640,24 @@ class TestFormatInlineComment:
         assert "findings" not in lowered
 
 
+class TestFormatInlineBody:
+    """_format_inline_body: single keeps old format; multiple merge, no counts."""
+
+    def test_single_finding_matches_single_formatter(self):
+        fd = Finding(path="a.py", line=5, message="solo")
+        assert (handler_module._format_inline_body("CHECK", [fd])
+                == handler_module._format_inline_comment("CHECK", fd))
+
+    def test_multiple_findings_enumerated_no_counts(self):
+        fds = [Finding(path="a.py", line=5, severity="error", message="one"),
+               Finding(path="a.py", line=5, message="two")]
+        body = handler_module._format_inline_body("BREAKING CHANGES", fds)
+        assert "one" in body and "two" in body
+        assert "- " in body  # bulleted merge
+        low = body.lower()
+        assert "2 findings" not in low and "issues found" not in low
+
+
 class _InlineJobMixin:
     def _github_job(self):
         return CheckJob(
@@ -2685,6 +2703,33 @@ class TestSyncInlineFindings(_InlineJobMixin):
         assert item["path"] == "src/x.py"
         assert item["line"] == 10
         assert item["providerCommentId"] == 55
+
+    def test_two_findings_same_line_merge_into_one_comment(self):
+        """Two findings on the same (path, line) -> ONE comment containing both,
+        one bookkeeping row. Neither is silently dropped (old dict last-wins)."""
+        job = self._github_job()
+        findings = [
+            {"path": "src/x.py", "line": 10, "message": "first problem"},
+            {"path": "src/x.py", "line": 10, "message": "second problem"},
+        ]
+        captured = {}
+
+        def fake_post(job, ctx, body, fd):
+            captured["body"] = body
+            return {"providerCommentId": 55}
+
+        with patch("process_pr_check_handler._query_inline_rows", return_value={}), \
+             patch("process_pr_check_handler._inline_provider_context",
+                   return_value={"token": "t", "head_sha": "h"}), \
+             patch("process_pr_check_handler._post_inline",
+                   side_effect=fake_post) as mock_post, \
+             patch("process_pr_check_handler.dual_write.ddb_put_item") as mock_put:
+            handler_module._sync_inline_findings(job, findings)
+
+        mock_post.assert_called_once()  # ONE comment for the line, not two
+        mock_put.assert_called_once()   # ONE bookkeeping row for the line
+        assert "first problem" in captured["body"]
+        assert "second problem" in captured["body"]
 
     def test_existing_matching_row_patches_not_posts(self):
         job = self._github_job()
@@ -2784,10 +2829,10 @@ class TestComputeAnchors:
         with patch("process_pr_check_handler.get_github_token", return_value="ghp"), \
              patch("shared.pr_metadata.fetch_pr_metadata",
                    return_value=SimpleNamespace(base_sha="b", head_sha="h")) as mock_meta, \
-             patch("shared.pr_diff.first_added_lines",
-                   return_value={"f.py": 3}) as mock_fal:
+             patch("shared.pr_diff.added_lines_by_file",
+                   return_value={"f.py": [3, 8]}) as mock_fal:
             out = handler_module._compute_anchors(job)
-        assert out == {"f.py": 3}
+        assert out == {"f.py": [3, 8]}
         mock_meta.assert_called_once_with(
             "github", 7, repository="owner/repo", github_token="ghp")
         mock_fal.assert_called_once_with(
@@ -2801,10 +2846,10 @@ class TestComputeAnchors:
                    return_value="https://gl.example"), \
              patch("shared.pr_metadata.fetch_pr_metadata",
                    return_value=SimpleNamespace(base_sha="b", head_sha="h")) as mock_meta, \
-             patch("shared.pr_diff.first_added_lines",
-                   return_value={"f.py": 2}) as mock_fal:
+             patch("shared.pr_diff.added_lines_by_file",
+                   return_value={"f.py": [2]}) as mock_fal:
             out = handler_module._compute_anchors(job)
-        assert out == {"f.py": 2}
+        assert out == {"f.py": [2]}
         mock_meta.assert_called_once_with(
             "gitlab", 7, gitlab_project_path="group/sub/proj",
             gitlab_access_token="glpat", gitlab_base_url="https://gl.example")
@@ -2822,10 +2867,10 @@ class TestComputeAnchors:
                    return_value="secret"), \
              patch("shared.pr_metadata.fetch_pr_metadata",
                    return_value=SimpleNamespace(base_sha="b", head_sha="h")) as mock_meta, \
-             patch("shared.pr_diff.first_added_lines",
-                   return_value={"f.py": 9}) as mock_fal:
+             patch("shared.pr_diff.added_lines_by_file",
+                   return_value={"f.py": [9, 27, 35]}) as mock_fal:
             out = handler_module._compute_anchors(job)
-        assert out == {"f.py": 9}
+        assert out == {"f.py": [9, 27, 35]}
         mock_meta.assert_called_once_with(
             "azure_devops", 7, ado_org="example-org",
             ado_project="example-project", ado_repo="example-repo",

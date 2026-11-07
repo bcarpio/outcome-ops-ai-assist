@@ -261,8 +261,11 @@ def symbol_graph_consumers(
     Returns:
         ``(consumers, undetermined_files)``.
         ``consumers`` -- one dict per distinct external caller/importer:
-        ``{changed_file, changed_symbol_id, relation, consumer_repo,
-        consumer_file, consumer_line, truncated}``.
+        ``{changed_file, changed_line, changed_symbol_id, relation,
+        consumer_repo, consumer_file, consumer_line, truncated}``.
+        ``changed_line`` is the first changed RIGHT-side line that resolved the
+        symbol, so each finding anchors to the symbol it concerns (not the
+        file's first added line).
         ``undetermined_files`` -- files whose consumers could NOT be determined
         because the graph was unavailable or errored. Per ADR-054 the caller
         MUST fail closed on these (manual-review WARN), never report "safe".
@@ -282,11 +285,14 @@ def symbol_graph_consumers(
             # 1. Resolve the enclosing symbols the PR actually changed. A symbol
             #    lives in one workspace; take the first scope that resolves it.
             resolved: Dict[str, str] = {}  # target_symbol_id -> workspace_id
+            resolved_line: Dict[str, int] = {}  # target_symbol_id -> first line
             for line in sorted(set(lines)):
                 for ws in workspace_ids:
                     enc = reader.symbol_at_line(ws, repo, file_path, line)
                     if enc and enc.target_symbol_id:
-                        resolved[enc.target_symbol_id] = ws
+                        if enc.target_symbol_id not in resolved:
+                            resolved[enc.target_symbol_id] = ws
+                            resolved_line[enc.target_symbol_id] = line
                         break
 
             # No resolvable symbol (comment/whitespace change, or a graph gap
@@ -311,6 +317,7 @@ def symbol_graph_consumers(
                         seen.add(key)
                         consumers.append({
                             "changed_file": file_path,
+                            "changed_line": resolved_line[sid],
                             "changed_symbol_id": sid,
                             "relation": relation,
                             "consumer_repo": site.repo,
@@ -343,7 +350,7 @@ def check_breaking_changes(
     changed_files: List[str],
     query_kb_lambda_name: str,
     *,
-    anchors: Optional[Dict[str, int]] = None,
+    anchors: Optional[Dict[str, List[int]]] = None,
     provider: str = "github",
     connection_id: str | None = None,
     ado_org: str | None = None,
@@ -366,13 +373,17 @@ def check_breaking_changes(
     (``connection_id``, ``ado_org``, ``ado_project``, ``ado_repo``)
     are accepted for parity with sibling handlers but not used.
 
-    ``anchors`` maps repo-relative file path -> 1-based first added
-    RIGHT-side line in the PR diff. When supplied, each distinct
+    ``anchors`` maps repo-relative file path -> the full list of 1-based
+    added RIGHT-side lines in the PR diff. When supplied, each distinct
     high-confidence breaking change on a changed file whose path is in
     ``anchors`` is emitted as a line-anchored inline Finding
-    (shared.pr_findings). Files absent from ``anchors`` (pure deletions,
-    or when anchor computation failed and ``anchors`` is {}/None) are not
-    anchored and stay in the ``details`` summary only.
+    (shared.pr_findings). The plane-1 symbol path anchors each finding on
+    the specific changed line that resolved the symbol; the heuristic path
+    (no per-symbol line) anchors on the file's first added line and emits
+    at most one finding per (file, handler) so co-located findings are not
+    fanned out. Files absent from ``anchors`` (pure deletions, or when
+    anchor computation failed and ``anchors`` is {}/None) are not anchored
+    and stay in the ``details`` summary only.
     """
     logger.info(
         f"Running breaking changes check for PR #{pr_number} "
@@ -551,44 +562,50 @@ def check_breaking_changes(
 
         for handler_name, deps in deps_for_findings.items():
             handler_files = changes_by_handler[handler_name]["files"]
-            # Only files that are in the PR diff with a resolvable first-added
-            # line can be anchored; others stay in the summary.
+            # Only files that are in the PR diff with a resolvable added line
+            # can be anchored; others stay in the summary.
             anchorable_files = [f for f in handler_files if f in anchors]
+            # The heuristic has no per-symbol line, so every consumer of a
+            # handler would anchor to the same first-added line. Emit ONE
+            # finding per (file, handler) that enumerates the named consumers
+            # (ADR-032: name them, never an aggregate count) rather than
+            # fanning N identical-line findings.
+            consumer_names = sorted({dep.source for dep in deps})
+            consumers_phrase = ", ".join(f"'{c}'" for c in consumer_names)
             for path in anchorable_files:
-                for dep in deps:
-                    message = (
-                        f"Potential breaking change in '{handler_name}': "
-                        f"direct consumer '{dep.source}' depends on this and "
-                        f"may be affected."
-                    )
-                    findings.append(
-                        Finding(
-                            path=path,
-                            line=anchors[path],
-                            side="RIGHT",
-                            severity="warning",
-                            message=message,
-                            enclosing_symbol=None,
-                        ).model_dump()
-                    )
+                message = (
+                    f"Potential breaking change in '{handler_name}': direct "
+                    f"consumer(s) {consumers_phrase} depend on this and may be "
+                    f"affected."
+                )
+                findings.append(
+                    Finding(
+                        path=path,
+                        line=anchors[path][0],
+                        side="RIGHT",
+                        severity="warning",
+                        message=message,
+                        enclosing_symbol=None,
+                    ).model_dump()
+                )
 
     # Plane 1 (ADR-054): precise code-symbol consumers via the symbol graph.
     # Additive to the summary heuristic above (that heuristic is retired in a
     # later chunk): plane 1 can upgrade PASS -> WARN but never the reverse.
-    # `anchors` gives us the changed line to resolve the enclosing symbol; with
-    # no anchors we cannot anchor a Finding (ADR-031), so plane 1 is skipped.
-    # Fail CLOSED: a file whose consumers cannot be determined becomes a
-    # manual-review WARN, never a silent "safe".
+    # `anchors` gives us the changed lines to resolve the enclosing symbols;
+    # with no anchors we cannot anchor a Finding (ADR-031), so plane 1 is
+    # skipped. Fail CLOSED: a file whose consumers cannot be determined becomes
+    # a manual-review WARN, never a silent "safe".
     #
-    # NOTE (chunk-01 WIP): we resolve the symbol at each file's first-added line
-    # (the available anchor). Threading the FULL changed-line set so multiple
-    # changed symbols per file are covered is a follow-up refinement.
+    # We thread the FULL changed-line set per file (anchors is now the complete
+    # added-line list), so multiple changed symbols in one file are each
+    # resolved and each finding anchors to its own symbol's line.
     if anchors and scope_workspace_ids:
         # Symbol graph keys on the BARE repo name (reference_app_vs_repo_naming),
         # not the owner/repo (or org/project/repo) slug.
         bare_repo = repository.split("/")[-1]
         changed_lines_by_file = {
-            f: [anchors[f]] for f in relevant_files if f in anchors
+            f: anchors[f] for f in relevant_files if f in anchors
         }
         plane1_consumers, plane1_undetermined = symbol_graph_consumers(
             scope_workspace_ids, bare_repo, changed_lines_by_file
@@ -609,7 +626,7 @@ def check_breaking_changes(
                 findings.append(
                     Finding(
                         path=c["changed_file"],
-                        line=anchors[c["changed_file"]],
+                        line=c["changed_line"],
                         side="RIGHT",
                         severity="warning",
                         message=(

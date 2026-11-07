@@ -30,7 +30,7 @@ Design decisions:
 
 import difflib
 import logging
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 
 logger = logging.getLogger(__name__)
@@ -173,7 +173,7 @@ def added_line_numbers(file_diff: str) -> List[int]:
     return added
 
 
-def first_added_lines(
+def added_lines_by_file(
     provider: str,
     repository: str,
     base_sha: str,
@@ -187,18 +187,20 @@ def first_added_lines(
     ado_access_token: Optional[str] = None,
     gitlab_access_token: Optional[str] = None,
     gitlab_base_url: Optional[str] = None,
-) -> Dict[str, int]:
-    """Map each changed file -> its first added (RIGHT-side) line in the PR diff.
+) -> Dict[str, List[int]]:
+    """Map each changed file -> ALL its added (RIGHT-side) lines in the PR diff.
 
     Provider-agnostic (github / azure_devops / gitlab): fetches base + head bytes
     via ``shared.source_fetch.fetch_file_at_sha`` and diffs them with
-    ``compute_file_diff``, then takes the first added line. This lets file-level
-    checks (e.g. BREAKING_CHANGES, TEST_COVERAGE) anchor an inline comment on the
-    changed code without a GitHub-only server-side diff endpoint.
+    ``compute_file_diff``, then collects every added line (in order). This lets
+    file-level checks (e.g. BREAKING_CHANGES, TEST_COVERAGE) anchor inline
+    comments on the changed code -- and, with the full set rather than just the
+    first line, anchor *multiple* findings per file on their own distinct lines
+    instead of collapsing them all onto line one.
 
     Best-effort: a per-file fetch/parse failure is logged and skipped, never
     raised. Files with no added lines (pure deletion, binary, or unchanged) are
-    omitted from the result.
+    omitted from the result (ADR-031: never fabricate a line).
     """
     from shared.source_fetch import SourceFetchError, fetch_file_at_sha
 
@@ -216,10 +218,10 @@ def first_added_lines(
             "gitlab_base_url": gitlab_base_url,
         }
     else:
-        logger.warning("first_added_lines: unknown provider %r", provider)
+        logger.warning("added_lines_by_file: unknown provider %r", provider)
         return {}
 
-    result: Dict[str, int] = {}
+    result: Dict[str, List[int]] = {}
     for path in changed_files or []:
         try:
             try:
@@ -233,7 +235,29 @@ def first_added_lines(
             added = added_line_numbers(
                 compute_file_diff(base_bytes, head_bytes, path))
             if added:
-                result[path] = added[0]
+                result[path] = added
         except Exception as e:  # provider/network/parse -- skip this file
-            logger.warning("first_added_lines: skipping %s: %s", path, e)
+            logger.warning("added_lines_by_file: skipping %s: %s", path, e)
     return result
+
+
+def first_added_lines(
+    provider: str,
+    repository: str,
+    base_sha: str,
+    head_sha: str,
+    changed_files: List[str],
+    **kwargs: Any,
+) -> Dict[str, int]:
+    """Map each changed file -> its FIRST added (RIGHT-side) line.
+
+    Thin convenience over :func:`added_lines_by_file` for callers that want a
+    single anchor per file. Same best-effort contract; same omissions.
+    """
+    return {
+        path: lines[0]
+        for path, lines in added_lines_by_file(
+            provider, repository, base_sha, head_sha, changed_files, **kwargs
+        ).items()
+        if lines
+    }

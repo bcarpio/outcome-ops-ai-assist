@@ -455,6 +455,27 @@ class TestCheckBreakingChanges:
         assert "consumer(s) detected" in result["message"]
 
     @patch('breaking_changes_handler.query_vector_search')
+    def test_heuristic_findings_anchor_at_first_added_line(self, mock_query):
+        """With a full added-line list, the heuristic anchors at the file's
+        first added line and emits one finding per (file, handler)."""
+        mock_query.return_value = [
+            KbVectorResult(
+                0.95,
+                "This handler processes messages from the hello queue using SQS",
+                "handler-group-summary: consumer"),
+        ]
+        result = check_breaking_changes(
+            "BREAKING_CHANGES", 123, "owner/repo",
+            ["lambda/hello/handler.py"], "query-kb-lambda",
+            anchors={"lambda/hello/handler.py": [12, 30, 45]})
+        findings = result["findings"]
+        assert len(findings) == 1  # one per (file, handler), not per consumer
+        f = findings[0]
+        assert f["path"] == "lambda/hello/handler.py"
+        assert f["line"] == 12  # first added line, not 30/45
+        assert "consumer(s)" in f["message"]
+
+    @patch('breaking_changes_handler.query_vector_search')
     def test_check_breaking_changes_no_high_confidence(self, mock_query):
         """Test: No HIGH confidence dependencies found"""
         # Arrange
@@ -571,6 +592,30 @@ class TestSymbolGraphConsumers:
         assert {c["consumer_file"] for c in consumers} == {
             "lambda/x/handler.py", "lambda/y/handler.py"}
         assert all(c["changed_symbol_id"] == "pkg.mod::func" for c in consumers)
+
+    def test_distinct_symbols_get_their_own_changed_line(self):
+        """Two changed lines resolving different symbols -> each consumer finding
+        carries the line that resolved its symbol (not the file's first line)."""
+        outer = self
+
+        class _MultiSymSGR(outer._FakeSGR):
+            def symbol_at_line(self, ws, repo, file_path, line):
+                return SimpleNamespace(target_symbol_id=f"pkg::sym{line}")
+
+            def callers(self, ws, sid):
+                return SimpleNamespace(
+                    sites=[SimpleNamespace(repo="other", file_path=f"c/{sid}.py",
+                                           line=1, source_symbol_id="x")],
+                    complete=True)
+
+            def importers(self, ws, sid):
+                return SimpleNamespace(sites=[], complete=True)
+
+        consumers, undetermined = symbol_graph_consumers(
+            ["ws1"], "myrepo", {"f.py": [10, 20]}, reader=_MultiSymSGR())
+        assert undetermined == []
+        by_line = {c["changed_line"]: c["changed_symbol_id"] for c in consumers}
+        assert by_line == {10: "pkg::sym10", 20: "pkg::sym20"}
 
     def test_self_references_excluded(self):
         """A caller inside the changed file itself is not a breaking consumer."""

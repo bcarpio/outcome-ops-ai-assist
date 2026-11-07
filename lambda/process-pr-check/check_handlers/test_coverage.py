@@ -429,7 +429,7 @@ def check_test_coverage(
     ado_org: str | None = None,
     ado_project: str | None = None,
     ado_repo: str | None = None,
-    anchors: Optional[Dict[str, int]] = None,
+    anchors: Optional[Dict[str, List[int]]] = None,
 ) -> Dict[str, Any]:
     """
     Language-agnostic test coverage check.
@@ -881,7 +881,11 @@ def check_test_coverage(
     anchor_map = anchors or {}
     finding_severity = "error" if status == "FAIL" else "warning"
     for source_file, pattern in missing_test_files:
-        anchor_line = anchor_map.get(source_file)
+        # TEST_COVERAGE emits one Finding per missing-test file, so the file's
+        # first added line is the right anchor (``anchors`` is now the full
+        # added-line list per file; take the first).
+        anchor_lines = anchor_map.get(source_file)
+        anchor_line = anchor_lines[0] if anchor_lines else None
         if anchor_line is None:
             # No safe line anchor -- leave this file in the summary only.
             continue

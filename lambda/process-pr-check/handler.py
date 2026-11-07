@@ -687,7 +687,7 @@ def store_check_result(result: CheckResult) -> None:
         raise
 
 
-def run_check(job: CheckJob, anchors: Optional[Dict[str, int]] = None) -> Dict[str, Any]:
+def run_check(job: CheckJob, anchors: Optional[Dict[str, List[int]]] = None) -> Dict[str, Any]:
     """
     Route to appropriate check handler based on check type.
 
@@ -871,9 +871,13 @@ def format_check_comment(result: CheckResult, usage: UsageTracker | None = None)
 # =============================================================================
 
 
-def _compute_anchors(job: CheckJob) -> Dict[str, int]:
-    """First-added-line per changed file, for file-level checks that anchor
-    inline findings (BREAKING_CHANGES, TEST_COVERAGE).
+def _compute_anchors(job: CheckJob) -> Dict[str, List[int]]:
+    """All added (RIGHT-side) lines per changed file, for file-level checks that
+    anchor inline findings (BREAKING_CHANGES, TEST_COVERAGE).
+
+    Returns the FULL added-line list per file (not just the first) so a check
+    can anchor multiple findings in one file on their own distinct lines. A
+    single-anchor consumer takes ``lines[0]``.
 
     Provider-aware (github/gitlab/azure_devops). Best-effort: returns ``{}`` on
     any failure so the check still runs and simply posts no inline findings (it
@@ -892,7 +896,7 @@ def _compute_anchors(job: CheckJob) -> Dict[str, int]:
             meta = fetch_pr_metadata(
                 "gitlab", job.pr_number, gitlab_project_path=job.repository,
                 gitlab_access_token=token, gitlab_base_url=base)
-            return pr_diff.first_added_lines(
+            return pr_diff.added_lines_by_file(
                 "gitlab", job.repository, meta.base_sha, meta.head_sha,
                 job.changed_files, gitlab_access_token=token,
                 gitlab_base_url=base)
@@ -907,7 +911,7 @@ def _compute_anchors(job: CheckJob) -> Dict[str, int]:
                 "azure_devops", job.pr_number, ado_org=job.azure_devops_org,
                 ado_project=job.azure_devops_project, ado_repo=job.azure_devops_repo,
                 ado_access_token=access_token)
-            return pr_diff.first_added_lines(
+            return pr_diff.added_lines_by_file(
                 "azure_devops", job.repository, meta.base_sha, meta.head_sha,
                 job.changed_files, ado_org=job.azure_devops_org,
                 ado_project=job.azure_devops_project, ado_repo=job.azure_devops_repo,
@@ -916,7 +920,7 @@ def _compute_anchors(job: CheckJob) -> Dict[str, int]:
         token = get_github_token()
         meta = fetch_pr_metadata(
             "github", job.pr_number, repository=job.repository, github_token=token)
-        return pr_diff.first_added_lines(
+        return pr_diff.added_lines_by_file(
             "github", job.repository, meta.base_sha, meta.head_sha,
             job.changed_files, github_token=token)
     except Exception as e:
@@ -967,6 +971,27 @@ def _format_inline_comment(check_name: str, fd: "Finding") -> str:
         f"{glyph} <b>{check_name}</b>{where}: {fd.message}\n\n"
         "---\n*Powered by [OutcomeOps AI Assist](https://outcomeops.ai)*"
     )
+
+
+def _format_inline_body(check_name: str, findings: List["Finding"]) -> str:
+    """Render ONE inline comment body for all findings on a single (path, line).
+
+    A single finding keeps the original one-line format (unchanged). Two or more
+    findings that legitimately anchor to the same line are MERGED into one
+    bulleted comment rather than posted as separate overlapping comments (and
+    rather than silently dropping all but one, as the old per-(path,line) dict
+    did). No aggregate counts (ADR-032): each concrete finding is enumerated.
+    """
+    if len(findings) == 1:
+        return _format_inline_comment(check_name, findings[0])
+    lines = [f"<b>{check_name}</b>:", ""]
+    for fd in findings:
+        glyph = {"error": "❌", "warning": "⚠️", "info": "ℹ️"}.get(fd.severity, "⚠️")
+        where = f" in `{fd.enclosing_symbol}`" if fd.enclosing_symbol else ""
+        lines.append(f"- {glyph}{where} {fd.message}")
+    lines.append("")
+    lines.append("---\n*Powered by [OutcomeOps AI Assist](https://outcomeops.ai)*")
+    return "\n".join(lines)
 
 
 def _inline_provider_context(job: CheckJob) -> Dict[str, Any]:
@@ -1129,7 +1154,14 @@ def _sync_inline_findings(job: CheckJob, findings_raw: List[Dict[str, Any]]) -> 
         except Exception as e:  # malformed finding -> skip, don't fail the check
             logger.warning("[inline] dropping malformed finding %r: %s", raw, e)
 
-    desired = {(fd.path, fd.line): fd for fd in findings}
+    # Group findings by (path, line): all findings on one line share a single
+    # inline comment (and a single INLINE# bookkeeping row). This both MERGES
+    # co-located findings into one comment and stops the old silent last-wins
+    # drop that a per-(path,line) dict caused.
+    desired: Dict[tuple, List[Finding]] = {}
+    for fd in findings:
+        desired.setdefault((fd.path, fd.line), []).append(fd)
+
     existing = _query_inline_rows(pk, sk_prefix)
     existing_by_key: Dict[tuple, tuple] = {}
     for sk, row in existing.items():
@@ -1149,19 +1181,20 @@ def _sync_inline_findings(job: CheckJob, findings_raw: List[Dict[str, Any]]) -> 
             ctx = _inline_provider_context(job)
         return ctx
 
-    # Upsert desired findings.
-    for key, fd in desired.items():
-        body = _format_inline_comment(check_name, fd)
+    # Upsert desired findings (one comment per (path, line) group).
+    for key, group in desired.items():
+        rep = group[0]  # path/line/side identical across the group
+        body = _format_inline_body(check_name, group)
         prior = existing_by_key.get(key)
         try:
             if prior:
                 _patch_inline(job, _get_ctx(), body, prior[1])
             else:
-                ids = _post_inline(job, _get_ctx(), body, fd)
-                _store_inline_row(pk, f"{sk_prefix}{fd.path}#{fd.line}", job, fd, ids)
+                ids = _post_inline(job, _get_ctx(), body, rep)
+                _store_inline_row(pk, f"{sk_prefix}{rep.path}#{rep.line}", job, rep, ids)
         except Exception as e:
             logger.warning(
-                "[inline] upsert failed for %s %s:%s: %s", check, fd.path, fd.line, e)
+                "[inline] upsert failed for %s %s:%s: %s", check, rep.path, rep.line, e)
 
     # Resolve stale rows (posted before, not among this run's findings).
     for key, (sk, row) in existing_by_key.items():
@@ -1204,7 +1237,7 @@ def process_check_job(job: CheckJob) -> CheckResult:
     # File-level checks (breaking changes, test coverage) can anchor inline
     # findings only if given a first-added-line map; compute it provider-aware
     # for just those checks (other checks don't need it and skip the fetch).
-    anchors: Optional[Dict[str, int]] = None
+    anchors: Optional[Dict[str, List[int]]] = None
     if job.check_type in (CheckType.BREAKING_CHANGES, CheckType.TEST_COVERAGE):
         anchors = _compute_anchors(job)
     check_result = run_check(job, anchors)

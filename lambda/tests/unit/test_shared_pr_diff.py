@@ -237,6 +237,52 @@ class TestAddedLineNumbers:
         assert pr_diff.added_line_numbers("") == []
 
 
+class TestAddedLinesByFile:
+    """``added_lines_by_file`` -- {path: ALL added RIGHT-side lines} (full set).
+
+    Full set (not just the first line) is what lets a check anchor multiple
+    findings in one file on distinct lines. ``fetch_file_at_sha`` is mocked so
+    ``compute_file_diff`` runs for real.
+    """
+
+    def _patch_fetch(self, side_effect):
+        return patch("shared.source_fetch.fetch_file_at_sha", side_effect=side_effect)
+
+    def test_collects_all_added_lines_in_order(self):
+        def fake(provider, path, sha, **kwargs):
+            if sha == "base":
+                return b"a\nb\nc\n"
+            return b"a\nNEW1\nb\nc\nNEW2\n"  # adds at RIGHT lines 2 and 5
+        with self._patch_fetch(fake):
+            out = pr_diff.added_lines_by_file(
+                "github", "owner/repo", "base", "head", ["f.py"],
+                github_token="ghp")
+        assert out == {"f.py": [2, 5]}
+
+    def test_no_added_lines_omitted(self):
+        def fake(provider, path, sha, **kwargs):
+            return b"identical\n"
+        with self._patch_fetch(fake):
+            out = pr_diff.added_lines_by_file(
+                "github", "owner/repo", "base", "head", ["same.py"],
+                github_token="ghp")
+        assert out == {}
+
+    def test_first_added_lines_delegates_to_full_set(self):
+        # first_added_lines is a thin convenience: first element of each list.
+        def fake(provider, path, sha, **kwargs):
+            if sha == "base":
+                return b"a\nb\n"
+            return b"a\nNEW1\nb\nNEW2\n"  # adds at 2 and 4
+        with self._patch_fetch(fake):
+            full = pr_diff.added_lines_by_file(
+                "github", "owner/repo", "base", "head", ["f.py"], github_token="ghp")
+            first = pr_diff.first_added_lines(
+                "github", "owner/repo", "base", "head", ["f.py"], github_token="ghp")
+        assert full == {"f.py": [2, 4]}
+        assert first == {"f.py": 2}
+
+
 class TestFirstAddedLines:
     """``first_added_lines`` -- {path: first added RIGHT-side line} across providers.
 
