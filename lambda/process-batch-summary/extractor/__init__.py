@@ -41,6 +41,12 @@ from . import csharp_extractor  # noqa: F401
 from . import go_extractor  # noqa: F401
 from . import abap_extractor  # noqa: F401
 
+# Side-effect: each module calls ``register_resolver()`` at import time (ADR-055).
+# Languages without a resolver keep raw reference targets (no regression).
+from . import python_resolver  # noqa: F401
+
+from .resolution import build_definitions_index, resolve_repo_facts
+
 logger = logging.getLogger(__name__)
 
 __all__ = [
@@ -48,10 +54,12 @@ __all__ = [
     "EXCLUDED_PATH_FRAGMENTS",
     "Fact",
     "SymbolGraphFilter",
+    "build_definitions_index",
     "extract_facts",
     "extract_facts_from_bytes",
     "is_excluded_path",
     "make_symbol_id",
+    "resolve_repo_facts",
     "supported_languages",
 ]
 

@@ -234,6 +234,51 @@ def supported_languages() -> Set[str]:
 
 
 # ---------------------------------------------------------------------------
+# Reference-resolution registry (ADR-055)
+# ---------------------------------------------------------------------------
+
+
+# A per-language *resolver* binds a file's cross-module references (calls /
+# imports / extends) to the callee's DEFINITION symbol id, so
+# ``symbol_graph_reader.callers``/``importers`` of a definition return the real
+# cross-file consumers. It is the language-specific half of ADR-055; the
+# language-agnostic pass lives in ``extractor.resolution``.
+#
+# Contract: given one file's facts and a repo definitions index, return a remap
+# ``{raw_target_symbol_id: resolved_target_symbol_id}`` for that file's
+# reference facts. Only entries that bind UNAMBIGUOUSLY to a known definition
+# are returned; everything else is omitted and the framework leaves the raw
+# target unchanged (ADR-055 never-guess). The index is typed ``object`` here to
+# avoid a circular import with ``extractor.resolution``.
+ResolverFn = Callable[[List["Fact"], object], Dict[str, str]]
+
+
+_RESOLVER_REGISTRY: Dict[str, ResolverFn] = {}
+
+
+def register_resolver(language: str, fn: ResolverFn) -> None:
+    """Register a per-language reference resolver (ADR-055)."""
+
+    _RESOLVER_REGISTRY[language] = fn
+
+
+def get_resolver(language: str) -> Optional[ResolverFn]:
+    """Return the registered resolver for ``language`` or None.
+
+    A language with no resolver keeps raw (unresolved) reference targets — no
+    regression, and languages are enabled incrementally per ADR-055.
+    """
+
+    return _RESOLVER_REGISTRY.get(language)
+
+
+def resolver_languages() -> Set[str]:
+    """Return the set of languages that currently have a resolver."""
+
+    return set(_RESOLVER_REGISTRY.keys())
+
+
+# ---------------------------------------------------------------------------
 # Per-repo extraction filter
 # ---------------------------------------------------------------------------
 
