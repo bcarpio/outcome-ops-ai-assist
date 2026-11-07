@@ -392,6 +392,23 @@ module "process_pr_check_lambda" {
         module.audit_logs_table.dynamodb_table_arn
       ]
     }
+
+    # shared.symbol_graph_reader emits OutcomeOps/SymbolGraph::QueryLatency
+    # (chunk-08 latency alarm) from the pr-check path too -- BREAKING_CHANGES
+    # plane-1 queries the symbol graph per check. PutMetricData has no
+    # resource-level ARN, so scope by namespace (mirrors lambda-chat.tf /
+    # mcp-outcomeops.tf). Without this the emit AccessDenies on every query
+    # and the latency metric is silently never recorded.
+    cloudwatch_symbol_graph_metrics = {
+      effect    = "Allow"
+      actions   = ["cloudwatch:PutMetricData"]
+      resources = ["*"]
+      conditions = [{
+        test     = "StringEquals"
+        variable = "cloudwatch:namespace"
+        values   = ["OutcomeOps/SymbolGraph"]
+      }]
+    }
     },
     # chunk 07: ADO PR-comment posting needs DDB read on AZDO_TOKEN#
     # rows + KMS decrypt on the OAuth tokens key. Gated on
