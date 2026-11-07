@@ -26,9 +26,15 @@ Keep entries terse — this is the index, not the spec.
 - **Titan Text Embeddings v2** for ingestion (1024-dim).
 - **Cohere Rerank 3.5** post-retrieval reranker, `top_k * 4`
   over-fetch capped at 50, drop below `rerank_min_score=0.3`.
-- **Anthropic Sonnet + Haiku via Bedrock** — Sonnet for advanced
-  reasoning, Haiku as the RAG default. tfvars-swappable per customer.
-  See `lambda/shared/audit.py` for `MODEL_PRICING`.
+- **Anthropic Claude via Bedrock — model-per-tier is a tfvar, not
+  hard-coded.** `bedrock_advanced_model_id` / `bedrock_basic_model_id`
+  pick the advanced and basic tiers. prd ships Sonnet 5.5 (advanced) +
+  Haiku 5.5 (basic), but any Claude model the customer has Bedrock
+  access to drops into either tier by changing the tfvar — e.g. Opus 5.5
+  or Fable as the advanced tier — no code change. Per-tier prices
+  (`bedrock_advanced_input_price`/`_output_price`, `bedrock_basic_*`) are
+  tfvars too. Embedding-model swap is architectural (vector dimensions),
+  not a tfvar flip. See `lambda/shared/audit.py` for `MODEL_PRICING`.
 - **OpenAI GPT-5.5 / 5.4 / Codex via Bedrock Mantle** — same
   `shared.model_client.invoke()` entry point routes anthropic prefixes
   to the Converse API and openai prefixes to the Mantle Responses API
@@ -444,8 +450,8 @@ to the `/audit` page, and ADR-018 for schema design.
   EventBridge cron (`cron(0 13 * * ? *)`), publishes first-cross
   threshold to SNS so finance / org-admin see it on day-of, not
   end-of-month.
-- **Operator-tunable pricing** — every model price (Sonnet input /
-  output, Haiku input / output, Embedding, Rerank-per-1k,
+- **Operator-tunable pricing** — every model price (advanced-tier input
+  / output, basic-tier input / output, Embedding, Rerank-per-1k,
   Comprehend-per-1M-chars) is a tfvar so customers on negotiated AWS
   pricing override without a code change.
 - **Bedrock application inference profiles for per-workload cost
