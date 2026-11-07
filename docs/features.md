@@ -102,6 +102,16 @@ customer's account; no diff leaves their boundary.
   PATCHed/PUT, never duplicated). `shared/pr_metadata.py` maps ADO
   `changeType` → GitHub status vocab so BREAKING_CHANGES behaves
   identically across platforms.
+- **Inline line-level review comments** — findings also post as
+  line-anchored review comments (GitHub review comments, GitLab
+  discussions with a diff position, ADO threads with `threadContext`)
+  alongside the per-check summary. `shared/pr_findings.py` carries the
+  Finding contract (path/line/side/severity/message) under the ADR-031
+  line-citation + ADR-032 no-aggregate rules; `process-pr-check`
+  `_sync_inline_findings` upserts new / patches existing / resolves
+  stale per `(check, file, line)` via `INLINE#` rows. Non-fatal: an
+  inline post/patch/resolve failure only warns, the summary already
+  landed.
 - **Enterprise scale** — symbol lookups use the `target-name-index`
   GSI (scales with matches, not workspace size); global workspaces
   (`is_global`) inject org-wide standards into every check.
