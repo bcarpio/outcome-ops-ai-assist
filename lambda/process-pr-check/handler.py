@@ -770,6 +770,7 @@ def run_check(job: CheckJob, anchors: Optional[Dict[str, List[int]]] = None) -> 
             changed_files=job.changed_files,
             query_kb_lambda_name=QUERY_KB_LAMBDA_NAME,
             github_token_param=github_token_param,
+            anchors=anchors,
             **provider_kwargs,
         )
 
@@ -1238,7 +1239,11 @@ def process_check_job(job: CheckJob) -> CheckResult:
     # findings only if given a first-added-line map; compute it provider-aware
     # for just those checks (other checks don't need it and skip the fetch).
     anchors: Optional[Dict[str, List[int]]] = None
-    if job.check_type in (CheckType.BREAKING_CHANGES, CheckType.TEST_COVERAGE):
+    if job.check_type in (
+        CheckType.BREAKING_CHANGES,
+        CheckType.TEST_COVERAGE,
+        CheckType.ARCHITECTURAL_DUPLICATION,
+    ):
         anchors = _compute_anchors(job)
     check_result = run_check(job, anchors)
     usage = check_result.get("usage")

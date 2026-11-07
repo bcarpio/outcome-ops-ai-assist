@@ -433,7 +433,14 @@ def analyze_similarity_with_claude(
         usage_tracker: UsageTracker to record API usage
 
     Returns:
-        dict with keys: hasSimilar (bool), findings (list of str)
+        dict with keys:
+        - ``hasSimilar`` (bool)
+        - ``findings`` (list of dicts ``{changed_file, existing_ref, message}``):
+          ``changed_file`` is the PR file that duplicates existing code (used to
+          anchor an inline comment); ``existing_ref`` is the other-repo match.
+        - ``parse_failed`` (bool): True when the model response could not be
+          parsed. The caller MUST fail closed on this (manual-review WARN),
+          never a silent "unique" (the max_tokens-truncation fail-open class).
     """
     prompt = f"""You are identifying code that performs the SAME BUSINESS FUNCTION across repositories.
 
@@ -471,9 +478,22 @@ RESPONSE FORMAT (JSON only, no markdown):
 {{
   "hasSimilar": true/false,
   "findings": [
-    "**repo-name/path/to/file.py**: same [business function] - candidate for shared library"
+    {{
+      "changed_file": "<one of the FILES BEING CHANGED, copied verbatim>",
+      "existing_ref": "repo-name/path/to/file.py",
+      "message": "same [business function] - candidate for shared library"
+    }}
   ]
 }}
+
+RULES FOR EACH FINDING:
+- "changed_file" MUST be copied verbatim from the FILES BEING CHANGED list above.
+  It is the NEW code in THIS PR that duplicates existing functionality -- it is
+  what the inline comment will be anchored to.
+- "existing_ref" is the EXISTING implementation in ANOTHER repo (the match from
+  the knowledge base). It is NEVER one of the changed files.
+- "message" states the shared business function. Do NOT include a count of
+  findings.
 
 If no code performs the SAME BUSINESS FUNCTION, return:
 {{"hasSimilar": false, "findings": []}}"""
@@ -484,7 +504,7 @@ If no code performs the SAME BUSINESS FUNCTION, return:
         response_text, usage = call_bedrock(
             prompt=prompt,
             model_id=SONNET_MODEL_ID,
-            max_tokens=1000,
+            max_tokens=4000,
             temperature=0.1
         )
         usage_tracker.add(usage)
@@ -505,9 +525,16 @@ If no code performs the SAME BUSINESS FUNCTION, return:
 
         try:
             parsed = json.loads(json_text)
+            raw_findings = parsed.get("findings", [])
+            # Keep only structured findings; ignore anything malformed.
+            findings = (
+                [f for f in raw_findings if isinstance(f, dict) and f.get("changed_file")]
+                if isinstance(raw_findings, list) else []
+            )
             return {
-                "hasSimilar": parsed.get("hasSimilar", False),
-                "findings": parsed.get("findings", []) if isinstance(parsed.get("findings"), list) else []
+                "hasSimilar": bool(parsed.get("hasSimilar", False)),
+                "findings": findings,
+                "parse_failed": False,
             }
 
         except json.JSONDecodeError as e:
@@ -515,10 +542,13 @@ If no code performs the SAME BUSINESS FUNCTION, return:
             logger.error(f"Attempted to parse: {json_text}")
             logger.error(f"Parse error: {e}")
 
-            # Fallback: return no findings
+            # Fail CLOSED: we could not determine duplication, so we must NOT
+            # report "unique" (that is the max_tokens-truncation fail-open bug
+            # class). Surface it for manual review via parse_failed.
             return {
                 "hasSimilar": False,
-                "findings": ["Could not parse similarity analysis"]
+                "findings": [],
+                "parse_failed": True,
             }
 
     except Exception as e:
@@ -534,6 +564,7 @@ def check_architectural_duplication(
     query_kb_lambda_name: str,
     github_token_param: str,
     *,
+    anchors: Optional[Dict[str, List[int]]] = None,
     provider: str = "github",
     connection_id: str | None = None,
     ado_org: str | None = None,
@@ -718,11 +749,30 @@ def check_architectural_duplication(
         # Step 5: Return results
         details = []
 
+        # Fail CLOSED: the model response could not be parsed, so we do not
+        # know whether this duplicates existing code -- surface for manual
+        # review rather than silently reporting "unique".
+        if analysis.get("parse_failed"):
+            details.append(
+                "Could not parse the similarity analysis -- manual review "
+                "required. This is NOT a confirmation that the functionality "
+                "is unique."
+            )
+            return {
+                "checkType": check_type,
+                "status": "WARN",
+                "message": "Similarity analysis incomplete - manual review required",
+                "details": details,
+                "usage": usage_tracker,
+            }
+
         if analysis["hasSimilar"] and analysis["findings"]:
             details.append("**Similar implementations found across repositories:**")
             details.append("")
-            for finding in analysis["findings"]:
-                details.append(f"- {finding}")
+            for fd in analysis["findings"]:
+                existing = fd.get("existing_ref", "")
+                msg = fd.get("message", "")
+                details.append(f"- **{existing}**: {msg}")
             details.append("")
             details.append("**Consolidation opportunities:**")
             details.append("- Could these implementations be extracted into a shared library?")
@@ -735,11 +785,40 @@ def check_architectural_duplication(
                 "You have the context to decide if consolidation makes sense for your use case."
             )
 
+            # Line-anchored inline findings (shared.pr_findings / ADR-031). Each
+            # structured finding names the CHANGED file that duplicates existing
+            # code; anchor the inline comment on that file's first added line.
+            # ``anchors`` only contains changed files with added lines, so a
+            # hallucinated/absent changed_file simply gets no anchor (summary
+            # only) -- never a fabricated line. severity=info (advisory).
+            from shared.pr_findings import Finding
+
+            anchor_map = anchors or {}
+            inline_findings: List[Dict[str, Any]] = []
+            for fd in analysis["findings"]:
+                changed_file = fd.get("changed_file")
+                lines = anchor_map.get(changed_file) if changed_file else None
+                if not lines:
+                    continue
+                existing = fd.get("existing_ref", "")
+                msg = fd.get("message", "")
+                inline_findings.append(
+                    Finding(
+                        path=changed_file,
+                        line=lines[0],
+                        side="RIGHT",
+                        severity="info",
+                        message=f"Similar implementation exists: {existing} - {msg}",
+                        enclosing_symbol=None,
+                    ).model_dump()
+                )
+
             return {
                 "checkType": check_type,
                 "status": "WARN",
                 "message": "Similar implementations found across repos",
                 "details": details,
+                "findings": inline_findings,
                 "usage": usage_tracker
             }
         else:

@@ -344,7 +344,10 @@ class TestAnalyzeSimilarityWithClaude:
             "output": {
                 "message": {
                     "content": [{
-                        "text": '{"hasSimilar": true, "findings": ["repo/handler.py has similar webhook processing"]}'
+                        "text": ('{"hasSimilar": true, "findings": [{'
+                                 '"changed_file": "lambda/hello/handler.py", '
+                                 '"existing_ref": "repo/handler.py", '
+                                 '"message": "same webhook processing - candidate for shared library"}]}')
                     }]
                 }
             },
@@ -360,11 +363,34 @@ class TestAnalyzeSimilarityWithClaude:
             usage_tracker
         )
 
-        # Assert
+        # Assert -- structured findings carry changed_file for anchoring.
         assert result["hasSimilar"] is True
-        assert len(result["findings"]) > 0
-        assert "webhook" in result["findings"][0]
+        assert result["parse_failed"] is False
+        assert len(result["findings"]) == 1
+        assert result["findings"][0]["changed_file"] == "lambda/hello/handler.py"
+        assert "webhook" in result["findings"][0]["message"]
         assert usage_tracker.total_tokens > 0
+
+    @patch.object(bedrock_module, 'invoke_model')
+    def test_analyze_similarity_drops_unstructured_findings(self, mock_invoke):
+        """A finding missing changed_file (or not a dict) is dropped."""
+        mock_invoke.return_value = _LegacyDictResponse({
+            "output": {
+                "message": {
+                    "content": [{
+                        "text": ('{"hasSimilar": true, "findings": ['
+                                 '"a bare string", '
+                                 '{"existing_ref": "repo/x.py", "message": "no changed_file"}]}')
+                    }]
+                }
+            },
+            "usage": {"inputTokens": 10, "outputTokens": 5}
+        })
+        usage_tracker = bedrock_module.UsageTracker()
+        result = analyze_similarity_with_claude(
+            "PR", "KB", ["lambda/hello/handler.py"], usage_tracker)
+        assert result["parse_failed"] is False
+        assert result["findings"] == []  # both dropped
 
     @patch.object(bedrock_module, 'invoke_model')
     def test_analyze_similarity_no_similar(self, mock_invoke):
@@ -413,10 +439,12 @@ class TestAnalyzeSimilarityWithClaude:
         # Act
         result = analyze_similarity_with_claude("PR summary", "KB context", ["lambda/hello/handler.py"], usage_tracker)
 
-        # Assert
+        # Assert -- fail CLOSED: no findings, parse_failed flagged (never a
+        # silent "unique"). The caller turns parse_failed into a WARN.
         assert "hasSimilar" in result
         assert result["hasSimilar"] is False
-        assert "Could not parse" in result["findings"][0]
+        assert result["findings"] == []
+        assert result["parse_failed"] is True
 
 
 class TestCheckArchitecturalDuplication:
@@ -461,17 +489,23 @@ class TestCheckArchitecturalDuplication:
         }
         mock_analyze.return_value = {
             "hasSimilar": True,
-            "findings": ["repo/handler.py has similar webhook processing"]
+            "findings": [{
+                "changed_file": "lambda/hello/handler.py",
+                "existing_ref": "repo/handler.py",
+                "message": "similar webhook processing - candidate for shared library",
+            }],
+            "parse_failed": False,
         }
 
-        # Act
+        # Act -- anchors supplied so the finding posts inline too.
         result = check_architectural_duplication(
             "ARCHITECTURAL_DUPLICATION",
             123,
             "owner/repo",
             ["lambda/hello/handler.py"],
             "query-kb-lambda",
-            "/dev/github/token"
+            "/dev/github/token",
+            anchors={"lambda/hello/handler.py": [5, 9]},
         )
 
         # Assert
@@ -479,6 +513,71 @@ class TestCheckArchitecturalDuplication:
         assert result["status"] == "WARN"
         assert "Similar implementations found" in result["message"]
         assert any("webhook" in str(detail) for detail in result["details"])
+        # One inline finding, anchored on the changed file's first added line.
+        assert len(result["findings"]) == 1
+        f = result["findings"][0]
+        assert f["path"] == "lambda/hello/handler.py"
+        assert f["line"] == 5
+        assert f["severity"] == "info"
+        assert "repo/handler.py" in f["message"]
+
+    @patch('architectural_duplication_handler.get_github_token')
+    @patch('architectural_duplication_handler.fetch_pr_file_diff')
+    @patch('architectural_duplication_handler.summarize_pr_with_claude')
+    @patch('architectural_duplication_handler.query_knowledge_base')
+    @patch('architectural_duplication_handler.analyze_similarity_with_claude')
+    def test_parse_failed_fails_closed_to_warn(
+        self, mock_analyze, mock_query_kb, mock_summarize, mock_fetch, mock_token
+    ):
+        """parse_failed -> WARN manual review, never a silent PASS/unique."""
+        mock_token.return_value = "token"
+        mock_fetch.return_value = "+new code"
+        mock_summarize.return_value = "This PR does something"
+        mock_query_kb.return_value = {"answer": "x", "sources": ["repo/h.py"]}
+        mock_analyze.return_value = {
+            "hasSimilar": False, "findings": [], "parse_failed": True}
+
+        result = check_architectural_duplication(
+            "ARCHITECTURAL_DUPLICATION", 123, "owner/repo",
+            ["lambda/hello/handler.py"], "query-kb-lambda", "/dev/github/token")
+
+        assert result["status"] == "WARN"
+        assert "manual review" in result["message"].lower()
+        assert not result.get("findings")  # no inline findings on a parse failure
+
+    @patch('architectural_duplication_handler.get_github_token')
+    @patch('architectural_duplication_handler.fetch_pr_file_diff')
+    @patch('architectural_duplication_handler.summarize_pr_with_claude')
+    @patch('architectural_duplication_handler.query_knowledge_base')
+    @patch('architectural_duplication_handler.analyze_similarity_with_claude')
+    def test_finding_without_anchor_stays_summary_only(
+        self, mock_analyze, mock_query_kb, mock_summarize, mock_fetch, mock_token
+    ):
+        """A changed_file absent from anchors gets no inline Finding (ADR-031:
+        never fabricate a line) but still appears in the summary details."""
+        mock_token.return_value = "token"
+        mock_fetch.return_value = "+new code"
+        mock_summarize.return_value = "This PR adds webhook processing"
+        mock_query_kb.return_value = {"answer": "x", "sources": ["repo/h.py"]}
+        mock_analyze.return_value = {
+            "hasSimilar": True,
+            "findings": [{
+                "changed_file": "lambda/hello/handler.py",
+                "existing_ref": "repo/h.py",
+                "message": "same webhook processing",
+            }],
+            "parse_failed": False,
+        }
+
+        # No anchors -> no safe line -> summary only.
+        result = check_architectural_duplication(
+            "ARCHITECTURAL_DUPLICATION", 123, "owner/repo",
+            ["lambda/hello/handler.py"], "query-kb-lambda", "/dev/github/token",
+            anchors={})
+
+        assert result["status"] == "WARN"
+        assert result.get("findings") == []  # nothing anchored
+        assert any("webhook" in str(d) for d in result["details"])  # still in summary
 
     @patch('architectural_duplication_handler.get_github_token')
     @patch('architectural_duplication_handler.fetch_pr_file_diff')
