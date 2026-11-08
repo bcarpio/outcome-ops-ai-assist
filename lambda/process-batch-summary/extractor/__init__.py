@@ -46,6 +46,8 @@ from . import abap_extractor  # noqa: F401
 from . import python_resolver  # noqa: F401
 from . import csharp_resolver  # noqa: F401
 from . import java_resolver  # noqa: F401
+from . import typescript_resolver  # noqa: F401
+from . import go_resolver  # noqa: F401
 
 from .resolution import build_definitions_index, resolve_repo_facts
 
