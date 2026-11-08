@@ -236,22 +236,54 @@ def create_tailored_query(handler_name: str, change_type: ChangeType) -> str:
         return f"handlers that depend on {handler_name}"
 
 
+# Source-code extensions the symbol graph carries facts for (one per registered
+# extractor language: Python, TypeScript, Java, C#, Go, ABAP). Plane 1 resolves
+# symbols language-agnostically through the reader, so its file scope keys off the
+# extension, never a repo-specific path.
+_PLANE1_CODE_EXTENSIONS = (
+    ".py", ".ts", ".tsx", ".java", ".cs", ".go", ".abap",
+)
+
+# Test-file markers excluded from plane 1 (a test's symbols rarely have
+# consumers, and co-located tests have no test *directory*). Covers the common
+# per-language conventions plus the ``/tests/`` and ``/test/`` directory forms.
+_PLANE1_TEST_SUFFIXES = (
+    "_test.go", "_test.py",
+    ".test.ts", ".test.tsx", ".spec.ts", ".spec.tsx",
+    "tests.cs", "test.cs",  # *Tests.cs / *Test.cs (compared lowercased)
+)
+
+
+def _is_plane1_test_file(path: str) -> bool:
+    lf = path.lower()
+    if "/tests/" in lf or "/test/" in lf or lf.startswith("test/") or lf.startswith("tests/"):
+        return True
+    if any(lf.endswith(s) for s in _PLANE1_TEST_SUFFIXES):
+        return True
+    basename = lf.rsplit("/", 1)[-1]
+    if basename.startswith("test_") and basename.endswith(".py"):
+        return True
+    return False
+
+
 def _plane1_file_scope(changed_files: List[str]) -> List[str]:
-    """Plane-1 (symbol-graph) file scope: every changed Python source under
-    ``lambda/`` that is not a test.
+    """Plane-1 (symbol-graph) file scope: every changed source file of a
+    symbol-graph language that is not a test -- regardless of repo layout.
 
     Unlike the heuristic's handler.py-only ``relevant_files``, plane 1 resolves
-    real code symbols, so it must see ``shared/*.py`` and non-handler modules
-    (``lambda/<x>/*.py``, ``check_handlers/*.py``) -- exactly the high-fan-out
-    code whose change breaks the most consumers. In a Lambda monorepo handlers
-    do not import each other's ``handler.py``; they share code through
-    ``shared/``, so a handler-scoped plane 1 is blind to its highest-value
-    targets. Terraform carries no Python symbol (heuristic/plane-2 territory)
-    and is excluded here. (ADR-054 / ADR-055.)
+    real code symbols via the (language-agnostic) symbol-graph reader, so it must
+    see every changed source module -- a ``shared/`` helper, a Go subpackage, a
+    C# service, a TS util -- exactly the high-fan-out code whose change breaks the
+    most consumers. The scope is therefore keyed on the source-code EXTENSION, not
+    a ``lambda/*.py`` path: the platform is language- and repo-agnostic, and the
+    earlier path-scoped version silently returned nothing for every non-Python,
+    non-``lambda/`` repo (Go/C#/TS/Java), making plane 1 a no-op there. Terraform
+    and docs carry no resolvable code symbol (heuristic / plane-2 territory) and
+    are excluded by not being code extensions. (ADR-054 / ADR-055.)
     """
     return [
         f for f in changed_files
-        if f.startswith("lambda/") and f.endswith(".py") and "/tests/" not in f
+        if f.endswith(_PLANE1_CODE_EXTENSIONS) and not _is_plane1_test_file(f)
     ]
 
 

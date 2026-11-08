@@ -664,7 +664,8 @@ class TestSymbolGraphConsumers:
 
 
 class TestPlane1FileScope:
-    """Chunk 11: plane-1 file scope is widened beyond handler.py."""
+    """Plane-1 file scope is language- and repo-agnostic: keyed on source-code
+    extension (any symbol-graph language), not a lambda/*.py path."""
 
     def test_includes_shared_and_non_handler_modules(self):
         """shared/*.py and non-handler lambda modules are in plane-1 scope --
@@ -678,26 +679,46 @@ class TestPlane1FileScope:
         assert _plane1_file_scope(changed) == changed
 
     def test_includes_handler_py(self):
-        """handler.py is still Python under lambda/ -> stays in plane-1 scope
-        (handlers can be imported too; widening is additive, not a swap)."""
+        """handler.py is still Python -> stays in plane-1 scope (handlers can be
+        imported too; widening is additive, not a swap)."""
         assert _plane1_file_scope(["lambda/hello/handler.py"]) == [
             "lambda/hello/handler.py"
         ]
 
-    def test_excludes_tests(self):
-        """Test modules carry no production consumers and are excluded."""
+    def test_includes_all_symbol_graph_languages_any_path(self):
+        """A changed source file of ANY symbol-graph language is in scope,
+        regardless of repo layout (Go/C#/TS/TSX/Java/ABAP, not under lambda/)."""
+        changed = [
+            "binding/binding.go",                         # Go, repo root pkg
+            "src/ClientApp/ViewModels/CatalogItemViewModel.cs",  # C#
+            "src/utils/accept.ts",                        # TS
+            "ui/src/App.tsx",                             # TSX
+            "src/main/java/com/acme/Widget.java",         # Java
+            "src/zcl_thing.abap",                         # ABAP
+        ]
+        assert _plane1_file_scope(changed) == changed
+
+    def test_excludes_tests_all_conventions(self):
+        """Test modules carry no production consumers and are excluded across
+        per-language conventions (dir-based and co-located)."""
         assert _plane1_file_scope([
             "lambda/tests/unit/test_check_breaking_changes.py",
             "lambda/shared/tests/test_pr_metadata.py",
+            "binding/form_mapping_test.go",               # Go co-located
+            "src/utils/accept.test.ts",                   # TS co-located
+            "src/router/trie.spec.ts",
+            "tests/Basket.UnitTests/BasketServiceTests.cs",  # C#
+            "src/test/java/com/acme/WidgetTest.java",
         ]) == []
 
-    def test_excludes_terraform_non_lambda_and_non_python(self):
-        """Terraform (no Python symbol), non-lambda paths, and non-.py files
-        are not plane-1 targets."""
+    def test_excludes_non_code(self):
+        """Terraform, config, docs and other non-code files carry no resolvable
+        symbol and are not plane-1 targets."""
         assert _plane1_file_scope([
             "terraform/lambda.tf",
-            "ui/src/app.ts",
             "lambda/hello/config.yaml",
+            "go.mod",
+            "package.json",
             "README.md",
         ]) == []
 
