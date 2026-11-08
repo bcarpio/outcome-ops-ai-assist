@@ -100,17 +100,33 @@ def resolve_module_suffix(module_text: str, modules: Set[str]) -> Optional[str]:
     return hits[0] if len(hits) == 1 else None
 
 
-def resolve_repo_facts(facts: Iterable[Fact]) -> List[Fact]:
+def resolve_repo_facts(
+    facts: Iterable[Fact],
+    extra_definitions: Optional[Iterable[Fact]] = None,
+) -> List[Fact]:
     """Rewrite reference targets to definition ids across one repo's facts.
 
     Pure function: takes the full fact stream for a repo (every file), returns a
     new list with each resolvable ``calls``/``imports``/``extends`` target bound
     to its definition id. ``defines`` facts pass through unchanged. Files whose
     language has no registered resolver pass through unchanged (no regression).
+
+    ``extra_definitions`` (ADR-056) widens the definitions index with the
+    ``defines`` of OTHER repos in the same workspace, so a cross-repo reference
+    can bind to a producer repo's definition. They are **lookup-only**: they are
+    never grouped by file, resolved, rewritten, or emitted -- only ``facts`` (this
+    repo's own stream) is resolved and returned. When ``extra_definitions`` is
+    None/empty, behavior is identical to the within-repo (ADR-055) pass, and
+    never-guess still holds -- a name defined in more than one repo is ambiguous
+    workspace-wide (``by_name`` length > 1) and the unique-name fallback declines.
     """
 
     materialized: List[Fact] = list(facts)
-    defs = build_definitions_index(materialized)
+    if extra_definitions:
+        sibling_defines = [f for f in extra_definitions if f.kind == "defines"]
+        defs = build_definitions_index(materialized + sibling_defines)
+    else:
+        defs = build_definitions_index(materialized)
 
     # Group every file's facts so a resolver sees the file's imports alongside
     # its references.
