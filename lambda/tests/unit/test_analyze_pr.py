@@ -796,6 +796,93 @@ class TestParseChangedFiles:
         # Assert
         assert CheckType.BREAKING_CHANGES.value not in result["checks_to_run"]
 
+    def test_parse_changed_files_csharp_source_dispatches_checks(self):
+        """A modified .cs source file under src/ (eShop layout) dispatches the
+        C# check set, not the python fallback."""
+        files = [
+            GitHubFile(
+                filename="src/Catalog.API/Apis/CatalogApi.cs",
+                status="modified", additions=5, deletions=1, changes=6,
+            )
+        ]
+        result = parse_changed_files(files, backend="csharp")
+        assert CheckType.BREAKING_CHANGES.value in result["checks_to_run"]
+        assert CheckType.ADR_COMPLIANCE.value in result["checks_to_run"]
+        assert CheckType.LICENSE_COMPLIANCE.value in result["checks_to_run"]
+
+    def test_parse_changed_files_csharp_handler_adds_coverage_and_dup(self):
+        """A *Api.cs / Program.cs handler file also dispatches TEST_COVERAGE +
+        ARCHITECTURAL_DUPLICATION."""
+        files = [
+            GitHubFile(
+                filename="src/Ordering.API/Program.cs",
+                status="modified", additions=3, deletions=0, changes=3,
+            )
+        ]
+        result = parse_changed_files(files, backend="csharp")
+        assert CheckType.TEST_COVERAGE.value in result["checks_to_run"]
+        assert CheckType.ARCHITECTURAL_DUPLICATION.value in result["checks_to_run"]
+
+    def test_parse_changed_files_csharp_test_excluded_from_breaking(self):
+        """A *Tests.cs file under tests/ is excluded from BREAKING_CHANGES."""
+        files = [
+            GitHubFile(
+                filename="tests/Basket.UnitTests/BasketServiceTests.cs",
+                status="modified", additions=4, deletions=1, changes=5,
+            )
+        ]
+        result = parse_changed_files(files, backend="csharp")
+        assert CheckType.BREAKING_CHANGES.value not in result["checks_to_run"]
+
+    def test_parse_changed_files_go_source_dispatches_checks(self):
+        """A modified .go file (gin binding package) dispatches the Go check set."""
+        files = [
+            GitHubFile(
+                filename="binding/form_mapping.go",
+                status="modified", additions=5, deletions=2, changes=7,
+            )
+        ]
+        result = parse_changed_files(files, backend="go")
+        assert CheckType.BREAKING_CHANGES.value in result["checks_to_run"]
+        assert CheckType.ADR_COMPLIANCE.value in result["checks_to_run"]
+        assert CheckType.LICENSE_COMPLIANCE.value in result["checks_to_run"]
+
+    def test_parse_changed_files_go_root_package_dispatches_breaking(self):
+        """A root-level .go file (Go packages live at repo root) still dispatches
+        BREAKING_CHANGES -- the "" source-dir prefix matches it."""
+        files = [
+            GitHubFile(
+                filename="context.go",
+                status="modified", additions=2, deletions=0, changes=2,
+            )
+        ]
+        result = parse_changed_files(files, backend="go")
+        assert CheckType.BREAKING_CHANGES.value in result["checks_to_run"]
+
+    def test_parse_changed_files_go_test_file_excluded_from_breaking(self):
+        """A *_test.go file (beside source, no test dir) is excluded from
+        BREAKING_CHANGES via the test_patterns gate."""
+        files = [
+            GitHubFile(
+                filename="binding/form_mapping_test.go",
+                status="modified", additions=8, deletions=0, changes=8,
+            )
+        ]
+        result = parse_changed_files(files, backend="go")
+        assert CheckType.BREAKING_CHANGES.value not in result["checks_to_run"]
+
+    def test_parse_changed_files_go_main_is_handler(self):
+        """main.go is the Go handler entrypoint -> TEST_COVERAGE + ARCH_DUP."""
+        files = [
+            GitHubFile(
+                filename="cmd/server/main.go",
+                status="modified", additions=3, deletions=1, changes=4,
+            )
+        ]
+        result = parse_changed_files(files, backend="go")
+        assert CheckType.TEST_COVERAGE.value in result["checks_to_run"]
+        assert CheckType.ARCHITECTURAL_DUPLICATION.value in result["checks_to_run"]
+
 
 class TestBackendPatterns:
     """Test backend-specific file pattern configuration."""
@@ -1016,6 +1103,16 @@ class TestGetBackendFromConfig:
         config = {"other_section": {}}
         result = get_backend_from_config(config)
         assert result == "python"
+
+    def test_get_backend_csharp(self):
+        """Test getting csharp backend."""
+        config = {"code_generation": {"backend": "csharp"}}
+        assert get_backend_from_config(config) == "csharp"
+
+    def test_get_backend_go(self):
+        """Test getting go backend."""
+        config = {"code_generation": {"backend": "go"}}
+        assert get_backend_from_config(config) == "go"
 
 
 class TestQueueCheckJobs:

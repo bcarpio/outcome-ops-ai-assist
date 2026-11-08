@@ -792,6 +792,28 @@ BACKEND_PATTERNS: Dict[str, BackendPatterns] = {
         config_files=["package.json", "tsconfig.json"],
         handler_patterns=["handler.ts", "index.ts", "main.ts", "app.ts"],
     ),
+    "csharp": BackendPatterns(
+        # eShop and most .NET repos: services under src/<Project>/, tests under
+        # tests/<Project>.UnitTests/. `_matches_pattern` globs the basename.
+        source_dirs=["src/", "source/"],
+        source_extensions=[".cs"],
+        test_dirs=["tests/", "test/"],
+        test_patterns=["*Tests.cs", "*Test.cs"],
+        config_files=["*.csproj", "*.sln", "*.slnx", "Directory.Build.props"],
+        handler_patterns=["*Controller.cs", "*Api.cs", "Program.cs", "*Handler.cs"],
+    ),
+    "go": BackendPatterns(
+        # Go packages live anywhere in the tree (including the repo root), so the
+        # "" source-dir prefix matches every non-test path. Tests are *_test.go
+        # beside source (no test directory), handled via test_patterns rather
+        # than test_dirs.
+        source_dirs=[""],
+        source_extensions=[".go"],
+        test_dirs=[],
+        test_patterns=["*_test.go"],
+        config_files=["go.mod", "go.sum"],
+        handler_patterns=["main.go"],
+    ),
 }
 
 
@@ -994,7 +1016,17 @@ def parse_changed_files(files: List[GitHubFile], backend: str = "python") -> Dic
         # cheap symbol-graph (DDB) path; the Bedrock heuristic keys off the
         # handler-scoped relevant_files set and stays dormant for them.
         if has_backend_extension and _is_in_source_dir(filepath, patterns):
-            if status in ["modified", "removed"] and "/tests/" not in filepath:
+            # Exclude tests both by path (`/tests/`) and by the backend's test
+            # filename patterns -- covers languages like Go whose tests
+            # (`*_test.go`) sit beside source with no test directory.
+            is_test_named = any(
+                _matches_pattern(filepath, tp) for tp in patterns.test_patterns
+            )
+            if (
+                status in ["modified", "removed"]
+                and "/tests/" not in filepath
+                and not is_test_named
+            ):
                 checks_to_run.add(CheckType.BREAKING_CHANGES)
                 logger.debug(f"BREAKING_CHANGES triggered by: {filepath}")
 
