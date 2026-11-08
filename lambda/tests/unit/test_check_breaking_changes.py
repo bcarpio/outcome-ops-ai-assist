@@ -638,6 +638,27 @@ class TestSymbolGraphConsumers:
         assert len(consumers) == 1
         assert consumers[0]["consumer_repo"] == "other-repo"
 
+    def test_test_file_consumers_excluded(self):
+        """A consumer in a test file is expected-breakage, not a production
+        signal -- filtered from the WARN. Only the production caller remains."""
+        fake = self._FakeSGR(
+            at_line=SimpleNamespace(target_symbol_id="go:binding::Default"),
+            callers_result=SimpleNamespace(
+                sites=[
+                    SimpleNamespace(repo="gin",
+                                    file_path="binding/binding_test.go",
+                                    line=158, source_symbol_id="t::TestBindingDefault"),
+                    SimpleNamespace(repo="gin",
+                                    file_path="context.go",
+                                    line=780, source_symbol_id="go:context.go::Context::Bind"),
+                ], complete=True),
+        )
+        consumers, undetermined = symbol_graph_consumers(
+            ["ws1"], "gin", {"binding/binding.go": [95]}, reader=fake)
+        assert undetermined == []
+        assert len(consumers) == 1
+        assert consumers[0]["consumer_file"] == "context.go"
+
     def test_no_symbol_resolved_is_not_undetermined(self):
         """No enclosing symbol (comment/whitespace) -> no consumers, NOT fail-closed."""
         fake = self._FakeSGR(at_line=None)

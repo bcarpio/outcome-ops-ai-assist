@@ -362,6 +362,11 @@ def symbol_graph_consumers(
                         # Exclude self-references inside the changed file itself.
                         if site.repo == repo and site.file_path == file_path:
                             continue
+                        # Exclude test-file consumers: a test using the symbol is
+                        # expected-to-break, not a production-impact signal. The
+                        # WARN is about real downstream consumers.
+                        if _is_plane1_test_file(site.file_path):
+                            continue
                         key = (relation, site.repo, site.file_path, site.line, sid)
                         if key in seen:
                             continue
