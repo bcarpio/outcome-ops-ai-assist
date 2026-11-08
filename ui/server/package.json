@@ -9,7 +9,9 @@
   },
   "overrides": {
     "fast-xml-parser": ">=5.7.0",
-    "proxy-addr": ">=2.0.8"
+    "proxy-addr": ">=2.0.8",
+    "body-parser": "^1.20.9",
+    "qs": "^6.16.2"
   },
   "dependencies": {
     "@aws-crypto/sha256-js": "^5.2.0",

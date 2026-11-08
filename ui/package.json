@@ -38,7 +38,10 @@
     "browserslist": ">=4.28.7",
     "proxy-addr": ">=2.0.8",
     "source-map-js": ">=1.2.2",
-    "shell-quote": ">=1.11.0"
+    "shell-quote": ">=1.11.0",
+    "body-parser": "^1.20.9",
+    "qs": "^6.16.2",
+    "postcss-selector-parser": "^6.1.5"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "^6.9.1",
@@ -47,14 +50,14 @@
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
     "@vitejs/plugin-react": "^4.3.4",
-    "@vitest/coverage-v8": "^4.1.8",
+    "@vitest/coverage-v8": "^4.1.12",
     "autoprefixer": "^10.4.20",
     "concurrently": "^9.1.2",
     "jsdom": "^25.0.1",
     "postcss": "^8.5.25",
     "tailwindcss": "^3.4.17",
     "typescript": "^5.7.2",
-    "vite": "^6.0.7",
-    "vitest": "^4.1.8"
+    "vite": "^6.4.5",
+    "vitest": "^4.1.12"
   }
 }
