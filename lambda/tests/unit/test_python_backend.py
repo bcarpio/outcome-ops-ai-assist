@@ -518,3 +518,55 @@ class TestSourceRootsConfig:
         # Assert - empty list is falsy, so defaults apply
         assert "lambda" in roots
         assert "src" in roots
+
+
+class TestPythonSourceRootsOverride:
+    """.outcomeops.yaml source_roots override is honored by discovery (previously
+    read into config but never applied -- a generic/root-package Python repo got
+    zero code units)."""
+
+    @staticmethod
+    def _blob(path):
+        return {"type": "blob", "path": path, "name": path.split("/")[-1]}
+
+    ROOT_PKG_FILES = [
+        {"type": "blob", "path": "shared_lib/__init__.py", "name": "__init__.py"},
+        {"type": "blob", "path": "shared_lib/math_utils.py", "name": "math_utils.py"},
+        {"type": "blob", "path": "shared_lib/string_utils.py", "name": "string_utils.py"},
+        {"type": "blob", "path": "README.md", "name": "README.md"},
+    ]
+
+    def _source_modules(self, backend):
+        return [
+            u for u in backend.discover_code_units(self.ROOT_PKG_FILES)
+            if u.metadata.get("batch_type") == "source-module"
+        ]
+
+    def test_override_discovers_root_package(self):
+        """With source_roots set, a package at the repo root becomes a code unit."""
+        backend = PythonBackend({"github_token": "t", "source_roots": ["shared_lib"]})
+        units = self._source_modules(backend)
+        assert len(units) == 1
+        assert units[0].name == "shared_lib"
+        assert set(units[0].file_paths) == {
+            "shared_lib/__init__.py",
+            "shared_lib/math_utils.py",
+            "shared_lib/string_utils.py",
+        }
+
+    def test_no_override_leaves_root_package_undiscovered(self):
+        """Without an override the lambda-centric default is unchanged -- a root
+        package is NOT discovered (regression guard for this platform's repo)."""
+        backend = PythonBackend({"github_token": "t"})
+        assert self._source_modules(backend) == []
+
+    def test_lambda_layout_still_discovered_with_default(self):
+        """The platform's own lambda/ discovery is untouched (no override)."""
+        files = [
+            self._blob("lambda/ingest-docs/handler.py"),
+            self._blob("lambda/ingest-docs/util.py"),
+        ]
+        backend = PythonBackend({"github_token": "t"})
+        names = [u.name for u in backend.discover_code_units(files)]
+        # handler-group unit for the lambda directory is discovered as before
+        assert any("ingest-docs" in n for n in names)

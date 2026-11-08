@@ -656,6 +656,13 @@ class CodeMapBackend(ABC):
         if matched_root:
             relative_path = dir_path[len(matched_root):].lstrip("/")
 
+        # When the directory IS the source root (nothing left after stripping),
+        # name the unit after the root's own basename rather than producing an
+        # empty name (e.g. source_roots=["shared_lib"] -> "shared_lib").
+        if not relative_path:
+            base_name = (matched_root or dir_path).rstrip("/").rsplit("/", 1)[-1]
+            return base_name or "root"
+
         # For Java-style paths, strip the package prefix (com/company/project)
         # We keep the meaningful part after common prefixes
         parts = relative_path.split("/")

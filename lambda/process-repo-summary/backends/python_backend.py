@@ -146,6 +146,18 @@ class PythonBackend(CodeMapBackend):
             if f["type"] == "blob" and not self.is_excluded_path(f["path"])
         ]
 
+        # Group 0: Explicit source_roots override (.outcomeops.yaml). When a repo
+        # declares source_roots, honor them via the generic ADR-009 discovery so
+        # a package at the repo root or any non-lambda/-style layout still becomes
+        # code units -- the documented purpose of the override, which was read
+        # into config but never applied. Without an override this is skipped and
+        # the lambda-centric defaults below apply unchanged (this platform's repo).
+        configured_roots = self.config.get("source_roots")
+        if configured_roots:
+            code_units.extend(
+                self.discover_source_units(relevant_files, configured_roots)
+            )
+
         # Group 1: Lambda handler groups
         handler_units = self._discover_lambda_handlers(relevant_files)
         code_units.extend(handler_units)

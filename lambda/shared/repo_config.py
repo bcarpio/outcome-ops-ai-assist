@@ -48,6 +48,12 @@ class CodeGenerationConfig(BaseModel):
     # Backend to use (e.g., 'python', 'java', 'typescript')
     backend: str = Field(default="python")
 
+    # Source-root directories for code-unit discovery. Overrides the backend's
+    # default roots so a repo not laid out like the platform (e.g. a package at
+    # the repo root, or a custom layout) is still discovered. ``None`` = use the
+    # backend defaults.
+    source_roots: Optional[List[str]] = None
+
     # Additional KB queries to include in every plan
     additional_kb_queries: List[str] = Field(default_factory=list)
 
