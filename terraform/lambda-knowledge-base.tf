@@ -278,10 +278,13 @@ module "process_batch_summary_lambda" {
     workspaces_read = {
       effect = "Allow"
       actions = [
-        "dynamodb:GetItem"
+        "dynamodb:GetItem",
+        # ADR-056: Query enumerates a workspace's repos (SK begins_with GITHUB_REPO#) for sibling defines
+        "dynamodb:Query"
       ]
       resources = [
-        module.workspaces_table[0].dynamodb_table_arn
+        module.workspaces_table[0].dynamodb_table_arn,
+        "${module.workspaces_table[0].dynamodb_table_arn}/index/*",
       ]
     }
 
