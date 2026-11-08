@@ -22,7 +22,7 @@ import logging
 import os
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Literal, Optional, Set
 from enum import Enum
@@ -888,6 +888,14 @@ def get_backend_from_config(config: Optional[Dict[str, Any]]) -> str:
     return backend
 
 
+def get_source_roots_from_config(config: Optional[Dict[str, Any]]) -> List[str]:
+    """Extract ``code_generation.source_roots`` from the repo config (or [])."""
+    if not config:
+        return []
+    roots = config.get("code_generation", {}).get("source_roots")
+    return [str(r) for r in roots] if isinstance(roots, list) else []
+
+
 def _matches_pattern(filepath: str, pattern: str) -> bool:
     """
     Check if a filepath matches a glob-like pattern.
@@ -940,7 +948,11 @@ def _is_handler_file(filepath: str, patterns: BackendPatterns) -> bool:
     return any(_matches_pattern(filepath, pattern) for pattern in patterns.handler_patterns)
 
 
-def parse_changed_files(files: List[GitHubFile], backend: str = "python") -> Dict[str, Any]:
+def parse_changed_files(
+    files: List[GitHubFile],
+    backend: str = "python",
+    source_roots: Optional[List[str]] = None,
+) -> Dict[str, Any]:
     """
     Parse changed files and determine which checks to run based on backend type.
 
@@ -954,6 +966,11 @@ def parse_changed_files(files: List[GitHubFile], backend: str = "python") -> Dic
     Args:
         files: List of GitHubFile objects
         backend: Backend type ("python", "java", or "typescript")
+        source_roots: Optional .outcomeops.yaml source_roots override. A repo not
+            laid out like the backend's defaults (e.g. a package at the repo root)
+            declares its roots; they are added to the backend's source_dirs so
+            file-scoping (and thus BREAKING_CHANGES dispatch) recognizes them --
+            the same override process-repo-summary honors for code-unit discovery.
 
     Returns:
         Dict with "changed_files" list and "checks_to_run" list
@@ -963,6 +980,11 @@ def parse_changed_files(files: List[GitHubFile], backend: str = "python") -> Dic
 
     # Get patterns for this backend
     patterns = BACKEND_PATTERNS.get(backend, BACKEND_PATTERNS["python"])
+    if source_roots:
+        extra_dirs = [r if r.endswith("/") else r + "/" for r in source_roots if r]
+        patterns = replace(
+            patterns, source_dirs=list(patterns.source_dirs) + extra_dirs
+        )
     logger.info(f"Using {backend} backend patterns for file analysis")
 
     # Source code extensions for license checking (all supported languages)
@@ -1208,7 +1230,10 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         files = fetch_pr_files(request.repository, request.pr_number, token)
 
         # Parse changed files and determine checks based on backend
-        parse_result = parse_changed_files(files, backend=backend)
+        parse_result = parse_changed_files(
+        files, backend=backend,
+        source_roots=get_source_roots_from_config(repo_config),
+    )
         changed_files = parse_result["changed_files"]
         checks_to_run = parse_result["checks_to_run"]
 
@@ -1504,7 +1529,10 @@ def _handle_azure_devops(
         for path in pr_meta.changed_files
     ]
 
-    parse_result = parse_changed_files(files, backend=backend)
+    parse_result = parse_changed_files(
+        files, backend=backend,
+        source_roots=get_source_roots_from_config(repo_config),
+    )
     changed_files = parse_result["changed_files"]
     checks_to_run = parse_result["checks_to_run"]
 
@@ -1659,7 +1687,10 @@ def _handle_gitlab(
         for path in pr_meta.changed_files
     ]
 
-    parse_result = parse_changed_files(files, backend=backend)
+    parse_result = parse_changed_files(
+        files, backend=backend,
+        source_roots=get_source_roots_from_config(repo_config),
+    )
     changed_files = parse_result["changed_files"]
     checks_to_run = parse_result["checks_to_run"]
 

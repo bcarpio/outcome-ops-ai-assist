@@ -41,6 +41,7 @@ parse_changed_files = handler_module.parse_changed_files
 queue_check_jobs = handler_module.queue_check_jobs
 fetch_repo_config = handler_module.fetch_repo_config
 get_backend_from_config = handler_module.get_backend_from_config
+get_source_roots_from_config = handler_module.get_source_roots_from_config
 BackendPatterns = handler_module.BackendPatterns
 BACKEND_PATTERNS = handler_module.BACKEND_PATTERNS
 
@@ -882,6 +883,30 @@ class TestParseChangedFiles:
         result = parse_changed_files(files, backend="go")
         assert CheckType.TEST_COVERAGE.value in result["checks_to_run"]
         assert CheckType.ARCHITECTURAL_DUPLICATION.value in result["checks_to_run"]
+
+    def test_source_roots_override_recognizes_root_package(self):
+        """A .outcomeops.yaml source_roots override makes a root-level package
+        (not under lambda/ or src/) count as source, so BREAKING_CHANGES
+        dispatches -- the fix that lets a shared-lib-style repo PR be checked."""
+        files = [
+            GitHubFile(filename="shared_lib/math_utils.py", status="modified",
+                       additions=2, deletions=1, changes=3)
+        ]
+        # Without the override: not in a python source_dir -> no BREAKING_CHANGES.
+        no_override = parse_changed_files(files, backend="python")
+        assert CheckType.BREAKING_CHANGES.value not in no_override["checks_to_run"]
+        # With the override: recognized as source -> BREAKING_CHANGES dispatches.
+        with_override = parse_changed_files(
+            files, backend="python", source_roots=["shared_lib"])
+        assert CheckType.BREAKING_CHANGES.value in with_override["checks_to_run"]
+        assert CheckType.ADR_COMPLIANCE.value in with_override["checks_to_run"]
+
+    def test_get_source_roots_from_config(self):
+        assert get_source_roots_from_config(
+            {"code_generation": {"source_roots": ["shared_lib", "app"]}}
+        ) == ["shared_lib", "app"]
+        assert get_source_roots_from_config({"code_generation": {}}) == []
+        assert get_source_roots_from_config(None) == []
 
 
 class TestBackendPatterns:
