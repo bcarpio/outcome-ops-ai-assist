@@ -58,6 +58,11 @@ EXPECTED_BACKEND_AVAILABILITY = {
     # C# / .NET - code-maps only for v1 (code generation backend intentionally
     # out of scope; see plan/overview.md and ADR-015). Mirrors the ABAP pattern.
     "csharp": (True, False),
+
+    # Go - code-maps only (symbol-graph + code-unit discovery via the Go
+    # package-per-directory backend). No code-generation backend yet; mirrors
+    # the ABAP / C# pattern.
+    "go": (True, False),
 }
 
 

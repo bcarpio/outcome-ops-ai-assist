@@ -29,6 +29,7 @@ try:
     from . import abap_backend  # noqa: F401
     from . import react_backend  # noqa: F401
     from . import csharp_backend  # noqa: F401
+    from . import go_backend  # noqa: F401
 except ImportError:
     # Add backends directory to path for testing
     backends_dir = os.path.dirname(os.path.abspath(__file__))
@@ -42,6 +43,7 @@ except ImportError:
     import abap_backend  # noqa: F401
     import react_backend  # noqa: F401
     import csharp_backend  # noqa: F401
+    import go_backend  # noqa: F401
 
 __all__ = [
     "CodeMapBackend",
