@@ -714,6 +714,88 @@ class TestParseChangedFiles:
         # Assert
         assert len(result["checks_to_run"]) == 0
 
+    def test_parse_changed_files_shared_module_triggers_breaking_changes(self):
+        """A modified non-handler source module (shared/) must dispatch
+        BREAKING_CHANGES. Plane-1 (ADR-054/ADR-055) resolves cross-module
+        symbol consumers, so a breaking edit can live outside a handler
+        entrypoint. The legacy handler-only dispatch gate missed these."""
+        # Arrange
+        files = [
+            GitHubFile(
+                filename="lambda/shared/pr_metadata.py",
+                status="modified",
+                additions=3,
+                deletions=1,
+                changes=4,
+            )
+        ]
+
+        # Act
+        result = parse_changed_files(files)
+
+        # Assert
+        assert CheckType.BREAKING_CHANGES.value in result["checks_to_run"]
+
+    def test_parse_changed_files_removed_shared_module_triggers_breaking_changes(self):
+        """A removed non-handler source module must also dispatch
+        BREAKING_CHANGES (its definitions vanish for cross-module consumers)."""
+        # Arrange
+        files = [
+            GitHubFile(
+                filename="lambda/shared/symbol_graph_writer.py",
+                status="removed",
+                additions=0,
+                deletions=40,
+                changes=40,
+            )
+        ]
+
+        # Act
+        result = parse_changed_files(files)
+
+        # Assert
+        assert CheckType.BREAKING_CHANGES.value in result["checks_to_run"]
+
+    def test_parse_changed_files_added_shared_module_no_breaking_changes(self):
+        """A newly-added module has no prior consumers to break, so BREAKING_CHANGES
+        stays dormant on 'added' status (matches the handler-file behavior)."""
+        # Arrange
+        files = [
+            GitHubFile(
+                filename="lambda/shared/brand_new_helper.py",
+                status="added",
+                additions=50,
+                deletions=0,
+                changes=50,
+            )
+        ]
+
+        # Act
+        result = parse_changed_files(files)
+
+        # Assert
+        assert CheckType.BREAKING_CHANGES.value not in result["checks_to_run"]
+
+    def test_parse_changed_files_modified_test_module_no_breaking_changes(self):
+        """A modified test module must NOT dispatch BREAKING_CHANGES -- the
+        dispatch scope mirrors the plane-1 file scope, which excludes tests."""
+        # Arrange
+        files = [
+            GitHubFile(
+                filename="lambda/tests/unit/test_pr_metadata.py",
+                status="modified",
+                additions=10,
+                deletions=2,
+                changes=12,
+            )
+        ]
+
+        # Act
+        result = parse_changed_files(files)
+
+        # Assert
+        assert CheckType.BREAKING_CHANGES.value not in result["checks_to_run"]
+
 
 class TestBackendPatterns:
     """Test backend-specific file pattern configuration."""

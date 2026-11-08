@@ -984,9 +984,17 @@ def parse_changed_files(files: List[GitHubFile], backend: str = "python") -> Dic
                 checks_to_run.add(CheckType.TEST_COVERAGE)
                 logger.debug(f"TEST_COVERAGE triggered by: {filepath}")
 
-        # Breaking Changes: Handler/Controller modifications
-        if has_backend_extension and _is_handler_file(filepath, patterns):
-            if status in ["modified", "removed"]:
+        # Breaking Changes: any source-dir code modification.
+        # Plane-1 (ADR-054/ADR-055) resolves cross-module/cross-file symbol
+        # consumers via the symbol graph, so a breaking edit can live in any
+        # source module (e.g. a shared/ helper), not only a handler entrypoint.
+        # Dispatch therefore mirrors the plane-1 file scope -- any modified or
+        # removed source-dir file of this backend, excluding tests -- rather
+        # than the legacy handler-only gate. Non-handler PRs incur only the
+        # cheap symbol-graph (DDB) path; the Bedrock heuristic keys off the
+        # handler-scoped relevant_files set and stays dormant for them.
+        if has_backend_extension and _is_in_source_dir(filepath, patterns):
+            if status in ["modified", "removed"] and "/tests/" not in filepath:
                 checks_to_run.add(CheckType.BREAKING_CHANGES)
                 logger.debug(f"BREAKING_CHANGES triggered by: {filepath}")
 
