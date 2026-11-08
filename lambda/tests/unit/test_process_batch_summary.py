@@ -1385,3 +1385,62 @@ def test_render_graph_grounding_omits_signature_addendum_when_no_signatures():
     block = handler_module._render_graph_grounding([fact])
     assert "VERIFIED SYMBOLS" in block
     assert "EXACT signature" not in block
+
+
+class TestResolutionPostPassGate:
+    """ADR-055: the whole-repo resolution post-pass fires exactly once, at the
+    last-close of a FULL regen. It must NOT fire on an incremental regen (no
+    full_regen flag) nor on a non-last close."""
+
+    def _batch(self, full_regen):
+        b = {
+            "workspace_id": "ws1",
+            "repo_project": "owner/repo",
+            "repo": "repo",  # bare name -> symbol-graph PK namespace
+            "commit_sha": "sha1",
+            "storage_key": "code-map#a",
+            "group_name": "a",
+        }
+        if full_regen:
+            b["full_regen"] = True
+        return b
+
+    def _run(self, monkeypatch, *, full_regen, last_close):
+        import shared.sha_truth as sha_truth
+
+        ledger = {
+            "expected_count": 2,
+            "completed_count": 2 if last_close else 1,
+            "failed_count": 0,
+        }
+        monkeypatch.setattr(
+            sha_truth, "mark_unit_complete", lambda *a, **k: ledger
+        )
+        monkeypatch.setattr(sha_truth, "try_advance_sha", lambda *a, **k: None)
+        monkeypatch.setattr(
+            handler_module, "_advance_gkg_sha", lambda *a, **k: None
+        )
+
+        calls = []
+        monkeypatch.setattr(
+            handler_module,
+            "_resolve_repo_symbol_graph",
+            lambda ws, repo, sha: calls.append((ws, repo, sha)),
+        )
+
+        handler_module._mark_code_map_unit_done(
+            self._batch(full_regen), status="ok"
+        )
+        return calls
+
+    def test_fires_on_full_regen_last_close(self, monkeypatch):
+        calls = self._run(monkeypatch, full_regen=True, last_close=True)
+        assert calls == [("ws1", "repo", "sha1")]
+
+    def test_not_fired_without_full_regen(self, monkeypatch):
+        calls = self._run(monkeypatch, full_regen=False, last_close=True)
+        assert calls == []
+
+    def test_not_fired_when_not_last_close(self, monkeypatch):
+        calls = self._run(monkeypatch, full_regen=True, last_close=False)
+        assert calls == []

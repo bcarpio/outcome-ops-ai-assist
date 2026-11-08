@@ -50,6 +50,7 @@ from extractor import (  # type: ignore  # noqa: E402
     Fact,
     SymbolGraphFilter,
     extract_facts_from_bytes,
+    resolve_repo_facts,
 )
 
 logger = logging.getLogger(__name__)
@@ -1401,6 +1402,100 @@ def _emit_facts(
         return 0
 
 
+def _resolve_repo_symbol_graph(
+    workspace_id: str, repo: str, commit_sha: str
+) -> None:
+    """ADR-055 whole-repo cross-module resolution post-pass.
+
+    Runs once per repo at the last-close of a FULL regen (the caller gates
+    this on the ``full_regen`` message flag). Reads every stored fact for the
+    (workspace, repo) partition, rebinds each cross-module
+    ``calls``/``imports``/``extends`` target to its definition id via the
+    registered per-language resolver, and replaces only the edges whose
+    target actually changed.
+
+    Why here and not per-batch: resolution needs the repo-wide definitions
+    index, but the regen writes facts one file-group per invocation, so no
+    single batch sees every ``defines``. The last-close batch is the first
+    moment the full generation exists in the graph. Keyed on the BARE repo
+    name (the symbol-graph table PK namespace), matching ``_emit_facts``.
+
+    Best-effort: any failure leaves the freshly-written (unresolved but
+    valid) generation intact -- resolution simply does not apply this run,
+    and the next full regen retries. Never raises.
+    """
+    try:
+        from shared.symbol_graph_writer import (  # type: ignore
+            rewrite_resolved_targets,
+            scan_repo_facts,
+        )
+
+        rows = scan_repo_facts(workspace_id, repo)
+        if not rows:
+            return
+
+        facts: "list[Fact]" = []
+        sks: "list[str]" = []
+        for row in rows:
+            sk = row.get("SK")
+            kind = row.get("kind")
+            if not sk or not kind:
+                continue
+            facts.append(
+                Fact(
+                    kind=str(kind),
+                    source_symbol_id=str(row.get("source_symbol_id", "")),
+                    target_symbol_id=str(row.get("target_symbol_id", "")),
+                    file_path=str(row.get("file_path", "")),
+                    line=int(row.get("line", 0) or 0),
+                    language=str(row.get("language", "")),
+                )
+            )
+            sks.append(str(sk))
+
+        # resolve_repo_facts returns a list parallel to its input, so each
+        # resolved fact lines up with the SK of the row it came from.
+        resolved = resolve_repo_facts(facts)
+        rewrites = [
+            (sks[i], resolved[i])
+            for i in range(len(facts))
+            if resolved[i].target_symbol_id != facts[i].target_symbol_id
+        ]
+        if not rewrites:
+            logger.info(
+                "symbol-graph resolution: no cross-module targets rebound "
+                "for %s/%s@%s (%d facts scanned)",
+                workspace_id,
+                repo,
+                commit_sha,
+                len(facts),
+            )
+            return
+
+        result = rewrite_resolved_targets(
+            workspace_id, repo, commit_sha, rewrites
+        )
+        logger.info(
+            "symbol-graph resolution: rebound %d targets (deleted %d stale "
+            "rows) for %s/%s@%s (%d facts scanned)",
+            result.rewritten,
+            result.deleted,
+            workspace_id,
+            repo,
+            commit_sha,
+            len(facts),
+        )
+    except Exception as exc:  # pragma: no cover - defensive, never break regen
+        logger.warning(
+            "symbol-graph resolution post-pass failed for %s/%s@%s: %s "
+            "(generation left unresolved; next full regen retries)",
+            workspace_id,
+            repo,
+            commit_sha,
+            exc,
+        )
+
+
 def _iter_batch_facts(
     file_path: str,
     language: str,
@@ -2058,31 +2153,54 @@ def _mark_code_map_unit_done(
             )
         if ledger:
             try_advance_sha(ledger)
-            # Fire-once gkg advance: when this close drives the
-            # code_map_units ledger to completed + failed >= expected,
-            # this batch IS the last one for the (workspace, repo,
-            # commit_sha) triple. Synthesize the gkg ledger here so
-            # it runs exactly once instead of per code unit. The
-            # gkg pointer table is the symbol-graph correctness
-            # anchor; the workspaces last_gkg_sha column is a mirror
-            # for the audit story, so this best-effort failure
-            # mode is acceptable.
+            # Determine whether THIS close is the last unit for the
+            # (workspace, repo, commit_sha) triple -- the trigger for both
+            # the once-per-regen gkg advance and the ADR-055 resolution pass.
+            is_last_close = False
             try:
                 expected = int(ledger.get("expected_count", 0))
                 completed = int(ledger.get("completed_count", 0))
                 failed = int(ledger.get("failed_count", 0))
-                if expected > 0 and (completed + failed) >= expected:
+                is_last_close = expected > 0 and (completed + failed) >= expected
+            except Exception:  # pragma: no cover - defensive
+                is_last_close = False
+
+            if is_last_close:
+                # Fire-once gkg advance: this batch IS the last one for the
+                # triple. Synthesize the gkg ledger here so it runs exactly
+                # once instead of per code unit. The gkg pointer table is the
+                # symbol-graph correctness anchor; the workspaces
+                # last_gkg_sha column is a mirror for the audit story, so
+                # this best-effort failure mode is acceptable.
+                try:
                     _advance_gkg_sha(workspace_id, repo_project, commit_sha)
-            except Exception as gkg_exc:  # pragma: no cover - defensive
-                logger.warning(
-                    "gkg sha-truth advance failed for %s/%s@%s: %s "
-                    "(pointer table is authoritative; workspaces "
-                    "column will drift until next regen)",
-                    workspace_id,
-                    repo_project,
-                    commit_sha,
-                    gkg_exc,
-                )
+                except Exception as gkg_exc:  # pragma: no cover - defensive
+                    logger.warning(
+                        "gkg sha-truth advance failed for %s/%s@%s: %s "
+                        "(pointer table is authoritative; workspaces "
+                        "column will drift until next regen)",
+                        workspace_id,
+                        repo_project,
+                        commit_sha,
+                        gkg_exc,
+                    )
+
+                # ADR-055 whole-repo cross-module resolution post-pass. Only
+                # on a FULL regen -- process-repo-summary stamps full_regen
+                # on the batch messages when the incremental filter did not
+                # reduce the code-unit set. An incremental sync re-extracts
+                # only a subset of files, so the partition does not hold a
+                # complete generation to resolve against (that between-regen
+                # case is the ADR-055 best-effort incremental path, not built
+                # here). Keyed on the BARE repo (batch["repo"]) to match the
+                # symbol-graph table PK; _resolve_repo_symbol_graph is
+                # best-effort and never raises.
+                if batch.get("full_regen"):
+                    sg_repo = batch.get("repo") or ""
+                    if workspace_id and sg_repo and commit_sha:
+                        _resolve_repo_symbol_graph(
+                            workspace_id, sg_repo, commit_sha
+                        )
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning(
             "[process-batch-summary] sha-truth %s failed for %s@%s: %s",

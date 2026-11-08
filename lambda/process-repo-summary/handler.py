@@ -1011,9 +1011,17 @@ def send_code_units_to_sqs(
     provider: str = "github",
     slug: Optional[str] = None,
     all_files: Optional[List[Dict[str, Any]]] = None,
+    full_regen: bool = False,
 ) -> int:
     """
     Send code units to SQS for detailed batch processing.
+
+    ``full_regen`` is stamped onto every dispatched message so the
+    last-close batch in process-batch-summary knows it may run the
+    ADR-055 whole-repo cross-module resolution post-pass. It is True only
+    when this run re-extracts the COMPLETE code-unit set (no incremental
+    filter) -- resolution needs the full generation in the graph, which an
+    incremental subset does not provide.
 
     Args:
         code_units: List of code unit dicts (may be filtered to changed
@@ -1079,6 +1087,7 @@ def send_code_units_to_sqs(
                 provider=provider,
                 slug=slug,
                 file_sizes=file_sizes,
+                full_regen=full_regen,
             )
             for message in unit_messages:
                 sqs_client.send_message(
@@ -1171,6 +1180,7 @@ def _build_shard_messages_for_unit(
     provider: str,
     slug: Optional[str],
     file_sizes: Dict[str, int],
+    full_regen: bool = False,
 ) -> List[Dict[str, Any]]:
     """Produce the SQS messages for one code unit: either one shard
     message (unit fits in one Bedrock call) or N shard messages + one
@@ -1250,6 +1260,11 @@ def _build_shard_messages_for_unit(
             message["provider"] = provider
         if slug:
             message["slug"] = slug
+        if full_regen:
+            # ADR-055: only a full regen holds the complete generation the
+            # resolution post-pass needs. Stamped only when True so the
+            # incremental message shape is unchanged.
+            message["full_regen"] = True
         messages.append(message)
 
     if shard_count > 1:
@@ -1279,6 +1294,8 @@ def _build_shard_messages_for_unit(
             merge_message["provider"] = provider
         if slug:
             merge_message["slug"] = slug
+        if full_regen:
+            merge_message["full_regen"] = True
         messages.append(merge_message)
 
     return messages
@@ -1598,6 +1615,14 @@ def handler(event, context):
                         expected_count=expected_msgs,
                     )
 
+                # ADR-055: a run is a FULL regen when the incremental filter
+                # did not shrink the code-unit set (first sync, forced full,
+                # or S3-mirror providers that skip change detection). The
+                # incremental branch only ever removes units, so equal counts
+                # means every tracked unit is being re-extracted this run --
+                # the complete generation the resolution post-pass needs.
+                full_regen = len(code_units) == len(full_code_units)
+
                 send_code_units_to_sqs(
                     code_units,
                     repo,
@@ -1617,6 +1642,7 @@ def handler(event, context):
                     # Chunk 03: thread the tree so the splitter can
                     # size each code unit against TARGET_SHARD_TOKENS.
                     all_files=all_files,
+                    full_regen=full_regen,
                 )
                 logger.info(f"Queued {len(code_units)} code units for {repo}")
 

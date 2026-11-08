@@ -624,3 +624,147 @@ def write_facts(
         new_commit_sha=commit_sha,
         pointer_swapped=swapped,
     )
+
+
+# ---------------------------------------------------------------------------
+# Cross-module reference resolution (ADR-055) -- storage primitives
+# ---------------------------------------------------------------------------
+#
+# The resolution pass itself (build the repo definitions index, run the
+# per-language resolver, decide the new targets) lives in the extractor
+# package -- this writer stays extractor-agnostic. These two functions are
+# the storage half: read a repo's stored facts back so the pass can rebuild
+# them, and apply the resolved targets by replacing the changed edges' rows.
+
+
+@dataclass(frozen=True)
+class ResolutionRewriteResult:
+    """Summary of one ADR-055 resolution rewrite pass.
+
+    ``rewritten`` is the number of reference edges whose row was replaced
+    (new resolved target). ``deleted`` is the number of old (unresolved)
+    rows evicted. Equal in the normal case; a mid-flight failure can leave
+    ``deleted`` < ``rewritten`` (old rows linger as over-report, self-heal
+    next regen) -- see the ordering note on ``rewrite_resolved_targets``.
+    """
+
+    rewritten: int
+    deleted: int
+
+
+def scan_repo_facts(
+    workspace_id: str,
+    repo: str,
+    *,
+    symbol_graph_table_name: Optional[str] = None,
+) -> List[Dict[str, object]]:
+    """Return every stored fact row for a (workspace, repo) partition.
+
+    Used by the ADR-055 resolution post-pass, which rebuilds the repo's Fact
+    set from these rows, resolves cross-module reference targets, and rewrites
+    only the edges whose target changed. Projects just the attributes the
+    resolver needs (``kind``/``source_symbol_id``/``target_symbol_id``/
+    ``file_path``/``line``/``language``) plus the ``SK`` so the caller can
+    address the row for replacement. Paginated Query on the base PK -- the
+    same partition and read grant the per-file prune pass already uses, so no
+    new IAM surface.
+    """
+
+    table_name = symbol_graph_table_name or os.environ.get(
+        "SYMBOL_GRAPH_TABLE", ""
+    )
+    if not table_name:
+        raise ValueError(
+            "symbol_graph_table_name is required (set SYMBOL_GRAPH_TABLE env "
+            "or pass explicitly)"
+        )
+
+    pk = f"{workspace_id}#{repo}"
+    table = _resource().Table(table_name)
+
+    out: List[Dict[str, object]] = []
+    query_kwargs: Dict[str, object] = {
+        "KeyConditionExpression": Key("PK").eq(pk),
+        "ProjectionExpression": (
+            "SK, kind, source_symbol_id, target_symbol_id, #fp, #ln, #lang"
+        ),
+        "ExpressionAttributeNames": {
+            "#fp": "file_path",
+            "#ln": "line",
+            "#lang": "language",
+        },
+    }
+    while True:
+        resp = table.query(**query_kwargs)
+        out.extend(resp.get("Items", []))
+        lek = resp.get("LastEvaluatedKey")
+        if not lek:
+            break
+        query_kwargs["ExclusiveStartKey"] = lek
+    return out
+
+
+def rewrite_resolved_targets(
+    workspace_id: str,
+    repo: str,
+    commit_sha: str,
+    rewrites: Iterable,
+    *,
+    symbol_graph_table_name: Optional[str] = None,
+) -> ResolutionRewriteResult:
+    """Apply resolved reference targets (ADR-055) by replacing changed rows.
+
+    ``rewrites`` is an iterable of ``(old_sk, new_fact)`` pairs: ``old_sk`` is
+    the SK of the existing (unresolved) row, ``new_fact`` any object exposing
+    the Fact attribute names (the same duck-typed contract ``write_facts``
+    accepts). Each pair's new item carries the resolved ``target_symbol_id``,
+    which changes both the base SK and the GSI partition keys; DynamoDB
+    maintains the GSIs from the base item, so a base-item PUT + DELETE is
+    sufficient -- no per-GSI bookkeeping.
+
+    **Put-before-delete (throttle safety).** Mirrors ``write_facts``'
+    write-before-prune: the resolved rows are PUT first, then the old rows
+    DELETEd. A failure between the two leaves the old (unresolved) edge in
+    place -- an over-report that self-heals on the next regen -- rather than
+    dropping the edge entirely. Both legs route through ``dual_write`` so the
+    change replicates to the passive region under HA.
+    """
+
+    pairs = list(rewrites)
+    if not pairs:
+        return ResolutionRewriteResult(rewritten=0, deleted=0)
+
+    table_name = symbol_graph_table_name or os.environ.get(
+        "SYMBOL_GRAPH_TABLE", ""
+    )
+    if not table_name:
+        raise ValueError(
+            "symbol_graph_table_name is required (set SYMBOL_GRAPH_TABLE env "
+            "or pass explicitly)"
+        )
+
+    new_items = [
+        _build_item(workspace_id, repo, commit_sha, new_fact)
+        for _old_sk, new_fact in pairs
+    ]
+    # Reuse the write path's (PK, SK) dedupe so a BatchWriteItem never carries
+    # a duplicate key (two edges resolving to the same target/source/line).
+    written = _write_facts_batched(table_name, new_items)
+
+    pk = f"{workspace_id}#{repo}"
+    # Never delete an old SK that collides with a just-written new SK (a no-op
+    # rewrite where the resolved target equals the raw one should not happen --
+    # resolve_repo_facts filters those -- but guard anyway so a PUT is never
+    # undone by its own DELETE).
+    new_sks = {str(item["SK"]) for item in new_items}
+    del_keys = [
+        {"PK": pk, "SK": old_sk}
+        for old_sk, _new_fact in pairs
+        if old_sk not in new_sks
+    ]
+    deleted = (
+        dual_write.ddb_batch_delete_items(table_name, del_keys)
+        if del_keys
+        else 0
+    )
+    return ResolutionRewriteResult(rewritten=written, deleted=deleted)

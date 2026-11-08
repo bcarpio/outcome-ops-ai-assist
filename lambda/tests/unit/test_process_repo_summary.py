@@ -871,3 +871,65 @@ class TestSendCodeUnitsToSqs:
             assert call[1]["QueueUrl"] == "https://sqs/codemaps"
             body = json.loads(call[1]["MessageBody"])
             assert body.get("action") != "delete_orphan_code_maps"
+
+
+class TestFullRegenMessageStamp:
+    """ADR-055: process-repo-summary stamps ``full_regen`` on every dispatched
+    SQS message so the last-close batch in process-batch-summary knows it may
+    run the whole-repo resolution post-pass. Stamped only on a full regen
+    (incremental filter did not shrink the code-unit set)."""
+
+    _UNIT = {
+        "file_paths": ["lambda/a/handler.py", "lambda/a/util.py"],
+        "storage_key": "code-map#a",
+        "group_name": "a",
+        "batch_type": "lambda",
+    }
+
+    def _build(self, *, full_regen, file_sizes=None):
+        return repo_summary_handler._build_shard_messages_for_unit(
+            code_unit=self._UNIT,
+            repo="repo",
+            repo_project="owner/repo",
+            workspace_id="ws1",
+            commit_sha="sha1",
+            commit_timestamp=123,
+            provider="github",
+            slug=None,
+            file_sizes=file_sizes or {},
+            full_regen=full_regen,
+        )
+
+    def test_full_regen_true_stamps_single_shard(self):
+        msgs = self._build(full_regen=True)
+        assert len(msgs) == 1
+        assert msgs[0]["full_regen"] is True
+
+    def test_full_regen_false_omits_flag(self):
+        msgs = self._build(full_regen=False)
+        assert len(msgs) == 1
+        assert "full_regen" not in msgs[0]
+
+    def test_default_omits_flag(self):
+        # Keyword defaults to False -- incremental message shape unchanged.
+        msgs = repo_summary_handler._build_shard_messages_for_unit(
+            code_unit=self._UNIT,
+            repo="repo",
+            repo_project="owner/repo",
+            workspace_id="ws1",
+            commit_sha="sha1",
+            commit_timestamp=123,
+            provider="github",
+            slug=None,
+            file_sizes={},
+        )
+        assert all("full_regen" not in m for m in msgs)
+
+    def test_full_regen_stamps_shards_and_merge_when_sharded(self):
+        # Oversized unit -> N shard messages + 1 merge; every one carries the
+        # flag so whichever batch closes last sees it.
+        big = {p: 5_000_000 for p in self._UNIT["file_paths"]}
+        msgs = self._build(full_regen=True, file_sizes=big)
+        assert len(msgs) > 1
+        assert any(m["message_type"] == "merge" for m in msgs)
+        assert all(m["full_regen"] is True for m in msgs)

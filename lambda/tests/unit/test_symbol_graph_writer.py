@@ -1266,3 +1266,197 @@ def test_build_item_omits_signature_returns_when_unannotated(tables):
         KeyConditionExpression=Key("PK").eq(f"{WORKSPACE_ID}#{REPO}")
     )["Items"][0]["signature"]
     assert persisted == {"params": [{"name": "x"}]}
+
+
+# ===========================================================================
+# ADR-055 resolution storage primitives: scan_repo_facts + rewrite_resolved_targets
+# ===========================================================================
+
+
+class TestResolutionStoragePrimitives:
+    """``scan_repo_facts`` reads a repo's facts back so the resolution pass
+    can rebuild them; ``rewrite_resolved_targets`` applies the resolved
+    targets by replacing the changed edges' rows (PUT new, DELETE old).
+    """
+
+    def test_scan_repo_facts_returns_all_rows_with_projected_fields(self, tables):
+        from shared.symbol_graph_writer import (  # type: ignore
+            scan_repo_facts,
+            write_facts,
+        )
+
+        write_facts(
+            workspace_id=WORKSPACE_ID,
+            repo=REPO,
+            commit_sha=NEW_SHA,
+            facts=[_calls_fact(i) for i in range(4)],
+            symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
+            skip_pointer_swap=True,
+        )
+
+        rows = scan_repo_facts(
+            WORKSPACE_ID, REPO, symbol_graph_table_name=SYMBOL_GRAPH_TABLE
+        )
+
+        assert len(rows) == 4
+        for r in rows:
+            # Every projected field the resolver needs is present.
+            assert r["SK"]
+            assert r["kind"] == "calls"
+            assert r["source_symbol_id"]
+            assert r["target_symbol_id"]
+            assert r["file_path"]
+            assert r["language"] == "python"
+            assert int(r["line"]) >= 10
+
+    def test_scan_repo_facts_paginates(self, tables):
+        # 60 rows forces moto to return more than one Query page when the
+        # caller reads with a small cap -- the pagination loop must gather all.
+        from shared.symbol_graph_writer import (  # type: ignore
+            scan_repo_facts,
+            write_facts,
+        )
+
+        write_facts(
+            workspace_id=WORKSPACE_ID,
+            repo=REPO,
+            commit_sha=NEW_SHA,
+            facts=[_calls_fact(i) for i in range(60)],
+            symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
+            skip_pointer_swap=True,
+        )
+
+        rows = scan_repo_facts(
+            WORKSPACE_ID, REPO, symbol_graph_table_name=SYMBOL_GRAPH_TABLE
+        )
+        assert len({r["SK"] for r in rows}) == 60
+
+    def test_scan_repo_facts_empty_partition(self, tables):
+        from shared.symbol_graph_writer import scan_repo_facts  # type: ignore
+
+        assert (
+            scan_repo_facts(
+                WORKSPACE_ID, REPO, symbol_graph_table_name=SYMBOL_GRAPH_TABLE
+            )
+            == []
+        )
+
+    def test_rewrite_empty_is_noop(self, tables):
+        from shared.symbol_graph_writer import (  # type: ignore
+            rewrite_resolved_targets,
+        )
+
+        result = rewrite_resolved_targets(
+            WORKSPACE_ID,
+            REPO,
+            NEW_SHA,
+            [],
+            symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
+        )
+        assert result.rewritten == 0
+        assert result.deleted == 0
+
+    def _seed_one_raw_call(self, raw_target):
+        from shared.symbol_graph_writer import (  # type: ignore
+            scan_repo_facts,
+            write_facts,
+        )
+
+        orig = FactShim(
+            kind="calls",
+            source_symbol_id="python:lambda.caller0.handler::lambda_handler",
+            target_symbol_id=raw_target,
+            file_path="lambda/caller0/handler.py",
+            line=11,
+            language="python",
+        )
+        write_facts(
+            workspace_id=WORKSPACE_ID,
+            repo=REPO,
+            commit_sha=NEW_SHA,
+            facts=[orig],
+            symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
+            skip_pointer_swap=True,
+        )
+        rows = scan_repo_facts(
+            WORKSPACE_ID, REPO, symbol_graph_table_name=SYMBOL_GRAPH_TABLE
+        )
+        assert len(rows) == 1
+        return orig, rows[0]["SK"]
+
+    def test_rewrite_replaces_changed_row(self, tables):
+        from shared.symbol_graph_writer import (  # type: ignore
+            rewrite_resolved_targets,
+            scan_repo_facts,
+        )
+
+        raw = "python:lambda.caller0.handler::report_repos_snapshot"
+        resolved = "python:lambda.shared.outcomeops_license::report_repos_snapshot"
+        orig, old_sk = self._seed_one_raw_call(raw)
+
+        new_fact = FactShim(
+            kind="calls",
+            source_symbol_id=orig.source_symbol_id,
+            target_symbol_id=resolved,
+            file_path=orig.file_path,
+            line=orig.line,
+            language="python",
+        )
+        result = rewrite_resolved_targets(
+            WORKSPACE_ID,
+            REPO,
+            NEW_SHA,
+            [(old_sk, new_fact)],
+            symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
+        )
+
+        assert result.rewritten == 1
+        assert result.deleted == 1
+
+        rows = scan_repo_facts(
+            WORKSPACE_ID, REPO, symbol_graph_table_name=SYMBOL_GRAPH_TABLE
+        )
+        assert len(rows) == 1  # old row replaced, not duplicated
+        assert rows[0]["target_symbol_id"] == resolved
+        assert rows[0]["SK"] != old_sk
+
+    def test_rewrite_moves_gsi1_target_partition(self, tables):
+        # The GSI1 (target-kind-index) partition is keyed on the target, so a
+        # resolved rewrite must move the row: the OLD target partition empties
+        # and the NEW target partition gains the row. This is the access path
+        # ``callers(definition_id)`` Queries -- the whole point of resolution.
+        from shared.symbol_graph_writer import (  # type: ignore
+            rewrite_resolved_targets,
+        )
+
+        raw = "python:lambda.caller0.handler::report_repos_snapshot"
+        resolved = "python:lambda.shared.outcomeops_license::report_repos_snapshot"
+        orig, old_sk = self._seed_one_raw_call(raw)
+        new_fact = FactShim(
+            kind="calls",
+            source_symbol_id=orig.source_symbol_id,
+            target_symbol_id=resolved,
+            file_path=orig.file_path,
+            line=orig.line,
+            language="python",
+        )
+        rewrite_resolved_targets(
+            WORKSPACE_ID,
+            REPO,
+            NEW_SHA,
+            [(old_sk, new_fact)],
+            symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
+        )
+
+        table = tables.Table(SYMBOL_GRAPH_TABLE)
+        old_partition = table.query(
+            IndexName="target-kind-index",
+            KeyConditionExpression=Key("GSI1PK").eq(f"{WORKSPACE_ID}#{raw}"),
+        )
+        new_partition = table.query(
+            IndexName="target-kind-index",
+            KeyConditionExpression=Key("GSI1PK").eq(f"{WORKSPACE_ID}#{resolved}"),
+        )
+        assert old_partition["Count"] == 0
+        assert new_partition["Count"] == 1
+        assert new_partition["Items"][0]["target_symbol_id"] == resolved
