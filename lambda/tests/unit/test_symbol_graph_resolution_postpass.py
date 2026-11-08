@@ -206,3 +206,100 @@ class TestResolveRepoSymbolGraphPostPass:
         # No facts seeded. Must not raise, must not write.
         handler._resolve_repo_symbol_graph(WORKSPACE_ID, REPO, SHA)
         assert _scan_calls() == []
+
+
+# =============================================================================
+# ADR-056: cross-repo resolution via the workspace-wide definitions index.
+# =============================================================================
+
+_WS_TABLE_XR = "test-workspaces-xr"
+_WS_XR = "ws-xrepo"
+
+
+def _create_workspaces_table():
+    client = boto3.client("dynamodb", region_name="us-west-2")
+    client.create_table(
+        TableName=_WS_TABLE_XR,
+        AttributeDefinitions=[
+            {"AttributeName": "PK", "AttributeType": "S"},
+            {"AttributeName": "SK", "AttributeType": "S"},
+        ],
+        KeySchema=[
+            {"AttributeName": "PK", "KeyType": "HASH"},
+            {"AttributeName": "SK", "KeyType": "RANGE"},
+        ],
+        BillingMode="PAY_PER_REQUEST",
+    )
+    tab = boto3.resource("dynamodb", region_name="us-west-2").Table(_WS_TABLE_XR)
+    for owner_repo in ("bcarpio/producer-xr", "bcarpio/consumer-xr"):
+        tab.put_item(Item={
+            "PK": f"WS#{_WS_XR}", "SK": f"GITHUB_REPO#{owner_repo}",
+            "workspace_id": _WS_XR,
+        })
+
+
+def _seed_xr():
+    from shared.symbol_graph_writer import write_facts  # type: ignore
+    from extractor.base import Fact  # type: ignore
+
+    write_facts(
+        workspace_id=_WS_XR, repo="producer-xr", commit_sha="sha-prod",
+        facts=[Fact("defines", "python:shared_lib.math_utils::<module>",
+                    "python:shared_lib.math_utils::add", "shared_lib/math_utils.py",
+                    4, "python")],
+        symbol_graph_table_name=SYMBOL_GRAPH_TABLE, skip_pointer_swap=True,
+    )
+    write_facts(
+        workspace_id=_WS_XR, repo="consumer-xr", commit_sha="sha-cons",
+        facts=[
+            Fact("defines", "python:app.main::<module>",
+                 "python:app.main::compute_total", "app/main.py", 7, "python"),
+            Fact("imports", "python:app.main::<module>",
+                 "python:shared_lib.math_utils::add", "app/main.py", 4, "python"),
+            Fact("calls", "python:app.main::compute_total",
+                 "python:app.main::add", "app/main.py", 8, "python"),
+        ],
+        symbol_graph_table_name=SYMBOL_GRAPH_TABLE, skip_pointer_swap=True,
+    )
+
+
+class TestCrossRepoPostPass:
+    def test_consumer_call_rebinds_to_producer_definition(self, monkeypatch):
+        from shared.symbol_graph_writer import scan_repo_facts  # type: ignore
+
+        _create_table()
+        _create_workspaces_table()
+        handler = _load_handler()
+        # Bind the workspaces-table read to THIS moto context.
+        monkeypatch.setattr(
+            handler, "dynamodb_resource",
+            boto3.resource("dynamodb", region_name="us-west-2"),
+        )
+        monkeypatch.setenv("WORKSPACES_TABLE", _WS_TABLE_XR)
+        _seed_xr()
+
+        # Pre: the consumer's call targets its OWN namespace (within-repo raw).
+        pre = scan_repo_facts(_WS_XR, "consumer-xr",
+                              symbol_graph_table_name=SYMBOL_GRAPH_TABLE)
+        call = next(r for r in pre if r["kind"] == "calls")
+        assert call["target_symbol_id"] == "python:app.main::add"
+
+        # Run the post-pass on the CONSUMER; it loads the producer's defines.
+        handler._resolve_repo_symbol_graph(_WS_XR, "consumer-xr", "sha-cons")
+
+        # Post: the call now targets the PRODUCER's definition (cross-repo).
+        post = scan_repo_facts(_WS_XR, "consumer-xr",
+                               symbol_graph_table_name=SYMBOL_GRAPH_TABLE)
+        call = next(r for r in post if r["kind"] == "calls")
+        assert call["target_symbol_id"] == "python:shared_lib.math_utils::add"
+
+    def test_list_workspace_repos_strips_owner_and_excludes_self(self, monkeypatch):
+        _create_workspaces_table()
+        handler = _load_handler()
+        monkeypatch.setattr(
+            handler, "dynamodb_resource",
+            boto3.resource("dynamodb", region_name="us-west-2"),
+        )
+        monkeypatch.setenv("WORKSPACES_TABLE", _WS_TABLE_XR)
+        repos = handler._list_workspace_repos(_WS_XR, exclude_bare="consumer-xr")
+        assert repos == ["producer-xr"]  # owner stripped, self excluded

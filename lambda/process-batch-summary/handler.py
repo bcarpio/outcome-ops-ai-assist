@@ -1402,6 +1402,98 @@ def _emit_facts(
         return 0
 
 
+def _list_workspace_repos(workspace_id: str, *, exclude_bare: str = "") -> "list[str]":
+    """Bare repo names connected to ``workspace_id`` (ADR-056), excluding
+    ``exclude_bare``.
+
+    The workspaces table stores one row per connected repo at
+    ``PK=WS#{workspace_id}``, ``SK=GITHUB_REPO#{owner}/{repo}`` (see
+    feedback_ddb_repo_sk_convention -- it is ``GITHUB_REPO#``, NOT ``REPO#``).
+    The symbol-graph table keys on the BARE repo name (reference_app_vs_repo_naming),
+    so strip the owner prefix. Best-effort: returns [] on any error.
+    """
+    table = _get_workspaces_table()
+    if table is None:
+        return []
+    from boto3.dynamodb.conditions import Key
+
+    bare_names: "list[str]" = []
+    query_kwargs: "dict" = {
+        "KeyConditionExpression": Key("PK").eq(f"WS#{workspace_id}")
+        & Key("SK").begins_with("GITHUB_REPO#"),
+        "ProjectionExpression": "SK",
+    }
+    try:
+        while True:
+            resp = table.query(**query_kwargs)
+            for item in resp.get("Items", []):
+                sk = str(item.get("SK", ""))
+                name = sk[len("GITHUB_REPO#"):] if sk.startswith("GITHUB_REPO#") else ""
+                bare = name.rsplit("/", 1)[-1]
+                if bare and bare != exclude_bare and bare not in bare_names:
+                    bare_names.append(bare)
+            last_key = resp.get("LastEvaluatedKey")
+            if not last_key:
+                break
+            query_kwargs["ExclusiveStartKey"] = last_key
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(
+            "ADR-056 sibling-repo enumeration failed for %s: %s", workspace_id, exc
+        )
+        return []
+    return bare_names
+
+
+def _load_workspace_sibling_defines(workspace_id: str, repo: str) -> "list[Fact]":
+    """Load the ``defines`` of every OTHER repo in the workspace (ADR-056) as
+    lookup-only facts for the cross-repo definitions index.
+
+    Best-effort per sibling: a load failure drops that one sibling, never the
+    whole resolution pass. Only ``defines`` are loaded -- they widen the index
+    so a consumer's cross-repo reference can bind to a producer repo's symbol;
+    nothing from a sibling is ever rewritten or emitted (resolve_repo_facts
+    treats ``extra_definitions`` as lookup-only).
+
+    Cost note: scans each sibling partition and filters to defines. For large
+    workspaces this is the dominant cost of the post-pass; it is bounded by the
+    workspace's repo count x definition count and uses the projected scan.
+    """
+    from shared.symbol_graph_writer import scan_repo_facts
+
+    siblings = _list_workspace_repos(workspace_id, exclude_bare=repo)
+    defines: "list[Fact]" = []
+    for sibling in siblings:
+        try:
+            for row in scan_repo_facts(workspace_id, sibling):
+                if row.get("kind") != "defines":
+                    continue
+                defines.append(
+                    Fact(
+                        kind="defines",
+                        source_symbol_id=str(row.get("source_symbol_id", "")),
+                        target_symbol_id=str(row.get("target_symbol_id", "")),
+                        file_path=str(row.get("file_path", "")),
+                        # line is irrelevant for a definition in the index; guard
+                        # the >=1 invariant rather than drop a sibling over it.
+                        line=max(1, int(row.get("line", 1) or 1)),
+                        language=str(row.get("language", "")),
+                    )
+                )
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning(
+                "ADR-056 sibling defines load failed for %s/%s: %s",
+                workspace_id, sibling, exc,
+            )
+            continue
+    if defines:
+        logger.info(
+            "ADR-056 cross-repo: loaded %d sibling defines from %d repo(s) "
+            "for %s/%s",
+            len(defines), len(siblings), workspace_id, repo,
+        )
+    return defines
+
+
 def _resolve_repo_symbol_graph(
     workspace_id: str, repo: str, commit_sha: str
 ) -> None:
@@ -1453,9 +1545,21 @@ def _resolve_repo_symbol_graph(
             )
             sks.append(str(sk))
 
+        # ADR-056: resolve against the workspace-wide definitions index so a
+        # cross-repo reference (a consumer repo calling a producer repo's symbol)
+        # binds to the producer's definition. Best-effort: on any sibling-load
+        # failure, fall back to within-repo (ADR-055) resolution only.
+        try:
+            sibling_defines = _load_workspace_sibling_defines(workspace_id, repo)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning(
+                "ADR-056 sibling-defines load failed; within-repo only: %s", exc
+            )
+            sibling_defines = []
+
         # resolve_repo_facts returns a list parallel to its input, so each
         # resolved fact lines up with the SK of the row it came from.
-        resolved = resolve_repo_facts(facts)
+        resolved = resolve_repo_facts(facts, extra_definitions=sibling_defines)
         rewrites = [
             (sks[i], resolved[i])
             for i in range(len(facts))
