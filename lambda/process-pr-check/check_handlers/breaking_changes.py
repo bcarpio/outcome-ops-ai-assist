@@ -236,6 +236,25 @@ def create_tailored_query(handler_name: str, change_type: ChangeType) -> str:
         return f"handlers that depend on {handler_name}"
 
 
+def _plane1_file_scope(changed_files: List[str]) -> List[str]:
+    """Plane-1 (symbol-graph) file scope: every changed Python source under
+    ``lambda/`` that is not a test.
+
+    Unlike the heuristic's handler.py-only ``relevant_files``, plane 1 resolves
+    real code symbols, so it must see ``shared/*.py`` and non-handler modules
+    (``lambda/<x>/*.py``, ``check_handlers/*.py``) -- exactly the high-fan-out
+    code whose change breaks the most consumers. In a Lambda monorepo handlers
+    do not import each other's ``handler.py``; they share code through
+    ``shared/``, so a handler-scoped plane 1 is blind to its highest-value
+    targets. Terraform carries no Python symbol (heuristic/plane-2 territory)
+    and is excluded here. (ADR-054 / ADR-055.)
+    """
+    return [
+        f for f in changed_files
+        if f.startswith("lambda/") and f.endswith(".py") and "/tests/" not in f
+    ]
+
+
 def symbol_graph_consumers(
     workspace_ids: List[str],
     repo: str,
@@ -356,6 +375,7 @@ def check_breaking_changes(
     ado_org: str | None = None,
     ado_project: str | None = None,
     ado_repo: str | None = None,
+    reader: Any = None,
 ) -> Dict[str, Any]:
     """
     Breaking Changes check handler.
@@ -384,13 +404,24 @@ def check_breaking_changes(
     fanned out. Files absent from ``anchors`` (pure deletions, or when
     anchor computation failed and ``anchors`` is {}/None) are not anchored
     and stay in the ``details`` summary only.
+
+    Scope is split by plane (ADR-054/ADR-055). The heuristic path keeps the
+    handler.py + terraform ``relevant_files`` set (handler-named by
+    construction). The plane-1 symbol-graph path scans ALL changed non-test
+    Python under ``lambda/`` -- crucially ``shared/*.py`` and non-handler
+    modules -- so a change to a high-fan-out shared symbol surfaces its real
+    cross-file consumers; a PR touching only ``shared/*.py`` still runs plane 1
+    instead of short-circuiting to PASS. ``reader`` is injectable for tests;
+    production leaves it ``None`` and plane 1 imports ``symbol_graph_reader``.
     """
     logger.info(
         f"Running breaking changes check for PR #{pr_number} "
         f"(provider={provider})"
     )
 
-    # Detect change types for all relevant files
+    # Heuristic scope (handler-to-handler runtime topology via KB
+    # handler-group-summaries): handler.py + terraform only. This path is
+    # handler-named by construction, so plane-1 widening must NOT leak into it.
     relevant_files = [
         f for f in changed_files
         if (
@@ -399,7 +430,14 @@ def check_breaking_changes(
         )
     ]
 
-    if not relevant_files:
+    # Plane-1 scope (symbol graph): all changed non-test Python under lambda/,
+    # built independently of the heuristic so shared/*.py and non-handler
+    # modules are covered (ADR-054/ADR-055). A PR that touches ONLY shared/ has
+    # an empty heuristic scope but a non-empty plane-1 scope -- the guard below
+    # must not short-circuit it to PASS.
+    plane1_files = _plane1_file_scope(changed_files)
+
+    if not relevant_files and not plane1_files:
         return {
             "checkType": check_type,
             "status": "PASS",
@@ -533,11 +571,18 @@ def check_breaking_changes(
 
         change_types_list = ", ".join(sorted(all_change_types))
 
-        details.append(f"Modified {len(relevant_files)} file(s): {change_types_list} changes")
-        details.append("")
-        details.append("No direct consumers detected in knowledge base.")
-        details.append("These may be new handlers, internal-only, or not yet documented.")
-        details.append("Changes appear safe to merge.")
+        if relevant_files:
+            details.append(f"Modified {len(relevant_files)} file(s): {change_types_list} changes")
+            details.append("")
+            details.append("No direct consumers detected in knowledge base.")
+            details.append("These may be new handlers, internal-only, or not yet documented.")
+            details.append("Changes appear safe to merge.")
+        else:
+            # Plane-1-only PR (e.g. shared/*.py): the handler heuristic has
+            # nothing to say; the symbol-graph section below carries the result.
+            details.append(
+                f"Scanned {len(plane1_files)} code module(s) for symbol-graph consumers."
+            )
 
     # Line-anchored findings for inline PR comments (shared.pr_findings).
     # Each HIGH-confidence dependency is a distinct breaking change attributed
@@ -604,11 +649,14 @@ def check_breaking_changes(
         # Symbol graph keys on the BARE repo name (reference_app_vs_repo_naming),
         # not the owner/repo (or org/project/repo) slug.
         bare_repo = repository.split("/")[-1]
+        # Plane-1 scans its OWN widened file set (shared/*.py + non-handler
+        # modules), not the handler-scoped `relevant_files`. `anchors` already
+        # carries added lines for every changed file, so the lines are present.
         changed_lines_by_file = {
-            f: anchors[f] for f in relevant_files if f in anchors
+            f: anchors[f] for f in plane1_files if f in anchors
         }
         plane1_consumers, plane1_undetermined = symbol_graph_consumers(
-            scope_workspace_ids, bare_repo, changed_lines_by_file
+            scope_workspace_ids, bare_repo, changed_lines_by_file, reader=reader
         )
 
         if plane1_consumers:

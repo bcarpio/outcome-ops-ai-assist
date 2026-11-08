@@ -65,6 +65,7 @@ calculate_confidence = handler_module.calculate_confidence
 create_tailored_query = handler_module.create_tailored_query
 check_breaking_changes = handler_module.check_breaking_changes
 symbol_graph_consumers = handler_module.symbol_graph_consumers
+_plane1_file_scope = handler_module._plane1_file_scope
 
 
 class TestKbVectorResult:
@@ -660,3 +661,127 @@ class TestSymbolGraphConsumers:
             ["ws1"], "myrepo", {"lambda/myrepo/handler.py": [10]}, reader=fake)
         assert consumers == []
         assert undetermined == ["lambda/myrepo/handler.py"]
+
+
+class TestPlane1FileScope:
+    """Chunk 11: plane-1 file scope is widened beyond handler.py."""
+
+    def test_includes_shared_and_non_handler_modules(self):
+        """shared/*.py and non-handler lambda modules are in plane-1 scope --
+        exactly the high-fan-out code the handler-only heuristic missed."""
+        changed = [
+            "lambda/shared/pr_metadata.py",
+            "lambda/shared/model_client.py",
+            "lambda/process-pr-check/check_handlers/breaking_changes.py",
+            "lambda/analyze-pr/diff_symbol_resolver.py",
+        ]
+        assert _plane1_file_scope(changed) == changed
+
+    def test_includes_handler_py(self):
+        """handler.py is still Python under lambda/ -> stays in plane-1 scope
+        (handlers can be imported too; widening is additive, not a swap)."""
+        assert _plane1_file_scope(["lambda/hello/handler.py"]) == [
+            "lambda/hello/handler.py"
+        ]
+
+    def test_excludes_tests(self):
+        """Test modules carry no production consumers and are excluded."""
+        assert _plane1_file_scope([
+            "lambda/tests/unit/test_check_breaking_changes.py",
+            "lambda/shared/tests/test_pr_metadata.py",
+        ]) == []
+
+    def test_excludes_terraform_non_lambda_and_non_python(self):
+        """Terraform (no Python symbol), non-lambda paths, and non-.py files
+        are not plane-1 targets."""
+        assert _plane1_file_scope([
+            "terraform/lambda.tf",
+            "ui/src/app.ts",
+            "lambda/hello/config.yaml",
+            "README.md",
+        ]) == []
+
+
+class TestPlane1ScopeWidening:
+    """Chunk 11: a shared/*.py-only PR now reaches plane 1 instead of an early
+    PASS, and its real cross-file consumers surface as line-anchored WARN
+    findings. Scope resolution is patched and the symbol-graph reader is
+    injected, so no live AWS is touched."""
+
+    def _reader_with_caller(self, consumer_file):
+        return TestSymbolGraphConsumers._FakeSGR(
+            at_line=SimpleNamespace(target_symbol_id="python:lambda.shared.pr_metadata::fetch_pr_metadata"),
+            callers_result=SimpleNamespace(
+                sites=[SimpleNamespace(
+                    repo="outcome-ops-ai-assist-private",
+                    file_path=consumer_file, line=88,
+                    source_symbol_id="python:lambda.process-pr-check.handler::run")],
+                complete=True),
+        )
+
+    @patch('shared.pr_check_scope.resolve_pr_check_workspace_scope',
+           return_value=["ws-eng"])
+    def test_shared_only_pr_runs_plane1_and_flags_consumer(self, _mock_scope):
+        """shared/*.py change with a graph consumer -> WARN, finding anchored on
+        the changed def line, naming the consuming file. Baseline behavior would
+        have early-returned PASS (no handler.py / .tf in the diff)."""
+        reader = self._reader_with_caller("lambda/process-pr-check/handler.py")
+        result = check_breaking_changes(
+            "BREAKING_CHANGES", 123, "bcarpio/outcome-ops-ai-assist-private",
+            ["lambda/shared/pr_metadata.py"], "query-kb-lambda",
+            anchors={"lambda/shared/pr_metadata.py": [10, 25]},
+            reader=reader,
+        )
+        assert result["status"] == "WARN"
+        findings = result["findings"]
+        assert len(findings) == 1
+        f = findings[0]
+        assert f["path"] == "lambda/shared/pr_metadata.py"
+        assert f["line"] == 10          # the changed line that resolved the symbol
+        assert "process-pr-check/handler.py" in f["message"]
+        assert "fetch_pr_metadata" in f["message"]
+
+    @patch('shared.pr_check_scope.resolve_pr_check_workspace_scope',
+           return_value=["ws-eng"])
+    def test_shared_only_pr_no_consumers_is_pass(self, _mock_scope):
+        """shared/*.py change with NO graph consumers -> genuine PASS (true safe),
+        not an early-exit PASS: plane 1 actually ran."""
+        reader = TestSymbolGraphConsumers._FakeSGR(
+            at_line=SimpleNamespace(target_symbol_id="python:lambda.shared.x::y"),
+        )  # empty callers + importers
+        result = check_breaking_changes(
+            "BREAKING_CHANGES", 123, "bcarpio/outcome-ops-ai-assist-private",
+            ["lambda/shared/x.py"], "query-kb-lambda",
+            anchors={"lambda/shared/x.py": [5]},
+            reader=reader,
+        )
+        assert result["status"] == "PASS"
+        assert result["findings"] == []
+        assert any("Scanned 1 code module" in d for d in result["details"])
+
+    @patch('shared.pr_check_scope.resolve_pr_check_workspace_scope',
+           return_value=["ws-eng"])
+    def test_shared_only_graph_unavailable_fails_closed(self, _mock_scope):
+        """Graph unavailable on a shared-only PR -> WARN (manual review), never a
+        silent safe PASS (ADR-054 fail-closed)."""
+        reader = TestSymbolGraphConsumers._FakeSGR(
+            raise_exc=TestSymbolGraphConsumers._FakeSGR.SymbolGraphUnavailable("down"))
+        result = check_breaking_changes(
+            "BREAKING_CHANGES", 123, "bcarpio/outcome-ops-ai-assist-private",
+            ["lambda/shared/x.py"], "query-kb-lambda",
+            anchors={"lambda/shared/x.py": [5]},
+            reader=reader,
+        )
+        assert result["status"] == "WARN"
+        assert any("manual review" in d.lower() for d in result["details"])
+
+    def test_handler_only_pr_without_anchors_unchanged(self):
+        """Regression: a handler.py-only PR with no anchors keeps the heuristic
+        path and does not invoke plane 1 (no anchors -> no symbol resolution)."""
+        with patch('breaking_changes_handler.query_vector_search', return_value=[]):
+            result = check_breaking_changes(
+                "BREAKING_CHANGES", 123, "owner/repo",
+                ["lambda/hello/handler.py"], "query-kb-lambda",
+            )
+        assert result["status"] == "PASS"
+        assert result["findings"] == []
