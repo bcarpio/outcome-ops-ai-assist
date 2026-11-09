@@ -618,6 +618,42 @@ class TestSymbolGraphConsumers:
         by_line = {c["changed_line"]: c["changed_symbol_id"] for c in consumers}
         assert by_line == {10: "pkg::sym10", 20: "pkg::sym20"}
 
+    def test_cross_workspace_consumer_found_via_scope_fanout(self):
+        """ADR-056: a consumer whose caller edge lives in a DIFFERENT workspace
+        than the changed symbol is found by querying every workspace in scope,
+        not just the symbol's defining workspace."""
+        outer = self
+
+        class _XwsSGR(outer._FakeSGR):
+            def symbol_at_line(self, ws, repo, file_path, line):
+                # The changed symbol resolves only in the producer workspace.
+                if ws == "ws-prod":
+                    return SimpleNamespace(
+                        target_symbol_id="shared_lib.math::add")
+                return None
+
+            def callers(self, ws, sid):
+                # The cross-workspace consumer's edge lives in ws-consumer only.
+                if ws == "ws-consumer":
+                    return SimpleNamespace(
+                        sites=[SimpleNamespace(
+                            repo="eng-consumer", file_path="app/service.py",
+                            line=17, source_symbol_id="app.service::process")],
+                        complete=True)
+                return SimpleNamespace(sites=[], complete=True)
+
+            def importers(self, ws, sid):
+                return SimpleNamespace(sites=[], complete=True)
+
+        consumers, undetermined = symbol_graph_consumers(
+            ["ws-prod", "ws-consumer"], "shared-lib",
+            {"shared_lib/math.py": [4]}, reader=_XwsSGR())
+        assert undetermined == []
+        assert len(consumers) == 1
+        assert consumers[0]["consumer_repo"] == "eng-consumer"
+        assert consumers[0]["relation"] == "caller"
+        assert consumers[0]["changed_symbol_id"] == "shared_lib.math::add"
+
     def test_self_references_excluded(self):
         """A caller inside the changed file itself is not a breaking consumer."""
         fake = self._FakeSGR(

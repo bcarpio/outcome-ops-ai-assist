@@ -353,34 +353,44 @@ def symbol_graph_consumers(
                 continue
 
             # 2. Callers + importers of each changed symbol are its consumers.
-            for sid, ws in resolved.items():
-                for relation, result in (
-                    ("caller", reader.callers(ws, sid)),
-                    ("importer", reader.importers(ws, sid)),
+            #    A cross-workspace consumer's edges live in ITS OWN workspace
+            #    partition (the target GSI is keyed {consumer_ws}#{sid}), so query
+            #    EVERY workspace in scope, not just the symbol's defining one
+            #    (ADR-056 cross-workspace consumer detection). Resolution already
+            #    consent-gated which bindings exist, so a workspace with no such
+            #    edge simply returns nothing -- no false consumers.
+            for sid in resolved:
+                for relation, query in (
+                    ("caller", reader.callers),
+                    ("importer", reader.importers),
                 ):
-                    for site in result.sites:
-                        # Exclude self-references inside the changed file itself.
-                        if site.repo == repo and site.file_path == file_path:
-                            continue
-                        # Exclude test-file consumers: a test using the symbol is
-                        # expected-to-break, not a production-impact signal. The
-                        # WARN is about real downstream consumers.
-                        if _is_plane1_test_file(site.file_path):
-                            continue
-                        key = (relation, site.repo, site.file_path, site.line, sid)
-                        if key in seen:
-                            continue
-                        seen.add(key)
-                        consumers.append({
-                            "changed_file": file_path,
-                            "changed_line": resolved_line[sid],
-                            "changed_symbol_id": sid,
-                            "relation": relation,
-                            "consumer_repo": site.repo,
-                            "consumer_file": site.file_path,
-                            "consumer_line": site.line,
-                            "truncated": not result.complete,
-                        })
+                    for ws in workspace_ids:
+                        result = query(ws, sid)
+                        for site in result.sites:
+                            # Exclude self-references inside the changed file.
+                            if site.repo == repo and site.file_path == file_path:
+                                continue
+                            # Exclude test-file consumers: a test using the symbol
+                            # is expected-to-break, not a production-impact signal.
+                            if _is_plane1_test_file(site.file_path):
+                                continue
+                            key = (
+                                relation, site.repo, site.file_path,
+                                site.line, sid,
+                            )
+                            if key in seen:
+                                continue
+                            seen.add(key)
+                            consumers.append({
+                                "changed_file": file_path,
+                                "changed_line": resolved_line[sid],
+                                "changed_symbol_id": sid,
+                                "relation": relation,
+                                "consumer_repo": site.repo,
+                                "consumer_file": site.file_path,
+                                "consumer_line": site.line,
+                                "truncated": not result.complete,
+                            })
 
         except reader.SymbolGraphUnavailable:
             # Fail closed: graph unreachable -> we do not know the consumers.
