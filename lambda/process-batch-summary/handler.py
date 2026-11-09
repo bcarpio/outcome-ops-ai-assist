@@ -1600,6 +1600,191 @@ def _resolve_repo_symbol_graph(
         )
 
 
+def _enqueue_xrepo_reresolve(
+    workspace_id: str, producer_repo: str, commit_sha: str
+) -> None:
+    """ADR-056 v2: enqueue a cross-repo re-resolution for a producer repo
+    that just finished a full regen.
+
+    Fires from the producer's last-close branch, AFTER the producer's own
+    resolution post-pass. Decouples the (potentially fanning-out) consumer
+    re-resolution from the producer's critical ingest path -- the message is
+    consumed by this same Lambda via the code-maps queue and handled by
+    ``handle_xrepo_reresolve_message``. Best-effort: a send failure only
+    means consumers pick up the producer's change on their own next regen
+    (the v1 consumer-pull contract), never a broken producer ingest.
+    """
+    if not CODE_MAPS_QUEUE_URL:
+        logger.warning(
+            "[xrepo] CODE_MAPS_QUEUE_URL not configured; cannot enqueue "
+            "re-resolution for producer %s/%s",
+            workspace_id,
+            producer_repo,
+        )
+        return
+    message = {
+        "message_type": "xrepo_reresolve",
+        "workspace_id": workspace_id,
+        "repo": producer_repo,
+        "commit_sha": commit_sha,
+    }
+    try:
+        sqs_client.send_message(
+            QueueUrl=CODE_MAPS_QUEUE_URL,
+            MessageBody=json.dumps(message),
+        )
+        logger.info(
+            "ADR-056 v2: enqueued cross-repo re-resolution for producer "
+            "%s/%s@%s",
+            workspace_id,
+            producer_repo,
+            commit_sha,
+        )
+    except ClientError as exc:
+        logger.warning(
+            "[xrepo] failed to enqueue re-resolution for producer %s/%s: %s",
+            workspace_id,
+            producer_repo,
+            exc,
+        )
+
+
+def _find_importer_repos(workspace_id: str, producer_repo: str) -> "list[str]":
+    """Bare names of the repos that import ``producer_repo``'s definitions
+    (ADR-056 v2, importer-narrowed).
+
+    Scans the producer's ``defines`` to get its definition ids, then queries
+    the target GSI (``symbol_graph_reader.importers``) for each -- the same
+    index that already powers cross-repo ``find_importers``. Returns the
+    distinct set of consumer repos, excluding the producer itself. Best-effort:
+    a failure on any single definition drops that lookup, never the whole set.
+    """
+    from shared.symbol_graph_reader import importers  # type: ignore
+    from shared.symbol_graph_writer import scan_repo_facts  # type: ignore
+
+    try:
+        define_ids = [
+            str(row.get("target_symbol_id", ""))
+            for row in scan_repo_facts(workspace_id, producer_repo)
+            if row.get("kind") == "defines" and row.get("target_symbol_id")
+        ]
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(
+            "[xrepo] could not scan producer defines for %s/%s: %s",
+            workspace_id,
+            producer_repo,
+            exc,
+        )
+        return []
+
+    repos: "set[str]" = set()
+    for definition_id in define_ids:
+        try:
+            result = importers(
+                workspace_id,
+                definition_id,
+                code_maps_table_name=CODE_MAPS_TABLE,
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning(
+                "[xrepo] importers() failed for %s: %s", definition_id, exc
+            )
+            continue
+        for site in result.sites:
+            bare = str(site.repo or "").rsplit("/", 1)[-1]
+            if bare and bare != producer_repo:
+                repos.add(bare)
+    return sorted(repos)
+
+
+def _current_graph_sha(workspace_id: str, repo: str) -> "str | None":
+    """The committed graph SHA for a (workspace, repo), or None.
+
+    Used to stamp a consumer's re-resolved rows with the consumer's OWN
+    provenance SHA (ADR-056 v2) rather than the producer's commit, since the
+    consumer source did not change -- only its cross-repo bindings refresh.
+    """
+    try:
+        from shared.symbol_graph_pointer import read_pointer  # type: ignore
+
+        state = read_pointer(
+            workspace_id, repo, code_maps_table_name=CODE_MAPS_TABLE
+        )
+        return state.graph_sha
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(
+            "[xrepo] could not read graph sha for %s/%s: %s",
+            workspace_id,
+            repo,
+            exc,
+        )
+        return None
+
+
+def handle_xrepo_reresolve_message(batch: Dict[str, Any]) -> None:
+    """ADR-056 v2 producer-push: re-resolve the consumers of a changed producer.
+
+    Finds the repos that import the producer (importer-narrowed via the target
+    GSI) and re-runs the whole-repo resolution post-pass for each against the
+    now-current workspace-wide definitions index. This reuses the v1 post-pass
+    (``_resolve_repo_symbol_graph``) verbatim, which is exactly right:
+
+    - A consumer ingested BEFORE its producer has raw cross-repo calls
+      (``app.main::add``); with the producer's defines now in the index they
+      bind to ``shared_lib.math_utils::add`` -- this closes the ADR-056 §5
+      ordering gap, the primary value of v2.
+    - An already-bound edge re-resolves to the same id (``bound == target`` ->
+      no rewrite): idempotent, so a stable workspace does no writes.
+    - An edge bound to a producer symbol the producer has since REMOVED does
+      not resolve, so it is left in place (not reverted to raw). That dangling
+      edge IS the breaking signal on the producer's own PR, and it self-heals
+      on the consumer's next regen. v2 deliberately does not un-bind.
+
+    Never marks a code-map ledger (this message is not part of any regen's unit
+    count) and never raises -- a failure just leaves consumers on the v1
+    consumer-pull contract.
+    """
+    workspace_id = batch.get("workspace_id") or ""
+    producer_repo = batch.get("repo") or ""
+    producer_sha = batch.get("commit_sha") or ""
+    if not (workspace_id and producer_repo):
+        logger.warning(
+            "[xrepo] re-resolution message missing workspace_id/repo; dropping"
+        )
+        return
+
+    consumers = _find_importer_repos(workspace_id, producer_repo)
+    if not consumers:
+        logger.info(
+            "ADR-056 v2: producer %s/%s has no importer repos; nothing to "
+            "re-resolve",
+            workspace_id,
+            producer_repo,
+        )
+        return
+
+    logger.info(
+        "ADR-056 v2: re-resolving %d importer repo(s) of producer %s/%s: %s",
+        len(consumers),
+        workspace_id,
+        producer_repo,
+        ", ".join(consumers),
+    )
+    for consumer in consumers:
+        # Stamp the consumer's own graph SHA; fall back to the producer's only
+        # if the pointer read fails (rows stay addressable either way -- the
+        # symbol-graph PK carries no SHA; the SHA is provenance).
+        consumer_sha = _current_graph_sha(workspace_id, consumer) or producer_sha
+        if not consumer_sha:
+            logger.warning(
+                "[xrepo] no commit sha for consumer %s/%s; skipping",
+                workspace_id,
+                consumer,
+            )
+            continue
+        _resolve_repo_symbol_graph(workspace_id, consumer, consumer_sha)
+
+
 def _iter_batch_facts(
     file_path: str,
     language: str,
@@ -1698,6 +1883,15 @@ def process_batch_record(record: Dict[str, Any]) -> None:
         # give-up); the requeue path does NOT mark so the ledger tracks
         # the merge as still pending.
         handle_merge_message(batch)
+        return
+
+    if message_type == "xrepo_reresolve":
+        # ADR-056 v2 producer-push re-resolution. A producer repo just
+        # completed a full regen; re-resolve the repos that IMPORT it so
+        # their cross-repo bindings pick up the producer's defines without
+        # re-ingesting each consumer. Importer-narrowed via the target GSI;
+        # best-effort and self-contained (never marks a code-map ledger).
+        handle_xrepo_reresolve_message(batch)
         return
 
     shard_index = batch.get("shard_index", 0)
@@ -2303,6 +2497,15 @@ def _mark_code_map_unit_done(
                     sg_repo = batch.get("repo") or ""
                     if workspace_id and sg_repo and commit_sha:
                         _resolve_repo_symbol_graph(
+                            workspace_id, sg_repo, commit_sha
+                        )
+                        # ADR-056 v2 producer-push: the producer's own graph is
+                        # now resolved against the workspace index. Enqueue a
+                        # cross-repo re-resolution of the repos that import it so
+                        # their stale/raw cross-repo bindings refresh without a
+                        # re-ingest. Async + best-effort; off the producer's
+                        # critical path. Guarded by the same keys as above.
+                        _enqueue_xrepo_reresolve(
                             workspace_id, sg_repo, commit_sha
                         )
     except Exception as exc:  # pragma: no cover - defensive

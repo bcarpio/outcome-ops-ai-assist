@@ -303,3 +303,155 @@ class TestCrossRepoPostPass:
         monkeypatch.setenv("WORKSPACES_TABLE", _WS_TABLE_XR)
         repos = handler._list_workspace_repos(_WS_XR, exclude_bare="consumer-xr")
         assert repos == ["producer-xr"]  # owner stripped, self excluded
+
+
+# =============================================================================
+# ADR-056 v2: producer-push re-resolution. When a producer finishes a regen,
+# the repos that IMPORT it are re-resolved so their cross-repo bindings refresh
+# without a consumer re-ingest. Importer-narrowed via the target GSI; reuses the
+# v1 post-pass per consumer.
+# =============================================================================
+
+
+class TestProducerPushReresolve:
+    def _setup(self, monkeypatch):
+        _create_table()
+        _create_workspaces_table()
+        handler = _load_handler()
+        monkeypatch.setattr(
+            handler, "dynamodb_resource",
+            boto3.resource("dynamodb", region_name="us-west-2"),
+        )
+        monkeypatch.setenv("WORKSPACES_TABLE", _WS_TABLE_XR)
+        return handler
+
+    def test_find_importer_repos_returns_consumer(self, monkeypatch):
+        # The producer's def is imported by consumer-xr; the GSI-narrowed
+        # importer lookup must surface exactly that repo (producer excluded).
+        handler = self._setup(monkeypatch)
+        _seed_xr()
+        assert handler._find_importer_repos(_WS_XR, "producer-xr") == ["consumer-xr"]
+
+    def test_producer_push_rebinds_importer_consumer(self, monkeypatch):
+        # Headline: the consumer's cross-repo call is RAW (ordering gap -- it
+        # was ingested before the producer's defines existed). A producer-push
+        # message re-resolves the importer consumer and binds the call to the
+        # producer's definition WITHOUT re-resolving the consumer directly.
+        from shared.symbol_graph_writer import scan_repo_facts  # type: ignore
+
+        handler = self._setup(monkeypatch)
+        _seed_xr()
+
+        pre = scan_repo_facts(_WS_XR, "consumer-xr",
+                              symbol_graph_table_name=SYMBOL_GRAPH_TABLE)
+        assert next(r for r in pre if r["kind"] == "calls")[
+            "target_symbol_id"] == "python:app.main::add"
+
+        handler.handle_xrepo_reresolve_message({
+            "message_type": "xrepo_reresolve",
+            "workspace_id": _WS_XR,
+            "repo": "producer-xr",
+            "commit_sha": "sha-prod",
+        })
+
+        post = scan_repo_facts(_WS_XR, "consumer-xr",
+                               symbol_graph_table_name=SYMBOL_GRAPH_TABLE)
+        assert next(r for r in post if r["kind"] == "calls")[
+            "target_symbol_id"] == "python:shared_lib.math_utils::add"
+
+    def test_producer_push_is_idempotent(self, monkeypatch):
+        # Re-running the push after the consumer is already bound rewrites
+        # nothing (bound == target -> no remap). Proves Case B idempotency.
+        from shared.symbol_graph_writer import scan_repo_facts  # type: ignore
+
+        handler = self._setup(monkeypatch)
+        _seed_xr()
+        msg = {
+            "message_type": "xrepo_reresolve", "workspace_id": _WS_XR,
+            "repo": "producer-xr", "commit_sha": "sha-prod",
+        }
+        handler.handle_xrepo_reresolve_message(msg)
+        first = scan_repo_facts(_WS_XR, "consumer-xr",
+                                symbol_graph_table_name=SYMBOL_GRAPH_TABLE)
+        handler.handle_xrepo_reresolve_message(msg)
+        second = scan_repo_facts(_WS_XR, "consumer-xr",
+                                 symbol_graph_table_name=SYMBOL_GRAPH_TABLE)
+        # Same SKs, same targets -- no churn on a stable workspace.
+        assert sorted((r["SK"], r["target_symbol_id"]) for r in first) == \
+            sorted((r["SK"], r["target_symbol_id"]) for r in second)
+
+    def test_producer_with_no_importers_is_noop(self, monkeypatch):
+        # A producer nobody imports yields an empty importer set and does no
+        # work -- the cold-producer path.
+        from shared.symbol_graph_writer import write_facts  # type: ignore
+        from extractor.base import Fact  # type: ignore
+
+        handler = self._setup(monkeypatch)
+        write_facts(
+            workspace_id=_WS_XR, repo="producer-xr", commit_sha="sha-prod",
+            facts=[Fact("defines", "python:shared_lib.math_utils::<module>",
+                        "python:shared_lib.math_utils::add",
+                        "shared_lib/math_utils.py", 4, "python")],
+            symbol_graph_table_name=SYMBOL_GRAPH_TABLE, skip_pointer_swap=True,
+        )
+        assert handler._find_importer_repos(_WS_XR, "producer-xr") == []
+        # Must not raise.
+        handler.handle_xrepo_reresolve_message({
+            "message_type": "xrepo_reresolve", "workspace_id": _WS_XR,
+            "repo": "producer-xr", "commit_sha": "sha-prod",
+        })
+
+    def test_missing_workspace_or_repo_drops(self, monkeypatch):
+        handler = self._setup(monkeypatch)
+        # No raise, no work: guard clause on missing identifiers.
+        handler.handle_xrepo_reresolve_message({"message_type": "xrepo_reresolve"})
+
+    def test_enqueue_sends_message_to_code_maps_queue(self, monkeypatch):
+        handler = self._setup(monkeypatch)
+        sent = {}
+
+        class _FakeSQS:
+            def send_message(self, **kwargs):
+                sent.update(kwargs)
+
+        monkeypatch.setattr(handler, "sqs_client", _FakeSQS())
+        monkeypatch.setattr(handler, "CODE_MAPS_QUEUE_URL", "https://sqs/test-q")
+        handler._enqueue_xrepo_reresolve(_WS_XR, "producer-xr", "sha-prod")
+
+        import json as _json
+        assert sent["QueueUrl"] == "https://sqs/test-q"
+        body = _json.loads(sent["MessageBody"])
+        assert body == {
+            "message_type": "xrepo_reresolve",
+            "workspace_id": _WS_XR,
+            "repo": "producer-xr",
+            "commit_sha": "sha-prod",
+        }
+
+    def test_enqueue_without_queue_url_is_noop(self, monkeypatch):
+        handler = self._setup(monkeypatch)
+
+        class _FakeSQS:
+            def send_message(self, **kwargs):  # pragma: no cover - must not run
+                raise AssertionError("send_message called with no queue URL")
+
+        monkeypatch.setattr(handler, "sqs_client", _FakeSQS())
+        monkeypatch.setattr(handler, "CODE_MAPS_QUEUE_URL", "")
+        handler._enqueue_xrepo_reresolve(_WS_XR, "producer-xr", "sha-prod")
+
+    def test_record_routing_dispatches_to_handler(self, monkeypatch):
+        # process_batch_record must route an xrepo_reresolve message to the
+        # producer-push handler and return before the shard path.
+        import json as _json
+
+        handler = self._setup(monkeypatch)
+        called = {}
+        monkeypatch.setattr(
+            handler, "handle_xrepo_reresolve_message",
+            lambda batch: called.setdefault("batch", batch),
+        )
+        handler.process_batch_record({"body": _json.dumps({
+            "message_type": "xrepo_reresolve",
+            "workspace_id": _WS_XR, "repo": "producer-xr", "commit_sha": "s",
+        })})
+        assert called["batch"]["repo"] == "producer-xr"

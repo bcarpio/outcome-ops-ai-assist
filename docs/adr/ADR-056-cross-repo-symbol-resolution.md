@@ -1,6 +1,9 @@
 # ADR-056: Cross-Repo Symbol Resolution
 
-## Status: Proposed
+## Status: Accepted
+
+v1 (consumer-pull) and v2 (producer-push) are both implemented and live-verified
+(2026-11-08). See §5 for the two mechanisms and the v2 operational contract.
 
 ## Context
 
@@ -118,6 +121,41 @@ consumers.** Two mechanisms, in rollout order:
   set is already queryable via the target GSI — see §2). This closes the staleness
   window without re-ingesting every consumer. Higher operational complexity;
   separate rollout.
+
+  **v2 mechanism (as built).** After the producer's own resolution post-pass
+  fires at its last-close, the producer enqueues a single `xrepo_reresolve`
+  message onto the code-maps queue (the same queue the ingest Lambda already
+  consumes — no new queue, no new IAM beyond the existing `SendMessage` grant).
+  Consuming that message, the Lambda:
+
+  1. **Narrows to importers via the GSI.** It reads the producer's own
+     `defines`, then queries `target-kind-index` (`imports#`) for each — the same
+     index that powers cross-repo `find_importers` — to get exactly the repos
+     that import this producer. A producer nobody imports does ~zero work.
+  2. **Re-runs the v1 post-pass per importer consumer**, unchanged, against the
+     now-current workspace-wide index. This reuse is exact, not a coincidence:
+
+     - A consumer ingested **before** its producer has *raw* cross-repo calls
+       (`app.main::add`); with the producer's defines now in the index they bind
+       to `shared_lib.math_utils::add`. **Closing this ordering gap is the
+       primary value of v2.**
+     - An **already-bound** edge re-resolves to the same id (`bound == target` →
+       no rewrite): **idempotent**, so a stable workspace writes nothing.
+     - An edge bound to a producer symbol the producer has since **removed** does
+       not resolve, so it is **left in place, not reverted to raw**. v2
+       deliberately does **not** un-bind: that dangling edge *is* the breaking
+       signal surfaced on the producer's own PR (BREAKING_CHANGES still finds the
+       consumer as a caller of the now-deleted id), and it self-heals on the
+       consumer's next regen (a fresh raw extraction). Un-binding would hide the
+       break.
+
+  Re-resolution is triggered only from a producer's own full-regen last-close; a
+  consumer re-resolution does not itself enqueue, so there is no cascade.
+  Mutual imports (A↔B) are safe: regenerating A re-resolves B and stops.
+  Cost note: each importer consumer re-scans the workspace's sibling defines (the
+  v1 post-pass does this internally); for large importer sets this is the
+  dominant cost and a precomputed shared index is the obvious optimization, left
+  as a follow-on since v2 runs off the producer's critical path.
 
 ### 6. Globally-shared library repos (deferred decision)
 
