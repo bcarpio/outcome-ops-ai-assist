@@ -190,14 +190,18 @@ class TestCrossWorkspaceScope:
         assert set(result) == {"ws-eng", "ws-global", "ws-b"}
         assert "ws-unrelated" not in result
 
-    def test_breaking_changes_scope_includes_grants(self):
-        # BREAKING_CHANGES gets the full resolution scope (incl. grants); a
-        # sibling standards check on the SAME repo does not.
+    def test_breaking_changes_scope_is_forward_consumer_scope(self):
+        # Producer repo in ws-eng, which GRANTED ws-consumer (its consumers may
+        # live there). BREAKING_CHANGES searches ws-consumer (forward); a sibling
+        # standards check does not. A workspace that granted ws-eng (reverse) is
+        # NOT a consumer location and must not appear.
         table = _table_stub(
             github_repo_items=[{"PK": "WS#ws-eng", "workspace_id": "ws-eng"}],
             all_metadata_items=[
-                {"workspace_id": "ws-eng", "is_global": False},
+                {"workspace_id": "ws-eng", "is_global": False,
+                 "search_allowed_workspaces": ["ws-consumer"]},
                 {"workspace_id": "ws-global", "is_global": True},
+                {"workspace_id": "ws-consumer", "is_global": False},
                 {"workspace_id": "ws-b", "search_allowed_workspaces": ["ws-eng"]},
             ],
         )
@@ -207,9 +211,38 @@ class TestCrossWorkspaceScope:
         adr = pr_check_scope.resolve_pr_check_workspace_scope(
             check_type="ADR_COMPLIANCE", repo_name="acme/app", table=table,
         )
-        assert set(bc) == {"ws-eng", "ws-global", "ws-b"}
-        assert set(adr) == {"ws-eng", "ws-global"}  # no grant for standards text
-        assert "ws-b" not in adr
+        assert set(bc) == {"ws-eng", "ws-global", "ws-consumer"}
+        assert "ws-b" not in bc  # reverse granter is not a consumer location
+        assert set(adr) == {"ws-eng", "ws-global"}
+        assert "ws-consumer" not in adr
+
+    def test_consumer_query_scope_forward_grant(self):
+        table = _table_stub(
+            github_repo_items=[{"PK": "WS#ws-eng", "workspace_id": "ws-eng"}],
+            all_metadata_items=[
+                {"workspace_id": "ws-eng",
+                 "search_allowed_workspaces": ["ws-consumer"]},
+                {"workspace_id": "ws-consumer"},
+                {"workspace_id": "ws-b",
+                 "search_allowed_workspaces": ["ws-eng"]},  # reverse, ignored
+            ],
+        )
+        result = pr_check_scope.resolve_consumer_query_scope("acme/app", table)
+        assert set(result) == {"ws-eng", "ws-consumer"}
+        assert "ws-b" not in result
+
+    def test_consumer_query_scope_global_producer_is_everywhere(self):
+        table = _table_stub(
+            github_repo_items=[{"PK": "WS#ws-glib", "workspace_id": "ws-glib"}],
+            all_metadata_items=[
+                {"workspace_id": "ws-glib", "is_global": True},
+                {"workspace_id": "ws-a"},
+                {"workspace_id": "ws-b"},
+            ],
+        )
+        # A global producer is readable by all, so its consumers may be anywhere.
+        result = pr_check_scope.resolve_consumer_query_scope("acme/glib", table)
+        assert set(result) == {"ws-glib", "ws-a", "ws-b"}
 
     def test_breaking_changes_without_grants_matches_standards(self):
         table = _table_stub(

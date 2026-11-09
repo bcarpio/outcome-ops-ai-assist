@@ -203,13 +203,16 @@ def resolve_repo_definition_scope(
     repo_name: str,
     table=None,
 ) -> List[str]:
-    """The workspace scope a repo's cross-repo references resolve against.
+    """The workspace scope a repo's cross-repo references RESOLVE against
+    (the REVERSE / consumer-side direction).
 
     ADR-056 §1: the repo's own workspace(s) + every ``is_global`` workspace +
-    every workspace that granted the repo's workspace(s) access. This is the
-    authoritative scope for cross-repo symbol resolution (process-batch-summary)
-    AND for the BREAKING_CHANGES consumer query, so the graph and the check
-    agree on visibility. Sorted, deduped.
+    every workspace that granted the repo's workspace(s) access ("who can this
+    repo read"). This is the scope cross-repo RESOLUTION uses: a consumer binds
+    to producers it is allowed to read. It is NOT the scope for finding a
+    producer's consumers -- that is the FORWARD direction in
+    ``resolve_consumer_query_scope``. A grant is one-directional, so the two
+    scopes differ. Sorted, deduped.
     """
     if not repo_name:
         return []
@@ -220,6 +223,76 @@ def resolve_repo_definition_scope(
     combined: Set[str] = set(repo_workspaces)
     combined.update(list_global_workspace_ids(table))
     combined.update(list_workspaces_granting_access(repo_workspaces, table))
+    return sorted(combined)
+
+
+def _forward_grants(
+    workspace_ids: Iterable[str],
+    table=None,
+) -> List[str]:
+    """The workspaces that the given workspaces have GRANTED (their own
+    ``search_allowed_workspaces``) -- i.e. who may read them.
+
+    The forward direction: for a producer in workspace W, the workspaces W
+    granted are where W's consumers may live. Scans METADATA (same cold path as
+    the other scope primitives) so it needs no GetItem grant.
+    """
+    wanted = {w for w in workspace_ids if w}
+    if not wanted:
+        return []
+    if table is None:
+        table = _get_dynamodb().Table(_get_workspaces_table_name())
+
+    out: List[str] = []
+    scan_kwargs = {
+        "FilterExpression": "SK = :sk",
+        "ExpressionAttributeValues": {":sk": "METADATA"},
+    }
+    while True:
+        response = table.scan(**scan_kwargs)
+        for item in response.get("Items", []):
+            if item.get("workspace_id") not in wanted:
+                continue
+            for granted in item.get("search_allowed_workspaces") or []:
+                if granted and granted not in out:
+                    out.append(granted)
+        last_key = response.get("LastEvaluatedKey")
+        if not last_key:
+            break
+        scan_kwargs["ExclusiveStartKey"] = last_key
+    return out
+
+
+def resolve_consumer_query_scope(
+    repo_name: str,
+    table=None,
+) -> List[str]:
+    """The workspaces where a producer repo's CONSUMERS may live
+    (the FORWARD / producer-side direction).
+
+    ADR-056 §5: a consumer in workspace A can import a producer in the repo's
+    workspace W iff A can read W -- A is in W's ``search_allowed_workspaces`` or
+    W is ``is_global`` (readable by all). So a producer's consumers live in: its
+    own workspace(s) + the workspaces those workspace(s) granted (forward) +
+    every workspace if any owning workspace is ``is_global`` + (for continuity)
+    the ``is_global`` workspaces. BREAKING_CHANGES uses THIS to find
+    cross-workspace consumers; the reverse (definition) scope would miss them
+    because a grant is one-directional. Sorted, deduped.
+    """
+    if not repo_name:
+        return []
+    if table is None:
+        table = _get_dynamodb().Table(_get_workspaces_table_name())
+
+    repo_workspaces = find_workspaces_for_repo(repo_name, table)
+    combined: Set[str] = set(repo_workspaces)
+    global_ids = set(list_global_workspace_ids(table))
+    combined.update(global_ids)
+    # A global producer is readable by everyone -> consumers may be anywhere.
+    if any(w in global_ids for w in repo_workspaces):
+        combined.update(list_all_workspace_ids(table))
+    # Forward grants: the workspaces this producer's workspace(s) granted.
+    combined.update(_forward_grants(repo_workspaces, table))
     return sorted(combined)
 
 
@@ -248,14 +321,16 @@ def resolve_pr_check_workspace_scope(
     if check_type in CROSS_PORTFOLIO_CHECKS:
         return sorted(list_all_workspace_ids(table))
 
-    # BREAKING_CHANGES reads the symbol graph for cross-repo consumers, so its
-    # scope must match the cross-repo RESOLUTION scope (ADR-056) -- repo's
-    # workspace(s) + is_global + granted workspaces -- or a cross-workspace-bound
-    # edge is invisible to the consumer query. The other standards checks keep
-    # repo + is_global (they retrieve standards TEXT, not graph edges, and adding
-    # grants there would widen which teams' ADRs apply to a PR -- a separate call).
+    # BREAKING_CHANGES finds a changed producer's CONSUMERS, which live in the
+    # workspaces that can read the producer (ADR-056 §5) -- the FORWARD scope:
+    # repo's workspace(s) + the workspaces they granted + all workspaces if the
+    # producer is global. The reverse (definition) scope would miss a consumer in
+    # a workspace the producer granted, because a grant is one-directional. The
+    # other standards checks keep repo + is_global (they retrieve standards TEXT,
+    # not graph edges; forward grants are a producer->consumer notion, not a
+    # whose-ADRs-apply one).
     if check_type == "BREAKING_CHANGES":
-        return resolve_repo_definition_scope(repo_name, table)
+        return resolve_consumer_query_scope(repo_name, table)
 
     repo_workspaces = find_workspaces_for_repo(repo_name, table)
 
