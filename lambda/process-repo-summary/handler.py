@@ -305,9 +305,31 @@ def get_installation_token(installation_id: str) -> str:
 # ============================================================================
 
 
+# The per-repo configuration file at the repository root. This is the
+# discovery/extraction CONTRACT -- it selects the code-map backend and carries
+# source_roots, handler_directories, and symbol_graph settings. A change to it
+# changes WHICH code units exist and HOW they are extracted.
+REPO_CONFIG_FILENAME = ".outcomeops.yaml"
+
+
+def _config_contract_changed(changed_files) -> bool:
+    """True if the repo's ``.outcomeops.yaml`` is among the changed files.
+
+    Incremental re-ingestion keeps only code units whose *source files*
+    changed (content-hash diff). A change to ``.outcomeops.yaml`` touches no
+    code unit's source, so the content-hash diff can't see it -- yet it may
+    change the discovery/extraction contract (backend, source_roots,
+    handler_directories, symbol_graph enable/languages). Returning True here
+    forces a full regen so a config edit actually takes effect, instead of
+    silently waiting for an unrelated source change. Language-agnostic: this
+    sits above the per-language backends and benefits all of them.
+    """
+    return REPO_CONFIG_FILENAME in set(changed_files)
+
+
 def fetch_repo_config(token: str, repo_project: str) -> Dict:
     """Fetch .outcomeops.yaml from repository."""
-    url = f"{_github_api()}/repos/{repo_project}/contents/.outcomeops.yaml"
+    url = f"{_github_api()}/repos/{repo_project}/contents/{REPO_CONFIG_FILENAME}"
     req = Request(
         url,
         headers={
@@ -1472,14 +1494,27 @@ def handler(event, context):
                                 if change_result.changed_files:
                                     changed_set = set(change_result.changed_files)
                                     total_units = len(code_units)
-                                    code_units = [
-                                        u for u in code_units
-                                        if any(f in changed_set for f in u["file_paths"])
-                                    ]
-                                    logger.info(
-                                        f"Incremental: {len(code_units)} of {total_units} "
-                                        f"code units changed ({len(changed_set)} files changed)"
-                                    )
+                                    if _config_contract_changed(changed_set):
+                                        # Config file changed -> discovery/extraction
+                                        # contract may have changed. Skip the
+                                        # incremental filter (keep all code units)
+                                        # so this becomes a full regen: re-extracts
+                                        # every unit, rebuilding code-maps AND the
+                                        # symbol graph, and firing v2 producer-push.
+                                        logger.info(
+                                            f"Full regeneration: {REPO_CONFIG_FILENAME} "
+                                            f"changed (discovery/extraction contract) -- "
+                                            f"re-processing all {total_units} code units"
+                                        )
+                                    else:
+                                        code_units = [
+                                            u for u in code_units
+                                            if any(f in changed_set for f in u["file_paths"])
+                                        ]
+                                        logger.info(
+                                            f"Incremental: {len(code_units)} of {total_units} "
+                                            f"code units changed ({len(changed_set)} files changed)"
+                                        )
                                 else:
                                     logger.info(
                                         f"Full regeneration: no changed_files returned "

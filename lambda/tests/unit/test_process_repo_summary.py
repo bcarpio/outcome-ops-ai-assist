@@ -933,3 +933,33 @@ class TestFullRegenMessageStamp:
         assert len(msgs) > 1
         assert any(m["message_type"] == "merge" for m in msgs)
         assert all(m["full_regen"] is True for m in msgs)
+
+
+class TestConfigContractChangeForcesFullRegen:
+    """A change to .outcomeops.yaml (the discovery/extraction contract) must
+    force a full regen. Incremental re-ingestion keeps only code units whose
+    SOURCE changed, so a config-only change (which touches no code unit's
+    source) would otherwise silently not take effect until an unrelated source
+    change. Language-agnostic: the check sits above the per-language backends."""
+
+    def test_config_filename_constant(self):
+        assert repo_summary_handler.REPO_CONFIG_FILENAME == ".outcomeops.yaml"
+
+    def test_config_change_detected(self):
+        changed = {".outcomeops.yaml", "README.md"}
+        assert repo_summary_handler._config_contract_changed(changed) is True
+
+    def test_source_only_change_not_detected(self):
+        changed = {"src/mathx.ts", "src/strutil.ts"}
+        assert repo_summary_handler._config_contract_changed(changed) is False
+
+    def test_empty_change_set_not_detected(self):
+        assert repo_summary_handler._config_contract_changed(set()) is False
+
+    def test_accepts_any_iterable_of_changed_files(self):
+        # change_result.changed_files is a list upstream; the helper must handle
+        # a plain list, not only a set.
+        assert repo_summary_handler._config_contract_changed(
+            ["a.py", ".outcomeops.yaml"]
+        ) is True
+        assert repo_summary_handler._config_contract_changed(["a.py"]) is False

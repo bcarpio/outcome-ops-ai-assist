@@ -216,6 +216,46 @@ class PythonBackend(CodeMapBackend):
         if k8s_unit:
             code_units.append(k8s_unit)
 
+        # Group 13: Generic library source (ADR-009) for any .py files NOT
+        # already claimed by a specialized group. This is what makes a plain
+        # Python LIBRARY repo "just work" with no config, mirroring the
+        # TypeScript backend's generic fallback (ADR-056 §7 parity). Without it,
+        # generic discovery only runs when source_roots is configured (Group 0),
+        # so a library at a non-lambda/ layout produces zero code units.
+        #
+        # Python libraries commonly live in a FLAT-layout package at the repo
+        # root (shared_lib/, mypkg/), not only under src/, so the default roots
+        # (lambda/, src/) don't reach them. Derive the top-level directory of
+        # each unclaimed source file as an implicit source root so ADR-009
+        # discovery can group packages regardless of layout (flat OR src/).
+        #
+        # The lambda/ directory is excluded from the implicit roots: it is this
+        # backend's specialized domain (Groups 1/5/7/9 own it), so a
+        # lambda-centric repo -- including this platform's own -- keeps its
+        # existing discovery unchanged. Gated on unclaimed files so
+        # handler/test/shared/schema source is never double-counted.
+        claimed_paths = {p for u in code_units for p in u.file_paths}
+        unclaimed_source = [
+            f for f in relevant_files
+            if f["path"] not in claimed_paths and self.is_source_file(f["path"])
+        ]
+        if unclaimed_source:
+            implicit_roots = sorted({
+                top
+                for top in (
+                    f["path"].split("/")[0]
+                    for f in unclaimed_source
+                    if "/" in f["path"]
+                )
+                if top != self.lambda_directory
+            })
+            if implicit_roots:
+                # discover_source_units only sees the unclaimed files, so its
+                # units never overlap the specialized groups.
+                code_units.extend(
+                    self.discover_source_units(unclaimed_source, implicit_roots)
+                )
+
         logger.info(f"Discovered {len(code_units)} code units from {len(relevant_files)} files")
         return code_units
 
@@ -602,6 +642,11 @@ class PythonBackend(CodeMapBackend):
             return f"summary#frontend#{frontend_type}"
         elif batch_type == "kubernetes":
             return "summary#kubernetes"
+        elif batch_type == "source-module":
+            # One key per module name so multiple library modules discovered by
+            # the generic ADR-009 fallback (Group 13) don't collide on a single
+            # "summary#source-module" key (matches Go/Java/TypeScript).
+            return f"summary#module#{code_unit.name}"
         else:
             return f"summary#{batch_type}"
 

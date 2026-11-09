@@ -184,6 +184,43 @@ Beyond source code units, backends should also discover:
 3. **Documentation** - `.md` files
 4. **Configuration** - Application configs, CI/CD
 
+### Zero-config library discovery (generic fallback)
+
+A plain **library** repo — exported source with none of a backend's specialized
+shapes (handlers, API routes, frontend components, schemas) — must still be
+discovered with **no `.outcomeops.yaml` configuration**. Every backend therefore
+runs the generic `discover_source_units()` algorithm above on any source files
+**not already claimed by a specialized group**, as a final fallback. A claimed-set
+gate means specialized source is never double-counted. This keeps discovery
+uniform across languages: Go discovers every package directory, C# every
+`.csproj`, Java/ABAP run the generic algorithm unconditionally, and TypeScript and
+Python add the fallback so a library "just works".
+
+- **Python** additionally derives **implicit source roots** from the top-level
+  directory of each unclaimed source file, so a *flat-layout* package at the repo
+  root (`mypkg/`, not only `src/`) is discovered without a `source_roots`
+  override. The `lambda/` directory is excluded from the implicit roots — it is
+  the Python backend's specialized domain, so a lambda-centric repo's discovery is
+  unchanged.
+- Discovered library units use the `source-module` storage key
+  `summary#module#<name>` (shared across Go/Java/C#/TypeScript/Python) so multiple
+  modules never collide on a single key.
+- The generic algorithm's thresholds still apply: a **single-file, non-boundary**
+  directory is skipped (needs 2+ files, a boundary-pattern name, or a build-module
+  marker), so a lone file is not promoted to a code unit.
+
+### `.outcomeops.yaml` is the discovery contract — a change forces a full regen
+
+`.outcomeops.yaml` selects the backend and carries `source_roots`,
+`handler_directories`, and symbol-graph settings — it determines **which** code
+units exist and **how** they are extracted. Incremental re-ingestion re-extracts
+only code units whose **source** changed (content-hash diff), which cannot see a
+config change against unchanged source. A change to `.outcomeops.yaml` is
+therefore treated as a **full regen**: all code units are re-extracted (rebuilding
+code-maps and the symbol graph). This is language-agnostic — the check sits above
+the per-language backends — and without it a config edit would silently not take
+effect until an unrelated source change.
+
 ## Consequences
 
 ### Positive

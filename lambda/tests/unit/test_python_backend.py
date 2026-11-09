@@ -554,11 +554,22 @@ class TestPythonSourceRootsOverride:
             "shared_lib/string_utils.py",
         }
 
-    def test_no_override_leaves_root_package_undiscovered(self):
-        """Without an override the lambda-centric default is unchanged -- a root
-        package is NOT discovered (regression guard for this platform's repo)."""
+    def test_no_override_discovers_root_package_via_fallback(self):
+        """A plain library package at the repo root is now discovered with NO
+        source_roots override, via the generic ADR-009 fallback (Group 13,
+        ADR-056 parity with the other language backends). Previously this
+        returned zero units and required an explicit source_roots override."""
         backend = PythonBackend({"github_token": "t"})
-        assert self._source_modules(backend) == []
+        units = self._source_modules(backend)
+        assert len(units) == 1
+        assert units[0].name == "shared_lib"
+        assert set(units[0].file_paths) == {
+            "shared_lib/__init__.py",
+            "shared_lib/math_utils.py",
+            "shared_lib/string_utils.py",
+        }
+        # Name-scoped key so multiple library modules don't collide.
+        assert backend.get_storage_key(units[0]) == "summary#module#shared_lib"
 
     def test_lambda_layout_still_discovered_with_default(self):
         """The platform's own lambda/ discovery is untouched (no override)."""
@@ -570,3 +581,78 @@ class TestPythonSourceRootsOverride:
         names = [u.name for u in backend.discover_code_units(files)]
         # handler-group unit for the lambda directory is discovered as before
         assert any("ingest-docs" in n for n in names)
+
+
+class TestGenericLibrarySourceDiscovery:
+    """A plain Python LIBRARY repo (no lambda/ handlers, no source_roots) must
+    still have its source discovered via the generic ADR-009 fallback
+    (Group 13), reaching parity with Go/Java/C#/TypeScript. The lambda/
+    directory stays the specialized domain and is never swept into a generic
+    source-module."""
+
+    @staticmethod
+    def _blob(path):
+        return {"type": "blob", "path": path, "name": path.split("/")[-1]}
+
+    def setup_method(self):
+        self.backend = PythonBackend({"github_token": "test-token"})
+
+    def _source_modules(self, files):
+        return [
+            u for u in self.backend.discover_code_units(files)
+            if u.unit_type == "source-module"
+        ]
+
+    def test_flat_layout_library_discovered_no_config(self):
+        # The real gap Group 13 closes: a FLAT-layout package at the repo root
+        # whose name matches none of the specialized groups (not src/utils/
+        # common/shared) previously produced zero units without a source_roots
+        # override. It is now discovered as a name-scoped source-module.
+        files = [
+            self._blob("mypkg/__init__.py"),
+            self._blob("mypkg/core.py"),
+            self._blob("mypkg/helpers.py"),
+        ]
+        source = self._source_modules(files)
+        assert len(source) == 1
+        assert source[0].name == "mypkg"
+        assert self.backend.get_storage_key(source[0]) == "summary#module#mypkg"
+
+    def test_src_layout_library_still_covered_by_shared_group(self):
+        # src-layout already worked via Group 7 (backend-shared), so Group 13
+        # must NOT also re-emit those files as a source-module (no double-count).
+        files = [
+            self._blob("pyproject.toml"),
+            self._blob("src/mathx.py"),
+            self._blob("src/strutil.py"),
+        ]
+        units = self.backend.discover_code_units(files)
+        shared = [u for u in units if u.unit_type == "shared"]
+        source = [u for u in units if u.unit_type == "source-module"]
+        assert len(shared) == 1
+        assert {"src/mathx.py", "src/strutil.py"} <= set(shared[0].file_paths)
+        assert source == []  # claimed by the shared group, not re-discovered
+
+    def test_lambda_handlers_not_swept_into_generic_module(self):
+        # A lambda-only repo: handler files are claimed by the handler group and
+        # lambda/ is excluded from the generic fallback -- so NO source-module.
+        files = [
+            self._blob("lambda/ingest-docs/handler.py"),
+            self._blob("lambda/ingest-docs/util.py"),
+        ]
+        assert self._source_modules(files) == []
+
+    def test_handler_source_not_double_counted(self):
+        # Mixed repo: lambda handler + a separate library package. The library is
+        # discovered; the handler files are NOT also emitted as a source-module.
+        files = [
+            self._blob("lambda/ingest-docs/handler.py"),
+            self._blob("lambda/ingest-docs/util.py"),
+            self._blob("mypkg/__init__.py"),
+            self._blob("mypkg/core.py"),
+        ]
+        source = self._source_modules(files)
+        assert len(source) == 1
+        assert source[0].name == "mypkg"
+        claimed = {p for u in source for p in u.file_paths}
+        assert not any(p.startswith("lambda/") for p in claimed)

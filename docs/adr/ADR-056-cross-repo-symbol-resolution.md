@@ -259,6 +259,17 @@ pairs):
 The resolvers' within-repo carve-outs still apply across repos (e.g. Go/C#
 receiver-method calls, aliased/namespace imports stay raw) — never-guess holds.
 
+Cross-repo binding has a discovery **precondition**: the producer's defines must
+have been ingested. A producer is often a plain *library* repo, so library
+discovery must work with no `.outcomeops.yaml` configuration. Per ADR-009
+("Zero-config library discovery"), every backend now discovers unclaimed library
+source via the generic fallback — including Python flat-layout packages (`mypkg/`
+at the repo root), which previously produced zero code units without a
+`source_roots` override. A change to `.outcomeops.yaml` forces a full regen (it is
+the discovery/extraction contract), so toggling `symbol_graph` on or adding a
+`source_root` takes effect immediately rather than waiting for an unrelated source
+change.
+
 ## Consequences
 
 - BREAKING_CHANGES on a producer repo flags downstream **consumer repos** across
