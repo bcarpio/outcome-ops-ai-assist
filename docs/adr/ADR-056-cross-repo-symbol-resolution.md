@@ -242,10 +242,18 @@ pairs):
   import's name to the UNIQUE in-scope definition whose module *basename* equals
   the specifier's last segment (`mathx`), the same directory-basename idea Go uses.
   Both the call and the import fact are rebound (the latter is what makes
-  `importers(definition)` return a cross-repo TS consumer). Residual limitation: a
-  bare specifier with no subpath (`from "ts-shared"`) binds only if the producer's
-  entry module basename matches; general `package.json` `exports` resolution is a
-  follow-on. Within-repo (relative-import) resolution is unchanged.
+  `importers(definition)` return a cross-repo TS consumer). Residual limitations:
+  (a) a bare specifier with no subpath (`from "ts-shared"`) binds only if the
+  producer's entry module basename matches; general `package.json` `exports`
+  resolution is a follow-on; (b) **TS imports do NOT cross for free.** Unlike
+  Python/Java/C#/Go — where an import target id is already the producer's
+  definition id, so `importers(def)` returns the consumer even before anything is
+  resolved (§2) — a TS import target is specifier-based (`ts-shared/mathx::add`)
+  and only becomes the definition id *after* resolution. So a TS consumer resolved
+  before its producer existed is invisible to the producer's v2 push (the importer
+  GSI narrowing finds nothing), and the ordering gap closes only on the consumer's
+  own next resolution (v1 consumer-pull). Within-repo (relative-import) resolution
+  is unchanged.
 - **ABAP**: no resolver (intentionally deferred), so no cross-repo binding.
 
 The resolvers' within-repo carve-outs still apply across repos (e.g. Go/C#
