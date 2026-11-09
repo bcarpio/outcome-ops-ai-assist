@@ -1703,15 +1703,63 @@ def _enqueue_xrepo_reresolve(
         )
 
 
-def _find_importer_repos(workspace_id: str, producer_repo: str) -> "list[str]":
-    """Bare names of the repos that import ``producer_repo``'s definitions
-    (ADR-056 v2, importer-narrowed).
+def _consuming_workspaces(producer_workspace_id: str) -> "set[str]":
+    """Workspaces whose consumers may bind to a producer in
+    ``producer_workspace_id`` (ADR-056 §5 cross-workspace fan-out).
 
-    Scans the producer's ``defines`` to get its definition ids, then queries
-    the target GSI (``symbol_graph_reader.importers``) for each -- the same
-    index that already powers cross-repo ``find_importers``. Returns the
-    distinct set of consumer repos, excluding the producer itself. Best-effort:
-    a failure on any single definition drops that lookup, never the whole set.
+    These are exactly the workspaces whose resolution scope includes the
+    producer: the producer's own workspace, plus EVERY workspace if the
+    producer's workspace is ``is_global``, plus the workspaces the producer's
+    workspace granted (its own ``search_allowed_workspaces`` -- a workspace A in
+    that list may read this one, so A's consumers may bind here). Best-effort:
+    any failure falls back to the producer's own workspace only.
+    """
+    out: "set[str]" = {producer_workspace_id}
+    ws_table = _get_workspaces_table()
+    if ws_table is None:
+        return out
+    try:
+        from shared.pr_check_scope import (  # type: ignore
+            list_all_workspace_ids,
+            list_global_workspace_ids,
+        )
+
+        if producer_workspace_id in set(list_global_workspace_ids(table=ws_table)):
+            out.update(list_all_workspace_ids(table=ws_table))
+        meta = (
+            ws_table.get_item(
+                Key={"PK": f"WS#{producer_workspace_id}", "SK": "METADATA"}
+            ).get("Item")
+            or {}
+        )
+        for granted in meta.get("search_allowed_workspaces") or []:
+            if granted:
+                out.add(str(granted))
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(
+            "[xrepo] consuming-workspace resolution failed for %s; own "
+            "workspace only: %s",
+            producer_workspace_id,
+            exc,
+        )
+        return {producer_workspace_id}
+    return out
+
+
+def _find_importer_repos(
+    producer_workspace_id: str, producer_repo: str
+) -> "list[tuple[str, str]]":
+    """``(owning_workspace, bare_repo)`` pairs for the repos that import
+    ``producer_repo``'s definitions (ADR-056 v2, importer-narrowed, cross-workspace).
+
+    Scans the producer's ``defines`` (under its own workspace) to get its
+    definition ids, then queries the target GSI
+    (``symbol_graph_reader.importers``) for each -- the same index that powers
+    cross-repo ``find_importers`` -- across EVERY consuming workspace (§5). The
+    GSI partition is ``{workspace_id}#{target}``, so an importer in another
+    workspace is only found by querying that workspace; the workspace queried is
+    the importer's owning workspace. Excludes the producer itself. Best-effort:
+    a failure on any single lookup drops it, never the whole set.
     """
     from shared.symbol_graph_reader import importers  # type: ignore
     from shared.symbol_graph_writer import scan_repo_facts  # type: ignore
@@ -1719,36 +1767,43 @@ def _find_importer_repos(workspace_id: str, producer_repo: str) -> "list[str]":
     try:
         define_ids = [
             str(row.get("target_symbol_id", ""))
-            for row in scan_repo_facts(workspace_id, producer_repo)
+            for row in scan_repo_facts(producer_workspace_id, producer_repo)
             if row.get("kind") == "defines" and row.get("target_symbol_id")
         ]
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning(
             "[xrepo] could not scan producer defines for %s/%s: %s",
-            workspace_id,
+            producer_workspace_id,
             producer_repo,
             exc,
         )
         return []
 
-    repos: "set[str]" = set()
-    for definition_id in define_ids:
-        try:
-            result = importers(
-                workspace_id,
-                definition_id,
-                code_maps_table_name=CODE_MAPS_TABLE,
-            )
-        except Exception as exc:  # pragma: no cover - defensive
-            logger.warning(
-                "[xrepo] importers() failed for %s: %s", definition_id, exc
-            )
-            continue
-        for site in result.sites:
-            bare = str(site.repo or "").rsplit("/", 1)[-1]
-            if bare and bare != producer_repo:
-                repos.add(bare)
-    return sorted(repos)
+    consuming = _consuming_workspaces(producer_workspace_id)
+    pairs: "set[tuple[str, str]]" = set()
+    for ws in consuming:
+        for definition_id in define_ids:
+            try:
+                result = importers(
+                    ws,
+                    definition_id,
+                    code_maps_table_name=CODE_MAPS_TABLE,
+                )
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning(
+                    "[xrepo] importers() failed for %s in %s: %s",
+                    definition_id,
+                    ws,
+                    exc,
+                )
+                continue
+            for site in result.sites:
+                bare = str(site.repo or "").rsplit("/", 1)[-1]
+                if bare and not (
+                    ws == producer_workspace_id and bare == producer_repo
+                ):
+                    pairs.add((ws, bare))
+    return sorted(pairs)
 
 
 def _current_graph_sha(workspace_id: str, repo: str) -> "str | None":
@@ -1807,8 +1862,8 @@ def handle_xrepo_reresolve_message(batch: Dict[str, Any]) -> None:
         )
         return
 
-    consumers = _find_importer_repos(workspace_id, producer_repo)
-    if not consumers:
+    consumer_pairs = _find_importer_repos(workspace_id, producer_repo)
+    if not consumer_pairs:
         logger.info(
             "ADR-056 v2: producer %s/%s has no importer repos; nothing to "
             "re-resolve",
@@ -1819,24 +1874,26 @@ def handle_xrepo_reresolve_message(batch: Dict[str, Any]) -> None:
 
     logger.info(
         "ADR-056 v2: re-resolving %d importer repo(s) of producer %s/%s: %s",
-        len(consumers),
+        len(consumer_pairs),
         workspace_id,
         producer_repo,
-        ", ".join(consumers),
+        ", ".join(f"{ws}/{repo}" for ws, repo in consumer_pairs),
     )
-    for consumer in consumers:
-        # Stamp the consumer's own graph SHA; fall back to the producer's only
-        # if the pointer read fails (rows stay addressable either way -- the
-        # symbol-graph PK carries no SHA; the SHA is provenance).
-        consumer_sha = _current_graph_sha(workspace_id, consumer) or producer_sha
+    for owning_ws, consumer in consumer_pairs:
+        # Re-resolve the consumer under its OWN owning workspace (the importer may
+        # live in a different workspace than the producer -- §5). Stamp the
+        # consumer's own graph SHA; fall back to the producer's only if the
+        # pointer read fails (rows stay addressable either way -- the symbol-graph
+        # PK carries no SHA; the SHA is provenance).
+        consumer_sha = _current_graph_sha(owning_ws, consumer) or producer_sha
         if not consumer_sha:
             logger.warning(
                 "[xrepo] no commit sha for consumer %s/%s; skipping",
-                workspace_id,
+                owning_ws,
                 consumer,
             )
             continue
-        _resolve_repo_symbol_graph(workspace_id, consumer, consumer_sha)
+        _resolve_repo_symbol_graph(owning_ws, consumer, consumer_sha)
 
 
 def _iter_batch_facts(

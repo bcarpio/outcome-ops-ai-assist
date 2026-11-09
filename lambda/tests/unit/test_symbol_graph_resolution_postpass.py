@@ -330,7 +330,9 @@ class TestProducerPushReresolve:
         # importer lookup must surface exactly that repo (producer excluded).
         handler = self._setup(monkeypatch)
         _seed_xr()
-        assert handler._find_importer_repos(_WS_XR, "producer-xr") == ["consumer-xr"]
+        assert handler._find_importer_repos(_WS_XR, "producer-xr") == [
+            (_WS_XR, "consumer-xr")
+        ]
 
     def test_producer_push_rebinds_importer_consumer(self, monkeypatch):
         # Headline: the consumer's cross-repo call is RAW (ordering gap -- it
@@ -583,3 +585,41 @@ class TestCrossWorkspaceScopeResolution:
         # Must not raise; falls back to own-workspace siblings only.
         pairs = handler._resolve_definition_scope_pairs(_A, "consumer-ws")
         assert all(ws == _A for ws, _ in pairs)
+
+    def test_global_producer_fan_out_finds_cross_workspace_consumer(self, monkeypatch):
+        handler = self._setup(monkeypatch)
+        # Producer global-lib is in the is_global workspace G; its consumer lives
+        # in workspace A. Fan-out (all workspaces, since G is global) finds it.
+        assert handler._find_importer_repos(_G, "global-lib") == [
+            (_A, "consumer-ws")
+        ]
+
+    def test_granted_producer_fan_out_finds_consumer(self, monkeypatch):
+        handler = self._setup(monkeypatch)
+        # granted-lib is in B, which granted A; fan-out = B + B's grants {A}.
+        assert handler._find_importer_repos(_B, "granted-lib") == [
+            (_A, "consumer-ws")
+        ]
+
+    def test_unshared_producer_has_no_cross_workspace_fan_out(self, monkeypatch):
+        handler = self._setup(monkeypatch)
+        # unshared-lib is in C, which is neither global nor grants anyone; its
+        # consumer in A is NOT re-resolved (consent gating in the fan-out).
+        assert handler._find_importer_repos(_C, "unshared-lib") == []
+
+    def test_global_producer_push_rebinds_cross_workspace(self, monkeypatch):
+        from shared.symbol_graph_writer import scan_repo_facts  # type: ignore
+
+        handler = self._setup(monkeypatch)
+        # The consumer's calls are raw. A producer-push from the GLOBAL producer
+        # re-resolves the cross-workspace consumer and binds the global symbol.
+        handler.handle_xrepo_reresolve_message({
+            "message_type": "xrepo_reresolve",
+            "workspace_id": _G, "repo": "global-lib", "commit_sha": "sha-global-lib",
+        })
+        targets = {r["target_symbol_id"] for r in scan_repo_facts(
+            _A, "consumer-ws", symbol_graph_table_name=SYMBOL_GRAPH_TABLE)
+            if r["kind"] == "calls"}
+        assert "python:global_mod::gfunc" in targets   # rebound cross-workspace
+        assert "python:granted_mod::tfunc" in targets  # granted also in scope
+        assert "python:app.main::ufunc" in targets      # unshared stays raw
