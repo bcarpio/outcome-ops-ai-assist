@@ -667,3 +667,42 @@ class TestGetStorageKey:
 
         # Assert
         assert key == "summary#config"
+
+
+class TestGenericLibrarySourceDiscovery:
+    """A plain TypeScript LIBRARY repo (no handlers/routes/components, no
+    handler_directories) must still have its source discovered (Group 5b)."""
+
+    def setup_method(self):
+        # handler_directories=[] is the default get_backend_for_repo passes when
+        # .outcomeops.yaml omits it -- the config that previously found no source.
+        self.backend = TypeScriptBackend({"github_token": "test-token",
+                                          "handler_directories": []})
+
+    def test_library_src_discovered_as_source_module(self):
+        files = [
+            {"path": "package.json", "type": "blob"},
+            {"path": "README.md", "type": "blob"},
+            {"path": "src/mathx.ts", "type": "blob"},
+            {"path": "src/strutil.ts", "type": "blob"},
+        ]
+        units = self.backend.discover_code_units(files)
+        source = [u for u in units if u.unit_type == "source-module"]
+        assert len(source) == 1
+        assert set(source[0].file_paths) == {"src/mathx.ts", "src/strutil.ts"}
+        # Storage key is name-scoped so multiple modules don't collide.
+        key = self.backend.get_storage_key(source[0])
+        assert key == f"summary#module#{source[0].name}"
+
+    def test_handlers_not_double_counted_as_source_module(self):
+        # A handler dir is claimed by the handler group; it must NOT also appear
+        # as a generic source-module.
+        files = [
+            {"path": "src/handlers/api/login-handler.ts", "type": "blob"},
+            {"path": "src/handlers/api/helpers.ts", "type": "blob"},
+        ]
+        units = self.backend.discover_code_units(files)
+        handler = [u for u in units if u.unit_type == "handler-group"]
+        source = [u for u in units if u.unit_type == "source-module"]
+        assert len(handler) == 1
+        assert source == []  # claimed by the handler group, not re-discovered

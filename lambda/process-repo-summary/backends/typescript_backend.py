@@ -216,6 +216,23 @@ class TypeScriptBackend(CodeMapBackend):
         shared_units = self._discover_shared_code(relevant_files)
         code_units.extend(shared_units)
 
+        # Group 5b: Generic source modules (ADR-009) for any source files not
+        # already claimed by a specialized group above. This is what makes a
+        # plain TypeScript LIBRARY repo "just work": its source under a source
+        # root (src/, lib/, packages/, ...) is discovered even when it has no
+        # handlers / routes / components and no handler_directories configured.
+        # Gated on unclaimed files so handler/route/component source is never
+        # double-counted.
+        claimed_paths = {p for u in code_units for p in u.file_paths}
+        unclaimed_source = [
+            f for f in relevant_files
+            if f["path"] not in claimed_paths and self.is_source_file(f["path"])
+        ]
+        if unclaimed_source:
+            # discover_source_units only sees the unclaimed files, so its units
+            # never overlap the specialized groups.
+            code_units.extend(self.discover_source_units(unclaimed_source))
+
         # Group 6: Infrastructure (uses base class)
         infra_unit = self.discover_infrastructure(files)
         if infra_unit:
@@ -899,6 +916,10 @@ class TypeScriptBackend(CodeMapBackend):
             return "summary#config"
         elif batch_type == "kubernetes":
             return "summary#kubernetes"
+        elif batch_type == "source-module":
+            # Generic library source (Group 5b). Keyed by unit name so multiple
+            # source modules don't collide (matches Go/Java "summary#module#<name>").
+            return f"summary#module#{code_unit.name}"
         else:
             return f"summary#{batch_type}"
 
