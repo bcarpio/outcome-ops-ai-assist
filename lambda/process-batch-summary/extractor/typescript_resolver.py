@@ -19,21 +19,32 @@ TS fact shapes it binds against (from ``typescript_extractor.py``):
     ``obj.method`` for a member call (``this.method`` collapses to ``method``).
   * ``extends`` / ``implements``: ``typescript:<BaseName>::*``.
 
-Binding rules (v1):
-  * A named import of a relative module resolves the specifier against the
+Binding rules:
+  * A named import of a RELATIVE module resolves the specifier against the
     importing file's directory, then binds the imported name to the definition
-    in that module. This is the clean, common case.
-  * Unique repo-wide name fallback (exactly one definition of the name anywhere).
+    in that module. This is the clean, common within-repo case.
+  * A named import of a NON-relative specifier (bare / package / subpath, e.g.
+    ``shared/mathx`` or ``@acme/lib/url``) binds the name to the UNIQUE in-scope
+    definition whose module basename equals the specifier's last segment
+    (ADR-056 cross-repo: TS module ids are file paths, so a package import can
+    never be byte-identical to the producer's definition id, but its last segment
+    is the file it resolves to).
+  * Unique repo-wide name fallback (exactly one definition of the name anywhere),
+    only for a name that was NOT imported.
 
 Never-guess (ADR-055 decision #4): a reference that does not bind to exactly one
 known definition keeps its raw target. Over-resolution produces a false
-"you broke this consumer" WARN, which is worse than under-resolution.
+"you broke this consumer" WARN, which is worse than under-resolution. This is also
+what keeps a true external-package import raw: ``import { map } from "lodash"``
+binds only if the workspace has exactly one in-scope module named ``lodash``
+defining ``map`` -- otherwise it stays raw.
 
-Not handled in v1 (left raw): namespace imports (``import * as ns``) and the
+Not handled (left raw): namespace imports (``import * as ns``) and the
 ``ns.member`` calls they gate; default imports whose local alias differs from the
-exported name; bare-package / path-aliased specifiers (``@acme/pkg``, ``@/lib``)
-which are external or need tsconfig path resolution; re-export barrels
-(``export * from``); dynamic ``import()``.
+exported name; a bare specifier with NO subpath (``from "shared"``) when the
+producer's entry module basename does not match ``shared`` (needs package.json
+``exports`` resolution); re-export barrels (``export * from``); dynamic
+``import()``.
 """
 
 from __future__ import annotations
@@ -77,8 +88,8 @@ def _resolve_specifier(
     """Resolve a relative import specifier to a repo definition module.
 
     ``./trie`` from ``src/router/index`` -> ``src/router/trie``. Only relative
-    specifiers are resolved; bare / path-aliased specifiers return None (external
-    or needs tsconfig path mapping, out of v1 scope).
+    specifiers are resolved here; bare / path-aliased specifiers are handled by
+    ``_resolve_nonrelative_specifier`` (ADR-056 cross-repo).
     """
     if not specifier.startswith(".") or file_module is None:
         return None
@@ -92,6 +103,42 @@ def _resolve_specifier(
     return cands[0] if len(cands) == 1 else None
 
 
+def _basename(module: str) -> str:
+    """Last path segment of a module id (``src/router/trie`` -> ``trie``)."""
+    return module.rstrip("/").rsplit("/", 1)[-1]
+
+
+def _resolve_nonrelative_specifier(
+    specifier: str, name: str, defs: DefinitionsIndex
+) -> Optional[str]:
+    """Bind a name imported from a NON-relative specifier to a definition, by
+    matching the specifier's last segment to a definition module's basename
+    (ADR-056 cross-repo).
+
+    TS definition module ids are file paths (``src/mathx``), while a cross-repo
+    import is a package specifier (``@scope/pkg/mathx`` or ``shared/mathx``). The
+    two cannot be made byte-identical, but the import's last segment is the file
+    the package resolves to, so a consumer's ``import { add } from "shared/mathx"``
+    binds to the UNIQUE definition of ``add`` whose module basename is ``mathx``.
+
+    Never-guess (ADR-055 #4): zero or multiple matches -> None (left raw). This is
+    why an external-package import (``import { map } from "lodash"``) stays raw
+    unless the workspace genuinely has exactly one in-scope module named ``lodash``
+    defining ``map`` -- the same uniqueness guard every binding rule uses.
+    """
+    if specifier.startswith("."):
+        return None
+    tail = _basename(specifier)
+    if not tail:
+        return None
+    candidates = {
+        def_id
+        for (module, nm), def_id in defs.by_qualified.items()
+        if nm == name and _basename(module) == tail
+    }
+    return next(iter(candidates)) if len(candidates) == 1 else None
+
+
 def _bind_name(
     name: str,
     *,
@@ -100,13 +147,14 @@ def _bind_name(
     defs: DefinitionsIndex,
 ) -> Optional[str]:
     """Resolve a bare symbol ``name`` to a definition id, or None (never-guess)."""
-    # 1. Explicit named import of a relative module.
+    # 1. Explicit named import.
     specifier = imported.get(name)
     if specifier is not None:
         resolved_mod = _resolve_specifier(specifier, file_module, defs.modules)
         if resolved_mod is not None:
             return defs.by_qualified.get((resolved_mod, name))
-        return None  # imported from an external / unresolved module -> raw
+        # Non-relative (bare / package) specifier -> cross-repo basename match.
+        return _resolve_nonrelative_specifier(specifier, name, defs)
     # 2. Unique repo-wide definition of the name (not the file's own symbol).
     by_name = defs.by_name.get(name)
     if by_name and len(by_name) == 1:
@@ -140,10 +188,17 @@ def resolve_typescript_file(
             if not name or name == "*":
                 continue
             resolved_mod = _resolve_specifier(specifier, file_module, defs.modules)
-            if resolved_mod is not None:
-                bound = defs.by_qualified.get((resolved_mod, name))
-                if bound and bound != f.target_symbol_id:
-                    remap[f.target_symbol_id] = bound
+            bound = (
+                defs.by_qualified.get((resolved_mod, name))
+                if resolved_mod is not None
+                else _resolve_nonrelative_specifier(specifier, name, defs)
+            )
+            # Binding the import fact to the producer's definition id is what
+            # makes importers(definition) return a cross-repo consumer (the id
+            # must match; unlike Python, a TS import target is not already the
+            # definition id -- see ADR-056 language support).
+            if bound and bound != f.target_symbol_id:
+                remap[f.target_symbol_id] = bound
 
         elif f.kind in ("extends", "implements"):
             _lang, base_name, _ns, _sym = split_symbol_id(f.target_symbol_id)

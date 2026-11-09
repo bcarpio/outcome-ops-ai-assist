@@ -105,3 +105,57 @@ class TestTypescriptResolutionFixtures:
             (f.kind, f.source_symbol_id, f.target_symbol_id) for f in fs
         )
         assert key(once) == key(twice)
+
+
+# ADR-056 §7: TS cross-repo binding via non-relative (package) specifiers.
+# A TS module id is a file path, so a package import cannot be byte-identical to
+# the producer's definition id; it binds by the specifier's last segment matching
+# a producer module's basename, with never-guess on ambiguity.
+class TestTypescriptCrossRepo:
+    from extractor.base import Fact  # type: ignore
+
+    def _consumer_facts(self, specifier):
+        F = self.Fact
+        return [
+            F("defines", "typescript:app/service::<module>",
+              "typescript:app/service::process", "app/service.ts", 3, "typescript"),
+            F("imports", "typescript:app/service::<module>",
+              f"typescript:{specifier}::add", "app/service.ts", 1, "typescript"),
+            F("calls", "typescript:app/service::process",
+              "typescript:app/service::add", "app/service.ts", 4, "typescript"),
+        ]
+
+    def _producer_define(self, module="src/mathx"):
+        return self.Fact(
+            "defines", f"typescript:{module}::<module>",
+            f"typescript:{module}::add", f"{module}.ts", 2, "typescript")
+
+    def _resolved(self, consumer, producers):
+        out = resolve_repo_facts(consumer, extra_definitions=producers)
+        return {f.kind: f for f in out}
+
+    def test_subpath_package_import_binds_cross_repo(self):
+        # import { add } from "ts-shared/mathx"  ->  producer src/mathx::add
+        res = self._resolved(
+            self._consumer_facts("ts-shared/mathx"), [self._producer_define()])
+        assert res["calls"].target_symbol_id == "typescript:src/mathx::add"
+        assert res["imports"].target_symbol_id == "typescript:src/mathx::add"
+
+    def test_scoped_package_subpath_binds(self):
+        # import { add } from "@acme/lib/mathx"
+        res = self._resolved(
+            self._consumer_facts("@acme/lib/mathx"), [self._producer_define()])
+        assert res["calls"].target_symbol_id == "typescript:src/mathx::add"
+
+    def test_ambiguous_basename_stays_raw(self):
+        # Two in-scope modules basename "mathx" both define add -> never-guess.
+        producers = [self._producer_define("src/mathx"),
+                     self._producer_define("lib/mathx")]
+        res = self._resolved(self._consumer_facts("ts-shared/mathx"), producers)
+        assert res["calls"].target_symbol_id == "typescript:app/service::add"  # raw
+
+    def test_external_package_without_matching_module_stays_raw(self):
+        # import { add } from "lodash" -> no module basename "lodash" -> raw.
+        res = self._resolved(
+            self._consumer_facts("lodash"), [self._producer_define("src/mathx")])
+        assert res["calls"].target_symbol_id == "typescript:app/service::add"  # raw
