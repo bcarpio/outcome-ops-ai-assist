@@ -222,6 +222,31 @@ A repo does **not** declare its own cross-workspace dependencies (e.g. in
 `.outcomeops.yaml`): that would let a consumer read a workspace that never
 consented. Governance stays with the workspace admins and the `is_global` flag.
 
+### 7. Language support
+
+Cross-repo binding works for a language only when the consumer's **import id**
+is byte-identical to the producer's **definition id** — i.e. the id is built from
+something repo-independent (a package / namespace / module path), not a
+repo-local file path. Live-verified cross-repo (synthetic producer/consumer
+pairs):
+
+- **Python** (`python:<package>::<name>`), **Java** (`java:<package>::<Class>`),
+  **C#** (`csharp:<namespace>::<Type>`), **Go** (`go:<dir>::<name>`, bound by
+  package directory basename): **supported** — these ids are repo-independent, so
+  a consumer in one repo resolves against a producer's defines in another.
+- **TypeScript**: **not supported cross-repo (known gap).** TS definition ids use
+  the file path with the extension stripped (`typescript:src/mathx::add`), and the
+  resolver binds only *relative* import specifiers (resolved against the importing
+  file's path). A cross-repo consumer imports a *package* (`import { add } from
+  "shared"`), which the resolver cannot map to the producer's file-path module id,
+  so the reference stays raw. Closing this needs the TS resolver to map a package
+  specifier to the producer's module via its `package.json` `name`/`exports` — a
+  follow-on. Within-repo (relative-import) TS resolution is unaffected.
+- **ABAP**: no resolver (intentionally deferred), so no cross-repo binding.
+
+The resolvers' within-repo carve-outs still apply across repos (e.g. Go/C#
+receiver-method calls, aliased/namespace imports stay raw) — never-guess holds.
+
 ## Consequences
 
 - BREAKING_CHANGES on a producer repo flags downstream **consumer repos** across
