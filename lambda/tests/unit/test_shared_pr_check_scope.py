@@ -152,3 +152,74 @@ class TestResolvePrCheckWorkspaceScope:
         )
         # No repo workspaces + globals still resolvable.
         assert result == ["ws-sec"]
+
+
+# ADR-056 §1.3 + §6: cross-workspace grant reverse-lookup and the resolution
+# scope (own workspace(s) + is_global + granting workspaces).
+class TestCrossWorkspaceScope:
+
+    def test_grant_reverse_lookup_returns_granting_workspace(self):
+        # ws-b grants ws-eng; ws-c grants someone unrelated; ws-eng (self) and
+        # a non-granting workspace are excluded.
+        table = _table_stub(all_metadata_items=[
+            {"workspace_id": "ws-b", "search_allowed_workspaces": ["ws-eng"]},
+            {"workspace_id": "ws-c", "search_allowed_workspaces": ["ws-xyz"]},
+            {"workspace_id": "ws-eng", "search_allowed_workspaces": ["ws-eng"]},
+            {"workspace_id": "ws-none"},
+        ])
+        result = pr_check_scope.list_workspaces_granting_access(["ws-eng"], table)
+        assert result == ["ws-b"]
+
+    def test_grant_reverse_lookup_empty_input(self):
+        table = _table_stub(all_metadata_items=[
+            {"workspace_id": "ws-b", "search_allowed_workspaces": ["ws-eng"]},
+        ])
+        assert pr_check_scope.list_workspaces_granting_access([], table) == []
+
+    def test_resolution_scope_unions_own_global_and_grants(self):
+        table = _table_stub(
+            github_repo_items=[{"PK": "WS#ws-eng", "workspace_id": "ws-eng"}],
+            all_metadata_items=[
+                {"workspace_id": "ws-eng", "is_global": False},
+                {"workspace_id": "ws-global", "is_global": True},
+                {"workspace_id": "ws-b", "search_allowed_workspaces": ["ws-eng"]},
+                {"workspace_id": "ws-unrelated", "is_global": False},
+            ],
+        )
+        result = pr_check_scope.resolve_repo_definition_scope("acme/app", table)
+        assert set(result) == {"ws-eng", "ws-global", "ws-b"}
+        assert "ws-unrelated" not in result
+
+    def test_breaking_changes_scope_includes_grants(self):
+        # BREAKING_CHANGES gets the full resolution scope (incl. grants); a
+        # sibling standards check on the SAME repo does not.
+        table = _table_stub(
+            github_repo_items=[{"PK": "WS#ws-eng", "workspace_id": "ws-eng"}],
+            all_metadata_items=[
+                {"workspace_id": "ws-eng", "is_global": False},
+                {"workspace_id": "ws-global", "is_global": True},
+                {"workspace_id": "ws-b", "search_allowed_workspaces": ["ws-eng"]},
+            ],
+        )
+        bc = pr_check_scope.resolve_pr_check_workspace_scope(
+            check_type="BREAKING_CHANGES", repo_name="acme/app", table=table,
+        )
+        adr = pr_check_scope.resolve_pr_check_workspace_scope(
+            check_type="ADR_COMPLIANCE", repo_name="acme/app", table=table,
+        )
+        assert set(bc) == {"ws-eng", "ws-global", "ws-b"}
+        assert set(adr) == {"ws-eng", "ws-global"}  # no grant for standards text
+        assert "ws-b" not in adr
+
+    def test_breaking_changes_without_grants_matches_standards(self):
+        table = _table_stub(
+            github_repo_items=[{"PK": "WS#ws-eng", "workspace_id": "ws-eng"}],
+            all_metadata_items=[
+                {"workspace_id": "ws-eng", "is_global": False},
+                {"workspace_id": "ws-global", "is_global": True},
+            ],
+        )
+        bc = pr_check_scope.resolve_pr_check_workspace_scope(
+            check_type="BREAKING_CHANGES", repo_name="acme/app", table=table,
+        )
+        assert set(bc) == {"ws-eng", "ws-global"}

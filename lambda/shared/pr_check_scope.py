@@ -152,6 +152,77 @@ def list_all_workspace_ids(table=None) -> List[str]:
     )
 
 
+def list_workspaces_granting_access(
+    workspace_ids: Iterable[str],
+    table=None,
+) -> List[str]:
+    """Workspaces that have granted read access to any of ``workspace_ids``.
+
+    ADR-056 §1.3 cross-workspace grant: a workspace B's
+    ``METADATA.search_allowed_workspaces`` lists the workspaces allowed to read
+    B. This returns every B where some A in ``workspace_ids`` appears in B's
+    grant list -- i.e. the workspaces whose repos are in-scope for a repo that
+    lives in ``workspace_ids``. Input workspaces are excluded from the result.
+
+    Reverse of the forward read in ``chat.handler._validate_workspace_access``;
+    there is no index for list-membership, so this scans the METADATA rows and
+    filters in Python. Cold path (once per repo resolution), paginated.
+    """
+    wanted = {w for w in workspace_ids if w}
+    if not wanted:
+        return []
+    if table is None:
+        table = _get_dynamodb().Table(_get_workspaces_table_name())
+
+    granting: List[str] = []
+    scan_kwargs = {
+        "FilterExpression": (
+            "SK = :sk AND attribute_exists(search_allowed_workspaces)"
+        ),
+        "ExpressionAttributeValues": {":sk": "METADATA"},
+    }
+    while True:
+        response = table.scan(**scan_kwargs)
+        for item in response.get("Items", []):
+            allowed = item.get("search_allowed_workspaces") or []
+            if not any(a in wanted for a in allowed):
+                continue
+            ws_id = item.get("workspace_id") or (
+                item.get("PK", "").replace("WS#", "") or None
+            )
+            if ws_id and ws_id not in wanted and ws_id not in granting:
+                granting.append(ws_id)
+        last_key = response.get("LastEvaluatedKey")
+        if not last_key:
+            break
+        scan_kwargs["ExclusiveStartKey"] = last_key
+    return granting
+
+
+def resolve_repo_definition_scope(
+    repo_name: str,
+    table=None,
+) -> List[str]:
+    """The workspace scope a repo's cross-repo references resolve against.
+
+    ADR-056 §1: the repo's own workspace(s) + every ``is_global`` workspace +
+    every workspace that granted the repo's workspace(s) access. This is the
+    authoritative scope for cross-repo symbol resolution (process-batch-summary)
+    AND for the BREAKING_CHANGES consumer query, so the graph and the check
+    agree on visibility. Sorted, deduped.
+    """
+    if not repo_name:
+        return []
+    if table is None:
+        table = _get_dynamodb().Table(_get_workspaces_table_name())
+
+    repo_workspaces = find_workspaces_for_repo(repo_name, table)
+    combined: Set[str] = set(repo_workspaces)
+    combined.update(list_global_workspace_ids(table))
+    combined.update(list_workspaces_granting_access(repo_workspaces, table))
+    return sorted(combined)
+
+
 def resolve_pr_check_workspace_scope(
     check_type: str,
     repo_name: str,
@@ -176,6 +247,15 @@ def resolve_pr_check_workspace_scope(
 
     if check_type in CROSS_PORTFOLIO_CHECKS:
         return sorted(list_all_workspace_ids(table))
+
+    # BREAKING_CHANGES reads the symbol graph for cross-repo consumers, so its
+    # scope must match the cross-repo RESOLUTION scope (ADR-056) -- repo's
+    # workspace(s) + is_global + granted workspaces -- or a cross-workspace-bound
+    # edge is invisible to the consumer query. The other standards checks keep
+    # repo + is_global (they retrieve standards TEXT, not graph edges, and adding
+    # grants there would widen which teams' ADRs apply to a PR -- a separate call).
+    if check_type == "BREAKING_CHANGES":
+        return resolve_repo_definition_scope(repo_name, table)
 
     repo_workspaces = find_workspaces_for_repo(repo_name, table)
 
