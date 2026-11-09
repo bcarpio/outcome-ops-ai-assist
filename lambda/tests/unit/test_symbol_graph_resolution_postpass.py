@@ -455,3 +455,131 @@ class TestProducerPushReresolve:
             "workspace_id": _WS_XR, "repo": "producer-xr", "commit_sha": "s",
         })})
         assert called["batch"]["repo"] == "producer-xr"
+
+
+# =============================================================================
+# ADR-056 scope extension: cross-repo resolution across is_global and granted
+# workspaces (not just the repo's own workspace).
+# =============================================================================
+
+_XWS_TABLE = "test-workspaces-xws"
+# A = consumer workspace, G = global, B = grantor (grants A), C = unshared.
+_A, _G, _B, _C = "ws-a", "ws-global", "ws-b", "ws-c"
+
+
+def _create_xws_workspaces_table():
+    client = boto3.client("dynamodb", region_name="us-west-2")
+    client.create_table(
+        TableName=_XWS_TABLE,
+        AttributeDefinitions=[
+            {"AttributeName": "PK", "AttributeType": "S"},
+            {"AttributeName": "SK", "AttributeType": "S"},
+        ],
+        KeySchema=[
+            {"AttributeName": "PK", "KeyType": "HASH"},
+            {"AttributeName": "SK", "KeyType": "RANGE"},
+        ],
+        BillingMode="PAY_PER_REQUEST",
+    )
+    tab = boto3.resource("dynamodb", region_name="us-west-2").Table(_XWS_TABLE)
+    # METADATA rows: G is global; B grants A; A and C are plain.
+    tab.put_item(Item={"PK": f"WS#{_A}", "SK": "METADATA", "workspace_id": _A})
+    tab.put_item(Item={"PK": f"WS#{_G}", "SK": "METADATA", "workspace_id": _G,
+                       "is_global": True})
+    tab.put_item(Item={"PK": f"WS#{_B}", "SK": "METADATA", "workspace_id": _B,
+                       "search_allowed_workspaces": [_A]})
+    tab.put_item(Item={"PK": f"WS#{_C}", "SK": "METADATA", "workspace_id": _C})
+    # Repo rows per workspace (SK=GITHUB_REPO#owner/repo).
+    for ws, repo in ((_A, "consumer-ws"), (_G, "global-lib"),
+                     (_B, "granted-lib"), (_C, "unshared-lib")):
+        tab.put_item(Item={"PK": f"WS#{ws}", "SK": f"GITHUB_REPO#bcarpio/{repo}",
+                           "workspace_id": ws})
+
+
+def _seed_xws():
+    from shared.symbol_graph_writer import write_facts  # type: ignore
+    from extractor.base import Fact  # type: ignore
+
+    def defines(ws, repo, module, name, fp):
+        write_facts(
+            workspace_id=ws, repo=repo, commit_sha=f"sha-{repo}",
+            facts=[Fact("defines", f"python:{module}::<module>",
+                        f"python:{module}::{name}", fp, 2, "python")],
+            symbol_graph_table_name=SYMBOL_GRAPH_TABLE, skip_pointer_swap=True,
+        )
+
+    defines(_G, "global-lib", "global_mod", "gfunc", "global_mod.py")
+    defines(_B, "granted-lib", "granted_mod", "tfunc", "granted_mod.py")
+    defines(_C, "unshared-lib", "unshared_mod", "ufunc", "unshared_mod.py")
+
+    # Consumer in A: imports + raw calls to all three producers' symbols.
+    write_facts(
+        workspace_id=_A, repo="consumer-ws", commit_sha="sha-consumer-ws",
+        facts=[
+            Fact("defines", "python:app.main::<module>",
+                 "python:app.main::use", "app/main.py", 9, "python"),
+            Fact("imports", "python:app.main::<module>",
+                 "python:global_mod::gfunc", "app/main.py", 1, "python"),
+            Fact("imports", "python:app.main::<module>",
+                 "python:granted_mod::tfunc", "app/main.py", 2, "python"),
+            Fact("imports", "python:app.main::<module>",
+                 "python:unshared_mod::ufunc", "app/main.py", 3, "python"),
+            Fact("calls", "python:app.main::use",
+                 "python:app.main::gfunc", "app/main.py", 10, "python"),
+            Fact("calls", "python:app.main::use",
+                 "python:app.main::tfunc", "app/main.py", 11, "python"),
+            Fact("calls", "python:app.main::use",
+                 "python:app.main::ufunc", "app/main.py", 12, "python"),
+        ],
+        symbol_graph_table_name=SYMBOL_GRAPH_TABLE, skip_pointer_swap=True,
+    )
+
+
+class TestCrossWorkspaceScopeResolution:
+    def _setup(self, monkeypatch):
+        _create_table()
+        _create_xws_workspaces_table()
+        handler = _load_handler()
+        monkeypatch.setattr(
+            handler, "dynamodb_resource",
+            boto3.resource("dynamodb", region_name="us-west-2"),
+        )
+        monkeypatch.setenv("WORKSPACES_TABLE", _XWS_TABLE)
+        _seed_xws()
+        return handler
+
+    def _calls(self):
+        from shared.symbol_graph_writer import scan_repo_facts  # type: ignore
+        rows = scan_repo_facts(_A, "consumer-ws",
+                               symbol_graph_table_name=SYMBOL_GRAPH_TABLE)
+        return {r["source_symbol_id"].split("::")[-1] + "->" +
+                r["target_symbol_id"]: r for r in rows if r["kind"] == "calls"}
+
+    def test_global_and_granted_bind_unshared_stays_raw(self, monkeypatch):
+        handler = self._setup(monkeypatch)
+        handler._resolve_repo_symbol_graph(_A, "consumer-ws", "sha-consumer-ws")
+        targets = {r["target_symbol_id"]
+                   for r in self._calls().values()}
+        # global (G in scope) and granted (B granted A) bind cross-workspace;
+        # unshared (C not in scope) stays raw in the consumer namespace.
+        assert "python:global_mod::gfunc" in targets
+        assert "python:granted_mod::tfunc" in targets
+        assert "python:app.main::ufunc" in targets          # raw, unbound
+        assert "python:unshared_mod::ufunc" not in targets   # never crossed to C
+
+    def test_scope_pairs_exclude_self_and_unshared(self, monkeypatch):
+        handler = self._setup(monkeypatch)
+        pairs = set(handler._resolve_definition_scope_pairs(_A, "consumer-ws"))
+        assert (_G, "global-lib") in pairs
+        assert (_B, "granted-lib") in pairs
+        assert (_C, "unshared-lib") not in pairs     # C not in scope
+        assert (_A, "consumer-ws") not in pairs       # self excluded
+
+    def test_scope_failure_falls_back_to_own_workspace(self, monkeypatch):
+        handler = self._setup(monkeypatch)
+        import shared.pr_check_scope as scope_mod
+        monkeypatch.setattr(scope_mod, "list_global_workspace_ids",
+                            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+        # Must not raise; falls back to own-workspace siblings only.
+        pairs = handler._resolve_definition_scope_pairs(_A, "consumer-ws")
+        assert all(ws == _A for ws, _ in pairs)

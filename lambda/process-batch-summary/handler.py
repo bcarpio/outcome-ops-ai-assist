@@ -1444,9 +1444,62 @@ def _list_workspace_repos(workspace_id: str, *, exclude_bare: str = "") -> "list
     return bare_names
 
 
+def _resolve_definition_scope_pairs(
+    workspace_id: str, repo: str
+) -> "list[tuple[str, str]]":
+    """``(owning_workspace, bare_repo)`` pairs for every repo in the resolution
+    scope of ``(workspace_id, repo)`` (ADR-056 §1).
+
+    The scope is this workspace plus every ``is_global`` workspace plus every
+    workspace that granted this one access (``search_allowed_workspaces``) --
+    the same scope the BREAKING_CHANGES consumer query uses (shared
+    ``pr_check_scope`` primitives), so the graph and the check agree on
+    visibility. Each sibling is paired with its OWN owning workspace because the
+    symbol-graph PK is ``{workspace_id}#{repo}``: a global/granted producer in
+    workspace B is scanned as ``B#repo``, not ``{this_workspace}#repo``.
+
+    The ``(workspace_id, repo)`` self pair is excluded (the repo's own defines
+    are already in the primary index). A different repo that merely shares the
+    bare name in another in-scope workspace is a legitimately different repo and
+    is kept. Best-effort: on any scope-resolution failure, falls back to the
+    own-workspace siblings only (the pre-ADR-056-scope behavior).
+    """
+    scope_ws = {workspace_id}
+    ws_table = _get_workspaces_table()
+    if ws_table is not None:
+        try:
+            from shared.pr_check_scope import (  # type: ignore
+                list_global_workspace_ids,
+                list_workspaces_granting_access,
+            )
+
+            scope_ws.update(list_global_workspace_ids(table=ws_table))
+            scope_ws.update(
+                list_workspaces_granting_access([workspace_id], table=ws_table)
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning(
+                "ADR-056 scope resolution failed for %s/%s; own-workspace "
+                "only: %s",
+                workspace_id, repo, exc,
+            )
+            scope_ws = {workspace_id}
+
+    pairs: "list[tuple[str, str]]" = []
+    for ws in sorted(scope_ws):
+        exclude = repo if ws == workspace_id else ""
+        for sibling in _list_workspace_repos(ws, exclude_bare=exclude):
+            pairs.append((ws, sibling))
+    return pairs
+
+
 def _load_workspace_sibling_defines(workspace_id: str, repo: str) -> "list[Fact]":
-    """Load the ``defines`` of every OTHER repo in the workspace (ADR-056) as
-    lookup-only facts for the cross-repo definitions index.
+    """Load the ``defines`` of every OTHER repo in the resolution SCOPE (ADR-056)
+    as lookup-only facts for the cross-repo definitions index.
+
+    The scope spans this workspace + ``is_global`` workspaces + workspaces that
+    granted this one access (see ``_resolve_definition_scope_pairs``). Each
+    sibling is scanned under its own owning-workspace partition.
 
     Best-effort per sibling: a load failure drops that one sibling, never the
     whole resolution pass. Only ``defines`` are loaded -- they widen the index
@@ -1454,17 +1507,17 @@ def _load_workspace_sibling_defines(workspace_id: str, repo: str) -> "list[Fact]
     nothing from a sibling is ever rewritten or emitted (resolve_repo_facts
     treats ``extra_definitions`` as lookup-only).
 
-    Cost note: scans each sibling partition and filters to defines. For large
-    workspaces this is the dominant cost of the post-pass; it is bounded by the
-    workspace's repo count x definition count and uses the projected scan.
+    Cost note: scans each in-scope sibling partition and filters to defines. For
+    large scopes this is the dominant cost of the post-pass; it is bounded by the
+    scope's repo count x definition count and uses the projected scan.
     """
     from shared.symbol_graph_writer import scan_repo_facts
 
-    siblings = _list_workspace_repos(workspace_id, exclude_bare=repo)
+    pairs = _resolve_definition_scope_pairs(workspace_id, repo)
     defines: "list[Fact]" = []
-    for sibling in siblings:
+    for owning_ws, sibling in pairs:
         try:
-            for row in scan_repo_facts(workspace_id, sibling):
+            for row in scan_repo_facts(owning_ws, sibling):
                 if row.get("kind") != "defines":
                     continue
                 defines.append(
@@ -1482,14 +1535,15 @@ def _load_workspace_sibling_defines(workspace_id: str, repo: str) -> "list[Fact]
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning(
                 "ADR-056 sibling defines load failed for %s/%s: %s",
-                workspace_id, sibling, exc,
+                owning_ws, sibling, exc,
             )
             continue
     if defines:
         logger.info(
             "ADR-056 cross-repo: loaded %d sibling defines from %d repo(s) "
-            "for %s/%s",
-            len(defines), len(siblings), workspace_id, repo,
+            "across %d workspace(s) in scope for %s/%s",
+            len(defines), len(pairs), len({ws for ws, _ in pairs}),
+            workspace_id, repo,
         )
     return defines
 

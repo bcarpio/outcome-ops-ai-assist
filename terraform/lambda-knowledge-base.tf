@@ -280,7 +280,11 @@ module "process_batch_summary_lambda" {
       actions = [
         "dynamodb:GetItem",
         # ADR-056: Query enumerates a workspace's repos (SK begins_with GITHUB_REPO#) for sibling defines
-        "dynamodb:Query"
+        "dynamodb:Query",
+        # ADR-056 scope: Scan enumerates is_global workspaces and the
+        # search_allowed_workspaces grant reverse-lookup (METADATA rows) so
+        # cross-repo resolution spans the repo's authorized scope.
+        "dynamodb:Scan"
       ]
       resources = [
         module.workspaces_table[0].dynamodb_table_arn,

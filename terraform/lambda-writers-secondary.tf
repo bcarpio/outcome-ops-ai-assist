@@ -510,9 +510,11 @@ module "process_batch_summary_lambda_secondary" {
       # PII path GetItems the workspace row to look up privacy_mode; this
       # grant was missing on the secondary and surfaced as a noisy
       # AccessDeniedException warning under failover (2026-06-01).
+      # ADR-056: Scan mirrors the primary -- is_global + search_allowed_workspaces
+      # scope enumeration for cross-repo resolution.
       workspaces_read = {
         effect  = "Allow"
-        actions = ["dynamodb:GetItem", "dynamodb:Query"]
+        actions = ["dynamodb:GetItem", "dynamodb:Query", "dynamodb:Scan"]
         resources = [
           module.workspaces_table_secondary[0].dynamodb_table_arn,
           "${module.workspaces_table_secondary[0].dynamodb_table_arn}/index/*",
