@@ -208,7 +208,9 @@ ingestion:
 
 # Code generation settings
 code_generation:
-  # Backend type: "python", "java", or "typescript"
+  # Backend type: "python", "java", "typescript", "csharp", "go",
+  # "react", or "abap" (selects the code-map / symbol-graph backend;
+  # code *generation* ships for python / java / typescript / react).
   backend: "python"
 
   # Custom guidelines for this repository (included in every plan)

@@ -95,7 +95,10 @@ customer's account; no diff leaves their boundary.
   `structural_impact` comment. Honest empty-sets: a symbol with zero
   callers renders "no known callers" rather than being omitted or
   fabricated — audit-grade. Fail-soft + disclosed on an
-  unavailable/stale graph, never silently wrong.
+  unavailable/stale graph, never silently wrong. Impact crosses
+  repository boundaries: a signature change to a shared library flags
+  the consuming repos — including those in other workspaces within the
+  authorized resolution scope — not only same-repo callers (ADR-056).
 - **Cross-SCM parity** — GitHub PRs, Azure DevOps PRs, and GitLab MRs
   (ADR-050 v1.2) get the same checks and the same collapsed
   `<details>` comments **upserted in place per push** (one per check,
@@ -191,14 +194,30 @@ and by code-gen as the "where does this thing live" index.
 - **Java** — Maven / Gradle backend; classes, methods, imports.
 - **Python** — modules, classes, functions, imports.
 - **TypeScript** — including React components.
+- **Go** — one code unit per package directory; functions, methods,
+  structs, interfaces, imports.
 - **C# / .NET** — see ADR-014 (code-unit discovery), ADR-015 (backend
   naming), ADR-016 (test discovery), ADR-017 (regex/filesystem
   parser, no parser library).
 - **ABAP / SAP** (abapGit) — code-map extraction supported (ADR-014
   also covers SAP file-suffix discovery). Code-*generation* does
   **not** target ABAP today.
+- **Zero-config library discovery** — a plain library repo (exported
+  source with none of a backend's framework shapes: handlers, routes,
+  components, schemas) is discovered with **no `.outcomeops.yaml` at
+  all**. Every backend runs the generic ADR-009 discovery over any
+  source not already claimed by a specialized group, as a fallback:
+  Go discovers every package directory, C# every `.csproj`, Java and
+  ABAP run the generic algorithm, and TypeScript and Python add the
+  fallback (Python also handles a flat-layout package at the repo
+  root, not only `src/`). A library "just works" the moment it is
+  connected. See ADR-009.
 - **Incremental regeneration** — code maps refresh on commit-SHA
-  delta, not full repo every time.
+  delta, not full repo every time. A change to `.outcomeops.yaml`
+  (the discovery / extraction contract) forces a **full**
+  regeneration, so toggling symbol-graph extraction or adding a
+  source root takes effect on the next sync instead of silently
+  waiting for an unrelated source change.
 - **Workspace-scoped repo allowlist** — code-map vectors are
   partitioned by repo, repos are joined to workspaces via membership.
 
@@ -227,6 +246,34 @@ convention.
 
 Operator kill-switch: `GRAPH_RETRIEVAL_ENABLED` (default `"true"`)
 gates the graph path per Lambda; one-touch rollback without redeploy.
+
+#### Cross-repo resolution (ADR-055 / ADR-056)
+
+The symbol graph resolves references **across repository boundaries**,
+not just within a single repo. When a consumer repo imports a symbol a
+producer repo exports, the consumer's call site binds to the producer's
+canonical definition — so `callers` / `importers` / `definitions`
+return cross-repo results, and the PR-check breaking-changes analysis
+flags consumers that live in *other* repositories.
+
+- **Resolution scope** — a consumer binds to producers in its own
+  workspace, in any `is_global` workspace, and in any workspace that
+  **granted** it access (reverse-grant scope). The binding rule is
+  import-id == define-id (for TypeScript package specifiers, a
+  basename match). ADR-056 governs the cross-repo scope; ADR-055 the
+  within-module resolver pass.
+- **Producer-push (v2)** — re-ingesting a producer re-resolves its
+  known consumers across the authorized scope (consent-gated: an
+  unshared producer fans out to nobody), so a consumer that was bound
+  before its producer existed is repaired without re-ingesting the
+  consumer.
+- **Language coverage** — cross-repo resolvers ship for Python,
+  TypeScript, Java, C#, and Go. ABAP discovers and extracts but is
+  intentionally left raw (no cross-repo binding) today.
+- **Zero-config precondition** — cross-repo binding needs the producer
+  *discovered* first, and a producer is usually a plain library, which
+  is why zero-config library discovery (above) is a prerequisite for
+  it to work with no per-repo configuration.
 
 #### Per-repo extraction config (`.outcomeops.yaml`)
 
@@ -345,7 +392,8 @@ plan+code+tests+PR, ADR-grounded, with auto-fix retry. Customers can
 leave it off entirely and use review + KB alone, or point their own
 coding agent at the governed KB via the MCP server instead of using
 this pipeline. Backends ship for Python, Java, TypeScript, and React
-(C# is code-map extraction only, not generation).
+(C# and Go are code-map + symbol-graph + PR-check only, not
+generation).
 
 - **`generate-code`** — dispatches to language backend (`python-lambda`,
   `java-spring`, `typescript-express`, `react`); selected via
