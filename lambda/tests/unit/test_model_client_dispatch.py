@@ -363,14 +363,16 @@ class TestInvokeWithWorkloadTier:
     def test_workload_tier_falls_back_to_legacy_model_id_env(
         self, monkeypatch, caplog,
     ):
-        # Post-chunk-04 rollout in flight: env var isn't wired for this
-        # Lambda yet, so we fall back to BEDROCK_ADVANCED_MODEL_ID with
-        # a WARN log so the attribution gap is visible in CloudWatch.
+        # App-profile ARN env var isn't set for this Lambda (either the
+        # rollout is in flight, or Claude app-profile routing is disabled
+        # via bedrock_claude_app_profiles_enabled=false under a region-deny
+        # SCP), so we fall back to BEDROCK_ADVANCED_MODEL_ID with an INFO
+        # log that stays visible in CloudWatch without crying wolf.
         monkeypatch.delenv("BEDROCK_CODE_MAPS_ADVANCED_PROFILE_ARN", raising=False)
         monkeypatch.setenv("BEDROCK_ADVANCED_MODEL_ID", "us.anthropic.claude-sonnet-4-6")
         captured = {}
         import logging
-        with caplog.at_level(logging.WARNING):
+        with caplog.at_level(logging.INFO):
             with patch(
                 "shared._converse_backend.invoke",
                 side_effect=self._fake_converse(captured),
@@ -381,7 +383,7 @@ class TestInvokeWithWorkloadTier:
                 )
         assert captured["model_id"] == "us.anthropic.claude-sonnet-4-6"
         assert any(
-            "falling back to untagged" in rec.message
+            "using untagged model_id" in rec.message
             for rec in caplog.records
         )
 

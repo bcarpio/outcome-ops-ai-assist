@@ -243,9 +243,12 @@ def _resolve_workload_model_id(workload: str, tier: str) -> str:
     ``BEDROCK_<WORKLOAD>_<TIER>_PROFILE_ARN``.
 
     Fallback: the legacy per-tier model id env var
-    (``BEDROCK_ADVANCED_MODEL_ID`` etc.) with a WARN log so any
-    unwired Lambda in Cost Explorer surfaces as "untagged Bedrock
-    spend" that can be traced back to which caller/workload.
+    (``BEDROCK_ADVANCED_MODEL_ID`` etc.) with an INFO log. This is
+    the expected path when Claude app-profile routing is disabled
+    (``bedrock_claude_app_profiles_enabled=false``, e.g. under a
+    Control Tower region-deny SCP); audit-table attribution is
+    unaffected either way. A genuinely unwired Lambda logs the same
+    line, so trace an unexpected one back to its terraform module.
     """
     profile_arn = resolve_profile_arn(workload, tier)
     if profile_arn:
@@ -260,11 +263,15 @@ def _resolve_workload_model_id(workload: str, tier: str) -> str:
             f"is set. Wire the profile ARN env var in this Lambda's "
             f"terraform module (chunk 04) or set the legacy fallback."
         )
-    logger.warning(
-        "workload=%r tier=%r falling back to untagged model_id=%r "
-        "(env var %s unset). Cost Explorer attribution disabled for "
-        "this call -- check terraform env-var wiring.",
-        workload, tier, legacy_value, _profile_env_var_name(workload, tier),
+    logger.info(
+        "workload=%r tier=%r: Bedrock app-profile ARN env var %s not set; "
+        "using untagged model_id=%r. If Claude app-profile routing is "
+        "disabled (bedrock_claude_app_profiles_enabled=false, e.g. under a "
+        "region-deny SCP) this is expected and audit-table cost attribution "
+        "is unaffected; otherwise wire the profile ARN env var in this "
+        "Lambda's terraform module. Cost Explorer workload-tag split is "
+        "unavailable for this call.",
+        workload, tier, _profile_env_var_name(workload, tier), legacy_value,
     )
     return legacy_value
 
