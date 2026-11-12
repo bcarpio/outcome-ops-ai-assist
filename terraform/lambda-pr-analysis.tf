@@ -299,13 +299,18 @@ module "process_pr_check_lambda" {
   # IAM permissions
   attach_policy_statements = true
   policy_statements = merge({
-    # Write to DynamoDB code maps table
+    # Write to DynamoDB code maps table. DeleteItem is required so the
+    # inline-comment reconciler (_sync_inline_findings -> _delete_inline_row)
+    # can remove the INLINE# bookkeeping row when a finding is resolved; without
+    # it the row orphans and a fixed-then-reintroduced finding at the same line
+    # tries to patch an already-deleted provider discussion and never re-posts.
     dynamodb_write = {
       effect = "Allow"
       actions = [
         "dynamodb:PutItem",
         "dynamodb:UpdateItem",
         "dynamodb:GetItem",
+        "dynamodb:DeleteItem",
         "dynamodb:Query"
       ]
       resources = [
