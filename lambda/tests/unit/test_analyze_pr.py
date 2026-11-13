@@ -1248,7 +1248,9 @@ class TestHandler:
         mock_fetch_pr.assert_called_once()
         mock_fetch_config.assert_called_once()
         mock_fetch_files.assert_called_once()
-        assert mock_post_comment.call_count == 1
+        # Two comments post on the success path now: the PR summary comment
+        # (COMMENT#summary) and the analysis-started status (COMMENT#analysis_started).
+        assert mock_post_comment.call_count == 2
         mock_queue_jobs.assert_called_once()
 
     @patch('analyze_pr_handler.log_admin_action')

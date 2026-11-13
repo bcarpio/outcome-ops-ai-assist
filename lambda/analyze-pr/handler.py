@@ -485,6 +485,7 @@ def patch_pr_comment(
 COMMENT_ROLE_ANALYSIS_STARTED = "analysis_started"
 COMMENT_ROLE_STRUCTURAL_IMPACT = "structural_impact"
 COMMENT_ROLE_NO_CHECKS_NEEDED = "no_checks_needed"
+COMMENT_ROLE_SUMMARY = "summary"
 
 
 def _build_analysis_started_comment(checks_to_run: List[str]) -> str:
@@ -753,6 +754,115 @@ def _upsert_gitlab_comment(
         pk=pk, sk=sk,
         provider_comment_id=response.get("id"),
     )
+
+
+# =============================================================================
+# PR/MR summary comment (SK=COMMENT#summary). Builds a plain-English
+# walkthrough + per-file table + queued-checks line and upserts it as the top
+# comment, PATCHing in place on re-push. Additive reviewer context -- every
+# call site wraps this in try/except so a summary failure never blocks the
+# check-queueing pipeline (ADR-004 non-fatal; mirrors the structural pass).
+# =============================================================================
+
+# Bound the number of files we fetch diffs for on ADO/GitLab (GitHub ships
+# inline patches for free). Keeps PR-open latency + model cost bounded; files
+# beyond the cap are reported as truncated in the summary (ADR-032).
+_SUMMARY_MAX_DIFF_FILES = int(os.environ.get("PR_SUMMARY_MAX_DIFF_FILES", "12"))
+
+
+def _render_summary_footer(usage) -> str:
+    """Collapsed token-usage footer for the summary comment (ADR-016).
+
+    Returns an empty string when the model call failed (usage is None) so the
+    deterministic summary still posts without a misleading zero-cost footer.
+    """
+    if usage is None:
+        return ""
+    return (
+        "\n\n<details>\n<summary>Usage</summary>\n\n"
+        "- model tier: basic (pr-analyzer workload)\n"
+        f"- input tokens: {usage.input_tokens}\n"
+        f"- output tokens: {usage.output_tokens}\n"
+        "</details>"
+    )
+
+
+def _build_summary_body(
+    *,
+    metadata,
+    diffs_by_file: Dict[str, str],
+    checks_to_run: List[str],
+    truncated_files: Optional[List[str]] = None,
+) -> str:
+    """Build the full summary comment body (walkthrough + table + footer)."""
+    from pr_summary import build_pr_summary
+
+    body, usage = build_pr_summary(
+        metadata=metadata,
+        diffs_by_file=diffs_by_file,
+        checks_to_run=checks_to_run,
+        truncated_files=truncated_files,
+    )
+    return (
+        body
+        + _render_summary_footer(usage)
+        + "\n\n---\n*Powered by [OutcomeOps AI Assist](https://outcomeops.ai)*"
+    )
+
+
+def _fetch_diffs_via_sha(
+    *,
+    provider: str,
+    changed_files: List[str],
+    change_types: Dict[str, str],
+    base_sha: str,
+    head_sha: str,
+    max_files: int,
+    **fetch_kwargs: Any,
+) -> tuple:
+    """Fetch per-file unified diffs for up to ``max_files`` files (ADO/GitLab).
+
+    GitHub supplies patches inline, so this is only for providers that don't.
+    Each file needs its base + head bytes; an added file has no base, a removed
+    file has no head. Non-fatal per file: a fetch error or a file beyond the cap
+    is reported in ``truncated_files`` so the summary signals the omission
+    (ADR-032) rather than silently dropping it.
+
+    Returns ``(diffs_by_file, truncated_files)``.
+    """
+    from shared.pr_diff import compute_file_diff
+    from shared.source_fetch import fetch_file_at_sha, SourceFetchError
+
+    diffs: Dict[str, str] = {}
+    truncated: List[str] = []
+    for idx, path in enumerate(changed_files):
+        if idx >= max_files:
+            truncated.append(path)
+            continue
+        status = change_types.get(path, "modified")
+        try:
+            base_bytes = (
+                None if status == "added"
+                else fetch_file_at_sha(provider, path, base_sha, **fetch_kwargs)
+            )
+            head_bytes = (
+                None if status == "removed"
+                else fetch_file_at_sha(provider, path, head_sha, **fetch_kwargs)
+            )
+            diff = compute_file_diff(base_bytes, head_bytes, path)
+        except SourceFetchError:
+            truncated.append(path)
+            continue
+        except Exception:
+            logger.warning(
+                "[analyze-pr.summary] diff build failed for %s; omitting",
+                path, exc_info=True,
+            )
+            truncated.append(path)
+            continue
+        if diff:
+            diffs[path] = diff
+    return diffs, truncated
 
 
 @dataclass
@@ -1317,6 +1427,43 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             )
             return response.dict()
 
+        # Post the PR summary comment (walkthrough + per-file table + queued
+        # checks) just above the analysis-started status. Non-fatal -- additive
+        # reviewer context; only posted when checks will run.
+        try:
+            from shared.pr_metadata import PRMetadata
+
+            gh_base = pr.base if isinstance(pr.base, dict) else {}
+            gh_head = pr.head if isinstance(pr.head, dict) else {}
+            summary_meta = PRMetadata(
+                head_sha=gh_head.get("sha", ""),
+                base_sha=gh_base.get("sha", ""),
+                base_branch=base_ref,
+                changed_files=[f.filename for f in files],
+                author="",
+                title=pr.title or "",
+                file_change_types={f.filename: f.status for f in files},
+            )
+            summary_diffs = {f.filename: f.patch for f in files if f.patch}
+            summary_truncated = [f.filename for f in files if not f.patch]
+            _upsert_github_comment(
+                repository=request.repository,
+                pr_number=request.pr_number,
+                role=COMMENT_ROLE_SUMMARY,
+                body=_build_summary_body(
+                    metadata=summary_meta,
+                    diffs_by_file=summary_diffs,
+                    checks_to_run=checks_to_run,
+                    truncated_files=summary_truncated,
+                ),
+                token=token,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[analyze-pr.summary] GitHub summary failed for PR #%d: %s",
+                request.pr_number, exc,
+            )
+
         # Post initial comment to PR (collapsed <details> template).
         _upsert_github_comment(
             repository=request.repository,
@@ -1562,6 +1709,39 @@ def _handle_azure_devops(
             checks_queued=0,
         ).dict()
 
+    # Post the PR summary comment just above the analysis-started status.
+    # Non-fatal -- additive reviewer context; only posted when checks will run.
+    try:
+        summary_diffs, summary_truncated = _fetch_diffs_via_sha(
+            provider="azure_devops",
+            changed_files=pr_meta.changed_files,
+            change_types=pr_meta.file_change_types,
+            base_sha=pr_meta.base_sha,
+            head_sha=pr_meta.head_sha,
+            max_files=_SUMMARY_MAX_DIFF_FILES,
+            ado_org=ado_org,
+            ado_project=ado_project,
+            ado_repo=ado_repo,
+            ado_access_token=access_token,
+        )
+        _upsert_ado_comment(
+            repository=request.repository,
+            ado_org=ado_org, ado_project=ado_project, ado_repo=ado_repo,
+            pr_number=request.pr_number, access_token=access_token,
+            role=COMMENT_ROLE_SUMMARY,
+            body=_build_summary_body(
+                metadata=pr_meta,
+                diffs_by_file=summary_diffs,
+                checks_to_run=checks_to_run,
+                truncated_files=summary_truncated,
+            ),
+        )
+    except Exception as exc:
+        logger.warning(
+            "[analyze-pr.summary] ADO summary failed for PR #%d: %s",
+            request.pr_number, exc,
+        )
+
     _upsert_ado_comment(
         repository=request.repository,
         ado_org=ado_org, ado_project=ado_project, ado_repo=ado_repo,
@@ -1718,6 +1898,39 @@ def _handle_gitlab(
             pr_number=request.pr_number,
             checks_queued=0,
         ).dict()
+
+    # Post the PR summary comment just above the analysis-started status.
+    # Non-fatal -- additive reviewer context; only posted when checks will run.
+    try:
+        summary_diffs, summary_truncated = _fetch_diffs_via_sha(
+            provider="gitlab",
+            changed_files=pr_meta.changed_files,
+            change_types=pr_meta.file_change_types,
+            base_sha=pr_meta.base_sha,
+            head_sha=pr_meta.head_sha,
+            max_files=_SUMMARY_MAX_DIFF_FILES,
+            gitlab_project_path=repository,
+            gitlab_access_token=access_token,
+            gitlab_base_url=gl_base,
+        )
+        _upsert_gitlab_comment(
+            repository=repository,
+            pr_number=request.pr_number,
+            access_token=access_token,
+            base_url=gl_base,
+            role=COMMENT_ROLE_SUMMARY,
+            body=_build_summary_body(
+                metadata=pr_meta,
+                diffs_by_file=summary_diffs,
+                checks_to_run=checks_to_run,
+                truncated_files=summary_truncated,
+            ),
+        )
+    except Exception as exc:
+        logger.warning(
+            "[analyze-pr.summary] GitLab summary failed for MR !%d: %s",
+            request.pr_number, exc,
+        )
 
     _upsert_gitlab_comment(
         repository=repository,
