@@ -67,7 +67,7 @@ module "analyze_pr_lambda" {
   # redeploy via SSM-backed env override. PR_WORKSPACE_ID is NOT wired
   # here -- analyze-pr resolves repo -> workspace at runtime; plumbed
   # through handler.py via the env var only as a forward-compat seam.
-  environment_variables = {
+  environment_variables = merge({
     ENV                     = var.environment
     APP_NAME                = var.app_name
     GITHUB_BASE_URL         = var.github_base_url
@@ -106,11 +106,37 @@ module "analyze_pr_lambda" {
     GITLAB_CLIENT_ID               = var.gitlab_client_id
     GITLAB_CLIENT_SECRET_SSM_PARAM = local.gitlab_secret_ssm_path
     GITLAB_INSTANCES               = local.gitlab_instances_env
-  }
+
+    # PR summary comment (COMMENT#summary) calls Bedrock directly via
+    # shared.model_client at workload=pr-analyzer, tier=basic. In prd the
+    # Claude app-inference-profiles are disabled, so the model id comes from
+    # the BEDROCK_BASIC_MODEL_ID legacy fallback; bedrock_pr_analyzer_env
+    # below supplies the profile ARNs when app profiles are enabled.
+    BEDROCK_BASIC_MODEL_ID  = var.bedrock_basic_model_id
+    BEDROCK_DEFAULT_BACKEND = var.bedrock_default_backend
+    },
+    # ADR-016 v1.2 -- analyze-pr's summary comment is the pr-analyzer workload.
+    local.bedrock_pr_analyzer_env,
+  )
 
   # IAM permissions
   attach_policy_statements = true
   policy_statements = merge({
+    # Bedrock models (the summary comment calls shared.model_client
+    # directly). All foundation models + inference profiles for model
+    # portability, mirroring process-pr-check.
+    bedrock_claude = {
+      effect = "Allow"
+      actions = [
+        "bedrock:InvokeModel"
+      ]
+      resources = [
+        "arn:aws:bedrock:*::foundation-model/*",
+        "arn:aws:bedrock:*:${data.aws_caller_identity.current.account_id}:inference-profile/*",
+        "arn:aws:bedrock:*:${data.aws_caller_identity.current.account_id}:application-inference-profile/*"
+      ]
+    }
+
     # Read SSM parameters (GitHub token and SQS queue URL)
     ssm_read = {
       effect = "Allow"

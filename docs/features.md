@@ -82,6 +82,18 @@ customer's account; no diff leaves their boundary.
   FIFO queue ordered per PR (`MessageGroupId =
   pr-{owner}-{repo}-{pr_number}`); the worker runs the analysis, posts
   result comments, and persists them (`PK=PR#<n>`, `SK=CHECK#<type>`).
+- **PR/MR summary comment** — before the checks run, `analyze-pr` posts
+  one upserted `COMMENT#summary`: a model prose summary **of the diff**
+  (not the PR description — ADR-025) plus a **code-supplied** per-file
+  table + count from `PRMetadata.file_change_types` — the model never
+  authors counts or file lists (ADR-032), hallucinated paths are
+  filtered, truncation is signalled. `pr_summary.build_pr_summary`;
+  degrades to the deterministic table if the model call fails (ADR-004);
+  model at `pr-analyzer`/`basic` with a collapsed token-usage footer
+  (ADR-016/035). Scoped to the checks-will-run path so no-check PRs
+  spend nothing. GitHub consumes inline `.patch`; GitLab/ADO fetch
+  bounded per-file diffs via `_fetch_diffs_via_sha`. PATCH-in-place per
+  push, 3-SCM parity (ADR-036/050, ADR-057).
 - **Six grounded checks** (verdicts PASS / WARN / FAIL): ADR
   compliance, breaking changes, architectural duplication, README
   freshness, test coverage, license/copyleft (ADR-008). ADR
