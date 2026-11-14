@@ -167,6 +167,63 @@ form: zero docs, just the model's silence on counts). The original
 "emit a labeled aggregate the model can quote" alternative is
 ruled out by the three-round whack-a-mole.
 
+## 2026-11-14 follow-up: the doctrine binds every rendered surface; post-hoc scrubbing is non-conformant
+
+The 2026-06 decisions above were written for chat synthesis over
+list-returning tools, and enforced structurally *there* — the renderer
+stopped emitting any model-quotable aggregate, and `total_known` on a
+tool envelope became the only sanctioned count. A second surface has
+since shipped that renders an enumerated table *outside* chat synthesis:
+the PR/MR summary comment (`analyze-pr`), whose per-file table enumerates
+the changed files and states their count.
+
+The same failure class recurs on any such surface, and so does the same
+trap: enforcing the count ban on the model's side — e.g. a regex over the
+model's prose that strips "N files changed" phrases — instead of
+structurally. The 2026-06-02/03/04 sequence already settled that
+model-side enforcement of the count ban does not hold. A regex is a
+weaker form of the same thing: it catches only the digit phrasings its
+author enumerated ("touches five files", "across a dozen modules" sail
+through), it mutilates real content when a count phrase shares a sentence
+with substance, and it gives a false assurance of conformance while counts
+still leak.
+
+### Decision (additive; generalizes the doctrine)
+
+"The model narrates; the renderer counts" is **not specific to chat
+synthesis.** It binds every customer-facing surface that renders an
+enumerated list or table — chat answers, PR/MR summary comments, review
+comments, UI tables, anything.
+
+1. **The enumeration and its count come from the authoritative source
+   only** — the tool/provider metadata, the code-map facts, or the
+   provider's own change list — constructed by the renderer. The model
+   never authors the row set, a row's identity or status, or the count.
+2. **A post-hoc filter over model output is non-conformant.** A regex or
+   scrubber that removes count phrases from model text is model-side
+   enforcement of exactly the kind three rounds of rule-tightening proved
+   cannot hold. If a model-authored count could reach a structured field
+   or a quoted headline, the fix is to not ask the model for the
+   enumeration at all: build the structure from data, and let the model
+   contribute only free narrative that is structurally incapable of being
+   the source of the list.
+3. **Model annotations, if used, decorate rows the renderer already
+   owns.** A design may let the model supply a per-row note, but the row
+   set, the statuses, and the count stay the renderer's; a note that
+   references an item not in the authoritative set is dropped by the
+   renderer, not rendered. The model's text is never the source of truth
+   for membership or magnitude.
+
+### Trade-off
+
+Same shape as 2026-06-04: a surface can no longer state a model-authored
+headline count even when convenient. It renders the enumerated table
+(whose rows and count the renderer owns) and, if a narrative is wanted, a
+model summary that does not author the count. The residual — free prose
+impressionistically mentioning magnitude — is handled by prompting the
+model to describe the change, not to count it; it is never presented as
+the authoritative count, and no scrubber is relied on to keep it out.
+
 ## Consequences
 
 - Every list-returning tool's response envelope grows two additive
