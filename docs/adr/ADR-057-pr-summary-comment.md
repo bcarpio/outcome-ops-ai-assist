@@ -128,6 +128,54 @@ markdown, usage = build_pr_summary(
   case wants a summary on check-less PRs, that is a deliberate cost decision to
   reopen here, not a bug.
 
+## Addendum: known hardening items (not yet in production)
+
+These surfaced in review after the initial build and are **open**. None is a
+correctness defect in the governed contract -- the per-file table and the count
+are code-supplied and trustworthy by construction (ADR-032) regardless of any of
+the below. All three are latency / abuse-surface items to close before this runs
+against real customer PR volume.
+
+1. **The summary sits on the check-dispatch critical path.** In all three
+   provider flows the summary is built and posted *before* `queue_check_jobs`
+   (GitHub, ADO, and GitLab paths in `handler.py`). The model call
+   (`pr_summary._invoke_model`) is synchronous, and for ADO/GitLab it is preceded
+   by `_fetch_diffs_via_sha`, which fetches base+head bytes **serially, one file
+   at a time** -- up to 2xN sequential round-trips before any check is queued. So
+   summary latency delays when checks start. It does **not** drop checks: each
+   call site wraps the whole summary in try/except and `queue_check_jobs` runs
+   after that block, so a model or fetch failure/timeout is caught and checks
+   still queue. The exposure is added wall-clock on the dispatch path, worst on
+   large ADO/GitLab PRs. **Fix to consider:** queue checks first and post the
+   summary afterward, or move the summary off the request path entirely
+   (fire-and-forget / separate invocation); parallelize the per-file SHA fetches
+   if the summary stays inline.
+
+2. **Untrusted PR title and diff feed the model; the model's prose is rendered
+   unescaped.** The PR title (`_build_user_prompt`) and the diff are both
+   author-controlled on any PR, and the model's prose is written into the comment
+   markdown as-is. The structural surface is already safe: the table, the count,
+   and the per-file notes stay code-owned, and `_parse_model_output` drops any
+   note whose path is not in `changed_files`, so injected text cannot fabricate
+   files, counts, or statuses. The residual surface is the free-text prose only
+   -- a crafted title or diff could steer the walkthrough, or emit markdown
+   (links/images) that renders live in the comment. The diff-is-truth system
+   prompt blunts this but does not remove it, and the title is not length-capped.
+   **Fix to consider:** cap the title length fed to the model, and neutralize
+   active markdown in the prose (render it inside a blockquote, or strip
+   link/image syntax) so injected content cannot render as live links or images.
+
+3. **`PR_SUMMARY_MAX_OUTPUT_TOKENS` (default 700) can clip the prose.** If the
+   model hits the output cap the walkthrough is cut mid-sentence and the parser
+   renders whatever arrived. This is cosmetic, not fail-open: a summary carries no
+   verdict, and the table, count, checks line, and truncation note are all
+   code-supplied and always render, so a clipped paragraph never yields a wrong or
+   misleadingly-partial *structural* claim. (Contrast the earlier check-output
+   truncation class, where a truncated model *verdict* could silently pass -- a
+   summary has no such pass/fail to corrupt.) **Fix to consider:** leave as-is, or
+   raise the cap only if real summaries read as clipped; if raised, keep the
+   deterministic table as the floor.
+
 ## Implementation
 
 ### Starting today
