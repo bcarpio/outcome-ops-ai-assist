@@ -1,4 +1,4 @@
-# ADR-057: PR/MR Summary Comment (Upserted, Code-Supplied Table, 3-SCM Parity)
+# ADR-057: PR/MR Summary Comment (Upserted Prose Walkthrough, 3-SCM Parity)
 
 ## Status: Accepted
 
@@ -16,7 +16,11 @@ already ruled out elsewhere:
 - **Fabricated counts and files.** A model asked to "summarize this PR" will
   happily state "this PR changes 12 files" and invent file paths. ADR-032
   (list-completeness / no model-authored aggregates) already forbids this for
-  check output; the summary must hold the same line.
+  check output; the summary must hold the same line. The conformant answer here
+  is **not** to render a code-built file table alongside the SCM's own one (that
+  is pure duplication) but to render **no file list or count at all** and keep
+  the model to prose that does not count -- the SCM already shows the
+  authoritative changed-file list and statuses natively.
 - **Summarizing the description instead of the diff.** ADR-025 established that
   the evidence is the diff, not the PR title/body (which may be empty, stale, or
   aspirational). The ADO run in testing proved the point: the model flagged that
@@ -29,9 +33,11 @@ already ruled out elsewhere:
 
 ## Decision
 
-**`analyze-pr` posts exactly one upserted `COMMENT#summary` per PR, built from a
-model prose summary of the diff plus a code-supplied per-file table, across all
-three SCMs, only on the path where checks will run.**
+**`analyze-pr` posts exactly one upserted `COMMENT#summary` per PR: a model
+prose walkthrough of the diff plus the queued-checks line, across all three
+SCMs, only on the path where checks will run. The comment renders no file list
+or count of its own -- the SCM shows those -- and the model is held to prose and
+told not to count (ADR-032).**
 
 ### Key Points
 
@@ -44,26 +50,32 @@ three SCMs, only on the path where checks will run.**
   GitHub/GitLab, `providerThreadId`+`providerThreadCommentId` for ADO -- so a
   re-run **PATCHes the same comment in place** rather than posting a duplicate.
 
-- **The prose summarizes the diff; the model is advisory, never authoritative
-  about structure (ADR-025, ADR-032).** The diff is passed to the model as
-  primary evidence. The model's prose is rendered as-is, but the **per-file
-  table and the file count are built entirely from code** --
-  `PRMetadata.file_change_types` supplies the rows and their statuses, and the
-  count is `len(changed_files)`. A path the model hallucinates in its FILE NOTES
-  is filtered out (it is not in `changed_files`, so it cannot become a row); a
-  count the model asserts in prose is ignored by the table header. Pipes in
-  paths/notes are escaped so a crafted filename cannot break the table.
+- **Prose only; no redundant structure (ADR-025, ADR-032).** The diff is passed
+  to the model as primary evidence and the changed-file list as grounding
+  context, but the model is instructed to write ONE concise paragraph and to
+  **not count files, enumerate names, or state totals**. The comment renders
+  that prose and nothing structural -- no table, no "N files changed" line --
+  because the SCM already shows the authoritative file list and statuses. ADR-032
+  is held two ways: the model is told not to author aggregates, and the comment
+  shows no aggregate for it to get wrong. Crucially there is **no post-hoc scrub**
+  of the model's prose (that is the anti-pattern ADR-032 marks non-conformant);
+  if the wording needs tightening the fix is the prompt + few-shot (ADR-027),
+  not output filtering.
 
 - **Degrade, don't fail (ADR-004).** The model call is wrapped: on any failure
-  the summary still posts, carrying the deterministic file table and a "Summary
-  unavailable" note. The table is the floor; the prose is the bonus.
+  the comment still posts with the queued-checks line and an honest fallback --
+  "Summary unavailable for this revision" when the model call errored (`usage`
+  is `None`), or "too large to summarize in prose; review the changed files
+  directly" when the call returned but yielded no usable prose. The checks line
+  is the floor; the prose is the bonus.
 
 - **Bounded diffs, with truncation signalled (ADR-032).** Diffs are capped
   per-file (`PR_SUMMARY_MAX_PATCH_BYTES_PER_FILE`) and in total
-  (`PR_SUMMARY_MAX_TOTAL_PATCH_BYTES`), and the file count is capped
-  (`PR_SUMMARY_MAX_DIFF_FILES`). Any file whose diff is capped, omitted, or
-  failed to fetch is still rendered as a table row and the summary carries a
-  "truncated or omitted" note -- never a silently-partial walkthrough.
+  (`PR_SUMMARY_MAX_TOTAL_PATCH_BYTES`). When any file's diff is capped, omitted,
+  or failed to fetch, the comment carries a code-computed note -- "diffs for N
+  file(s) were too large to include" -- so the reviewer knows the prose may not
+  cover every change. That `N` is derived in code from the omission set, never
+  authored by the model.
 
 - **Two diff sources, one contract.** GitHub supplies file patches inline, so the
   summary consumes `GitHubFile.patch` directly. GitLab and ADO do not, so the
@@ -80,29 +92,27 @@ three SCMs, only on the path where checks will run.**
 ### Example Implementation
 
 ```python
-# lambda/analyze-pr/pr_summary.py -- the builder. The table and count are
-# code-supplied from metadata; the model never authors structure (ADR-032).
+# lambda/analyze-pr/pr_summary.py -- the builder. The model writes prose only;
+# the comment renders no file list/count (the SCM shows it). The one count it
+# emits (the truncation note) is code-computed (ADR-032).
 markdown, usage = build_pr_summary(
-    metadata=pr_metadata,            # PRMetadata: changed_files + file_change_types
+    metadata=pr_metadata,            # PRMetadata: changed_files for the truncation count
     diffs_by_file=diffs,             # GitHub .patch, or _fetch_diffs_via_sha (GL/ADO)
     checks_to_run=checks,            # rendered as the "Checks queued" line
     truncated_files=truncated,       # ADR-032 omission signal
 )
-# usage is None when the model degraded; the deterministic table still rendered.
+# usage is None when the model call errored; the checks line + fallback still post.
 ```
 
 ```
 ## PR summary
 
-<model prose: what the diff does -- advisory>
-
-**Files changed (N):**        <- N = len(changed_files), code-supplied
-
-| File | Change | Note |
-| ---- | ------ | ---- |
-| `path` | added/modified/removed/renamed | <in-range model note, or diff omitted> |
+<model prose: one concise paragraph on what the diff does; no counts, no file list>
 
 **Checks queued:** ADR_COMPLIANCE, TEST_COVERAGE, ...
+
+> Note: diffs for N file(s) were too large to include, so the summary above
+> may not cover them.          <- only when some diff was capped; N is code-computed
 
 <details><summary>Usage</summary> model tier / input+output tokens </details>
 ```
@@ -113,10 +123,13 @@ markdown, usage = build_pr_summary(
 
 - Reviewers get a diff-grounded orientation before the findings, identical in
   shape on GitHub, GitLab, and ADO.
-- The structural claims (which files, how many, what status) are trustworthy by
-  construction -- they come from the SCM's own change list, not the model.
-- A model outage downgrades the summary to a plain table instead of dropping it
-  or failing the run.
+- Nothing structural is duplicated: the comment adds the one thing the SCM does
+  not already show -- a plain-English "what this does" plus which checks are
+  running -- instead of re-listing files the PR view already lists.
+- The model is kept from authoring aggregates by construction (prose-only,
+  instructed not to count, nothing structural rendered), with no post-hoc scrub.
+- A model outage still posts the checks line and an honest fallback instead of
+  dropping the comment or failing the run.
 - Re-running analysis never clutters the PR with duplicate summaries.
 
 ### Tradeoffs
@@ -124,17 +137,21 @@ markdown, usage = build_pr_summary(
 - The prose is only as good as the diff bounds allow; on a very large PR the
   model sees truncated diffs and the note says so. Raising the caps raises token
   cost -- revisit the defaults if summaries on big PRs read as too shallow.
+- Relying on the prompt (not a renderer table) to keep the model from counting
+  means a disobedient model could still slip a number into the prose. The guard
+  is prompt wording + few-shot (ADR-027), re-tuned if it misfires -- never a
+  post-hoc scrub, which ADR-032 bans.
 - The summary is scoped to the checks-will-run path by design. If a future use
   case wants a summary on check-less PRs, that is a deliberate cost decision to
   reopen here, not a bug.
 
 ## Addendum: known hardening items (not yet in production)
 
-These surfaced in review after the initial build and are **open**. None is a
-correctness defect in the governed contract -- the per-file table and the count
-are code-supplied and trustworthy by construction (ADR-032) regardless of any of
-the below. All three are latency / abuse-surface items to close before this runs
-against real customer PR volume.
+These surfaced in review and live testing after the initial build. None is a
+correctness defect in the ADR-032 posture -- the comment renders nothing
+structural (the SCM shows the file list), so there is no code-authored aggregate
+to be wrong. Item 3 is now **resolved**; items 1 and 2 remain **open** latency /
+abuse-surface items to close before this runs against real customer PR volume.
 
 1. **The summary sits on the check-dispatch critical path.** In all three
    provider flows the summary is built and posted *before* `queue_check_jobs`
@@ -154,37 +171,38 @@ against real customer PR volume.
 2. **Untrusted PR title and diff feed the model; the model's prose is rendered
    unescaped.** The PR title (`_build_user_prompt`) and the diff are both
    author-controlled on any PR, and the model's prose is written into the comment
-   markdown as-is. The structural surface is already safe: the table, the count,
-   and the per-file notes stay code-owned, and `_parse_model_output` drops any
-   note whose path is not in `changed_files`, so injected text cannot fabricate
-   files, counts, or statuses. The residual surface is the free-text prose only
-   -- a crafted title or diff could steer the walkthrough, or emit markdown
+   markdown as-is. Injection cannot fabricate structure -- the comment renders no
+   file list or count to spoof -- so the surface is the free-text prose only: a
+   crafted title or diff could steer the walkthrough, or emit markdown
    (links/images) that renders live in the comment. The diff-is-truth system
    prompt blunts this but does not remove it, and the title is not length-capped.
    **Fix to consider:** cap the title length fed to the model, and neutralize
    active markdown in the prose (render it inside a blockquote, or strip
    link/image syntax) so injected content cannot render as live links or images.
 
-3. **`PR_SUMMARY_MAX_OUTPUT_TOKENS` (default 700) can clip the prose.** If the
-   model hits the output cap the walkthrough is cut mid-sentence and the parser
-   renders whatever arrived. This is cosmetic, not fail-open: a summary carries no
-   verdict, and the table, count, checks line, and truncation note are all
-   code-supplied and always render, so a clipped paragraph never yields a wrong or
-   misleadingly-partial *structural* claim. (Contrast the earlier check-output
-   truncation class, where a truncated model *verdict* could silently pass -- a
-   summary has no such pass/fail to corrupt.) **Fix to consider:** leave as-is, or
-   raise the cap only if real summaries read as clipped; if raised, keep the
-   deterministic table as the floor.
+3. **RESOLVED -- large-PR prose collapse.** The earlier design asked the model
+   for a prose paragraph *plus* one note per file; on a large PR that per-file
+   output blew the 700-token cap and the prose collapsed entirely to "Summary
+   unavailable." Observed live on a 54-file GitLab MR and a 54-file ADO PR (both
+   pinned at `output: 700`), with the file table the only thing that rendered.
+   Fixed by holding the model to **prose only** (no per-file notes to bloat
+   output -- which also removed the redundant table) and raising the default cap
+   to **1500**; a successful-but-empty response now falls back to an honest "too
+   large to summarize in prose; review the changed files directly" rather than
+   the misleading "unavailable." The cap stays env-tunable via
+   `PR_SUMMARY_MAX_OUTPUT_TOKENS`.
 
 ## Implementation
 
 ### Starting today
 
-1. `pr_summary.build_pr_summary` owns prose+table assembly and model degradation.
+1. `pr_summary.build_pr_summary` owns prose assembly + model degradation; it
+   renders no file table, only the prose, the checks line, and (when a diff is
+   capped) the code-computed truncation note.
 2. `analyze-pr/handler.py` wires `COMMENT#summary` into all three provider flows
    just above `analysis_started`, on the checks-will-run path only.
 3. `analyze-pr` has Bedrock `InvokeModel` + `BEDROCK_BASIC_MODEL_ID` so the basic
-   tier resolves; without it the builder degrades to the table.
+   tier resolves; without it the comment degrades to the checks line + fallback.
 
 ### Next phases
 
@@ -210,7 +228,13 @@ against real customer PR volume.
 
 Version History:
 
-- v1.0 (2026-11-13): Initial decision. Live-verified across GitHub PR, GitLab MR,
-  and ADO PR.
+- v1.0 (2026-11-13): Initial design -- prose plus a code-supplied per-file table
+  and count. Live-verified across GitHub PR, GitLab MR, and ADO PR.
+- Prose-only revision (2026-11-15): removed the per-file table and per-file notes
+  (the SCM already shows the file list, so the table was redundant) and held the
+  model to a single prose paragraph; raised the output cap 700 -> 1500 after the
+  per-file-notes design collapsed the prose to "Summary unavailable" on large
+  (54-file) GitLab/ADO diffs. Re-verification across all three SCMs pending the
+  next deploy.
 
 <!-- Confluence sync -->
