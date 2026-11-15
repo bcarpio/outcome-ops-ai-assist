@@ -770,17 +770,19 @@ def _upsert_gitlab_comment(
 _SUMMARY_MAX_DIFF_FILES = int(os.environ.get("PR_SUMMARY_MAX_DIFF_FILES", "12"))
 
 
-def _render_summary_footer(usage) -> str:
+def _render_summary_footer(usage, tier: str) -> str:
     """Collapsed token-usage footer for the summary comment (ADR-016).
 
-    Returns an empty string when the model call failed (usage is None) so the
-    deterministic summary still posts without a misleading zero-cost footer.
+    ``tier`` is reported as-is (the builder owns the tier choice); it is never
+    hardcoded here so a tfvar model swap stays accurately labelled. Returns an
+    empty string when the model call failed (usage is None) so the summary still
+    posts without a misleading zero-cost footer.
     """
     if usage is None:
         return ""
     return (
         "\n\n<details>\n<summary>Usage</summary>\n\n"
-        "- model tier: basic (pr-analyzer workload)\n"
+        f"- model tier: {tier} (pr-analyzer workload)\n"
         f"- input tokens: {usage.input_tokens}\n"
         f"- output tokens: {usage.output_tokens}\n"
         "</details>"
@@ -794,8 +796,8 @@ def _build_summary_body(
     checks_to_run: List[str],
     truncated_files: Optional[List[str]] = None,
 ) -> str:
-    """Build the full summary comment body (walkthrough + table + footer)."""
-    from pr_summary import build_pr_summary
+    """Build the full summary comment body (prose walkthrough + checks line + footer)."""
+    from pr_summary import build_pr_summary, SUMMARY_MODEL_TIER
 
     body, usage = build_pr_summary(
         metadata=metadata,
@@ -805,7 +807,7 @@ def _build_summary_body(
     )
     return (
         body
-        + _render_summary_footer(usage)
+        + _render_summary_footer(usage, SUMMARY_MODEL_TIER)
         + "\n\n---\n*Powered by [OutcomeOps AI Assist](https://outcomeops.ai)*"
     )
 

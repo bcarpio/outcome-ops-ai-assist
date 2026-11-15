@@ -217,7 +217,10 @@ def test_invokes_with_pr_analyzer_basic_and_captures_usage(monkeypatch):
         checks_to_run=["adr_compliance"],
     )
     assert calls["workload"] == "pr-analyzer"
-    assert calls["tier"] == "basic"
+    # Advanced tier: the summary is a high-visibility, every-PR comment where
+    # prose quality matters. The tier string is the only lever; the model id is
+    # resolved from tfvars by shared.model_client, not hardcoded here.
+    assert calls["tier"] == "advanced"
     # Prose-only output is short; the cap was raised to 1500 for headroom so a
     # large PR no longer blows the budget and collapses the walkthrough.
     assert calls["max_tokens"] == 1500

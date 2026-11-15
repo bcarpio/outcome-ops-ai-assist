@@ -45,14 +45,16 @@ class _Usage:
 
 
 def test_footer_empty_when_usage_none():
-    assert _handler_module._render_summary_footer(None) == ""
+    assert _handler_module._render_summary_footer(None, "advanced") == ""
 
 
 def test_footer_reports_tokens_and_tier():
-    footer = _handler_module._render_summary_footer(_Usage(13, 27))
+    # The tier is passed in (from pr_summary.SUMMARY_MODEL_TIER), never hardcoded,
+    # so a tfvar model swap stays accurately labelled.
+    footer = _handler_module._render_summary_footer(_Usage(13, 27), "advanced")
     assert "input tokens: 13" in footer
     assert "output tokens: 27" in footer
-    assert "basic (pr-analyzer workload)" in footer
+    assert "advanced (pr-analyzer workload)" in footer
     assert "<details>" in footer
 
 

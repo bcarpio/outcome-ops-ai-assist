@@ -83,10 +83,14 @@ told not to count (ADR-032).**
   (`shared.source_fetch.fetch_file_at_sha` + `shared.pr_diff.compute_file_diff`),
   non-fatal per file. Both paths feed the identical builder.
 
-- **Cost stays trivial.** The summary is built only on the branch where checks
-  will actually run. A PR that queues no checks calls no model and posts no
-  summary. The model runs at `workload="pr-analyzer", tier="basic"` via the
-  shared `model_client` (ADR-035), and the captured token usage is rendered in a
+- **Cost scoped to where it is read.** The summary is built only on the branch
+  where checks will actually run. A PR that queues no checks calls no model and
+  posts no summary. The model runs at `workload="pr-analyzer", tier="advanced"`
+  via the shared `model_client` (ADR-035): the summary is a high-visibility,
+  every-PR comment, so it is worth the Sonnet-class tier rather than the cheap
+  one. The advanced model id is tfvar-driven (`bedrock_advanced_model_id`, or
+  the pr-analyzer advanced app-inference profile), swappable per customer to
+  e.g. Opus -- nothing is hardcoded. Captured token usage is rendered in a
   collapsed footer (ADR-016 workload cost accounting).
 
 ### Example Implementation
@@ -201,8 +205,9 @@ abuse-surface items to close before this runs against real customer PR volume.
    capped) the code-computed truncation note.
 2. `analyze-pr/handler.py` wires `COMMENT#summary` into all three provider flows
    just above `analysis_started`, on the checks-will-run path only.
-3. `analyze-pr` has Bedrock `InvokeModel` + `BEDROCK_BASIC_MODEL_ID` so the basic
-   tier resolves; without it the comment degrades to the checks line + fallback.
+3. `analyze-pr` has Bedrock `InvokeModel` + `BEDROCK_ADVANCED_MODEL_ID` (and
+   `BEDROCK_BASIC_MODEL_ID`) so the advanced tier resolves via the tfvar-driven
+   model id; without it the comment degrades to the checks line + fallback.
 
 ### Next phases
 

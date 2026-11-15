@@ -108,12 +108,15 @@ module "analyze_pr_lambda" {
     GITLAB_INSTANCES               = local.gitlab_instances_env
 
     # PR summary comment (COMMENT#summary) calls Bedrock directly via
-    # shared.model_client at workload=pr-analyzer, tier=basic. In prd the
+    # shared.model_client at workload=pr-analyzer, tier=advanced. In prd the
     # Claude app-inference-profiles are disabled, so the model id comes from
-    # the BEDROCK_BASIC_MODEL_ID legacy fallback; bedrock_pr_analyzer_env
-    # below supplies the profile ARNs when app profiles are enabled.
-    BEDROCK_BASIC_MODEL_ID  = var.bedrock_basic_model_id
-    BEDROCK_DEFAULT_BACKEND = var.bedrock_default_backend
+    # the BEDROCK_ADVANCED_MODEL_ID legacy fallback; bedrock_pr_analyzer_env
+    # below supplies the profile ARNs when app profiles are enabled. Both the
+    # advanced and basic ids are the tfvar-driven, per-customer-swappable model
+    # ids (advanced may be Sonnet or Opus); the Lambda never hardcodes a model.
+    BEDROCK_ADVANCED_MODEL_ID = var.bedrock_advanced_model_id
+    BEDROCK_BASIC_MODEL_ID    = var.bedrock_basic_model_id
+    BEDROCK_DEFAULT_BACKEND   = var.bedrock_default_backend
     },
     # ADR-016 v1.2 -- analyze-pr's summary comment is the pr-analyzer workload.
     local.bedrock_pr_analyzer_env,

@@ -27,8 +27,9 @@ Standards applied (retrieved at plan time via OutcomeOps MCP):
   model-authored-count risk the ADR bans. The only count this module emits (the
   truncation note's "N files") is computed in code, never by the model.
 - **ADR-035 / ADR-016** — the model is called through ``shared.model_client``
-  with ``workload="pr-analyzer"`` and ``tier="basic"`` (the Haiku-class cheap
-  tier) so Bedrock spend is tagged to the right application-inference profile.
+  with ``workload="pr-analyzer"`` and ``tier="advanced"`` so Bedrock spend is
+  tagged to the right application-inference profile and the model id comes from
+  the deployment's tfvars (swappable to e.g. Opus), never hardcoded here.
 """
 
 import logging
@@ -40,10 +41,19 @@ from shared.model_client_types import Usage
 
 logger = logging.getLogger()
 
-# ADR-016 cost-attribution: tag this spend to the pr-analyzer workload at the
-# cheap (Haiku-class) tier. A summary is light synthesis, not deep reasoning.
+# ADR-016 cost-attribution: tag this spend to the pr-analyzer workload. The
+# summary runs at the ADVANCED tier -- it is a high-visibility, every-PR comment
+# where prose quality carries the feature -- and the advanced tier resolves to
+# whatever model the deployment maps it to via tfvars
+# (``bedrock_advanced_model_id`` / the pr-analyzer advanced app-inference
+# profile), swappable to e.g. Opus per customer. No model id is hardcoded here;
+# the tier string is the only lever and ``shared.model_client`` does the lookup.
 _WORKLOAD = "pr-analyzer"
-_TIER = "basic"
+_TIER = "advanced"
+
+# Public so the comment's usage footer can report the tier without duplicating
+# the literal. Kept in lock-step with ``_TIER``.
+SUMMARY_MODEL_TIER = _TIER
 
 # Diff size caps. A summary is a cheap, high-visibility artifact; it must not
 # balloon model cost on a large PR. Oversized patches are truncated and the

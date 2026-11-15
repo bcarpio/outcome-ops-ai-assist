@@ -90,8 +90,9 @@ customer's account; no diff leaves their boundary.
   post-hoc scrub. A code-computed note flags when some diffs were too large
   to include. `pr_summary.build_pr_summary`; on a model-call failure it
   degrades to the checks line + an honest fallback (ADR-004); model at
-  `pr-analyzer`/`basic`, prose-only, `PR_SUMMARY_MAX_OUTPUT_TOKENS` default
-  1500, with a collapsed token-usage footer (ADR-016/035). Scoped to the
+  `pr-analyzer`/`advanced` (tfvar-swappable model id, e.g. Sonnet/Opus),
+  prose-only, `PR_SUMMARY_MAX_OUTPUT_TOKENS` default 1500, with a collapsed
+  token-usage footer (ADR-016/035). Scoped to the
   checks-will-run path so no-check PRs spend nothing. GitHub consumes inline
   `.patch`; GitLab/ADO fetch bounded per-file diffs via
   `_fetch_diffs_via_sha`. PATCH-in-place per push, 3-SCM parity
