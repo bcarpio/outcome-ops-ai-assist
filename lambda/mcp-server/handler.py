@@ -1720,16 +1720,34 @@ def handle_get_coding_standards(params, email):
 # ============================================================================
 
 
+# MCP has no synthesis-prompt seam (ADR-058): the client model (Claude Code /
+# Cursor) synthesizes under its OWN system prompt, so the eight chat/RAG prose
+# grounding rules cannot be injected server-side. The discipline MCP CAN carry
+# is data on the tool response. This marks graph-tool facts as structural,
+# graph-sourced, and citable at file_path:line -- the ADR-031 line-citation and
+# the magic_link structural-attribution rule expressed as data a client model
+# can act on. Three short fields, by design (client token budget).
+_SYMBOL_GRAPH_GROUNDING = {
+    "source": "symbol-graph",
+    "cite_as": "file_path:line",
+    "rule": (
+        "structural fact; cite the site's file_path:line and do not "
+        "attribute it to prose/doc chunks"
+    ),
+}
+
+
 def _query_result_to_dict(query_result) -> dict:
     """Project a ``QueryResult`` onto the JSON shape documented for the
     MCP tools: ``sites`` + ``truncated`` + ``complete`` + ``total_known``
-    + ``graph_sha`` + ``staleness_seconds``.
+    + ``graph_sha`` + ``staleness_seconds`` + ``grounding``.
 
     ``complete`` and ``total_known`` (ADR-032 list-completeness
     contract) are forwarded so chat synthesis can detect a clipped
     list and either disclose or refuse rather than ship a confidently-
     incomplete enumeration. ``truncated`` remains for back-compat
     with consumers that already read it; ``complete = not truncated``.
+    ``grounding`` carries the structural-attribution provenance (ADR-058).
     """
     sites = []
     for s in query_result.sites:
@@ -1751,19 +1769,22 @@ def _query_result_to_dict(query_result) -> dict:
         "total_known": query_result.total_known,
         "graph_sha": query_result.graph_sha,
         "staleness_seconds": query_result.staleness_seconds,
+        "grounding": _SYMBOL_GRAPH_GROUNDING,
     }
 
 
 def _resolution_result_to_dict(resolution_result) -> dict:
     """Project a ``ResolutionResult`` (fuzzy_resolve_by_name) onto the
     JSON shape for the find_symbol_by_name MCP tool. Carries the same
-    list-completeness fields as ``_query_result_to_dict`` (ADR-032).
+    list-completeness fields as ``_query_result_to_dict`` (ADR-032) plus
+    the structural-attribution ``grounding`` (ADR-058).
     """
     return {
         "canonicals": list(resolution_result.canonicals),
         "truncated": bool(resolution_result.truncated),
         "complete": bool(resolution_result.complete),
         "total_known": resolution_result.total_known,
+        "grounding": _SYMBOL_GRAPH_GROUNDING,
     }
 
 
@@ -2077,6 +2098,7 @@ def handle_find_symbol_at_line(params, email):
                 },
                 "queried_file_path": file_path,
                 "queried_line": line_int,
+                "grounding": _SYMBOL_GRAPH_GROUNDING,
             }
         )
     }

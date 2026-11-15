@@ -55,7 +55,20 @@ Keep entries terse — this is the index, not the spec.
   documentation channel retrieve independently, rerank per lane, then
   merge for synthesis. Prevents doc-drift from dominating grounded
   code answers. Closes the "the docs say X but the code does Y" moat
-  violation. ADR-033.
+  violation. ADR-033. Lives in the shared retrieval seam
+  (`shared/retrieval.py::search_kb_dual_channel`) so **all three retrieval
+  surfaces** — chat, query-kb, and the MCP server (Claude Code / Cursor) —
+  run it; the engineer surface no longer runs single-channel.
+- **RAG synthesis grounding parity** — `build_rag_system_prompt`
+  (ask-claude server-side synthesis; query-kb invokes it) carries the same
+  eight grounding blocks as chat (value/read-source/line-citation/
+  list-completeness/code-over-docs/structural-attribution/SAST-scope/
+  requirement-strength), closing a silent under-grounding on the RAG path.
+- **MCP tool-response grounding** — the MCP server has no synthesis-prompt
+  seam (the client model synthesizes), so grounding rides on the tool
+  RESPONSE as data: graph-tool payloads carry a compact `grounding` block
+  (graph-source + `file_path:line` citation provenance) plus the
+  list-completeness fields. ADR-058.
 - **read_source adjudicator** — platform-agnostic tool exposing
   `read_this_file_at_this_SHA` to the model. Any citation the model
   wants to make can be verified against source-of-truth git state

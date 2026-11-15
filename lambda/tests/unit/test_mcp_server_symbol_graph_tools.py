@@ -1480,3 +1480,72 @@ class TestListCompletenessEnvelope:
         payload = json.loads(result["text"])
         assert payload["complete"] is True
         assert payload["total_known"] == 3
+
+
+# ===========================================================================
+# ADR-058: structural-attribution grounding envelope on graph-tool responses
+# ===========================================================================
+
+
+class TestGroundingEnvelope:
+    """MCP has no synthesis-prompt seam, so the structural-attribution and
+    line-citation discipline rides on the tool RESPONSE as data. Every
+    graph-tool payload carries a compact ``grounding`` block."""
+
+    def test_grounding_constant_shape(self):
+        g = mcp_module._SYMBOL_GRAPH_GROUNDING
+        assert g["source"] == "symbol-graph"
+        assert g["cite_as"] == "file_path:line"
+        assert "structural fact" in g["rule"]
+
+    def test_find_callers_carries_grounding(self, tables):
+        target = "python:lambda.shared.outcomeops_license::report_repos_snapshot"
+        _put_fact(
+            tables.Table(SYMBOL_GRAPH_TABLE),
+            workspace_id=WORKSPACE_ID,
+            repo=REPO,
+            commit_sha=SHA,
+            kind="calls",
+            source_symbol_id="python:lambda.github_integration.handler::lambda_handler",
+            target_symbol_id=target,
+            file_path="lambda/github-integration/handler.py",
+            line=137,
+            language="python",
+        )
+        with _patch_user_workspaces([WORKSPACE_ID]):
+            result = mcp_module.handle_find_callers(
+                {"symbol_id": target, "workspace_id": WORKSPACE_ID},
+                USER_EMAIL,
+            )
+        payload = json.loads(result["text"])
+        assert payload["grounding"] == mcp_module._SYMBOL_GRAPH_GROUNDING
+
+    def test_find_callers_empty_result_still_carries_grounding(self, tables):
+        with _patch_user_workspaces([WORKSPACE_ID]):
+            result = mcp_module.handle_find_callers(
+                {"symbol_id": "python:nonexistent::sym", "workspace_id": WORKSPACE_ID},
+                USER_EMAIL,
+            )
+        payload = json.loads(result["text"])
+        assert payload["grounding"]["source"] == "symbol-graph"
+
+    def test_find_symbol_by_name_carries_grounding(self, tables):
+        _put_fact(
+            tables.Table(SYMBOL_GRAPH_TABLE),
+            workspace_id=WORKSPACE_ID,
+            repo=REPO,
+            commit_sha=SHA,
+            kind="defines",
+            source_symbol_id="python:lambda.x::<module>",
+            target_symbol_id="python:lambda.x::report_repos_snapshot",
+            file_path="lambda/x.py",
+            line=10,
+            language="python",
+        )
+        with _patch_user_workspaces([WORKSPACE_ID]):
+            result = mcp_module.handle_find_symbol_by_name(
+                {"bare_name": "report_repos_snapshot", "workspace_id": WORKSPACE_ID},
+                USER_EMAIL,
+            )
+        payload = json.loads(result["text"])
+        assert payload["grounding"] == mcp_module._SYMBOL_GRAPH_GROUNDING
