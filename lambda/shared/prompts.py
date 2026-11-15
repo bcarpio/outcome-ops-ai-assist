@@ -240,6 +240,15 @@ def build_rag_system_prompt(workspace_prompt: str = None) -> str:
     """
     Build the system prompt for RAG-based answer generation (ask-claude).
 
+    Carries the same grounding stack as ``build_chat_system_prompt`` -- value
+    grounding, read-source verification, ADR-031 line-citation, ADR-032
+    list-completeness, ADR-025 code-over-docs, the magic_link structural-
+    attribution rule, and the SAST scope guard -- so server-side RAG synthesis
+    is grounded to parity with chat (it previously carried only
+    REQUIREMENT_STRENGTH_RULES). The blocks are shared constants, not forked
+    text (ADR-007). MCP cannot inherit these (no synthesis-prompt seam -- see
+    the dual-channel plan / the MCP tool-response grounding ADR).
+
     Args:
         workspace_prompt: Optional workspace-specific instructions to prepend.
 
@@ -260,7 +269,21 @@ INSTRUCTIONS:
 5. Be concise but thorough
 6. Do not refuse requests based on the technology involved - if it's in the context, help with it
 7. When asked to create documents (ADRs, specs, etc.) based on context, do it
-8. {REQUIREMENT_STRENGTH_RULES}"""
+8. {REQUIREMENT_STRENGTH_RULES}
+
+{VALUE_GROUNDING_RULES}
+
+{READ_SOURCE_VERIFICATION_RULES}
+
+{LINE_CITATION_GROUNDING_RULES}
+
+{LIST_COMPLETENESS_RULES}
+
+{CODE_OVER_DOCS_RULES}
+
+{STRUCTURAL_ATTRIBUTION_RULES}
+
+{SAST_SCOPE_RULES}"""
     if workspace_prompt:
         return f"""{base}
 

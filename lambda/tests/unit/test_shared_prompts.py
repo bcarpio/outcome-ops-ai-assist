@@ -206,6 +206,61 @@ class TestBuildRagSystemPrompt:
         assert "MAY" in prompt
         assert "mandatory" in prompt
 
+    # Grounding parity (chunk 04): the RAG prompt must now carry the same
+    # grounding stack as chat, so server-side synthesis (ask-claude / query-kb)
+    # is grounded to parity. These sentinels mirror the chat-prompt assertions.
+    def test_includes_value_grounding_rules(self):
+        prompt = build_rag_system_prompt()
+        assert "When you state a SPECIFIC VALUE" in prompt
+
+    def test_includes_read_source_verification_rules(self):
+        prompt = build_rag_system_prompt()
+        assert "When you are about to state a SPECIFIC code value" in prompt
+
+    def test_includes_line_citation_grounding_rules(self):
+        """ADR-031 line-citation discipline is on the RAG path."""
+        prompt = build_rag_system_prompt()
+        assert "When you are about to cite a code location" in prompt
+
+    def test_includes_list_completeness_rules(self):
+        """ADR-032 list-completeness / total_known discipline."""
+        prompt = build_rag_system_prompt()
+        assert "When you call any list-returning tool" in prompt
+        assert "total_known" in prompt
+
+    def test_includes_code_over_docs_rules(self):
+        """ADR-025 code-over-docs precedence."""
+        prompt = build_rag_system_prompt()
+        assert "When code and documentation genuinely disagree" in prompt
+
+    def test_includes_structural_attribution_rules(self):
+        """The codified magic_link fix -- structural facts need code-map
+        evidence, not doc-only. The load-bearing block for the attestation
+        persona this plan serves."""
+        prompt = build_rag_system_prompt()
+        assert "When you state a STRUCTURAL FACT" in prompt
+
+    def test_includes_sast_scope_rules(self):
+        """ADR-025 SAST scope guard (no 'SonarQube clean therefore compliant')."""
+        prompt = build_rag_system_prompt()
+        assert "When SonarQube or other SAST output appears" in prompt
+
+    def test_grounding_stack_matches_chat(self):
+        """Every grounding sentinel present in chat is now present in RAG."""
+        rag = build_rag_system_prompt()
+        chat = build_chat_system_prompt()
+        for sentinel in (
+            "When you state a SPECIFIC VALUE",
+            "When you are about to state a SPECIFIC code value",
+            "When you are about to cite a code location",
+            "When you call any list-returning tool",
+            "When code and documentation genuinely disagree",
+            "When you state a STRUCTURAL FACT",
+            "When SonarQube or other SAST output appears",
+        ):
+            assert sentinel in chat
+            assert sentinel in rag
+
     def test_is_technology_agnostic(self):
         """Test RAG prompt does not refuse based on technology."""
         prompt = build_rag_system_prompt()
