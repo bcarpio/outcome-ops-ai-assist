@@ -763,10 +763,23 @@ class TestQueryS3Vectors:
     @patch('query_kb_handler.VECTOR_BUCKET', 'test-bucket')
     @patch('query_kb_handler.VECTOR_INDEX', 'test-index')
     def test_query_vectors_basic(self, mock_s3v):
-        """Test basic vector query returns results."""
-        mock_s3v.query_vectors.return_value = {
-            "vectors": [
-                {
+        """Dual-channel (default, no doc_types): an ADR vector lands in the
+        docs lane and is returned once, stamped with its lane."""
+        def _q(**params):
+            # Emulate S3 server-side type filtering: the adr vector only
+            # matches the lane whose type taxonomy includes "adr" (docs). With
+            # no repo/workspace scope the lane filter is a bare type clause;
+            # with scope it is nested under $and.
+            filt = params.get("filter", {})
+            types = None
+            if "type" in filt:
+                types = filt["type"]["$in"]
+            else:
+                for c in filt.get("$and", []):
+                    if "type" in c:
+                        types = c["type"]["$in"]
+            if types and "adr" in types:
+                return {"vectors": [{
                     "metadata": {
                         "content": "Lambda handler content",
                         "type": "adr",
@@ -774,28 +787,34 @@ class TestQueryS3Vectors:
                         "file_path": "docs/adrs/ADR-004.md",
                     },
                     "distance": 0.1,
-                },
-            ]
-        }
+                }]}
+            return {"vectors": []}
 
+        mock_s3v.query_vectors.side_effect = _q
         result = query_s3_vectors([0.1] * 1024, top_k=5)
 
         assert len(result) == 1
         assert result[0]["score"] == 0.9
         assert result[0]["type"] == "adr"
         assert result[0]["repo"] == "my-repo"
+        assert result[0]["lane"] == "docs"
 
     @patch('query_kb_handler.s3vectors_client')
     @patch('query_kb_handler.VECTOR_BUCKET', 'test-bucket')
     @patch('query_kb_handler.VECTOR_INDEX', 'test-index')
     def test_query_vectors_with_repo_filter(self, mock_s3v):
-        """Test vector query with repo filter."""
+        """Dual-channel composes the repo base filter AND each lane's type
+        taxonomy into an $and, server-side."""
         mock_s3v.query_vectors.return_value = {"vectors": []}
 
         query_s3_vectors([0.1] * 1024, top_k=5, repo_filter="my-repo")
 
-        call_kwargs = mock_s3v.query_vectors.call_args[1]
-        assert call_kwargs["filter"] == {"repo": {"equals": "my-repo"}}
+        # Two lane calls; each ANDs the repo filter with a type clause.
+        assert mock_s3v.query_vectors.call_count == 2
+        for call in mock_s3v.query_vectors.call_args_list:
+            f = call[1]["filter"]
+            assert f["$and"][0] == {"repo": {"equals": "my-repo"}}
+            assert "type" in f["$and"][1]
 
     @patch('query_kb_handler.s3vectors_client')
     @patch('query_kb_handler.VECTOR_BUCKET', 'test-bucket')
@@ -895,15 +914,30 @@ class TestQueryS3Vectors:
     @patch('query_kb_handler.s3vectors_client')
     @patch('query_kb_handler.VECTOR_BUCKET', 'test-bucket')
     @patch('query_kb_handler.VECTOR_INDEX', 'test-index')
-    def test_query_vectors_client_error(self, mock_s3v):
-        """Test vector query raises on S3 Vectors error."""
+    def test_query_vectors_dual_channel_degrades_to_empty_on_error(self, mock_s3v):
+        """Dual-channel (default) degrades a failing lane to empty -- parity
+        with chat/mcp -- so a vector-store hiccup yields no-context rather than
+        propagating. Each lane's ClientError is swallowed in the shared seam."""
+        mock_s3v.query_vectors.side_effect = ClientError(
+            {"Error": {"Code": "InternalError", "Message": "fail"}},
+            "QueryVectors"
+        )
+
+        assert query_s3_vectors([0.1] * 1024, top_k=5) == []
+
+    @patch('query_kb_handler.s3vectors_client')
+    @patch('query_kb_handler.VECTOR_BUCKET', 'test-bucket')
+    @patch('query_kb_handler.VECTOR_INDEX', 'test-index')
+    def test_query_vectors_single_channel_doc_types_still_raises(self, mock_s3v):
+        """The explicit doc_types (single-channel) path still propagates S3
+        errors; only the dual-channel default degrades."""
         mock_s3v.query_vectors.side_effect = ClientError(
             {"Error": {"Code": "InternalError", "Message": "fail"}},
             "QueryVectors"
         )
 
         with pytest.raises(ClientError):
-            query_s3_vectors([0.1] * 1024, top_k=5)
+            query_s3_vectors([0.1] * 1024, top_k=5, doc_types=["adr"])
 
     @patch('query_kb_handler.s3vectors_client')
     @patch('query_kb_handler.VECTOR_BUCKET', 'test-bucket')

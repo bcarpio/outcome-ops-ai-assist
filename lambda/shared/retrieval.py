@@ -374,29 +374,43 @@ def rerank(
 # server-side type filtering so each lane fills from its own taxonomy rather
 # than losing its budget to the other lane in a single top-K.
 # --------------------------------------------------------------------------- #
+def _workspace_filter(
+    workspace_ids: Optional[Sequence[str]],
+) -> Optional[Dict[str, Any]]:
+    """Workspace-scope clause: ``$eq`` for one, ``$in`` for many, None for
+    no scope. The common base filter for chat and mcp-server."""
+    if not workspace_ids:
+        return None
+    ws = list(workspace_ids)
+    return (
+        {"workspace_id": {"$eq": ws[0]}}
+        if len(ws) == 1
+        else {"workspace_id": {"$in": ws}}
+    )
+
+
+def _compose_lane_filter(
+    base_filter: Optional[Dict[str, Any]],
+    types: Sequence[str],
+) -> Dict[str, Any]:
+    """AND the caller's scope (``base_filter`` -- workspace for chat/mcp, repo +
+    workspace for query-kb) with the lane's ``type`` taxonomy (``$in``), so the
+    lane fills with up to ``top_k`` vectors OF THAT TYPE server-side rather than
+    being post-filtered down from a mixed top-K. No base filter means a
+    type-only lane filter."""
+    type_clause = {"type": {"$in": list(types)}}
+    if not base_filter:
+        return type_clause
+    return {"$and": [base_filter, type_clause]}
+
+
 def _lane_filter(
     workspace_ids: Optional[Sequence[str]],
     types: Sequence[str],
 ) -> Dict[str, Any]:
-    """Build the S3 Vectors metadata filter for one lane.
-
-    Composes the workspace scope (``$eq`` for one, ``$in`` for many) AND the
-    lane's ``type`` taxonomy (``$in``) into an ``$and`` -- the same server-side
-    filter chat builds, so the lane fills with up to ``top_k`` vectors OF THAT
-    TYPE rather than being post-filtered down from a mixed top-K.
-    """
-    clauses: List[Dict[str, Any]] = []
-    if workspace_ids:
-        ws = list(workspace_ids)
-        clauses.append(
-            {"workspace_id": {"$eq": ws[0]}}
-            if len(ws) == 1
-            else {"workspace_id": {"$in": ws}}
-        )
-    clauses.append({"type": {"$in": list(types)}})
-    if len(clauses) == 1:
-        return clauses[0]
-    return {"$and": clauses}
+    """Workspace-scoped lane filter (chat/mcp convenience). Equivalent to
+    ``_compose_lane_filter(_workspace_filter(workspace_ids), types)``."""
+    return _compose_lane_filter(_workspace_filter(workspace_ids), types)
 
 
 def search_kb_dual_channel(
@@ -406,8 +420,10 @@ def search_kb_dual_channel(
     s3vectors_client,
     vector_bucket: str,
     vector_index: str,
-    embed_fn: Callable[[str], List[float]],
+    embed_fn: Optional[Callable[[str], List[float]]] = None,
+    query_embedding: Optional[List[float]] = None,
     workspace_ids: Optional[Sequence[str]] = None,
+    base_filter: Optional[Dict[str, Any]] = None,
     code_map_types: Sequence[str] = CODE_MAP_TYPES,
     doc_types: Sequence[str] = DOC_TYPES,
     text_truncate: int = 20000,
@@ -415,21 +431,37 @@ def search_kb_dual_channel(
 ) -> List[Dict[str, Any]]:
     """Two-lane retrieval (ADR-033): a code-map lane and a docs lane.
 
-    Embeds ``query`` once (via the injected ``embed_fn``) and fires two
-    ``query_vectors`` calls concurrently -- one filtered to ``code_map_types``,
-    one to ``doc_types`` -- each taking half of ``fetch_k``. Every result is
-    stamped with its ``lane`` (``"code_map"`` / ``"docs"``) and the combined
-    pool is returned for a downstream per-lane rerank (``rerank_dual_channel``).
+    Fires two ``query_vectors`` calls concurrently -- one filtered to
+    ``code_map_types``, one to ``doc_types`` -- each taking half of ``fetch_k``.
+    Every result is stamped with its ``lane`` (``"code_map"`` / ``"docs"``) and
+    the combined pool is returned for a downstream per-lane rerank
+    (``rerank_dual_channel``).
+
+    Embedding: pass ``query_embedding`` when the caller already has it (query-kb,
+    mcp-server), else pass ``embed_fn`` and the query is embedded once here (chat).
+
+    Scope: pass ``base_filter`` for a caller-specific scope (query-kb's
+    ``repo``/``workspace`` filter), or ``workspace_ids`` for the common
+    workspace-only scope (chat, mcp-server). The lane's ``type`` filter is ANDed
+    onto whichever is given.
 
     Both lanes always fire, intent-agnostic: code-maps carry the structural
     facts, docs carry the authored narrative, and rerank decides who keeps a
     slot. Reuses the single ``query_vectors`` S3 implementation (ADR-023
     consolidation) -- no private S3 query here.
     """
-    embedding = embed_fn(query)
+    embedding = (
+        query_embedding if query_embedding is not None
+        else (embed_fn(query) if embed_fn is not None else None)
+    )
     if not embedding:
         logger.warning("[retrieval.dual_channel] empty embedding; returning []")
         return []
+
+    effective_base = (
+        base_filter if base_filter is not None
+        else _workspace_filter(workspace_ids)
+    )
 
     # Each lane gets half the candidate budget. Floor at 1 so even a very
     # small fetch_k still queries both lanes.
@@ -448,7 +480,7 @@ def search_kb_dual_channel(
                 vector_index=vector_index,
                 query_embedding=embedding,
                 top_k=top_k,
-                filter_dict=_lane_filter(workspace_ids, types),
+                filter_dict=_compose_lane_filter(effective_base, types),
                 text_truncate=text_truncate,
             )
         except ClientError as exc:

@@ -989,23 +989,22 @@ def search_knowledge_base(
 
     top_k = max(1, min(int(top_k), MAX_TOP_K))
 
-    filter_dict = None
-    if workspace_ids:
-        if len(workspace_ids) == 1:
-            filter_dict = {"workspace_id": {"$eq": workspace_ids[0]}}
-        else:
-            filter_dict = {"workspace_id": {"$in": workspace_ids}}
-
     fetch_k = min(top_k * 4, RERANK_MAX_FETCH) if RERANK_ENABLED else top_k
 
     try:
-        docs = shared_retrieval.query_vectors(
+        # Dual-channel (ADR-033): the engineer surface (Claude Code / Cursor)
+        # is the population most likely to ask the structural questions where
+        # a single lane starves the code_map facts. Two lanes always fire, the
+        # workspace scope ANDed with each lane's type taxonomy, results stamped
+        # with their lane for the per-lane rerank below.
+        docs = shared_retrieval.search_kb_dual_channel(
+            query,
+            fetch_k,
             s3vectors_client=_get_s3vectors_client(),
             vector_bucket=S3_VECTORS_BUCKET,
             vector_index=S3_VECTORS_INDEX,
             query_embedding=embedding,
-            top_k=fetch_k,
-            filter_dict=filter_dict,
+            workspace_ids=workspace_ids,
             text_truncate=0,  # snippet windowing happens in format_results
         )
     except ClientError as e:
@@ -1013,19 +1012,19 @@ def search_knowledge_base(
         return []
 
     if RERANK_ENABLED and len(docs) > 1:
-        # NOTE: the Bedrock Rerank API only accepts a FOUNDATION-MODEL ARN --
-        # it rejects application inference profile ARNs ("invalid model ARN").
-        # So unlike InvokeModel, rerank cannot be routed through the workload
-        # profile for ADR-016 v1.2 cost attribution. Use the bare model id
-        # (retrieval.rerank wraps it into arn:...::foundation-model/<id>).
-        # Rerank spend is negligible vs LLM synthesis ([[project_retrieval_cost_model]]).
-        rerank_id = RERANK_MODEL_ID
-        docs = shared_retrieval.rerank(
+        # Per-lane rerank so the code_map lane keeps its slots instead of
+        # losing them to doc-lane prose on a combined-pool rerank -- the fix
+        # this plan ships for MCP. NOTE: Bedrock Rerank only accepts a
+        # FOUNDATION-MODEL ARN (rejects application inference profile ARNs), so
+        # unlike InvokeModel it can't attribute to the ADR-016 v1.2 workload
+        # profile; use the bare model id. Rerank spend is negligible vs LLM
+        # synthesis ([[project_retrieval_cost_model]]).
+        docs = shared_retrieval.rerank_dual_channel(
             bedrock_agent_runtime_client=_get_bedrock_agent_runtime_client(),
-            rerank_model_id=rerank_id,
+            rerank_model_id=RERANK_MODEL_ID,
             query=query,
             documents=docs,
-            top_n=top_k,
+            top_k=top_k,
             lambda_name="mcp-server",
             audit_table_name=os.environ.get("AUDIT_TABLE", ""),
         )

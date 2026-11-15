@@ -177,9 +177,14 @@ class TestMcpToolHandlers:
         )
 
         assert "text" in result
-        # Verify workspace filter was applied
-        call_kwargs = mock_s3vectors.query_vectors.call_args[1]
-        assert call_kwargs["filter"] == {"workspace_id": {"$eq": "ws-123"}}
+        # Dual-channel (ADR-033): the workspace scope is ANDed with each lane's
+        # type taxonomy; two lane queries fire.
+        calls = mock_s3vectors.query_vectors.call_args_list
+        assert len(calls) == 2
+        for call in calls:
+            f = call[1]["filter"]
+            assert f["$and"][0] == {"workspace_id": {"$eq": "ws-123"}}
+            assert "type" in f["$and"][1]
 
     def test_list_workspaces(self, mock_dynamodb):
         """Test list_workspaces tool."""

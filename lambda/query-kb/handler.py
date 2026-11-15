@@ -274,16 +274,34 @@ def query_s3_vectors(
     # the normalized result onto its long-standing 6-key output, applying
     # format_source from the passed-through metadata.
     try:
-        docs = shared_retrieval.query_vectors(
-            s3vectors_client=s3vectors_client,
-            vector_bucket=VECTOR_BUCKET,
-            vector_index=VECTOR_INDEX,
-            query_embedding=query_embedding,
-            top_k=top_k,
-            filter_dict=filter_dict,
-            doc_types=doc_types,
-            text_truncate=20000,
-        )
+        if doc_types:
+            # Explicit doc-type filter -> single-channel. The caller asked for
+            # a specific type scope; the two-lane split would broaden it.
+            docs = shared_retrieval.query_vectors(
+                s3vectors_client=s3vectors_client,
+                vector_bucket=VECTOR_BUCKET,
+                vector_index=VECTOR_INDEX,
+                query_embedding=query_embedding,
+                top_k=top_k,
+                filter_dict=filter_dict,
+                doc_types=doc_types,
+                text_truncate=20000,
+            )
+        else:
+            # Default: dual-channel (ADR-033) so the code_map lane is not
+            # starved by docs on structural questions -- parity with chat. The
+            # repo/workspace scope becomes the base_filter ANDed with each
+            # lane's type taxonomy. Lanes are stamped for per-lane rerank.
+            docs = shared_retrieval.search_kb_dual_channel(
+                query="",
+                fetch_k=top_k,
+                s3vectors_client=s3vectors_client,
+                vector_bucket=VECTOR_BUCKET,
+                vector_index=VECTOR_INDEX,
+                query_embedding=query_embedding,
+                base_filter=filter_dict,
+                text_truncate=20000,
+            )
     except ClientError as e:
         logger.error(f"[query-kb] Failed to query S3 Vectors: {e}")
         raise
@@ -314,6 +332,9 @@ def query_s3_vectors(
             "workspace_name": workspace_names.get(
                 d["metadata"].get("workspace_id"),
             ),
+            # Lane stamp (dual-channel path) so the handler can rerank per lane;
+            # empty string on the single-channel (explicit doc_types) path.
+            "lane": d.get("lane", ""),
         }
         for d in docs
     ]
@@ -392,6 +413,29 @@ def rerank_results(
         query=query,
         documents=documents,
         top_n=top_n,
+        lambda_name="query-kb",
+        audit_table_name=os.environ.get("AUDIT_TABLE", ""),
+    )
+
+
+def rerank_dual_channel(
+    query: str,
+    documents: List[Dict[str, Any]],
+    top_k: int,
+) -> List[Dict[str, Any]]:
+    """Per-lane rerank for dual-channel results (ADR-033).
+
+    Reranks the code_map and docs lanes against their own adaptive budgets so
+    the code_map lane keeps its slots instead of losing them to doc-lane prose
+    on a combined-pool rerank -- the actual fix this plan ships for query-kb.
+    Bare foundation-model id (Bedrock Rerank rejects profile ARNs; ADR-016 v1.2).
+    """
+    return shared_retrieval.rerank_dual_channel(
+        bedrock_agent_runtime_client=bedrock_agent_runtime_client,
+        rerank_model_id=RERANK_MODEL_ID,
+        query=query,
+        documents=documents,
+        top_k=top_k,
         lambda_name="query-kb",
         audit_table_name=os.environ.get("AUDIT_TABLE", ""),
     )
@@ -534,9 +578,14 @@ def handler(event, context):
 
         logger.info(f"[query-kb] Found {len(context_docs)} relevant documents")
 
-        # Step 2.5: Rerank results if enabled
+        # Step 2.5: Rerank results if enabled. Dual-channel results carry a
+        # lane stamp -> rerank per lane (protects the code_map lane); the
+        # single-channel path (explicit doc_types) has no lanes -> combined.
         if RERANK_ENABLED and len(context_docs) > 1:
-            context_docs = rerank_results(query, context_docs, top_n=top_k)
+            if any(d.get("lane") for d in context_docs):
+                context_docs = rerank_dual_channel(query, context_docs, top_k=top_k)
+            else:
+                context_docs = rerank_results(query, context_docs, top_n=top_k)
             # Log score distribution for threshold tuning
             has_rerank_scores = any("rerank_score" in d for d in context_docs)
             if has_rerank_scores:

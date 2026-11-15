@@ -313,6 +313,20 @@ def test_lane_filter_no_workspace_type_only():
     }
 
 
+def test_compose_lane_filter_ands_base_with_type():
+    # query-kb's repo/workspace base filter gets ANDed with the lane type.
+    base = {"repo": {"equals": "r1"}, "workspace_id": {"$in": ["w1"]}}
+    assert retrieval._compose_lane_filter(base, ["adr"]) == {
+        "$and": [base, {"type": {"$in": ["adr"]}}]
+    }
+
+
+def test_compose_lane_filter_no_base_is_type_only():
+    assert retrieval._compose_lane_filter(None, ["adr"]) == {
+        "type": {"$in": ["adr"]}
+    }
+
+
 def _type_in(filt):
     """Extract the lane's ``type`` ``$in`` set from a filter (emulating the
     S3 Vectors server-side type filter)."""
@@ -373,6 +387,47 @@ def test_search_kb_dual_channel_fans_out_and_stamps_lanes():
     assert {r["type"] for r in docs} <= set(retrieval.DOC_TYPES)
     assert len(code_map) == 2 and len(docs) == 2
     assert len(out) == 4
+
+
+def test_search_kb_dual_channel_uses_precomputed_embedding():
+    # query-kb / mcp-server pass query_embedding directly; embed_fn must NOT
+    # be called (and may be None).
+    all_vectors = [
+        {"key": "d1", "distance": 0.1, "metadata": {"content": "d", "type": "adr"}},
+    ]
+    client = _fake_s3vectors_server_filter(all_vectors)
+    out = retrieval.search_kb_dual_channel(
+        "q", fetch_k=2,
+        s3vectors_client=client, vector_bucket="b", vector_index="i",
+        query_embedding=[0.1] * 4,
+        workspace_ids=["w1"],
+    )
+    assert any(r["lane"] == "docs" for r in out)
+
+
+def test_search_kb_dual_channel_base_filter_reaches_query():
+    # A caller base_filter (query-kb repo scope) is ANDed with the lane type
+    # and passed through to query_vectors as the S3 filter.
+    seen_filters = []
+    client = MagicMock()
+
+    def _q(**params):
+        seen_filters.append(params.get("filter"))
+        return {"vectors": []}
+
+    client.query_vectors.side_effect = _q
+    retrieval.search_kb_dual_channel(
+        "q", fetch_k=2,
+        s3vectors_client=client, vector_bucket="b", vector_index="i",
+        query_embedding=[0.1] * 4,
+        base_filter={"repo": {"equals": "r1"}},
+    )
+    # Both lanes' filters AND the repo base with their type clause.
+    assert all(f.get("$and") and f["$and"][0] == {"repo": {"equals": "r1"}}
+               for f in seen_filters)
+    type_sets = {tuple(f["$and"][1]["type"]["$in"]) for f in seen_filters}
+    assert tuple(retrieval.CODE_MAP_TYPES) in type_sets
+    assert tuple(retrieval.DOC_TYPES) in type_sets
 
 
 def test_search_kb_dual_channel_empty_embedding_returns_empty():

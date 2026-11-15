@@ -971,13 +971,18 @@ class TestSearchKnowledgeBaseEdges:
     @patch.object(mcp_module, "_get_s3vectors_client")
     @patch.object(mcp_module, "generate_embedding", return_value=[0.1] * 1024)
     def test_multiple_workspace_filter(self, mock_embed, mock_s3v):
-        """Uses $in filter for multiple workspace IDs."""
+        """Dual-channel ANDs the $in workspace scope with each lane's type."""
         mock_s3v.return_value.query_vectors.return_value = {"vectors": []}
 
         mcp_module.search_knowledge_base("test", workspace_ids=["ws-1", "ws-2"])
 
-        call_kwargs = mock_s3v.return_value.query_vectors.call_args[1]
-        assert call_kwargs["filter"] == {"workspace_id": {"$in": ["ws-1", "ws-2"]}}
+        # Two lane queries; each ANDs the workspace scope with a type clause.
+        calls = mock_s3v.return_value.query_vectors.call_args_list
+        assert len(calls) == 2
+        for call in calls:
+            f = call[1]["filter"]
+            assert f["$and"][0] == {"workspace_id": {"$in": ["ws-1", "ws-2"]}}
+            assert "type" in f["$and"][1]
 
     @patch.object(mcp_module, "_get_s3vectors_client")
     @patch.object(mcp_module, "generate_embedding", return_value=[0.1] * 1024)
