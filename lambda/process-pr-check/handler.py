@@ -16,7 +16,7 @@ import json
 import logging
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Literal, Optional
 from enum import Enum
 
@@ -70,6 +70,14 @@ ENVIRONMENT = os.environ.get("ENV", "dev")
 APP_NAME = os.environ.get("APP_NAME", "outcome-ops-ai-assist")
 DYNAMODB_TABLE = os.environ.get("DYNAMODB_TABLE", f"{ENVIRONMENT}-{APP_NAME}-code-maps")
 QUERY_KB_LAMBDA_NAME = os.environ.get("QUERY_KB_LAMBDA_NAME", f"{ENVIRONMENT}-{APP_NAME}-query-kb")
+
+# ADR-057 deferred-ADO-summary coordination. analyze-pr persists the rendered
+# summary under SK=SUMMARY_DEFERRED (ADO orders threads by creation, so an
+# up-front summary sinks below the per-check threads); the completion fan-in
+# here posts it as the newest thread once every check finishes, so it lands on
+# top. Both constants MUST match analyze-pr/handler.py.
+DEFERRED_SUMMARY_SK = "SUMMARY_DEFERRED"
+COMMENT_ROLE_SUMMARY = "summary"
 
 # chunk 07: ADO PR-comment posting needs the customer's per-connection
 # OAuth access token. tenant_id + client_id come from tfvars (same as
@@ -574,6 +582,100 @@ def _try_patch_ado_comment(
             f"#{pull_request_id}: {e}. Falling back to POST."
         )
         return None
+
+
+def _ado_mark_done_and_maybe_post_summary(job: CheckJob) -> None:
+    """Mark this ADO check complete; post the deferred summary if it was last.
+
+    analyze-pr persists the ADO summary under SK=SUMMARY_DEFERRED instead of
+    posting it up front (ADO orders threads by creation, so an up-front summary
+    sinks below the per-check threads). Each check idempotently adds itself to
+    ``completedChecks`` (a String Set -- safe under SQS at-least-once); the check
+    that completes the expected set claims the post exactly once (a conditional
+    write) and posts the summary as the newest thread, so it lands on top
+    (ADR-057). A no-op when no summary was deferred for this PR.
+    """
+    pk = f"PR#{job.provider}#{job.repository}#{job.pr_number}"
+    deferred = _get_existing_check_result_row(pk, DEFERRED_SUMMARY_SK)
+    if not deferred or not deferred.get("summaryBody"):
+        return  # summary not deferred for this PR (nothing to do)
+    expected = set(deferred.get("expectedChecks") or [])
+    if not expected:
+        return
+
+    table = dynamodb.Table(DYNAMODB_TABLE)
+    # Idempotent: ADDing an element already in the set is a no-op, so an SQS
+    # redelivery of the same check cannot over- or under-count completion.
+    updated = table.update_item(
+        Key={"PK": pk, "SK": DEFERRED_SUMMARY_SK},
+        UpdateExpression="ADD completedChecks :c",
+        ExpressionAttributeValues={":c": {job.check_type.value}},
+        ReturnValues="ALL_NEW",
+    ).get("Attributes", {})
+    completed = set(updated.get("completedChecks") or [])
+    if not expected.issubset(completed):
+        return  # more checks still pending
+    if updated.get("summaryPosted"):
+        return  # already posted on a prior completion
+
+    # Claim the post exactly once -- guards the race where the last two checks
+    # complete concurrently and both observe the full set.
+    try:
+        table.update_item(
+            Key={"PK": pk, "SK": DEFERRED_SUMMARY_SK},
+            UpdateExpression="SET summaryPosted = :t",
+            ConditionExpression="attribute_not_exists(summaryPosted)",
+            ExpressionAttributeValues={":t": True},
+        )
+    except ClientError as e:
+        if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            return  # another worker won the claim
+        raise
+
+    _ado_upsert_summary(job, deferred["summaryBody"])
+    logger.info(
+        "[pr-summary.ado] posted deferred summary as newest thread for PR #%s",
+        job.pr_number,
+    )
+
+
+def _ado_upsert_summary(job: CheckJob, body: str) -> None:
+    """Create-or-PATCH the ADO summary thread (SK=COMMENT#summary).
+
+    The first post (after all checks complete) creates the newest thread, so it
+    sits at the top. A later run PATCHes the same thread in place, which keeps
+    that top position because the thread's creation time is unchanged.
+    """
+    pk = f"PR#{job.provider}#{job.repository}#{job.pr_number}"
+    sk = f"COMMENT#{COMMENT_ROLE_SUMMARY}"
+    org, project, repo = (
+        job.azure_devops_org, job.azure_devops_project, job.azure_devops_repo,
+    )
+    existing = _get_existing_check_result_row(pk, sk)
+    if existing:
+        url = _try_patch_ado_comment(
+            org=org, project=project, repo=repo,
+            pull_request_id=job.pr_number, connection_id=job.connection_id,
+            existing_row=existing, comment_body=body,
+        )
+        if url is not None:
+            return  # PATCHed in place; thread stays at the top
+    resp = _post_azure_devops_thread(
+        org, project, repo, job.pr_number, body, job.connection_id,
+    )
+    thread_id = resp.get("id")
+    comments = resp.get("comments") or []
+    comment_id = comments[0].get("id") if comments else None
+    item: Dict[str, Any] = {
+        "PK": pk,
+        "SK": sk,
+        "updatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+    if thread_id is not None:
+        item["providerThreadId"] = int(thread_id)
+    if comment_id is not None:
+        item["providerThreadCommentId"] = int(comment_id)
+    dual_write.ddb_put_item(DYNAMODB_TABLE, item)
 
 
 def _gitlab_note_url(repository: str, pr_number: int, note_id,
@@ -1413,6 +1515,20 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             process_check_job(job)
 
             logger.info(f"Successfully processed job: {job.check_type.value} for PR #{job.pr_number}")
+
+            # ADR-057: on ADO the PR summary is deferred to the completion
+            # fan-in so it lands as the newest (top) thread. Marking this check
+            # done posts the summary if it was the last one. Non-fatal: a
+            # failure here must not retry an already-successful check.
+            if job.provider == "azure_devops":
+                try:
+                    _ado_mark_done_and_maybe_post_summary(job)
+                except Exception as hook_error:
+                    logger.warning(
+                        "[pr-summary.ado] completion hook failed for PR #%s "
+                        "(%s): %s",
+                        job.pr_number, job.check_type.value, hook_error,
+                    )
 
         except Exception as error:
             logger.error(f"Error processing SQS record: {error}", exc_info=True)

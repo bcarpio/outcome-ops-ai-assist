@@ -83,6 +83,22 @@ told not to count (ADR-032).**
   (`shared.source_fetch.fetch_file_at_sha` + `shared.pr_diff.compute_file_diff`),
   non-fatal per file. Both paths feed the identical builder.
 
+- **ADO posts the summary last so it reads first (ordering parity).** GitHub and
+  GitLab render PR threads oldest-first, so a summary posted before the checks
+  sits on top. ADO renders its Overview threads **newest-first**, so an up-front
+  summary sinks below the per-check threads. On ADO the summary is therefore
+  **deferred**: `analyze-pr` renders the body and persists it (SK=`SUMMARY_DEFERRED`
+  under the PR's PK, with the expected check set as a String Set) instead of
+  posting it. `process-pr-check` then runs a completion fan-in -- each finished
+  check idempotently adds itself to a `completedChecks` String Set (safe under
+  SQS at-least-once), and the check that completes the expected set claims the
+  post exactly once (a conditional write on `summaryPosted`) and posts the
+  summary as the newest thread, so it lands at the top. A later run PATCHes that
+  same thread in place, which keeps the top position because the thread's
+  creation time is unchanged. GitHub/GitLab keep posting up front, unchanged. The
+  model still renders in `analyze-pr` (the deferral is only of the POST), so the
+  stored body is a complete, already-rendered comment the fan-in posts verbatim.
+
 - **Cost scoped to where it is read.** The summary is built only on the branch
   where checks will actually run. A PR that queues no checks calls no model and
   posts no summary. The model runs at `workload="pr-analyzer", tier="advanced"`
@@ -227,9 +243,13 @@ abuse-surface items to close before this runs against real customer PR volume.
 ## References
 
 - `lambda/analyze-pr/pr_summary.py` -- the builder
-- `lambda/analyze-pr/handler.py` -- `COMMENT#summary` wiring, `_fetch_diffs_via_sha`
+- `lambda/analyze-pr/handler.py` -- `COMMENT#summary` wiring, `_fetch_diffs_via_sha`,
+  `_store_deferred_ado_summary` (ADO defer)
+- `lambda/process-pr-check/handler.py` -- `_ado_mark_done_and_maybe_post_summary`
+  / `_ado_upsert_summary` (the ADO completion fan-in that posts the summary last)
 - `lambda/tests/unit/test_pr_summary.py`,
-  `lambda/tests/unit/test_analyze_pr_summary_wiring.py`
+  `lambda/tests/unit/test_analyze_pr_summary_wiring.py`,
+  `lambda/tests/unit/test_process_pr_check.py` (fan-in tests)
 
 Version History:
 
@@ -243,5 +263,11 @@ Version History:
   MR and ADO PR: real diff-grounded prose returned (output ~860 tokens, no
   collapse), no file table, truncation note code-computed. GitHub uses the same
   builder via the inline-patch path.
+- Advanced tier + ADO ordering (2026-11-15): moved the summary to the advanced
+  (Sonnet-class, tfvar-swappable) model tier for better prose; and, because ADO
+  orders PR threads newest-first, deferred the ADO summary post to a
+  `process-pr-check` completion fan-in so it lands as the newest (top) thread
+  instead of below the per-check comments. Re-verification of the ADO ordering
+  pending the next deploy.
 
 <!-- Confluence sync -->

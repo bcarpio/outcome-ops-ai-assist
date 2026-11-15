@@ -158,3 +158,32 @@ def test_fetch_diffs_empty_diff_not_included(monkeypatch):
 
 def test_summary_role_constant():
     assert _handler_module.COMMENT_ROLE_SUMMARY == "summary"
+
+
+# --------------------------------------------------------------------------- #
+# _store_deferred_ado_summary (ADR-057: ADO defers the summary to the fan-in)
+# --------------------------------------------------------------------------- #
+
+def test_store_deferred_ado_summary_writes_body_and_expected_set(monkeypatch):
+    captured = {}
+
+    class _Table:
+        def put_item(self, Item=None):
+            captured["item"] = Item
+
+    class _DDB:
+        def Table(self, _name):
+            return _Table()
+
+    monkeypatch.setattr(_handler_module, "dynamodb", _DDB())
+    _handler_module._store_deferred_ado_summary(
+        pk="PR#azure_devops#bcarpio/OutcomeOps/repo#4",
+        body="## PR summary\n\nprose\n\n**Checks queued:** ADR_COMPLIANCE",
+        expected_checks=["ADR_COMPLIANCE", "LICENSE_COMPLIANCE"],
+    )
+    item = captured["item"]
+    assert item["PK"] == "PR#azure_devops#bcarpio/OutcomeOps/repo#4"
+    assert item["SK"] == _handler_module.DEFERRED_SUMMARY_SK
+    assert item["summaryBody"].startswith("## PR summary")
+    # Stored as a DynamoDB String Set the fan-in matches completion against.
+    assert item["expectedChecks"] == {"ADR_COMPLIANCE", "LICENSE_COMPLIANCE"}

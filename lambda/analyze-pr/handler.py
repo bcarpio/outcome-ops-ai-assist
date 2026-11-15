@@ -487,6 +487,15 @@ COMMENT_ROLE_STRUCTURAL_IMPACT = "structural_impact"
 COMMENT_ROLE_NO_CHECKS_NEEDED = "no_checks_needed"
 COMMENT_ROLE_SUMMARY = "summary"
 
+# SK for the deferred-ADO-summary coordination item (ADR-057). On Azure DevOps
+# the PR summary is NOT posted up front: ADO orders PR threads by creation, so
+# an up-front summary sinks below the per-check threads. analyze-pr persists the
+# rendered body + expected check set here; process-pr-check's completion fan-in
+# reads it and posts the summary as the newest thread once every check finishes,
+# so it lands at the top. MUST match the identically named constant in
+# process-pr-check/handler.py.
+DEFERRED_SUMMARY_SK = "SUMMARY_DEFERRED"
+
 
 def _build_analysis_started_comment(checks_to_run: List[str]) -> str:
     """Compose the "OutcomeOps Analysis Started" comment body.
@@ -578,6 +587,32 @@ def _store_comment_row(
         logger.warning(
             f"[analyze-pr.upsert] Failed to store comment row {pk}/{sk}: {e}"
         )
+
+
+def _store_deferred_ado_summary(
+    *, pk: str, body: str, expected_checks: List[str]
+) -> None:
+    """Persist the ADO summary so the check-completion fan-in posts it last.
+
+    ADO orders PR threads by creation; a summary posted up front sinks below the
+    per-check threads. Deferring the ADO post to process-pr-check's completion
+    fan-in makes the summary the newest thread -> top of the Overview (ADR-057).
+    Stores the fully rendered body and the expected check-type set (a String Set
+    the fan-in matches ``completedChecks`` against) under SK=SUMMARY_DEFERRED.
+
+    Written via the resource client rather than ``dual_write`` because the value
+    is a DynamoDB String Set and this is transient, single-cycle coordination
+    state (not a durable artifact that needs cross-region replication).
+    """
+    dynamodb.Table(DYNAMODB_TABLE).put_item(
+        Item={
+            "PK": pk,
+            "SK": DEFERRED_SUMMARY_SK,
+            "summaryBody": body,
+            "expectedChecks": set(expected_checks),
+            "updatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        }
+    )
 
 
 def _upsert_github_comment(
@@ -1711,8 +1746,11 @@ def _handle_azure_devops(
             checks_queued=0,
         ).dict()
 
-    # Post the PR summary comment just above the analysis-started status.
-    # Non-fatal -- additive reviewer context; only posted when checks will run.
+    # Defer the PR summary on ADO. ADO orders PR threads by creation, so a
+    # summary posted here (before the checks) sinks below the later per-check
+    # threads. Persist the rendered body + expected check set instead; the
+    # process-pr-check completion fan-in posts it as the newest thread once
+    # every check finishes, so it lands on top (ADR-057). Non-fatal.
     try:
         summary_diffs, summary_truncated = _fetch_diffs_via_sha(
             provider="azure_devops",
@@ -1726,21 +1764,19 @@ def _handle_azure_devops(
             ado_repo=ado_repo,
             ado_access_token=access_token,
         )
-        _upsert_ado_comment(
-            repository=request.repository,
-            ado_org=ado_org, ado_project=ado_project, ado_repo=ado_repo,
-            pr_number=request.pr_number, access_token=access_token,
-            role=COMMENT_ROLE_SUMMARY,
+        _store_deferred_ado_summary(
+            pk=_build_comment_pk("azure_devops", request.repository, request.pr_number),
             body=_build_summary_body(
                 metadata=pr_meta,
                 diffs_by_file=summary_diffs,
                 checks_to_run=checks_to_run,
                 truncated_files=summary_truncated,
             ),
+            expected_checks=checks_to_run,
         )
     except Exception as exc:
         logger.warning(
-            "[analyze-pr.summary] ADO summary failed for PR #%d: %s",
+            "[analyze-pr.summary] ADO summary defer failed for PR #%d: %s",
             request.pr_number, exc,
         )
 

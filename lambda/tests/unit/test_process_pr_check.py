@@ -3123,3 +3123,94 @@ class TestSyncInlineFindingsExtraBranches(_InlineJobMixin):
             mock_ddb.Table.return_value = table
             # Both the provider delete AND the row delete raise -> both swallowed.
             handler_module._sync_inline_findings(job, [])
+
+
+# --------------------------------------------------------------------------- #
+# ADR-057: ADO summary completion fan-in
+# (_ado_mark_done_and_maybe_post_summary posts the deferred summary as the
+#  newest thread once every expected check has completed, exactly once).
+# --------------------------------------------------------------------------- #
+from unittest.mock import Mock as _Mock  # noqa: E402
+from botocore.exceptions import ClientError as _ClientError  # noqa: E402
+
+
+def _ddb_with(update_return=None, update_side_effect=None):
+    table = _Mock()
+    if update_side_effect is not None:
+        table.update_item.side_effect = update_side_effect
+    else:
+        table.update_item.return_value = update_return
+    ddb = _Mock()
+    ddb.Table.return_value = table
+    return ddb, table
+
+
+def test_ado_fanin_noop_when_no_deferred(monkeypatch):
+    monkeypatch.setattr(handler_module, "_get_existing_check_result_row",
+                        lambda pk, sk: None)
+    upsert = _Mock()
+    monkeypatch.setattr(handler_module, "_ado_upsert_summary", upsert)
+    handler_module._ado_mark_done_and_maybe_post_summary(_ado_job())
+    upsert.assert_not_called()
+
+
+def test_ado_fanin_partial_does_not_post(monkeypatch):
+    monkeypatch.setattr(
+        handler_module, "_get_existing_check_result_row",
+        lambda pk, sk: {"summaryBody": "x",
+                        "expectedChecks": {"ADR_COMPLIANCE", "LICENSE_COMPLIANCE"}})
+    ddb, table = _ddb_with(update_return={"Attributes": {"completedChecks": {"ADR_COMPLIANCE"}}})
+    monkeypatch.setattr(handler_module, "dynamodb", ddb)
+    upsert = _Mock()
+    monkeypatch.setattr(handler_module, "_ado_upsert_summary", upsert)
+    handler_module._ado_mark_done_and_maybe_post_summary(_ado_job())
+    upsert.assert_not_called()
+
+
+def test_ado_fanin_posts_once_when_last(monkeypatch):
+    monkeypatch.setattr(
+        handler_module, "_get_existing_check_result_row",
+        lambda pk, sk: {"summaryBody": "BODY",
+                        "expectedChecks": {"ADR_COMPLIANCE", "LICENSE_COMPLIANCE"}})
+    ddb, table = _ddb_with(update_return={"Attributes": {
+        "completedChecks": {"ADR_COMPLIANCE", "LICENSE_COMPLIANCE"}}})
+    monkeypatch.setattr(handler_module, "dynamodb", ddb)
+    upsert = _Mock()
+    monkeypatch.setattr(handler_module, "_ado_upsert_summary", upsert)
+    handler_module._ado_mark_done_and_maybe_post_summary(_ado_job())
+    upsert.assert_called_once()
+    assert upsert.call_args[0][1] == "BODY"       # the stored body is posted
+    assert table.update_item.call_count == 2      # ADD completion, then SET claim
+
+
+def test_ado_fanin_skips_when_already_posted(monkeypatch):
+    monkeypatch.setattr(
+        handler_module, "_get_existing_check_result_row",
+        lambda pk, sk: {"summaryBody": "B", "expectedChecks": {"ADR_COMPLIANCE"}})
+    ddb, table = _ddb_with(update_return={"Attributes": {
+        "completedChecks": {"ADR_COMPLIANCE"}, "summaryPosted": True}})
+    monkeypatch.setattr(handler_module, "dynamodb", ddb)
+    upsert = _Mock()
+    monkeypatch.setattr(handler_module, "_ado_upsert_summary", upsert)
+    handler_module._ado_mark_done_and_maybe_post_summary(_ado_job())
+    upsert.assert_not_called()
+    assert table.update_item.call_count == 1      # only the ADD; no claim attempt
+
+
+def test_ado_fanin_claim_race_lost(monkeypatch):
+    monkeypatch.setattr(
+        handler_module, "_get_existing_check_result_row",
+        lambda pk, sk: {"summaryBody": "B", "expectedChecks": {"ADR_COMPLIANCE"}})
+
+    def _update(**kwargs):
+        if "ADD" in kwargs.get("UpdateExpression", ""):
+            return {"Attributes": {"completedChecks": {"ADR_COMPLIANCE"}}}
+        raise _ClientError(
+            {"Error": {"Code": "ConditionalCheckFailedException"}}, "UpdateItem")
+
+    ddb, table = _ddb_with(update_side_effect=_update)
+    monkeypatch.setattr(handler_module, "dynamodb", ddb)
+    upsert = _Mock()
+    monkeypatch.setattr(handler_module, "_ado_upsert_summary", upsert)
+    handler_module._ado_mark_done_and_maybe_post_summary(_ado_job())
+    upsert.assert_not_called()                    # another worker won the claim

@@ -96,7 +96,11 @@ customer's account; no diff leaves their boundary.
   checks-will-run path so no-check PRs spend nothing. GitHub consumes inline
   `.patch`; GitLab/ADO fetch bounded per-file diffs via
   `_fetch_diffs_via_sha`. PATCH-in-place per push, 3-SCM parity
-  (ADR-036/050, ADR-057).
+  (ADR-036/050, ADR-057). GitHub/GitLab post it up front (those UIs order
+  threads oldest-first); ADO orders newest-first, so the summary is
+  deferred to a `process-pr-check` completion fan-in
+  (`_ado_mark_done_and_maybe_post_summary`) and posted as the newest
+  thread once all checks finish, so it still lands on top.
 - **Six grounded checks** (verdicts PASS / WARN / FAIL): ADR
   compliance, breaking changes, architectural duplication, README
   freshness, test coverage, license/copyleft (ADR-008). ADR
