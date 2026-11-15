@@ -234,7 +234,9 @@ Version History:
   (the SCM already shows the file list, so the table was redundant) and held the
   model to a single prose paragraph; raised the output cap 700 -> 1500 after the
   per-file-notes design collapsed the prose to "Summary unavailable" on large
-  (54-file) GitLab/ADO diffs. Re-verification across all three SCMs pending the
-  next deploy.
+  (54-file) GitLab/ADO diffs. Live-verified 2026-11-15 on the same 54-file GitLab
+  MR and ADO PR: real diff-grounded prose returned (output ~860 tokens, no
+  collapse), no file table, truncation note code-computed. GitHub uses the same
+  builder via the inline-patch path.
 
 <!-- Confluence sync -->
