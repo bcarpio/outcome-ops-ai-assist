@@ -454,6 +454,35 @@ def test_rerank_dual_channel_empty_docs_noop():
     ) == []
 
 
+def test_search_kb_dual_channel_lane_error_degrades_to_empty():
+    # A lane whose S3 query raises ClientError must degrade to empty rather
+    # than failing the whole retrieval, so the other lane still returns.
+    all_vectors = [
+        {"key": "d1", "distance": 0.15, "metadata": {"content": "doc1", "type": "adr"}},
+    ]
+
+    client = MagicMock()
+
+    def _q(**params):
+        tset = _type_in(params.get("filter", {}))
+        if tset and set(retrieval.CODE_MAP_TYPES) & tset:
+            raise ClientError(
+                {"Error": {"Code": "ValidationException", "Message": "boom"}},
+                "QueryVectors",
+            )
+        return {"vectors": [v for v in all_vectors if v["metadata"]["type"] in (tset or set())][: params["topK"]]}
+
+    client.query_vectors.side_effect = _q
+    out = retrieval.search_kb_dual_channel(
+        "q", fetch_k=4,
+        s3vectors_client=client, vector_bucket="b", vector_index="i",
+        embed_fn=lambda _q: [0.0] * 4, workspace_ids=["w1"],
+    )
+    # code_map lane raised -> empty; docs lane still returns its hit.
+    assert [r["lane"] for r in out] == ["docs"]
+    assert out[0]["key"] == "d1"
+
+
 def test_rerank_bare_model_id_still_wraps_foundation_model_arn():
     # Legacy path (pre-chunk-04 callers): bare model id -> constructed
     # arn:aws:bedrock:{region}::foundation-model/{id}. Preserves

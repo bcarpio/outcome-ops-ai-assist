@@ -437,15 +437,26 @@ def search_kb_dual_channel(
     doc_k = max(1, fetch_k - code_map_k)
 
     def _run_lane(lane_label: str, top_k: int, types: Sequence[str]):
-        hits = query_vectors(
-            s3vectors_client=s3vectors_client,
-            vector_bucket=vector_bucket,
-            vector_index=vector_index,
-            query_embedding=embedding,
-            top_k=top_k,
-            filter_dict=_lane_filter(workspace_ids, types),
-            text_truncate=text_truncate,
-        )
+        # Degrade a failing lane to empty rather than failing the whole
+        # retrieval: one lane's S3 error (or a region without the index)
+        # must still let the other lane's results through. Mirrors the
+        # per-lane error handling chat had before consolidation.
+        try:
+            hits = query_vectors(
+                s3vectors_client=s3vectors_client,
+                vector_bucket=vector_bucket,
+                vector_index=vector_index,
+                query_embedding=embedding,
+                top_k=top_k,
+                filter_dict=_lane_filter(workspace_ids, types),
+                text_truncate=text_truncate,
+            )
+        except ClientError as exc:
+            logger.warning(
+                "[retrieval.dual_channel] lane=%s query failed, degrading to "
+                "empty: %s", lane_label, exc,
+            )
+            return []
         for hit in hits:
             hit["lane"] = lane_label
         return hits

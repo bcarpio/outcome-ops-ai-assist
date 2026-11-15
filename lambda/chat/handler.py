@@ -37,6 +37,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared import dual_write
 from shared.audit import log_audit_entry
 from shared import model_client
+from shared import retrieval
 from shared.model_client import invoke_stream as model_invoke_stream
 # fable-scale chunk 05: per-workload Bedrock gate saturation raises this
 # BEFORE the Bedrock call, distinct from Bedrock-side ThrottlingException.
@@ -126,7 +127,7 @@ MEMORY_TOP_K = 3  # Number of memory chunks to retrieve
 
 # ADR-033 dual-channel retrieval: vector type taxonomy. Taxonomy
 # audited 2026-06-03 across the prd knowledge-base index (1631
-# vectors, 31 types). See plan/01-findings.md for the full table.
+# vectors, 31 types).
 #
 # CODE_MAP_TYPES: platform-authored structural summaries -- the
 # graph-grounded truth half of the precedence rule (ADR-025). When a
@@ -153,41 +154,11 @@ MEMORY_TOP_K = 3  # Number of memory chunks to retrieve
 # and `binary` (empty content, never retrievable) are intentionally
 # NOT included -- those catch build logs, generated dumps, random
 # dotfiles, etc. and would readmit ADR-033's original noise problem.
-CODE_MAP_TYPES = (
-    "handler-group-summary",
-    "source-module-summary",
-    "csharp-project-summary",
-    "tests-summary",
-    "code-map",
-    "csharp-services-summary",
-    "docs-summary",
-    "frontend-tests-summary",
-    "frontend-components-summary",
-    "frontend-utils-summary",
-    "infrastructure-summary",
-    "frontend-pages-summary",
-    "csharp-models-summary",
-    "build-summary",
-    "csharp-views-summary",
-    "csharp-repositories-summary",
-    "kubernetes-summary",
-    "schemas-summary",
-    "shared-summary",
-)
-
-DOC_TYPES = (
-    "adr",
-    "markdown",
-    "html",
-    "pdf",
-    "yaml",
-    "pptx",
-    "docx",
-    "text",   # .txt files -- NOTES, CHANGELOG, TODO, etc.
-    "json",   # package.json / composer.json / TS configs / API schemas
-    "xlsx",   # Excel spreadsheets (extracted-to-text via process-documents)
-    "csv",    # tabular data (extracted-to-text via process-documents)
-)
+# The taxonomy's single source of truth now lives in shared/retrieval.py (the
+# dual-channel consolidation, ADR-023/ADR-033) so chat, query-kb, and
+# mcp-server all share one definition. Re-exported here so chat call sites and
+# tests keep referencing handler.CODE_MAP_TYPES / handler.DOC_TYPES unchanged.
+from shared.retrieval import CODE_MAP_TYPES, DOC_TYPES  # noqa: E402,F401
 
 
 def _get_dynamodb():
@@ -1526,218 +1497,35 @@ def build_contextual_search_query(message: str, history: List[Dict]) -> str:
     return augmented
 
 
-def search_kb(
-    query: str,
-    top_k: int = 10,
-    workspace_id: str = None,
-    workspace_ids: List[str] = None,
-    type_filter: Optional[Tuple[str, ...]] = None,
-    lane_label: str = "",
-) -> List[Dict]:
-    """Search KB documents in S3 Vectors.
-
-    Args:
-        query: Search query text
-        top_k: Number of results to return
-        workspace_id: Single workspace ID (deprecated, use workspace_ids)
-        workspace_ids: List of workspace IDs for cross-workspace search
-        type_filter: Optional tuple of `type` values to filter on (ADR-033
-            dual-channel retrieval). When provided, only vectors whose
-            metadata `type` is in the tuple are returned. None = no
-            type filter (legacy single-channel behavior).
-        lane_label: Optional string identifying which lane this call is
-            for ("code_map" / "docs" / ""). Used for CloudWatch
-            attribution; otherwise no behavioral effect.
-
-    When workspace filtering is provided, results are limited to documents
-    that belong to the specified workspace(s). When type filtering is
-    also provided, results are restricted to that lane's taxonomy.
-    """
-    s3vectors = _get_s3vectors_client()
-    vector_bucket = _get_vector_bucket()
-    vector_index = _get_vector_index()
-
-    # Generate query embedding
-    embedding = generate_embedding(query)
-    if not embedding:
-        logger.warning("Empty embedding generated")
-        return []
-
-    # Normalize workspace filter - prefer workspace_ids over workspace_id
-    ws_filter_ids = workspace_ids or ([workspace_id] if workspace_id else None)
-
-    try:
-        # Build query params
-        query_params = {
-            "vectorBucketName": vector_bucket,
-            "indexName": vector_index,
-            "queryVector": {"float32": embedding},
-            "topK": top_k,
-            "returnMetadata": True,
-            "returnDistance": True,
-        }
-
-        # Compose the filter: workspace scope (always present when
-        # provided) AND optional type lane (ADR-033). S3 Vectors
-        # supports $eq / $in / $and operators on metadata fields.
-        clauses = []
-        if ws_filter_ids:
-            if len(ws_filter_ids) == 1:
-                clauses.append({"workspace_id": {"$eq": ws_filter_ids[0]}})
-            else:
-                clauses.append({"workspace_id": {"$in": ws_filter_ids}})
-        if type_filter:
-            clauses.append({"type": {"$in": list(type_filter)}})
-
-        if len(clauses) == 1:
-            query_params["filter"] = clauses[0]
-        elif len(clauses) > 1:
-            query_params["filter"] = {"$and": clauses}
-
-        if ws_filter_ids:
-            logger.info(
-                "Filtering KB search: workspaces=%d type_lane=%s",
-                len(ws_filter_ids),
-                lane_label or "(none)",
-            )
-
-        response = s3vectors.query_vectors(**query_params)
-
-        results = []
-        for vector in response.get("vectors", []):
-            metadata = vector.get("metadata", {})
-            # Extract repo: prefer explicit field, fall back to source-specific logic
-            repo = metadata.get("repo", "")
-            if not repo:
-                source_type = metadata.get("source", "")
-                folder_path = metadata.get("folder_path", "")
-                if source_type == "github":
-                    repo = folder_path.split("/")[0] if folder_path else ""
-                elif source_type and folder_path:
-                    # e.g., "Confluence/OutcomeOps" from source=confluence, folder_path=confluence/OutcomeOps
-                    space = folder_path.split("/")[-1] if "/" in folder_path else folder_path
-                    repo = f"{source_type.capitalize()}/{space}"
-                elif source_type:
-                    repo = source_type.capitalize()
-
-            results.append({
-                "key": vector.get("key", ""),
-                "score": vector.get("distance", 0),
-                "content": metadata.get("content", ""),
-                "repo": repo,
-                "type": metadata.get("type", ""),
-                "file_path": metadata.get("file_path", ""),
-                "workspace_id": metadata.get("workspace_id", ""),
-                "lane": lane_label,
-            })
-
-        logger.info(
-            "Found %d KB results (lane=%s)",
-            len(results),
-            lane_label or "(none)",
-        )
-        return results
-
-    except ClientError as e:
-        logger.error(f"Error searching vectors (lane=%s): %s", lane_label, e)
-        return []
-
-
 def search_kb_dual_channel(
     query: str,
     fetch_k: int,
     workspace_ids: List[str] = None,
 ) -> List[Dict]:
-    """Dual-channel retrieval per ADR-033.
+    """Dual-channel retrieval (ADR-033), delegating to the shared seam.
 
-    Fires two parallel S3 Vectors queries: one filtered to the
-    CODE_MAP_TYPES lane, one filtered to the DOC_TYPES lane. Each lane
-    gets half the fetch_k budget. The combined result set feeds into
-    the existing rerank candidate pool.
-
-    Why: a single vector retrieval lets docs out-rank code-maps for
-    prose-shaped questions on doc-heavy repos, starving the synthesis
-    context of the structural truth ADR-025 needs to enforce code-over-
-    docs precedence. The 2026-06-03 magic_link audit (handle_verify
-    vs verify_magic_token attribution) traced to exactly that
-    starvation -- the auth code-map existed in the index but lost on
-    cosine similarity to a doc-heavy field of competitors.
-
-    Two lanes always fire, intent-agnostic. Rerank decides who keeps
-    their slot in the final context.
+    The two-lane orchestration now lives in shared/retrieval.py so chat,
+    query-kb, and mcp-server share one implementation (ADR-023). This wrapper
+    injects chat's own S3 Vectors client / bucket / index / embedding function
+    and maps the shared result shape (``text``) onto the ``content`` key chat's
+    downstream (format_context, sources) reads.
     """
-    # Each lane gets half the candidate budget. Floor at 1 so even a
-    # very small fetch_k still queries both lanes.
-    code_map_k = max(1, fetch_k // 2)
-    doc_k = max(1, fetch_k - code_map_k)
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-        code_map_future = pool.submit(
-            search_kb,
-            query=query,
-            top_k=code_map_k,
-            workspace_ids=workspace_ids,
-            type_filter=CODE_MAP_TYPES,
-            lane_label="code_map",
-        )
-        doc_future = pool.submit(
-            search_kb,
-            query=query,
-            top_k=doc_k,
-            workspace_ids=workspace_ids,
-            type_filter=DOC_TYPES,
-            lane_label="docs",
-        )
-        code_map_hits = code_map_future.result()
-        doc_hits = doc_future.result()
-
-    combined = list(code_map_hits) + list(doc_hits)
-    logger.info(
-        "[chat.retrieval] code_map_lane=%d docs_lane=%d combined=%d",
-        len(code_map_hits),
-        len(doc_hits),
-        len(combined),
+    results = retrieval.search_kb_dual_channel(
+        query,
+        fetch_k,
+        s3vectors_client=_get_s3vectors_client(),
+        vector_bucket=_get_vector_bucket(),
+        vector_index=_get_vector_index(),
+        embed_fn=generate_embedding,
+        workspace_ids=workspace_ids,
     )
-    return combined
+    for r in results:
+        r["content"] = r.get("text", "")
+    return results
 
 
-def split_rerank_budget(
-    top_k: int, code_map_count: int, doc_count: int,
-) -> Tuple[int, int]:
-    """Adaptive per-lane rerank top_n split.
-
-    Start from an even 50/50 (odd budget goes to docs -- the larger
-    pool in any non-thin-ingest workspace), then cap each lane at its
-    actual candidate count and redistribute unused slots to the other
-    lane so we don't waste room in the final context.
-
-    Prior behavior forced exactly ``top_k // 2`` per lane regardless
-    of what fetch returned; a thin code-maps lane (2 candidates) left
-    3 slots empty on a ``top_k=10`` turn instead of letting the docs
-    lane fill them. The 2026-06-29 hybrid-deployment repro traced
-    exactly to this: the model refused ("I don't have SAP ABAP
-    codebase maps ...") because only 4 sources reached synthesis when
-    10 slots were available in the pool.
-
-    Returns ``(code_map_top_n, doc_top_n)``; both non-negative;
-    their sum is min(``top_k``, ``code_map_count + doc_count``).
-    """
-    target_code = max(1, top_k // 2)
-    target_docs = max(1, top_k - target_code)
-    code_map_top_n = min(target_code, code_map_count)
-    doc_top_n = min(target_docs, doc_count)
-    leftover = top_k - code_map_top_n - doc_top_n
-    if leftover > 0:
-        # Docs lane usually has the larger candidate pool in a mature
-        # workspace, so absorb overflow there first, then fall
-        # through to code-maps if docs is itself the thin side.
-        extra_docs = min(leftover, doc_count - doc_top_n)
-        doc_top_n += extra_docs
-        leftover -= extra_docs
-        if leftover > 0:
-            extra_code = min(leftover, code_map_count - code_map_top_n)
-            code_map_top_n += extra_code
-    return code_map_top_n, doc_top_n
+# Adaptive per-lane rerank budget split -- single source of truth in shared.
+split_rerank_budget = retrieval.split_rerank_budget
 
 
 def rerank_results(
@@ -1749,94 +1537,32 @@ def rerank_results(
     source_ip: str = "",
     user_agent: str = "",
 ) -> List[Dict]:
-    """Rerank documents using Bedrock Rerank API (Cohere Rerank 3.5).
+    """Rerank documents via the shared Bedrock Rerank primitive.
 
-    Falls back to original order if reranking fails.
-
-    Caller should pass user_email + workspace_id + source_ip + user_agent
-    so the rerank audit row gets attributed correctly. Without these the
-    row lands at PK=WS#SYSTEM and the analytics aggregator skips it,
-    making rerank invisible in cost-by-workspace / cost-by-user views.
+    Resolves chat's ADR-016 workload profile ARN (cost attribution) and passes
+    it plus the request attribution (so the audit row lands on the causing
+    workspace/user, not WS#SYSTEM) into shared.retrieval.rerank. Falls back to
+    the foundation-model ARN when no profile is configured.
     """
-    if not documents:
-        return documents
+    rerank_arn = model_client.resolve_profile_arn("chat", "cohere-rerank") or (
+        f"arn:aws:bedrock:"
+        f"{_get_bedrock_agent_runtime_client().meta.region_name}"
+        f"::foundation-model/{RERANK_MODEL_ID}"
+    )
+    return retrieval.rerank(
+        bedrock_agent_runtime_client=_get_bedrock_agent_runtime_client(),
+        rerank_model_id=rerank_arn,
+        query=query,
+        documents=documents,
+        top_n=top_n,
+        lambda_name="chat",
+        audit_table_name=os.environ.get("AUDIT_TABLE", ""),
+        user_email=user_email,
+        workspace_id=workspace_id,
+        source_ip=source_ip,
+        user_agent=user_agent,
+    )
 
-    try:
-        client = _get_bedrock_agent_runtime_client()
-
-        sources = []
-        for doc in documents:
-            text = doc.get("content", "") or doc.get("text", "")
-            sources.append({
-                "type": "INLINE",
-                "inlineDocumentSource": {
-                    "type": "TEXT",
-                    "textDocument": {
-                        "text": text[:4096]
-                    }
-                }
-            })
-
-        rerank_start = time.time()
-
-        # ADR-016 v1.2 -- chat/cohere-rerank profile ARN attribution.
-        rerank_profile = model_client.resolve_profile_arn(
-            "chat", "cohere-rerank",
-        )
-        rerank_arn = rerank_profile or (
-            f"arn:aws:bedrock:{client.meta.region_name}"
-            f"::foundation-model/{RERANK_MODEL_ID}"
-        )
-        rerank_params = {
-            "queries": [{"type": "TEXT", "textQuery": {"text": query}}],
-            "sources": sources,
-            "rerankingConfiguration": {
-                "type": "BEDROCK_RERANKING_MODEL",
-                "bedrockRerankingConfiguration": {
-                    "modelConfiguration": {
-                        "modelArn": rerank_arn,
-                    }
-                }
-            }
-        }
-
-        if top_n is not None:
-            rerank_params["rerankingConfiguration"]["bedrockRerankingConfiguration"]["numberOfResults"] = top_n
-
-        response = client.rerank(**rerank_params)
-
-        rerank_duration_ms = int((time.time() - rerank_start) * 1000)
-        logger.info(f"Reranked {len(documents)} documents in {rerank_duration_ms}ms")
-
-        reranked = []
-        for result in response.get("results", []):
-            idx = result.get("index", 0)
-            if idx < len(documents):
-                doc = documents[idx].copy()
-                doc["rerank_score"] = result.get("relevanceScore", 0)
-                reranked.append(doc)
-
-        log_audit_entry(
-            audit_table_name=os.environ.get("AUDIT_TABLE", ""),
-            lambda_name="chat",
-            model_id=RERANK_MODEL_ID,
-            input_text=f"rerank:{query}",
-            output_text=f"reranked {len(reranked)} of {len(documents)} docs",
-            duration_ms=rerank_duration_ms,
-            user_email=user_email,
-            workspace_id=workspace_id,
-            source_ip=source_ip,
-            user_agent=user_agent,
-        )
-
-        return reranked
-
-    except ClientError as e:
-        logger.warning(f"Reranking failed, falling back to cosine order: {e}")
-        return documents[:top_n] if top_n else documents
-    except Exception as e:
-        logger.warning(f"Unexpected rerank error, falling back: {e}")
-        return documents[:top_n] if top_n else documents
 
 
 def format_context(results: List[Dict]) -> str:
