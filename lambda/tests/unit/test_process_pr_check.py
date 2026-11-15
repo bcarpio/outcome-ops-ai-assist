@@ -3214,3 +3214,67 @@ def test_ado_fanin_claim_race_lost(monkeypatch):
     monkeypatch.setattr(handler_module, "_ado_upsert_summary", upsert)
     handler_module._ado_mark_done_and_maybe_post_summary(_ado_job())
     upsert.assert_not_called()                    # another worker won the claim
+
+
+# --------------------------------------------------------------------------- #
+# ADR-057: _ado_upsert_summary posts a FRESH thread (delete-and-recreate), not
+# a PATCH. ADO orders Overview threads by publishedDate (newest on top) and a
+# PATCH keeps the old publishedDate, so an edited thread stays at the bottom.
+# --------------------------------------------------------------------------- #
+def test_ado_upsert_summary_deletes_old_then_posts_fresh(monkeypatch):
+    existing = {"PK": "PR#azure_devops#example-repo#7", "SK": "COMMENT#summary",
+                "providerThreadId": 48, "providerThreadCommentId": 1}
+    monkeypatch.setattr(handler_module, "_get_existing_check_result_row",
+                        lambda pk, sk: existing)
+    deleted = _Mock(return_value=True)
+    monkeypatch.setattr(handler_module, "_try_delete_ado_comment", deleted)
+    posted = _Mock(return_value={"id": 90, "comments": [{"id": 5}]})
+    monkeypatch.setattr(handler_module, "_post_azure_devops_thread", posted)
+    dw = _Mock()
+    monkeypatch.setattr(handler_module, "dual_write", dw)
+
+    handler_module._ado_upsert_summary(_ado_job(), "FRESH BODY")
+
+    deleted.assert_called_once()                       # stale thread removed
+    assert deleted.call_args.kwargs["existing_row"] is existing
+    posted.assert_called_once()                        # then a brand-new POST
+    assert posted.call_args[0][4] == "FRESH BODY"      # body positional arg
+    dw.ddb_put_item.assert_called_once()
+    item = dw.ddb_put_item.call_args[0][1]
+    assert item["SK"] == "COMMENT#summary"
+    assert item["providerThreadId"] == 90              # new thread id recorded
+    assert item["providerThreadCommentId"] == 5
+
+
+def test_ado_upsert_summary_no_prior_just_posts(monkeypatch):
+    monkeypatch.setattr(handler_module, "_get_existing_check_result_row",
+                        lambda pk, sk: None)
+    deleted = _Mock()
+    monkeypatch.setattr(handler_module, "_try_delete_ado_comment", deleted)
+    posted = _Mock(return_value={"id": 91, "comments": [{"id": 2}]})
+    monkeypatch.setattr(handler_module, "_post_azure_devops_thread", posted)
+    dw = _Mock()
+    monkeypatch.setattr(handler_module, "dual_write", dw)
+
+    handler_module._ado_upsert_summary(_ado_job(), "BODY")
+
+    deleted.assert_not_called()                        # nothing to delete
+    posted.assert_called_once()
+    dw.ddb_put_item.assert_called_once()
+
+
+def test_ado_upsert_summary_delete_failure_still_posts(monkeypatch):
+    monkeypatch.setattr(
+        handler_module, "_get_existing_check_result_row",
+        lambda pk, sk: {"providerThreadId": 48, "providerThreadCommentId": 1})
+    monkeypatch.setattr(handler_module, "_try_delete_ado_comment",
+                        _Mock(return_value=False))     # delete no-op/failed
+    posted = _Mock(return_value={"id": 92, "comments": [{"id": 3}]})
+    monkeypatch.setattr(handler_module, "_post_azure_devops_thread", posted)
+    dw = _Mock()
+    monkeypatch.setattr(handler_module, "dual_write", dw)
+
+    handler_module._ado_upsert_summary(_ado_job(), "BODY")
+
+    posted.assert_called_once()                        # fresh post regardless
+    dw.ddb_put_item.assert_called_once()

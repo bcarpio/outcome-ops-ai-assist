@@ -85,19 +85,31 @@ told not to count (ADR-032).**
 
 - **ADO posts the summary last so it reads first (ordering parity).** GitHub and
   GitLab render PR threads oldest-first, so a summary posted before the checks
-  sits on top. ADO renders its Overview threads **newest-first**, so an up-front
-  summary sinks below the per-check threads. On ADO the summary is therefore
-  **deferred**: `analyze-pr` renders the body and persists it (SK=`SUMMARY_DEFERRED`
-  under the PR's PK, with the expected check set as a String Set) instead of
-  posting it. `process-pr-check` then runs a completion fan-in -- each finished
-  check idempotently adds itself to a `completedChecks` String Set (safe under
-  SQS at-least-once), and the check that completes the expected set claims the
-  post exactly once (a conditional write on `summaryPosted`) and posts the
-  summary as the newest thread, so it lands at the top. A later run PATCHes that
-  same thread in place, which keeps the top position because the thread's
-  creation time is unchanged. GitHub/GitLab keep posting up front, unchanged. The
-  model still renders in `analyze-pr` (the deferral is only of the POST), so the
-  stored body is a complete, already-rendered comment the fan-in posts verbatim.
+  sits on top. ADO orders its Overview threads by **`publishedDate`, newest on
+  top** (verified live against the REST `pullRequestThreads` API on 2026-11-15),
+  so an up-front summary sinks below the later per-check threads. On ADO the
+  summary is therefore **deferred**: `analyze-pr` renders the body and persists it
+  (SK=`SUMMARY_DEFERRED` under the PR's PK, with the expected check set as a String
+  Set) instead of posting it. `process-pr-check` then runs a completion fan-in --
+  each finished check idempotently adds itself to a `completedChecks` String Set
+  (safe under SQS at-least-once), and the check that completes the expected set
+  claims the post exactly once (a conditional write on `summaryPosted`) and posts
+  the summary. Because every check has posted by then, a thread created now has
+  the newest `publishedDate`, so it lands at the top.
+- **The ADO summary is delete-and-recreate, not PATCH-in-place.** A PATCH does
+  **not** change a thread's `publishedDate`, so editing an existing summary thread
+  leaves it wherever it was first created -- which, after the per-check threads
+  have posted (first analysis) or after a prior summary (re-push), is at the
+  bottom. `_ado_upsert_summary` therefore **deletes** any previously posted
+  summary comment (its sole comment removes the thread, via
+  `delete_pull_request_thread_comment`) and **POSTs a brand-new thread** every
+  time, so the summary carries a fresh, newest `publishedDate` on every run. The
+  delete is best-effort: if it fails, the fresh POST still happens (a transient
+  duplicate is cosmetic; a missing summary is worse). GitHub/GitLab keep posting
+  up front and PATCH in place (their oldest-first ordering already keeps an
+  up-front summary on top), unchanged. The model still renders in `analyze-pr`
+  (the deferral is only of the POST), so the stored body is a complete,
+  already-rendered comment the fan-in posts verbatim.
 
 - **Cost scoped to where it is read.** The summary is built only on the branch
   where checks will actually run. A PR that queues no checks calls no model and
@@ -246,7 +258,9 @@ abuse-surface items to close before this runs against real customer PR volume.
 - `lambda/analyze-pr/handler.py` -- `COMMENT#summary` wiring, `_fetch_diffs_via_sha`,
   `_store_deferred_ado_summary` (ADO defer)
 - `lambda/process-pr-check/handler.py` -- `_ado_mark_done_and_maybe_post_summary`
-  / `_ado_upsert_summary` (the ADO completion fan-in that posts the summary last)
+  (the ADO completion fan-in) / `_ado_upsert_summary` (delete-and-recreate so the
+  summary POSTs with the newest `publishedDate`) / `_try_delete_ado_comment`
+- `lambda/shared/azure_devops_api.py` -- `delete_pull_request_thread_comment`
 - `lambda/tests/unit/test_pr_summary.py`,
   `lambda/tests/unit/test_analyze_pr_summary_wiring.py`,
   `lambda/tests/unit/test_process_pr_check.py` (fan-in tests)
@@ -265,9 +279,18 @@ Version History:
   builder via the inline-patch path.
 - Advanced tier + ADO ordering (2026-11-15): moved the summary to the advanced
   (Sonnet-class, tfvar-swappable) model tier for better prose; and, because ADO
-  orders PR threads newest-first, deferred the ADO summary post to a
-  `process-pr-check` completion fan-in so it lands as the newest (top) thread
-  instead of below the per-check comments. Re-verification of the ADO ordering
-  pending the next deploy.
+  orders PR threads by `publishedDate` (newest on top), deferred the ADO summary
+  post to a `process-pr-check` completion fan-in so it posts after the per-check
+  threads.
+- ADO delete-and-recreate fix (2026-11-15): the first fan-in revision PATCHed the
+  summary thread in place, which kept it at the **bottom** -- a PATCH does not
+  change `publishedDate`, so a summary thread created up front (or carried over
+  from a prior run) never moves. Verified live against the ADO REST
+  `pullRequestThreads` API: the summary thread had the oldest `publishedDate` of
+  all threads. Fixed by making `_ado_upsert_summary` delete any prior summary
+  comment and POST a fresh thread every run, so it always carries the newest
+  `publishedDate` and lands on top. Also corrects the latent re-push sink (new
+  per-check threads would otherwise out-rank an edited-in-place summary).
+  Re-verification pending the next `process-pr-check` deploy.
 
 <!-- Confluence sync -->

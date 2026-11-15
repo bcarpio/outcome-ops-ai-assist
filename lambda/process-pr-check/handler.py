@@ -584,6 +584,55 @@ def _try_patch_ado_comment(
         return None
 
 
+def _try_delete_ado_comment(
+    *,
+    org: str,
+    project: str,
+    repo: str,
+    pull_request_id: int,
+    connection_id: str,
+    existing_row: Dict[str, Any],
+) -> bool:
+    """Best-effort delete of a previously posted ADO thread comment.
+
+    Deleting a thread's sole comment removes the thread. Returns ``True`` on a
+    successful delete, ``False`` when there is nothing to delete or the call
+    fails -- the caller POSTs a fresh thread regardless, since a transient
+    duplicate is a cosmetic nuisance while a missing summary is worse.
+    """
+    if not _ADO_AVAILABLE:
+        return False
+    thread_id = existing_row.get("providerThreadId")
+    thread_comment_id = existing_row.get("providerThreadCommentId")
+    if thread_id is None or thread_comment_id is None:
+        return False
+    try:
+        from shared.azure_devops_api import delete_pull_request_thread_comment
+        access_token = _ado_refresh_access_token(
+            connection_id=connection_id,
+            tenant_id=AZURE_DEVOPS_TENANT_ID,
+            client_id=AZURE_DEVOPS_CLIENT_ID,
+            client_secret=_get_ado_client_secret(),
+        )
+        if not access_token:
+            return False
+        delete_pull_request_thread_comment(
+            access_token=access_token,
+            org=org, project=project, repo=repo,
+            pull_request_id=pull_request_id,
+            thread_id=int(thread_id),
+            comment_id=int(thread_comment_id),
+        )
+        return True
+    except Exception as e:
+        logger.warning(
+            f"[pr-summary.ado] delete of prior summary thread {thread_id}/"
+            f"comment {thread_comment_id} in {org}/{project}/{repo} PR "
+            f"#{pull_request_id} failed: {e}. Posting a fresh thread anyway."
+        )
+        return False
+
+
 def _ado_mark_done_and_maybe_post_summary(job: CheckJob) -> None:
     """Mark this ADO check complete; post the deferred summary if it was last.
 
@@ -640,11 +689,16 @@ def _ado_mark_done_and_maybe_post_summary(job: CheckJob) -> None:
 
 
 def _ado_upsert_summary(job: CheckJob, body: str) -> None:
-    """Create-or-PATCH the ADO summary thread (SK=COMMENT#summary).
+    """Post the ADO summary as a fresh thread, deleting any prior one.
 
-    The first post (after all checks complete) creates the newest thread, so it
-    sits at the top. A later run PATCHes the same thread in place, which keeps
-    that top position because the thread's creation time is unchanged.
+    ADO orders PR Overview threads by creation time (``publishedDate``), newest
+    at the top, and a PATCH does *not* change a thread's ``publishedDate``. So
+    editing a summary thread in place leaves it wherever it was first created --
+    which, after the per-check threads have posted, is at the bottom. To keep the
+    summary on top on every run (first analysis and every re-push), delete the
+    previously posted summary comment (its sole comment removes the thread) and
+    POST a brand-new thread, whose fresh ``publishedDate`` is the newest at
+    completion time (ADR-057).
     """
     pk = f"PR#{job.provider}#{job.repository}#{job.pr_number}"
     sk = f"COMMENT#{COMMENT_ROLE_SUMMARY}"
@@ -653,13 +707,11 @@ def _ado_upsert_summary(job: CheckJob, body: str) -> None:
     )
     existing = _get_existing_check_result_row(pk, sk)
     if existing:
-        url = _try_patch_ado_comment(
+        _try_delete_ado_comment(
             org=org, project=project, repo=repo,
             pull_request_id=job.pr_number, connection_id=job.connection_id,
-            existing_row=existing, comment_body=body,
+            existing_row=existing,
         )
-        if url is not None:
-            return  # PATCHed in place; thread stays at the top
     resp = _post_azure_devops_thread(
         org, project, repo, job.pr_number, body, job.connection_id,
     )
