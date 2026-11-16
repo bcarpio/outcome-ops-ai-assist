@@ -37,6 +37,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared.audit import log_audit_entry
 from shared import retrieval as shared_retrieval
 from shared.model_client import resolve_profile_arn
+from shared.hybrid_augment import augment_with_symbol_graph
 
 # Bedrock model configuration
 EMBEDDING_MODEL_ID = os.environ.get(
@@ -46,6 +47,12 @@ RERANK_MODEL_ID = os.environ.get("BEDROCK_RERANK_MODEL_ID", "cohere.rerank-v3-5:
 RERANK_ENABLED = os.environ.get("RERANK_ENABLED", "false").lower() == "true"
 RERANK_MAX_FETCH = int(os.environ.get("RERANK_MAX_FETCH", "50"))
 RERANK_MIN_SCORE = float(os.environ.get("RERANK_MIN_SCORE", "0"))
+
+# Symbol-graph table for opt-in hybrid augmentation (ADR-023 seam). When set
+# AND the caller passes ``hybrid: true``, query-kb fuses deterministic
+# symbol-graph facts into the retrieval context. Unset -> hybrid requests
+# degrade to RAG-only (fail-soft).
+SYMBOL_GRAPH_TABLE = os.environ.get("SYMBOL_GRAPH_TABLE", "")
 
 # Setup logging
 logger = logging.getLogger()
@@ -485,7 +492,12 @@ def handler(event, context):
         "raw": false,  // Optional, if true skips Claude synthesis
         "repo": "spring-petclinic",  // Optional, filter to specific repo
         "docTypes": ["adr", "doc"],  // Optional, filter to specific document types
-        "model": "haiku"  // Optional, "haiku" (default) or "sonnet" (advanced reasoning)
+        "model": "haiku",  // Optional, "haiku" (default) or "sonnet" (advanced reasoning)
+        "hybrid": false  // Optional (default false). When true AND SYMBOL_GRAPH_TABLE
+                         // is set, fuse deterministic symbol-graph facts into the
+                         // context for structural questions (ADR-023 seam). Default
+                         // off keeps callers RAG-only and cost-neutral (no router/
+                         // graph calls). Fail-soft: errors degrade to RAG-only.
     }
 
     Returns (normal mode):
@@ -531,6 +543,7 @@ def handler(event, context):
         doc_types = event.get("docTypes")  # Optional doc type filter
         workspace_ids = event.get("workspaceIds") or event.get("workspace_ids")
         model = event.get("model", "haiku")  # Optional model selection
+        hybrid = event.get("hybrid", False)  # Optional opt-in symbol-graph fusion
 
         if not query:
             logger.warning("[query-kb] Missing required field: query")
@@ -597,6 +610,75 @@ def handler(event, context):
                 context_docs = [d for d in context_docs if d.get("rerank_score", 0) >= RERANK_MIN_SCORE]
                 logger.info(f"[query-kb] Min score filter ({RERANK_MIN_SCORE}): {before_count} -> {len(context_docs)} docs")
             logger.info(f"[query-kb] Reranked and filtered to {len(context_docs)} docs (requested {top_k})")
+
+        # Step 2.75: Opt-in hybrid augmentation (ADR-023 seam). Fuse
+        # deterministic symbol-graph facts into the context for structural
+        # questions, independent of rerank phrasing. Added AFTER the rerank +
+        # min-score filter so the graph block is never evicted by the score
+        # gate. Default OFF (``hybrid`` absent) -> zero router/graph calls, so
+        # the PR-check fan-out stays cost-neutral. Fail-soft throughout: any
+        # error (or an unset SYMBOL_GRAPH_TABLE) degrades to RAG-only.
+        if hybrid and SYMBOL_GRAPH_TABLE:
+            try:
+                # Anchor the graph on the scoped workspaces when provided; for
+                # an unscoped query, derive the workspaces the RAG actually hit
+                # from the retrieved docs so the symbol resolves where it lives.
+                augment_ws = workspace_ids or sorted(
+                    {
+                        d.get("workspace_id")
+                        for d in context_docs
+                        if d.get("workspace_id")
+                    }
+                )
+                graph_out = augment_with_symbol_graph(
+                    query,
+                    augment_ws,
+                    user_id=event.get("userEmail", "") or "",
+                    source_ip=event.get("sourceIp", "") or "",
+                    user_agent=event.get("userAgent", "") or "",
+                    symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
+                )
+                graph_block = graph_out.get("graph_block", "")
+                if graph_block:
+                    # A synthetic context entry carrying the structural facts.
+                    # lane="symbol_graph" lets raw-mode consumers tell it apart;
+                    # ask-claude reads source/text/score so it flows into
+                    # synthesis + the sources list unchanged.
+                    context_docs.append(
+                        {
+                            "score": 1.0,
+                            "text": graph_block,
+                            "source": "Symbol graph (structural facts)",
+                            "type": "symbol-graph",
+                            "repo": "",
+                            "file_path": "",
+                            "workspace_id": (augment_ws[0] if augment_ws else None),
+                            "workspace_name": None,
+                            "lane": "symbol_graph",
+                            "graph_sites": graph_out.get("graph_sites", []),
+                            "graph_relation": graph_out.get("graph_relation"),
+                        }
+                    )
+                    logger.info(
+                        "[query-kb] Hybrid: added symbol-graph block "
+                        "(relation=%s sites=%d)",
+                        graph_out.get("graph_relation"),
+                        len(graph_out.get("graph_sites") or []),
+                    )
+                else:
+                    logger.info(
+                        "[query-kb] Hybrid: no symbol-graph block "
+                        "(skip_reason=%s)",
+                        graph_out.get("graph_skip_reason"),
+                    )
+            except Exception as exc:  # noqa: BLE001 - fail-soft to RAG-only
+                logger.warning(
+                    "[query-kb] Hybrid augmentation failed (%s); RAG-only", exc
+                )
+        elif hybrid and not SYMBOL_GRAPH_TABLE:
+            logger.warning(
+                "[query-kb] hybrid requested but SYMBOL_GRAPH_TABLE unset; RAG-only"
+            )
 
         # Raw mode: Return vector results directly without Claude synthesis
         # Used by code generation to avoid double-processing (Claude will process them anyway)

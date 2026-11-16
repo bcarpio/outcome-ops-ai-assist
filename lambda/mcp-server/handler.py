@@ -277,6 +277,56 @@ MCP_TOOLS = [
         },
     },
     {
+        "name": "search_hybrid",
+        "description": (
+            "Hybrid retrieval in ONE call: returns BOTH narrative/code-map "
+            "snippets from the knowledge base AND structural facts from the "
+            "symbol graph (callers / importers / implementers / definitions) for "
+            "the symbol the question is about. Prefer this over calling "
+            "query_knowledge_base and the find_* tools separately. The "
+            "symbol_graph facts are structural and citable at file_path:line -- "
+            "cite them there; do not attribute a structural claim to a prose/doc "
+            "chunk. The symbol-graph facts are returned regardless of the RAG "
+            "relevance score, so a pinpoint structural question still gets them."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": (
+                        "The question to answer. Structural phrasing (e.g. 'who "
+                        "calls validate_input', 'what implements IBookingClient') "
+                        "anchors the symbol-graph facts."
+                    ),
+                },
+                "workspace_id": {
+                    "type": "string",
+                    "description": (
+                        "Optional workspace ID to scope the search. If omitted, "
+                        "searches all workspaces the user has access to."
+                    ),
+                },
+                "top_k": {
+                    "type": "integer",
+                    "description": (
+                        "Number of RAG results to return after reranking "
+                        "(default 5, max 20)."
+                    ),
+                },
+                "min_score": {
+                    "type": "number",
+                    "description": (
+                        "Minimum rerank relevance score (0.0-1.0, default 0.0) for "
+                        "the RAG lane only. Does NOT affect the symbol-graph facts, "
+                        "which are always returned."
+                    ),
+                },
+            },
+            "required": ["query"],
+        },
+    },
+    {
         "name": "list_workspaces",
         "description": (
             "List workspaces the authenticated user has access to. "
@@ -1519,6 +1569,105 @@ def handle_query_knowledge_base(params, email):
         query, workspace_ids=workspace_ids, top_k=top_k, min_score=min_score
     )
     return {"text": format_results(results, query=query, max_tokens=max_tokens)}
+
+
+def handle_search_hybrid(params, email):
+    """Handle search_hybrid: dual-channel RAG + symbol-graph facts in one
+    ADR-058-grounded response.
+
+    Returns both the narrative/code-map retrieval and the structural graph
+    facts for the symbol the question is about, so a client that does not
+    orchestrate two tool calls still gets the hybrid. The ``symbol_graph``
+    section always carries the grounding envelope and is returned regardless
+    of the RAG rerank ``min_score`` gate -- that gate can evict a code-map on
+    pinpoint structural phrasing, which is exactly when the graph facts matter
+    most. Fail-soft: if one lane errors, the other is still returned.
+    """
+    query = params.get("query", "")
+    if not query:
+        return {"error": "query is required"}
+
+    workspace_id = params.get("workspace_id")
+    if workspace_id:
+        # Explicit scope -> enforce the same per-workspace access gate the
+        # symbol-graph tools use, so the fused graph facts cannot leak across
+        # a workspace the caller may not read.
+        deny = _check_symbol_graph_workspace_access(workspace_id, email)
+        if deny is not None:
+            return deny
+        workspace_ids = [workspace_id]
+    else:
+        workspace_ids = get_user_workspace_ids(email)
+
+    top_k = _bounded_int(params.get("top_k"), DEFAULT_TOP_K, 1, MAX_TOP_K)
+    max_tokens = _bounded_int(
+        params.get("max_tokens"), DEFAULT_MAX_TOKENS, 1, MAX_MAX_TOKENS
+    )
+    min_score = _bounded_float(params.get("min_score"), DEFAULT_MIN_SCORE, 0.0, 1.0)
+
+    # --- RAG lane (fail-soft: a failure here must not drop the graph facts) ---
+    rag_sources = []
+    rag_text = ""
+    try:
+        rag_results = search_knowledge_base(
+            query, workspace_ids=workspace_ids, top_k=top_k, min_score=min_score
+        )
+        rag_text = format_results(rag_results, query=query, max_tokens=max_tokens)
+        # Lightweight per-source metadata (ADR-058: the lane + type annotation
+        # conveys retrieval origin so a client can apply code-over-docs). No full
+        # text here -- the bounded content lives in ``rag_text`` to stay budgeted.
+        rag_sources = [
+            {
+                "repo": d.get("repo", ""),
+                "type": d.get("type", ""),
+                "lane": d.get("lane", ""),
+                "file_path": d.get("file_path", ""),
+                "score": d.get("score"),
+                "rerank_score": d.get("rerank_score"),
+            }
+            for d in rag_results
+        ]
+    except Exception as exc:  # pragma: no cover - defensive; keep the graph lane
+        logger.warning(f"[search_hybrid] RAG lane failed: {exc}")
+        rag_text = ""
+        rag_sources = []
+
+    # --- Symbol-graph lane (fail-soft: keep RAG if the graph errors) ---
+    symbol_graph = {"grounding": _SYMBOL_GRAPH_GROUNDING}
+    try:
+        from shared.hybrid_augment import augment_with_symbol_graph  # lazy import
+
+        aug = augment_with_symbol_graph(
+            query,
+            workspace_ids,
+            user_id=email or "",
+            symbol_graph_table_name=os.environ.get("SYMBOL_GRAPH_TABLE") or None,
+            code_maps_table_name=os.environ.get("CODE_MAPS_TABLE") or None,
+            audit_table_name=os.environ.get("AUDIT_TABLE", ""),
+        )
+        decision = aug.get("decision")
+        symbol_graph.update(
+            {
+                "intent": getattr(decision, "intent", None),
+                "symbol": getattr(decision, "symbol_candidate", None),
+                "relation": aug.get("graph_relation"),
+                "sites": aug.get("graph_sites") or [],
+                "result_count": aug.get("graph_result_count"),
+                "graph_sha": aug.get("graph_sha"),
+                "staleness_seconds": aug.get("graph_staleness_seconds"),
+                "canonicals_truncated": aug.get("graph_canonicals_truncated"),
+                "skip_reason": aug.get("graph_skip_reason"),
+            }
+        )
+    except Exception as exc:  # pragma: no cover - defensive; keep the RAG lane
+        logger.warning(f"[search_hybrid] symbol-graph lane failed: {exc}")
+        symbol_graph["skip_reason"] = "augment_error"
+
+    return {
+        "text": json.dumps(
+            {"rag": rag_sources, "rag_text": rag_text, "symbol_graph": symbol_graph}
+        )
+    }
 
 
 def handle_list_workspaces(params, email):
@@ -3136,6 +3285,7 @@ def handle_read_source(params, email):
 
 TOOL_HANDLERS = {
     "query_knowledge_base": handle_query_knowledge_base,
+    "search_hybrid": handle_search_hybrid,
     "list_workspaces": handle_list_workspaces,
     "list_workspace_documents": handle_list_workspace_documents,
     "get_coding_standards": handle_get_coding_standards,

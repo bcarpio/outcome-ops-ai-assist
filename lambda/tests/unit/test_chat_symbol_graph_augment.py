@@ -29,8 +29,9 @@ for _name in list(_sys.modules):
     if (
         _name.startswith("shared.symbol_graph_reader")
         or _name.startswith("chat_router")
-        or _name == "router"
-        or _name == "context_builder"
+        or _name in ("router", "shared.router")
+        or _name in ("context_builder", "shared.context_builder")
+        or _name == "shared.hybrid_augment"
     ):
         _sys.modules.pop(_name, None)
 
@@ -92,7 +93,7 @@ def _inject_clients():
     """
     from shared import symbol_graph_pointer  # type: ignore
     from shared import symbol_graph_reader  # type: ignore
-    import router  # type: ignore
+    import shared.router as router  # type: ignore
 
     real_resource = boto3.resource("dynamodb", region_name="us-west-2")
 
@@ -103,7 +104,7 @@ def _inject_clients():
 
     # Router uses shared.model_client.invoke (ADR-035 chunk 11). To
     # avoid talking to Bedrock in unit tests, we patch
-    # chat.router.invoke_model and route through a MagicMock that
+    # shared.router.invoke_model and route through a MagicMock that
     # preserves the legacy .converse() surface so existing call_args /
     # call_count assertions still work.
     from shared.model_client_types import Response, StopReason, Usage
@@ -869,13 +870,15 @@ def test_augment_fuzzy_resolver_uses_explicit_limit_not_default(
     )
 
     # The resolver was invoked with an explicit limit (not None / not
-    # the reader default 25). The exact value is the constant the
-    # router exports so a future bump is visible.
-    assert captured.get("limit") == handler._FUZZY_RESOLVE_LIMIT
-    assert handler._FUZZY_RESOLVE_LIMIT >= 200
+    # the reader default 25). The exact value is the constant the shared
+    # hybrid-augment seam exports so a future bump is visible.
+    from shared.hybrid_augment import _FUZZY_RESOLVE_LIMIT  # type: ignore
+
+    assert captured.get("limit") == _FUZZY_RESOLVE_LIMIT
+    assert _FUZZY_RESOLVE_LIMIT >= 200
     # And the augment recorded the structured signal on `out` so the
     # downstream rendering can surface the cap if it's ever hit.
-    assert out["graph_canonicals_limit"] == handler._FUZZY_RESOLVE_LIMIT
+    assert out["graph_canonicals_limit"] == _FUZZY_RESOLVE_LIMIT
     assert out["graph_canonicals_truncated"] is False
 
 
@@ -945,9 +948,157 @@ def test_augment_canonical_truncation_prepends_disclosure_note(
 
     assert out["graph_canonicals_truncated"] is True
     block = out["graph_block"]
+    from shared.hybrid_augment import _FUZZY_RESOLVE_LIMIT  # type: ignore
+
     assert "NOTE: the bare-name lookup" in block
-    assert str(handler._FUZZY_RESOLVE_LIMIT) in block
+    assert str(_FUZZY_RESOLVE_LIMIT) in block
     assert "surface this incompleteness" in block
     # The actual rendered facts still appear -- the disclosure is
     # additive, not a replacement.
     assert "lambda/auth/handler.py:1325" in block
+
+
+# ===========================================================================
+# Chunk 03 (ADR-059) — deterministic backstop when the router returns NO symbol
+# ===========================================================================
+
+
+def _seed_require_auth():
+    """Seed require_auth so the bare-name GSI resolves it (mirrors the
+    existing pattern-intent backstop fixtures)."""
+    canonical = "python:lambda.auth.handler::require_auth"
+    _put_fact(
+        workspace_id=WORKSPACE_ID, repo=REPO, commit_sha=SHA, kind="defines",
+        source_symbol_id="python:lambda.auth.handler::<module>",
+        target_symbol_id=canonical, file_path="lambda/auth/handler.py", line=588,
+    )
+    _put_fact(
+        workspace_id=WORKSPACE_ID, repo=REPO, commit_sha=SHA, kind="calls",
+        source_symbol_id="python:lambda.auth.handler::handle_invite",
+        target_symbol_id=canonical, file_path="lambda/auth/handler.py", line=1325,
+    )
+
+
+def test_augment_deterministic_backstop_fires_when_router_gives_no_symbol(
+    _inject_clients,
+):
+    """Router says PATTERN and extracts NO symbol, but the question text
+    names a resolvable symbol -> the deterministic backstop fires the graph."""
+    _create_symbol_graph_table()
+    _create_code_maps_table()
+    _seed_require_auth()
+
+    bedrock_stub = _inject_clients
+    bedrock_stub.converse.return_value = _bedrock_response("pattern", None)
+
+    handler = _import_augment()
+    out = handler._augment_context_with_symbol_graph(
+        question="What are our standards around `require_auth`?",
+        workspace_ids=[WORKSPACE_ID],
+        user_id="user@x.com",
+    )
+    assert out["decision"].intent == "pattern"
+    assert out["decision"].symbol_candidate is None
+    # Deterministic backstop fired despite PATTERN + no router symbol.
+    assert out["graph_skip_reason"] is None
+    assert "backstop:deterministic" in out["retrievals_fired"]
+    assert "lambda/auth/handler.py:1325" in out["graph_block"]
+
+
+def test_augment_deterministic_backstop_fires_on_classify_failure_no_second_bedrock_call(
+    _inject_clients,
+):
+    """classify_intent degrades to pattern+None under a Bedrock throttle;
+    the backstop still fires on a named symbol AND makes NO second Bedrock
+    call (DDB-only), so it never compounds the throttle."""
+    from botocore.exceptions import ClientError
+
+    _create_symbol_graph_table()
+    _create_code_maps_table()
+    _seed_require_auth()
+
+    bedrock_stub = _inject_clients
+    bedrock_stub.converse.side_effect = ClientError(
+        {"Error": {"Code": "ThrottlingException", "Message": "slow down"}},
+        "Converse",
+    )
+
+    handler = _import_augment()
+    out = handler._augment_context_with_symbol_graph(
+        question="Walk me through `require_auth`.",
+        workspace_ids=[WORKSPACE_ID],
+        user_id="user@x.com",
+    )
+    # Router degraded to the narrow pattern default.
+    assert out["decision"].intent == "pattern"
+    assert out["decision"].symbol_candidate is None
+    # Backstop fired on the DDB resolution.
+    assert "backstop:deterministic" in out["retrievals_fired"]
+    assert "lambda/auth/handler.py:1325" in out["graph_block"]
+    # Critical: exactly ONE Bedrock attempt (the classify that threw); the
+    # backstop added zero model calls.
+    assert bedrock_stub.converse.call_count == 1
+
+
+def test_augment_pattern_prose_with_no_resolvable_token_stays_rag_only(
+    _inject_clients,
+):
+    """PATTERN + no router symbol + a prose question naming no resolvable
+    identifier -> stays RAG-only (the backstop does not fire)."""
+    _create_symbol_graph_table()
+    _create_code_maps_table()
+    _seed_require_auth()
+
+    bedrock_stub = _inject_clients
+    bedrock_stub.converse.return_value = _bedrock_response("pattern", None)
+
+    handler = _import_augment()
+    out = handler._augment_context_with_symbol_graph(
+        question="What are our python coding standards and conventions?",
+        workspace_ids=[WORKSPACE_ID],
+        user_id="user@x.com",
+    )
+    assert out["decision"].intent == "pattern"
+    assert out["graph_skip_reason"] == "intent_pattern"
+    assert out["graph_block"] == ""
+    assert "backstop:deterministic" not in out["retrievals_fired"]
+
+
+# --- token extraction (pure string work, no graph) ---
+
+
+def test_extract_candidate_identifiers_shapes_and_prose():
+    from shared.hybrid_augment import _extract_candidate_identifiers
+
+    q = (
+        "Does `verify_magic_token` in auth.handler call reportReposSnapshot, "
+        "and what about require_auth versus the overall security posture?"
+    )
+    cands = _extract_candidate_identifiers(q)
+    assert "verify_magic_token" in cands  # backticked snake_case
+    assert "require_auth" in cands        # snake_case
+    # prose words are never extracted
+    for prose in (
+        "Does", "call", "and", "what", "about", "versus", "the",
+        "overall", "security", "posture",
+    ):
+        assert prose not in cands
+
+
+def test_extract_candidate_identifiers_respects_cap():
+    from shared.hybrid_augment import (
+        _BACKSTOP_CANDIDATE_CAP,
+        _extract_candidate_identifiers,
+    )
+
+    cands = _extract_candidate_identifiers(
+        "a_one b_two c_three d_four e_five f_six"
+    )
+    assert len(cands) == _BACKSTOP_CANDIDATE_CAP
+
+
+def test_extract_candidate_identifiers_empty_and_prose_only():
+    from shared.hybrid_augment import _extract_candidate_identifiers
+
+    assert _extract_candidate_identifiers("") == []
+    assert _extract_candidate_identifiers("what are our coding standards") == []

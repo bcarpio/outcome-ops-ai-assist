@@ -69,6 +69,18 @@ Keep entries terse — this is the index, not the spec.
   RESPONSE as data: graph-tool payloads carry a compact `grounding` block
   (graph-source + `file_path:line` citation provenance) plus the
   list-completeness fields. ADR-058.
+- **Hybrid retrieval (RAG + symbol-graph fusion)** — the router +
+  symbol-graph augmentation live in the shared seam
+  (`shared/router.py`, `shared/hybrid_augment.py::augment_with_symbol_graph`)
+  so structural questions are answered from the code graph (deterministic
+  `callers`/`importers`/`file_path:line`), not a phrasing-sensitive rerank.
+  Chat has it always; query-kb adopts it via an opt-in `hybrid` flag
+  (default off, cost-neutral; PR-check's BREAKING_CHANGES turns it on to
+  ground consumer detection on the graph); the MCP server exposes a fused
+  `search_hybrid` tool returning RAG + graph facts in one ADR-058-grounded
+  response. A deterministic, DDB-only backstop fires the graph whenever the
+  question names a resolvable symbol, even if the LLM router degraded to
+  RAG-only. ADR-059.
 - **read_source adjudicator** — platform-agnostic tool exposing
   `read_this_file_at_this_SHA` to the model. Any citation the model
   wants to make can be verified against source-of-truth git state

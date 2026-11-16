@@ -153,6 +153,17 @@ resource "aws_iam_role_policy_attachment" "generate_code_symbol_graph_reader" {
   policy_arn = aws_iam_policy.symbol_graph_reader.arn
 }
 
+# query-kb runs the opt-in hybrid augmentation (ADR-023 seam): on a
+# hybrid=true request it resolves a changed/queried symbol's
+# callers/importers from the symbol graph and fuses them into the retrieval
+# context. Query-only, identical to the other readers. (query-kb is
+# primary-only -- there is no query-kb-secondary module -- so no secondary
+# mirror applies.)
+resource "aws_iam_role_policy_attachment" "query_kb_symbol_graph_reader" {
+  role       = module.query_kb_lambda.lambda_role_name
+  policy_arn = aws_iam_policy.symbol_graph_reader.arn
+}
+
 # process-pr-check runs the BREAKING_CHANGES plane-1 consumer lookup (ADR-054):
 # it resolves a changed symbol's callers/importers from the symbol graph.
 # Query-only, identical to the other readers.

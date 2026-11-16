@@ -1,7 +1,7 @@
-"""Chat-side query intent router.
+"""Query intent router (shared retrieval seam).
 
-Classifies a user's chat turn into one of five intents so the chat
-Lambda can decide which retrieval surfaces fire:
+Classifies a user's question into one of five intents so a retrieval
+surface (chat, query-kb, mcp-server) can decide which indexes fire:
 
 - ``pattern``     — prose / architecture / standards / ADR / compliance.
                     RAG only.
@@ -53,7 +53,7 @@ import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
-# Module-level alias so tests can patch chat.router.invoke_model.
+# Module-level alias so tests can patch shared.router.invoke_model.
 from shared.model_client import invoke as invoke_model
 
 logger = logging.getLogger(__name__)
@@ -220,7 +220,7 @@ def _router_model_id() -> str:
 # _reset_clients_for_tests) were removed here. The router now calls
 # shared.model_client.invoke (aliased as the module-level `invoke_model`
 # above) which has its own backend dispatch and its own test patch
-# surface (tests do `patch.object(chat.router, "invoke_model", ...)`).
+# surface (tests do `patch.object(shared.router, "invoke_model", ...)`).
 
 
 # ---------------------------------------------------------------------------
@@ -333,7 +333,7 @@ def classify_intent(
     """
 
     # Defensive import — avoid making the chat-handler-side
-    # ``from chat.router import classify_intent`` pull in the audit
+    # ``from shared.router import classify_intent`` pull in the audit
     # module's transitive boto3 graph at module import time.
     from shared.audit import log_audit_entry
 
@@ -350,7 +350,7 @@ def classify_intent(
     started = time.time()
     try:
         # Route via the module-level invoke_model alias so tests can
-        # patch chat.router.invoke_model without needing the legacy
+        # patch shared.router.invoke_model without needing the legacy
         # boto3-client injection hook (which is now retained only as a
         # no-op for backward compatibility with other suites).
         # ADR-016 v1.2 -- router uses Haiku ("basic" tier) under the
@@ -373,7 +373,7 @@ def classify_intent(
         # ('unknown') triggered structural/graph retrieval on top of RAG,
         # compounding quota pressure at exactly the wrong moment.
         logger.warning(
-            "[chat.router] Bedrock classify failed (%s); defaulting to 'pattern' (narrow)",
+            "[shared.router] Bedrock classify failed (%s); defaulting to 'pattern' (narrow)",
             exc,
         )
         # Audit the failure so the cost-and-error dashboard still sees
@@ -394,7 +394,7 @@ def classify_intent(
                 user_agent=user_agent,
             )
         except Exception:  # pragma: no cover - audit is best-effort
-            logger.exception("[chat.router] audit emission failed")
+            logger.exception("[shared.router] audit emission failed")
         return RouterDecision(
             intent="pattern",
             symbol_candidate=None,
@@ -430,7 +430,7 @@ def classify_intent(
             flagged_reason=f"q_sha256={hashlib.sha256(question.encode()).hexdigest()}",
         )
     except Exception:  # pragma: no cover - audit is best-effort
-        logger.exception("[chat.router] audit emission failed")
+        logger.exception("[shared.router] audit emission failed")
 
     return RouterDecision(
         intent=intent,

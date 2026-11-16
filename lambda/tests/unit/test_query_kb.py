@@ -1171,3 +1171,100 @@ class TestHandlerAdditional:
         response = handler(event, None)
 
         assert response["statusCode"] == 200
+
+
+class TestHybridAugmentation:
+    """Opt-in symbol-graph fusion (ADR-023 seam). Default OFF must stay
+    cost-neutral (zero augment calls); on, it appends a lane='symbol_graph'
+    context entry that bypasses the rerank min-score gate. Fail-soft."""
+
+    @patch('query_kb_handler.VECTOR_BUCKET', 'test-bucket')
+    @patch('query_kb_handler.VECTOR_INDEX', 'test-index')
+    @patch('query_kb_handler.ASK_CLAUDE_LAMBDA_ARN', 'arn:aws:lambda:us-east-1:123:function:ask-claude')
+    @patch('query_kb_handler.SYMBOL_GRAPH_TABLE', 'sg-table')
+    @patch('query_kb_handler.augment_with_symbol_graph')
+    @patch('query_kb_handler.query_s3_vectors')
+    @patch('query_kb_handler.generate_embedding')
+    @patch('query_kb_handler.invoke_lambda')
+    def test_hybrid_absent_is_cost_neutral(self, mock_invoke, mock_embedding, mock_query, mock_augment):
+        # No hybrid flag -> augment must never be called.
+        mock_embedding.return_value = [0.1] * 1024
+        mock_query.return_value = [
+            {"score": 0.9, "text": "x", "source": "ADR: A", "type": "adr", "repo": "r", "file_path": "p", "workspace_id": "ws1"}
+        ]
+        mock_invoke.return_value = {"statusCode": 200, "body": json.dumps({"answer": "a", "sources": ["ADR: A"]})}
+
+        response = handler({"query": "anything", "topK": 5}, None)
+
+        assert response["statusCode"] == 200
+        mock_augment.assert_not_called()
+
+    @patch('query_kb_handler.VECTOR_BUCKET', 'test-bucket')
+    @patch('query_kb_handler.VECTOR_INDEX', 'test-index')
+    @patch('query_kb_handler.SYMBOL_GRAPH_TABLE', 'sg-table')
+    @patch('query_kb_handler.augment_with_symbol_graph')
+    @patch('query_kb_handler.query_s3_vectors')
+    @patch('query_kb_handler.generate_embedding')
+    def test_hybrid_true_adds_symbol_graph_entry_raw(self, mock_embedding, mock_query, mock_augment):
+        mock_embedding.return_value = [0.1] * 1024
+        mock_query.return_value = [
+            {"score": 0.5, "text": "doc", "source": "ADR: A", "type": "adr", "repo": "r", "file_path": "p", "workspace_id": "wsX"}
+        ]
+        mock_augment.return_value = {
+            "graph_block": "## Symbol facts\n- _claim_magic_token_jti called by verify_magic_token at lambda/auth/handler.py:672",
+            "graph_sites": [{"file_path": "lambda/auth/handler.py", "line": 672}],
+            "graph_relation": "callers",
+            "graph_skip_reason": None,
+        }
+
+        response = handler({"query": "what calls _claim_magic_token_jti", "hybrid": True, "raw": True, "topK": 5}, None)
+
+        assert response["statusCode"] == 200
+        results = json.loads(response["body"])["results"]
+        sg = [r for r in results if r.get("lane") == "symbol_graph"]
+        assert len(sg) == 1
+        assert "verify_magic_token" in sg[0]["text"]
+        assert sg[0]["graph_relation"] == "callers"
+        # Unscoped query -> workspace derived from the retrieved docs.
+        mock_augment.assert_called_once()
+        _, kwargs = mock_augment.call_args
+        assert kwargs["symbol_graph_table_name"] == "sg-table"
+        args = mock_augment.call_args[0]
+        assert args[1] == ["wsX"]  # augment_ws derived from context docs
+
+    @patch('query_kb_handler.VECTOR_BUCKET', 'test-bucket')
+    @patch('query_kb_handler.VECTOR_INDEX', 'test-index')
+    @patch('query_kb_handler.SYMBOL_GRAPH_TABLE', 'sg-table')
+    @patch('query_kb_handler.augment_with_symbol_graph')
+    @patch('query_kb_handler.query_s3_vectors')
+    @patch('query_kb_handler.generate_embedding')
+    def test_hybrid_true_failsoft_on_augment_error(self, mock_embedding, mock_query, mock_augment):
+        mock_embedding.return_value = [0.1] * 1024
+        mock_query.return_value = [
+            {"score": 0.5, "text": "doc", "source": "ADR: A", "type": "adr", "repo": "r", "file_path": "p", "workspace_id": "wsX"}
+        ]
+        mock_augment.side_effect = RuntimeError("graph down")
+
+        response = handler({"query": "q", "hybrid": True, "raw": True, "topK": 5}, None)
+
+        # RAG-only, no raise, no symbol_graph entry.
+        assert response["statusCode"] == 200
+        results = json.loads(response["body"])["results"]
+        assert all(r.get("lane") != "symbol_graph" for r in results)
+
+    @patch('query_kb_handler.VECTOR_BUCKET', 'test-bucket')
+    @patch('query_kb_handler.VECTOR_INDEX', 'test-index')
+    @patch('query_kb_handler.SYMBOL_GRAPH_TABLE', '')
+    @patch('query_kb_handler.augment_with_symbol_graph')
+    @patch('query_kb_handler.query_s3_vectors')
+    @patch('query_kb_handler.generate_embedding')
+    def test_hybrid_true_no_table_degrades_to_rag(self, mock_embedding, mock_query, mock_augment):
+        mock_embedding.return_value = [0.1] * 1024
+        mock_query.return_value = [
+            {"score": 0.5, "text": "doc", "source": "ADR: A", "type": "adr", "repo": "r", "file_path": "p", "workspace_id": "wsX"}
+        ]
+
+        response = handler({"query": "q", "hybrid": True, "raw": True, "topK": 5}, None)
+
+        assert response["statusCode"] == 200
+        mock_augment.assert_not_called()

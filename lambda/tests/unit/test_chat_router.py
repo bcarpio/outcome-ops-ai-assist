@@ -1,4 +1,4 @@
-"""Unit tests for ``chat.router``.
+"""Unit tests for ``shared.router``.
 
 Covers:
 
@@ -34,7 +34,7 @@ from __future__ import annotations
 import sys as _sys
 
 for _name in list(_sys.modules):
-    if _name.startswith("chat_router") or _name == "router":
+    if _name.startswith("chat_router") or _name in ("router", "shared.router"):
         _sys.modules.pop(_name, None)
 
 import hashlib
@@ -50,7 +50,7 @@ from moto import mock_aws
 
 
 # ---------------------------------------------------------------------------
-# sys.path bootstrap -- make ``import router`` and ``from shared.audit
+# sys.path bootstrap -- make ``import shared.router as router`` and ``from shared.audit
 # import log_audit_entry`` resolve without dragging in the entire chat
 # handler module.
 # ---------------------------------------------------------------------------
@@ -90,7 +90,7 @@ def _isolate_env(monkeypatch):
 
 @pytest.fixture
 def stub_bedrock():
-    """Patch chat.router.invoke_model (the shared.model_client alias) and
+    """Patch shared.router.invoke_model (the shared.model_client alias) and
     yield a MagicMock that pretends to be the legacy boto3 bedrock client.
     The mock exposes a .converse(...) attribute whose .return_value is a
     Converse-shape dict; the shim below translates that dict into the
@@ -101,7 +101,7 @@ def stub_bedrock():
     call_count / call_args on. The shim preserves that surface while
     routing the real call through shared.model_client.
     """
-    import router  # type: ignore
+    import shared.router as router  # type: ignore
     from shared.model_client_types import Response, StopReason, Usage
 
     client = MagicMock()
@@ -166,7 +166,7 @@ def _bedrock_converse_response(text: str, *, input_tokens: int = 50, output_toke
 
 
 def _classify_with_response(stub_bedrock, response_text: str, question: str):
-    from router import classify_intent  # type: ignore
+    from shared.router import classify_intent  # type: ignore
 
     stub_bedrock.converse.return_value = _bedrock_converse_response(response_text)
     return classify_intent(question)
@@ -178,7 +178,7 @@ def _classify_with_response(stub_bedrock, response_text: str, question: str):
 
 
 def test_classify_empty_question_returns_unknown_without_bedrock(stub_bedrock):
-    from router import classify_intent  # type: ignore
+    from shared.router import classify_intent  # type: ignore
 
     decision = classify_intent("")
     assert decision.intent == "unknown"
@@ -188,7 +188,7 @@ def test_classify_empty_question_returns_unknown_without_bedrock(stub_bedrock):
 
 
 def test_classify_whitespace_question_returns_unknown_without_bedrock(stub_bedrock):
-    from router import classify_intent  # type: ignore
+    from shared.router import classify_intent  # type: ignore
 
     decision = classify_intent("   \n\t")
     assert decision.intent == "unknown"
@@ -302,7 +302,7 @@ def test_classify_bedrock_clienterror_returns_pattern(stub_bedrock):
     """fable-scale chunk 05: router degrades to 'pattern' (narrow, RAG-only)
     on ClientError so a router throttle doesn't fan out MORE Bedrock calls.
     Prior behavior was 'unknown' which triggered structural+graph fan-out."""
-    from router import classify_intent  # type: ignore
+    from shared.router import classify_intent  # type: ignore
 
     stub_bedrock.converse.side_effect = ClientError(
         {"Error": {"Code": "ThrottlingException", "Message": "rate"}},
@@ -321,7 +321,7 @@ def test_classify_bedrock_clienterror_returns_pattern(stub_bedrock):
 def test_classify_audit_uses_router_lambda_name_and_hashed_question(
     stub_bedrock, monkeypatch
 ):
-    from router import classify_intent  # type: ignore
+    from shared.router import classify_intent  # type: ignore
 
     captured = {}
 
@@ -353,7 +353,7 @@ def test_classify_audit_uses_router_lambda_name_and_hashed_question(
 
 
 def test_classify_bedrock_failure_still_emits_audit(stub_bedrock, monkeypatch):
-    from router import classify_intent  # type: ignore
+    from shared.router import classify_intent  # type: ignore
 
     captured = []
     monkeypatch.setattr(
@@ -450,7 +450,7 @@ def test_lighthouse_demo_classifications(
     threads the value through faithfully for each fixture shape.
     Real Haiku tuning happens in chunk-08 rollout validation.
     """
-    from router import classify_intent  # type: ignore
+    from shared.router import classify_intent  # type: ignore
 
     response_payload = json.dumps(
         {"intent": expected_intent, "symbol": expected_symbol}
@@ -530,7 +530,7 @@ def test_router_passes_question_as_user_message(stub_bedrock):
 
 def test_router_prompt_default_is_v2():
     """Default prompt is v2: verification/audit/gap-analysis is HYBRID."""
-    from router import _router_system_prompt  # type: ignore
+    from shared.router import _router_system_prompt  # type: ignore
 
     prompt = _router_system_prompt()
     assert "VERIFIES, AUDITS, or GAP-ANALYZES" in prompt
@@ -540,7 +540,7 @@ def test_router_prompt_default_is_v2():
 
 def test_router_prompt_v1_rollback(monkeypatch):
     """CHAT_ROUTER_PROMPT_VERSION=v1 restores the original taxonomy."""
-    from router import _router_system_prompt, _ROUTER_SYSTEM_PROMPT_V1  # type: ignore
+    from shared.router import _router_system_prompt, _ROUTER_SYSTEM_PROMPT_V1  # type: ignore
 
     monkeypatch.setenv("CHAT_ROUTER_PROMPT_VERSION", "v1")
     prompt = _router_system_prompt()

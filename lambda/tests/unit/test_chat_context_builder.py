@@ -1,4 +1,4 @@
-"""Unit tests for ``chat.context_builder``.
+"""Unit tests for ``shared.context_builder``.
 
 Covers:
 
@@ -27,7 +27,7 @@ for _p in (str(_LAMBDA_ROOT), str(_CHAT_DIR)):
         sys.path.insert(0, _p)
 
 
-from context_builder import (  # noqa: E402  -- path bootstrap above
+from shared.context_builder import (  # noqa: E402  -- path bootstrap above
     AUDIT_COVERAGE_ROWS,
     GRAPH_GROUNDING_INSTRUCTION,
     SYMBOL_FACTS_HEADER,

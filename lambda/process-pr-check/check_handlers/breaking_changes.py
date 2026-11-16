@@ -81,12 +81,19 @@ def query_vector_search(
     # is not a real dependency). The standalone vector-query Lambda was folded
     # into query-kb (S3 Vectors search runs in-process there); process-pr-check
     # already holds invoke on query-kb, so there is no separate function to grant.
+    # hybrid=True opts this consumer-detection query into symbol-graph
+    # augmentation (ADR-023 seam): query-kb fuses deterministic caller/importer
+    # facts for the changed symbol on top of the RAG hits, so consumer
+    # detection no longer depends on the rerank scoring a handler-group-summary
+    # above drifting docs. Opt-in is per-check: only structural checks pay the
+    # router + graph cost, keeping the rest of the PR-check fan-out RAG-only.
     payload: Dict[str, Any] = {
         "query": query,
         "topK": top_k,
         "raw": True,
         "docTypes": ["handler-group-summary"],
         "workspaceIds": workspace_ids,
+        "hybrid": True,
     }
 
     try:

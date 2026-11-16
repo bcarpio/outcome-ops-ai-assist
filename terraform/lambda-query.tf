@@ -171,6 +171,14 @@ module "query_kb_lambda" {
       # resolution. Empty when the deploy has enable_workspaces=false;
       # the resolver treats missing as "no lookup available".
       WORKSPACES_TABLE = var.enable_workspaces ? module.workspaces_table[0].dynamodb_table_id : ""
+
+      # Opt-in hybrid retrieval (ADR-023 seam): when a caller passes
+      # hybrid=true, query-kb fuses deterministic symbol-graph facts into
+      # the context. IAM read access is attached in iam_symbol_graph.tf;
+      # CODE_MAPS_TABLE feeds symbol_graph_reader's per-repo staleness
+      # pointer, same as chat. Unset vars -> hybrid degrades to RAG-only.
+      SYMBOL_GRAPH_TABLE = module.symbol_graph_table.dynamodb_table_id
+      CODE_MAPS_TABLE    = module.code_maps_table.dynamodb_table_id
     },
     # ADR-016 v1.2 -- query-kb is chat's retrieval endpoint (embed + rerank).
     local.bedrock_chat_env,
@@ -205,6 +213,24 @@ module "query_kb_lambda" {
       resources = var.enable_workspaces ? [
         module.workspaces_table[0].dynamodb_table_arn,
       ] : []
+    }
+
+    # Opt-in hybrid retrieval: symbol_graph_reader reads the code-maps
+    # table's per-repo pointer row to compute staleness_seconds / graph_sha
+    # so a graph-backed answer can disclose freshness. Read-only; identical
+    # to chat's code_maps_pointer_read. (Symbol-graph table + GSI read is
+    # attached via the shared symbol_graph_reader policy in
+    # iam_symbol_graph.tf.)
+    code_maps_pointer_read = {
+      effect = "Allow"
+      actions = [
+        "dynamodb:GetItem",
+        "dynamodb:Query",
+      ]
+      resources = [
+        module.code_maps_table.dynamodb_table_arn,
+        "${module.code_maps_table.dynamodb_table_arn}/index/*",
+      ]
     }
 
     # Read SSM parameters (to get Lambda ARNs and S3 Vectors config)

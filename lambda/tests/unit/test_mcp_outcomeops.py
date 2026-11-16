@@ -381,16 +381,17 @@ class TestMcpTools:
     def test_all_tools_defined(self):
         """Test that the expected native tools are all defined.
 
-        Four KB tools + six symbol-graph tools + read_source = 11. SonarQube is
-        a cataloged/proxied MCP server (its own container), not a native tool.
-        See docs/mcp-server.md.
+        Four KB tools + the fused search_hybrid tool + six symbol-graph tools +
+        read_source = 12. SonarQube is a cataloged/proxied MCP server (its own
+        container), not a native tool. See docs/mcp-server.md.
         """
         tools = mcp_module.MCP_TOOLS
-        assert len(tools) == 11
+        assert len(tools) == 12
         names = {t["name"] for t in tools}
         assert names == {
             # KB tools
             "query_knowledge_base",
+            "search_hybrid",
             "list_workspaces",
             "list_workspace_documents",
             "get_coding_standards",
