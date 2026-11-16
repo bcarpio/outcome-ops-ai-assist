@@ -129,17 +129,20 @@ dual-channel below the seam.
 - `terraform/lambda-query.tf`, `terraform/iam_symbol_graph.tf` — `SYMBOL_GRAPH_TABLE`
   / `CODE_MAPS_TABLE` env + the shared symbol-graph reader IAM for query-kb.
   (query-kb is primary-only; no secondary module exists, so there is no HA mirror.)
-- `terraform/mcp-outcomeops.tf`, `terraform/fargate-secondary.tf` —
-  `BEDROCK_BASIC_MODEL_ID` on the MCP Fargate task (+ secondary mirror). The
-  MCP server had no server-side LLM call before `search_hybrid`; the hybrid
-  augmentation's router `classify_intent` is the first, and it resolves the
-  BASIC chat model. The Claude app inference profiles are disabled in prd
-  (Control Tower region-deny SCP), so `local.bedrock_chat_env` carries no
-  `BEDROCK_CHAT_BASIC_PROFILE_ARN`; the task falls back to the system-profile
-  model id, the same fallback chat/query-kb use. The task role's existing
-  `bedrock:InvokeModel` on inference-profile ARNs already covers the call.
-  (Surfaced live 2026-11-16: without this env the symbol-graph lane returned
-  `skip_reason: augment_error`.)
+- `terraform/mcp-outcomeops.tf`, `terraform/fargate-secondary.tf`,
+  `terraform/lambda-query.tf` — `BEDROCK_BASIC_MODEL_ID` on the MCP Fargate
+  task (+ secondary mirror) and on the query-kb Lambda. Neither surface made a
+  server-side LLM call before hybrid (MCP only did retrieval + graph reads;
+  query-kb's synthesis lives in ask-claude), so neither was ever given a chat
+  model id. The hybrid augmentation's router `classify_intent` is their first
+  LLM call, and it resolves the BASIC chat model. The Claude app inference
+  profiles are disabled in prd (Control Tower region-deny SCP), so
+  `local.bedrock_chat_env` carries no `BEDROCK_CHAT_BASIC_PROFILE_ARN`; both
+  fall back to the system-profile model id, the same fallback chat/ask-claude
+  use. The MCP task role's existing `bedrock:InvokeModel` on inference-profile
+  ARNs already covers the call. (Surfaced live 2026-11-16: without this env the
+  symbol-graph lane returned `skip_reason: augment_error` on MCP and
+  `Hybrid augmentation failed ...; RAG-only` on query-kb.)
 
 ## Known follow-up (out of scope)
 

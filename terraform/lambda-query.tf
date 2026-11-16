@@ -179,6 +179,15 @@ module "query_kb_lambda" {
       # pointer, same as chat. Unset vars -> hybrid degrades to RAG-only.
       SYMBOL_GRAPH_TABLE = module.symbol_graph_table.dynamodb_table_id
       CODE_MAPS_TABLE    = module.code_maps_table.dynamodb_table_id
+      # The hybrid augmentation's router classify_intent calls the BASIC
+      # chat model. query-kb did no server-side LLM call before hybrid
+      # (synthesis lives in ask-claude), so it was never given a model id;
+      # the Claude app inference profiles are disabled in prd (Control Tower
+      # region-deny SCP -- see bedrock-inference-profiles.tf), so
+      # local.bedrock_chat_env carries no BEDROCK_CHAT_BASIC_PROFILE_ARN.
+      # Wire the us.* system-profile fallback -- same as chat (lambda-chat.tf)
+      # and ask-claude above -- or hybrid fails augment_error -> RAG-only.
+      BEDROCK_BASIC_MODEL_ID = var.bedrock_basic_model_id
     },
     # ADR-016 v1.2 -- query-kb is chat's retrieval endpoint (embed + rerank).
     local.bedrock_chat_env,
