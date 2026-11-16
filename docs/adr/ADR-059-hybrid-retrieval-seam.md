@@ -144,23 +144,44 @@ dual-channel below the seam.
   symbol-graph lane returned `skip_reason: augment_error` on MCP and
   `Hybrid augmentation failed ...; RAG-only` on query-kb.)
 
-## Known follow-up (out of scope)
+## Resolved follow-ups (v1.1)
 
-`shared.router` hardcodes `shared.model_client.invoke(workload="chat", ...)`, so
-`classify_intent` spend on the query-kb and MCP surfaces attributes to the "chat"
-workload. Parameterizing the router workload for correct ADR-016 cost attribution
-is a small follow-up, deliberately left out of these behavior-preserving changes.
+Two items were originally recorded here as deferred. Both are now closed:
 
-A related robustness gap: `augment_with_symbol_graph` calls `classify_intent`
-first, so a hard classify failure (misconfigured model env, not just a throttle)
-raises and takes down the whole symbol-graph lane -- even for a pinpoint
-structural question the DDB-only backstop could have resolved with zero Bedrock.
-The deterministic backstop is quota-safe by design; making the augmentation
-degrade to it when classify *errors* (not only when it returns `pattern`) would
-remove the single point of failure. Out of scope for the env fix that unblocked
-the surface; worth doing when the router workload is parameterized.
+1. **Classify failures degrade to the backstop (DONE, v1.1).**
+   `augment_with_symbol_graph` calls `classify_intent` first, and the router's
+   degrade only caught `ClientError` (a Bedrock throttle/API error). A hard
+   classify failure of any other kind -- notably a model-config error, which
+   `shared.model_client` raises as `BackendConfigError`, not `ClientError` --
+   escaped and took down the whole symbol-graph lane, even for a pinpoint
+   structural question the DDB-only backstop could have resolved with zero
+   Bedrock (live-burned 2026-11-16 on query-kb + MCP before the env fix landed).
+   `classify_intent` now catches **every** exception and degrades to `pattern`,
+   logging a WARNING. The augmentation's deterministic backstop then resolves a
+   named symbol from DynamoDB regardless, so a misconfigured surface fails *loud
+   to ops* (the warning) rather than *silent to the user* (a dropped graph lane).
+
+2. **Router workload parameterization (WITHDRAWN -- the "chat" attribution is
+   intentional).** `shared.router` invokes `workload="chat"`, so `classify_intent`
+   spend on query-kb and MCP rolls up to the chat workload for ADR-016 cost
+   attribution. On review this is correct by design, not a gap: `terraform/
+   lambda-query.tf` and `terraform/mcp-outcomeops.tf` already document attributing
+   those surfaces' Bedrock retrieval spend to the chat workload because they hit
+   the same vector index, and the router classify is part of that same
+   chat-adjacent retrieval workflow. `shared.model_client` also enforces a closed
+   `_VALID_WORKLOADS` vocabulary (chat / code-maps / code-gen / pr-analyzer) and
+   raises on anything else, so introducing a `query-kb` or `mcp` workload would
+   require provisioning new Bedrock inference profiles (+ IAM, env, HA mirror) --
+   not a small change, and not wanted. No code change.
 
 ## Version History
 - v1.0 (2026-11-16): Initial. Records the hybrid-retrieval seam, the opt-in cost
   decision, the DDB-only determinism backstop, and the fused MCP tool; scopes out
   the rerank min-score floor and ingestion changes.
+- v1.1 (2026-11-16): Closed both deferred follow-ups. `classify_intent` now
+  degrades to `pattern` on every exception (not just `ClientError`) so a model
+  misconfig falls through to the DDB-only backstop instead of dropping the
+  symbol-graph lane. Withdrew the router-workload parameterization: attributing
+  query-kb/MCP classify spend to the chat workload is intentional per the existing
+  ADR-016 terraform treatment, and distinct workloads would need new inference
+  profiles.

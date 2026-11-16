@@ -313,6 +313,24 @@ def test_classify_bedrock_clienterror_returns_pattern(stub_bedrock):
     assert decision.symbol_candidate is None
 
 
+def test_classify_non_clienterror_also_returns_pattern(stub_bedrock):
+    """ADR-059: a NON-ClientError failure (e.g. a model-config error such as
+    BackendConfigError when a surface is wired without BEDROCK_BASIC_MODEL_ID)
+    must also degrade to 'pattern', not propagate. Live-burned 2026-11-16 on
+    query-kb + MCP: the config error escaped the old `except ClientError` and
+    took down the whole symbol-graph lane. Degrading here lets the
+    hybrid_augment DDB-only backstop still resolve a named symbol."""
+    from shared.router import classify_intent  # type: ignore
+
+    stub_bedrock.converse.side_effect = RuntimeError(
+        "workload='chat' tier='basic': neither BEDROCK_CHAT_BASIC_PROFILE_ARN "
+        "nor BEDROCK_BASIC_MODEL_ID is set."
+    )
+    decision = classify_intent("Any question")
+    assert decision.intent == "pattern"
+    assert decision.symbol_candidate is None
+
+
 # ===========================================================================
 # Audit emission -- SHA256-only, no question text leak
 # ===========================================================================

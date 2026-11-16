@@ -51,7 +51,6 @@ from typing import Optional
 
 import boto3
 from botocore.config import Config
-from botocore.exceptions import ClientError
 
 # Module-level alias so tests can patch shared.router.invoke_model.
 from shared.model_client import invoke as invoke_model
@@ -366,14 +365,24 @@ def classify_intent(
             max_tokens=128,
             temperature=0.0,
         )
-    except ClientError as exc:
+    except Exception as exc:
         duration_ms = int((time.time() - started) * 1000)
         # fable-scale chunk 05: degrade to 'pattern' (narrow, RAG-only) so a
         # router throttle doesn't fan out MORE Bedrock calls. Prior behavior
         # ('unknown') triggered structural/graph retrieval on top of RAG,
         # compounding quota pressure at exactly the wrong moment.
+        #
+        # ADR-059: catch EVERY exception, not just ClientError (Bedrock
+        # throttle/API). A model-config error also lands here -- a surface
+        # wired without BEDROCK_BASIC_MODEL_ID raises BackendConfigError,
+        # not ClientError -- and must degrade to 'pattern' rather than
+        # propagate. The hybrid_augment DDB-only backstop then still
+        # resolves a named symbol with zero Bedrock, so a pinpoint
+        # structural question keeps working and the misconfig surfaces as
+        # this WARNING (loud to ops) instead of a dropped graph lane
+        # (silent to the user). Live-burned 2026-11-16 on query-kb + MCP.
         logger.warning(
-            "[shared.router] Bedrock classify failed (%s); defaulting to 'pattern' (narrow)",
+            "[shared.router] classify failed (%s); defaulting to 'pattern' (narrow)",
             exc,
         )
         # Audit the failure so the cost-and-error dashboard still sees
