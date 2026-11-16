@@ -129,6 +129,17 @@ dual-channel below the seam.
 - `terraform/lambda-query.tf`, `terraform/iam_symbol_graph.tf` — `SYMBOL_GRAPH_TABLE`
   / `CODE_MAPS_TABLE` env + the shared symbol-graph reader IAM for query-kb.
   (query-kb is primary-only; no secondary module exists, so there is no HA mirror.)
+- `terraform/mcp-outcomeops.tf`, `terraform/fargate-secondary.tf` —
+  `BEDROCK_BASIC_MODEL_ID` on the MCP Fargate task (+ secondary mirror). The
+  MCP server had no server-side LLM call before `search_hybrid`; the hybrid
+  augmentation's router `classify_intent` is the first, and it resolves the
+  BASIC chat model. The Claude app inference profiles are disabled in prd
+  (Control Tower region-deny SCP), so `local.bedrock_chat_env` carries no
+  `BEDROCK_CHAT_BASIC_PROFILE_ARN`; the task falls back to the system-profile
+  model id, the same fallback chat/query-kb use. The task role's existing
+  `bedrock:InvokeModel` on inference-profile ARNs already covers the call.
+  (Surfaced live 2026-11-16: without this env the symbol-graph lane returned
+  `skip_reason: augment_error`.)
 
 ## Known follow-up (out of scope)
 
@@ -136,6 +147,15 @@ dual-channel below the seam.
 `classify_intent` spend on the query-kb and MCP surfaces attributes to the "chat"
 workload. Parameterizing the router workload for correct ADR-016 cost attribution
 is a small follow-up, deliberately left out of these behavior-preserving changes.
+
+A related robustness gap: `augment_with_symbol_graph` calls `classify_intent`
+first, so a hard classify failure (misconfigured model env, not just a throttle)
+raises and takes down the whole symbol-graph lane -- even for a pinpoint
+structural question the DDB-only backstop could have resolved with zero Bedrock.
+The deterministic backstop is quota-safe by design; making the augmentation
+degrade to it when classify *errors* (not only when it returns `pattern`) would
+remove the single point of failure. Out of scope for the env fix that unblocked
+the surface; worth doing when the router workload is parameterized.
 
 ## Version History
 - v1.0 (2026-11-16): Initial. Records the hybrid-retrieval seam, the opt-in cost

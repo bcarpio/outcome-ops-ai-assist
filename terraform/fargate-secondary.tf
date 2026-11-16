@@ -134,6 +134,12 @@ module "mcp_outcomeops_secondary" {
     BEDROCK_RERANK_MODEL_ID = var.bedrock_rerank_model_id
     RERANK_ENABLED          = tostring(var.bedrock_rerank_enabled)
     RERANK_MAX_FETCH        = tostring(var.rerank_max_fetch)
+    # search_hybrid (ADR-059, HA parity): router classify_intent needs the
+    # BASIC chat model. Claude app profiles are disabled in prd (region-deny
+    # SCP), so fall back to the us.* system-profile model id -- mirror of
+    # primary (mcp-outcomeops.tf). Without it the symbol-graph lane fails
+    # augment_error on failover.
+    BEDROCK_BASIC_MODEL_ID = var.bedrock_basic_model_id
     # ADR-030 v1.1 (HA parity): ADO branch of read_source needs the
     # same env plumbing on the secondary. Region-neutral values flow
     # from the same tfvars as the primary.

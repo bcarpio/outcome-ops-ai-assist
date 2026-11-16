@@ -109,6 +109,15 @@ module "mcp_outcomeops" {
     BEDROCK_RERANK_MODEL_ID = var.bedrock_rerank_model_id
     RERANK_ENABLED          = tostring(var.bedrock_rerank_enabled)
     RERANK_MAX_FETCH        = tostring(var.rerank_max_fetch)
+    # search_hybrid (ADR-059) runs the shared hybrid augmentation, whose
+    # router classify_intent calls the BASIC chat model. The Claude app
+    # inference profiles are disabled in prd (Control Tower region-deny
+    # SCP -- see bedrock-inference-profiles.tf), so local.bedrock_chat_env
+    # carries no BEDROCK_CHAT_BASIC_PROFILE_ARN and the server falls back
+    # to the us.* system-profile model id -- the same fallback chat
+    # (lambda-chat.tf) and query-kb (lambda-query.tf) use. Without it the
+    # symbol-graph lane fails with augment_error.
+    BEDROCK_BASIC_MODEL_ID = var.bedrock_basic_model_id
     # ADR-030 v1.1: read_source is platform-agnostic. When the
     # workspace's connection is Azure DevOps, the tool refreshes an
     # Entra ID OAuth access token via shared.entra_id_oauth. The
