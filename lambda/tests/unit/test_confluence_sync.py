@@ -1258,7 +1258,7 @@ class TestProcessSyncRequest:
 # ============================================================================
 
 class TestLambdaHandler:
-    """Test main Lambda handler -- Chunk 02: SQS partial-batch-failure
+    """Test main Lambda handler -- SQS partial-batch-failure
     contract. Handler must return {"batchItemFailures": [...]} so SQS
     redelivers only the failed records instead of silently deleting on 200."""
 

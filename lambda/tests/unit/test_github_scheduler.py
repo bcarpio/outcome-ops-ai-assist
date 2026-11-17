@@ -549,7 +549,7 @@ class TestLambdaHandler:
     @patch.object(handler_module, 'queue_sync_job')
     @patch.object(handler_module, 'scan_github_repos_for_sync')
     def test_serial_fallback_when_workers_is_1(self, mock_scan, mock_queue):
-        """fable-scale chunk 08: setting workers=1 forces the serial path
+        """setting workers=1 forces the serial path
         (rollback lever). Verifies the fallback is wired."""
         mock_scan.return_value = [
             {"workspace_id": f"ws_{i}", "repo_name": f"o/r{i}",
@@ -567,7 +567,7 @@ class TestLambdaHandler:
     @patch.object(handler_module, 'queue_sync_job')
     @patch.object(handler_module, 'scan_github_repos_for_sync')
     def test_parallel_path_returns_correct_counts(self, mock_scan, mock_queue):
-        """fable-scale chunk 08: parallel fan-out returns the same counts
+        """parallel fan-out returns the same counts
         as serial even with 50 repos. Verifies the ThreadPoolExecutor path
         aggregates queued/failed correctly."""
         mock_scan.return_value = [

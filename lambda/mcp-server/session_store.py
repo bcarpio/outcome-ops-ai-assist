@@ -1,7 +1,7 @@
 # Copyright 2025-2026 OutcomeOps
 # SPDX-License-Identifier: Apache-2.0
 """
-MCP session store (fable-scale chunk 02).
+MCP session store ().
 
 The MCP server previously kept two per-container dicts:
 

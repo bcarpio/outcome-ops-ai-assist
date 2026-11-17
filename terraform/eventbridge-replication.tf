@@ -4,9 +4,9 @@
 # EventBridge cross-region replication transport (HA mode)
 # ----------------------------------------------------------------------------
 # Each region runs an event bus named ${env}-${app}-replication. The
-# dual-write helper (chunk 04) PutEvents to its LOCAL bus; a rule on the
+# dual-write helper PutEvents to its LOCAL bus; a rule on the
 # local bus forwards every event to the OTHER region's bus; the
-# replicator-applier Lambda (chunk 05) subscribes to its local bus and
+# replicator-applier Lambda subscribes to its local bus and
 # applies the event to local DDB / S3 / S3 Vectors.
 #
 # Symmetric: both regions have the same bus + rule + DLQ + alarm + IAM

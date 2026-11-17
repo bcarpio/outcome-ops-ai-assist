@@ -686,7 +686,7 @@ class TestPublishCodeGenerationCompletedEvent:
             # Assert - no exception raised
 
     def test_emits_code_generated_audit_row(self, basic_plan, step_message):
-        """plan/audit-completeness chunk 07 — publish_code_generation_completed_event
+        """plan/audit-completeness — publish_code_generation_completed_event
         also emits ACTION_CODE_GENERATED via log_admin_action."""
         with patch('step_executor.events_client'), \
              patch('step_executor.log_admin_action') as mock_audit, \

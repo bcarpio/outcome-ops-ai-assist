@@ -44,10 +44,10 @@ output "platform_ca_layer_arn" {
 }
 
 # ============================================================================
-# Secondary-region platform-CA layer (HA chunk 9d)
+# Secondary-region platform-CA layer ()
 # ----------------------------------------------------------------------------
 # Lambda layers are regional. The secondary chat + workspace-management
-# Lambdas (chunk 9d) attach the platform-CA layer for BYO-CA trust; that
+# Lambdas attach the platform-CA layer for BYO-CA trust; that
 # requires a parallel layer in us-east-2 with the same merged PEM.
 #
 # Same source zip (built by `make build-platform-layer`) — replication is

@@ -503,7 +503,7 @@ resource "aws_sqs_queue" "delete_dlq_secondary" {
 }
 
 # ----------------------------------------------------------------------------
-# azure_devops_sync (standard) -- chunk 09
+# azure_devops_sync (standard) -- 
 # ----------------------------------------------------------------------------
 
 resource "aws_sqs_queue" "azure_devops_sync_secondary" {
@@ -546,7 +546,7 @@ resource "aws_sqs_queue" "azure_devops_sync_dlq_secondary" {
 }
 
 # ----------------------------------------------------------------------------
-# gitlab_sync (standard) -- ADR-050 chunk 08
+# gitlab_sync (standard) -- ADR-050
 # ----------------------------------------------------------------------------
 
 resource "aws_sqs_queue" "gitlab_sync_secondary" {
@@ -589,7 +589,7 @@ resource "aws_sqs_queue" "gitlab_sync_dlq_secondary" {
 }
 
 # ----------------------------------------------------------------------------
-# servicenow_sync (standard) -- chunk 07 (HA parity)
+# servicenow_sync (standard) -- (HA parity)
 # ----------------------------------------------------------------------------
 
 resource "aws_sqs_queue" "servicenow_sync_secondary" {

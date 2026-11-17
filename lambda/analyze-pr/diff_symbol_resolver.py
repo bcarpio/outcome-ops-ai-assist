@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# sys.path bootstrap so we can import the chunk-01 extractor without the
+# sys.path bootstrap so we can import the extractor without the
 # Lambda zip having to special-case it. The deploy package layout uses
 # ``source_path = lambda/analyze-pr`` and we side-load shared/ via the
 # handler's existing ``sys.path.insert`` (see handler.py top). The
@@ -132,9 +132,9 @@ class Hunk:
 class MutatedSymbol:
     """One canonical symbol the PR mutates.
 
-    ``symbol_id`` is the chunk-01 canonical ID (e.g.
+    ``symbol_id`` is the canonical ID (e.g.
     ``"python:lambda.shared.audit::log_audit_entry"``)
-    so the chunk-04 reader will find its callers.
+    so the reader will find its callers.
 
     ``change_kind`` distinguishes signature-changes (callers likely
     need updates) from body-changes (behavioral change only). Per the
@@ -283,7 +283,7 @@ def parse_diff_hunks(patch: str) -> List[Hunk]:
 def _language_for_path(file_path: str) -> Optional[str]:
     """Best-effort file-extension -> language mapping.
 
-    Mirrors the chunk-01 extractor's coverage (Python / TS / Java /
+    Mirrors the extractor's coverage (Python / TS / Java /
     C# / Go / ABAP). Unknown extensions return None and the resolver
     short-circuits for that file -- the structural-impact block
     simply omits those files (failure-modes table: "Symbol resolution

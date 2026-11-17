@@ -1,6 +1,6 @@
 # Copyright 2025-2026 OutcomeOps
 # SPDX-License-Identifier: Apache-2.0
-"""Unit tests for shared/code_map_sizing.py (chunk 01)."""
+"""Unit tests for shared/code_map_sizing.py."""
 
 import importlib
 import os

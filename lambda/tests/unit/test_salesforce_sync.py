@@ -241,7 +241,7 @@ class TestEnqueueIngestionFIFO:
 
 
 class TestAttachmentWalk:
-    """Chunk 01 -- ContentVersion walk parity with app.retrieveit.ai."""
+    """-- ContentVersion walk parity with app.retrieveit.ai."""
 
     @patch.object(
         handler_module.salesforce_oauth, "refresh_access_token",

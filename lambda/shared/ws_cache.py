@@ -1,6 +1,6 @@
 # Copyright 2025-2026 OutcomeOps
 # SPDX-License-Identifier: Apache-2.0
-"""Per-instance TTL cache for workspaces-table queries (fable-scale chunk 03).
+"""Per-instance TTL cache for workspaces-table queries ().
 
 The chat and MCP hot paths were doing full workspaces-table Scans on every
 message / tool call:

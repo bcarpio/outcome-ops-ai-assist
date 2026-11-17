@@ -239,7 +239,7 @@ class TestSymbolGraphFilter:
 
 
 class TestSignatureSchema:
-    """plan-signature-extraction chunk 01 -- schema additions."""
+    """plan-signature-extraction -- schema additions."""
 
     def test_param_defaults_type_to_none(self):
         from extractor.base import Param

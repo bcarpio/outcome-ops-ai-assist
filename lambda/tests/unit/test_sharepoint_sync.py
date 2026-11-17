@@ -304,7 +304,7 @@ class TestSPSyncProcessRequest:
 
 
 class TestSPSyncLambdaHandler:
-    """Chunk 02: SQS partial-batch-failure contract."""
+    """SQS partial-batch-failure contract."""
 
     @patch.object(handler_module, "process_sync_request")
     def test_handler_success(self, mock_process):

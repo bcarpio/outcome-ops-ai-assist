@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Unit tests for file-ingestion Lambda -- Teams file handler.
 
-Covers the chunk 03 etag safety net + the base process_teams_file flow.
+Covers the etag safety net + the base process_teams_file flow.
 """
 
 import importlib.util
@@ -103,7 +103,7 @@ def _sample_file_info(**overrides):
 
 
 # ============================================================================
-# _teams_file_unchanged (chunk 03)
+# _teams_file_unchanged
 # ============================================================================
 
 
@@ -280,7 +280,7 @@ class TestProcessTeamsFileBaseFlow:
 
 
 class TestTwoLayerDefensePayoff:
-    """Chunk 04 integration: exercises chunks 02 and 03 together across
+    """integration: exercises chunks 02 and 03 together across
     the SQS boundary. Proves the pattern the whole plan was designed to
     close -- even when Graph's delta returns an unchanged item on a
     subsequent cycle (metadata-only save, permission edit, etc.), the

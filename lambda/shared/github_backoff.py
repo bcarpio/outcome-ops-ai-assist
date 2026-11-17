@@ -1,6 +1,6 @@
 # Copyright 2025-2026 OutcomeOps
 # SPDX-License-Identifier: Apache-2.0
-"""GitHub API backoff wrapper (fable-scale chunk 06).
+"""GitHub API backoff wrapper ().
 
 At enterprise scale (thousands of repos, org-wide PR analysis) the
 GitHub App installation-token 5000 req/hr ceiling matters. Prior

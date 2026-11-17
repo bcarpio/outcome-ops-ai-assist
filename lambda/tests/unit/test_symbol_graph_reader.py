@@ -1174,7 +1174,7 @@ def test_fuzzy_resolve_returns_empty_for_blank_args(tables):
 
 
 # ===========================================================================
-# Signature deserialization (plan-signature-extraction chunk 01)
+# Signature deserialization (plan-signature-extraction )
 # ===========================================================================
 
 
@@ -1565,7 +1565,7 @@ class TestSymbolAtLine:
 
 class TestListCompletenessContract:
     """Each list-returning reader populates the truncation fields the
-    chat synthesis prompt rule (chunk 04) binds against."""
+    chat synthesis prompt rule binds against."""
 
     def test_definitions_truncates_when_limit_hit(self, tables):
         """A symbol with more definitions than the limit returns
@@ -1642,7 +1642,7 @@ class TestListCompletenessContract:
     ):
         """The audit-failure shape: a bare name with N>limit distinct
         canonicals returns a clipped set AND a truncated=True signal
-        so the chat router (chunk 03) and prompt (chunk 04) can
+        so the chat router and prompt can
         recover instead of shipping silently wrong."""
         from shared.symbol_graph_reader import fuzzy_resolve_by_name  # type: ignore
 

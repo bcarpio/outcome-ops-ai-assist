@@ -8,7 +8,7 @@ leaving the row in an ambiguous state. Two attributes co-exist on the
 existing code-maps pointer item:
 
 - ``graph_sha``          : SHA the persisted symbol-graph slice was
-                           built against. Readers (chunk 04) anchor
+                           built against. Readers anchor
                            every query on this value.
 - ``graph_pending_sha``  : SHA in flight while a regen is mid-write.
                            Present iff a swap is currently in progress.
@@ -26,7 +26,7 @@ update to detect the concurrent-regen case and reject the loser.
 This module reuses the same pointer item key the writer already uses
 (``PK = "SYMBOL_GRAPH#${ws}#${repo}", SK = "POINTER"``) so both
 modules see one row instead of fighting over two. The writer's
-``current_commit_sha`` attribute is preserved and unrelated; chunk 03
+``current_commit_sha`` attribute is preserved and unrelated; 
 adds ``graph_sha`` / ``graph_pending_sha`` alongside it.
 
 Test-isolation hooks (``_set_resource_for_tests`` /
@@ -125,7 +125,7 @@ class PointerState:
 
     ``graph_sha_committed_at`` is the epoch-second timestamp of the most
     recent successful ``commit_swap`` call (i.e. when the current
-    ``graph_sha`` became the committed slice). Chunk-04 readers use it
+    ``graph_sha`` became the committed slice). readers use it
     to compute ``staleness_seconds = now - graph_sha_committed_at``.
     """
 
@@ -318,7 +318,7 @@ def commit_swap(
     try:
         # graph_sha_committed_at is set here (not in begin_swap) because
         # "when did this slice become the committed slice" semantically
-        # refers to the commit step. Chunk-04 readers use it for
+        # refers to the commit step. readers use it for
         # staleness_seconds.
         resp = table.update_item(
             Key=_pointer_key(workspace_id, repo),

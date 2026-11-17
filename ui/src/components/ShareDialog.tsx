@@ -36,7 +36,7 @@ export default function ShareDialog({ conversationId, workspaces, onClose, onSha
         setSharedWorkspaceIds(ids)
         setSelectedWorkspaceIds(new Set(ids))
       } catch (err) {
-        // Chunk 15: getConversation now throws instead of returning null.
+        // getConversation now throws instead of returning null.
         // For this dialog, both "not shared yet" (404 semantically) and a
         // legitimate server error land here; log so genuine failures
         // aren't silently swallowed. Empty shared_workspace_ids is the

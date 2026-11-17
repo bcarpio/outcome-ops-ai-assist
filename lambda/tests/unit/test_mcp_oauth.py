@@ -1,6 +1,6 @@
 # Copyright 2025-2026 OutcomeOps
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for MCP Azure AD OAuth (JWT) auth + validate_bearer dispatch (chunk 11b).
+"""Tests for MCP Azure AD OAuth (JWT) auth + validate_bearer dispatch.
 
 Uses a real RS256 keypair and mocks the JWKS client so signature/iss/aud/exp
 validation runs for real against a known public key.

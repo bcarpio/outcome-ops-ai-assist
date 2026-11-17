@@ -1,6 +1,6 @@
 # Copyright 2025-2026 OutcomeOps
 # SPDX-License-Identifier: Apache-2.0
-"""Per-workload Bedrock concurrency gate (fable-scale chunk 05).
+"""Per-workload Bedrock concurrency gate ().
 
 All four workloads (chat, code-maps, code-gen, pr-analyzer) share the same
 per-model Bedrock on-demand quota. Without fairness controls, a batch burst

@@ -5,12 +5,12 @@ Azure DevOps Boards Sync Scheduler Lambda for OutcomeOps AI Assist.
 
 EventBridge-triggered hourly. Enumerates every enabled Boards project
 across every workspace and enqueues a sync message per project to the
-Boards sync queue. The sync worker (chunk 05) is the actual consumer.
+Boards sync queue. The sync worker is the actual consumer.
 
 Direct analog of ``lambda/jira-scheduler/handler.py`` adapted to
 Boards' per-project row shape (Jira stores selected projects on the
 connection row; Boards has one AZDO_BOARDS_PROJECT# row per project
-per chunk 01's DDB schema).
+per DDB schema).
 
 Active-region guard mirrors the Jira scheduler: the passive region's
 scheduler tick logs + returns without side effects so no double

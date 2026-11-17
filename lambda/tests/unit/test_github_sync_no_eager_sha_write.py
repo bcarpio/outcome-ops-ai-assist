@@ -1,6 +1,6 @@
 # Copyright 2025-2026 OutcomeOps
 # SPDX-License-Identifier: Apache-2.0
-"""Regression pin for the chunk-02 behavior change in github-sync.
+"""Regression pin for the behavior change in github-sync.
 
 Asserts that after a successful dispatch with NO consumer running,
 the per-pipeline SHA columns (``last_code_map_sha``, ``last_docs_sha``,
@@ -8,7 +8,7 @@ the per-pipeline SHA columns (``last_code_map_sha``, ``last_docs_sha``,
 diagnostic columns (``last_attempted_sha``, ``last_dispatched_sha``)
 move forward.
 
-The plan-git-truth chunk 02 commits replaced github-sync's eager
+The plan-git-truth commits replaced github-sync's eager
 ``last_commit_sha = current_sha`` write at the end of the sync flow.
 Without this regression test, a future "convenience" eager-write
 could silently re-introduce the original bug — the per-pipeline
@@ -220,7 +220,7 @@ def test_github_sync_does_not_advance_per_pipeline_sha_on_dispatch(tables):
     # The diagnostic columns moved forward.
     assert row["last_attempted_sha"] == NEW_SHA
     assert row["last_dispatched_sha"] == NEW_SHA
-    # Legacy mirror still gets written for now (chunk-04 future plan
+    # Legacy mirror still gets written for now (future plan
     # removes it). last_commit_sha advances on success — this is the
     # one column github-sync still writes eagerly. That's
     # intentional for back-compat with the UI's "last synced"

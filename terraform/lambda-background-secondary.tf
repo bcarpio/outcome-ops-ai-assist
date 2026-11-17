@@ -1,7 +1,7 @@
 # Copyright 2025-2026 OutcomeOps
 # SPDX-License-Identifier: Apache-2.0
 # ============================================================================
-# Secondary-region background Lambdas + SNS topics (HA chunk 9j)
+# Secondary-region background Lambdas + SNS topics ()
 # ----------------------------------------------------------------------------
 # Mirror of:
 #   - module.audit_alerts_sns                       (sns.tf)
@@ -12,13 +12,13 @@
 #
 # Active/passive behavior:
 # - audit-alert: gated on is_active_region() so only active fires SNS
-#   (chunk 9j Python edit).
+#.
 # - analytics-aggregator: NOT gated — both regions process their own
 #   DDB stream into their own analytics-table. The replicated audit
 #   rows arrive via dual_write, secondary's aggregator processes them,
 #   secondary's analytics-table fills. Both regions see consistent
 #   analytics regardless of role.
-# - analytics-cost-alert: gated on is_active_region() (chunk 9j Python).
+# - analytics-cost-alert: gated on is_active_region().
 # - audit-stream-publisher: NOT mirrored — gated on
 #   audit_stream_export_enabled which is false for the owner's prd.
 #   When a customer turns on SIEM export AND HA, that's a follow-up
@@ -81,7 +81,7 @@ module "cost_alerts_sns_secondary" {
 
 # ----------------------------------------------------------------------------
 # audit-alert (secondary) — DDB-stream-triggered refusal detector.
-# is_active_region() gate (chunk 9j Python) keeps it silent while passive.
+# is_active_region() gate keeps it silent while passive.
 # ----------------------------------------------------------------------------
 
 module "audit_alert_lambda_secondary" {
@@ -207,7 +207,7 @@ module "analytics_aggregator_lambda_secondary" {
   cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs_secondary[0].arn
   quiet_archive_local_exec          = true
 
-  # chunk 10 (HA cleanup): AUDIT_TABLE removed (dead -- handler doesn't
+  # (HA cleanup): AUDIT_TABLE removed (dead -- handler doesn't
   # reference it; it consumes the audit-logs stream, not the table).
   environment_variables = {
     ENV             = var.environment
@@ -224,7 +224,7 @@ module "analytics_aggregator_lambda_secondary" {
     }
     dynamodb_analytics_write = {
       effect = "Allow"
-      # chunk 10 (HA parity): add PutItem to match primary. UpdateItem-only
+      # (HA parity): add PutItem to match primary. UpdateItem-only
       # was tight but incomplete -- initial-row inserts (no prior row to
       # ADD-attribute against) fell through to a fresh row via PutItem in
       # the handler's fallback path.
@@ -247,12 +247,12 @@ resource "aws_lambda_event_source_mapping" "analytics_aggregator_stream_secondar
   enabled                 = true
   function_response_types = ["ReportBatchItemFailures"]
 
-  # chunk 10 (HA parity): mirror primary retry bounds. Without these a
+  # (HA parity): mirror primary retry bounds. Without these a
   # poison record could stall the shard forever.
   maximum_retry_attempts        = 3
   maximum_record_age_in_seconds = 3600
 
-  # chunk 10 (HA parity): mirror primary's SYSTEM-exclusion filter so
+  # (HA parity): mirror primary's SYSTEM-exclusion filter so
   # system-level audit rows (workspace_id="" or "SYSTEM") don't get
   # aggregated as if they were tenant traffic.
   filter_criteria {
@@ -273,7 +273,7 @@ resource "aws_lambda_event_source_mapping" "analytics_aggregator_stream_secondar
 
 # ----------------------------------------------------------------------------
 # analytics-cost-alert (secondary) — daily-cron cost-threshold alerter.
-# is_active_region() gate (chunk 9j Python) keeps it silent while passive.
+# is_active_region() gate keeps it silent while passive.
 # ----------------------------------------------------------------------------
 
 module "analytics_cost_alert_lambda_secondary" {
@@ -326,7 +326,7 @@ module "analytics_cost_alert_lambda_secondary" {
     }
     dynamodb_analytics = {
       effect = "Allow"
-      # chunk 10 (HA alignment): drop Scan (handler doesn't scan
+      # (HA alignment): drop Scan (handler doesn't scan
       # analytics), add PutItem (matches handler's alert-fired
       # bookkeeping). Now converges with primary.
       actions   = ["dynamodb:Query", "dynamodb:GetItem", "dynamodb:PutItem"]
@@ -355,7 +355,7 @@ resource "aws_cloudwatch_event_rule" "analytics_cost_alert_daily_secondary" {
 
   name        = "${var.environment}-${var.app_name}-analytics-cost-alert-daily"
   description = "Daily roll-up cost-threshold check (secondary region)"
-  # chunk 10 (HA alignment): use the same tfvar-driven schedule as the
+  # (HA alignment): use the same tfvar-driven schedule as the
   # primary; the hardcoded rate(24 hours) was a silent drift.
   schedule_expression = var.cost_alert_schedule_expression
   tags                = { Purpose = "analytics-cost-alert" }

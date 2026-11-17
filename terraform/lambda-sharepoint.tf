@@ -403,7 +403,7 @@ resource "aws_lambda_event_source_mapping" "sharepoint_sync" {
   batch_size                         = 1 # Process one sync at a time
   maximum_batching_window_in_seconds = 0 # Process immediately
 
-  # Chunk 02: partial-batch-failure. Handler returns batchItemFailures for
+  # partial-batch-failure. Handler returns batchItemFailures for
   # records that failed; without this, ReportBatchItemFailures is disabled
   # and SQS deletes every record on 200 (silent KB data loss).
   function_response_types = ["ReportBatchItemFailures"]

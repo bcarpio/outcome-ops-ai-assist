@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Unit tests for the ``read_source`` MCP tool on the OutcomeOps gateway.
 
-Covers ``handle_read_source`` (plan-read-source-adjudicator chunk 01):
+Covers ``handle_read_source`` (plan-read-source-adjudicator ):
 input validation, workspace-access gating, installation-id resolution
 out of the workspaces table, GitHub App token mint + Contents API
 fetch, and the window slicing around an anchor line.
@@ -347,7 +347,7 @@ class TestReadHappyPath:
 
 
 # ===========================================================================
-# Chunk 02 -- SHA-skew handling: graph resolution + window relocation.
+# -- SHA-skew handling: graph resolution + window relocation.
 # ===========================================================================
 
 
@@ -614,7 +614,7 @@ class TestSymbolRelocationInWindow:
 
 
 # ===========================================================================
-# Chunk 04 -- integration-shaped: the "verified value beats a stale
+# -- integration-shaped: the "verified value beats a stale
 # code-map claim" scenario the plan was written to close. End-to-end
 # from the read_source tool's perspective (the chat synthesis loop is
 # separately covered by the prompt-rules tests in test_shared_prompts.py).
@@ -691,7 +691,7 @@ class TestReadSourceVerifiedValueWinsScenario:
 
 
 # ===========================================================================
-# Bare-repo handling in at_graph_sha mode (post-chunk-04 fix surfaced by
+# Bare-repo handling in at_graph_sha mode (post-fix surfaced by
 # live eShop smoke test on 2026-06-02). The symbol-graph stores `repo`
 # as the bare name; the GitHub Contents API needs 'owner/<bare>'.
 # ===========================================================================
@@ -965,7 +965,7 @@ ADO_WORKSPACE_ID = "ws-rs-ado-test"
 
 
 class TestReadSourceResolvePlatform:
-    """Chunk 02: platform resolver picks the right connection.
+    """platform resolver picks the right connection.
 
     Uses ``ADO_WORKSPACE_ID`` for ADO-only cases so the fixture-seeded
     GitHub row on ``WORKSPACE_ID`` doesn't shadow the ADO branch.
@@ -1039,7 +1039,7 @@ class TestReadSourceResolvePlatform:
 
 
 class TestReadSourceResolveFullAdoTriplet:
-    """Chunk 02: bare-name -> full triplet resolver for at_graph_sha path."""
+    """bare-name -> full triplet resolver for at_graph_sha path."""
 
     def test_passthrough_when_already_triplet(self, workspaces_table):
         result = mcp_module._read_source_resolve_full_ado_triplet(
@@ -1084,7 +1084,7 @@ class TestReadSourceResolveFullAdoTriplet:
 
 
 class TestReadSourceAdoAccessToken:
-    """Chunk 02: token-mint wrapper reaches shared.entra_id_oauth with
+    """token-mint wrapper reaches shared.entra_id_oauth with
     the right constants and error surface."""
 
     def test_missing_connection_id_raises(self, monkeypatch):
@@ -1165,7 +1165,7 @@ def _client_error(code):
 
 
 class TestReadSourceFetchFileAdo:
-    """Chunk 03: ADO items API fetcher.
+    """ADO items API fetcher.
 
     Mocks urlopen; asserts the URL shape and cap enforcement.
     """
@@ -1282,7 +1282,7 @@ class TestReadSourceFetchFileAdo:
 
 
 class TestReadSourceRouter:
-    """Chunk 04: platform dispatch in handle_read_source.
+    """platform dispatch in handle_read_source.
 
     Verifies the auto-detected repo shape lines up with the workspace's
     connection, and that the platform field lands in every response.
@@ -1418,7 +1418,7 @@ class TestReadSourceRouter:
     def test_ado_at_graph_sha_resolves_bare_to_triplet(
         self, workspaces_table, graph_tables,
     ):
-        """Chunk 04 + chunk 02 integration: at_graph_sha on an ADO
+        """+ integration: at_graph_sha on an ADO
         workspace must use the ADO triplet resolver, not the GitHub
         owner resolver, when the graph row is a bare repo name."""
         _seed_azdo_repo_row(workspaces_table, ADO_WORKSPACE_ID)

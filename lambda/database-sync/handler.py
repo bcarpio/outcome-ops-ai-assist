@@ -61,7 +61,7 @@ DELETE_QUEUE = os.environ.get("DELETE_QUEUE")
 
 dynamodb = boto3.resource("dynamodb")
 sqs_client = boto3.client("sqs")
-# chunk 07: lazy publish path — only used when DATABASE_DRIFT_TOPIC_ARN
+# lazy publish path — only used when DATABASE_DRIFT_TOPIC_ARN
 # is set AND a drift list is non-empty. SNS publish failures are
 # non-blocking (warning-logged; the audit row already has the data).
 sns_client = boto3.client("sns")
@@ -120,7 +120,7 @@ def update_connection_status(
         update_expr += ", known_table_ids = :kti"
         expr_values[":kti"] = known_table_ids
 
-    # chunk 07: prior-sync snapshot of every schema the RO user could
+    # prior-sync snapshot of every schema the RO user could
     # see. UI reads this for the "N new schemas available" pill on the
     # connection card; the sync's drift-detection diffs the current
     # enumeration against this list to produce schemas_added /
@@ -304,7 +304,7 @@ def _parse_schema_keys(keys: List[str], *, field: str) -> Dict[str, set]:
         parts = key.split(".", 2)
         # Strict shape: exactly 2 non-empty segments. The legacy 3-
         # segment "catalog.schema.table" shape is intentionally
-        # rejected — chunk 06 moved scope to schema-level and existing
+        # rejected — moved scope to schema-level and existing
         # connections were disconnected pre-deploy (no migration).
         if len(parts) != 2 or not parts[0] or not parts[1]:
             raise ValueError(
@@ -695,10 +695,10 @@ def _list_visible_schemas(
     every engine for typical schema counts.
 
     Returned shape is a sorted list of "catalog.schema" keys, matching
-    the 2-segment format the rest of chunk 06 / 07 uses for
+    the 2-segment format the rest of / 07 uses for
     `available_schemas`, `introspection.include`, etc.
 
-    Chunk 07: diffing this against the connection record's prior-sync
+    diffing this against the connection record's prior-sync
     `available_schemas` produces the schemas_added / schemas_removed
     drift signal that rides on the DATABASE_SYNCED audit row.
     """
@@ -806,7 +806,7 @@ def _format_drift_email(
     by the caller.
 
     Schema-drift ONLY. Table-level drift inside selected schemas is
-    handled automatically by chunk 06's auto-discover path (new
+    handled automatically by auto-discover path (new
     tables sync, dropped tables get orphan-cleaned) so the admin
     has no action to take and we don't want to email about it.
     """
@@ -860,7 +860,7 @@ def _publish_drift_notification(
     """Publish a structured drift email to DATABASE_DRIFT_TOPIC_ARN.
 
     Schema-drift only. Table-level drift inside already-selected
-    schemas is handled by chunk 06's auto-discover path with no
+    schemas is handled by auto-discover path with no
     admin action required, so it does NOT trigger an email; only
     schema additions/removals (which DO require admin action) fire
     a notification.
@@ -1004,7 +1004,7 @@ def process_sync_request(message: Dict) -> Dict[str, Any]:
         tables_queued += 1
 
     # Schema-drift delta against the previous sync's known_table_ids.
-    # First sync after a fresh connect (or after chunk-06's deploy +
+    # First sync after a fresh connect (or after deploy +
     # reconnect): every table is "added", nothing is "removed" -
     # expected. Subsequent syncs surface only genuine schema-level
     # drift (DBA created a new table, dropped a table, etc.). Audit
@@ -1014,7 +1014,7 @@ def process_sync_request(message: Dict) -> Dict[str, Any]:
     tables_added = sorted(current_known - previous_known)
     tables_removed = sorted(previous_known - current_known)
 
-    # Chunk 07: schema-level drift detection. After the scoped sync
+    # schema-level drift detection. After the scoped sync
     # introspect (which only walks admin-selected schemas), run an
     # unrestricted enumeration to discover every schema the RO user
     # can see. Diffing against the connection record's prior-sync
@@ -1052,7 +1052,7 @@ def process_sync_request(message: Dict) -> Dict[str, Any]:
     queue_orphan_cleanup(workspace_id, connection_id, current_table_ids)
 
     # sampling-on iff any schemas opted in via the new per-schema
-    # sampling.include list (chunk 06). Legacy sampling.enabled bool
+    # sampling.include list. Legacy sampling.enabled bool
     # is no longer read.
     sampling_include = (scope_config.get("sampling") or {}).get("include") or []
 
@@ -1075,7 +1075,7 @@ def process_sync_request(message: Dict) -> Dict[str, Any]:
             "tables_added": tables_added,
             "tables_removed": tables_removed,
             "table_count_delta": len(tables_added) - len(tables_removed),
-            # chunk 07: schema-level drift delta. Mirrors the
+            # schema-level drift delta. Mirrors the
             # tables_added / tables_removed shape so downstream
             # alert consumers can wire one logic path.
             "schemas_added": schemas_added,
@@ -1084,9 +1084,9 @@ def process_sync_request(message: Dict) -> Dict[str, Any]:
         },
     )
 
-    # Chunk 07: push notification — schema-drift ONLY. Table-level
+    # push notification — schema-drift ONLY. Table-level
     # drift inside already-selected schemas is auto-discovered (new
-    # tables) or auto-cleaned (removed tables) by chunk 06's path
+    # tables) or auto-cleaned (removed tables) by path
     # and requires no admin action, so it does not email. Schema
     # additions / removals DO require admin action (admin must
     # opt-in to a new schema; investigate a removed one) and are
@@ -1122,7 +1122,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         logger.error("No SQS records in event")
         return {"statusCode": 400, "body": "Invalid event"}
 
-    # Chunk 02: partial-batch-failure semantics -- see github-sync
+    # partial-batch-failure semantics -- see github-sync
     # for the same conversion + rationale (silent KB data loss under
     # transient upstream failures).
     batch_item_failures: List[Dict[str, str]] = []

@@ -61,7 +61,7 @@ S3_VECTORS_INDEX = os.environ.get("S3_VECTORS_INDEX", "")
 KB_BUCKET = os.environ.get("KB_BUCKET", "")
 ENVIRONMENT = os.environ.get("ENVIRONMENT", "prd")
 MCP_BASE_URL = os.environ.get("MCP_BASE_URL", "")
-# chunk 11b: Azure AD OAuth (JWT) auth for the MCP server. AZURE_AD_TENANT_ID +
+# Azure AD OAuth (JWT) auth for the MCP server. AZURE_AD_TENANT_ID +
 # MCP_JWT_AUDIENCE are required for the JWT path; when either is unset the JWT
 # path is disabled and only static keys work. MCP_STATIC_KEYS_ENABLED gates the
 # legacy static-key path (default true for back-compat; false in the F500
@@ -93,7 +93,7 @@ SNIPPET_MAX_TOKENS = int(os.environ.get("MCP_RETRIEVAL_SNIPPET_TOKENS", "500"))
 
 # Session storage.
 #
-# fable-scale chunk 02: session state lives in an external SessionStore
+# session state lives in an external SessionStore
 # (DDB in prod, in-memory for tests) instead of a per-container dict.
 # Externalizing was the design constraint that had prevented horizontal
 # scaling of the MCP Fargate service — a second task couldn't share
@@ -600,7 +600,7 @@ MCP_TOOLS = [
         },
     },
     # ------------------------------------------------------------------
-    # Read-source adjudicator (plan-read-source-adjudicator chunk 01).
+    # Read-source adjudicator (plan-read-source-adjudicator ).
     # Bounded source-read for verifying exact code values that the
     # code-map deliberately omits (literals, key prefixes, signature
     # arguments per ADR-027) and that the symbol graph stores anchors
@@ -734,7 +734,7 @@ MCP_TOOLS = [
 # ============================================================================
 
 
-# fable-scale chunk 03: per-instance validate_api_key cache. Every MCP
+# per-instance validate_api_key cache. Every MCP
 # request currently does 3 DDB ops on the key path (GSI1 Query + last_used_at
 # UpdateItem + audit PutItem). Under 2000 engineers running Claude Code
 # fleet-wide that's thousands of DDB ops/hour just for auth. Cache the
@@ -843,7 +843,7 @@ def validate_api_key(api_key, source_ip=""):
 
 
 # ---------------------------------------------------------------------------
-# Azure AD OAuth (JWT) auth (chunk 11b / ADR-049)
+# Azure AD OAuth (JWT) auth
 # ---------------------------------------------------------------------------
 
 _jwks_client = None
@@ -1133,7 +1133,7 @@ def format_results(results, query="", max_tokens=DEFAULT_MAX_TOKENS):
 def get_user_workspace_ids(email):
     """Get workspace IDs the user has access to, including shared workspaces.
 
-    fable-scale chunk 03: both the admin-enumerate-all branch and the
+    both the admin-enumerate-all branch and the
     regular-user share-resolution branch cache their DDB scans per-instance
     for WORKSPACE_CACHE_TTL_SECONDS (default 60s). At enterprise scale each
     MCP tool call was doing a full workspaces-table Scan (2000+ rows);
@@ -2256,12 +2256,12 @@ def handle_find_symbol_at_line(params, email):
 
 
 # ============================================================================
-# Read-source adjudicator (plan-read-source-adjudicator chunk 01)
+# Read-source adjudicator (plan-read-source-adjudicator )
 #
 # Bounded GitHub Contents API read for verifying exact code values that
 # the code-map deliberately omits (ADR-027) and that the symbol graph
 # stores anchors but not values for. The helpers below are intentionally
-# co-located here for chunk 01; a follow-up can lift them into
+# co-located here for ; a follow-up can lift them into
 # `shared/github_app.py` once a second consumer needs the same shape.
 # ============================================================================
 
@@ -3299,7 +3299,7 @@ TOOL_HANDLERS = {
     "find_symbol_by_name": handle_find_symbol_by_name,
     "find_symbol_at_line": handle_find_symbol_at_line,
     # Read-source adjudicator -- bounded source-read for verified-value
-    # claims (see docs/adr/ADR-???-read-source-adjudicator.md once chunk 04 lands).
+    # claims (see docs/adr/ADR-???-read-source-adjudicator.md once lands).
     "read_source": handle_read_source,
 }
 
@@ -3651,7 +3651,7 @@ class McpHandler(BaseHTTPRequestHandler):
 def cleanup_sessions():
     """Periodically clean up expired sessions.
 
-    fable-scale chunk 02: for the DDB store, DynamoDB TTL owns eviction
+    for the DDB store, DynamoDB TTL owns eviction
     and this loop no-ops (cleanup_expired returns 0). For the in-memory
     store, it retains the pre-refactor behavior of scanning + deleting
     expired rows every 5 minutes.

@@ -224,7 +224,7 @@ def test_rerank_empty_docs_noop():
 
 
 # ---------------------------------------------------------------------------
-# ADR-016 v1.2 (chunk 03) -- rerank accepts a profile ARN as the model id
+# ADR-016 v1.2 -- rerank accepts a profile ARN as the model id
 # ---------------------------------------------------------------------------
 
 
@@ -286,7 +286,7 @@ def test_rerank_threads_attribution_to_audit(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Dual-channel (chunk 01): _lane_filter / search_kb_dual_channel /
+# Dual-channel: _lane_filter / search_kb_dual_channel /
 # split_rerank_budget / rerank_dual_channel
 # ---------------------------------------------------------------------------
 
@@ -541,7 +541,7 @@ def test_search_kb_dual_channel_lane_error_degrades_to_empty():
 
 
 def test_rerank_bare_model_id_still_wraps_foundation_model_arn():
-    # Legacy path (pre-chunk-04 callers): bare model id -> constructed
+    # Legacy path (pre-callers): bare model id -> constructed
     # arn:aws:bedrock:{region}::foundation-model/{id}. Preserves
     # backwards compatibility during rollout.
     client = _fake_bedrock()

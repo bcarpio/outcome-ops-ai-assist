@@ -239,7 +239,7 @@ class TestHandleDlqMessage:
         mock_audit,
         sample_message,
     ):
-        """plan/audit-completeness chunk 07 — successful salvage PR
+        """plan/audit-completeness — successful salvage PR
         creation emits ACTION_CODE_GEN_DLQ_SALVAGE_PR_CREATED."""
         mock_token.return_value = "test-token"
         mock_branch_sha.return_value = "abc123"

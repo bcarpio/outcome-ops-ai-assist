@@ -189,7 +189,7 @@ class TestFetchPullRequest:
 class TestFetchPrFiles:
     """Test fetching PR file changes from GitHub API.
 
-    fable-scale chunk 06: fetch_pr_files now paginates via
+    fetch_pr_files now paginates via
     shared.github_backoff.github_request; tests mock at that layer so
     they exercise the pagination loop shape while staying isolated from
     the underlying requests library.
@@ -249,7 +249,7 @@ class TestFetchPrFiles:
 
     @patch('shared.github_backoff.github_request')
     def test_fetch_pr_files_paginates_across_multiple_pages(self, mock_gh):
-        """fable-scale chunk 06: monorepo PRs with >100 files now paginate
+        """monorepo PRs with >100 files now paginate
         instead of getting truncated at the default GitHub page size (30)."""
         page1 = Mock(status_code=200)
         page1.json.return_value = [
@@ -305,7 +305,7 @@ class TestPostPrComment:
 
 
 class TestPatchPrComment:
-    """PATCH-side sibling to TestPostPrComment. Chunk 01 of the
+    """PATCH-side sibling to TestPostPrComment. of the
     update-in-place PR-check UX plan."""
 
     @patch('analyze_pr_handler.requests.patch')
@@ -381,7 +381,7 @@ class TestBuildAnalysisStartedComment:
 
 
 class TestAnalyzePrUpsertHelpers:
-    """Chunk 04 of the update-in-place plan: analyze-pr's three
+    """of the update-in-place plan: analyze-pr's three
     self-emitted comments (analysis_started / structural_impact /
     no_checks_needed) get PATCHed on subsequent runs instead of POSTed."""
 
@@ -530,7 +530,7 @@ class TestAnalyzePrUpsertHelpers:
 
 
 class TestUpsertGitlabComment:
-    """GitLab MR-note upsert (chunk 05): PUT-in-place on re-runs, POST on
+    """GitLab MR-note upsert: PUT-in-place on re-runs, POST on
     first run, note id stored in providerCommentId (single-id model)."""
 
     @patch('analyze_pr_handler._get_existing_comment_row', return_value=None)
@@ -1272,7 +1272,7 @@ class TestHandler:
         mock_queue_jobs,
         mock_audit,
     ):
-        """plan/audit-completeness chunk 07 - analyze-pr emits
+        """plan/audit-completeness - analyze-pr emits
         ACTION_PR_ANALYZED with repo / pr_number / pr_title / shas /
         backend / checks_run / duration. This is the parent event for
         the per-check Bedrock rows that process-pr-check writes."""
@@ -1437,7 +1437,7 @@ class TestHandler:
 
 
 # =============================================================================
-# Chunk 01 of the AI PR Analyzer dispatch entry-point plan: widen
+# of the AI PR Analyzer dispatch entry-point plan: widen
 # analyze-pr for provider="azure_devops"
 # =============================================================================
 
@@ -1829,7 +1829,7 @@ class TestHandleAzureDevOpsEndToEnd:
 
 
 class TestGitLabRequestValidation:
-    """Chunk 05: gitlab provider shape. Variable-depth slugs (nested
+    """gitlab provider shape. Variable-depth slugs (nested
     subgroups) must validate by segments, never slash-count."""
 
     def test_gitlab_two_segment_slug_accepted(self):

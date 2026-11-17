@@ -201,7 +201,7 @@ def get_drive_delta(
 ) -> Tuple[List[Dict[str, Any]], Optional[str]]:
     """Return (items, new_delta_link) for a team's SharePoint drive.
 
-    Chunk 01 §2: the returned items' ``parentReference`` includes
+    §2: the returned items' ``parentReference`` includes
     ``id`` (the immediate parent driveItem id) and ``driveId``, but
     NOT ``path``. Callers must route by parent-id, not by path prefix.
 

@@ -62,7 +62,7 @@ vi.mock('../../../src/lib/api', () => ({
   triggerGitHubSync: vi.fn(),
   updateAzureDevOpsRepo: vi.fn(),
   listAzureDevOpsRepoBranches: vi.fn(),
-  // Chunk 06 added the Azure DevOps (non-Boards) connection UI to
+  // added the Azure DevOps (non-Boards) connection UI to
   // WorkspaceSettings; the mock was never updated to include those
   // exports. Locally the `.catch(() => [])` chains hide it, but on
   // slower CI runners the failed getters leave the page in an
@@ -1116,7 +1116,7 @@ describe('WorkspaceSettings', () => {
   })
 
   it('shows the sync-branch chip on GitHub repos when default_branch is set', async () => {
-    // Post-chunk-01 rows carry default_branch. The chip makes it
+    // Post-rows carry default_branch. The chip makes it
     // scannable at a glance so admins can see which repos are still
     // syncing from master after an org-wide master -> main cutover.
     mockListGitHubInstallations.mockResolvedValue([
@@ -1137,7 +1137,7 @@ describe('WorkspaceSettings', () => {
   })
 
   it('does not render a branch chip on legacy GitHub rows that lack default_branch', async () => {
-    // Pre-chunk-01 rows may lack the field until backfilled on next
+    // Pre-rows may lack the field until backfilled on next
     // sync. Show nothing rather than assume 'main' -- assuming 'main'
     // would silently mislead admins about repos still on master.
     mockListGitHubInstallations.mockResolvedValue([

@@ -15,7 +15,7 @@ Emits:
 
 Module path is the Java package (e.g. ``com.acme.booking``). Symbol
 namespace is the enclosing class name. Inner classes are flattened to
-one level — chunk 01 explicitly skips deep nested structure to keep
+one level — explicitly skips deep nested structure to keep
 the edge volume manageable.
 """
 

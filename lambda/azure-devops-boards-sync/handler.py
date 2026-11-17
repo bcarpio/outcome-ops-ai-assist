@@ -80,7 +80,7 @@ AZURE_DEVOPS_CLIENT_SECRET_SSM_PARAM = os.environ.get(
 # Cap on initial-sync fan-out. WIQL itself caps at 20k results per
 # call; this tighter cap keeps the initial ingest bounded even for
 # very large projects. Older work items require a customer-initiated
-# backfill (documented in the chunk 09 runbook).
+# backfill (documented in the runbook).
 INITIAL_SYNC_MAX_IDS = int(os.environ.get("BOARDS_INITIAL_SYNC_MAX_IDS", "5000"))
 
 # Initial-sync watermark lookback -- treat "no watermark" as "N days

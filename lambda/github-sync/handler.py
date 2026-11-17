@@ -163,7 +163,7 @@ def generate_jwt() -> str:
 def _mint_installation_token(installation_id: str) -> str:
     """Uncached mint: JWT + POST /app/installations/{id}/access_tokens.
 
-    fable-scale chunk 06: split off from the cached wrapper below so
+    split off from the cached wrapper below so
     `shared.github_auth.get_installation_token` can invoke it on cache miss.
     """
     import urllib.request
@@ -194,7 +194,7 @@ def _mint_installation_token(installation_id: str) -> str:
 def get_installation_token(installation_id: str) -> str:
     """Return an installation access token, SSM-cached for ~55 minutes.
 
-    fable-scale chunk 06: prior behavior minted a fresh token on every
+    prior behavior minted a fresh token on every
     call (~200ms + 2 API-quota units). At enterprise sync rates the mint
     itself is a meaningful share of the GitHub App's 5000 req/hr ceiling.
     Cache hits skip the mint entirely.
@@ -217,7 +217,7 @@ def get_repo_tree(token: str, owner: str, repo: str, ref: str = "HEAD") -> List[
 
     Returns list of file objects with path, type, size, sha.
 
-    fable-scale chunk 06: routes through shared.github_backoff so a
+    routes through shared.github_backoff so a
     rate-limit 403 or 429 sleeps + retries instead of hard-failing the
     sync. A single sync = many get_repo_tree calls at enterprise scale
     (thousands of repos); previously a burst could exhaust the App's
@@ -503,7 +503,7 @@ def _backfill_default_branch(
     next sync can read it without a live GitHub API call.
 
     Used only by the lazy-backfill path in ``resolve_sync_branch``:
-    existing rows added before chunk 01 lack the field, and rows
+    existing rows added before lack the field, and rows
     added by pre-fix installs of this Lambda too. Best-effort --
     a write failure just means the next sync re-resolves (extra
     quota, correct behavior). Goes through dual_write so the HA
@@ -536,12 +536,12 @@ def resolve_sync_branch(
 
     Priority:
     1. The ``default_branch`` field on the repo's DDB row -- this is
-       what the customer picked in the add-repo picker (chunk 03) or
-       what the backend resolved on add (chunk 01).
+       what the customer picked in the add-repo picker or
+       what the backend resolved on add.
     2. Live ``GET /repos/{owner}/{repo}`` lookup, with the result
        written back to the row so the next sync doesn't burn quota.
 
-    Case (2) fires only for rows added before chunk 01 shipped
+    Case (2) fires only for rows added before shipped
     (they lack the field). After the first sync backfills it, every
     subsequent sync takes case (1).
     """
@@ -574,7 +574,7 @@ def update_sync_status(
 ) -> None:
     """Update sync status for a repo.
 
-    plan-git-truth chunk 02 adds the diagnostic columns
+    plan-git-truth adds the diagnostic columns
     ``last_attempted_sha`` / ``last_dispatched_sha`` /
     ``last_failed_sha`` / ``last_failed_at`` / ``last_failure_reason``
     so operators can see what github-sync tried, what it dispatched,
@@ -583,7 +583,7 @@ def update_sync_status(
     which only advance on actual downstream completion.
 
     The legacy ``commit_sha`` parameter still writes ``last_commit_sha``
-    for back-compat with the UI; chunk-04 (future, separate plan)
+    for back-compat with the UI; (future, separate plan)
     removes both the parameter and the column.
     """
     table = _get_dynamodb().Table(WORKSPACES_TABLE)
@@ -738,7 +738,7 @@ def queue_file_for_ingestion(
     ``commit_timestamp`` (epoch seconds) rides on the message body so
     the file-ingestion consumer can mark its docs-pipeline ledger row
     complete with the correct monotonic-advance anchor. Optional for
-    back-compat during the chunk-02b rolling deploy — file-ingestion
+    back-compat during the rolling deploy — file-ingestion
     tolerates the absence and skips the ledger call for one release.
     """
     if not FILE_INGESTION_QUEUE:
@@ -945,7 +945,7 @@ def queue_repo_for_code_maps(
             message_body["last_commit_sha"] = last_commit_sha
         if current_commit_sha:
             message_body["current_commit_sha"] = current_commit_sha
-        # plan-git-truth chunk 02: commit_timestamp on the SQS body so
+        # plan-git-truth commit_timestamp on the SQS body so
         # process-repo-summary can open the code_map_units ledger row
         # with the correct monotonic-advance anchor, and the gkg
         # writer downstream can do the same after commit_swap.
@@ -969,7 +969,7 @@ def queue_repo_for_code_maps(
 
 
 # ============================================================================
-# SHA-truth ledger helpers (plan-git-truth chunk 02)
+# SHA-truth ledger helpers (plan-git-truth )
 #
 # These are thin wrappers around shared.sha_truth that absorb the
 # import side-effect cost and the ledger-failure swallowing pattern.
@@ -1141,7 +1141,7 @@ def _mark_docs_unit_fetch_failed(
     """Mark a docs ledger unit as failed when github-sync can't fetch
     the file content from the GitHub API or the S3 PutObject fails.
 
-    Required for plan-git-truth chunk 02b/4 (race fix): the ledger is
+    Required for plan-git-truth /4 (race fix): the ledger is
     opened BEFORE the upload loop with expected_count = len(doc_files),
     so any file that fails to upload still needs its unit closed —
     otherwise expected_count > completed_count + failed_count forever
@@ -1278,12 +1278,12 @@ def process_sync_request(message: Dict) -> Dict:
             update_sync_status(workspace_id, repo_name, "failed", "Invalid repo name format")
             return {"status": "error", "error": "Invalid repo name format"}
 
-        # Get default branch and latest commit (plan-git-truth chunk 02:
+        # Get default branch and latest commit (plan-git-truth 
         # commit_timestamp drives the monotonic-advance check downstream).
         # ``resolve_sync_branch`` reads the customer's stored/picked
-        # branch from the DDB row first (honors the chunk-03 override,
+        # branch from the DDB row first (honors the override,
         # avoids a live GitHub call), lazy-backfilling on the first
-        # sync of a pre-chunk-01 row.
+        # sync of a pre-row.
         default_branch = resolve_sync_branch(
             repo, token, owner, repo_short, workspace_id, repo_name,
         )
@@ -1291,7 +1291,7 @@ def process_sync_request(message: Dict) -> Dict:
             token, owner, repo_short, default_branch
         )
 
-        # plan-git-truth chunk 02: record what we attempted before any
+        # plan-git-truth record what we attempted before any
         # SQS dispatch so a sync that dies mid-flight is observable.
         # last_attempted_sha is a diagnostic — distinct from
         # last_{pipeline}_sha which only advances on real completion.
@@ -1429,7 +1429,7 @@ def _process_standards_repo(
     ingested as documents for the knowledge base. Files are uploaded to S3
     where the process-documents Lambda picks them up for embedding/indexing.
 
-    plan-git-truth chunk 02: Standards repos write directly to S3 (no
+    plan-git-truth Standards repos write directly to S3 (no
     file-ingestion SQS dispatch), so there's no docs-pipeline ledger to
     open here. The S3 PutObject is synchronous; success means the doc
     is in the knowledge base immediately. ``last_docs_sha`` is advanced
@@ -1453,7 +1453,7 @@ def _process_standards_repo(
         f"doc files for standards repo"
     )
 
-    # plan-git-truth chunk 02b/4 (race fix 2026-05-17): open the docs
+    # plan-git-truth /4 (race fix 2026-05-17): open the docs
     # ledger BEFORE the upload loop. S3 PUTs trigger process-documents
     # asynchronously and the first few invocations can finish
     # vectorizing + call mark_unit_complete before github-sync's loop
@@ -1582,7 +1582,7 @@ def _process_application_repo(
             f"{len(all_doc_files)} doc files changed since {last_commit_sha[:7] if last_commit_sha else '<none>'}"
         )
 
-    # plan-git-truth chunk 02b/4 (race fix 2026-05-17): open the docs
+    # plan-git-truth /4 (race fix 2026-05-17): open the docs
     # ledger BEFORE the upload loop with expected_count = len(doc_files).
     # S3 PUTs trigger process-documents asynchronously and the first
     # invocations can finish vectorizing + call mark_unit_complete
@@ -1642,7 +1642,7 @@ def _process_application_repo(
     current_doc_paths = [f["path"] for f in all_doc_files]
     _queue_orphan_detection(workspace_id, repo_name, current_doc_paths)
 
-    # plan-git-truth chunk 02: open the code_map_dispatch ledger row
+    # plan-git-truth open the code_map_dispatch ledger row
     # BEFORE publishing the repo-summaries SQS message. If the
     # send_message fails, mark_unit_failed below closes it as failed
     # so try_advance_sha never trips on a half-open dispatch.
@@ -1713,7 +1713,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     """
     logger.info(f"GitHub sync handler invoked with {len(event.get('Records', []))} records")
 
-    # Chunk 02: partial-batch-failure semantics. Previously per-record
+    # partial-batch-failure semantics. Previously per-record
     # exceptions were caught and the batch returned 200, so SQS
     # deleted every message even ones that failed. Failed records
     # never retried and never reached the DLQ -- silent KB data loss

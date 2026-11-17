@@ -97,7 +97,7 @@ ENV = os.environ.get("ENV", "dev")
 APP_NAME = os.environ.get("APP_NAME", "outcome-ops-ai-assist")
 WORKSPACES_TABLE = os.environ.get("WORKSPACES_TABLE")
 KB_BUCKET = os.environ.get("KB_BUCKET")
-# Chunk-08a: after the S3 upload completes we enqueue a single
+# after the S3 upload completes we enqueue a single
 # message to repo-summaries so the same code-map + symbol-graph
 # pipeline that runs for github (process-repo-summary +
 # process-batch-summary) also runs for ADO. The downstream workers
@@ -532,7 +532,7 @@ def process_sync_message(message: Dict[str, Any]) -> Dict[str, Any]:
             file_count=uploaded,
         )
 
-        # chunk-08a: fan into the code-map + symbol-graph pipeline
+        # fan into the code-map + symbol-graph pipeline
         # only for application repos (matches github-sync's behavior).
         # Standards repos skip code-map; their content is already in
         # S3 for chat KB search via process-documents.
@@ -544,7 +544,7 @@ def process_sync_message(message: Dict[str, Any]) -> Dict[str, Any]:
             # discover_lambda_handlers / discover_frontend_* etc. paths
             # match 0 files and every code unit collapses into the
             # catch-all "shared" / "tests/other" buckets. The S3 mirror
-            # already normalizes the slash off (chunk 05a's
+            # already normalizes the slash off (
             # _upload_blob_to_s3), so the enqueued list needs to use
             # the same normalized form. Burned 2026-06-05 on the first
             # marketplace-events query.

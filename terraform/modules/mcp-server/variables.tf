@@ -47,7 +47,7 @@ variable "memory" {
 }
 
 # ---------------------------------------------------------------------------
-# fable-scale chunk 01: sizing + autoscaling knobs
+# sizing + autoscaling knobs
 # ---------------------------------------------------------------------------
 # Previously desired_count, capacity_provider_strategy, and
 # deployment_minimum_healthy_percent were hardcoded to 1 / SPOT-only / 0

@@ -14,13 +14,13 @@ module "chat_streaming_lambda" {
   description   = "Streaming chat interface for OutcomeOps AI Assist"
   handler       = "run.sh"
   runtime       = "python3.12"
-  # fable-scale chunk 05: timeout is tfvars-tunable. Was 900 (streaming max);
+  # timeout is tfvars-tunable. Was 900 (streaming max);
   # 300 covers tool-use worst case comfortably and unblocks Lambda
   # concurrency slots sooner under sustained load.
   timeout     = var.chat_timeout_seconds
   memory_size = 1024
 
-  # fable-scale chunk 05: reserved_concurrent_executions guarantees the
+  # reserved_concurrent_executions guarantees the
   # chat surface a slice of the account concurrency pool so batch jobs
   # (PR checks, code-maps ingestion) can't starve interactive chat.
   # Default -1 (== unreserved) preserves sandbox behavior.
@@ -93,7 +93,7 @@ module "chat_streaming_lambda" {
       RERANK_MAX_FETCH                   = tostring(var.rerank_max_fetch)
       RERANK_MIN_SCORE                   = tostring(var.rerank_min_score)
       RAG_MAX_DOC_CHARS                  = tostring(var.rag_max_doc_chars)
-      # fable-scale chunk 10: chat message hygiene knobs.
+      # chat message hygiene knobs.
       CHAT_MESSAGE_TTL_SECONDS       = tostring(var.chat_message_ttl_seconds)
       CHAT_MAX_MESSAGE_CONTENT_CHARS = tostring(var.chat_max_message_content_chars)
       BEDROCK_PROMPT_CACHE_ENABLED   = tostring(var.bedrock_prompt_cache_enabled)
@@ -125,7 +125,7 @@ module "chat_streaming_lambda" {
     },
     local.ha_writer_env,
     # AppConfig role-read env so shared.region_guard.guard_active() on the
-    # chat mutation routes (chunk 05) actually evaluates the local
+    # chat mutation routes actually evaluates the local
     # region's active/passive role. Without this, is_active_region()
     # takes the single-region fast-path (returns True) and passive-region
     # chats would write + replicate — the bidirectional behavior ADR-022
@@ -135,7 +135,7 @@ module "chat_streaming_lambda" {
     # ADR-016 v1.2 -- chat workload profile ARNs (all 4 models used).
     # shared.model_client.resolve_profile_arn(workload="chat", tier=...)
     # reads these. Legacy BEDROCK_*_MODEL_ID env vars stay for the
-    # WARN-fallback path per chunk 03.
+    # WARN-fallback path per .
     local.bedrock_chat_env,
   )
 
@@ -161,7 +161,7 @@ module "chat_streaming_lambda" {
     }
 
     # shared.symbol_graph_reader emits OutcomeOps/SymbolGraph::QueryLatency
-    # (chunk-08 latency alarm) from the chat path too. PutMetricData has no
+    # from the chat path too. PutMetricData has no
     # resource ARN, so scope by namespace. Without this the emit AccessDenies.
     cloudwatch_symbol_graph_metrics = {
       effect    = "Allow"

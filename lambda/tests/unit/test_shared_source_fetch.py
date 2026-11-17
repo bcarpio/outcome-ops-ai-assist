@@ -175,7 +175,7 @@ class TestGitHubBranch:
 
 
 # ---------------------------------------------------------------------------
-# fetch_file_at_sha — chunk 01 of the PR-analyzer ADO parity plan.
+# fetch_file_at_sha — of the PR-analyzer ADO parity plan.
 # Same shape as fetch_repo_file but reads at a specific commit SHA and
 # returns raw bytes rather than decoded text.
 # ---------------------------------------------------------------------------
@@ -388,7 +388,7 @@ class TestFetchFileAtShaAzureDevOps:
 
     @patch.object(source_fetch, "urlopen")
     def test_ado_version_type_branch_used_in_url(self, mock_urlopen):
-        # Chunk 04: ado_version_type="branch" lets callers read files
+        # ado_version_type="branch" lets callers read files
         # at default-branch tip (used by TEST_COVERAGE for
         # .outcomeops.yaml).
         mock_resp = MagicMock()
@@ -418,7 +418,7 @@ class TestFetchFileAtShaAzureDevOps:
 
     @patch.object(source_fetch, "urlopen")
     def test_ado_version_type_defaults_to_commit(self, mock_urlopen):
-        # Chunk 01 behavior preserved: without ado_version_type,
+        # behavior preserved: without ado_version_type,
         # default is "commit".
         mock_resp = MagicMock()
         mock_resp.__enter__ = MagicMock(return_value=mock_resp)

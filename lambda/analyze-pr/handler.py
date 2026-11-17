@@ -311,7 +311,7 @@ def fetch_pr_files(repository: str, pr_number: int, token: str) -> List[GitHubFi
     Raises:
         Exception: If API request fails
     """
-    # fable-scale chunk 06: paginate GitHub's /pulls/{n}/files. The prior
+    # paginate GitHub's /pulls/{n}/files. The prior
     # single unpaginated GET returned only the first 30 files (GitHub's
     # default page size); monorepo PRs above that count got silently
     # partial analysis. Also route through shared.github_backoff so
@@ -539,7 +539,7 @@ def _build_analysis_started_comment(checks_to_run: List[str]) -> str:
 
 
 def _build_comment_pk(provider: str, repository: str, pr_number: int) -> str:
-    """Match the process-pr-check chunk-02 shape: PR#{provider}#{repo}#{n}."""
+    """Match the process-pr-check shape: PR#{provider}#{repo}#{n}."""
     return f"PR#{provider}#{repository}#{pr_number}"
 
 
@@ -1294,7 +1294,7 @@ def queue_check_jobs(
 
         # Message group ensures ordered processing per PR
         message_group_id = f"pr-{repository.replace('/', '-')}-{pr_number}"
-        # fable-scale chunk 06: MessageDeduplicationId is a stable content
+        # MessageDeduplicationId is a stable content
         # hash — same (repo, pr, head_sha, check_type) tuple always maps to
         # the same dedup ID, so GitHub Actions re-runs of the same commit
         # naturally coalesce within the SQS 5-min dedup window. Prior

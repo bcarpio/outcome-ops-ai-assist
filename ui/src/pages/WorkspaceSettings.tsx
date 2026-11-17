@@ -460,7 +460,7 @@ export default function WorkspaceSettings() {
   const [configuringDatabaseConnection, setConfiguringDatabaseConnection] = useState<DatabaseConnection | null>(null)
   const [availableDatabaseSchemas, setAvailableDatabaseSchemas] = useState<DatabaseSchemaInfo[]>([])
   const [loadingDatabaseSchemas, setLoadingDatabaseSchemas] = useState(false)
-  // Per-schema introspection + sampling toggles (chunk 06). Keys are
+  // Per-schema introspection + sampling toggles. Keys are
   // "catalog.schema". Tables inside selected schemas are auto-
   // discovered on every sync; the admin doesn't pick individual tables.
   const [databaseIntrospectSchemas, setDatabaseIntrospectSchemas] = useState<Set<string>>(new Set())
@@ -502,7 +502,7 @@ export default function WorkspaceSettings() {
   const [editBranchSelected, setEditBranchSelected] = useState<string>('')
   const [editBranchSaving, setEditBranchSaving] = useState(false)
 
-  // Azure DevOps integration state (chunk 08)
+  // Azure DevOps integration state
   const [azureDevOpsConnections, setAzureDevOpsConnections] = useState<AzureDevOpsConnection[]>([])
   const [azureDevOpsRepos, setAzureDevOpsRepos] = useState<AzureDevOpsRepo[]>([])
   const [loadingAzureDevOps, setLoadingAzureDevOps] = useState(false)
@@ -705,7 +705,7 @@ export default function WorkspaceSettings() {
   async function loadConnections() {
     if (!workspaceId) return
     setLoadingConnections(true)
-    // Chunk 15: previously each of these 8 lists had `.catch(() => [])`,
+    // previously each of these 8 lists had `.catch(() => [])`,
     // which turned a Lambda outage into a silent "not connected" state
     // and invited users to duplicate-reconnect. Now each failure is
     // routed into the existing `setError` pipe (same behavior as
@@ -768,7 +768,7 @@ export default function WorkspaceSettings() {
     }
   }
 
-  // Azure DevOps integration loader (chunk 08). 404 from a deploy
+  // Azure DevOps integration loader. 404 from a deploy
   // that hasn't enabled the integration is silently swallowed so the
   // tab doesn't display an error -- the section just doesn't appear.
   async function loadAzureDevOpsData() {
@@ -849,7 +849,7 @@ export default function WorkspaceSettings() {
     }
   }
 
-  // Repo picker (chunk 08 follow-up): cascade org -> project -> repo.
+  // Repo picker: cascade org -> project -> repo.
   async function openAzureDevOpsRepoPicker(connectionId: string) {
     if (!workspaceId) return
     setPickerConnectionId(connectionId)
@@ -2246,7 +2246,7 @@ export default function WorkspaceSettings() {
     try {
       const schemas = await listDatabaseSchemas(workspaceId, connection.connection_id)
       setAvailableDatabaseSchemas(schemas)
-      // Seed picker state from existing scope_config (chunk 06: keys
+      // Seed picker state from existing scope_config (keys
       // are "catalog.schema").
       const includeList = (connection.scope_config?.introspection?.include) || []
       const samplingIncludeList = (connection.scope_config?.sampling?.include) || []
@@ -2313,7 +2313,7 @@ export default function WorkspaceSettings() {
     setError(null)
     try {
       // Materialize per-schema selection into the wire format —
-      // chunk 06 uses 2-segment "catalog.schema" keys for both
+      // uses 2-segment "catalog.schema" keys for both
       // introspection.include and sampling.include.
       const introspectInclude = Array.from(databaseIntrospectSchemas).sort()
       const samplingInclude = Array.from(databaseSamplingSchemas).sort()
@@ -2521,7 +2521,7 @@ export default function WorkspaceSettings() {
           ? await listGitHubRepoBranches(workspaceId, target)
           : await listAzureDevOpsRepoBranches(workspaceId, target)
         setEditBranchData(data)
-        // If the row has no stored branch (legacy pre-chunk-01), seed
+        // If the row has no stored branch (legacy pre-), seed
         // the input with the provider's current default so the customer
         // has a sensible starting point.
         if (!storedDefault && data.current_default) {
@@ -3540,7 +3540,7 @@ export default function WorkspaceSettings() {
             </div>
             )}
 
-            {/* Azure DevOps Integration Section (chunk 08) */}
+            {/* Azure DevOps Integration Section */}
             {enabledIntegrations.azure_devops && (
             <div className="bg-white rounded-lg border shadow-sm">
               <div className="p-4 border-b flex items-center justify-between">
@@ -5081,7 +5081,7 @@ export default function WorkspaceSettings() {
                             <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-700 uppercase">
                               {conn.engine}
                             </span>
-                            {/* chunk 07: surface DBA-created schemas the
+                            {/* surface DBA-created schemas the
                                 admin hasn't included yet. N = available
                                 schemas minus already-included. Schemas
                                 always require admin confirmation (no
@@ -6442,7 +6442,7 @@ export default function WorkspaceSettings() {
                     </thead>
                     <tbody>
                       {ordered.map(([schemaKey, bucket]) => {
-                        // chunk 07: badge a schema "NEW" when it
+                        // badge a schema "NEW" when it
                         // appeared in the last sync's available_schemas
                         // snapshot but is not yet in the picker's
                         // selected-set. Clears once the admin saves with
@@ -6517,7 +6517,7 @@ export default function WorkspaceSettings() {
 
       {/* Edit Sync Branch Modal (both providers). Opens from the
           gear icon on each added-repo row. Shows a branch dropdown
-          populated from chunk 06's /branches endpoint, falls back to
+          populated from /branches endpoint, falls back to
           a text input if the endpoint fails (permission, rate-limit),
           and surfaces a drift badge when the stored branch differs
           from the provider's current default. */}

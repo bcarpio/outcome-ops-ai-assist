@@ -1,13 +1,13 @@
 # Copyright 2025-2026 OutcomeOps
 # SPDX-License-Identifier: Apache-2.0
 # ============================================================================
-# Secondary-region sync worker Lambdas (HA chunk 9g)
+# Secondary-region sync worker Lambdas ()
 # ----------------------------------------------------------------------------
 # 9 SQS-triggered sync workers under aws.secondary, consuming from the
-# secondary's integration-sync queues (chunk 02g).
+# secondary's integration-sync queues.
 #
 # Idle until secondary becomes active and schedulers in secondary
-# (chunk 9f) fire and enqueue work. Data they produce (workspaces
+# fire and enqueue work. Data they produce (workspaces
 # updates, audit logs, S3 KB uploads) replicates back to primary via
 # dual_write (chunks 04/06a).
 #
@@ -15,7 +15,7 @@
 #
 # OAuth-token decryption gotcha: tokens encrypted in primary's
 # oauth_tokens KMS key are NOT decryptable in secondary. After
-# failover, users re-establish OAuth integrations. Chunk 13
+# failover, users re-establish OAuth integrations. 
 # (multi-region KMS) fixes this.
 # ============================================================================
 
@@ -90,7 +90,7 @@ module "github_sync_lambda_secondary" {
         actions   = ["ssm:GetParameter", "ssm:GetParameters"]
         resources = ["arn:aws:ssm:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/*"]
       }
-      # fable-scale 06 mirror: the cached-installation-token path WRITES
+      # Secondary mirror: the cached-installation-token path WRITES
       # the token back to SSM. Without PutParameter the secondary falls
       # back to a fresh token mint on every call post-failover (GitHub
       # rate-limit exposure), and the write raises AccessDenied noise.
@@ -145,7 +145,7 @@ resource "aws_lambda_event_source_mapping" "github_sync_secondary" {
   batch_size                         = 1
   maximum_batching_window_in_seconds = 0
 
-  # Chunk 02: partial-batch-failure. See lambda-github.tf primary
+  # partial-batch-failure. See lambda-github.tf primary
   # ESM for rationale (handler returns batchItemFailures for failures).
   function_response_types = ["ReportBatchItemFailures"]
 
@@ -265,7 +265,7 @@ resource "aws_lambda_event_source_mapping" "confluence_sync_secondary" {
   function_name    = module.confluence_sync_lambda_secondary[0].lambda_function_name
   batch_size       = 1
 
-  # Chunk 02: partial-batch-failure. See lambda-github.tf primary
+  # partial-batch-failure. See lambda-github.tf primary
   # ESM for rationale (handler returns batchItemFailures for failures).
   function_response_types = ["ReportBatchItemFailures"]
 
@@ -379,7 +379,7 @@ resource "aws_lambda_event_source_mapping" "jira_sync_secondary" {
   function_name    = module.jira_sync_lambda_secondary[0].lambda_function_name
   batch_size       = 1
 
-  # Chunk 02: partial-batch-failure. See lambda-github.tf primary
+  # partial-batch-failure. See lambda-github.tf primary
   # ESM for rationale (handler returns batchItemFailures for failures).
   function_response_types = ["ReportBatchItemFailures"]
 
@@ -427,7 +427,7 @@ module "outlook_sync_lambda_secondary" {
       OAUTH_KMS_KEY_ARN    = aws_kms_replica_key.oauth_tokens_secondary[0].arn
       FILE_INGESTION_QUEUE = aws_sqs_queue.file_ingestion_secondary[0].url
       DELETE_QUEUE         = aws_sqs_queue.delete_queue_secondary[0].url
-      # chunk 08 (HA parity): mirror primary continuation env. Without
+      # (HA parity): mirror primary continuation env. Without
       # this, the handler's continuation branch logs "not configured for
       # continuation" and stops, silently truncating large mailbox syncs
       # in the secondary region post-failover.
@@ -479,7 +479,7 @@ module "outlook_sync_lambda_secondary" {
       sqs_send = {
         effect  = "Allow"
         actions = ["sqs:SendMessage"]
-        # chunk 08 (HA parity): grant continuation SendMessage on OWN queue
+        # (HA parity): grant continuation SendMessage on OWN queue
         # so paginated syncs self-requeue after failover.
         resources = [
           aws_sqs_queue.file_ingestion_secondary[0].arn,
@@ -506,7 +506,7 @@ resource "aws_lambda_event_source_mapping" "outlook_sync_secondary" {
   function_name    = module.outlook_sync_lambda_secondary[0].lambda_function_name
   batch_size       = 1
 
-  # Chunk 02: partial-batch-failure. See lambda-github.tf primary
+  # partial-batch-failure. See lambda-github.tf primary
   # ESM for rationale (handler returns batchItemFailures for failures).
   function_response_types = ["ReportBatchItemFailures"]
 
@@ -549,7 +549,7 @@ module "teams_sync_lambda_secondary" {
       OAUTH_KMS_KEY_ARN    = aws_kms_replica_key.oauth_tokens_secondary[0].arn
       FILE_INGESTION_QUEUE = aws_sqs_queue.file_ingestion_secondary[0].url
       DELETE_QUEUE         = aws_sqs_queue.delete_queue_secondary[0].url
-      # chunk 08 (HA parity): mirror primary continuation env. Without
+      # (HA parity): mirror primary continuation env. Without
       # this, the handler's continuation branch logs "not configured for
       # continuation" and stops -- large syncs silently truncate in the
       # secondary region post-failover.
@@ -601,7 +601,7 @@ module "teams_sync_lambda_secondary" {
       sqs_send = {
         effect  = "Allow"
         actions = ["sqs:SendMessage"]
-        # chunk 08 (HA parity): grant continuation SendMessage on OWN queue
+        # (HA parity): grant continuation SendMessage on OWN queue
         # so paginated syncs self-requeue after failover.
         resources = [
           aws_sqs_queue.file_ingestion_secondary[0].arn,
@@ -628,7 +628,7 @@ resource "aws_lambda_event_source_mapping" "teams_sync_secondary" {
   function_name    = module.teams_sync_lambda_secondary[0].lambda_function_name
   batch_size       = 1
 
-  # Chunk 02: partial-batch-failure. See lambda-github.tf primary
+  # partial-batch-failure. See lambda-github.tf primary
   # ESM for rationale (handler returns batchItemFailures for failures).
   function_response_types = ["ReportBatchItemFailures"]
 
@@ -671,7 +671,7 @@ module "sharepoint_sync_lambda_secondary" {
       OAUTH_KMS_KEY_ARN    = aws_kms_replica_key.oauth_tokens_secondary[0].arn
       FILE_INGESTION_QUEUE = aws_sqs_queue.file_ingestion_secondary[0].url
       DELETE_QUEUE         = aws_sqs_queue.delete_queue_secondary[0].url
-      # chunk 08 (HA parity): mirror primary continuation env. Without
+      # (HA parity): mirror primary continuation env. Without
       # this, the handler's continuation branch logs "not configured for
       # continuation" and stops -- large syncs silently truncate in the
       # secondary region post-failover.
@@ -723,7 +723,7 @@ module "sharepoint_sync_lambda_secondary" {
       sqs_send = {
         effect  = "Allow"
         actions = ["sqs:SendMessage"]
-        # chunk 08 (HA parity): grant continuation SendMessage on OWN queue
+        # (HA parity): grant continuation SendMessage on OWN queue
         # so paginated syncs self-requeue after failover.
         resources = [
           aws_sqs_queue.file_ingestion_secondary[0].arn,
@@ -750,7 +750,7 @@ resource "aws_lambda_event_source_mapping" "sharepoint_sync_secondary" {
   function_name    = module.sharepoint_sync_lambda_secondary[0].lambda_function_name
   batch_size       = 1
 
-  # Chunk 02: partial-batch-failure. See lambda-github.tf primary
+  # partial-batch-failure. See lambda-github.tf primary
   # ESM for rationale (handler returns batchItemFailures for failures).
   function_response_types = ["ReportBatchItemFailures"]
 
@@ -793,7 +793,7 @@ module "onedrive_sync_lambda_secondary" {
       OAUTH_KMS_KEY_ARN    = aws_kms_replica_key.oauth_tokens_secondary[0].arn
       FILE_INGESTION_QUEUE = aws_sqs_queue.file_ingestion_secondary[0].url
       DELETE_QUEUE         = aws_sqs_queue.delete_queue_secondary[0].url
-      # chunk 08 (HA parity): mirror primary continuation env. Without
+      # (HA parity): mirror primary continuation env. Without
       # this, the handler's continuation branch logs "not configured for
       # continuation" and stops -- large syncs silently truncate in the
       # secondary region post-failover.
@@ -845,7 +845,7 @@ module "onedrive_sync_lambda_secondary" {
       sqs_send = {
         effect  = "Allow"
         actions = ["sqs:SendMessage"]
-        # chunk 08 (HA parity): grant continuation SendMessage on OWN queue
+        # (HA parity): grant continuation SendMessage on OWN queue
         # so paginated syncs self-requeue after failover.
         resources = [
           aws_sqs_queue.file_ingestion_secondary[0].arn,
@@ -872,7 +872,7 @@ resource "aws_lambda_event_source_mapping" "onedrive_sync_secondary" {
   function_name    = module.onedrive_sync_lambda_secondary[0].lambda_function_name
   batch_size       = 1
 
-  # Chunk 02: partial-batch-failure. See lambda-github.tf primary
+  # partial-batch-failure. See lambda-github.tf primary
   # ESM for rationale (handler returns batchItemFailures for failures).
   function_response_types = ["ReportBatchItemFailures"]
 
@@ -915,7 +915,7 @@ module "onenote_sync_lambda_secondary" {
       OAUTH_KMS_KEY_ARN    = aws_kms_replica_key.oauth_tokens_secondary[0].arn
       FILE_INGESTION_QUEUE = aws_sqs_queue.file_ingestion_secondary[0].url
       DELETE_QUEUE         = aws_sqs_queue.delete_queue_secondary[0].url
-      # chunk 08 (HA parity): mirror primary continuation env. Without
+      # (HA parity): mirror primary continuation env. Without
       # this, the handler's continuation branch logs "not configured for
       # continuation" and stops -- large syncs silently truncate in the
       # secondary region post-failover.
@@ -967,7 +967,7 @@ module "onenote_sync_lambda_secondary" {
       sqs_send = {
         effect  = "Allow"
         actions = ["sqs:SendMessage"]
-        # chunk 08 (HA parity): grant continuation SendMessage on OWN queue
+        # (HA parity): grant continuation SendMessage on OWN queue
         # so paginated syncs self-requeue after failover.
         resources = [
           aws_sqs_queue.file_ingestion_secondary[0].arn,
@@ -994,7 +994,7 @@ resource "aws_lambda_event_source_mapping" "onenote_sync_secondary" {
   function_name    = module.onenote_sync_lambda_secondary[0].lambda_function_name
   batch_size       = 1
 
-  # Chunk 02: partial-batch-failure. See lambda-github.tf primary
+  # partial-batch-failure. See lambda-github.tf primary
   # ESM for rationale (handler returns batchItemFailures for failures).
   function_response_types = ["ReportBatchItemFailures"]
 
@@ -1026,7 +1026,7 @@ module "database_sync_lambda_secondary" {
   role_name     = "${var.environment}-${var.app_name}-database-sync-secondary"
   description   = "Database sync (secondary region)"
   timeout       = 900
-  # chunk 08 (HA parity): bumped 1024 -> 2048 to match primary. Introspection
+  # (HA parity): bumped 1024 -> 2048 to match primary. Introspection
   # against a large schema was OOMing here post-failover.
   memory_size = 2048
   publish     = true
@@ -1046,7 +1046,7 @@ module "database_sync_lambda_secondary" {
       WORKSPACES_TABLE          = module.workspaces_table_secondary[0].dynamodb_table_id
       DB_CREDENTIAL_KMS_KEY_ARN = aws_kms_replica_key.db_credentials_secondary[0].arn
       FILE_INGESTION_QUEUE      = aws_sqs_queue.file_ingestion_secondary[0].url
-      # chunk 08 (HA parity): mirror primary continuation env
+      # (HA parity): mirror primary continuation env
       # (self-requeue after per-page ingestion) + schema-drift SNS topic.
       # Without these two, database syncs silently truncate in the
       # secondary region and drift alerts stop firing post-failover.
@@ -1083,7 +1083,7 @@ module "database_sync_lambda_secondary" {
       sqs_send = {
         effect  = "Allow"
         actions = ["sqs:SendMessage"]
-        # chunk 08 (HA parity): grant SendMessage on OWN queue for
+        # (HA parity): grant SendMessage on OWN queue for
         # continuation self-requeue.
         resources = [
           aws_sqs_queue.file_ingestion_secondary[0].arn,
@@ -1096,7 +1096,7 @@ module "database_sync_lambda_secondary" {
         actions   = ["dynamodb:PutItem"]
         resources = [module.audit_logs_table_secondary[0].dynamodb_table_arn]
       }
-      # chunk 08 (HA parity): publish-grant on the secondary drift
+      # (HA parity): publish-grant on the secondary drift
       # topic. Same nonexistent-arn fallback pattern as primary so the
       # policy stays well-formed when no subscribers are configured.
       publish_drift = {
@@ -1118,7 +1118,7 @@ resource "aws_lambda_event_source_mapping" "database_sync_secondary" {
   function_name    = module.database_sync_lambda_secondary[0].lambda_function_name
   batch_size       = 1
 
-  # Chunk 02: partial-batch-failure. See lambda-github.tf primary
+  # partial-batch-failure. See lambda-github.tf primary
   # ESM for rationale (handler returns batchItemFailures for failures).
   function_response_types = ["ReportBatchItemFailures"]
 
@@ -1128,11 +1128,11 @@ resource "aws_lambda_event_source_mapping" "database_sync_secondary" {
 }
 
 # ----------------------------------------------------------------------------
-# Azure DevOps sync (secondary) -- chunk 09 finalization
+# Azure DevOps sync (secondary) -- finalization
 #
 # Mirrors module.sharepoint_sync_lambda_secondary. The primary's azure-
-# devops-sync worker was added in commit d6e9574 (chunk 05); this is the
-# secondary-region copy that completes chunk 09.
+# devops-sync worker was added in commit d6e9574; this is the
+# secondary-region copy that completes .
 # ----------------------------------------------------------------------------
 
 module "azure_devops_sync_lambda_secondary" {
@@ -1171,13 +1171,13 @@ module "azure_devops_sync_lambda_secondary" {
       AZURE_DEVOPS_CLIENT_ID               = var.azure_devops_client_id
       AZURE_DEVOPS_CLIENT_SECRET_SSM_PARAM = var.azure_devops_client_secret_ssm_param
 
-      # chunk 05a: ADO sync writes blobs directly to the KB bucket
+      # ADO sync writes blobs directly to the KB bucket
       # (process-documents is S3-triggered + source-agnostic). Skips
       # the file-ingestion / repo-summaries hop entirely so we don't
       # contaminate the github-shaped consumers' DLQs.
       KB_BUCKET               = module.knowledge_base_bucket_secondary.s3_bucket_id
       AZURE_DEVOPS_SYNC_QUEUE = aws_sqs_queue.azure_devops_sync_secondary[0].url
-      # chunk 08 (HA parity): mirror primary chunk-08a. Without this env
+      # (HA parity): mirror primary . Without this env
       # var + the sqs_send_repo_summaries grant below, ADO syncs in the
       # secondary region never enqueue repo-summary jobs post-failover,
       # so code-map + symbol-graph regen silently stops for ADO repos.
@@ -1226,8 +1226,8 @@ module "azure_devops_sync_lambda_secondary" {
         actions   = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"]
         resources = [aws_sqs_queue.azure_devops_sync_secondary[0].arn]
       }
-      # chunk 05a: write blobs directly to the secondary-region KB
-      # bucket. Chunk 08 (HA parity): widened to bucket-root (${bucket}/*)
+      # write blobs directly to the secondary-region KB
+      # bucket. (HA parity): widened to bucket-root (${bucket}/*)
       # to match the primary. The old workspaces/* prefix scoping was the
       # exact anti-pattern CLAUDE.md warns about -- generic-feeling but
       # silently divergent from primary, invisible until failover.
@@ -1236,7 +1236,7 @@ module "azure_devops_sync_lambda_secondary" {
         actions   = ["s3:PutObject", "s3:PutObjectAcl"]
         resources = ["${module.knowledge_base_bucket_secondary.s3_bucket_arn}/*"]
       }
-      # chunk 08 (HA parity, chunk-08a mirror): grant SendMessage on the
+      # (HA parity, mirror): grant SendMessage on the
       # secondary repo-summaries queue so post-failover ADO syncs fan
       # into the same code-map + symbol-graph pipeline.
       sqs_send_repo_summaries = {
@@ -1269,7 +1269,7 @@ resource "aws_lambda_event_source_mapping" "azure_devops_sync_secondary" {
 }
 
 # ----------------------------------------------------------------------------
-# GitLab sync (secondary) -- ADR-050 chunk 08
+# GitLab sync (secondary) -- ADR-050
 # ----------------------------------------------------------------------------
 
 module "gitlab_sync_lambda_secondary" {
@@ -1360,7 +1360,7 @@ module "gitlab_sync_lambda_secondary" {
         actions   = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"]
         resources = [aws_sqs_queue.gitlab_sync_secondary[0].arn]
       }
-      # Bucket-root scope to match the primary exactly (the ADO chunk-08
+      # Bucket-root scope to match the primary exactly (the ADO 
       # live-burn: a prefix-scoped secondary grant diverged silently).
       s3_kb_write = {
         effect    = "Allow"
@@ -1398,7 +1398,7 @@ resource "aws_lambda_event_source_mapping" "gitlab_sync_secondary" {
 }
 
 # ----------------------------------------------------------------------------
-# ServiceNow sync (secondary) -- chunk 07 (HA parity, ADR-044)
+# ServiceNow sync (secondary) -- (HA parity, ADR-044)
 # ----------------------------------------------------------------------------
 
 module "servicenow_sync_lambda_secondary" {
@@ -1519,7 +1519,7 @@ resource "aws_lambda_event_source_mapping" "servicenow_sync_secondary" {
   function_name    = module.servicenow_sync_lambda_secondary[0].lambda_function_name
   batch_size       = 1
 
-  # Partial-batch-failure per the chunk 02 remediation contract.
+  # Partial-batch-failure per the remediation contract.
   function_response_types = ["ReportBatchItemFailures"]
 
   scaling_config {

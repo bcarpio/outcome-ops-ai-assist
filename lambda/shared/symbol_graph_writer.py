@@ -84,7 +84,7 @@ class WriteResult:
 
     ``pointer_swapped`` is True iff the code-maps pointer was advanced to
     ``new_commit_sha`` (legacy ``current_commit_sha`` attribute -- the
-    chunk-03 pointer state machine in ``shared.symbol_graph_pointer``
+    pointer state machine in ``shared.symbol_graph_pointer``
     owns the modern ``graph_sha`` / ``graph_pending_sha`` lifecycle and
     callers wanting that path pass ``skip_pointer_swap=True``).
     """
@@ -237,7 +237,7 @@ def _build_item(
     commit_sha: str,
     fact,
 ) -> Dict[str, object]:
-    """Flatten one ``Fact`` (chunk-01 dataclass) onto a DynamoDB item.
+    """Flatten one ``Fact`` onto a DynamoDB item.
 
     The Fact type is imported lazily by the caller; we accept any object
     that exposes the documented attribute names. This keeps the writer
@@ -447,7 +447,7 @@ def _write_facts_batched(
     **Dedupe before send**: DynamoDB's BatchWriteItem rejects the whole
     batch with ``ValidationException: Provided list of item keys contains
     duplicates`` when two PutItem requests target the same (PK, SK).
-    The chunk-01 extractor can emit two Facts with identical
+    The extractor can emit two Facts with identical
     ``(kind, source, target, file_path, line)`` tuples for a single
     source file (e.g. the same call walked twice by the Tree-sitter
     visitor under nested-scope traversal), which produces identical SKs.

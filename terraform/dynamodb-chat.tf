@@ -76,7 +76,7 @@ module "chat_table" {
   server_side_encryption_enabled     = true
   server_side_encryption_kms_key_arn = local.data_cmk_arn
 
-  # fable-scale chunk 10: TTL on `expires_at` so old conversations age out
+  # TTL on `expires_at` so old conversations age out
   # (was unbounded — every historical chat message survived forever). New
   # message writes set expires_at = now + CHAT_MESSAGE_TTL_SECONDS. Rows
   # written before this landed have no attribute and are ignored by TTL
@@ -180,7 +180,7 @@ module "chat_table_secondary" {
   server_side_encryption_enabled     = true
   server_side_encryption_kms_key_arn = local.data_cmk_arn_secondary
 
-  # fable-scale chunk 10 (HA parity): TTL matches primary.
+  # (HA parity): TTL matches primary.
   ttl_enabled        = true
   ttl_attribute_name = "expires_at"
 

@@ -34,7 +34,7 @@ from botocore.exceptions import ClientError
 
 from shared import dual_write
 
-# fable-scale chunk 04 — GSI2 partition sharding.
+# — GSI2 partition sharding.
 from shared import audit_shard as _audit_shard
 
 logger = logging.getLogger(__name__)
@@ -83,7 +83,7 @@ ACTION_LOGIN_SUCCEEDED = "LOGIN_SUCCEEDED"
 ACTION_API_KEY_USED = "API_KEY_USED"
 ACTION_MCP_JWT_VALIDATED = "MCP_JWT_VALIDATED"
 
-# HA passive-mode block (chunk 9c). Steady-state count is zero in
+# HA passive-mode block. Steady-state count is zero in
 # active region; non-zero in passive region during a failover drill
 # or post-failover until the operator flips. Operators WANT these on
 # the audit dashboard — NOT in HIDDEN_DASHBOARD_ACTIONS.
@@ -359,7 +359,7 @@ def log_admin_action(
             "SK": sort_key,
             "GSI1PK": user_key,
             "GSI1SK": sort_key,
-            # GSI2: category-partitioned index. fable-scale chunk 04 shards
+            # GSI2: category-partitioned index. shards
             # this key by a hash of request_id so a hot category (e.g.
             # CAT#admin during org-scale onboarding) doesn't hammer a single
             # DDB partition. Reader must fan out across shards + the legacy

@@ -16,7 +16,7 @@ ADO differs from the other integrations in two important ways:
    env var ``AZURE_DEVOPS_TENANT_ID`` down to every token_manager call.
 2. **Three-level namespace.** ADO repos live under
    ``{org}/{project}/{repo}`` (vs GitHub's ``{owner}/{repo}``). The
-   DDB SK is ``AZDO_REPO#{org}/{project}/{repo}`` per chunk 01.
+   DDB SK is ``AZDO_REPO#{org}/{project}/{repo}``.
 
 API Endpoints:
     GET    /azure-devops/authorize?workspace_id={id}     -- OAuth URL
@@ -659,7 +659,7 @@ def _get_workspace_repo(workspace_id: str, slug: str) -> Optional[Dict]:
 def _queue_sync_job(workspace_id: str, slug: str, connection_id: str) -> None:
     """Enqueue a sync job. The message shape must match what the
     azure-devops-sync worker reads from message["org"|"project"|"repo"]
-    (KeyError otherwise). Mirror the chunk-06 scheduler's body shape."""
+    (KeyError otherwise). Mirror the scheduler's body shape."""
     if not AZURE_DEVOPS_SYNC_QUEUE:
         logger.warning("AZURE_DEVOPS_SYNC_QUEUE not configured")
         return

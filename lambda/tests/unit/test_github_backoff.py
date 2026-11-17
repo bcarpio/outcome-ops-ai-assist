@@ -1,6 +1,6 @@
 # Copyright 2025-2026 OutcomeOps
 # SPDX-License-Identifier: Apache-2.0
-"""Unit tests for shared/github_backoff (fable-scale chunk 06).
+"""Unit tests for shared/github_backoff ().
 
 Covers:
 - 403 with rate-limit body -> retry

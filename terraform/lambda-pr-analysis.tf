@@ -98,7 +98,7 @@ module "analyze_pr_lambda" {
     AZURE_DEVOPS_CLIENT_ID               = var.azure_devops_client_id
     AZURE_DEVOPS_CLIENT_SECRET_SSM_PARAM = var.azure_devops_client_secret_ssm_param
 
-    # GitLab MR-analysis dispatch (chunk 05). Same pattern as the ADO
+    # GitLab MR-analysis dispatch. Same pattern as the ADO
     # block above: empty on deploys without GitLab; the gitlab branch
     # surfaces a clear error in that case. Token acquisition goes
     # through the cached single-flight path (ADR-050 v1.1) which reads
@@ -300,7 +300,7 @@ module "process_pr_check_lambda" {
     BEDROCK_BASIC_INPUT_PRICE          = tostring(var.bedrock_basic_input_price)
     BEDROCK_BASIC_OUTPUT_PRICE         = tostring(var.bedrock_basic_output_price)
 
-    # chunk 07: ADO PR-comment posting reads the customer's OAuth
+    # ADO PR-comment posting reads the customer's OAuth
     # refresh token from WORKSPACES_TABLE (AZDO_TOKEN# rows),
     # decrypts via the OAuth tokens KMS key, and refreshes against
     # the customer's Entra ID tenant. tenant_id + client_id come
@@ -313,7 +313,7 @@ module "process_pr_check_lambda" {
     AZURE_DEVOPS_CLIENT_ID               = var.azure_devops_client_id
     AZURE_DEVOPS_CLIENT_SECRET_SSM_PARAM = var.azure_devops_client_secret_ssm_param
 
-    # GitLab MR-check dispatch (chunk 05). Token acquisition goes
+    # GitLab MR-check dispatch. Token acquisition goes
     # through the cached single-flight path (ADR-050 v1.1) reading
     # GITLAB_TOKEN# rows from WORKSPACES_TABLE + the OAuth KMS key
     # (both wired above). Empty on deploys without GitLab.
@@ -431,7 +431,7 @@ module "process_pr_check_lambda" {
     }
 
     # shared.symbol_graph_reader emits OutcomeOps/SymbolGraph::QueryLatency
-    # (chunk-08 latency alarm) from the pr-check path too -- BREAKING_CHANGES
+    # from the pr-check path too -- BREAKING_CHANGES
     # plane-1 queries the symbol graph per check. PutMetricData has no
     # resource-level ARN, so scope by namespace (mirrors lambda-chat.tf /
     # mcp-outcomeops.tf). Without this the emit AccessDenies on every query
@@ -447,7 +447,7 @@ module "process_pr_check_lambda" {
       }]
     }
     },
-    # chunk 07: ADO PR-comment posting needs DDB read on AZDO_TOKEN#
+    # ADO PR-comment posting needs DDB read on AZDO_TOKEN#
     # rows + KMS decrypt on the OAuth tokens key. Gated on
     # enable_workspaces because the workspaces table + oauth_tokens
     # key only exist in that mode.
@@ -494,7 +494,7 @@ resource "aws_lambda_event_source_mapping" "pr_checks_queue_to_lambda" {
   # Function response types for partial batch failures
   function_response_types = ["ReportBatchItemFailures"]
 
-  # fable-scale chunk 05: cap PR-analyzer concurrency so a Monday-9am burst
+  # cap PR-analyzer concurrency so a Monday-9am burst
   # of 200 PRs doesn't starve the interactive chat surface of Bedrock quota.
   # Absent this cap, process-pr-check spins up as many concurrent Lambdas as
   # SQS delivers messages, each holding a Sonnet inference slot.

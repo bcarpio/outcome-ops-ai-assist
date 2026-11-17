@@ -21,7 +21,7 @@ module "audit_alert_lambda" {
   cloudwatch_logs_retention_in_days = 7
   cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs.arn
 
-  # Source code from local directory + shared/ for the HA chunk 9j
+  # Source code from local directory + shared/ for the 
   # is_active_region() gate at the top of handler.py.
   source_path = [
     {
@@ -38,7 +38,7 @@ module "audit_alert_lambda" {
   quiet_archive_local_exec = true
 
   # Environment variables
-  # chunk 10 (HA parity): merge ha_scheduler_env so is_active_region()
+  # (HA parity): merge ha_scheduler_env so is_active_region()
   # reads the local-region AppConfig. Without this the primary alert
   # Lambda no-ops the gate (returns True unconditionally), which under
   # a demoted-but-alive primary means duplicate SNS alerts alongside
@@ -82,7 +82,7 @@ module "audit_alert_lambda" {
         ]
       }
     },
-    # chunk 10 (HA parity): appconfig:GetLatestConfiguration on the
+    # (HA parity): appconfig:GetLatestConfiguration on the
     # primary-region config so is_active_region() can gate SNS publishes.
     local.ha_scheduler_iam,
   )

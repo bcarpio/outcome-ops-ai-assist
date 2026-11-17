@@ -665,7 +665,7 @@ def _extract_via_tree_sitter(file_path: str, source: bytes) -> Iterator[Fact]:
             # Class-impl is *also* a ``defines`` site — having both
             # ``class_declaration`` and ``class_implementation`` in one
             # file is the canonical OO ABAP shape, so we emit twice on
-            # purpose: the storage layer (chunk 02) dedupes on
+            # purpose: the storage layer dedupes on
             # (kind, source, target).
             yield Fact(
                 kind="defines",

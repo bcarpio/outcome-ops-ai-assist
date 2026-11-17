@@ -1,6 +1,6 @@
 # Copyright 2025-2026 OutcomeOps
 # SPDX-License-Identifier: Apache-2.0
-"""Unit tests for shared.model_client dispatch (chunk 01).
+"""Unit tests for shared.model_client dispatch.
 
 These tests do not exercise real boto3 / HTTPS. Backends are stubs.
 """
@@ -195,7 +195,7 @@ def test_invoke_stream_routes_to_correct_backend_and_yields():
     from shared.model_client_types import Usage
 
     def fake_stream(req, on_retry=None):
-        # fable-scale chunk 05: invoke_stream now accepts an on_retry
+        # invoke_stream now accepts an on_retry
         # callback for stream-init backoff notifications.
         assert req.model_id == "anthropic.claude-opus-4-7-20260514-v1:0"
         yield TextDelta(text="hi")
@@ -240,7 +240,7 @@ def test_stream_event_subclasses_are_instances_of_streamevent():
 
 
 # ---------------------------------------------------------------------------
-# ADR-016 v1.2 -- workload-aware profile ARN resolution (chunk 03)
+# ADR-016 v1.2 -- workload-aware profile ARN resolution
 # ---------------------------------------------------------------------------
 
 
@@ -273,7 +273,7 @@ class TestApplicationInferenceProfileArnBackendDispatch:
     def test_application_inference_profile_arn_routes_to_converse(self):
         # Regression: application profile ARNs have resource type
         # ":application-inference-profile/", not ":inference-profile/".
-        # The initial chunk 03 check anchored on ":inference-profile/"
+        # The initial check anchored on ":inference-profile/"
         # (leading colon) and missed application profiles because their
         # separator is "-", not ":". Landed a real "No backend
         # registered" DLQ from process-repo-summary against the
@@ -335,7 +335,7 @@ class TestProfileArnEnvVarResolution:
 
 
 class TestInvokeWithWorkloadTier:
-    """The workload+tier dispatch path (chunk 03 API)."""
+    """The workload+tier dispatch path."""
 
     def _fake_converse(self, captured):
         def fake_invoke(req):

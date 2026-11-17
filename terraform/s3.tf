@@ -83,7 +83,7 @@ output "knowledge_base_bucket_arn" {
 # ============================================================================
 # Secondary-region copy (HA mode only).
 # S3 bucket names are globally unique, so the secondary bucket has a
-# `-secondary` suffix. The replicator-applier (chunk 05) does
+# `-secondary` suffix. The replicator-applier does
 # cross-region GetObject from the source bucket and PutObject into the
 # local bucket, so the two buckets stay in sync via application-layer
 # dual-write — not S3 Cross-Region Replication (the latter introduces

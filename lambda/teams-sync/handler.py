@@ -119,7 +119,7 @@ def update_connection_status(
     """Update connection sync status.
 
     ``channel_folder_maps`` (ADR-###): {team_drive_{drive_id}:
-    {folder_id: channel_name}} — chunk 02's persisted ancestor map for
+    {folder_id: channel_name}} — persisted ancestor map for
     drive-delta parent-id routing.
     """
     table = dynamodb.Table(WORKSPACES_TABLE)
@@ -304,7 +304,7 @@ def queue_file_ingestion(
             "download_url": download_url,
             "mime_type": file_item.get("file", {}).get("mimeType", "application/octet-stream"),
             "size": file_item.get("size", 0),
-            # Chunk 03: threaded through to file-ingestion's etag
+            # threaded through to file-ingestion's etag
             # safety net. Empty when Graph didn't return an eTag on the
             # delta item -- the safety net skips the check and takes
             # the download+put path in that case.
@@ -373,7 +373,7 @@ def process_sync_request(message: Dict) -> Dict[str, Any]:
 
     try:
         # Group channels by team so file-sync can make one drive-delta
-        # call per team (chunk 02 §Overview). Preserve original ordering
+        # call per team. Preserve original ordering
         # for consistent CloudWatch traces.
         team_to_channels: Dict[str, List[Dict]] = {}
         for channel_info in include_channels:
@@ -431,7 +431,7 @@ def process_sync_request(message: Dict) -> Dict[str, Any]:
                 total_messages += msg_count
 
             # File-sync: one drive-delta call for the whole team.
-            # Chunk 02 §Overview: replaces the previous per-channel
+            # §Overview: replaces the previous per-channel
             # list_folder_files enumeration with parent-id routing
             # via a persisted ancestor map. Blocked channels
             # (repo-limit) are dropped -- files from those channels
@@ -716,7 +716,7 @@ def _sync_team_files(
 ) -> int:
     """Sync files for all channels of a team via one drive-delta call.
 
-    Chunk 01 §2 + §3: Graph's driveitem-delta does NOT populate
+    §2 + §3: Graph's driveitem-delta does NOT populate
     ``parentReference.path`` on returned items. Routing is by
     ``parentReference.id`` through a folder-ancestor map:
     {folder_id: channel_name}. The map is seeded with each channel's
@@ -724,7 +724,7 @@ def _sync_team_files(
     driveItems. It's persisted on the connection row alongside
     ``delta_links``.
 
-    Chunk 01 §6: post-migration private channels report the drive
+    §6: post-migration private channels report the drive
     root as their filesFolder. ``_get_channel_roots`` detects the
     collision and drops the affected channels; files at drive root
     are not attributable to a specific channel and get skipped
@@ -821,7 +821,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         logger.error("No SQS records in event")
         return {"statusCode": 400, "body": "Invalid event"}
 
-    # Chunk 02: partial-batch-failure semantics -- see github-sync
+    # partial-batch-failure semantics -- see github-sync
     # for the same conversion + rationale (silent KB data loss under
     # transient upstream failures).
     batch_item_failures: List[Dict[str, str]] = []

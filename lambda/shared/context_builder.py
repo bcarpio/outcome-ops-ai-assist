@@ -359,7 +359,7 @@ def build_graph_unavailable_block(*, target_symbol_id: Optional[str] = None) -> 
     """Render the fallback block when the symbol graph is unavailable.
 
     Emitted when ``shared.symbol_graph_reader`` raises
-    ``SymbolGraphUnavailable`` (chunk-04 retry exhaustion) so the
+    ``SymbolGraphUnavailable`` so the
     answer transparently degrades to RAG-only with a disclaimer. The
     grounding instruction (above) tells the model to surface the
     unavailable state to the user.
@@ -379,7 +379,7 @@ def build_graph_unavailable_block(*, target_symbol_id: Optional[str] = None) -> 
 
 
 # ---------------------------------------------------------------------------
-# Audit-shaped coverage checklist (chunk 05 / ADR-026)
+# Audit-shaped coverage checklist
 #
 # Security/audit/compliance questions were answered via free-form
 # synthesis, so the same question produced a different finding set each
@@ -409,7 +409,7 @@ AUDIT_COVERAGE_ROWS: Tuple[str, ...] = (
 
 # Verification framing — an explicit "is this secure / does this meet /
 # audit / gaps in" shape, NOT a plain "how does X work" explanation.
-# Conservative on purpose (see chunk-05 false-positive risk).
+# Conservative on purpose (see false-positive risk).
 _AUDIT_SHAPE_PATTERNS = (
     r"\bis\b.{0,40}\bsecure\b",
     r"\bhow secure\b",

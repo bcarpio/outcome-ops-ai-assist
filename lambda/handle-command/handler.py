@@ -57,7 +57,7 @@ logger.setLevel(logging.INFO)
 # AWS clients (initialized once per container)
 ssm_client = boto3.client("ssm")
 sqs_client = boto3.client("sqs")
-# Bedrock LLM completions route via shared.model_client (ADR-035 chunk 11).
+# Bedrock LLM completions route via shared.model_client (ADR-035).
 # The per-handler bedrock-runtime client was only used for the legacy
 # InvokeModel call below and is no longer constructed here.
 

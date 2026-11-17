@@ -91,12 +91,12 @@ describe('listConversations', () => {
     expect(result.conversations[0].conversation_id).toBe('conv-1')
   })
 
-  it('throws on non-ok response (chunk 15: consistency with other exports)', async () => {
+  it('throws on non-ok response', async () => {
     global.fetch = vi.fn().mockResolvedValue({ ok: false, status: 500, text: () => Promise.resolve('{}') })
     await expect(listConversations()).rejects.toThrow(/500/)
   })
 
-  it('propagates network errors (chunk 15: no silent swallow)', async () => {
+  it('propagates network errors', async () => {
     global.fetch = vi.fn().mockRejectedValue(new Error('Network error'))
     await expect(listConversations()).rejects.toThrow('Network error')
   })
@@ -131,30 +131,30 @@ describe('getConversation', () => {
     expect(result?.messages).toHaveLength(1)
   })
 
-  it('throws on non-ok response (chunk 15: no silent null)', async () => {
+  it('throws on non-ok response', async () => {
     global.fetch = vi.fn().mockResolvedValue({ ok: false, status: 404, text: () => Promise.resolve('{}') })
     await expect(getConversation('bad-id')).rejects.toThrow(/404/)
   })
 
-  it('propagates network errors (chunk 15: no silent swallow)', async () => {
+  it('propagates network errors', async () => {
     global.fetch = vi.fn().mockRejectedValue(new Error('Network error'))
     await expect(getConversation('conv-1')).rejects.toThrow('Network error')
   })
 })
 
 describe('deleteConversation', () => {
-  it('resolves on success (chunk 15: void return)', async () => {
+  it('resolves on success', async () => {
     global.fetch = vi.fn().mockResolvedValue({ ok: true })
     await expect(deleteConversation('conv-1')).resolves.toBeUndefined()
     expect(fetch).toHaveBeenCalledWith('/api/conversations/conv-1', { method: 'DELETE' })
   })
 
-  it('throws on failure (chunk 15: no silent boolean)', async () => {
+  it('throws on failure', async () => {
     global.fetch = vi.fn().mockResolvedValue({ ok: false, status: 500, text: () => Promise.resolve('{}') })
     await expect(deleteConversation('conv-1')).rejects.toThrow(/500/)
   })
 
-  it('propagates network errors (chunk 15: no silent swallow)', async () => {
+  it('propagates network errors', async () => {
     global.fetch = vi.fn().mockRejectedValue(new Error('Network error'))
     await expect(deleteConversation('conv-1')).rejects.toThrow('Network error')
   })

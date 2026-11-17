@@ -290,7 +290,7 @@ resource "aws_ecs_service" "mcp" {
   task_definition = aws_ecs_task_definition.mcp.arn
   desired_count   = var.desired_count
 
-  # fable-scale chunk 01: mixed on-demand + spot. Base=0 keeps the
+  # mixed on-demand + spot. Base=0 keeps the
   # sandbox default behaviour (all-spot); callers wanting always-on
   # tasks pass ondemand_base > 0.
   dynamic "capacity_provider_strategy" {
@@ -311,11 +311,11 @@ resource "aws_ecs_service" "mcp" {
   deployment_maximum_percent         = 200
   deployment_minimum_healthy_percent = var.min_healthy_percent
 
-  # fable-scale chunk 01: required when capacity_provider_strategy changes.
+  # required when capacity_provider_strategy changes.
   # ECS refuses the update otherwise ("force_new_deployment should be true
   # when capacity_provider_strategy is being updated"). Same default as the
   # terraform-aws-modules/ecs/aws service submodule. Session state lives in
-  # DDB (fable-scale chunk 02) so rolling a task is stateless-safe; the
+  # DDB () so rolling a task is stateless-safe; the
   # min_healthy_percent = 100 guarantees an in-flight tools/call isn't
   # dropped mid-roll.
   force_new_deployment = true
@@ -351,11 +351,11 @@ resource "aws_ecs_service" "mcp" {
 }
 
 # -----------------------------------------------------------------------------
-# fable-scale chunk 01: application autoscaling (target-tracking on
+# application autoscaling (target-tracking on
 # ALBRequestCountPerTarget). Only wired when the caller opts in AND the ALB
 # path is in use — Cloud Map-only deployments would need a different metric.
 # Enabling this on MCP requires session state to live outside the container
-# (fable-scale chunk 02); with in-memory sessions, a second task can't share
+# (); with in-memory sessions, a second task can't share
 # state, so autoscaling would multiply session losses.
 # -----------------------------------------------------------------------------
 

@@ -1,7 +1,7 @@
 # Copyright 2025-2026 OutcomeOps
 # SPDX-License-Identifier: Apache-2.0
 
-# === Legacy dict -> unified Response adapter (ADR-035 chunk 11) ===
+# === Legacy dict -> unified Response adapter (ADR-035) ===
 from types import SimpleNamespace
 from shared.model_client_types import StopReason
 
@@ -141,7 +141,7 @@ class TestComputeContentHash:
 class TestFetchFileContent:
     """Test file content fetching from GitHub.
 
-    chunk-08a moved the urlopen call from process_batch_summary's
+    moved the urlopen call from process_batch_summary's
     fetch_file_content into shared.source_fetch -- the mock target
     moved with it. The shared module also validates that
     github_token is non-empty at the dispatch layer, so the tests
@@ -387,7 +387,7 @@ class TestStoreBatchSummary:
     def test_store_batch_summary_success(self):
         """Test successful batch summary storage.
 
-        fable-scale chunk 07: store_batch_summary now routes through
+        store_batch_summary now routes through
         shared.dual_write.s3vectors_put_vectors (chunked at 500 + HA
         replication). Inject a mock client into dual_write so the same
         put_vectors call_args inspection shape works.
@@ -559,7 +559,7 @@ class TestProcessBatchRecord:
     def test_process_batch_record_old_shape_defaults_to_single_shard(
         self, mock_summary, mock_embedding, mock_store
     ):
-        """Chunk 02 backwards compat: pre-chunk-02 producer omits
+        """backwards compat: pre-producer omits
         message_type + shard fields. Consumer must still process the
         record end-to-end by defaulting to single-shard."""
         mock_summary.return_value = "summary"
@@ -588,7 +588,7 @@ class TestProcessBatchRecord:
     def test_process_batch_record_merge_message_routes_to_handle_merge(
         self, mock_summary, mock_embedding, mock_store, mock_handle_merge,
     ):
-        """Chunk 05: process_batch_record delegates merge messages to
+        """process_batch_record delegates merge messages to
         handle_merge_message; the shard-summary path (Bedrock, embedding,
         store) is skipped since merge has its own dedicated Bedrock call."""
         record = {
@@ -639,7 +639,7 @@ class TestProcessBatchRecord:
 
 
 class TestHandleMergeMessage:
-    """Chunk 05 merge fan-in."""
+    """merge fan-in."""
 
     def _base_batch(self, shard_count=3):
         return {
@@ -878,7 +878,7 @@ class TestSymbolGraphWiring:
         mock_store,
     ):
         """When the SQS message carries workspace_id + repo + commit_sha,
-        the chunk-03 path engages: begin_swap claims the pointer, the
+        the path engages: begin_swap claims the pointer, the
         summary path runs WITH a fact sink, _emit_facts is invoked with
         all three context args, and commit_swap advances the pointer."""
         record = {
@@ -931,7 +931,7 @@ class TestSymbolGraphWiring:
         )
         mock_abandon.assert_not_called()
 
-        # generate_batch_summary received a fact_sink (chunk-03 enabled).
+        # generate_batch_summary received a fact_sink.
         # The first positional arg is the batch; fact_sink is the keyword.
         summary_call = mock_summary.call_args
         assert summary_call.kwargs.get("fact_sink") is not None
@@ -975,7 +975,7 @@ class TestSymbolGraphWiring:
         ) as mock_begin:
             process_batch_record(record)
 
-        # Chunk-03 path stays off when commit_sha is missing.
+        # path stays off when commit_sha is missing.
         mock_begin.assert_not_called()
         mock_emit_facts.assert_not_called()
         mock_commit.assert_not_called()
@@ -1115,7 +1115,7 @@ class TestGitHubApiCallsUseFullRepoName:
 
 
 class TestPiiRedactionWiring:
-    """plan/ chunk 05 - verify the redact -> embed pipeline wiring for
+    """plan/ - verify the redact -> embed pipeline wiring for
     workspace-scoped batch summaries."""
 
     @patch("process_batch_summary_handler.store_batch_summary")

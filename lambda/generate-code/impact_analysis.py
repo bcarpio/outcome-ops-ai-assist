@@ -15,7 +15,7 @@ The flow:
      Jira/GitHub issue verbiage and the plan's file mix.
   3. On modify, ``extract_modify_targets`` parses the plan to identify
      which existing symbols are being changed.
-  4. ``analyze_caller_impact`` queries the symbol graph (chunk-04 reader)
+  4. ``analyze_caller_impact`` queries the symbol graph
      for callers of each modified symbol.
   5. ``build_impact_prompt_section`` formats the result for inclusion
      in the model's prompt, so the next codegen pass updates caller
@@ -176,7 +176,7 @@ def classify_task_type(
 
 # Match qualified symbol IDs in plan/issue text. Two recognized shapes:
 #
-#   - "module.path::name"   (Python-style, what the chunk-01 extractor emits)
+#   - "module.path::name"   (Python-style, what the extractor emits)
 #   - "@scope/pkg/subpath"  (TS-style subpath; relevant for importers())
 #
 # We also accept the explicit ``python:`` / ``typescript:`` /
@@ -222,7 +222,7 @@ def _normalize_symbol_id(
 ) -> Optional[str]:
     """Build a canonical symbol_id from regex groups.
 
-    The chunk-01 extractor emits ``python:lambda.shared.foo::bar``. We
+    The extractor emits ``python:lambda.shared.foo::bar``. We
     default to ``python:`` when no language prefix is present and a
     Python-shape symbol matched, because the OutcomeOps repo is
     Python-dominant; this matches the proof case in the plan

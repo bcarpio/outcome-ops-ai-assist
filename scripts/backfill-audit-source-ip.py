@@ -51,7 +51,7 @@ def _iter_target_rows(
     audit_table, start_iso: str, category: str
 ) -> Iterator[Dict]:
     """Query GSI2 for category rows in the time window. We use GSI2 here
-    because chunk-08 (2fd19e9) backfilled it, so this query reads only
+    because (2fd19e9) backfilled it, so this query reads only
     rows in the requested category - no Scan + post-filter required."""
     query_kwargs = {
         "IndexName": "GSI2",

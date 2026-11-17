@@ -71,7 +71,7 @@ _HANDLER_LOAD_ENV = {
 _orig_env = {k: os.environ.get(k) for k in _HANDLER_LOAD_ENV}
 os.environ.update(_HANDLER_LOAD_ENV)
 
-# Chunk 16: token_manager + azure_devops_api consolidated to
+# token_manager + azure_devops_api consolidated to
 # lambda/shared/oauth/azure_devops.py + lambda/shared/azure_devops_api.py.
 # For the shared modules we import via the ordinary package path so all
 # handlers share the SAME module object -- double-loading via _load_module

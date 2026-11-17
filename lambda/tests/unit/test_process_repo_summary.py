@@ -259,7 +259,7 @@ class TestHandler:
 
 
 # ============================================================================
-# Code-map orphan cleanup emit (chunk 02)
+# Code-map orphan cleanup emit
 # ============================================================================
 
 
@@ -374,7 +374,7 @@ class TestExpectedCodeMapVectorKeys:
 
 
 class TestExpectedCodeMapVectorKeysShardAware:
-    """Regression for the 2026-07-08 shard-orphan-cleanup bug: chunk 03's
+    """Regression for the 2026-07-08 shard-orphan-cleanup bug: 
     splitter writes shard-suffixed vector keys for oversized units, but
     the pre-fix _expected_code_map_vector_keys only emitted parent
     group_names. Result: whichever shard summary landed before the

@@ -65,7 +65,7 @@ def _load_handler_module():
     handler_module._workspaces_table = "test-workspaces-table"
     # Bypass workspace access validation in tests
     handler_module._validate_workspace_access = lambda user_email, workspace_ids: workspace_ids
-    # Bypass scope resolution too (chunk 03 of the workspace-scope plan).
+    # Bypass scope resolution too.
     # Save a reference to the real resolver so the dedicated resolver
     # tests can reach past the stub.
     handler_module._real_resolve_chat_workspace_scope = (
@@ -116,7 +116,7 @@ def _legacy_converse_stream_to_unified(events):
     """Translate Converse-shape stream events (the dict shape that
     test_chat fixtures program via mock_bedrock_client.converse_stream.
     return_value) into the unified StreamEvent sequence that the new
-    chat handler consumes after the ADR-035 chunk 11 migration.
+    chat handler consumes after the ADR-035 migration.
     """
     import json as _json
     from shared.model_client_types import (
@@ -435,7 +435,7 @@ class TestDdbNormalize:
 
 
 # ============================================================================
-# Chunk 03 of the workspace-scope plan: resolve_chat_workspace_scope
+# of the workspace-scope plan: resolve_chat_workspace_scope
 # ============================================================================
 
 
@@ -903,7 +903,7 @@ class TestSaveMessage:
         assert "sources" not in item
 
     def test_save_message_sets_expires_at(self, mock_table):
-        """fable-scale chunk 10: expires_at drives TTL eviction (default 90d)."""
+        """expires_at drives TTL eviction (default 90d)."""
         import time as _time
         before = int(_time.time())
         save_message("conv_test123", "user", "Hello")
@@ -916,7 +916,7 @@ class TestSaveMessage:
         assert item["expires_at"] <= after + 7776000 + 5
 
     def test_save_message_caps_oversized_content(self, mock_table, monkeypatch):
-        """fable-scale chunk 10: >CHAT_MAX_MESSAGE_CONTENT_CHARS pastes get
+        """>CHAT_MAX_MESSAGE_CONTENT_CHARS pastes get
         head+tail truncated with a middle-of-message marker."""
         # Use a realistic cap so the head+tail budget preserves both ends.
         monkeypatch.setenv("CHAT_MAX_MESSAGE_CONTENT_CHARS", "1000")
@@ -2717,7 +2717,7 @@ class TestEdgeCases:
     def test_delete_conversation_emits_audit_row(
         self, mock_get_conversation, mock_audit, mock_table,
     ):
-        """plan/audit-completeness chunk 05 — delete_conversation emits
+        """plan/audit-completeness — delete_conversation emits
         ACTION_CONVERSATION_DELETED with message_count + oldest_message_at."""
         mock_s3vectors_client.list_vectors.return_value = {"vectors": []}
         # Ownership-verification probe returns the conversation row.

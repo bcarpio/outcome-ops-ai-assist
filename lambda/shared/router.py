@@ -215,7 +215,7 @@ def _router_model_id() -> str:
     )
 
 
-# NOTE (ADR-035 chunk 12): the legacy boto3 bedrock-runtime client
+# NOTE (ADR-035): the legacy boto3 bedrock-runtime client
 # construction + test-injection hooks (_bedrock / _bedrock_client /
 # _test_bedrock_override / _set_bedrock_client_for_tests /
 # _reset_clients_for_tests) were removed here. The router now calls
@@ -318,7 +318,7 @@ def classify_intent(
 
     Bedrock-failures degrade gracefully to ``RouterDecision(intent=
     "pattern", symbol_candidate=None, ...)`` — the narrowest safe
-    default (RAG-only, no symbol-graph fan-out). fable-scale chunk 05
+    default (RAG-only, no symbol-graph fan-out). 
     flipped this from ``unknown`` (which triggered fan-out to every
     retrieval surface) so a router throttle doesn't pile MORE Bedrock
     calls onto an already-saturated quota. Trade-off: pattern-only
@@ -369,7 +369,7 @@ def classify_intent(
         )
     except Exception as exc:
         duration_ms = int((time.time() - started) * 1000)
-        # fable-scale chunk 05: degrade to 'pattern' (narrow, RAG-only) so a
+        # degrade to 'pattern' (narrow, RAG-only) so a
         # router throttle doesn't fan out MORE Bedrock calls. Prior behavior
         # ('unknown') triggered structural/graph retrieval on top of RAG,
         # compounding quota pressure at exactly the wrong moment.

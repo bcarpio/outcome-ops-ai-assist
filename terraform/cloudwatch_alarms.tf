@@ -4,12 +4,12 @@
 # CloudWatch alarms -- estate coverage
 # ============================================================================
 #
-# Chunk 12 of the fable-code-review remediation. Before this file, the
+# of the fable-code-review remediation. Before this file, the
 # entire estate had five alarms: cloudwatch_symbol_graph.tf and four
 # replication-DLQ alarms in eventbridge-replication + lambda-replication-
 # applier. Nothing alarmed on integration sync DLQs, code-generation
 # DLQ, file-ingestion DLQ, chat/query/KB Lambda errors, API Gateway
-# 5xx, or Fargate health. Once chunk 02 lands (sync consumers switching
+# 5xx, or Fargate health. Once lands (sync consumers switching
 # to partial-batch-failure semantics), real failures start hitting DLQs
 # and nobody was told.
 #
@@ -32,7 +32,7 @@ locals {
   # dimension resolves whether the underlying queue is a module or a
   # raw aws_sqs_queue.
   dlq_alarm_queues = [
-    # Integration sync DLQs (chunk 02 makes these actually receive
+    # Integration sync DLQs (makes these actually receive
     # messages via partial-batch-failure semantics).
     "${var.environment}-${var.app_name}-github-sync-dlq",
     "${var.environment}-${var.app_name}-confluence-sync-dlq",
@@ -175,7 +175,7 @@ resource "aws_cloudwatch_metric_alarm" "outcome_ops_api_5xx" {
 }
 
 # ----------------------------------------------------------------------------
-# Chunk 06 (code-map splitter): observability for merge fan-in failures.
+# (code-map splitter): observability for merge fan-in failures.
 #
 # Two failure modes worth alarming on:
 #
@@ -206,7 +206,7 @@ resource "aws_cloudwatch_log_metric_filter" "merge_dlq_give_up" {
 
 resource "aws_cloudwatch_metric_alarm" "merge_dlq_give_up" {
   alarm_name          = "${var.environment}-${var.app_name}-merge-dlq-give-up"
-  alarm_description   = "Chunk 05 merge fan-in gave up after max requeue attempts -- shard summaries never all landed, sharded code unit lost its unified summary. Per-shard summaries survive at shard-suffixed keys."
+  alarm_description   = "merge fan-in gave up after max requeue attempts -- shard summaries never all landed, sharded code unit lost its unified summary. Per-shard summaries survive at shard-suffixed keys."
   namespace           = "OutcomeOps/CodeMap"
   metric_name         = "MergeGiveUpCount"
   statistic           = "Sum"

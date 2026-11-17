@@ -1,6 +1,6 @@
 # Copyright 2025-2026 OutcomeOps
 # SPDX-License-Identifier: Apache-2.0
-"""Failure-mode tests for plan-git-truth chunk 03.
+"""Failure-mode tests for plan-git-truth .
 
 Seven tests, one per failure mode documented in
 plan-git-truth/overview.md. Plus one cross-test helper (`_seed_ws_row`)
@@ -297,7 +297,7 @@ def test_dlq_wedge_advances_with_partial_policy(tables):
 # Test 4 — Per-unit dispatch failure does NOT fail the SQS record
 # ===========================================================================
 #
-# Regression guard for the chunk-02b/2 behavior change in
+# Regression guard for the /2 behavior change in
 # send_code_units_to_sqs. Inject a ClientError on one unit's
 # send_message; assert the other units still dispatch, the function
 # returns a partial success count, and the failed unit is recorded

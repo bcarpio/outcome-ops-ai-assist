@@ -276,7 +276,7 @@ class TestChunking:
         para_b = "y " * 30_000
         text = para_a + "\n\n" + para_b
 
-        # Chunk 1 reports 2 emails, chunk 2 reports 3 phones.
+        # reports 2 emails, reports 3 phones.
         side_effects = [
             _comprehend_response([
                 {"Type": "EMAIL", "BeginOffset": 0, "EndOffset": 1,
@@ -356,7 +356,7 @@ class TestLanguageCode:
 
 class TestReadWorkspaceMode:
     def test_returns_strict_for_legacy_workspace_missing_attr(self):
-        """Workspaces created before chunk 03 lack privacy_mode -
+        """Workspaces created before lack privacy_mode -
         reader must default to STRICT (the safe default)."""
         table = MagicMock()
         table.get_item.return_value = {"Item": {"workspace_id": "ws1"}}

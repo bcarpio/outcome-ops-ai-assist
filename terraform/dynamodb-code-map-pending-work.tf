@@ -1,7 +1,7 @@
 # Copyright 2025-2026 OutcomeOps
 # SPDX-License-Identifier: Apache-2.0
 # ============================================================================
-# DynamoDB Table for Per-Pipeline Pending-Work Ledger (plan-git-truth chunk 01)
+# DynamoDB Table for Per-Pipeline Pending-Work Ledger (plan-git-truth )
 #
 # Tracks expected vs. completed SQS messages per
 # (workspace, repo, pipeline, target_sha). The dispatcher writes one row
@@ -38,7 +38,7 @@ module "code_map_pending_work_table" {
   ]
 
   # No GSIs. Operators investigating a stuck batch scan by PK prefix;
-  # query volume is rare enough that scan cost is fine. If chunk 02
+  # query volume is rare enough that scan cost is fine. If 
   # surfaces a need to list "all pending batches for a workspace,"
   # add a GSI then — don't speculate now.
 

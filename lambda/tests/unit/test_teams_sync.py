@@ -390,7 +390,7 @@ class TestTeamsSyncProcessRequest:
 
 
 class TestTeamsSyncLambdaHandler:
-    """Chunk 02: SQS partial-batch-failure contract."""
+    """SQS partial-batch-failure contract."""
 
     @patch.object(handler_module, "process_sync_request")
     def test_handler_success(self, mock_process):
@@ -431,12 +431,12 @@ class TestTeamsSyncLambdaHandler:
 
 
 # ============================================================================
-# Chunk 02 -- drive-delta file sync (per-team + parent-id routing)
+# -- drive-delta file sync (per-team + parent-id routing)
 # ============================================================================
 
 
 class TestGetDriveDelta:
-    """teams_api.get_drive_delta -- new in chunk 02."""
+    """teams_api.get_drive_delta -- new in ."""
 
     @patch.object(teams_api_module, "_make_request")
     def test_initial_call_no_token_hits_root_delta_url(self, mock_req):
@@ -528,7 +528,7 @@ class TestGetChannelRoots:
         assert list(result.keys()) == ["c1"]
 
     def test_drops_channels_sharing_drive_root_as_folder(self, caplog):
-        """Chunk 01 §6: post-migration private channels report the
+        """§6: post-migration private channels report the
         drive root as their filesFolder. Detect and drop both."""
         channels = [
             {"channel_id": "c1", "channel_name": "PrivateOne"},

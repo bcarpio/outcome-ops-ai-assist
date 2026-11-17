@@ -13,7 +13,7 @@ Tests focus on what the chunk plan calls out:
 3. ``enabled=false`` repos are skipped.
 4. Malformed rows (missing slug or connection_id) are skipped, not
    raised.
-5. The enqueued SQS message body has the right shape so the chunk-05
+5. The enqueued SQS message body has the right shape so the 
    sync worker can consume it without surprises.
 """
 
@@ -252,7 +252,7 @@ class TestQueueMessageShape:
     def test_message_carries_fields_the_sync_worker_will_consume(
         self, mock_active, mock_dynamo_and_sqs,
     ):
-        # The chunk-05 sync worker reads workspace_id, connection_id,
+        # The sync worker reads workspace_id, connection_id,
         # slug, org, project, repo, triggered_by, sync_id. Pin the
         # shape so a refactor to the scheduler can't silently drop
         # one of these and break the sync worker downstream.

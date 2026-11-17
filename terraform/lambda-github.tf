@@ -96,7 +96,7 @@ module "github_integration_lambda" {
         ]
       }
 
-      # fable-scale chunk 06: PutParameter on the installation-token cache
+      # PutParameter on the installation-token cache
       # (github-integration also mints tokens; its ~8 callers all share the
       # same cache prefix as github-sync).
       ssm_write_token_cache = {
@@ -114,7 +114,7 @@ module "github_integration_lambda" {
         effect = "Allow"
         actions = [
           "kms:Decrypt",
-          "kms:Encrypt", # fable-scale chunk 06: needed for PutParameter SecureString on the token cache
+          "kms:Encrypt", # needed for PutParameter SecureString on the token cache
         ]
         resources = [
           "arn:aws:kms:${var.aws_region}:${data.aws_caller_identity.current.account_id}:alias/aws/ssm"
@@ -285,8 +285,8 @@ module "github_sync_lambda" {
       KB_BUCKET            = module.knowledge_base_bucket.s3_bucket_id
       AUDIT_TABLE          = module.audit_logs_table.dynamodb_table_id
       AUDIT_RETENTION_DAYS = tostring(var.audit_retention_days)
-      # plan-git-truth chunk 01: SHA-truth ledger tables. Wired but not
-      # yet imported by github-sync; chunk 02 lights them up.
+      # plan-git-truth SHA-truth ledger tables. Wired but not
+      # yet imported by github-sync; lights them up.
       PENDING_WORK_TABLE = module.code_map_pending_work_table.dynamodb_table_id
       FAILED_FILES_TABLE = module.code_map_failed_files_table.dynamodb_table_id
     },
@@ -312,7 +312,7 @@ module "github_sync_lambda" {
         ]
       }
 
-      # plan-git-truth chunk 01: SHA-truth ledger (pending-work +
+      # plan-git-truth SHA-truth ledger (pending-work +
       # failed-files). Get/Put/Update only — no Query needed at the
       # dispatcher tier.
       sha_truth = {
@@ -337,7 +337,7 @@ module "github_sync_lambda" {
         ]
       }
 
-      # fable-scale chunk 06: PutParameter on the installation-token cache
+      # PutParameter on the installation-token cache
       # so github-sync + github-integration can write cached tokens back to
       # SSM. Scoped narrowly to just the token cache prefix.
       ssm_write_token_cache = {
@@ -355,7 +355,7 @@ module "github_sync_lambda" {
         effect = "Allow"
         actions = [
           "kms:Decrypt",
-          "kms:Encrypt", # fable-scale chunk 06: needed for PutParameter SecureString on the token cache
+          "kms:Encrypt", # needed for PutParameter SecureString on the token cache
         ]
         resources = [
           "arn:aws:kms:${var.aws_region}:${data.aws_caller_identity.current.account_id}:alias/aws/ssm"
@@ -428,13 +428,13 @@ resource "aws_lambda_event_source_mapping" "github_sync" {
   batch_size                         = 1 # Process one sync at a time
   maximum_batching_window_in_seconds = 0 # Process immediately
 
-  # Chunk 02: partial-batch-failure. Handler returns batchItemFailures for
+  # partial-batch-failure. Handler returns batchItemFailures for
   # records that failed; without this, ReportBatchItemFailures is disabled
   # and SQS deletes every record on 200 (silent KB data loss). Also matches
   # the ADR-030/ADR-032 retry contract for sync workers.
   function_response_types = ["ReportBatchItemFailures"]
 
-  # fable-scale chunk 08: max_conc tfvar-driven. Was hardcoded 5 which
+  # max_conc tfvar-driven. Was hardcoded 5 which
   # bottlenecked the ingestion pipeline at enterprise repo counts. 25
   # default = 5x the sandbox rate; enterprises can bump higher.
   scaling_config {
@@ -457,13 +457,13 @@ module "github_scheduler_lambda" {
   description   = "Hourly scheduler for GitHub sync jobs"
   handler       = "handler.lambda_handler"
   runtime       = "python3.12"
-  # fable-scale chunk 08: tfvar-driven. Was 60 which truncated the fan-out
+  # tfvar-driven. Was 60 which truncated the fan-out
   # at enterprise repo counts (hundreds of repos × ~10ms SQS send = >60s
   # under serial enqueue). Parallelization in handler makes 300 comfortable.
   timeout     = var.github_scheduler_timeout_seconds
   memory_size = 256
 
-  # Source code (chunk 07 adds shared.active_region import; bundle shared/)
+  # Source code
   source_path = [
     {
       path             = "${path.module}/../lambda/github-scheduler"
@@ -493,7 +493,7 @@ module "github_scheduler_lambda" {
     APP_NAME          = var.app_name
     WORKSPACES_TABLE  = module.workspaces_table[0].dynamodb_table_id
     GITHUB_SYNC_QUEUE = aws_sqs_queue.github_sync[0].url
-    # fable-scale chunk 08: parallel enqueue worker count.
+    # parallel enqueue worker count.
     GITHUB_SCHEDULER_PARALLEL_WORKERS = tostring(var.github_scheduler_parallel_workers)
     },
     local.ha_scheduler_env,
@@ -726,7 +726,7 @@ output "github_scheduler_lambda_arn" {
 # Secondary-region copies of operator-populated SSM SecureStrings (HA mode).
 # Operator must populate each region's value separately via
 # `aws ssm put-parameter --overwrite ... --region us-east-1`. The
-# `make ha-list-secrets` helper in chunk 08 reports which parameters
+# `make ha-list-secrets` helper in reports which parameters
 # are still at PLACEHOLDER_CONFIGURE_ME.
 # ============================================================================
 

@@ -10,7 +10,7 @@ carry Converse content blocks), so request translation is near pass-through.
 Response translation extracts text, usage, stop_reason, and any toolUse
 blocks into the unified Response.
 
-fable-scale chunk 05: retry semantics are app-side, not botocore-side. The
+retry semantics are app-side, not botocore-side. The
 boto client is configured with `max_attempts=1` so this module's own loop
 owns backoff, jitter, and observability. Rationale: layering botocore
 retries under an app-side loop makes total-attempt count confusing (3x3=9)
@@ -47,7 +47,7 @@ from .model_client_types import (
 
 logger = logging.getLogger(__name__)
 
-# fable-scale chunk 05: app-side retries — botocore does exactly one attempt.
+# app-side retries — botocore does exactly one attempt.
 _BEDROCK_CONFIG = Config(
     read_timeout=300,
     connect_timeout=10,
@@ -137,7 +137,7 @@ def _build_converse_kwargs(req: Request) -> dict[str, Any]:
     if req.system:
         system = req.system if isinstance(req.system, list) else [req.system]
         system_blocks: list[dict] = [{"text": s} for s in system]
-        # fable-scale chunk 10: append a Bedrock Converse cachePoint after
+        # append a Bedrock Converse cachePoint after
         # the system prompt when caching is enabled globally. System prompts
         # are the largest stable input in a chat turn — caching yields real
         # input-token savings. Chat opts in via BEDROCK_PROMPT_CACHE_ENABLED;
@@ -184,7 +184,7 @@ def _extract_tool_calls(content_blocks: list[dict]) -> list[ToolCall] | None:
 
 
 def invoke_with_retry(req: Request) -> Response:
-    """fable-scale chunk 05: `invoke` wrapped in app-side backoff+jitter.
+    """`invoke` wrapped in app-side backoff+jitter.
 
     Retries `ThrottlingException`, `ModelStreamErrorException`,
     `ServiceUnavailableException` up to `BEDROCK_MAX_ATTEMPTS` (default 6)
@@ -298,7 +298,7 @@ def invoke_stream(
     text deltas are stateless. `contentBlockStop` flushes the open tool
     block, if any.
 
-    fable-scale chunk 05: stream-init retries via `open_stream_with_retry`.
+    stream-init retries via `open_stream_with_retry`.
     `on_retry(attempt, delay_ms)` is called before each backoff sleep so
     the caller can emit a `busy_retrying` event through the SSE surface.
     """

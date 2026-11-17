@@ -297,7 +297,7 @@ def rerank(
                         # profile ARN (from BEDROCK_<WL>_COHERE_RERANK_
                         # PROFILE_ARN) for cost attribution. Falls back
                         # to constructing the foundation-model ARN from
-                        # a bare model id for pre-chunk-04 callers.
+                        # a bare model id for pre-callers.
                         "modelArn": (
                             rerank_model_id
                             if rerank_model_id.startswith("arn:aws:bedrock:")

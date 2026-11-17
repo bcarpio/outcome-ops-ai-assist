@@ -14,7 +14,7 @@ Kept in ``check_handlers/`` because:
 
 - It reads the same ``AZURE_DEVOPS_TENANT_ID`` / ``AZURE_DEVOPS_CLIENT_ID``
   env vars + ``AZURE_DEVOPS_CLIENT_SECRET_SSM_PARAM`` that the parent
-  handler.py (chunk 07 of the ADO Repos plan) already wires. The check
+  handler.py already wires. The check
   handlers are peers of that helper, not consumers of an abstraction
   layer above.
 - The ADO token manager itself is a local module bundled into the

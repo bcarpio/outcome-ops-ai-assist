@@ -1,7 +1,7 @@
 # Copyright 2025-2026 OutcomeOps
 # SPDX-License-Identifier: Apache-2.0
 
-# === Legacy dict -> unified Response adapter (ADR-035 chunk 10) ===
+# === Legacy dict -> unified Response adapter (ADR-035) ===
 from types import SimpleNamespace
 from shared.model_client_types import StopReason
 
@@ -183,7 +183,7 @@ def test_handler_runs_tests_and_publishes_results(mock_ssm, mock_s3, mock_events
 def test_handler_emits_tests_ran_audit_row(
     mock_ssm, mock_s3, mock_events, mock_audit, tmp_path, monkeypatch,
 ):
-    """plan/audit-completeness chunk 08 — handler emits ACTION_TESTS_RAN
+    """plan/audit-completeness — handler emits ACTION_TESTS_RAN
     in the finally block, regardless of test pass/fail outcome."""
     mock_ssm.get_parameter.return_value = {"Parameter": {"Value": "ghp_test_token"}}
 

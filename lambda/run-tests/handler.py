@@ -121,7 +121,7 @@ def _get_account_id() -> str:
     return _account_id
 
 # NOTE: the per-handler bedrock-runtime client construction was removed
-# in ADR-035 chunk 10. auto_fix.py routes through shared.model_client.invoke.
+# in ADR-035. auto_fix.py routes through shared.model_client.invoke.
 # The CLAUDE_MODEL_ID + MAX_FIX_ATTEMPTS constants stay since other parts
 # of the handler still reference them for logging / orchestration.
 CLAUDE_MODEL_ID = os.environ.get(
@@ -1254,7 +1254,7 @@ def handler(event: Dict[str, Any], _context: Any) -> Dict[str, Any]:
 
         emit_result_event(result_detail)
 
-        # plan/audit-completeness chunk 08: emit ACTION_TESTS_RAN as a
+        # plan/audit-completeness emit ACTION_TESTS_RAN as a
         # parent event for the per-step Bedrock rows that auto-fix paths
         # write. Operators can answer "every test run we did, with cost
         # and pass/fail attribution" via a single Query.

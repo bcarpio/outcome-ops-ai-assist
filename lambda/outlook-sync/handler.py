@@ -526,7 +526,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         logger.error("No SQS records in event")
         return {"statusCode": 400, "body": "Invalid event"}
 
-    # Chunk 02: partial-batch-failure semantics -- see github-sync
+    # partial-batch-failure semantics -- see github-sync
     # for the same conversion + rationale (silent KB data loss under
     # transient upstream failures).
     batch_item_failures: List[Dict[str, str]] = []

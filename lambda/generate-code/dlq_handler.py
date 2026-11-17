@@ -212,7 +212,7 @@ This PR contains whatever code was successfully generated before the failure.
         logger.info(f"[dlq] Created salvage PR: {pr_url}")
 
         # Emit ACTION_CODE_GEN_DLQ_SALVAGE_PR_CREATED audit row.
-        # plan/audit-completeness chunk 07. Salvage PRs only appear after
+        # plan/audit-completeness . Salvage PRs only appear after
         # 4 retries failed; flagging them as a distinct action lets
         # operators monitor codegen reliability.
         try:

@@ -112,8 +112,8 @@ from shared.region_guard import (
     passive_response,
 )
 from shared import dual_write
-from shared import audit_shard  # fable-scale chunk 04 — GSI2 shard fan-out
-from shared import group_workspace_sync  # chunk 11a — Azure AD group->workspace
+from shared import audit_shard  # — GSI2 shard fan-out
+from shared import group_workspace_sync  # — Azure AD group->workspace
 from shared.delete_dispatch import dispatch_repo_delete, region_from_sqs_url
 from shared.audit_writer import (
     ACTION_API_KEY_CREATED,
@@ -160,9 +160,9 @@ APP_NAME = os.environ.get("APP_NAME", "outcome-ops-ai-assist")
 AUDIT_TABLE = os.environ.get("AUDIT_TABLE", "")
 ANALYTICS_TABLE = os.environ.get("ANALYTICS_TABLE", "")
 
-# Org-level kill switch for PII redaction. Wired via terraform (chunk 07
+# Org-level kill switch for PII redaction. Wired via terraform (
 # of plan/). Read at request time (not module load) so tests can patch
-# it; chunk 04 also exposes the flag via GET /workspaces/{id}/privacy.
+# it; also exposes the flag via GET /workspaces/{id}/privacy.
 PII_REDACTION_ENABLED = (
     os.environ.get("PII_REDACTION_ENABLED", "true").lower() == "true"
 )
@@ -307,7 +307,7 @@ class CreateWorkspaceRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     description: Optional[str] = Field(default="", max_length=500)
     # Optional in the request so the handler defaults to "STRICT" when
-    # absent. Validated below if provided. Plan/ chunk 03.
+    # absent. Validated below if provided. Plan/ .
     privacy_mode: Optional[str] = Field(default=None)
     # Bidirectional scope flag. When ``true``:
     # 1. This workspace's ingested content is included in every user's
@@ -649,7 +649,7 @@ def get_integrations_config_response() -> Dict:
 def get_region_role_response() -> Dict:
     """Return the local region's HA role and a few diagnostic fields.
 
-    Consumed by the UI's PassiveRegionBanner (HA chunk 9k) and by the
+    Consumed by the UI's PassiveRegionBanner () and by the
     operator status tooling. Single-region deployments (AppConfig env
     vars unset) always return ``"active"`` via the fast-path in
     ``shared.active_region``.
@@ -735,8 +735,8 @@ def create_workspace(
         "search_allowed_workspaces": [],  # No sharing by default
         # PII redaction posture for ingests into this workspace. STRICT
         # is the safe default; admins can opt out per-workspace via the
-        # privacy endpoints (chunk 04). Org-level kill switch lives in
-        # the pii_redaction_enabled tfvar (chunk 07).
+        # privacy endpoints. Org-level kill switch lives in
+        # the pii_redaction_enabled tfvar.
         "privacy_mode": request.privacy_mode or "STRICT",
         # Bidirectional scope flag; see CreateWorkspaceRequest docstring.
         # Only settable by org admins (org-admin gate is above), which
@@ -745,7 +745,7 @@ def create_workspace(
         # ticketing (ServiceNow, etc.).
         "is_global": bool(request.is_global),
     }
-    # fable-scale chunk 03: sparse-GSI hash attribute. Present ("1") when
+    # sparse-GSI hash attribute. Present ("1") when
     # is_global=true so this row appears in GSI_is_global; absent when
     # is_global=false so it stays out of the index entirely. Enterprise-scale
     # "list every global workspace" becomes one Query on a small partition
@@ -1011,7 +1011,7 @@ def update_workspace(
         # Snapshot the current is_global before we write it, so the
         # audit row can carry (old -> new). Read once outside the SET.
         prior_is_global: Optional[bool] = None
-        # fable-scale chunk 03: track whether we need to REMOVE the sparse
+        # track whether we need to REMOVE the sparse
         # GSI attribute (flipping true→false) so we can emit an UpdateExpression
         # with both SET and REMOVE clauses.
         remove_parts: list[str] = []
@@ -1096,7 +1096,7 @@ def delete_workspace(
         if not _is_workspace_admin(table, user_email, workspace_id):
             return _error(403, "Only workspace admins can delete workspace")
 
-        # Chunk 05: paginate BOTH the partition query and the GSI member
+        # paginate BOTH the partition query and the GSI member
         # enumeration. Single-shot .query() silently truncates at 1MB, so
         # for a large workspace the delete "succeeded" while orphan repos
         # / connections / members remained -- a data-retention bug (the
@@ -1250,7 +1250,7 @@ def add_member(
             "user_email": request.email,
             "role": request.role,
             # Tag admin-added rows as manual so the Azure AD group sync
-            # (chunk 11a) never revokes or overwrites them.
+            # never revokes or overwrites them.
             "source": group_workspace_sync.MANUAL_SOURCE,
             "joined_at": now,
         }
@@ -1285,7 +1285,7 @@ def list_members(user_email: str, workspace_id: str) -> Dict:
         if not _can_access_workspace(table, user_email, workspace_id):
             return _error(403, "Not a member of this workspace")
 
-        # Chunk 05: paginate. Single-shot .query() truncates at 1MB;
+        # paginate. Single-shot .query() truncates at 1MB;
         # for a large workspace this silently drops members from the UI.
         members: List[Dict] = []
         query_kwargs = {
@@ -1337,7 +1337,7 @@ def update_member(
 
         # Can't demote the last admin
         if target_is_admin and demoting:
-            # Chunk 05: paginate. Single-shot query would silently drop
+            # paginate. Single-shot query would silently drop
             # admins beyond the 1MB boundary; if the *only* remaining
             # admin happened to live on page 2 we'd wrongly allow the
             # demotion and lock the workspace out. Count across pages,
@@ -1402,7 +1402,7 @@ def remove_member(
 
         # Can't remove the last admin from a workspace
         if existing.get("role") == "workspace_admin":
-            # Chunk 05: paginate so the count is honest on large workspaces
+            # paginate so the count is honest on large workspaces
             # (single-shot query truncates at 1MB). Short-circuit as soon
             # as >=2 admins are seen.
             member_kwargs = {
@@ -1449,7 +1449,7 @@ def remove_member(
 
 
 # ============================================================================
-# Azure AD group -> workspace bindings + on-login membership sync (chunk 11a)
+# Azure AD group -> workspace bindings + on-login membership sync
 # ============================================================================
 
 
@@ -2202,7 +2202,7 @@ def list_org_members(
     This avoids sync issues where a user is in a workspace but missing
     from the org listing.
 
-    fable-scale chunk 10: paginated. The full member list is still
+    paginated. The full member list is still
     materialized in-memory (both source scans have to complete to compute
     each member's workspace list), but the RESPONSE is sliced to `limit`
     items with a next_cursor so the admin UI can page through. At
@@ -2217,7 +2217,7 @@ def list_org_members(
         if not _is_org_admin(table, user_email):
             return _error(403, "Only org admins can list org members")
 
-        # Source 1: Explicit org membership records (paginated -- Chunk 05,
+        # Source 1: Explicit org membership records (paginated -- ,
         # 1MB truncation would silently hide members from the org admin UI).
         members_by_email: Dict[str, Dict] = {}
         org_kwargs = {
@@ -2277,7 +2277,7 @@ def list_org_members(
         # Sort: org_admins first, then by email
         members.sort(key=lambda x: (x.get("org_role") != "org_admin", x.get("user_email", "")))
 
-        # fable-scale chunk 10: slice + cursor. Cursor = the email of the
+        # slice + cursor. Cursor = the email of the
         # last returned member; next page returns members with email > cursor
         # (stable sort by email post admin-first grouping means this is
         # deterministic within the trailing member set).
@@ -2592,7 +2592,7 @@ def get_searchable_workspaces(user_email: str) -> Dict:
             # Include them in the chat picker regardless of membership
             # or explicit share so the customer can add them to their
             # chat context alongside their own workspaces. Chat scope
-            # resolution (chunk 03) enforces the actual retrieval
+            # resolution enforces the actual retrieval
             # semantics; this is just picker surfacing.
             all_ws_for_globals = _scan_all_workspaces(table)
             global_count = 0
@@ -3428,7 +3428,7 @@ def refresh_mcp_tools(user_email: str, mcp_id: str) -> Dict:
 
 
 # ============================================================================
-# MCP Workspace Assignment Operations (Chunk 04)
+# MCP Workspace Assignment Operations
 # ============================================================================
 
 
@@ -4364,7 +4364,7 @@ def update_workspace_budget(
 def _get_workspace_privacy_mode(table, workspace_id: str) -> str:
     """Read the workspace's privacy_mode. Returns "STRICT" for any
     workspace whose METADATA row lacks the attribute - workspaces
-    created before plan/ chunk 03 shipped do, and the safe default
+    created before plan/ shipped do, and the safe default
     matches the new-create behavior."""
     resp = table.get_item(Key={"PK": f"WS#{workspace_id}", "SK": "METADATA"})
     item = resp.get("Item") or {}
@@ -5061,7 +5061,7 @@ def get_analytics_workspace(
 
 
 # ============================================================================
-# Audit Query Endpoints (chunk 05)
+# Audit Query Endpoints
 # ============================================================================
 
 # /audit/events server-side caps. The no-filter org-admin path is the most
@@ -5178,7 +5178,7 @@ def _summarize_admin_events(items: List[Dict]) -> Dict[str, Any]:
     """Build the get_audit_summary response shape from raw admin-row items.
 
     Used as a fallback when the analytics-aggregator hasn't emitted any
-    DA/DC/DCU rows yet (fresh deploy, pre-chunk-02 historical rows, or
+    DA/DC/DCU rows yet (fresh deploy, pre-historical rows, or
     while a stream re-drive is catching up). Always-correct but slower
     than reading the rollups.
     """
@@ -5236,7 +5236,7 @@ def _query_admin_events_for_range(
 ) -> List[Dict]:
     """Query GSI2 (CAT#<category>) for admin rows in a date range.
 
-    fable-scale chunk 04: fans out across sharded GSI2 partitions
+    fans out across sharded GSI2 partitions
     (`CAT#<category>#00`..`#15`) plus the legacy unsharded key so pre-cutover
     rows stay visible for the 365-day TTL window. Reads only rows in the
     requested category — bedrock rows in the same table don't have to be
@@ -5324,7 +5324,7 @@ def get_audit_summary(user_email: str, query_params: Dict[str, Any]) -> Dict:
                         bucket["last_active"] = last_action_at
 
         # Fallback: if the aggregator hasn't produced any rollups yet (fresh
-        # deploy, historical pre-chunk-02 rows, or in-flight stream re-drive)
+        # deploy, historical pre-rows, or in-flight stream re-drive)
         # compute the same shape on-demand from the raw audit table. Capped
         # scan; bounded cost. Self-healing as new admin actions flow.
         fallback_used = False
@@ -5594,7 +5594,7 @@ def get_audit_events(user_email: str, query_params: Dict[str, Any]) -> Dict:
         limit = _parse_audit_limit(
             query_params.get("limit"), AUDIT_EVENTS_DEFAULT_LIMIT
         )
-        # fable-scale chunk 04: this branch uses the shard-aware reader
+        # this branch uses the shard-aware reader
         # (audit_shard.read_by_category) instead of a single GSI2 Query.
         # `query_kwargs` stays as a *carrier* for the FilterExpression
         # builder below so the existing filter code doesn't need to fork —
@@ -5674,7 +5674,7 @@ def get_audit_events(user_email: str, query_params: Dict[str, Any]) -> Dict:
     if filters:
         query_kwargs["FilterExpression"] = " AND ".join(filters)
 
-    # fable-scale chunk 04: for the sharded GSI2 branch, cursor semantics
+    # for the sharded GSI2 branch, cursor semantics
     # differ — it's a "high water mark SK", not a DDB LastEvaluatedKey.
     if cursor:
         decoded = _decode_audit_cursor(cursor)
@@ -5686,7 +5686,7 @@ def get_audit_events(user_email: str, query_params: Dict[str, Any]) -> Dict:
 
     try:
         if query_kwargs.get("_shard_read"):
-            # fable-scale chunk 04: shard fan-out. `audit_shard.read_by_category`
+            # shard fan-out. `audit_shard.read_by_category`
             # runs 17 parallel Queries (16 shards + legacy), merges by GSI2SK
             # desc, and returns (items, next_cursor_sk). FilterExpression is
             # applied per-shard-Query so it doesn't hide throughput problems
@@ -5754,7 +5754,7 @@ def get_audit_event(user_email: str, workspace_id: str, request_id: str) -> Dict
     which is a DDB anti-pattern: ``Limit`` is applied BEFORE the filter,
     so the call read exactly one item and then filtered it, returning
     404 for every audit event except the partition's oldest row. See
-    plan chunk 03 for the incident context.
+    plan for the incident context.
     """
     audit_table_name = _get_audit_table()
     if not audit_table_name:
@@ -5808,7 +5808,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         or event.get("requestContext", {}).get("http", {}).get("path", "/")
     )
 
-    # HA chunk 9a: region-role endpoint bypasses auth. UI fetches this
+    # region-role endpoint bypasses auth. UI fetches this
     # before login state matters; gating it on x-user-email would create
     # a circular dependency (UI needs to know region role to render the
     # login page correctly). The response is non-sensitive: it tells
@@ -5842,7 +5842,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     # endpoints so admin audit rows carry attribution data.
     audit_ctx = extract_request_context(event)
 
-    # plan/audit-completeness chunk 02: emit ACTION_LOGIN_SUCCEEDED once per
+    # plan/audit-completeness emit ACTION_LOGIN_SUCCEEDED once per
     # user per day per Lambda container. Cheap fire-and-forget; this is the
     # auth-category-row pattern the audit dashboard uses for "who logged in
     # when" without instrumenting Express.
@@ -5858,7 +5858,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     except json.JSONDecodeError:
         body = {}
 
-    # HA chunk 9d: small closure that wraps the passive-mode guard so
+    # small closure that wraps the passive-mode guard so
     # each mutation route is a one-liner.  Returns None when active
     # (caller proceeds normally), or the 403 passive_response dict when
     # the local region is passive (caller returns that directly).
@@ -5960,7 +5960,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             member_email = unquote(parts[3])
             return remove_member(user_email, parts[1], member_email, audit_ctx)
 
-        # Route: POST /sync-memberships (chunk 11a — on-login self-service)
+        # Route: POST /sync-memberships
         if parts == ("sync-memberships",) and http_method == "POST":
             if blocked := _guard_or_block("sync_memberships"):
                 return blocked
@@ -6423,7 +6423,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             return get_analytics_workspace(user_email, parts[2], query_params)
 
         # ====================================================================
-        # Audit Routes (chunk 05)
+        # Audit Routes
         # ====================================================================
 
         # Route: GET /audit/summary

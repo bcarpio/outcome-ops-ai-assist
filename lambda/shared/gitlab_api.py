@@ -172,7 +172,7 @@ def get_file_content(access_token: str, project_path: str, file_path: str,
 
 
 # =============================================================================
-# Merge requests (chunk 05: MR-analysis parity)
+# Merge requests
 # =============================================================================
 
 
@@ -272,7 +272,7 @@ def post_merge_request_discussion(access_token: str, project_path: str,
     Returns the discussion object; callers store its ``id`` plus the first
     note's ``id`` (``notes[0].id``) to target
     update_merge_request_discussion_note on later runs (inline upsert; plan
-    chunk 02).
+    ).
     """
     return _send(
         access_token,

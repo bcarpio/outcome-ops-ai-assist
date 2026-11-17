@@ -350,7 +350,7 @@ resource "aws_lambda_event_source_mapping" "servicenow_sync" {
   batch_size                         = 1
   maximum_batching_window_in_seconds = 0
 
-  # Chunk 02 (remediation): partial-batch-failure. Handler returns
+  # (remediation): partial-batch-failure. Handler returns
   # batchItemFailures for records that failed; without this SQS deletes
   # every record on 200.
   function_response_types = ["ReportBatchItemFailures"]

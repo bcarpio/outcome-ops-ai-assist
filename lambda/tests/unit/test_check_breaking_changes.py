@@ -783,7 +783,7 @@ class TestPlane1FileScope:
 
 
 class TestPlane1ScopeWidening:
-    """Chunk 11: a shared/*.py-only PR now reaches plane 1 instead of an early
+    """a shared/*.py-only PR now reaches plane 1 instead of an early
     PASS, and its real cross-file consumers surface as line-anchored WARN
     findings. Scope resolution is patched and the symbol-graph reader is
     injected, so no live AWS is touched."""

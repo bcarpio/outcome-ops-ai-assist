@@ -164,7 +164,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
 
     # Queue sync jobs.
     #
-    # fable-scale chunk 08: parallel fan-out via ThreadPoolExecutor. The
+    # parallel fan-out via ThreadPoolExecutor. The
     # prior serial loop truncated at enterprise repo counts (each
     # sqs.send_message is ~10ms + credential-provider warmup, so ~3000
     # repos hit the old 60s Lambda timeout). Workers default to 32

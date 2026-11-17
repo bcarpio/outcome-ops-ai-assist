@@ -54,10 +54,10 @@ module "mcp_outcomeops" {
   container_image = "${aws_ecr_repository.mcp_outcomeops[0].repository_url}:${nonsensitive(data.aws_ssm_parameter.mcp_image_tag[0].value)}"
   container_port  = 8080
 
-  # fable-scale chunk 01: sizing + autoscaling driven by tfvars. Autoscaling
-  # here presumes DDB-backed sessions (fable-scale chunk 02); with in-memory
+  # sizing + autoscaling driven by tfvars. Autoscaling
+  # here presumes DDB-backed sessions (); with in-memory
   # sessions a second task can't share auth/session state — flip
-  # mcp_server_enable_autoscaling = false as a rollback until chunk 02 ships.
+  # mcp_server_enable_autoscaling = false as a rollback until ships.
   cpu                                  = var.mcp_server_cpu
   memory                               = var.mcp_server_memory
   desired_count                        = var.mcp_server_desired_count
@@ -81,20 +81,20 @@ module "mcp_outcomeops" {
     KB_BUCKET          = module.knowledge_base_bucket.s3_bucket_id
     ENVIRONMENT        = var.environment
     MCP_BASE_URL       = local.mcp_base_url
-    # chunk 11b (ADR-049): Azure AD OAuth (JWT) auth for the MCP server.
+    # (ADR-049): Azure AD OAuth (JWT) auth for the MCP server.
     # AZURE_AD_TENANT_ID + MCP_JWT_AUDIENCE enable the JWT path;
     # MCP_STATIC_KEYS_ENABLED gates the legacy static-key path (default true;
     # set false in the enterprise profile once all clients use OAuth).
     AZURE_AD_TENANT_ID      = var.azure_ad_tenant_id
     MCP_JWT_AUDIENCE        = var.mcp_jwt_audience
     MCP_STATIC_KEYS_ENABLED = tostring(var.mcp_static_keys_enabled)
-    # fable-scale chunk 02: DDB-backed session store. MCP_SESSION_STORE
+    # DDB-backed session store. MCP_SESSION_STORE
     # picks the impl (memory | ddb); "ddb" is required for horizontal
-    # scaling (chunk 01 autoscaling). Fallback to "memory" reverts to the
+    # scaling. Fallback to "memory" reverts to the
     # single-task in-memory dict (test-mode + operator rollback).
     MCP_SESSION_STORE  = "ddb"
     MCP_SESSIONS_TABLE = module.mcp_sessions_table[0].dynamodb_table_id
-    # plan/audit-completeness chunk 02 + 08: MCP server emits
+    # plan/audit-completeness + 08: MCP server emits
     # ACTION_API_KEY_USED + ACTION_MCP_TOOL_INVOKED audit rows.
     AUDIT_TABLE          = module.audit_logs_table.dynamodb_table_id
     AUDIT_RETENTION_DAYS = tostring(var.audit_retention_days)
@@ -200,7 +200,7 @@ resource "aws_iam_role_policy" "mcp_outcomeops" {
         ]
       },
       {
-        # fable-scale chunk 02: session store (PK-only, TTL-driven).
+        # session store (PK-only, TTL-driven).
         Sid    = "MCPSessionsAccess"
         Effect = "Allow"
         Action = [
@@ -321,7 +321,7 @@ resource "aws_iam_role_policy" "mcp_outcomeops" {
       },
       {
         # shared.symbol_graph_reader emits OutcomeOps/SymbolGraph::QueryLatency
-        # (chunk-08 latency alarm). PutMetricData has no resource-level ARN, so
+        #. PutMetricData has no resource-level ARN, so
         # scope it by namespace condition. Without this the emit fails
         # AccessDenied every query (non-fatal, but noisy + blinds the alarm).
         Sid    = "CloudWatchSymbolGraphMetrics"

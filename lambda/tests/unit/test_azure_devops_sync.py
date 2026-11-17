@@ -1,6 +1,6 @@
 # Copyright 2025-2026 OutcomeOps
 # SPDX-License-Identifier: Apache-2.0
-"""Unit tests for azure-devops-sync worker (chunk 05 + 05a refactor).
+"""Unit tests for azure-devops-sync worker.
 
 After 05a, the worker no longer enqueues to file-ingestion or
 repo-summaries -- it writes each indexable blob directly to the KB

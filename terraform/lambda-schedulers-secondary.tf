@@ -1,11 +1,11 @@
 # Copyright 2025-2026 OutcomeOps
 # SPDX-License-Identifier: Apache-2.0
 # ============================================================================
-# Secondary-region scheduler Lambdas (HA chunk 9f)
+# Secondary-region scheduler Lambdas ()
 # ----------------------------------------------------------------------------
 # 10 hourly schedulers under aws.secondary, each with its own
 # EventBridge rule firing locally. Schedulers already gate on
-# shared.active_region.is_active_region() per chunk 07 — in the
+# shared.active_region.is_active_region() per — in the
 # secondary region they fire every hour and immediately short-circuit
 # returning passive-region-skip until AppConfig is flipped to active.
 #
@@ -52,7 +52,7 @@ module "github_scheduler_lambda_secondary" {
     APP_NAME          = var.app_name
     WORKSPACES_TABLE  = module.workspaces_table_secondary[0].dynamodb_table_id
     GITHUB_SYNC_QUEUE = aws_sqs_queue.github_sync_secondary[0].url
-    # fable-scale 08 mirror: scan fan-out worker pool.
+    # Secondary mirror: scan fan-out worker pool.
     GITHUB_SCHEDULER_PARALLEL_WORKERS = tostring(var.github_scheduler_parallel_workers)
     },
     local.ha_scheduler_env_secondary,
@@ -813,7 +813,7 @@ resource "aws_lambda_permission" "onenote_scheduler_eventbridge_secondary" {
 }
 
 # ----------------------------------------------------------------------------
-# Azure DevOps scheduler (secondary) -- chunk 09
+# Azure DevOps scheduler (secondary) -- 
 #
 # Mirrors the primary's hourly EventBridge rule. The scheduler handler
 # short-circuits on is_active_region() == False so the passive copy
@@ -906,7 +906,7 @@ resource "aws_lambda_permission" "azure_devops_scheduler_eventbridge_secondary" 
 }
 
 # ----------------------------------------------------------------------------
-# GitLab scheduler (secondary) -- ADR-050 chunk 08
+# GitLab scheduler (secondary) -- ADR-050
 # ----------------------------------------------------------------------------
 
 module "gitlab_scheduler_lambda_secondary" {
@@ -995,7 +995,7 @@ resource "aws_lambda_permission" "gitlab_scheduler_eventbridge_secondary" {
 }
 
 # ----------------------------------------------------------------------------
-# ServiceNow scheduler (secondary) -- chunk 07 (HA parity, ADR-044)
+# ServiceNow scheduler (secondary) -- (HA parity, ADR-044)
 # ----------------------------------------------------------------------------
 
 module "servicenow_scheduler_lambda_secondary" {

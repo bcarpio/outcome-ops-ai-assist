@@ -229,7 +229,7 @@ def _query_with_retry(table, **query_kwargs):
 _dynamodb_resource = None
 _test_resource_override = None
 
-# CloudWatch client for the chunk-08 ``QueryLatency`` metric emission.
+# CloudWatch client for the ``QueryLatency`` metric emission.
 # Lazy + best-effort: a publish failure must not break a query that
 # already succeeded. Matches the writer's lazy-client pattern.
 _cloudwatch_client = None
@@ -273,7 +273,7 @@ def _emit_query_latency_metric(
 ) -> None:
     """Publish ``QueryLatency`` to ``OutcomeOps/SymbolGraph``.
 
-    The chunk-08 alarm watches the p99 across all dimensions; we attach
+    The alarm watches the p99 across all dimensions; we attach
     ``Index`` as a dimension so operators can drill into target-kind vs
     target-prefix latency separately if the alarm fires. Best-effort:
     any error is swallowed and logged at WARN. The metric is the
@@ -432,7 +432,7 @@ def _pointer_for_workspace(
 ) -> Tuple[Optional[str], Optional[int]]:
     """Aggregate per-repo pointer state into a single workspace-wide answer.
 
-    Design choice (chunk-04 open issue): queries are workspace-wide but
+    Design choice: queries are workspace-wide but
     the pointer is per-(workspace, repo). We surface the OLDEST
     ``graph_sha_committed_at`` across the repos in the result set so
     ``staleness_seconds`` reflects the WORST-case freshness across the
@@ -941,7 +941,7 @@ def fuzzy_resolve_by_name(
     its own require_auth definition; 40 canonicals in one workspace)
     silently lost the alphabetical tail. Consumers with enumeration
     semantics must pass an explicit ``limit`` (chat handler does so
-    after the chunk-03 fix in this plan); the default remains 25 for
+    after the fix in this plan); the default remains 25 for
     disambiguation callers.
     """
 

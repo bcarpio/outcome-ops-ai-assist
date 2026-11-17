@@ -13,7 +13,7 @@ export default mergeConfig(
         provider: 'v8',
         reporter: ['text', 'lcov'],
         reportsDirectory: 'coverage',
-        // Chunk 13: include server/middleware.js so the extracted auth
+        // include server/middleware.js so the extracted auth
         // gate + 404 guard + error handler count toward coverage. Keep
         // server/index.js excluded (it binds to a port + loads SSM at
         // import time; the pure middleware factory lives in middleware.js).

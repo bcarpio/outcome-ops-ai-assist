@@ -197,12 +197,12 @@ def test_callers_latency_regression_guard_at_10k_edges():
     # Relaxed thresholds for moto. The point of this benchmark is to
     # catch O(N) / O(N^2) regressions on the reader's collection path;
     # the production p99 target is < 50ms on real DynamoDB and lives in
-    # the plan's "Performance" section (exercised by chunk 08).
+    # the plan's "Performance" section (exercised by ).
     #
     # Empirically: a healthy 200-item Query on moto takes ~80-120ms.
     # A quadratic regression in the reader's collection loop would push
     # p99 well past 800ms, so 800ms remains a generous-but-meaningful
-    # guard. The chunk-08 ceiling was bumped from 500ms to 800ms after
+    # guard. The ceiling was bumped from 500ms to 800ms after
     # full-suite test-order pollution (accumulated boto3 session state
     # from prior tests) pushed the standalone-passing run from ~13s
     # warm to ~600ms p99 when run after the chat / analyze-pr suites.

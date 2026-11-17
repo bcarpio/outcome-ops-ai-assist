@@ -569,7 +569,7 @@ variable "ui_container_image" {
 }
 
 # ----------------------------------------------------------------------------
-# Multi-region UI ingress (HA chunk 9)
+# Multi-region UI ingress ()
 # Operator-provided VPC + subnets in the secondary region. ECR cross-region
 # replication (terraform/ecr.tf) handles image syncing automatically; the
 # *_secondary container image var below is optional and defaults to the
@@ -577,13 +577,13 @@ variable "ui_container_image" {
 # ----------------------------------------------------------------------------
 
 variable "ui_vpc_id_secondary" {
-  description = "VPC ID in the secondary region for the UI ALB + Fargate. Required before chunk 9b (secondary ALB) can apply; chunk 9a (ECR replication / Route53 / ACM) doesn't consume it."
+  description = "VPC ID in the secondary region for the UI ALB + Fargate. Required before (secondary ALB) can apply; (ECR replication / Route53 / ACM) doesn't consume it."
   type        = string
   default     = ""
 }
 
 variable "ui_private_subnet_ids_secondary" {
-  description = "Private subnet IDs in the secondary region for UI Fargate tasks. At least two subnets across AZs are needed for ECS spread. Required before chunk 9b."
+  description = "Private subnet IDs in the secondary region for UI Fargate tasks. At least two subnets across AZs are needed for ECS spread. Required before ."
   type        = list(string)
   default     = []
 }
@@ -595,7 +595,7 @@ variable "ui_container_image_secondary" {
 }
 
 variable "ui_alb_internal" {
-  description = "Make the ALB internal (VPC-only access). Set to false for public ALB secured by OIDC. fable-scale chunk 09 flipped the default from false → true so a fresh enterprise deploy defaults to the safer posture; sandbox / demo deploys explicitly set `ui_alb_internal = false` in their tfvars."
+  description = "Make the ALB internal (VPC-only access). Set to false for public ALB secured by OIDC. flipped the default from false → true so a fresh enterprise deploy defaults to the safer posture; sandbox / demo deploys explicitly set `ui_alb_internal = false` in their tfvars."
   type        = bool
   default     = true
 }
@@ -607,7 +607,7 @@ variable "ui_fargate_assign_public_ip" {
 }
 
 # ============================================================================
-# UI proxy Fargate sizing + autoscaling (fable-scale chunk 01)
+# UI proxy Fargate sizing + autoscaling ()
 # ----------------------------------------------------------------------------
 # Historically the UI proxy shipped as one 0.25 vCPU / 512 MB FARGATE_SPOT
 # task with deployment_minimum_healthy_percent = 0. Fine as a sandbox demo;
@@ -695,12 +695,12 @@ variable "ui_fargate_min_healthy_percent" {
 }
 
 # ============================================================================
-# MCP server Fargate sizing + autoscaling (fable-scale chunk 01)
+# MCP server Fargate sizing + autoscaling ()
 # ----------------------------------------------------------------------------
 # Same story as ui_fargate_*: sandbox default was 0.5 vCPU / 1 GB / 1
 # FARGATE_SPOT task. At 2000 engineers running Claude Code with persistent
 # MCP connections this melts. Autoscaling requires session state to move
-# out of the module-global _sessions dict — see fable-scale chunk 02.
+# out of the module-global _sessions dict — see .
 # ============================================================================
 
 variable "mcp_server_cpu" {
@@ -740,7 +740,7 @@ variable "mcp_sonarqube_memory" {
 }
 
 variable "mcp_server_desired_count" {
-  description = "Initial desired task count for the MCP server service. Requires DDB-backed sessions (fable-scale chunk 02); with in-memory sessions, second+ tasks won't share state."
+  description = "Initial desired task count for the MCP server service. Requires DDB-backed sessions (); with in-memory sessions, second+ tasks won't share state."
   type        = number
   default     = 2
 }
@@ -757,7 +757,7 @@ variable "mcp_server_max_count" {
   default     = 20
 }
 
-# chunk 11b (ADR-049): Azure AD OAuth (JWT) auth for the MCP server.
+# (ADR-049): Azure AD OAuth (JWT) auth for the MCP server.
 variable "azure_ad_tenant_id" {
   description = "Azure AD (Entra) tenant ID (GUID) for MCP OAuth JWT validation. Empty disables the JWT auth path (static keys only)."
   type        = string
@@ -776,7 +776,7 @@ variable "mcp_static_keys_enabled" {
   default     = true
 }
 
-# chunk 03 (ADR-048 v1.1): Azure AD group selection UX -- naming-convention
+# (ADR-048 v1.1): Azure AD group selection UX -- naming-convention
 # eligibility scope + toggleable app-only Graph read for the binding picker and
 # the >200-group memberOf fallback.
 variable "azure_ad_group_patterns" {
@@ -846,13 +846,13 @@ variable "mcp_server_min_healthy_percent" {
 }
 
 variable "mcp_server_enable_autoscaling" {
-  description = "Whether to attach app-autoscaling to the MCP server service. Requires session externalization (fable-scale chunk 02). Disable when running in-memory sessions."
+  description = "Whether to attach app-autoscaling to the MCP server service. Requires session externalization (). Disable when running in-memory sessions."
   type        = bool
   default     = true
 }
 
 # ============================================================================
-# Bedrock fairness + graceful degradation (fable-scale chunk 05)
+# Bedrock fairness + graceful degradation ()
 # ----------------------------------------------------------------------------
 # All four workloads (chat, code-maps, code-gen, pr-analyzer) share the same
 # per-model Bedrock on-demand quota. Without concurrency caps and fairness
@@ -880,7 +880,7 @@ variable "chat_timeout_seconds" {
 }
 
 # ============================================================================
-# Ingestion throughput (fable-scale chunk 08)
+# Ingestion throughput ()
 # ----------------------------------------------------------------------------
 # Prior sandbox defaults capped github-sync at 5 concurrent + repo/batch
 # summaries at 20. At thousands of repos re-ingesting on every push-to-main
@@ -897,7 +897,7 @@ variable "github_sync_max_conc" {
 }
 
 variable "repo_summary_max_conc" {
-  description = "SQS ESM MaximumConcurrency on process-repo-summary (was 20). Repo summary work is Bedrock-heavy; bumping requires Bedrock quota headroom + the workload gate from chunk 05."
+  description = "SQS ESM MaximumConcurrency on process-repo-summary (was 20). Repo summary work is Bedrock-heavy; bumping requires Bedrock quota headroom + the workload gate from ."
   type        = number
   default     = 50
 }
@@ -939,7 +939,7 @@ variable "github_scheduler_parallel_workers" {
 }
 
 # ============================================================================
-# Data-layer hygiene (fable-scale chunk 10)
+# Data-layer hygiene ()
 # ============================================================================
 
 variable "chat_message_ttl_seconds" {

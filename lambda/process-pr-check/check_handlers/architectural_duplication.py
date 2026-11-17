@@ -186,7 +186,7 @@ def query_knowledge_base(
         doc_types: Optional list of doc types to filter (e.g., ["code-map"])
         workspace_ids: Optional workspace scope. ARCHITECTURAL_DUPLICATION
             is a cross-portfolio check by design; passes every workspace
-            in the deployment via chunk 04 of the workspace-scope plan.
+            in the deployment via of the workspace-scope plan.
     """
     payload = {
         "query": query,

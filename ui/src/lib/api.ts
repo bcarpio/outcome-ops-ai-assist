@@ -185,7 +185,7 @@ export interface ConversationListResponse {
  * Throws on non-OK response so the caller (Chat.tsx) can render an
  * error banner. The previous "return empty list on error" behavior
  * rendered chat Lambda outages as "you have no conversations" -- a
- * silent outage the user could not diagnose. Chunk 15 fix; consistent
+ * silent outage the user could not diagnose. fix; consistent
  * with the 143 other exported api.ts functions that throw.
  */
 export async function listConversations(
@@ -490,7 +490,7 @@ export async function removeMember(workspaceId: string, email: string): Promise<
 }
 
 // ---------------------------------------------------------------------------
-// Azure AD group -> workspace bindings (chunk 11a)
+// Azure AD group -> workspace bindings
 // ---------------------------------------------------------------------------
 
 export interface GroupBinding {
@@ -2251,7 +2251,7 @@ export interface DatabaseConnection {
     | 'blocked_license_limit'
   last_sync_error?: string | null
   tables_count: number
-  // chunk 07: snapshot of every schema the RO user could see at the
+  // snapshot of every schema the RO user could see at the
   // last sync (sorted "catalog.schema" keys). UI uses this to render
   // the "N new schemas available" pill on the connection card and
   // the per-schema "NEW" badge in the Configure Scope picker.
@@ -2261,10 +2261,10 @@ export interface DatabaseConnection {
 }
 
 export interface DatabaseScopeConfig {
-  // chunk 06: include holds 2-segment "catalog.schema" keys. Tables
+  // include holds 2-segment "catalog.schema" keys. Tables
   // inside the selected schemas are auto-discovered on every sync.
   introspection: { include: string[]; exclude: string[] }
-  // chunk 06: sampling.include is a parallel list of "catalog.schema"
+  // sampling.include is a parallel list of "catalog.schema"
   // keys (subset of introspection.include) where sampling is on.
   // sampling.enabled bool is retired.
   sampling: { include: string[]; exclude: string[] }
@@ -2446,7 +2446,7 @@ export interface GitHubRepo {
   added_by: string
   // The branch the platform syncs from. Persisted on add (resolved
   // from GitHub API unless the customer picked an override in the
-  // picker). Pre-chunk-01 rows lack this field.
+  // picker). Pre-rows lack this field.
   default_branch?: string | null
 }
 
@@ -2571,7 +2571,7 @@ export interface RepoBranchesResponse {
   branches: { name: string; protected?: boolean }[]
   /** Provider's current default (may have changed since we stored ours). */
   current_default: string
-  /** What our DDB row has today (may be null on legacy pre-chunk-01 rows). */
+  /** What our DDB row has today (may be null on legacy pre-rows). */
   stored_default: string | null
 }
 
@@ -2622,7 +2622,7 @@ export async function triggerGitHubSync(workspaceId: string, repoName?: string):
 }
 
 // ============================================================================
-// Azure DevOps integration (chunk 08)
+// Azure DevOps integration
 // ============================================================================
 
 export interface AzureDevOpsConnection {
@@ -3737,7 +3737,7 @@ export async function getAnalyticsWorkspace(
 }
 
 // ============================================================================
-// Audit (chunk 05)
+// Audit
 // ============================================================================
 
 export interface AuditActionCount {

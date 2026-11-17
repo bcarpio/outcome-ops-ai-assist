@@ -77,7 +77,7 @@ bedrock_config = Config(
 
 dynamodb_client = boto3.client("dynamodb")
 dynamodb_resource = boto3.resource("dynamodb")
-# ADR-035 chunk 12: bedrock_client is now EMBEDDINGS-ONLY (Titan via
+# ADR-035: bedrock_client is now EMBEDDINGS-ONLY (Titan via
 # invoke_model). LLM completions go through shared.model_client.invoke
 # (imported above). The 300s read timeout on bedrock_config is no
 # longer load-bearing -- it was sized for Claude's 2-3 minute summary
@@ -88,17 +88,17 @@ bedrock_client = boto3.client("bedrock-runtime", config=bedrock_config)
 ssm_client = boto3.client("ssm")
 s3vectors_client = boto3.client("s3vectors")
 
-# Chunk 05: SQS client for merge-message requeue-with-delay. Queue URL
-# comes from CODE_MAPS_QUEUE_URL env var (set by terraform chunk 06).
+# SQS client for merge-message requeue-with-delay. Queue URL
+# comes from CODE_MAPS_QUEUE_URL env var (set by terraform ).
 # Fallback: if missing, merge handler logs a warning and processes as
 # if shards are complete (worst case: merge fires early and produces
 # a partial merged summary rather than blocking sha-truth advance).
 sqs_client = boto3.client("sqs")
 CODE_MAPS_QUEUE_URL = os.environ.get("CODE_MAPS_QUEUE_URL", "")
 
-# Chunk 05: how many merge-requeue-with-delay attempts before we give
+# how many merge-requeue-with-delay attempts before we give
 # up and mark the merge failed. Historical default was 10 x 60s = ~10 min
-# grace for the last shard to land. fable-scale chunk 08 makes both
+# grace for the last shard to land. Makes both
 # tunable via env — enterprise repo counts want a longer runway (30 x 60s
 # = 30 min default) since some shards genuinely take longer than 10 min.
 _MAX_MERGE_ATTEMPTS = int(os.environ.get("BATCH_SUMMARY_MERGE_ATTEMPTS", "30"))
@@ -421,7 +421,7 @@ def _render_graph_grounding(facts: "list[Fact]") -> str:
     the prompt. Returns "" when no facts (e.g. fact_sink not provided),
     leaving the prompt unchanged for legacy/test paths.
 
-    When a ``defines`` fact carries a ``signature`` (chunk 01 of
+    When a ``defines`` fact carries a ``signature`` (of
     plan-signature-extraction), the rendered line includes the
     parenthesized parameter list + return type. The summarizer is told
     to use ONLY those verified signatures, closing the
@@ -962,10 +962,10 @@ def generate_batch_summary(
     group_name = batch["group_name"]
     file_paths = batch["file_paths"]
 
-    # chunk-08a provider-aware fetch: process-repo-summary threads
+    # provider-aware fetch: process-repo-summary threads
     # `provider` + `workspace_id` + `slug` through to the code-units
     # message. For azure_devops these route fetch_file_content to the
-    # S3 mirror written by azure-devops-sync (chunk 05a). For github
+    # S3 mirror written by azure-devops-sync. For github
     # (legacy / absent provider) the existing raw.githubusercontent.com
     # path runs unchanged.
     fetch_provider = batch.get("provider", "github")
@@ -1055,8 +1055,8 @@ def generate_batch_summary(
     if current_sub:
         sub_batches.append(current_sub)
 
-    # Chunk 04: sub-batching is now a defense-in-depth safety net.
-    # Post-chunk-03 shard messages are pre-sized to fit in one call, so
+    # sub-batching is now a defense-in-depth safety net.
+    # Post-shard messages are pre-sized to fit in one call, so
     # this branch triggering on a shard indicates the upstream
     # estimator drifted (e.g., an unusually dense-tokenizing file).
     # Log loudly so the drift is observable in CloudWatch metrics.
@@ -1214,7 +1214,7 @@ def store_batch_summary(
         content_hash = compute_content_hash(summary)
         doc_type = f"{batch['batch_type']}-summary"
         workspace_id = batch.get("workspace_id")
-        # chunk-08a: provider is threaded through from process-repo-
+        # provider is threaded through from process-repo-
         # summary's send_code_units_to_sqs. Default "github" preserves
         # all existing vector keys + metadata.
         provider = batch.get("provider", "github")
@@ -1258,7 +1258,7 @@ def store_batch_summary(
             # race ahead of its own shards).
             metadata["commit_sha"] = batch["commit_sha"]
 
-        # fable-scale chunk 07: route through shared.dual_write so this
+        # route through shared.dual_write so this
         # write replicates to the passive region.
         from shared import dual_write
         dual_write.s3vectors_put_vectors(
@@ -1999,13 +1999,13 @@ def process_batch_record(record: Dict[str, Any]) -> None:
 
     batch = json.loads(record["body"])
 
-    # Chunk 02 schema: messages carry message_type + shard fields.
-    # Old-shape messages (pre-chunk-02 producer or the 10 stuck DLQ
+    # schema: messages carry message_type + shard fields.
+    # Old-shape messages (pre-producer or the 10 stuck DLQ
     # entries from before this migration) default to single-shard --
     # they still process end-to-end via the existing summarize path.
     message_type = batch.get("message_type", "shard")
     if message_type == "merge":
-        # Chunk 05: fan-in merge. Reads N shard summaries by key,
+        # fan-in merge. Reads N shard summaries by key,
         # generates one unified summary via Bedrock, stores at parent
         # vector key. Requeue-with-delay when shards not yet complete.
         # Marks ledger on the final iteration (success OR max-attempts
@@ -2132,7 +2132,7 @@ def process_batch_record(record: Dict[str, Any]) -> None:
             _abandon_symbol_graph_swap(sg_workspace, sg_repo)
         raise
 
-    # PII redaction (plan/ chunk 05). Code summaries occasionally include
+    # PII redaction (plan/ ). Code summaries occasionally include
     # accidentally-pasted credentials / customer data from inline
     # comments; redact before embedding so neither S3 Vectors nor the
     # downstream RAG flow sees raw identifiers. Honors the workspace's
@@ -2213,7 +2213,7 @@ def process_batch_record(record: Dict[str, Any]) -> None:
 
     logger.info(f"Successfully processed {batch['batch_type']} summary for {batch['group_name']}")
 
-    # plan-git-truth chunk 02b: close one unit of the code_map_units
+    # plan-git-truth close one unit of the code_map_units
     # ledger row that process-repo-summary opened with expected_count =
     # the full fan-out size. When this close drives completed_count
     # equal to expected_count (the last unit), try_advance_sha checks
@@ -2227,7 +2227,7 @@ def process_batch_record(record: Dict[str, Any]) -> None:
     _mark_code_map_unit_done(batch, status="ok")
 
     # Optional cooldown period to prevent Bedrock throttling on next message.
-    # fable-scale chunk 08: duration tfvar-driven (was hardcoded 10s). Default
+    # duration tfvar-driven (was hardcoded 10s). Default
     # 0 disables the cooldown entirely — enterprise Bedrock quotas absorb the
     # rate; low-quota accounts can dial it back up. Kept ENABLE_BEDROCK_COOLDOWN
     # as the master switch for backward compat.
@@ -2239,10 +2239,10 @@ def process_batch_record(record: Dict[str, Any]) -> None:
 
 
 # ============================================================================
-# Chunk 05: ledger-driven fan-in merge
+# ledger-driven fan-in merge
 # ============================================================================
 #
-# When a code unit is split into N shards, the splitter (chunk 03) also
+# When a code unit is split into N shards, the splitter also
 # emits a companion merge message. The merge handler below reads the N
 # shard summaries by their known vector keys, produces one unified
 # summary via a single Bedrock call, and stores it at the parent vector
@@ -2677,7 +2677,7 @@ def _advance_gkg_sha(workspace_id: str, repo: str, commit_sha: str) -> None:
     """Synthesize a single-unit gkg ledger entry + advance the
     ``last_gkg_sha`` column on the workspaces row.
 
-    Plan-git-truth chunk 02: gkg is a single-writer pipeline with no
+    Plan-git-truth gkg is a single-writer pipeline with no
     fan-out, so we open + complete + advance in three sequential DDB
     calls to keep the audit contract uniform across pipelines. The
     pointer table (``shared.symbol_graph_pointer``) remains the
@@ -2750,7 +2750,7 @@ def handler(event, context):
     if CODE_MAPS_TABLE is None:
         load_config()
 
-    # plan-git-truth chunk 02b: SQS maxReceiveCount on the code-maps
+    # plan-git-truth SQS maxReceiveCount on the code-maps
     # queue (terraform/sqs.tf) is 3. When a record's
     # ApproximateReceiveCount reaches that, the next failure DLQs it
     # invisibly. To preserve the SHA-truth contract (every code unit

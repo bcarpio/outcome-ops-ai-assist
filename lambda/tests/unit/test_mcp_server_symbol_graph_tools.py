@@ -763,7 +763,7 @@ class TestFindDefinitions:
 
     def test_cross_repo_duplicates_surface(self, tables):
         """definitions(X) returns list[CallSite] so cross-repo duplicates
-        all surface (chunk-04 open Q #2). The MCP tool MUST preserve
+        all surface. The MCP tool MUST preserve
         that -- otherwise consumers can't reason about duplicate
         interface declarations."""
         sym = "typescript:@org/types::IBookingClient"
@@ -1319,7 +1319,7 @@ class TestFindSymbolAtLine:
 
 # ===========================================================================
 # MCP envelope completeness fields (ADR-032). Each list-returning tool's
-# JSON envelope forwards complete + total_known so chat synthesis (chunk 04
+# JSON envelope forwards complete + total_known so chat synthesis (
 # prompt rule) can detect a clipped result.
 # ===========================================================================
 

@@ -1,6 +1,6 @@
 # Copyright 2025-2026 OutcomeOps
 # SPDX-License-Identifier: Apache-2.0
-"""Unit tests for fable-scale chunk 05 retry semantics in _converse_backend.
+"""Unit tests for retry semantics in _converse_backend.
 
 Covers:
 - _is_retryable classification of error codes.
@@ -185,7 +185,7 @@ class TestOpenStreamWithRetry:
 
 
 class TestPromptCache:
-    """fable-scale chunk 10: BEDROCK_PROMPT_CACHE_ENABLED gates a
+    """BEDROCK_PROMPT_CACHE_ENABLED gates a
     Converse cachePoint appended to the system-prompt block."""
 
     def test_cache_disabled_by_default(self, monkeypatch):

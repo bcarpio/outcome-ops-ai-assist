@@ -1,11 +1,11 @@
 # Copyright 2025-2026 OutcomeOps
 # SPDX-License-Identifier: Apache-2.0
 # ============================================================================
-# Secondary-region integration handler Lambdas (HA chunk 9c-3b)
+# Secondary-region integration handler Lambdas (-3b)
 # ----------------------------------------------------------------------------
 # Mirror of the 9 integration Lambdas under aws.secondary. Each gets its own
 # Function URL with IAM auth and an SSM parameter holding the URL so the
-# secondary UI Fargate (chunk 9h) can resolve it without hard-coding.
+# secondary UI Fargate can resolve it without hard-coding.
 #
 # Env vars + IAM scope to SECONDARY-region resources only:
 #   workspaces_table_secondary, audit_logs_table_secondary,
@@ -17,7 +17,7 @@
 # Single-region deploys (secondary_region == "") produce no resources here.
 #
 # Passive-mode behavior: each Lambda's handler.py routes mutation
-# operations through shared.region_guard.guard_active() per chunk 9c-2.
+# operations through shared.region_guard.guard_active() per -2.
 # When secondary is passive (default after first deploy), POSTs / PUTs /
 # DELETEs return HTTP 403 with {"error": "region_passive"}.
 # ============================================================================
@@ -69,7 +69,7 @@ module "github_integration_lambda_secondary" {
       WORKSPACES_TABLE  = module.workspaces_table_secondary[0].dynamodb_table_id
       GITHUB_SYNC_QUEUE = aws_sqs_queue.github_sync_secondary[0].url
       DELETE_QUEUE      = aws_sqs_queue.delete_queue_secondary[0].url
-      # chunk 10 (HA parity): reverse pointer to the primary delete
+      # (HA parity): reverse pointer to the primary delete
       # queue so disconnect-cleanup issued while secondary is active
       # also purges primary-region KB/vectors. Handler reads
       # DELETE_QUEUE_SECONDARY (name is region-neutral; on the primary
@@ -98,7 +98,7 @@ module "github_integration_lambda_secondary" {
         actions   = ["ssm:GetParameter", "ssm:GetParameters"]
         resources = ["arn:aws:ssm:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.environment}/${var.app_name}/github/*"]
       }
-      # fable-scale 06 mirror: the cached-installation-token path WRITES
+      # Secondary mirror: the cached-installation-token path WRITES
       # the token back to SSM. Without PutParameter the secondary falls
       # back to a fresh token mint on every call post-failover (GitHub
       # rate-limit exposure), and the write raises AccessDenied noise.
@@ -115,7 +115,7 @@ module "github_integration_lambda_secondary" {
       sqs_send = {
         effect  = "Allow"
         actions = ["sqs:SendMessage"]
-        # chunk 10 (HA parity): also grant SendMessage on the primary
+        # (HA parity): also grant SendMessage on the primary
         # delete queue for cross-region cleanup.
         resources = [
           aws_sqs_queue.github_sync_secondary[0].arn,
@@ -204,7 +204,7 @@ module "confluence_integration_lambda_secondary" {
       APP_NAME              = var.app_name
       WORKSPACES_TABLE      = module.workspaces_table_secondary[0].dynamodb_table_id
       CONFLUENCE_SYNC_QUEUE = aws_sqs_queue.confluence_sync_secondary[0].url
-      # chunk 08 (HA parity): mirror primary DELETE_QUEUE so disconnect-
+      # (HA parity): mirror primary DELETE_QUEUE so disconnect-
       # cleanup enqueues delete jobs after failover (silent no-op otherwise).
       DELETE_QUEUE         = aws_sqs_queue.delete_queue_secondary[0].url
       AUDIT_TABLE          = module.audit_logs_table_secondary[0].dynamodb_table_id
@@ -327,7 +327,7 @@ module "jira_integration_lambda_secondary" {
       APP_NAME         = var.app_name
       WORKSPACES_TABLE = module.workspaces_table_secondary[0].dynamodb_table_id
       JIRA_SYNC_QUEUE  = aws_sqs_queue.jira_sync_secondary[0].url
-      # chunk 08 (HA parity): mirror primary DELETE_QUEUE so disconnect-
+      # (HA parity): mirror primary DELETE_QUEUE so disconnect-
       # cleanup enqueues delete jobs after failover (silent no-op otherwise).
       DELETE_QUEUE         = aws_sqs_queue.delete_queue_secondary[0].url
       AUDIT_TABLE          = module.audit_logs_table_secondary[0].dynamodb_table_id
@@ -450,7 +450,7 @@ module "outlook_integration_lambda_secondary" {
       APP_NAME           = var.app_name
       WORKSPACES_TABLE   = module.workspaces_table_secondary[0].dynamodb_table_id
       OUTLOOK_SYNC_QUEUE = aws_sqs_queue.outlook_sync_secondary[0].url
-      # chunk 08 (HA parity): mirror primary DELETE_QUEUE so disconnect-
+      # (HA parity): mirror primary DELETE_QUEUE so disconnect-
       # cleanup enqueues delete jobs after failover (silent no-op otherwise).
       DELETE_QUEUE         = aws_sqs_queue.delete_queue_secondary[0].url
       AUDIT_TABLE          = module.audit_logs_table_secondary[0].dynamodb_table_id
@@ -571,7 +571,7 @@ module "teams_integration_lambda_secondary" {
       APP_NAME         = var.app_name
       WORKSPACES_TABLE = module.workspaces_table_secondary[0].dynamodb_table_id
       TEAMS_SYNC_QUEUE = aws_sqs_queue.teams_sync_secondary[0].url
-      # chunk 08 (HA parity): mirror primary DELETE_QUEUE so disconnect-
+      # (HA parity): mirror primary DELETE_QUEUE so disconnect-
       # cleanup enqueues delete jobs after failover (silent no-op otherwise).
       DELETE_QUEUE         = aws_sqs_queue.delete_queue_secondary[0].url
       AUDIT_TABLE          = module.audit_logs_table_secondary[0].dynamodb_table_id
@@ -692,7 +692,7 @@ module "sharepoint_integration_lambda_secondary" {
       APP_NAME              = var.app_name
       WORKSPACES_TABLE      = module.workspaces_table_secondary[0].dynamodb_table_id
       SHAREPOINT_SYNC_QUEUE = aws_sqs_queue.sharepoint_sync_secondary[0].url
-      # chunk 08 (HA parity): mirror primary DELETE_QUEUE so disconnect-
+      # (HA parity): mirror primary DELETE_QUEUE so disconnect-
       # cleanup enqueues delete jobs after failover (silent no-op otherwise).
       DELETE_QUEUE         = aws_sqs_queue.delete_queue_secondary[0].url
       AUDIT_TABLE          = module.audit_logs_table_secondary[0].dynamodb_table_id
@@ -813,7 +813,7 @@ module "onedrive_integration_lambda_secondary" {
       APP_NAME            = var.app_name
       WORKSPACES_TABLE    = module.workspaces_table_secondary[0].dynamodb_table_id
       ONEDRIVE_SYNC_QUEUE = aws_sqs_queue.onedrive_sync_secondary[0].url
-      # chunk 08 (HA parity): mirror primary DELETE_QUEUE so disconnect-
+      # (HA parity): mirror primary DELETE_QUEUE so disconnect-
       # cleanup enqueues delete jobs after failover (silent no-op otherwise).
       DELETE_QUEUE         = aws_sqs_queue.delete_queue_secondary[0].url
       AUDIT_TABLE          = module.audit_logs_table_secondary[0].dynamodb_table_id
@@ -934,7 +934,7 @@ module "onenote_integration_lambda_secondary" {
       APP_NAME           = var.app_name
       WORKSPACES_TABLE   = module.workspaces_table_secondary[0].dynamodb_table_id
       ONENOTE_SYNC_QUEUE = aws_sqs_queue.onenote_sync_secondary[0].url
-      # chunk 08 (HA parity): mirror primary DELETE_QUEUE so disconnect-
+      # (HA parity): mirror primary DELETE_QUEUE so disconnect-
       # cleanup enqueues delete jobs after failover (silent no-op otherwise).
       DELETE_QUEUE         = aws_sqs_queue.delete_queue_secondary[0].url
       AUDIT_TABLE          = module.audit_logs_table_secondary[0].dynamodb_table_id
@@ -1061,7 +1061,7 @@ module "database_integration_lambda_secondary" {
       APP_NAME            = var.app_name
       WORKSPACES_TABLE    = module.workspaces_table_secondary[0].dynamodb_table_id
       DATABASE_SYNC_QUEUE = aws_sqs_queue.database_sync_secondary[0].url
-      # chunk 08 (HA parity): mirror primary DELETE_QUEUE so disconnect-
+      # (HA parity): mirror primary DELETE_QUEUE so disconnect-
       # cleanup enqueues delete jobs after failover (silent no-op otherwise).
       DELETE_QUEUE              = aws_sqs_queue.delete_queue_secondary[0].url
       AUDIT_TABLE               = module.audit_logs_table_secondary[0].dynamodb_table_id
@@ -1135,7 +1135,7 @@ resource "aws_ssm_parameter" "database_integration_url_secondary" {
 }
 
 # ============================================================================
-# Outputs — Function URLs consumed by the secondary UI Fargate (chunk 9h)
+# Outputs — Function URLs consumed by the secondary UI Fargate
 # ============================================================================
 
 output "github_integration_url_secondary" {
@@ -1184,7 +1184,7 @@ output "database_integration_url_secondary" {
 }
 
 # ----------------------------------------------------------------------------
-# Azure DevOps integration (secondary) -- chunk 09
+# Azure DevOps integration (secondary) -- 
 # ----------------------------------------------------------------------------
 
 module "azure_devops_integration_lambda_secondary" {
@@ -1359,7 +1359,7 @@ output "azure_devops_integration_url_secondary" {
 }
 
 # ----------------------------------------------------------------------------
-# GitLab integration (secondary) -- ADR-050 chunk 08
+# GitLab integration (secondary) -- ADR-050
 # ----------------------------------------------------------------------------
 
 # Same derived-path placeholder as the primary (lambda-gitlab.tf): terraform
@@ -1549,7 +1549,7 @@ output "gitlab_integration_url_secondary" {
 }
 
 # ----------------------------------------------------------------------------
-# ServiceNow integration (secondary) -- chunk 07 (HA parity, ADR-044)
+# ServiceNow integration (secondary) -- (HA parity, ADR-044)
 #
 # Per-workspace OAuth credentials live in DDB (KMS-encrypted with the
 # oauth_tokens_secondary CMK), so no env-level SSM params to replicate.

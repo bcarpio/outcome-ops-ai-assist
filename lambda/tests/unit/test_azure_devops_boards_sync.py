@@ -68,7 +68,7 @@ api_module = _load_module(
     "../../azure-devops-boards-sync",
     also_register_as="azure_devops_work_items_api",
 )
-# Chunk 16: token_manager consolidated to shared/oauth/azure_devops_boards.py.
+# token_manager consolidated to shared/oauth/azure_devops_boards.py.
 # Import via the ordinary package path so every consumer shares the same
 # module object (see the sibling handler test for the double-loading trap).
 _LAMBDA_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))

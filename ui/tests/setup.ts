@@ -1,6 +1,6 @@
 import { afterEach, vi } from 'vitest'
 
-// Chunk 13: allow node-environment tests (server/ suites) to opt out
+// allow node-environment tests (server/ suites) to opt out
 // of the DOM setup. A per-file `// @vitest-environment node` directive
 // disables `window`; the DOM shims below then throw at load time.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

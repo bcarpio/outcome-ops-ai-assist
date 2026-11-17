@@ -234,7 +234,7 @@ module "database_sync_lambda" {
       DELETE_QUEUE              = aws_sqs_queue.delete_queue[0].url
       AUDIT_TABLE               = module.audit_logs_table.dynamodb_table_id
       AUDIT_RETENTION_DAYS      = tostring(var.audit_retention_days)
-      # chunk 07: empty string when no subscribers configured - the
+      # empty string when no subscribers configured - the
       # handler's publish path is gated on truthiness, so a missing
       # topic is a clean no-op (audit row still fires).
       DATABASE_DRIFT_TOPIC_ARN = length(aws_sns_topic.database_drift) > 0 ? aws_sns_topic.database_drift[0].arn : ""
@@ -305,7 +305,7 @@ module "database_sync_lambda" {
         ]
       }
 
-      # chunk 07: publish-grant on the database-drift topic. Uses a
+      # publish-grant on the database-drift topic. Uses a
       # nonexistent-arn placeholder when no topic was created so the
       # policy attachment stays well-formed; the handler's publish
       # path is gated on the env-var being non-empty, so nothing tries
@@ -333,7 +333,7 @@ resource "aws_lambda_event_source_mapping" "database_sync" {
   batch_size                         = 1
   maximum_batching_window_in_seconds = 0
 
-  # Chunk 02: partial-batch-failure. See lambda-github.tf for rationale.
+  # partial-batch-failure. See lambda-github.tf for rationale.
   function_response_types = ["ReportBatchItemFailures"]
 
   scaling_config {

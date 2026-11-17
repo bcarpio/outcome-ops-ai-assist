@@ -451,7 +451,7 @@ def process_sync_message(message: Dict[str, Any]) -> Dict[str, Any]:
         return {"slug": slug, "status": "skip-disabled", "sync_id": sync_id}
 
     repo_type = repo_row.get("repo_type", "application")
-    # Which GitLab instance this repo belongs to (chunk 03 stores it on the
+    # Which GitLab instance this repo belongs to (stores it on the
     # row; absent on pre-multi-instance rows -> the sole "default" instance).
     instance = gitlab_instances.get_instance(repo_row.get("instance_id"))
     _base = instance.base_url

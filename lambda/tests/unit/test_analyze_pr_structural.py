@@ -16,7 +16,7 @@ Covers the four moving parts of the structural-impact pass:
      contains the expected sections, in stable order, with the
      staleness footer.
 
-Plus the chunk-06 "Definition of done" integration test: a synthetic
+Plus the "Definition of done" integration test: a synthetic
 PR that changes the signature of ``log_audit_entry`` produces an
 impact block that lists all 9 known callers and uses the
 signature-change reviewer note. Mirrors the same fixture set as
@@ -63,7 +63,7 @@ from moto import mock_aws
 #   * ``from diff_symbol_resolver import ...`` works (analyze-pr lives at
 #     ``lambda/analyze-pr`` so it's adjacent to ``lambda/shared``).
 #   * ``from extractor import extract_facts_from_bytes`` resolves via
-#     ``lambda/process-batch-summary/`` (the chunk-01 extractor).
+#     ``lambda/process-batch-summary/`` (the extractor).
 # ---------------------------------------------------------------------------
 
 
@@ -997,7 +997,7 @@ def _load_handler():
 class TestHandlerStructuralGlue:
     def test_disabled_via_env_returns_none(self, monkeypatch):
         """GRAPH_RETRIEVAL_ENABLED=false short-circuits without firing
-        any reader calls -- the kill-switch standardized in chunk 08.
+        any reader calls -- the kill-switch standardized in .
         """
         monkeypatch.setenv("GRAPH_RETRIEVAL_ENABLED", "false")
         handler = _load_handler()
@@ -1013,7 +1013,7 @@ class TestHandlerStructuralGlue:
         assert out is None
 
     def test_disabled_via_legacy_env_returns_none(self, monkeypatch):
-        """Backward-compat: GRAPH_AUGMENT_ENABLED=false (the chunk-06
+        """Backward-compat: GRAPH_AUGMENT_ENABLED=false (the 
         name) still disables the pass when GRAPH_RETRIEVAL_ENABLED is
         unset. Lets operators on older deploys roll forward."""
         monkeypatch.delenv("GRAPH_RETRIEVAL_ENABLED", raising=False)

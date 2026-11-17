@@ -61,7 +61,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """DynamoDB Streams batch handler. Returns the AWS Lambda partial-batch
     response shape so failed records get retried while successful ones are
     not redelivered."""
-    # HA chunk 9j: only the active region exports OCSF to Kinesis.
+    # only the active region exports OCSF to Kinesis.
     # Both regions' audit-logs DDB streams fire on replicated writes;
     # without this gate, customer SIEMs would see doubled OCSF events
     # (one per region) per audit row.

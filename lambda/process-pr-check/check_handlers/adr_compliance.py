@@ -292,7 +292,7 @@ def query_knowledge_base(
     """Query knowledge base via query-kb Lambda.
 
     ``workspace_ids`` scopes retrieval to those workspaces only
-    (chunk 04 of the workspace-scope plan). Empty/None ==
+. Empty/None ==
     workspace-blind (pre-fix legacy behavior; callers should
     always pass a scope now).
     """

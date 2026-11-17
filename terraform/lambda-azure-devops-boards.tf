@@ -210,7 +210,7 @@ resource "aws_ssm_parameter" "azure_devops_boards_integration_url" {
 # SQS queue + DLQ for Boards sync jobs.
 # Defined here because the integration Lambda writes to the queue on
 # add-projects. The sync worker that consumes from the queue is added in
-# chunk 05; the scheduler that fans out hourly sync jobs is added in chunk 06.
+# ; the scheduler that fans out hourly sync jobs is added in .
 # ============================================================================
 
 resource "aws_sqs_queue" "azure_devops_boards_sync" {
@@ -245,7 +245,7 @@ resource "aws_sqs_queue" "azure_devops_boards_sync_dlq" {
 }
 
 # ============================================================================
-# Boards Sync Worker Lambda (chunk 05)
+# Boards Sync Worker Lambda
 # ============================================================================
 
 module "azure_devops_boards_sync_lambda" {
@@ -392,7 +392,7 @@ resource "aws_lambda_event_source_mapping" "azure_devops_boards_sync" {
 
   function_response_types = ["ReportBatchItemFailures"]
 
-  # chunk 10 (HA parity): mirror secondary's maximum_concurrency = 5.
+  # (HA parity): mirror secondary's maximum_concurrency = 5.
   # Without a cap, a scheduler-driven backlog would burst-invoke against
   # Boards' per-project ADO API rate limit -- primary was unbounded, the
   # secondary was already correct.
@@ -402,7 +402,7 @@ resource "aws_lambda_event_source_mapping" "azure_devops_boards_sync" {
 }
 
 # ============================================================================
-# Boards Scheduler Lambda (chunk 06)
+# Boards Scheduler Lambda
 #
 # Hourly EventBridge trigger. Scans workspace-projects table, enqueues
 # a sync message per enabled AZDO_BOARDS_PROJECT# row. Active-region

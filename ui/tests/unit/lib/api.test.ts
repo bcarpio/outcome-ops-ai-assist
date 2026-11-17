@@ -176,13 +176,13 @@ describe('listConversations', () => {
     expect(mockFetch).toHaveBeenCalledWith(expect.stringContaining('cursor=cursor-abc'))
   })
 
-  it('propagates fetch errors (chunk 15: no silent swallow)', async () => {
+  it('propagates fetch errors', async () => {
     mockFetch.mockRejectedValue(new Error('Network error'))
 
     await expect(listConversations()).rejects.toThrow('Network error')
   })
 
-  it('throws on non-ok response (chunk 15: consistency with other exports)', async () => {
+  it('throws on non-ok response', async () => {
     mockFetch.mockResolvedValue(createMockFetchResponse({}, false, 500))
 
     await expect(listConversations()).rejects.toThrow(/500/)
@@ -218,13 +218,13 @@ describe('getConversation', () => {
     expect(result).toEqual(data)
   })
 
-  it('throws on non-ok response (chunk 15: no silent null)', async () => {
+  it('throws on non-ok response', async () => {
     mockFetch.mockResolvedValue(createMockFetchResponse({}, false, 404))
 
     await expect(getConversation('c1')).rejects.toThrow(/404/)
   })
 
-  it('propagates fetch errors (chunk 15: no silent swallow)', async () => {
+  it('propagates fetch errors', async () => {
     mockFetch.mockRejectedValue(new Error('Network error'))
 
     await expect(getConversation('c1')).rejects.toThrow('Network error')
@@ -235,7 +235,7 @@ describe('getConversation', () => {
 // deleteConversation
 // ============================================================================
 describe('deleteConversation', () => {
-  it('resolves on success (chunk 15: void return, throw semantics)', async () => {
+  it('resolves on success', async () => {
     mockFetch.mockResolvedValue(createMockFetchResponse({}, true, 200))
 
     await expect(deleteConversation('c1')).resolves.toBeUndefined()
@@ -243,13 +243,13 @@ describe('deleteConversation', () => {
     expect(mockFetch).toHaveBeenCalledWith('/api/conversations/c1', { method: 'DELETE' })
   })
 
-  it('throws on non-ok response (chunk 15: no silent boolean)', async () => {
+  it('throws on non-ok response', async () => {
     mockFetch.mockResolvedValue(createMockFetchResponse({}, false, 404))
 
     await expect(deleteConversation('c1')).rejects.toThrow(/404/)
   })
 
-  it('propagates fetch errors (chunk 15: no silent swallow)', async () => {
+  it('propagates fetch errors', async () => {
     mockFetch.mockRejectedValue(new Error('Network error'))
 
     await expect(deleteConversation('c1')).rejects.toThrow('Network error')

@@ -1,6 +1,6 @@
 # Copyright 2025-2026 OutcomeOps
 # SPDX-License-Identifier: Apache-2.0
-"""Unit tests for servicenow-sync Lambda (chunk 03)."""
+"""Unit tests for servicenow-sync Lambda."""
 
 import importlib.util
 import json

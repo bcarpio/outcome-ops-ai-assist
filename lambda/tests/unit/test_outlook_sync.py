@@ -421,7 +421,7 @@ class TestProcessSyncRequest:
 # ============================================================================
 
 class TestLambdaHandler:
-    """Chunk 02: SQS partial-batch-failure contract."""
+    """SQS partial-batch-failure contract."""
 
     @patch.object(handler_module, 'process_sync_request')
     def test_processes_sqs_records(self, mock_process):
@@ -469,7 +469,7 @@ class TestLambdaHandler:
 
     @patch.object(handler_module, 'process_sync_request')
     def test_only_failed_record_in_batch_item_failures(self, mock_process):
-        """Chunk 02 reference test: 3-record batch, middle raises,
+        """reference test: 3-record batch, middle raises,
         only itemIdentifier for msg-2 is returned."""
         def side_effect(msg):
             if msg["workspace_id"] == "ws2":

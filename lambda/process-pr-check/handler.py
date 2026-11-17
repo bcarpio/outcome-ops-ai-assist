@@ -43,7 +43,7 @@ from check_handlers import (
     UsageTracker,
 )
 
-# chunk 07: Azure DevOps PR-comment posting via the customer's
+# Azure DevOps PR-comment posting via the customer's
 # connection. The modules are copies (per the sharepoint-sync /
 # azure-devops-sync precedent of bundling integration modules into
 # the consumer). The handler stays GitHub-default; the ADO branch
@@ -81,7 +81,7 @@ QUERY_KB_LAMBDA_NAME = os.environ.get("QUERY_KB_LAMBDA_NAME", f"{ENVIRONMENT}-{A
 DEFERRED_SUMMARY_SK = "SUMMARY_DEFERRED"
 COMMENT_ROLE_SUMMARY = "summary"
 
-# chunk 07: ADO PR-comment posting needs the customer's per-connection
+# ADO PR-comment posting needs the customer's per-connection
 # OAuth access token. tenant_id + client_id come from tfvars (same as
 # the integration Lambda); client secret is read from SSM at request
 # time.
@@ -137,7 +137,7 @@ class CheckStatus(str, Enum):
 class CheckJob(BaseModel):
     """Check job schema (from SQS message).
 
-    chunk 07: ``provider`` defaults to ``"github"`` so existing
+    ``provider`` defaults to ``"github"`` so existing
     GitHub-only PR-check messages continue to work unchanged. When
     ``provider == "azure_devops"``, the comment-post path uses ADO
     REST + the customer's connection-id-driven OAuth token. The
@@ -338,7 +338,7 @@ def post_pr_review_comment(
     Unlike post_pr_comment (issue-level), this anchors the comment to a specific
     file+line via the pull-request review-comments endpoint. Callers store the
     returned ``id`` to target patch_pr_review_comment on later runs (the inline
-    upsert bookkeeping; see plan chunk 02).
+    upsert bookkeeping; see plan ).
 
     Args:
         commit_id: PR head SHA the line is anchored to (from pr_metadata).
@@ -853,7 +853,7 @@ def run_check(job: CheckJob, anchors: Optional[Dict[str, List[int]]] = None) -> 
     signatures in ``check_handlers/*.py``), so callers reaching this
     function with an ADO job hit a loud failure. The
     ``process_check_job`` short-circuit above prevents that from
-    happening in production until chunk 05 removes it.
+    happening in production until removes it.
 
     Args:
         job: CheckJob with check type and PR metadata
@@ -1387,9 +1387,9 @@ def process_check_job(job: CheckJob) -> CheckResult:
 
     # All 6 check handlers accept ``provider=azure_devops`` and dispatch
     # source-fetching accordingly (chunks 03-04 of the AI-PR-Analyzer
-    # ADO parity plan). The chunk-07-era short-circuit that stubbed
+    # ADO parity plan). The -era short-circuit that stubbed
     # ADO to a PASS with a "not yet implemented" comment was removed
-    # in chunk 05; ADO jobs now run the same check pipeline GitHub
+    # in ; ADO jobs now run the same check pipeline GitHub
     # jobs do.
     # File-level checks (breaking changes, test coverage) can anchor inline
     # findings only if given a first-added-line map; compute it provider-aware

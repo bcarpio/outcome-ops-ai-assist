@@ -85,7 +85,7 @@ bedrock_config = Config(
 
 dynamodb_client = boto3.client("dynamodb")
 dynamodb_resource = boto3.resource("dynamodb")
-# ADR-035 chunk 12: bedrock_client is EMBEDDINGS-ONLY (Titan via
+# ADR-035: bedrock_client is EMBEDDINGS-ONLY (Titan via
 # invoke_model). The architectural-summary generation routes through
 # shared.model_client.invoke (imported above). The legacy 300s read
 # timeout on bedrock_config is no longer load-bearing here.
@@ -378,7 +378,7 @@ def discover_code_units(
     """
     Discover code units from file list using backend abstraction.
 
-    ``token`` may be None for non-github providers (chunk-08a). In
+    ``token`` may be None for non-github providers. In
     that case we skip the GitHub .outcomeops.yaml fetch and use an
     empty repo config -- the backend defaults to python with no
     custom handler patterns, which works against any file tree at
@@ -581,7 +581,7 @@ def generate_embedding(text: str) -> List[float]:
         # ADR-016 v1.2: prefer the chat/titan-embed application inference
         # profile ARN (Cost Explorer attribution). Falls back to the
         # bare foundation-model id when the profile env var isn't set
-        # on this Lambda (chunk-04 didn't wire chat_env into code-maps
+        # on this Lambda (didn't wire chat_env into code-maps
         # Lambdas; embed spend stays untagged rather than crashing).
         embed_model_id = (
             resolve_profile_arn("chat", "titan-embed") or EMBEDDING_MODEL_ID
@@ -663,7 +663,7 @@ def store_code_map_embedding(
             metadata["workspace_id"] = workspace_id
             metadata["source"] = provider
 
-        # fable-scale chunk 07: route through shared.dual_write for HA
+        # route through shared.dual_write for HA
         # replication.
         from shared import dual_write
         dual_write.s3vectors_put_vectors(
@@ -707,7 +707,7 @@ def _shard_group_names_for_unit(
     summaries under for one code unit.
 
     Single-shard units return ``[parent_group_name]`` (unchanged from
-    pre-chunk-03 behavior). Sharded units return ``[parent#shard-00,
+    pre-behavior). Sharded units return ``[parent#shard-00,
     parent#shard-01, ...]`` matching the shard-suffixed group_name that
     ``_build_shard_messages_for_unit`` sets on each shard message.
 
@@ -749,7 +749,7 @@ def _expected_code_map_vector_keys(
         doc_type = f"{batch['batch_type']}-summary"
         key      = f"{ws}#{provider}#{repo_bare}#{doc_type}#{group_name}"
 
-    For sharded units (chunk 03 splitter emits N shard messages per
+    For sharded units (splitter emits N shard messages per
     oversized unit), the writer stores each shard's summary under a
     shard-suffixed group_name like ``tests#shard-00``. The orphan
     cleanup MUST include those shard-suffixed keys in expected_keys or
@@ -901,7 +901,7 @@ def _open_code_map_units_ledger(
     will dispatch. Closed incrementally by ``process-batch-summary``
     as each code-unit SQS message lands.
 
-    plan-git-truth chunk 02b: this is the second stage of the
+    plan-git-truth this is the second stage of the
     two-stage code-map ledger; the first stage
     (``code_map_dispatch``) was opened by github-sync.
     """
@@ -1054,7 +1054,7 @@ def send_code_units_to_sqs(
             Threaded onto each code-unit SQS body so
             process-batch-summary can mark its code_map_units ledger
             with the correct monotonic-advance anchor (plan-git-truth
-            chunk 02b).
+            ).
 
     Returns:
         Count of units successfully published to SQS. Per-unit
@@ -1062,7 +1062,7 @@ def send_code_units_to_sqs(
         increment ``failed_count`` on the code_map_units ledger row
         (when ledger context is available) — they do NOT abort the
         rest of the batch and do NOT re-raise. This is the
-        error-handling shift in plan-git-truth chunk 02b: the
+        error-handling shift in plan-git-truth the
         record's other units still dispatch, the SQS message
         succeeds, and operators see the failed units in the
         failed-files table instead of an opaque DLQ entry.
@@ -1073,7 +1073,7 @@ def send_code_units_to_sqs(
     expected_keys reflects every handler that should remain - otherwise
     incremental sync would treat all unchanged handlers as orphans.
     """
-    # Chunk 03: build a path -> byte-size lookup so the splitter can
+    # build a path -> byte-size lookup so the splitter can
     # decide when a code unit is too big for a single Bedrock call.
     # Both callers (github-sync + azure-devops-sync) currently flatten
     # the tree to list[str] paths before enqueuing, so file sizes
@@ -1116,7 +1116,7 @@ def send_code_units_to_sqs(
                 f"({len(unit_messages)} messages)"
             )
         except ClientError as e:
-            # plan-git-truth chunk 02b: per-unit dispatch failure does
+            # plan-git-truth per-unit dispatch failure does
             # not abort the batch. Record the failure in the SHA-truth
             # failed-files table; the rest of the units still get
             # dispatched.
@@ -1263,10 +1263,10 @@ def _build_shard_messages_for_unit(
             # Symbol-graph regen anchors on this commit SHA.
             message["commit_sha"] = commit_sha
         if commit_timestamp is not None:
-            # plan-git-truth chunk 02b: monotonic-advance anchor
+            # plan-git-truth monotonic-advance anchor
             # for the per-unit ledger increments downstream.
             message["commit_timestamp"] = commit_timestamp
-        # chunk-08a: process-batch-summary's fetch_file_content
+        # process-batch-summary's fetch_file_content
         # dispatches on `provider`. For azure_devops it reads from
         # the S3 mirror at workspaces/{ws}/azure_devops/{slug}/.
         # GitHub default "github" keeps the existing
@@ -1284,8 +1284,8 @@ def _build_shard_messages_for_unit(
         messages.append(message)
 
     if shard_count > 1:
-        # Companion merge message. Chunk 02's consumer stub drops it
-        # (logs + returns) until chunk 05 fills in the fan-in body.
+        # Companion merge message. consumer stub drops it
+        # (logs + returns) until fills in the fan-in body.
         # Storage/group_name stay at the parent so the merged summary
         # lands where downstream retrieval expects it.
         merge_message: Dict[str, Any] = {
@@ -1365,7 +1365,7 @@ def handler(event, context):
             workspace_id = message_body.get("workspace_id")
             installation_id = message_body.get("installation_id")
             should_discover = message_body.get("discover_code_units", False)
-            # chunk-08a provider routing: github (default) uses the
+            # provider routing: github (default) uses the
             # existing installation_token + GitHub API path. ADO uses
             # the S3 mirror; no token needed at this layer (sync
             # worker already authenticated against the customer's
@@ -1377,7 +1377,7 @@ def handler(event, context):
             # Read commit SHAs for incremental processing
             last_commit_sha = message_body.get("last_commit_sha")
             current_commit_sha = message_body.get("current_commit_sha")
-            # plan-git-truth chunk 02b: commit_timestamp is threaded
+            # plan-git-truth commit_timestamp is threaded
             # through from github-sync on the repo-summaries body so
             # this dispatcher can open the code_map_units ledger with
             # the correct monotonic-advance anchor.
@@ -1393,7 +1393,7 @@ def handler(event, context):
             full_code_units: List[Dict[str, Any]] = []
 
             if should_discover and provider in ("azure_devops", "gitlab"):
-                # S3-mirror providers (ADO chunk-08a + GitLab ADR-050). No
+                # S3-mirror providers (ADO + GitLab ADR-050). No
                 # installation token needed; the sync worker already wrote files
                 # to S3 and downstream process-batch-summary reads them via
                 # shared.source_fetch using provider+workspace_id+slug. Backend
@@ -1492,7 +1492,7 @@ def handler(event, context):
                 repo, repo_type, all_files, workspace_id=workspace_id or ""
             )
 
-            # PII redaction (plan/ chunk 05). Architectural summaries can
+            # PII redaction (plan/ ). Architectural summaries can
             # echo back inline comments / repo metadata that occasionally
             # carry credentials or customer data. Redact BEFORE both the
             # vector embed and the S3 upload so neither path stores the
@@ -1574,7 +1574,7 @@ def handler(event, context):
 
             # Send code units to SQS for detailed processing
             if code_units:
-                # plan-git-truth chunk 02b: open the units-stage ledger
+                # plan-git-truth open the units-stage ledger
                 # BEFORE the dispatch loop so per-unit failures (caught
                 # inside send_code_units_to_sqs) can increment
                 # failed_count on a row that exists. Expected count is
@@ -1586,7 +1586,7 @@ def handler(event, context):
                     and current_commit_sha
                     and current_commit_timestamp is not None
                 ):
-                    # Chunk 03: sharded units emit N shard + 1 merge
+                    # sharded units emit N shard + 1 merge
                     # messages each, so expected_count must count total
                     # SQS messages not just code units. Otherwise the
                     # consumer's per-message mark_unit_complete drives
@@ -1622,19 +1622,19 @@ def handler(event, context):
                         if current_commit_timestamp is not None
                         else None
                     ),
-                    # chunk-08a: thread provider+slug so the downstream
+                    # thread provider+slug so the downstream
                     # process-batch-summary's fetch_file_content can
                     # dispatch to the S3 mirror for non-github providers.
                     provider=provider,
                     slug=slug,
-                    # Chunk 03: thread the tree so the splitter can
+                    # thread the tree so the splitter can
                     # size each code unit against TARGET_SHARD_TOKENS.
                     all_files=all_files,
                     full_regen=full_regen,
                 )
                 logger.info(f"Queued {len(code_units)} code units for {repo}")
 
-            # plan-git-truth chunk 02b: close the dispatch-stage ledger
+            # plan-git-truth close the dispatch-stage ledger
             # AFTER opening the units-stage. The dispatch close fires
             # try_advance_sha, which checks the units stage too — if
             # units is open and incomplete, the advance is deferred to
@@ -1662,7 +1662,7 @@ def handler(event, context):
             if full_code_units:
                 # all_files threaded through so the expected_keys builder
                 # emits shard-suffixed vector keys for oversized units.
-                # Without it, the chunk-05 orphan cleanup would delete
+                # Without it, the orphan cleanup would delete
                 # shard summaries the moment they land (silently
                 # breaking merge fan-in for every regen).
                 expected_keys = _expected_code_map_vector_keys(

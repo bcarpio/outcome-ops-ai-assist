@@ -717,7 +717,7 @@ def store_vectors(
         return 0
 
     try:
-        # fable-scale chunk 07: route through shared.dual_write so vector
+        # route through shared.dual_write so vector
         # writes replicate to the passive region + chunk to the 500-vector
         # PutVectors SDK limit automatically (prior direct client.put_vectors
         # bypassed dual_write and failed hard at >500 vectors per doc).
@@ -790,7 +790,7 @@ def _emit_ingest_audit(
     that rolls into cost-by-model. Skipped runs (workspace_none /
     org_disabled / empty_text) emit only the admin row.
 
-    Non-fatal: audit writes never raise. Mirrors plan/ chunk 05 spec.
+    Non-fatal: audit writes never raise. Mirrors plan/ spec.
     """
     audit_table = os.environ.get("AUDIT_TABLE", "")
     if not audit_table:
@@ -841,7 +841,7 @@ def _close_docs_unit(
     """Close one unit of the docs SHA-truth ledger after a successful
     (or permanently failed) vector write.
 
-    plan-git-truth chunk 02b/4: github-sync opens
+    plan-git-truth /4: github-sync opens
     ``PENDING#docs#{sha}`` with ``expected_count = uploaded count``.
     Each process-documents invocation closes one unit; the last
     close advances ``last_docs_sha`` on the workspaces row. The
@@ -947,7 +947,7 @@ def process_document(bucket: str, key: str) -> Dict[str, Any]:
 
         if not text or len(text) < 50:
             logger.warning(f"Insufficient text content in {filename}")
-            # plan-git-truth chunk 02b/4 race fix #2 (2026-05-17): every
+            # plan-git-truth /4 race fix #2 (2026-05-17): every
             # github-sync-uploaded doc has a corresponding unit on the
             # docs ledger. If we early-return here without closing the
             # unit, the ledger sits below expected_count forever and
@@ -958,7 +958,7 @@ def process_document(bucket: str, key: str) -> Dict[str, Any]:
             _close_docs_unit(workspace_id, source, metadata, status="ok")
             return {"status": "skipped", "reason": "Insufficient content", "key": key}
 
-        # PII redaction (plan/ chunk 05). Scrub PII from `text` BEFORE
+        # PII redaction (plan/ ). Scrub PII from `text` BEFORE
         # chunking + embedding so neither S3 Vectors nor Bedrock ever see
         # raw identifiers. Honors the workspace's privacy_mode and the
         # org-level PII_REDACTION_ENABLED kill switch. The audit rows
@@ -1009,7 +1009,7 @@ def process_document(bucket: str, key: str) -> Dict[str, Any]:
             metadata=metadata,
         )
 
-        # plan-git-truth chunk 02b/4: close one unit of the docs
+        # plan-git-truth /4: close one unit of the docs
         # ledger that github-sync opened with expected_count =
         # uploaded count. last_docs_sha advances only when every
         # vector lands -- critical for HA failover so a mid-flight
@@ -1028,7 +1028,7 @@ def process_document(bucket: str, key: str) -> Dict[str, Any]:
 
     except ClientError as e:
         logger.error(f"Error processing document {key}: {e}")
-        # plan-git-truth chunk 02b/4: record the per-doc failure on
+        # plan-git-truth /4: record the per-doc failure on
         # the ledger so try_advance_sha eventually closes the batch
         # (otherwise a single permanent S3/Bedrock failure would
         # wedge the SHA forever).

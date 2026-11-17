@@ -1,6 +1,6 @@
 # Copyright 2025-2026 OutcomeOps
 # SPDX-License-Identifier: Apache-2.0
-"""Unit tests for the PR-check workspace-scope resolver (chunk 04)."""
+"""Unit tests for the PR-check workspace-scope resolver."""
 
 from unittest.mock import MagicMock
 

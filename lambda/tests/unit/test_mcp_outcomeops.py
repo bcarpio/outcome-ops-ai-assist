@@ -213,7 +213,7 @@ class TestMcpToolHandlers:
         """Test list_workspaces when user has no workspaces."""
         mock_dynamodb.get_item.return_value = {"Item": {"org_role": "member"}}
         mock_dynamodb.query.return_value = {"Items": []}
-        # Chunk 01 of workspace-scope plan: handler now scans for
+        # of workspace-scope plan: handler now scans for
         # is_global workspaces to append. Return an empty page so the
         # scan loop exits cleanly instead of hitting a MagicMock's
         # truthy LastEvaluatedKey and spinning forever.
@@ -239,7 +239,7 @@ class TestMcpToolHandlers:
         mock_s3vectors.query_vectors.return_value = {
             "vectors": [
                 {
-                    "key": "doc-1-chunk-0",
+                    "key": "doc-1-",
                     "metadata": {
                         "workspace_id": "ws-1",
                         "repo": "my-repo",
@@ -248,7 +248,7 @@ class TestMcpToolHandlers:
                     },
                 },
                 {
-                    "key": "doc-1-chunk-1",
+                    "key": "doc-1-",
                     "metadata": {
                         "workspace_id": "ws-1",
                         "repo": "my-repo",

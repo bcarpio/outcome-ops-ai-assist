@@ -324,7 +324,7 @@ class TestPostPrComment:
 
 
 class TestPatchPrComment:
-    """Test updating existing PR comments -- chunk 01 of the update-in-place plan."""
+    """Test updating existing PR comments -- of the update-in-place plan."""
 
     @patch('process_pr_check_handler.requests.patch')
     def test_patch_pr_comment_success(self, mock_patch_req):
@@ -357,7 +357,7 @@ class TestPatchPrComment:
     @patch('process_pr_check_handler.requests.patch')
     def test_patch_pr_comment_404_raises(self, mock_patch_req):
         # Comment was deleted between POST and next PATCH attempt --
-        # let the caller catch this and fall back to POST (chunk 03
+        # let the caller catch this and fall back to POST (
         # logic).
         mock_response = Mock()
         mock_response.status_code = 404
@@ -494,7 +494,7 @@ class TestProcessCheckJob:
             result = process_check_job(job)
 
         # Assert -- PK is self-contained per (provider, repo, PR)
-        # per chunk 02 of the update-in-place plan.
+        # per of the update-in-place plan.
         assert result.PK == "PR#github#owner/repo#123"
         assert result.SK == "CHECK#test_coverage"
         assert result.status == CheckStatus.PASS
@@ -505,14 +505,14 @@ class TestProcessCheckJob:
         mock_post_comment.assert_called_once()
         assert mock_store.call_count == 2  # Once before comment, once after
         # Provider-comment-id is extracted from POST response and lands on
-        # the CheckResult so chunk 03's PATCH can target it.
+        # the CheckResult so PATCH can target it.
         assert result.provider_comment_id == 456
         assert result.provider_thread_id is None
         assert result.provider_thread_comment_id is None
 
 
 class TestCheckResultUpdateInPlaceFields:
-    """Chunk 02: CheckResult schema carries provider comment identifiers +
+    """CheckResult schema carries provider comment identifiers +
     the widened PK shape so subsequent runs can PATCH the existing
     comment instead of POSTing a new one."""
 
@@ -597,7 +597,7 @@ class TestCheckResultUpdateInPlaceFields:
 
 
 class TestUpsertBehavior:
-    """Chunk 03 of the update-in-place plan: process_check_job
+    """of the update-in-place plan: process_check_job
     PATCHes an existing comment instead of POSTing on subsequent runs."""
 
     def _fresh_job_github(self):
@@ -1659,7 +1659,7 @@ class TestHandler:
 
 
 # ---------------------------------------------------------------------------
-# chunk 07: Azure DevOps PR-comment posting
+# Azure DevOps PR-comment posting
 # ---------------------------------------------------------------------------
 
 
@@ -1711,7 +1711,7 @@ class TestCheckJobAdoFields:
 
 class TestProcessCheckJobAdoBranch:
     """process_check_job dispatches the comment-post step on
-    job.provider. Chunk 05 removed the stub-PASS short-circuit
+    job.provider. removed the stub-PASS short-circuit
     that used to intercept ADO jobs; they now run the full
     check pipeline the same as GitHub jobs."""
 
@@ -1721,8 +1721,8 @@ class TestProcessCheckJobAdoBranch:
     def test_ado_job_runs_real_check_and_posts_via_ado_path(
         self, mock_run_check, mock_post_ado, mock_store,
     ):
-        # Chunk 05: run_check IS called for ADO jobs now (real check
-        # execution). Chunk 03/04 wired ADO in every check_handler.
+        # run_check IS called for ADO jobs now (real check
+        # execution). /04 wired ADO in every check_handler.
         mock_run_check.return_value = {
             "status": "PASS",
             "message": "All ADR standards met on ADO PR",
@@ -1787,7 +1787,7 @@ class TestProcessCheckJobAdoBranch:
         self, mock_run_check, mock_store, mock_token, mock_post_github,
     ):
         # Regression guard: the existing GitHub flow is untouched by
-        # the chunk-07 additive changes.
+        # the additive changes.
         mock_run_check.return_value = {
             "status": "PASS", "message": "all good", "details": [], "usage": None,
         }
@@ -1866,7 +1866,7 @@ class TestPostAzureDevOpsThread:
 
 
 # ---------------------------------------------------------------------------
-# Chunk 02 of AI-PR-Analyzer ADO parity plan: widened check_* signatures
+# of AI-PR-Analyzer ADO parity plan: widened check_* signatures
 # and provider-context forwarding through run_check().
 # ---------------------------------------------------------------------------
 
@@ -2021,7 +2021,7 @@ class TestRunCheckProviderForwarding:
         assert kwargs["provider"] == "azure_devops"
 
     def test_run_check_with_ado_job_reaches_handler_not_guard(self):
-        # Chunk 04 wired all 6 handlers so run_check no longer
+        # wired all 6 handlers so run_check no longer
         # hits a NotImplementedError guard on ADO jobs. Mock the
         # handler and confirm run_check forwards the ADO context.
         with patch.object(handler_module, "check_license_compliance") as mock_check:
@@ -2032,7 +2032,7 @@ class TestRunCheckProviderForwarding:
 
 
 # ---------------------------------------------------------------------------
-# Chunk 03 of AI-PR-Analyzer ADO parity plan: real ADO execution wired
+# of AI-PR-Analyzer ADO parity plan: real ADO execution wired
 # into BREAKING_CHANGES, ADR_COMPLIANCE, ARCHITECTURAL_DUPLICATION.
 # ---------------------------------------------------------------------------
 
@@ -2232,7 +2232,7 @@ class TestArchitecturalDuplicationADO:
 
 
 # ---------------------------------------------------------------------------
-# Chunk 04 of AI-PR-Analyzer ADO parity plan: introspection-heavy
+# of AI-PR-Analyzer ADO parity plan: introspection-heavy
 # handlers (README_FRESHNESS, LICENSE_COMPLIANCE, TEST_COVERAGE)
 # wired for Azure DevOps.
 # ---------------------------------------------------------------------------
@@ -2422,7 +2422,7 @@ class TestTestCoverageADO:
 
 
 class TestGitLabCheckJob:
-    """Chunk 05: gitlab provider on the worker side."""
+    """gitlab provider on the worker side."""
 
     def _fresh_job_gitlab(self):
         return CheckJob(

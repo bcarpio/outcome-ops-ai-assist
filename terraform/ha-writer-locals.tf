@@ -6,7 +6,7 @@
 # Every writer Lambda that should emit cross-region replication events
 # merges these env vars into its environment_variables block, and merges
 # the policy_statement into its IAM. Centralizing here keeps the 12
-# writer Lambdas' lambda-*.tf files consistent — when chunk 04's event
+# writer Lambdas' lambda-*.tf files consistent — when event
 # schema or the bus name pattern changes, we update one file.
 #
 # In single-region mode (var.secondary_region == ""):
@@ -17,8 +17,8 @@
 #
 # In HA mode (var.secondary_region set):
 # - Lambdas in the primary region emit to this region's replication bus.
-#   The cross-region rule (chunk 03) forwards events to the secondary's
-#   bus; the secondary's applier (chunk 05) replays them locally.
+#   The cross-region rule forwards events to the secondary's
+#   bus; the secondary's applier replays them locally.
 # - Lambdas deployed under aws.secondary would consume their own region's
 #   bus name + region — see the per-Lambda secondary-deploy patterns in
 #   the lambda-*.tf files where applicable.
@@ -73,7 +73,7 @@ locals {
   } : {}
 
   # ----------------------------------------------------------------------------
-  # Secondary-region variants (HA chunk 9c).
+  # Secondary-region variants ().
   # Lambdas deployed under aws.secondary read THESE env vars + IAM,
   # which point at the secondary region's bus / AppConfig / region name.
   # Gated on var.secondary_region != "" — empty in single-region mode.

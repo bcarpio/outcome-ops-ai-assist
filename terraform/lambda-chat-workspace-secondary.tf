@@ -1,11 +1,11 @@
 # Copyright 2025-2026 OutcomeOps
 # SPDX-License-Identifier: Apache-2.0
 # ============================================================================
-# Secondary-region chat + workspace-management Lambdas (HA chunk 9d)
+# Secondary-region chat + workspace-management Lambdas ()
 # ----------------------------------------------------------------------------
 # Mirror of the two custom-built core Lambdas under aws.secondary. Each
 # gets its own Function URL with IAM auth and an SSM parameter holding
-# the URL so the secondary UI Fargate (chunk 9h) can resolve it from
+# the URL so the secondary UI Fargate can resolve it from
 # local-region SSM.
 #
 # Env vars + IAM scope to SECONDARY-region resources only:
@@ -19,7 +19,7 @@
 #
 # Passive-mode behavior:
 # - chat: NO guard. Chat is a user-facing read+write that should work in
-#   either region. Chat memory writes go through dual_write (chunk 06a)
+#   either region. Chat memory writes go through dual_write
 #   for cross-region replication.
 # - workspace-management: 14 mutation routes gated by
 #   shared.region_guard.guard_active (this commit). Reads unaffected.
@@ -47,7 +47,7 @@ module "chat_streaming_lambda_secondary" {
   description   = "Streaming chat interface (secondary region)"
   handler       = "run.sh"
   runtime       = "python3.12"
-  # fable-scale chunk 05 (HA parity).
+  # (HA parity).
   timeout                        = var.chat_timeout_seconds
   memory_size                    = 1024
   reserved_concurrent_executions = var.chat_reserved_concurrency
@@ -86,7 +86,7 @@ module "chat_streaming_lambda_secondary" {
       PORT                         = "8000"
       AUDIT_TABLE                  = module.audit_logs_table_secondary[0].dynamodb_table_id
       AUDIT_RETENTION_DAYS         = tostring(var.audit_retention_days)
-      # fable-scale 10 mirror (chat TTL + content cap + prompt-cache
+      # Secondary mirror (chat TTL + content cap + prompt-cache
       # scaffold). Missing here = secondary chat silently diverges from
       # primary data-hygiene behavior post-failover.
       CHAT_MESSAGE_TTL_SECONDS           = tostring(var.chat_message_ttl_seconds)
@@ -173,7 +173,7 @@ module "chat_streaming_lambda_secondary" {
     }
     workspaces_table_read = {
       effect = "Allow"
-      # chunk 09 (HA parity): dynamodb:Scan was missing on secondary. The
+      # (HA parity): dynamodb:Scan was missing on secondary. The
       # global-workspace broaden branch of resolve_chat_workspace_scope
       # (ADR-037) uses Scan to enumerate is_global workspaces; without
       # this grant chat returns AccessDenied for any global-scope query
@@ -321,7 +321,7 @@ module "workspace_management_lambda_secondary" {
       PORT                         = "8000"
       KB_BUCKET                    = module.knowledge_base_bucket_secondary.s3_bucket_id
       DELETE_QUEUE_URL             = aws_sqs_queue.delete_queue_secondary[0].url
-      # chunk 10 (HA parity): reverse pointer to the primary delete queue
+      # (HA parity): reverse pointer to the primary delete queue
       # so deletes issued while secondary is active also purge the
       # primary-region KB/vectors (ADR-029 deletion contract requires
       # both regions to converge). Cross-region SQS SendMessage is
@@ -417,7 +417,7 @@ module "workspace_management_lambda_secondary" {
       sqs_send = {
         effect  = "Allow"
         actions = ["sqs:SendMessage"]
-        # chunk 10 (HA parity): grant SendMessage on BOTH regions'
+        # (HA parity): grant SendMessage on BOTH regions'
         # delete queues so cross-region cleanup works both ways.
         resources = [
           aws_sqs_queue.delete_queue_secondary[0].arn,
@@ -474,7 +474,7 @@ resource "aws_ssm_parameter" "workspace_management_url_secondary" {
 }
 
 # ============================================================================
-# Outputs — Function URLs consumed by the secondary UI Fargate (chunk 9h)
+# Outputs — Function URLs consumed by the secondary UI Fargate
 # ============================================================================
 
 output "chat_streaming_url_secondary" {

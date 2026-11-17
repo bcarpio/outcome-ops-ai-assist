@@ -3,11 +3,11 @@
 """Unit tests for shared._responses_backend translation paths (chunks 04, 05, 06).
 
 Covers:
-- chunk 04: system -> instructions, multi-turn messages -> input list,
+- system -> instructions, multi-turn messages -> input list,
   image content blocks -> input_image typed items
-- chunk 05: function_call output items -> tool_calls + Converse-shaped
+- function_call output items -> tool_calls + Converse-shaped
   toolUse blocks in content_blocks
-- chunk 06: tools= request translation, toolUse history -> function_call
+- tools= request translation, toolUse history -> function_call
   input items, toolResult history -> function_call_output input items
 """
 
@@ -83,7 +83,7 @@ def _capture_kwargs(text="ok"):
 
 
 # ============================================================================
-# chunk 04: system prompt -> instructions
+# system prompt -> instructions
 # ============================================================================
 
 
@@ -137,7 +137,7 @@ def test_system_role_inside_messages_raises_translation_error():
 
 
 # ============================================================================
-# chunk 04: messages -> input (single-turn shorthand vs multi-turn list)
+# messages -> input (single-turn shorthand vs multi-turn list)
 # ============================================================================
 
 
@@ -188,7 +188,7 @@ def test_multi_turn_user_assistant_user_becomes_typed_item_list():
 
 
 # ============================================================================
-# chunk 04: image content blocks
+# image content blocks
 # ============================================================================
 
 
@@ -229,7 +229,7 @@ def test_user_image_block_unknown_format_raises_translation_error():
 
 
 # ============================================================================
-# chunk 04: stop_sequences dropped with warning
+# stop_sequences dropped with warning
 # ============================================================================
 
 
@@ -287,7 +287,7 @@ def test_temperature_dropped_when_set():
 
 
 # ============================================================================
-# chunk 06: tools= request translation
+# tools= request translation
 # ============================================================================
 
 
@@ -333,7 +333,7 @@ def test_tools_none_omits_tools_kwarg():
 
 
 # ============================================================================
-# chunk 06: toolUse history -> function_call input items
+# toolUse history -> function_call input items
 # ============================================================================
 
 
@@ -455,7 +455,7 @@ def test_parallel_tool_use_in_one_assistant_message_emits_two_function_call_item
 
 
 # ============================================================================
-# chunk 05: function_call output item -> tool_calls + content_blocks
+# function_call output item -> tool_calls + content_blocks
 # ============================================================================
 
 

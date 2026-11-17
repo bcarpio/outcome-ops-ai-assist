@@ -57,7 +57,7 @@ _HANDLER_LOAD_ENV = {
 _orig_env = {k: os.environ.get(k) for k in _HANDLER_LOAD_ENV}
 os.environ.update(_HANDLER_LOAD_ENV)
 
-# Chunk 16: consolidated. token_manager -> shared/oauth/azure_devops_boards.py.
+# consolidated. token_manager -> shared/oauth/azure_devops_boards.py.
 # The Repos client (azure_devops_api) -> shared/azure_devops_api.py. Import
 # the shared modules via the ordinary package path so all consumers share
 # the SAME module object -- double-loading via _load_module gives distinct

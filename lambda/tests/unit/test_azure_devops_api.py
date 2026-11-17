@@ -1,6 +1,6 @@
 # Copyright 2025-2026 OutcomeOps
 # SPDX-License-Identifier: Apache-2.0
-"""Unit tests for the Azure DevOps REST client (chunk 03).
+"""Unit tests for the Azure DevOps REST client.
 
 The module under test is a thin set of urllib wrappers; the tests
 target three things:
@@ -48,7 +48,7 @@ def _load_module(mod_name, filename, directory):
     return module
 
 
-# Chunk 16: consolidated to lambda/shared/azure_devops_api.py. Import via
+# consolidated to lambda/shared/azure_devops_api.py. Import via
 # the ordinary package path so all consumers share the same module object.
 _LAMBDA_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 if _LAMBDA_ROOT not in sys.path:
@@ -71,7 +71,7 @@ _VENDORED_COPY_DIRS = [
     ids=[d.rsplit("/", 1)[-1] for d in _VENDORED_COPY_DIRS],
 )
 def _vendored_copy(request):
-    # Chunk 16: only one copy now (the shared module). Nothing to rebind --
+    # only one copy now (the shared module). Nothing to rebind --
     # the module-level `import shared.azure_devops_api as api` above already
     # points at the single canonical module. Kept as a no-op fixture so the
     # per-copy parametrize test IDs stay stable in the coverage report.
@@ -357,7 +357,7 @@ class TestPullRequestThreadBody:
     def test_body_has_comments_with_type_1_status_1(self, mock_urlopen):
         # ADO's PR thread API rejects payloads that don't match this
         # exact shape. Pinning here so a refactor can't silently break
-        # the chunk-07 PR-comment posting path.
+        # the PR-comment posting path.
         mock_urlopen.return_value = _resp({"id": 99})
         api.post_pull_request_thread(
             "tok", "example-org", "example-project", "example-repo",
@@ -437,7 +437,7 @@ class TestUpdatePullRequestThreadComment:
     def test_patch_404_maps_to_not_found_error(self, mock_urlopen):
         # If the thread/comment was deleted between POST and PATCH,
         # the underlying _request maps 404 to AzureDevOpsNotFoundError.
-        # Caller catches this and falls back to POST (chunk 03 logic).
+        # Caller catches this and falls back to POST.
         mock_urlopen.side_effect = _http_error(404)
         with pytest.raises(api.AzureDevOpsNotFoundError):
             api.update_pull_request_thread_comment(

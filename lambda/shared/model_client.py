@@ -22,7 +22,7 @@ passed as the Bedrock ``modelId`` -- Converse and InvokeModel both
 accept a profile ARN in place of a model ID -- so Bedrock bills against
 the tagged profile and Cost Explorer can split spend by workload.
 
-If the env var isn't wired yet (chunk 04 rollout in flight), the module
+If the env var isn't wired yet, the module
 falls back to the legacy ``BEDROCK_<TIER>_MODEL_ID`` env var with a
 WARN log so any post-rollout attribution gap is diagnosable in
 CloudWatch.
@@ -192,7 +192,7 @@ _VALID_TIERS = frozenset({"advanced", "basic", "titan-embed", "cohere-rerank"})
 # Tier -> legacy env var name used by callers today. When a workload
 # is passed but the profile env var isn't wired yet, we fall back to
 # this so the Lambda keeps working (with a WARN log) rather than
-# hard-crashing during chunk 04 rollout.
+# hard-crashing during rollout.
 _LEGACY_MODEL_ID_ENV = {
     "advanced": "BEDROCK_ADVANCED_MODEL_ID",
     "basic": "BEDROCK_BASIC_MODEL_ID",
@@ -263,7 +263,7 @@ def _resolve_workload_model_id(workload: str, tier: str) -> str:
             f"workload={workload!r} tier={tier!r}: neither "
             f"{_profile_env_var_name(workload, tier)} nor {legacy_env} "
             f"is set. Wire the profile ARN env var in this Lambda's "
-            f"terraform module (chunk 04) or set the legacy fallback."
+            f"terraform module or set the legacy fallback."
         )
     logger.info(
         "workload=%r tier=%r: Bedrock app-profile ARN env var %s not set; "
@@ -286,7 +286,7 @@ def _resolve_model_id(
     """Reconcile the two ways a caller can specify the model.
 
     Precedence: workload+tier > model_id. Callers that pass both get
-    the workload-scoped profile ARN (chunk 04 wiring), keeping the
+    the workload-scoped profile ARN, keeping the
     legacy ``model_id`` value effectively as a documentation crumb
     for reviewers. Callers that pass neither raise -- silent defaults
     would collapse attribution.
@@ -330,7 +330,7 @@ def invoke(
         tools=tools,
     )
     name = _resolve_backend(resolved_id)
-    # fable-scale chunk 05: per-workload gate + app-side retry. Gate acquisition
+    # per-workload gate + app-side retry. Gate acquisition
     # sheds load BEFORE hitting a saturated Bedrock quota; retries with jitter
     # cover transient throttles that leak past the gate.
     from . import workload_gate
@@ -371,7 +371,7 @@ def invoke_stream(
         tools=tools,
     )
     name = _resolve_backend(resolved_id)
-    # fable-scale chunk 05: gate held for the duration of the stream — this is
+    # gate held for the duration of the stream — this is
     # the whole "Bedrock call" for a streaming synth. `on_retry(attempt,
     # delay_ms)` propagates to _converse_backend so chat can surface a
     # `busy_retrying` event through the SSE stream.

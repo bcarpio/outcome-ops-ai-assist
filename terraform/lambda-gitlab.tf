@@ -142,7 +142,7 @@ module "gitlab_integration_lambda" {
       GITLAB_REDIRECT_URI            = local.gitlab_redirect_uri
       GITLAB_INSTANCES               = local.gitlab_instances_env
 
-      # chunk-03: the handler enqueues the initial sync job on add-repos
+      # the handler enqueues the initial sync job on add-repos
       # and full repo-delete cleanup on delete-repo / disconnect (ADR-052,
       # via shared.delete_dispatch -- same contract as GitHub).
       GITLAB_SYNC_QUEUE = aws_sqs_queue.gitlab_sync[0].url
@@ -186,7 +186,7 @@ module "gitlab_integration_lambda" {
         resources = local.gitlab_secret_ssm_arns
       }
 
-      # chunk-03: enqueue the initial sync job (gitlab sync queue) + full
+      # enqueue the initial sync job (gitlab sync queue) + full
       # repo-delete cleanup (shared delete queue, + secondary delete queue
       # under HA per ADR-052) from the handler.
       sqs_send = {
@@ -292,7 +292,7 @@ output "gitlab_integration_url" {
 }
 
 # ============================================================================
-# SQS queue + DLQ for GitLab sync jobs (ADR-050, chunk-03).
+# SQS queue + DLQ for GitLab sync jobs (ADR-050, ).
 # The integration Lambda writes to this queue on add-repos; the scheduler
 # fans out hourly sync jobs; the sync worker consumes it.
 # ============================================================================
@@ -343,7 +343,7 @@ output "gitlab_sync_queue_arn" {
 }
 
 # ============================================================================
-# GitLab Sync Scheduler Lambda (ADR-050, chunk-03)
+# GitLab Sync Scheduler Lambda (ADR-050, )
 # Runs hourly via EventBridge to fan out sync jobs for every enabled
 # GITLAB_REPO# row. Honors is_active_region() so the secondary-region copy
 # returns immediately when passive.
@@ -447,7 +447,7 @@ resource "aws_lambda_permission" "gitlab_scheduler_eventbridge" {
 }
 
 # ============================================================================
-# GitLab Sync Worker Lambda (ADR-050, chunk-03)
+# GitLab Sync Worker Lambda (ADR-050, )
 # SQS-triggered. Pulls source content from GitLab, mirrors it to S3, and
 # enqueues one repo-summaries message so the code-map + symbol-graph
 # pipeline runs for GitLab too.
@@ -502,7 +502,7 @@ module "gitlab_sync_lambda" {
       GITLAB_CLIENT_SECRET_SSM_PARAM = local.gitlab_secret_ssm_path
       GITLAB_INSTANCES               = local.gitlab_instances_env
 
-      # chunk-03: sync worker writes files DIRECTLY to S3 (not via
+      # sync worker writes files DIRECTLY to S3 (not via
       # file-ingestion / repo-summaries) so we don't contaminate the
       # github-shaped consumers + their DLQs. process-documents is
       # S3-triggered + source-agnostic, so KB chat search picks up

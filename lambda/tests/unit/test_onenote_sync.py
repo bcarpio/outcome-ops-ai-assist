@@ -487,7 +487,7 @@ class TestQueueOrphanCleanup:
 
 
 class TestLambdaHandlerDispatch:
-    """Chunk 02: SQS partial-batch-failure contract."""
+    """SQS partial-batch-failure contract."""
 
     def test_no_records_returns_400(self):
         result = handler_module.lambda_handler({}, None)

@@ -73,7 +73,7 @@ resource "aws_ssm_parameter" "bedrock_profile_arn_secondary" {
 }
 
 
-# Chunk 04 -- secondary-region per-workload env-var maps.
+# -- secondary-region per-workload env-var maps.
 # Same shape as primary; empty map when HA is off so secondary-region
 # Lambda modules can merge unconditionally without a null check.
 locals {

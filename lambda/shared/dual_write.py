@@ -495,7 +495,7 @@ def s3vectors_put_vectors(
 ) -> None:
     """Write vectors to S3 Vectors + emit one replication event per chunk.
 
-    fable-scale chunk 07: chunks at 500 to respect the AWS PutVectors
+    chunks at 500 to respect the AWS PutVectors
     per-call limit. A single call with >500 vectors used to fail with
     ValidationException at the SDK; ingestion handlers now call this
     helper without worrying about chunk size.

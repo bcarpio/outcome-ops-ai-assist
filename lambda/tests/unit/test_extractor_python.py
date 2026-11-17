@@ -85,7 +85,7 @@ class TestReportReposSnapshot:
     """The load-bearing v1 success-case fixture.
 
     The plan's DoD says the extractor must surface 10 distinct callers
-    of ``log_audit_entry``. Chunk 08 reuses this fixture as the
+    of ``log_audit_entry``. reuses this fixture as the
     live-data signal so the test name and assertion are stable.
     """
 

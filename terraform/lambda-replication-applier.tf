@@ -99,7 +99,7 @@ module "replication_applier" {
       effect  = "Allow"
       actions = ["s3:GetObject"]
       # The applier in primary reads from the SECONDARY's bucket
-      # (which has the -secondary suffix per chunk 02e).
+      # (which has the -secondary suffix per ).
       resources = var.secondary_region != "" ? [
         "${module.knowledge_base_bucket_secondary.s3_bucket_arn}/*",
       ] : []

@@ -1,6 +1,6 @@
 // @vitest-environment node
 /**
- * Chunk 13: first server-side tests. Exercises the auth gate, the /api
+ * first server-side tests. Exercises the auth gate, the /api
  * 404 guard, and the terminal JSON error middleware directly via
  * fake req/res objects (no supertest / no port bind) so this suite can
  * live inside the existing vitest project.
@@ -183,7 +183,7 @@ describe("makeApiAuthGate", () => {
 
 describe("apiNotFound", () => {
   it("returns JSON 404 with the request path", () => {
-    // Reg: pre-chunk-13, unmatched /api/* fell through to the SPA fallback
+    // Reg: pre-, unmatched /api/* fell through to the SPA fallback
     // and returned index.html with a 200. safeJson() then turned that
     // into null, silently emptying data.
     const req = { originalUrl: "/api/does-not-exist" };

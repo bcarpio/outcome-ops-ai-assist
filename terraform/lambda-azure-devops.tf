@@ -279,7 +279,7 @@ output "azure_devops_sync_queue_arn" {
 # Azure DevOps Sync Scheduler Lambda
 # Runs hourly via EventBridge to fan out sync jobs for every enabled
 # AZDO_REPO# row. Honors is_active_region() so the secondary-region copy
-# (chunk 09) returns immediately when passive.
+# returns immediately when passive.
 # ============================================================================
 
 module "azure_devops_scheduler_lambda" {
@@ -433,14 +433,14 @@ module "azure_devops_sync_lambda" {
       AZURE_DEVOPS_CLIENT_ID               = var.azure_devops_client_id
       AZURE_DEVOPS_CLIENT_SECRET_SSM_PARAM = var.azure_devops_client_secret_ssm_param
 
-      # chunk 05a: sync worker writes files DIRECTLY to S3 (not via
+      # sync worker writes files DIRECTLY to S3 (not via
       # file-ingestion / repo-summaries) so we don't contaminate the
       # github-shaped consumers + their DLQs. process-documents is
       # S3-triggered + source-agnostic, so KB chat search picks up
       # the uploaded files automatically.
       KB_BUCKET               = module.knowledge_base_bucket.s3_bucket_id
       AZURE_DEVOPS_SYNC_QUEUE = aws_sqs_queue.azure_devops_sync[0].url
-      # chunk 08a: after the per-file S3 upload finishes the sync
+      # after the per-file S3 upload finishes the sync
       # worker enqueues ONE repo-summaries message so the existing
       # code-map + symbol-graph pipeline (process-repo-summary +
       # process-batch-summary) runs for ADO too. Downstream consumers
@@ -497,7 +497,7 @@ module "azure_devops_sync_lambda" {
         resources = [aws_sqs_queue.azure_devops_sync[0].arn]
       }
 
-      # chunk 05a: write blobs directly to the KB bucket. process-documents
+      # write blobs directly to the KB bucket. process-documents
       # is S3-triggered + source-agnostic so chat retrieval picks up
       # ADO files without a downstream Lambda refactor.
       s3_kb_write = {
@@ -506,7 +506,7 @@ module "azure_devops_sync_lambda" {
         resources = ["${module.knowledge_base_bucket.s3_bucket_arn}/*"]
       }
 
-      # chunk 08a: enqueue one repo-summaries job per sync so the
+      # enqueue one repo-summaries job per sync so the
       # code-map + symbol-graph pipeline fans into the same queue
       # github-sync uses.
       sqs_send_repo_summaries = {

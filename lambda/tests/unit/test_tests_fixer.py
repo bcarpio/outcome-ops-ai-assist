@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # === Legacy dict -> unified Response adapter ===
-# Tests written before chunk 09 mocked the boto3 Converse-shaped dict
+# Tests written before mocked the boto3 Converse-shaped dict
 # response. The fixer code now consumes unified Response objects from
 # shared.model_client.invoke. Wrap legacy dicts so they expose the new
 # attribute surface (resp.text, resp.usage.input_tokens, etc.) without

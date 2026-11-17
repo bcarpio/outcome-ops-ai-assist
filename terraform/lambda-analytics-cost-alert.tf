@@ -21,7 +21,7 @@ module "analytics_cost_alert_lambda" {
   description   = "Publish cost-alert SNS notifications when workspace/org budgets are crossed"
   handler       = "handler.handler"
   runtime       = "python3.12"
-  # chunk 10 (HA alignment): bumped 60->120 to match secondary. Cost
+  # (HA alignment): bumped 60->120 to match secondary. Cost
   # aggregation across a full month of analytics rows can push past 60s
   # at enterprise scale.
   timeout     = 120
@@ -43,7 +43,7 @@ module "analytics_cost_alert_lambda" {
 
   quiet_archive_local_exec = true
 
-  # chunk 10 (HA parity): merge ha_scheduler_env so is_active_region()
+  # (HA parity): merge ha_scheduler_env so is_active_region()
   # gates SNS publishes on the primary too. Without it a demoted-but-
   # alive primary + promoted secondary both publish cost-threshold
   # alerts (double-email scenario the gate exists to prevent).
@@ -67,12 +67,12 @@ module "analytics_cost_alert_lambda" {
     {
       dynamodb_analytics = {
         effect = "Allow"
-        # chunk 10 (HA alignment): grant the union of what the handler
+        # (HA alignment): grant the union of what the handler
         # actually uses (query + put_item on analytics; scan + get_item
         # on workspaces). Primary was PutItem-only for analytics; adding
         # Scan is a no-op for analytics since the handler doesn't scan
         # it -- kept out. Secondary had Scan on analytics erroneously;
-        # chunk 10 drops it there.
+        # drops it there.
         actions = [
           "dynamodb:Query",
           "dynamodb:GetItem",
@@ -115,7 +115,7 @@ module "analytics_cost_alert_lambda" {
         ]
       }
     },
-    # chunk 10 (HA parity): appconfig:GetLatestConfiguration on the
+    # (HA parity): appconfig:GetLatestConfiguration on the
     # primary AppConfig so is_active_region() can gate SNS publishes.
     local.ha_scheduler_iam,
   )

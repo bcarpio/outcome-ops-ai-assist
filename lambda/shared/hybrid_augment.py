@@ -82,7 +82,7 @@ walked so the downstream relation fan-out is complete. 200 covers
 any realistic workspace -- the 2026-06-02 require_auth eval had 40
 canonicals; the prior 25-cap silently lost 8 lambdas. ADR-032's
 completeness signal catches the regression if a workspace ever
-exceeds 200 (the chat synthesis prompt rule, ADR-032/chunk 04,
+exceeds 200 (the chat synthesis prompt rule, ADR-032/,
 binds the LLM to surface the truncation rather than ship a
 silently-incomplete enumeration)."""
 
@@ -360,7 +360,7 @@ def augment_with_symbol_graph(
         decision.duration_ms,
     )
 
-    # 2. Resolve the graph tables up front — both the chunk-02 backstop
+    # 2. Resolve the graph tables up front — both the backstop
     # probe and the main query path need them. (routing-decision table:
     # structural / hybrid / unknown -> fire on intent; pattern /
     # dependency -> skip unless the backstop resolves the symbol.)
@@ -483,7 +483,7 @@ def augment_with_symbol_graph(
         # ADR-032: when the canonical resolution itself was clipped, the
         # downstream relation fan-out is built on an incomplete set.
         # Surface a structured signal the chat synthesis prompt rule
-        # (chunk 04) binds against -- the LLM must disclose or refuse
+        # binds against -- the LLM must disclose or refuse
         # the enumeration rather than ship the partial answer.
         out["graph_canonicals_truncated"] = canonicals_truncated_in_any_ws
         out["graph_canonicals_limit"] = _FUZZY_RESOLVE_LIMIT

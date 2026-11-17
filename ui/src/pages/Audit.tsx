@@ -47,7 +47,7 @@ function isoHoursAgo(hours: number): string {
   return d.toISOString()
 }
 
-// Per chunk 07: this set is the InfoSec sound-bite metric on the page.
+// Per this set is the InfoSec sound-bite metric on the page.
 // Refusals are layered on top via status="refusal" in the merged feed.
 const CRITICAL_ACTIONS = new Set([
   'API_KEY_CREATED',

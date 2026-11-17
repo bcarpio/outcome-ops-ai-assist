@@ -15,9 +15,9 @@ ADO-specific surface vs the 5 Microsoft-Graph wrappers
 1. **tenant_id is per-customer**, not ``"common"``. ADO uses the
    single-tenant authority because the OAuth app is registered in
    the customer's Entra ID tenant (per ADR-035-style architecture
-   captured in chunk 10's ADR). The wrapper accepts ``tenant_id``
+   captured in ADR). The wrapper accepts ``tenant_id``
    as an argument on every function that touches Microsoft's token
-   endpoint; the caller (chunk 04's handler) pulls it from
+   endpoint; the caller pulls it from
    ``var.azure_devops_tenant_id`` (env: AZURE_DEVOPS_TENANT_ID).
 
 2. **Resource ID is Azure DevOps**, not Microsoft Graph. The well-
@@ -27,7 +27,7 @@ ADO-specific surface vs the 5 Microsoft-Graph wrappers
    etc.) the customer's tenant admin consented to at app-
    registration time. If they only consented to read, ingest works
    but PR-comment posting fails at the API call (handler maps the
-   403 to a user-visible "needs vso.code_write" message in chunk 07).
+   403 to a user-visible "needs vso.code_write" message in ).
 
 3. **get_user_profile()** calls ADO's vssps endpoint, NOT Microsoft
    Graph's ``/me``. The shared module is OAuth-only; provider-

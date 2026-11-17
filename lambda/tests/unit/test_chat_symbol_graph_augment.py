@@ -104,7 +104,7 @@ def _inject_clients():
     symbol_graph_pointer._reset_clients_for_tests()
     symbol_graph_pointer._set_resource_for_tests(real_resource)
 
-    # Router uses shared.model_client.invoke (ADR-035 chunk 11). To
+    # Router uses shared.model_client.invoke (ADR-035). To
     # avoid talking to Bedrock in unit tests, we patch
     # shared.router.invoke_model and route through a MagicMock that
     # preserves the legacy .converse() surface so existing call_args /
@@ -702,7 +702,7 @@ def test_augment_importer_routes_on_subpath_symbol(_inject_clients):
 
 
 # ===========================================================================
-# Chunk 02 — graph-fire backstop on a resolved symbol
+# — graph-fire backstop on a resolved symbol
 # ===========================================================================
 
 
@@ -762,7 +762,7 @@ def test_augment_pattern_intent_with_unresolved_symbol_skips_graph(_inject_clien
 
 
 # ===========================================================================
-# Chunk 07 — multi-workspace fan-out
+# — multi-workspace fan-out
 # ===========================================================================
 
 
@@ -809,10 +809,10 @@ def test_augment_fans_out_across_workspaces(_inject_clients):
 # The 2026-06-02 require_auth audit failure: chat router called
 # fuzzy_resolve_by_name with no limit, default 25 clipped a 40-canonical
 # set, 8 lambdas silently dropped from the relation fan-out. After the
-# chunk-03 fix the router passes an explicit _FUZZY_RESOLVE_LIMIT (200)
+# fix the router passes an explicit _FUZZY_RESOLVE_LIMIT (200)
 # AND, when the resolver itself still truncates (workspace exceeds 200),
 # the augment block must carry an explicit "NOTE: bare-name lookup was
-# clipped..." disclosure so the chat synthesis prompt rule (chunk 04)
+# clipped..." disclosure so the chat synthesis prompt rule
 # can bind the LLM to surface the incompleteness rather than ship a
 # confidently-partial enumeration.
 # ===========================================================================
@@ -889,7 +889,7 @@ def test_augment_canonical_truncation_prepends_disclosure_note(
 ):
     """When fuzzy resolution itself was clipped, the augment block
     must prepend an explicit NOTE so the chat synthesis prompt rule
-    (chunk 04) can bind on it. The note names the cap and tells the
+ can bind on it. The note names the cap and tells the
     LLM the answer must surface the incompleteness."""
     _create_symbol_graph_table()
     _create_code_maps_table()
@@ -961,7 +961,7 @@ def test_augment_canonical_truncation_prepends_disclosure_note(
 
 
 # ===========================================================================
-# Chunk 03 (ADR-059) — deterministic backstop when the router returns NO symbol
+# (ADR-059) — deterministic backstop when the router returns NO symbol
 # ===========================================================================
 
 

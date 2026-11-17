@@ -444,7 +444,7 @@ class TestAuditRetentionTTL:
 
 class TestComprehendPerCharPricing:
     """Comprehend Detect-PII is priced per character scanned. Mirrors the
-    rerank tests but for the per_char shape introduced in chunk 02 of the
+    rerank tests but for the per_char shape introduced in of the
     PII redaction plan."""
 
     def test_calculate_cost_comprehend_known_chars(self):
@@ -710,8 +710,8 @@ class TestLogAuditEntry:
         assert item["GSI1PK"] == "USER#user@example.com"
         assert item["SK"].startswith("20")  # ISO timestamp prefix
         assert "audit_" in item["SK"]
-        # GSI2: bedrock rows go to CAT#bedrock#NN (sharded, fable-scale
-        # chunk 04) so org-wide audit-dashboard queries (CAT#admin) don't
+        # GSI2: bedrock rows go to CAT#bedrock#NN (sharded, 
+        # ) so org-wide audit-dashboard queries (CAT#admin) don't
         # have to filter past them AND write throughput scales past the
         # ~1000 WCU single-partition ceiling.
         assert item["GSI2PK"].startswith("CAT#bedrock")
@@ -826,7 +826,7 @@ class TestLogAuditEntry:
 
     def test_log_audit_entry_does_not_auto_calculate_cost_with_zero_tokens(self, mock_table):
         """Token-based models with both tokens zero still yield 0.0 cost.
-        (The "guard" was removed in chunk 02 of the PII redaction plan to
+        (The "guard" was removed in of the PII redaction plan to
         let per-call / per-char models price correctly with zero tokens;
         token-based pricing math at 0/0 naturally returns 0.0.)"""
         log_audit_entry(

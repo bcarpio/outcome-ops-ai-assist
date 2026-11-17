@@ -171,7 +171,7 @@ module "query_kb_lambda" {
       RERANK_ENABLED                 = tostring(var.bedrock_rerank_enabled)
       RERANK_MAX_FETCH               = tostring(var.rerank_max_fetch)
       RERANK_MIN_SCORE               = tostring(var.rerank_min_score)
-      # Workspace metadata table for chunk-05 source-workspace name
+      # Workspace metadata table for source-workspace name
       # resolution. Empty when the deploy has enable_workspaces=false;
       # the resolver treats missing as "no lookup available".
       WORKSPACES_TABLE = var.enable_workspaces ? module.workspaces_table[0].dynamodb_table_id : ""
@@ -211,7 +211,7 @@ module "query_kb_lambda" {
       ]
     }
 
-    # Workspace metadata read for the chunk-05 citation polish:
+    # Workspace metadata read for the citation polish:
     # BatchGetItem resolves workspace_id -> workspace name so source
     # citations carry "(Workspace Name)" for compliance auditor
     # traceability. Fail-soft in the handler if this grant is

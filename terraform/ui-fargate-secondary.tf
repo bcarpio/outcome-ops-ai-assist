@@ -1,7 +1,7 @@
 # Copyright 2025-2026 OutcomeOps
 # SPDX-License-Identifier: Apache-2.0
 # ============================================================================
-# Secondary-region UI Fargate ECS (HA chunk 9h)
+# Secondary-region UI Fargate ECS ()
 # ----------------------------------------------------------------------------
 # Mirror of module.ui_ecs under aws.secondary. After this commit:
 #
@@ -11,11 +11,11 @@
 #   region-local.
 # - Task IAM role grants lambda:InvokeFunctionUrl on the SECONDARY
 #   Lambda ARNs only.
-# - Image: from secondary-region ECR (replicated via chunk 9a's
+# - Image: from secondary-region ECR (replicated via 
 #   aws_ecr_replication_configuration), or var.ui_container_image_secondary
 #   if explicitly set.
 #
-# Gated on local.deploy_ui_secondary (already defined in chunk 9b)
+# Gated on local.deploy_ui_secondary (already defined in )
 # which requires deploy_ui + secondary_region + ui_vpc_id_secondary.
 # ============================================================================
 
@@ -70,7 +70,7 @@ module "ui_ecs_secondary" {
 
   cluster_name = "${var.environment}-${var.app_name}-ui"
 
-  # fable-scale chunk 01 (HA parity): mixed capacity providers, same
+  # (HA parity): mixed capacity providers, same
   # weights as primary. See ui-fargate.tf for the full comment.
   cluster_capacity_providers = ["FARGATE", "FARGATE_SPOT"]
 
@@ -94,7 +94,7 @@ module "ui_ecs_secondary" {
 
   services = {
     ui = {
-      # fable-scale chunk 01 (HA parity): tfvars-driven sizing +
+      # (HA parity): tfvars-driven sizing +
       # autoscaling, same shape as primary.
       cpu    = var.ui_fargate_cpu
       memory = var.ui_fargate_memory
@@ -117,7 +117,7 @@ module "ui_ecs_secondary" {
       deployment_maximum_percent         = 200
       deployment_minimum_healthy_percent = var.ui_fargate_min_healthy_percent
 
-      # fable-scale chunk 01 (HA parity): target-tracking autoscaling on
+      # (HA parity): target-tracking autoscaling on
       # ALBRequestCountPerTarget for the secondary ALB + target group.
       enable_autoscaling       = true
       autoscaling_min_capacity = var.ui_fargate_min_count
@@ -166,7 +166,7 @@ module "ui_ecs_secondary" {
                 name  = "AWS_REGION"
                 value = var.secondary_region
               },
-              # UI banner (chunk 9k) reads THIS_REGION to decide whether
+              # UI banner reads THIS_REGION to decide whether
               # to render the passive-mode banner.
               {
                 name  = "THIS_REGION"
@@ -235,7 +235,7 @@ module "ui_ecs_secondary" {
                 value = try(aws_lambda_function_url.salesforce_integration_secondary[0].function_url, "")
               }
             ] : [],
-            # Scanner secondary lands in chunk 9i; SSM path stays the
+            # Scanner secondary lands in ; SSM path stays the
             # same so this env var resolves once 9i populates the param.
             local.scanner_enabled ? [
               {
@@ -284,8 +284,8 @@ module "ui_ecs_secondary" {
           }
         ],
         # Scanner JWT SSM access — secondary copy of the SSM param ships
-        # in chunk 9i. Grant by ARN-pattern since the resource may not
-        # exist yet when this Fargate applies; chunk 9i landing fills it.
+        # in . Grant by ARN-pattern since the resource may not
+        # exist yet when this Fargate applies; landing fills it.
         local.scanner_enabled ? [
           {
             effect    = "Allow"

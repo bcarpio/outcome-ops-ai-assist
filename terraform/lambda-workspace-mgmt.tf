@@ -50,7 +50,7 @@ module "workspace_management_lambda" {
   ]
 
   # Source code with pip requirements (includes shared module so handler.py
-  # can `from shared.audit_writer import ...` at runtime; chunk 02 / 03 / 05
+  # can `from shared.audit_writer import ...` at runtime; / 03 / 05
   # all depend on this).
   source_path = [
     {
@@ -96,7 +96,7 @@ module "workspace_management_lambda" {
     AUDIT_RETENTION_DAYS       = tostring(var.audit_retention_days)
     ANALYTICS_TABLE            = module.analytics_table.dynamodb_table_id
     # PII redaction posture (read for GET /workspaces/{id}/privacy so the
-    # UI knows whether to render the toggle). plan/ chunk 07.
+    # UI knows whether to render the toggle). plan/ .
     PII_REDACTION_ENABLED = tostring(var.pii_redaction_enabled)
 
     # Per-integration enablement manifest surfaced at
@@ -119,14 +119,14 @@ module "workspace_management_lambda" {
     INTEGRATION_SERVICENOW_ENABLED          = tostring(var.enable_servicenow_integration)
     INTEGRATION_SALESFORCE_ENABLED          = tostring(var.enable_salesforce_integration)
 
-    # chunk 03 (ADR-048 v1.1): Azure AD group selection UX. Patterns scope the
+    # (ADR-048 v1.1): Azure AD group selection UX. Patterns scope the
     # binding picker; the Graph fallback (app-only, SSM secret) populates the
     # full picker + resolves the >200-group memberOf overage. Off => the picker
     # is fed by the caller's own token groups + paste (credential-free).
     # Graph creds default to the OIDC login app (see locals above); tenant falls
     # back to oidc_tenant_id. This is workspace-mgmt-only -- the MCP server's
     # AZURE_AD_TENANT_ID stays governed by its own var so this does not switch on
-    # chunk-02 MCP JWT validation.
+    # MCP JWT validation.
     AZURE_AD_TENANT_ID                    = local.azure_ad_graph_tenant_id
     AZURE_AD_GROUP_PATTERNS               = jsonencode(var.azure_ad_group_patterns)
     AZURE_AD_GROUP_SYNC_ENABLED           = tostring(var.azure_ad_group_sync_enabled)
@@ -171,7 +171,7 @@ module "workspace_management_lambda" {
     }
 
     # DynamoDB for audit logs (admin-action writes via shared.audit_writer
-    # plus the new chunk-05 audit-query endpoints which read base table +
+    # plus the new audit-query endpoints which read base table +
     # GSI1 and may scan as a last-resort org-admin path).
     dynamodb_audit = {
       effect = "Allow"

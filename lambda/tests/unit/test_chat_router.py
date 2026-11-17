@@ -301,7 +301,7 @@ def test_classify_unrecognized_token_falls_through_to_unknown(stub_bedrock):
 
 
 def test_classify_bedrock_clienterror_returns_pattern(stub_bedrock):
-    """fable-scale chunk 05: router degrades to 'pattern' (narrow, RAG-only)
+    """router degrades to 'pattern' (narrow, RAG-only)
     on ClientError so a router throttle doesn't fan out MORE Bedrock calls.
     Prior behavior was 'unknown' which triggered structural+graph fan-out."""
     from shared.router import classify_intent  # type: ignore
@@ -468,7 +468,7 @@ def test_lighthouse_demo_classifications(
     The classifier is stubbed to return the expected payload; this
     test asserts the router's parsing + symbol-extraction path
     threads the value through faithfully for each fixture shape.
-    Real Haiku tuning happens in chunk-08 rollout validation.
+    Real Haiku tuning happens in rollout validation.
     """
     from shared.router import classify_intent  # type: ignore
 
@@ -544,7 +544,7 @@ def test_router_passes_question_as_user_message(stub_bedrock):
 
 
 # ===========================================================================
-# Chunk 01 — router prompt versioning (verification -> HYBRID, v1 rollback)
+# — router prompt versioning (verification -> HYBRID, v1 rollback)
 # ===========================================================================
 
 

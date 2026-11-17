@@ -532,7 +532,7 @@ def query_knowledge_base(
 ) -> Dict[str, Any]:
     """Query knowledge base via query-kb Lambda.
 
-    ``workspace_ids`` scopes retrieval to those workspaces (chunk 04
+    ``workspace_ids`` scopes retrieval to those workspaces (
     of the workspace-scope plan).
     """
     payload: Dict[str, Any] = {

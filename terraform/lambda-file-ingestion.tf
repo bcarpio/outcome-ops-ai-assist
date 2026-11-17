@@ -146,8 +146,8 @@ module "file_ingestion_lambda" {
       # AUDIT_TABLE for audit logging
       AUDIT_TABLE          = module.audit_logs_table.dynamodb_table_id
       AUDIT_RETENTION_DAYS = tostring(var.audit_retention_days)
-      # plan-git-truth chunk 01: SHA-truth ledger tables. Wired but not
-      # yet imported; chunk 02 lights up the docs-pipeline consumer.
+      # plan-git-truth SHA-truth ledger tables. Wired but not
+      # yet imported; lights up the docs-pipeline consumer.
       PENDING_WORK_TABLE = module.code_map_pending_work_table.dynamodb_table_id
       FAILED_FILES_TABLE = module.code_map_failed_files_table.dynamodb_table_id
     },
@@ -196,7 +196,7 @@ module "file_ingestion_lambda" {
         ]
       }
 
-      # plan-git-truth chunk 01: SHA-truth ledger.
+      # plan-git-truth SHA-truth ledger.
       sha_truth = {
         effect = "Allow"
         actions = [
@@ -282,7 +282,7 @@ resource "aws_lambda_event_source_mapping" "file_ingestion" {
 
   batch_size = 10 # Process multiple files concurrently
 
-  # Chunk 02: partial-batch-failure. Ingestion writes are idempotent
+  # partial-batch-failure. Ingestion writes are idempotent
   # (S3 put + DDB upsert on stable key), so redelivery of failed items
   # is safe. Without this the batch returns 200 on any failure and every
   # message is deleted -- permanent KB gap.
@@ -352,7 +352,7 @@ module "process_documents_lambda" {
       PII_REDACTION_ENABLED             = tostring(var.pii_redaction_enabled)
       COMPREHEND_PII_PRICE_PER_1M_CHARS = tostring(var.comprehend_pii_price_per_1m_chars)
       PII_REDACTION_SKIP_TYPES          = join(",", var.pii_redaction_skip_types)
-      # plan-git-truth chunk 02b/4: process-documents closes the docs
+      # plan-git-truth /4: process-documents closes the docs
       # ledger after vectorization. _close_docs_unit reads these tables.
       PENDING_WORK_TABLE = module.code_map_pending_work_table.dynamodb_table_id
       FAILED_FILES_TABLE = module.code_map_failed_files_table.dynamodb_table_id
@@ -379,7 +379,7 @@ module "process_documents_lambda" {
       ]
     }
 
-    # plan-git-truth chunk 02b/4: SHA-truth ledger (pending-work +
+    # plan-git-truth /4: SHA-truth ledger (pending-work +
     # failed-files) + workspaces-row advance.
     sha_truth = {
       effect = "Allow"
@@ -424,7 +424,7 @@ module "process_documents_lambda" {
       # is passed as modelId). inference-profile/* covers application
       # inference profiles created in bedrock-inference-profiles.tf so
       # process-documents can attribute Titan-embed spend under the
-      # chat workload once chunk 03/04 land.
+      # chat workload once /04 land.
       resources = [
         "arn:aws:bedrock:*::foundation-model/*",
         "arn:aws:bedrock:*:${data.aws_caller_identity.current.account_id}:inference-profile/*",
@@ -476,7 +476,7 @@ module "process_documents_lambda" {
       ]
     }
 
-    # Comprehend Detect-PII for ingest-time PII redaction (plan/ chunk 07).
+    # Comprehend Detect-PII for ingest-time PII redaction (plan/ ).
     # AWS does not support resource-level scoping for this action; "*" is
     # the only valid value per the Comprehend service auth documentation.
     comprehend_pii = {

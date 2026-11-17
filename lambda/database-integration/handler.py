@@ -179,7 +179,7 @@ def generate_id() -> str:
 
 def _default_scope_config() -> Dict[str, Any]:
     """Default scope at connection-create time. Schemas-only scope as
-    of chunk 06: introspection.include and sampling.include both hold
+    of introspection.include and sampling.include both hold
     2-segment 'catalog.schema' keys. Sampling is off by default
     (empty include == off, the regulated-buyer posture). Profiling
     is on so admins get aggregate column stats; top_values are
@@ -196,10 +196,10 @@ def _validate_schema_keys(keys: list, *, field: str) -> None:
     """Strict-validate a list of 'catalog.schema' keys. Raises
     ValueError on any malformed entry.
 
-    Chunk 06: introspection.include and sampling.include both hold
+    introspection.include and sampling.include both hold
     schema-level keys exclusively. Legacy 3-segment 'catalog.schema.table'
     entries are intentionally rejected — connections were disconnected
-    before the chunk-06 deploy so no legacy records survive.
+    before the deploy so no legacy records survive.
     """
     if not isinstance(keys, list):
         raise ValueError(f"{field} must be a list of 'catalog.schema' strings")
@@ -482,7 +482,7 @@ def update_scope(
     scope.setdefault("sampling", {"include": [], "exclude": []})
     scope.setdefault("profiling", {"enabled": True})
 
-    # Strict 2-segment validation (chunk 06). Reject the legacy
+    # Strict 2-segment validation. Reject the legacy
     # 'catalog.schema.table' shape — connections were disconnected
     # pre-deploy, no legacy records survive.
     try:

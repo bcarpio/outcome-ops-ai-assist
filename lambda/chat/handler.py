@@ -41,7 +41,7 @@ from shared.audit import log_audit_entry
 from shared import model_client
 from shared import retrieval
 from shared.model_client import invoke_stream as model_invoke_stream
-# fable-scale chunk 05: per-workload Bedrock gate saturation raises this
+# per-workload Bedrock gate saturation raises this
 # BEFORE the Bedrock call, distinct from Bedrock-side ThrottlingException.
 from shared.workload_gate import WorkloadBackpressureError
 from shared.model_client_types import (
@@ -180,9 +180,9 @@ def _get_s3vectors_client():
 
 
 def _get_bedrock_client():
-    """ADR-035 chunk 12: this client is embeddings-only (Titan via
+    """ADR-035: this client is embeddings-only (Titan via
     invoke_model at ~line 1219). LLM-completion streaming was migrated
-    to shared.model_client.invoke_stream in chunk 11."""
+    to shared.model_client.invoke_stream."""
     global _bedrock_client
     if _bedrock_client is None:
         _bedrock_client = boto3.client("bedrock-runtime", config=bedrock_config)
@@ -329,7 +329,7 @@ def _list_all_workspace_metadata(table) -> List[Dict]:
     established that the user is a member of an ``is_global``
     workspace in the requested set before reaching here.
 
-    fable-scale chunk 03: cached per-instance for
+    cached per-instance for
     WORKSPACE_CACHE_TTL_SECONDS (default 60s). At 2000-workspace scale
     the Scan is the enterprise bottleneck; caching drops per-instance
     cost ~99% at steady chat rates while keeping the "new workspace
@@ -361,7 +361,7 @@ def _list_all_workspace_metadata(table) -> List[Dict]:
 def _list_global_workspace_metadata(table) -> List[Dict]:
     """All ``is_global=true`` workspace METADATA rows.
 
-    fable-scale chunk 03: queries the sparse GSI_is_global index (added
+    queries the sparse GSI_is_global index (added
     to the workspaces table by terraform/dynamodb-workspaces.tf). At
     enterprise scale globals are few (tens); the Query beats a Scan-with-
     filter by orders of magnitude. Cached alongside the full-metadata
@@ -944,7 +944,7 @@ def get_conversation_messages(conversation_id: str, limit: int = 10) -> List[Dic
 
 
 def _cap_message_content(content: str) -> str:
-    """fable-scale chunk 10: cap message content at CHAT_MAX_MESSAGE_CONTENT_CHARS
+    """cap message content at CHAT_MAX_MESSAGE_CONTENT_CHARS
     via head+tail preservation. Chat re-sends the last 10 messages verbatim on
     every synthesis; unbounded pastes approach the 400KB DDB item limit AND
     inflate every subsequent Bedrock input by their full size.
@@ -970,7 +970,7 @@ def _cap_message_content(content: str) -> str:
 
 
 def _chat_ttl_seconds() -> int:
-    """Chat-table row TTL in seconds (fable-scale chunk 10; ADR-060).
+    """Chat-table row TTL in seconds (; ADR-060).
 
     The chat table is a bounded live UI cache -- the durable record is the
     audit table plus the Kinesis SIEM export (docs/audit-stream-export.md), so
@@ -993,10 +993,10 @@ def save_message(conversation_id: str, role: str, content: str, sources: List[Di
     message_id = generate_id()
     now = datetime.now(timezone.utc).isoformat()
 
-    # fable-scale chunk 10: cap runaway pastes before persisting.
+    # cap runaway pastes before persisting.
     content = _cap_message_content(content)
 
-    # fable-scale chunk 10: TTL. Rows written before this deploy have no
+    # TTL. Rows written before this deploy have no
     # expires_at and stay indefinitely (safe default). New rows drop out
     # after CHAT_MESSAGE_TTL_SECONDS (env, default 90d).
     item = {
@@ -1447,7 +1447,7 @@ def generate_answer_stream(
     Empty string when no graph block is present (pattern / dependency
     questions, or when the router skipped the augmentation path).
     """
-    # NOTE (ADR-035 chunk 12): the legacy `bedrock = _get_bedrock_client()`
+    # NOTE (ADR-035): the legacy `bedrock = _get_bedrock_client()`
     # construction was removed here. The streaming loop below routes
     # through shared.model_client.invoke_stream (aliased as
     # model_invoke_stream at the module top); the only remaining
@@ -1485,7 +1485,7 @@ When the user's question builds on something you said earlier in this conversati
     # ADR-016 v1.2 -- chat workload, tier picked by the caller's
     # advanced flag. shared.model_client resolves the profile ARN from
     # BEDROCK_CHAT_ADVANCED_PROFILE_ARN / BEDROCK_CHAT_BASIC_PROFILE_ARN
-    # (chunk-04 wired). Legacy BEDROCK_ADVANCED_MODEL_ID / _BASIC_MODEL_ID
+    #. Legacy BEDROCK_ADVANCED_MODEL_ID / _BASIC_MODEL_ID
     # env vars still populate ADVANCED_MODEL_ID/BASIC_MODEL_ID here for
     # the WARN-log fallback path.
     tier = "advanced" if advanced else "basic"
@@ -1510,7 +1510,7 @@ When the user's question builds on something you said earlier in this conversati
 
     try:
         for iteration in range(max_iterations):
-            # Route via shared.model_client.invoke_stream (ADR-035 chunk 11).
+            # Route via shared.model_client.invoke_stream (ADR-035).
             # Converse for anthropic/meta/nova/gpt-oss; Mantle Responses
             # for openai.gpt-5*. The chat UI's SSE wire format to the
             # frontend is unchanged -- we yield the same text deltas and
@@ -2082,7 +2082,7 @@ def handle_chat_stream(event: Dict) -> Generator[str, None, None]:
                 answer_chunks.append(chunk)
                 yield json.dumps({"type": "token", "text": chunk}) + "\n"
     except ClientError as e:
-        # fable-scale chunk 05: distinguish throttle-after-retry-exhaustion
+        # distinguish throttle-after-retry-exhaustion
         # from other errors so operators can tell whether the pain is quota
         # exhaustion or an actual bug. Silent retries with backoff live inside
         # shared.model_client.invoke_stream (via _converse_backend.
@@ -2102,7 +2102,7 @@ def handle_chat_stream(event: Dict) -> Generator[str, None, None]:
             yield _stream_error("Failed to generate response", 500) + "\n"
         return
     except WorkloadBackpressureError as e:
-        # fable-scale chunk 05: the per-instance chat gate is saturated
+        # the per-instance chat gate is saturated
         # BEFORE we could reach Bedrock. Same user-facing shape as
         # ThrottlingException — busy, retry.
         logger.warning("chat workload gate saturated: %s", e)
@@ -2585,7 +2585,7 @@ def list_shared_conversations(
 def _get_user_workspace_ids(user_id: str) -> List[str]:
     """Get all workspace IDs the user is a member of.
 
-    fable-scale chunk 03:
+    
     - Query is now paginated (was single-shot, silently truncated at 1MB
       once a user carried ~10k+ memberships — the MCP-server equivalent
       already paginates).

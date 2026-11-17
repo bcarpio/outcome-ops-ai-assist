@@ -727,7 +727,7 @@ class TestFormatSource:
         assert result == "guide.md - my-repo"
 
     def test_format_source_adds_workspace_name_suffix_when_provided(self):
-        """Chunk 05: when workspace_names is provided and the metadata
+        """when workspace_names is provided and the metadata
         carries a resolvable workspace_id, the source string appends
         ``(WorkspaceName)`` so compliance auditors can see which tier
         of standards a citation came from."""

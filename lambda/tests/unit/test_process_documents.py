@@ -40,7 +40,7 @@ os.environ.setdefault("KB_BUCKET", "test-kb-bucket")
 os.environ.setdefault("AUDIT_TABLE", "")
 # Default the org-level PII kill switch to off in tests so existing
 # end-to-end tests don't try to reach Comprehend. Specific tests can
-# flip it on with patch.dict (plan/ chunk 05).
+# flip it on with patch.dict (plan/ ).
 os.environ.setdefault("PII_REDACTION_ENABLED", "false")
 
 
@@ -129,7 +129,7 @@ def reset_mocks():
     mock_s3vectors_client.delete_vectors.side_effect = None
     # Reset cached vector config
     handler_module._vector_config = None
-    # fable-scale chunk 07: store_vectors now routes writes through
+    # store_vectors now routes writes through
     # shared.dual_write.s3vectors_put_vectors (HA replication + chunking).
     # Inject the same mock client into dual_write so put_vectors call_args
     # inspections in these tests continue to work.
@@ -1273,7 +1273,7 @@ class TestStoreVectors:
 
     def test_store_vectors_success(self, vector_config):
         """Test successful vector storage."""
-        chunks = ["chunk 0 text", "chunk 1 text"]
+        chunks = ["text", "text"]
         embeddings = [[0.1] * 1024, [0.2] * 1024]
 
         result = store_vectors(
@@ -1309,7 +1309,7 @@ class TestStoreVectors:
         assert meta["type"] == "html"
         assert meta["chunk_index"] == "0"
         assert meta["total_chunks"] == "2"
-        assert meta["content"] == "chunk 0 text"
+        assert meta["content"] == "text"
 
     def test_store_vectors_no_folder_path(self, vector_config):
         """Test vector key when no folder path is present."""
@@ -1439,8 +1439,8 @@ class TestStoreVectors:
 
     def test_store_vectors_skips_empty_embeddings(self, vector_config):
         """Test chunks with empty embeddings are skipped."""
-        chunks = ["chunk 0", "chunk 1", "chunk 2"]
-        embeddings = [[0.1] * 1024, [], [0.3] * 1024]  # chunk 1 has no embedding
+        chunks = ["", "", ""]
+        embeddings = [[0.1] * 1024, [], [0.3] * 1024]  # has no embedding
 
         result = store_vectors(
             workspace_id="ws_abc",
@@ -1460,7 +1460,7 @@ class TestStoreVectors:
 
     def test_store_vectors_all_empty_embeddings(self, vector_config):
         """Test returns 0 when all embeddings are empty."""
-        chunks = ["chunk 0"]
+        chunks = [""]
         embeddings = [[]]
 
         result = store_vectors(
@@ -1740,7 +1740,7 @@ class TestProcessDocument:
 
 
 # ============================================================================
-# PII Redaction wiring (plan/ chunk 05)
+# PII Redaction wiring (plan/ )
 # ============================================================================
 
 

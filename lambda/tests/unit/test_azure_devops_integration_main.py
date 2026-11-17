@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Unit tests for azure-devops-integration/main.py FastAPI shim.
 
-Chunk 17 Group B. The `main.py` files are the Lambda's public HTTP
+Group B. The `main.py` files are the Lambda's public HTTP
 surface under Lambda Web Adapter; a routing bug here 404s a whole
 integration silently. These tests verify that each shim route builds
 the right event structure (path, method, body, query params, headers)

@@ -167,7 +167,7 @@ describe('Workspaces', () => {
   })
 
   it('shows a Global badge on workspaces flagged is_global', async () => {
-    // Chunk 02 of the workspace-scope plan. Global workspaces (Security,
+    // of the workspace-scope plan. Global workspaces (Security,
     // Enterprise Architecture, etc.) are visually distinguishable in the
     // list so admins can scan the deployment's read-scope at a glance.
     mockListWorkspaces.mockResolvedValue([

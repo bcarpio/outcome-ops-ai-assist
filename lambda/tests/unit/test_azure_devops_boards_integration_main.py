@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Unit tests for azure-devops-boards-integration/main.py FastAPI shim.
 
-Chunk 17 Group B. Verifies that each route builds the right event
+Group B. Verifies that each route builds the right event
 structure and returns the underlying handler's response verbatim.
 See test_azure_devops_integration_main.py for the pattern.
 """

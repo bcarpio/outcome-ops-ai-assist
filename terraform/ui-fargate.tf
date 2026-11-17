@@ -161,9 +161,9 @@ resource "aws_acm_certificate_validation" "ui" {
 }
 
 # ============================================================================
-# Secondary-region ACM certificate (HA chunk 9a)
+# Secondary-region ACM certificate ()
 # ----------------------------------------------------------------------------
-# ACM is regional; the secondary ALB (chunk 9b) needs its own cert in
+# ACM is regional; the secondary ALB needs its own cert in
 # us-east-2. The cert covers BOTH the regional hostname
 # (outcomeops2.${domain}) AND the canonical hostname
 # (outcomeops.${domain}) — because after failover, users hit the
@@ -223,7 +223,7 @@ resource "aws_acm_certificate_validation" "ui_secondary" {
 }
 
 locals {
-  # ARN of the secondary-region cert the secondary ALB listener (chunk 9b)
+  # ARN of the secondary-region cert the secondary ALB listener
   # consumes. Empty when HA is disabled OR when BYO cert (no auto-issue).
   # When BYO, operator provides a secondary cert via a separate tfvar
   # (deferred until a customer actually asks for BYO + HA).
@@ -247,7 +247,7 @@ resource "aws_route53_record" "ui" {
   }
 
   lifecycle {
-    # HA chunk 9a: operator-driven failover flips this record's alias
+    # operator-driven failover flips this record's alias
     # target between the two regional ALBs via the AWS console. Without
     # ignore_changes a subsequent terraform apply would revert the
     # operator's flip. The canonical hostname stays terraform-managed
@@ -257,7 +257,7 @@ resource "aws_route53_record" "ui" {
   }
 }
 
-# HA chunk 9a: regional hostname for primary. Operator escape hatch
+# regional hostname for primary. Operator escape hatch
 # for deep-linking to us-west-2 specifically (e.g. to verify the
 # primary ALB is healthy during a failover drill). The canonical
 # `outcomeops.${domain}` is what end users hit; this is admin-only.
@@ -420,7 +420,7 @@ resource "aws_lb_listener" "https" {
 }
 
 # ============================================================================
-# Secondary-region UI ALB + listeners (HA chunk 9b)
+# Secondary-region UI ALB + listeners ()
 # ----------------------------------------------------------------------------
 # Mirror of the primary ALB/SG/listener block above, under the
 # aws.secondary provider. Gated on var.secondary_region != "" AND
@@ -455,7 +455,7 @@ data "aws_vpc" "ui_secondary" {
 # OIDC client secret in secondary. Read-only data source matches the
 # primary pattern (data "aws_ssm_parameter" "oidc_client_secret"):
 # operator creates the SecureString in us-east-2 manually BEFORE
-# applying 9b. `make ha-list-secrets` (chunk 9l) will check both
+# applying 9b. `make ha-list-secrets` will check both
 # regions. If the parameter doesn't exist, terraform plan fails with
 # a clear error and the operator runs:
 #   aws ssm put-parameter --region us-east-2 --type SecureString \
@@ -582,7 +582,7 @@ module "ui_alb_secondary" {
       protocol          = "HTTP"
       port              = 3000
       target_type       = "ip"
-      create_attachment = false # ECS service handles attachment in chunk 9h
+      create_attachment = false # ECS service handles attachment in 
 
       health_check = {
         enabled             = true
@@ -656,7 +656,7 @@ resource "aws_lb_listener" "https_secondary" {
   }
 }
 
-# HA chunk 9b: regional hostname for secondary. Operator escape hatch
+# regional hostname for secondary. Operator escape hatch
 # for deep-linking to us-east-2 specifically (e.g. to verify the
 # secondary ALB is healthy before flipping DNS). End users hit the
 # canonical URL; this is admin-only.
@@ -692,7 +692,7 @@ module "ui_ecs" {
 
   cluster_name = "${var.environment}-${var.app_name}-ui"
 
-  # fable-scale chunk 01: cluster must offer BOTH on-demand + spot so the
+  # cluster must offer BOTH on-demand + spot so the
   # service's mixed capacity provider strategy resolves. Default strategy
   # is 1 on-demand base + weighted spot above it (see var.ui_fargate_*).
   cluster_capacity_providers = ["FARGATE", "FARGATE_SPOT"]
@@ -718,7 +718,7 @@ module "ui_ecs" {
 
   services = {
     ui = {
-      # fable-scale chunk 01: sizing is tfvars-driven. Sandbox defaults
+      # sizing is tfvars-driven. Sandbox defaults
       # were 256/512/1 SPOT-only; enterprise defaults are 512/1024/2 with
       # mixed capacity providers and target-tracking autoscaling on
       # ALBRequestCountPerTarget.
@@ -753,7 +753,7 @@ module "ui_ecs" {
       deployment_maximum_percent         = 200
       deployment_minimum_healthy_percent = var.ui_fargate_min_healthy_percent
 
-      # fable-scale chunk 01: target-tracking on ALBRequestCountPerTarget.
+      # target-tracking on ALBRequestCountPerTarget.
       # SSE streams hold sockets 30-900s, so this is really "concurrent
       # streams per task". resource_label format is required by the
       # predefined metric: <alb-arn-suffix>/<tg-arn-suffix>.

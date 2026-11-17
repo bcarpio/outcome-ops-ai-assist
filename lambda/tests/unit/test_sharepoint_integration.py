@@ -43,7 +43,7 @@ token_module = _load_module(
     also_register_as="token_manager",
 )
 
-# Shared Entra ID OAuth helper (ADR-035 chunk 01a):
+# Shared Entra ID OAuth helper (ADR-035):
 # token_manager.py is now a thin wrapper. Tests patch internals
 # (urllib, _get_dynamodb, _get_kms, _encrypt_token, _decrypt_token,
 # save_tokens, get_refresh_token, module-level cache globals) on

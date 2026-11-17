@@ -188,7 +188,7 @@ class TestFetchPRCommitsAzureDevOps:
 
 
 class TestFetchPRCommitsGitLab:
-    """Chunk 05: MR commits via the shared GitLab client. ``message`` is
+    """MR commits via the shared GitLab client. ``message`` is
     the full body, so Co-Authored-By trailers survive without an
     ADO-style truncation refetch."""
 

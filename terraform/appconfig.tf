@@ -11,7 +11,7 @@
 # apply): the lifecycle ignore_changes on hosted_configuration_version.content
 # prevents subsequent terraform applies from clobbering an operator flip.
 #
-# Chunk 02 adds the symmetric secondary-region copy under aws.secondary.
+# adds the symmetric secondary-region copy under aws.secondary.
 # ============================================================================
 
 resource "aws_appconfig_application" "ha" {
@@ -192,7 +192,7 @@ resource "aws_appconfig_deployment" "initial_secondary" {
   }
 }
 
-# Outputs consumed by Lambda environments (chunk 06 + chunk 07 wire these
+# Outputs consumed by Lambda environments (+ wire these
 # into the writer + scheduler env-var blocks).
 output "appconfig_application_id" {
   description = "AppConfig application id for the HA role flag"

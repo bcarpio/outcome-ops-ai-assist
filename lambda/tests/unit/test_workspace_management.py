@@ -330,7 +330,7 @@ class TestCreateWorkspace:
 
 
 class TestCreateWorkspaceIsGlobal:
-    """Chunk 01 of the workspace-scope plan. Verify the is_global
+    """of the workspace-scope plan. Verify the is_global
     request field is accepted, persisted to the metadata row, and
     defaults to False when omitted."""
 
@@ -417,7 +417,7 @@ class TestListWorkspaces:
     def test_list_workspaces_surfaces_is_global_workspaces_to_non_members(
         self, mock_dynamodb, mock_get_table,
     ):
-        """Chunk 01 of the workspace-scope plan: every caller sees
+        """of the workspace-scope plan: every caller sees
         is_global=true workspaces even when they're not a member.
         Global workspaces show up tagged role='global_reader' so the
         UI + downstream scope resolvers can distinguish them from
@@ -699,7 +699,7 @@ class TestListMembers:
     @patch("workspace_management_handler._get_workspaces_table")
     @patch("workspace_management_handler._get_dynamodb")
     def test_list_members_paginates(self, mock_dynamodb, mock_get_table):
-        """Chunk 05: single-shot .query() truncates at 1MB, silently
+        """single-shot .query() truncates at 1MB, silently
         dropping members from the workspace UI. Confirm the loop walks
         LastEvaluatedKey so page-2 members appear in the response."""
         mock_table = MagicMock()
@@ -932,7 +932,7 @@ class TestRepoOperations:
 
 
 class TestLoginSucceededAudit:
-    """plan/audit-completeness chunk 02 LOGIN_SUCCEEDED — fires once per
+    """plan/audit-completeness LOGIN_SUCCEEDED — fires once per
     (user, day) per Lambda container; subsequent requests no-op."""
 
     @patch("workspace_management_handler.log_admin_action")
@@ -1156,7 +1156,7 @@ class TestUpdateWorkspace:
         assert result["statusCode"] == 403
 
     # ------------------------------------------------------------------
-    # Chunk 01 of the workspace-scope plan.
+    # of the workspace-scope plan.
     # ------------------------------------------------------------------
 
     @patch("workspace_management_handler._is_workspace_admin", return_value=True)
@@ -1263,7 +1263,7 @@ class TestDeleteWorkspace:
     def test_delete_workspace_paginates_partition_and_gsi(
         self, mock_dynamodb, mock_get_table, mock_ws_admin, mock_delete
     ):
-        """Chunk 05: single-shot query truncates at 1MB. delete_workspace
+        """single-shot query truncates at 1MB. delete_workspace
         must paginate BOTH the workspace-partition query and the GSI
         member enumeration so items on page 2 aren't orphaned after
         the audit row says 'deleted'."""
@@ -1399,7 +1399,7 @@ class TestUpdateMember:
     def test_update_member_last_admin_check_paginates(
         self, mock_dynamodb, mock_get_table, mock_org_admin, mock_ws_admin, mock_update
     ):
-        """Chunk 05: the last-admin check must paginate. If the second
+        """the last-admin check must paginate. If the second
         remaining admin lives on page 2 of the members query, a single-
         shot .query() would truncate to page 1 (only one admin), wrongly
         blocking the demotion. With pagination, the second admin is seen
@@ -1598,7 +1598,7 @@ class TestSearchAccess:
     def test_update_search_access_emits_audit_with_diff(
         self, mock_dynamodb, mock_get_table, mock_ws_admin, mock_audit,
     ):
-        """plan/audit-completeness chunk 06 — emit
+        """plan/audit-completeness — emit
         ACTION_WORKSPACE_SHARING_UPDATED with previous + new + diff."""
         mock_table = MagicMock()
         mock_dynamodb.return_value.Table.return_value = mock_table
@@ -1669,7 +1669,7 @@ class TestListAllWorkspacesForSharing:
 
 
 class TestRegionRole:
-    """HA chunk 9a: /api/region/role endpoint.
+    """/api/region/role endpoint.
 
     The endpoint bypasses auth and returns the local region's HA role
     (active|passive). Single-region deployments always return "active"
@@ -1877,7 +1877,7 @@ class TestOrgMembers:
     def test_list_org_members_paginates_at_limit(
         self, mock_dynamodb, mock_get_table, mock_org_admin
     ):
-        """fable-scale chunk 10: response is sliced to `limit` items, with
+        """response is sliced to `limit` items, with
         next_cursor set when more members exist beyond the page."""
         mock_table = MagicMock()
         mock_dynamodb.return_value.Table.return_value = mock_table
@@ -1937,7 +1937,7 @@ class TestOrgMembers:
     def test_list_org_members_paginates_gsi_query(
         self, mock_dynamodb, mock_get_table, mock_org_admin
     ):
-        """Chunk 05: ORG#default GSI query paginates. Members on page 2
+        """ORG#default GSI query paginates. Members on page 2
         would silently disappear from the org admin UI otherwise."""
         mock_table = MagicMock()
         mock_dynamodb.return_value.Table.return_value = mock_table
@@ -2480,7 +2480,7 @@ class TestDocumentOperations:
         self, mock_dynamodb, mock_get_table, mock_ws_admin,
         mock_bucket, mock_s3, mock_queue, mock_sqs, mock_audit,
     ):
-        """plan/audit-completeness chunk 05 — delete_document emits
+        """plan/audit-completeness — delete_document emits
         ACTION_DOCUMENT_DELETED with file_path + file_size + queue marker."""
         mock_table = MagicMock()
         mock_dynamodb.return_value.Table.return_value = mock_table
@@ -2708,7 +2708,7 @@ class TestMcpWorkspaceAssignment:
     def test_assign_mcp_emits_audit_row(
         self, mock_dynamodb, mock_get_table, mock_ws_admin, mock_audit,
     ):
-        """plan/audit-completeness chunk 06 — emit MCP_SERVER_ASSIGNED."""
+        """plan/audit-completeness — emit MCP_SERVER_ASSIGNED."""
         mock_table = MagicMock()
         mock_dynamodb.return_value.Table.return_value = mock_table
         mock_get_table.return_value = "test-workspaces"
@@ -2738,7 +2738,7 @@ class TestMcpWorkspaceAssignment:
     def test_remove_mcp_emits_audit_row(
         self, mock_dynamodb, mock_get_table, mock_ws_admin, mock_audit,
     ):
-        """plan/audit-completeness chunk 06 — emit MCP_SERVER_UNASSIGNED."""
+        """plan/audit-completeness — emit MCP_SERVER_UNASSIGNED."""
         mock_table = MagicMock()
         mock_dynamodb.return_value.Table.return_value = mock_table
         mock_get_table.return_value = "test-workspaces"
@@ -3918,7 +3918,7 @@ class TestValidateApiKey:
 
 
 class TestApiKeyUsedAudit:
-    """plan/audit-completeness chunk 02 — every validate_api_key call
+    """plan/audit-completeness — every validate_api_key call
     (success or failure) emits an ACTION_API_KEY_USED audit row so
     InfoSec can track programmatic-access activity."""
 
@@ -4206,7 +4206,7 @@ class TestRequestModelValidation:
 
 
 # ============================================================================
-# Chunk 03a: audit emission for the 7 wired mutations
+# audit emission for the 7 wired mutations
 # ============================================================================
 
 
@@ -4409,7 +4409,7 @@ class TestRemoveRepoAudit:
 
 
 # ============================================================================
-# Chunk 03b: audit emission for org / MCP / API key / budget mutations
+# audit emission for org / MCP / API key / budget mutations
 # ============================================================================
 
 
@@ -4551,7 +4551,7 @@ class TestCreateApiKeyAudit:
         assert result["statusCode"] == 201
 
         # Pull the raw key out of the response so we can assert it never appears
-        # in the audit details (security gate per chunk 03b).
+        # in the audit details (security gate per ).
         response_body = json.loads(result["body"])
         raw_key = response_body["key"]
         assert raw_key.startswith("ooa_")
@@ -4658,7 +4658,7 @@ class TestUpdateWorkspaceBudgetAudit:
 
 
 class TestPrivacyMode:
-    """GET / PUT /workspaces/{id}/privacy. Plan/ chunk 04."""
+    """GET / PUT /workspaces/{id}/privacy. Plan/ ."""
 
     @patch("workspace_management_handler._can_access_workspace", return_value=True)
     @patch("workspace_management_handler._get_workspaces_table")
@@ -4666,7 +4666,7 @@ class TestPrivacyMode:
     def test_get_returns_strict_for_legacy_workspace(
         self, mock_dynamodb, mock_get_table, mock_can_access,
     ):
-        """Workspaces created before chunk 03 lack the privacy_mode
+        """Workspaces created before lack the privacy_mode
         attribute. Reader must default to 'STRICT' (the safe default)."""
         mock_table = MagicMock()
         mock_dynamodb.return_value.Table.return_value = mock_table
@@ -4822,7 +4822,7 @@ class TestLambdaHandlerBootstrap:
 
 
 # ============================================================================
-# Chunk 05: audit query endpoints
+# audit query endpoints
 # ============================================================================
 
 
@@ -5033,7 +5033,7 @@ class TestAuditEvents:
         self, mock_dynamodb, mock_get_table, mock_org
     ):
         """The no-filter org-admin path Queries GSI2 (CAT#admin partition)
-        rather than Scan + FilterExpression. fable-scale chunk 04: routes
+        rather than Scan + FilterExpression. routes
         through audit_shard.read_by_category for shard fan-out."""
         mock_table = MagicMock()
         mock_dynamodb.return_value.Table.return_value = mock_table
@@ -5096,7 +5096,7 @@ class TestAuditEvents:
         self, mock_dynamodb, mock_get_table, mock_org
     ):
         """Regression: Last-N-days has to actually narrow the result set.
-        fable-scale chunk 04: the date range flows through the shard helper
+        the date range flows through the shard helper
         as sk_start/sk_end arguments."""
         mock_table = MagicMock()
         mock_dynamodb.return_value.Table.return_value = mock_table
@@ -5125,7 +5125,7 @@ class TestAuditEvents:
         """Regression: even though Query with ScanIndexForward=False already
         returns newest-first, the handler also sorts defensively in case a
         future caller flips the direction. The bug originally surfaced as
-        audit rows showing oldest-first in the UI. fable-scale chunk 04:
+        audit rows showing oldest-first in the UI. 
         the sort still happens post-shard-merge in the handler."""
         mock_table = MagicMock()
         mock_dynamodb.return_value.Table.return_value = mock_table
@@ -5154,7 +5154,7 @@ class TestAuditEvents:
     ):
         """The Audit dashboard fetches refusals via category=bedrock +
         status=refusal. Regression: the status param surfaces as a
-        FilterExpression on the audit-events Query. fable-scale chunk 04:
+        FilterExpression on the audit-events Query. 
         the FilterExpression flows through the shard helper as a kwarg."""
         mock_table = MagicMock()
         mock_dynamodb.return_value.Table.return_value = mock_table
@@ -5184,7 +5184,7 @@ class TestAuditEvents:
         applies Limit BEFORE FilterExpression, so a sparse status=refusal
         filter returns 0 if the most-recent N items are all non-matches.
         The handler must paginate internally until target_limit matches
-        accumulate. fable-scale chunk 04: pagination happens inside each
+        accumulate. pagination happens inside each
         shard's Query loop in audit_shard.read_by_category (verified by
         this test using the real helper against the mock table)."""
         mock_table = MagicMock()
@@ -5226,7 +5226,7 @@ class TestAuditEvents:
     ):
         """If the filter would scan forever (every page returns LastEvaluatedKey
         but no matches), the handler bails at MAX_PAGES per shard so a
-        Lambda timeout doesn't bring down the dashboard. fable-scale chunk
+        Lambda timeout doesn't bring down the dashboard. chunk
         04: cap applies per-shard inside audit_shard.read_by_category."""
         mock_table = MagicMock()
         mock_dynamodb.return_value.Table.return_value = mock_table
@@ -5357,7 +5357,7 @@ class TestAuditEvents:
         self, mock_dynamodb, mock_get_table, mock_org
     ):
         """The category query param now picks the GSI2 partition rather
-        than appearing as a FilterExpression. fable-scale chunk 04: the
+        than appearing as a FilterExpression. the
         category is passed to audit_shard.read_by_category which fans out
         across CAT#bedrock#NN shards."""
         mock_table = MagicMock()
@@ -5458,7 +5458,7 @@ class TestAuditSummaryFallback:
         mock_get_table.return_value = "test-workspaces"
         # _scan_all_workspaces returns []; the aggregator loop runs zero
         # iterations so total stays 0 and the fallback fires. The fallback
-        # goes through audit_shard.read_by_category (fable-scale chunk 04).
+        # goes through audit_shard.read_by_category ().
         fallback_items = [
             {
                 "action": "API_KEY_CREATED",

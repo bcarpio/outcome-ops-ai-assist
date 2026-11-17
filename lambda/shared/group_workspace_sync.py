@@ -1,6 +1,6 @@
 # Copyright 2025-2026 OutcomeOps
 # SPDX-License-Identifier: Apache-2.0
-"""Azure AD group -> workspace membership resolution (chunk 11a).
+"""Azure AD group -> workspace membership resolution.
 
 Pure, side-effect-free logic. Given a user's current Entra group IDs (from the
 OIDC ``groups`` claim), the admin-configured group->workspace bindings, and the

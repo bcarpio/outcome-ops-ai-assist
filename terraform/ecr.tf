@@ -250,7 +250,7 @@ output "database_sync_ecr_repository_url" {
 }
 
 # ============================================================================
-# ECR Cross-Region Replication (HA chunk 9a)
+# ECR Cross-Region Replication ()
 # ----------------------------------------------------------------------------
 # When secondary_region is set, replicate the platform images from the
 # primary registry to the secondary region. AWS handles syncing on every

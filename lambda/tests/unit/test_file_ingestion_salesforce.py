@@ -1,6 +1,6 @@
 # Copyright 2025-2026 OutcomeOps
 # SPDX-License-Identifier: Apache-2.0
-"""Unit tests for file-ingestion Lambda -- Salesforce branches (chunk 05)."""
+"""Unit tests for file-ingestion Lambda -- Salesforce branches."""
 
 import importlib.util
 import os
@@ -100,7 +100,7 @@ class TestProcessRecord:
 
 
 class TestProcessAttachment:
-    """Chunk 01 -- file-ingestion side of the ContentVersion port."""
+    """-- file-ingestion side of the ContentVersion port."""
 
     @patch.object(handler_module.dual_write, "s3_put_object")
     @patch("shared.salesforce_api.download_content_version",

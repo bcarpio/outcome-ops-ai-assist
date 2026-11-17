@@ -281,7 +281,7 @@ class TestAggregateItem:
 
 
 class TestHandler:
-    """Chunk 10: handler returns DDB-Streams partial-batch-failure envelope
+    """handler returns DDB-Streams partial-batch-failure envelope
     so a poison record is retried instead of silently dropped on 200."""
 
     @patch.object(handler_module, "_get_table")

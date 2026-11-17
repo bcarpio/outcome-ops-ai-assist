@@ -78,7 +78,7 @@ resource "aws_lambda_event_source_mapping" "analytics_aggregator_stream" {
   maximum_retry_attempts        = 3
   maximum_record_age_in_seconds = 3600
 
-  # chunk 10 (HA parity): the handler returns batchItemFailures with the
+  # (HA parity): the handler returns batchItemFailures with the
   # failed record's eventID; ReportBatchItemFailures tells the stream to
   # redeliver only that record instead of dropping it on the 200. Without
   # this the retry bounds above are meaningless (whole batch succeeds).

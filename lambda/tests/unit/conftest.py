@@ -74,7 +74,7 @@ def _walk_stack_for(dual_write, accessors: tuple[str, ...], resources: tuple[str
 def _reset_ws_cache():
     """Clear ``shared.ws_cache`` around every test.
 
-    fable-scale chunk 03 introduced ``shared.ws_cache`` -- a module-level
+    introduced ``shared.ws_cache`` -- a module-level
     TTL cache consulted by workspace-resolution paths (chat, mcp-server,
     workspace-management). It legitimately persists across calls in
     production, but across *tests* a stale entry seeded by one file leaks

@@ -41,7 +41,7 @@ outlook_sync_tm = _load_module(
     "outlook_sync_token_mgr", "token_manager.py", "../../outlook-sync"
 )
 
-# Shared Entra ID OAuth helper (ADR-035 chunk 01a):
+# Shared Entra ID OAuth helper (ADR-035):
 import shared.entra_id_oauth as shared_oauth  # noqa: E402
 
 

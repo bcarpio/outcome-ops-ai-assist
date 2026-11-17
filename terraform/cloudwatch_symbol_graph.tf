@@ -17,7 +17,7 @@
 # Deliberately does NOT add chat-end-to-end or analyze-pr-end-to-end
 # duration alarms here. Duration coverage remains a gap; error-count
 # alarms for chat / analyze-pr / etc. live in cloudwatch_alarms.tf
-# (chunk 12 of the fable-code-review remediation). This file is
+#. This file is
 # graph-only.
 #
 # Notification routing: alarms route to the existing

@@ -1,7 +1,7 @@
 # Copyright 2025-2026 OutcomeOps
 # SPDX-License-Identifier: Apache-2.0
 # ============================================================================
-# Shared local for SHA-truth table ARNs (plan-git-truth chunk 01).
+# Shared local for SHA-truth table ARNs (plan-git-truth ).
 #
 # The pending-work ledger and failed-files tables are written by every
 # pipeline Lambda that participates in the SHA-truth contract:
@@ -21,7 +21,7 @@ locals {
     module.code_map_failed_files_table.dynamodb_table_arn,
   ]
 
-  # Secondary-region parallels for HA writer Lambdas (chunk 9e). Empty
+  # Secondary-region parallels for HA writer Lambdas. Empty
   # when secondary_region is unset; populated otherwise.
   sha_truth_table_arns_secondary = var.secondary_region != "" ? [
     module.code_map_pending_work_table_secondary[0].dynamodb_table_arn,

@@ -1,7 +1,7 @@
 # Copyright 2025-2026 OutcomeOps
 # SPDX-License-Identifier: Apache-2.0
 
-# === Legacy dict -> unified Response adapter (ADR-035 chunk 11 fallout) ===
+# === Legacy dict -> unified Response adapter (ADR-035 fallout) ===
 from types import SimpleNamespace
 from shared.model_client_types import StopReason
 

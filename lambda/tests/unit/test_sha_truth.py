@@ -438,7 +438,7 @@ def test_try_advance_idempotent_under_concurrent_callers(tables):
 
 
 # ===========================================================================
-# Two-stage code-map ledger (chunk 02 design B)
+# Two-stage code-map ledger
 # ===========================================================================
 #
 # The code-maps pipeline has two fan-out points:

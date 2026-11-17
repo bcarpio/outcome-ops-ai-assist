@@ -1,7 +1,7 @@
 # Copyright 2025-2026 OutcomeOps
 # SPDX-License-Identifier: Apache-2.0
 # ============================================================================
-# Secondary-region MCP servers + security scanner (HA chunk 9i)
+# Secondary-region MCP servers + security scanner ()
 # ----------------------------------------------------------------------------
 # Mirror of:
 #   - aws_service_discovery_private_dns_namespace.mcp (in mcp.tf)
@@ -9,12 +9,12 @@
 #   - module.security_scanner_lambda + SSM + target group + listener rules
 #     (in security-scanner.tf)
 #
-# All attach to the SECONDARY ALB (chunk 9b) via path-based listener rules.
+# All attach to the SECONDARY ALB via path-based listener rules.
 # Same priorities as primary; conflicts are impossible across two different
 # ALBs.
 #
 # The mcp-outcomeops + mcp-sonarqube ECR images replicate from primary
-# automatically via aws_ecr_replication_configuration.ha (chunk 9a). The
+# automatically via aws_ecr_replication_configuration.ha. The
 # secondary Fargate tasks pull from us-east-2 ECR for warm starts —
 # repository names match primary; the replication service auto-creates
 # the destination repos on first push.
@@ -24,7 +24,7 @@
 # across failover. The secondary SSM SecureStrings reference the primary's
 # random resources directly.
 #
-# All resources gated on local.deploy_ui_secondary (chunk 9b) AND the
+# All resources gated on local.deploy_ui_secondary AND the
 # relevant feature flag (mcp_server_enabled / mcp_sonarqube_enabled /
 # scanner_enabled).
 # ============================================================================
@@ -88,12 +88,12 @@ module "mcp_outcomeops_secondary" {
 
   server_name = "outcomeops"
   # Same repo name as primary; us-east-2 ECR copy populated via the
-  # cross-region replication config from chunk 9a.
+  # cross-region replication config from .
   container_image = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.secondary_region}.amazonaws.com/${var.environment}-${var.app_name}-mcp-outcomeops:${nonsensitive(data.aws_ssm_parameter.mcp_image_tag_secondary[0].value)}"
   container_port  = 8080
 
-  # fable-scale chunk 01 (HA parity): tfvars-driven sizing + autoscaling,
-  # same shape as primary. Requires fable-scale chunk 02 sessions in DDB.
+  # (HA parity): tfvars-driven sizing + autoscaling,
+  # same shape as primary. Requires sessions in DDB.
   cpu                                  = var.mcp_server_cpu
   memory                               = var.mcp_server_memory
   desired_count                        = var.mcp_server_desired_count
@@ -117,21 +117,21 @@ module "mcp_outcomeops_secondary" {
     KB_BUCKET          = module.knowledge_base_bucket_secondary.s3_bucket_id
     ENVIRONMENT        = var.environment
     MCP_BASE_URL       = local.mcp_base_url_secondary
-    # chunk 11b (ADR-049, HA parity): Azure AD OAuth (JWT) auth. Shared code +
+    # (ADR-049, HA parity): Azure AD OAuth (JWT) auth. Shared code +
     # same tfvars -> identical behavior in both regions.
     AZURE_AD_TENANT_ID      = var.azure_ad_tenant_id
     MCP_JWT_AUDIENCE        = var.mcp_jwt_audience
     MCP_STATIC_KEYS_ENABLED = tostring(var.mcp_static_keys_enabled)
     AUDIT_TABLE             = module.audit_logs_table_secondary[0].dynamodb_table_id
     AUDIT_RETENTION_DAYS    = tostring(var.audit_retention_days)
-    # fable-scale chunk 02 (HA parity): DDB-backed session store, secondary
-    # region's own table. Sessions are region-scoped by design (chunk 02
+    # (HA parity): DDB-backed session store, secondary
+    # region's own table. Sessions are region-scoped by design (
     # comment in terraform/dynamodb-mcp-sessions.tf).
     MCP_SESSION_STORE  = "ddb"
     MCP_SESSIONS_TABLE = module.mcp_sessions_table_secondary[0].dynamodb_table_id
     SYMBOL_GRAPH_TABLE = module.symbol_graph_table_secondary[0].dynamodb_table_id
     CODE_MAPS_TABLE    = module.code_maps_table_secondary[0].dynamodb_table_id
-    # chunk 09 (HA parity, ADR-033): mirror primary rerank env. Without
+    # (HA parity, ADR-033): mirror primary rerank env. Without
     # these three the secondary silently drops the per-lane rerank
     # (retrieval quality drops exactly when everything else is on fire).
     BEDROCK_RERANK_MODEL_ID = var.bedrock_rerank_model_id
@@ -232,7 +232,7 @@ resource "aws_iam_role_policy" "mcp_outcomeops_secondary" {
         ]
       },
       {
-        # fable-scale chunk 02 (HA parity): session store, secondary region.
+        # (HA parity): session store, secondary region.
         Sid    = "MCPSessionsAccess"
         Effect = "Allow"
         Action = [

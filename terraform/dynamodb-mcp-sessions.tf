@@ -1,11 +1,11 @@
 # Copyright 2025-2026 OutcomeOps
 # SPDX-License-Identifier: Apache-2.0
 # ============================================================================
-# DynamoDB Table for MCP Session Store (fable-scale chunk 02)
+# DynamoDB Table for MCP Session Store ()
 # ----------------------------------------------------------------------------
 # Externalizes the MCP server's per-user session state (previously a module-
 # global dict inside the container). Two consequences:
-#   - Autoscaling the MCP Fargate service (fable-scale chunk 01) becomes safe
+#   - Autoscaling the MCP Fargate service () becomes safe
 #     — a second task doesn't lose or duplicate sessions.
 #   - Container restarts (spot reclamation, deploys) no longer drop every
 #     in-flight MCP session.

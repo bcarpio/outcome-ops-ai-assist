@@ -36,7 +36,7 @@ locals {
 
 # ============================================================================
 # Writer policy - process-batch-summary
-# Required for the delete-then-write regen path (chunk 03):
+# Required for the delete-then-write regen path:
 #   Query    - enumerate the previous-SHA partition for deletion
 #   BatchWriteItem / DeleteItem - delete-old + write-new in 25-item batches
 #   PutItem  - pointer-swap fallback

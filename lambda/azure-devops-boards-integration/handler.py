@@ -69,8 +69,8 @@ from shared.region_guard import (  # noqa: E402
 )
 
 
-# Boards Work Items API (chunk 03). Only used for discovery here
-# (list_projects); the sync worker in chunk 05 owns WIQL + work-item
+# Boards Work Items API. Only used for discovery here
+# (list_projects); the sync worker in owns WIQL + work-item
 # fetch. Repos-side APIs are deliberately NOT imported -- keeping
 # the two integrations decoupled.
 from azure_devops_work_items_api import (  # noqa: E402
@@ -621,7 +621,7 @@ def _get_workspace_project(workspace_id: str, slug: str) -> Optional[Dict]:
 
 def _queue_sync_job(workspace_id: str, slug: str, connection_id: str) -> None:
     """Enqueue a sync job. Body shape must match what the
-    azure-devops-boards-sync worker (chunk 05) reads from
+    azure-devops-boards-sync worker reads from
     message["org"|"project"] (KeyError otherwise).
     """
     if not AZURE_DEVOPS_BOARDS_SYNC_QUEUE:
@@ -648,7 +648,7 @@ def _queue_sync_job(workspace_id: str, slug: str, connection_id: str) -> None:
 
 def _queue_delete_job(workspace_id: str, slug: str) -> None:
     """Enqueue a delete-prefix job for the project's ingested work-item
-    documents. Prefix mirrors chunk 05's S3 write path
+    documents. Prefix mirrors S3 write path
     (``azure_devops_boards/{org}/{project}/``).
     """
     if not DELETE_QUEUE:

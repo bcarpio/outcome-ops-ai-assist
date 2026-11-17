@@ -1170,7 +1170,7 @@ def process_teams_file(
 
     Downloads from pre-authenticated URL provided in file_info.
 
-    Chunk 03: etag safety net. When the SQS body carries a Graph
+    etag safety net. When the SQS body carries a Graph
     ``etag`` and the existing S3 object's ``teams_etag`` metadata
     matches, skip the download + put + downstream re-embedding.
     Fail-safe on any head_object error (falls through to the
@@ -1196,7 +1196,7 @@ def process_teams_file(
     safe_filename = sanitize_filename(filename)
     s3_key = f"workspaces/{workspace_id}/teams/{safe_channel}/files/{safe_filename}"
 
-    # Etag pre-flight (chunk 03). Only runs when Graph gave us an etag
+    # Etag pre-flight. Only runs when Graph gave us an etag
     # to compare against; empty means "we can't prove no change" and
     # we take the download+put path.
     if graph_etag and _teams_file_unchanged(s3_key, graph_etag):
@@ -1495,7 +1495,7 @@ def _strip_top_values(doc: Any) -> Any:
     Defensive backstop to the strip already performed in database-sync.
     Even if a future contributor regresses the upstream pass, this gate
     ensures column-value leakage never lands in S3. The two
-    implementations share the same shape; tests in chunk 05 keep them
+    implementations share the same shape; tests in keep them
     in sync.
     """
     if isinstance(doc, dict):
@@ -2034,7 +2034,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         logger.error("No SQS records in event")
         return {"statusCode": 400, "body": "Invalid event"}
 
-    # Chunk 02: partial-batch-failure semantics. Previously every record
+    # partial-batch-failure semantics. Previously every record
     # was catch-all appended to `results` and the batch returned 200,
     # so SQS deleted messages that never actually ingested -- a hard KB
     # gap (file simply missing from the source, no retry, no DLQ). Now

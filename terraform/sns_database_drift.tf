@@ -1,7 +1,7 @@
 # Copyright 2025-2026 OutcomeOps
 # SPDX-License-Identifier: Apache-2.0
 # ============================================================================
-# Database-drift SNS topic (chunk 07)
+# Database-drift SNS topic
 #
 # Per-environment topic that the database-sync Lambda publishes to when a
 # sync detects schemas or tables that were added or removed against the
@@ -68,7 +68,7 @@ output "database_drift_topic_arn" {
 }
 
 # ============================================================================
-# Secondary-region drift topic (chunk 08 HA parity)
+# Secondary-region drift topic
 #
 # Without this, database-sync in the secondary region has no drift topic
 # to publish to post-failover -- notifications silently stop. Mirrors the

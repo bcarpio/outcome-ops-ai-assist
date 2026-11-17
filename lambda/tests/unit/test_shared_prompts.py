@@ -208,7 +208,7 @@ class TestBuildRagSystemPrompt:
         assert "MAY" in prompt
         assert "mandatory" in prompt
 
-    # Grounding parity (chunk 04): the RAG prompt must now carry the same
+    # Grounding parity: the RAG prompt must now carry the same
     # grounding stack as chat, so server-side synthesis (ask-claude / query-kb)
     # is grounded to parity. These sentinels mirror the chat-prompt assertions.
     def test_includes_value_grounding_rules(self):
@@ -679,7 +679,7 @@ class TestCodeMapLiteralDiscipline:
 
 
 class TestReadSourceVerificationRules:
-    """plan-read-source-adjudicator chunk 03 -- the system prompt must
+    """plan-read-source-adjudicator -- the system prompt must
     tell the LLM to verify exact code values against source via the
     read_source MCP tool, not only when docs and code-map disagree."""
 

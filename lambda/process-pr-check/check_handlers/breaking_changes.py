@@ -445,7 +445,7 @@ def check_breaking_changes(
     Provider-aware: BREAKING_CHANGES is provider-agnostic — it works
     entirely off ``changed_files`` (already normalized in the CheckJob)
     and KB queries (already indexed for both GitHub and Azure DevOps
-    per the ADO Repos plan chunk 05a). The ADO-specific kwargs
+    per the ADO Repos plan ). The ADO-specific kwargs
     (``connection_id``, ``ado_org``, ``ado_project``, ``ado_repo``)
     are accepted for parity with sibling handlers but not used.
 

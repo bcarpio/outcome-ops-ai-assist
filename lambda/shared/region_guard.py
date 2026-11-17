@@ -3,8 +3,8 @@
 """Backend guard: reject mutating admin operations when the local
 region is passive.
 
-Used by workspace-management (chunk 9d) and the 9 integration handlers
-(chunk 9c) to refuse admin / state-changing operations from the
+Used by workspace-management and the 9 integration handlers
+ to refuse admin / state-changing operations from the
 secondary region while it's passive. Reads from shared.active_region.
 
 The guard records an audit row with action

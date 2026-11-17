@@ -1,7 +1,7 @@
 # Copyright 2025-2026 OutcomeOps
 # SPDX-License-Identifier: Apache-2.0
 # ============================================================================
-# Secondary-region writer Lambdas (HA chunk 9e)
+# Secondary-region writer Lambdas ()
 # ----------------------------------------------------------------------------
 # Mirror of the 5 ingest-pipeline Lambdas under aws.secondary:
 #   file-ingestion       (SQS-triggered by file_ingestion_secondary)
@@ -133,7 +133,7 @@ resource "aws_lambda_event_source_mapping" "file_ingestion_secondary" {
 
   batch_size = 10
 
-  # Chunk 02: partial-batch-failure. See lambda-file-ingestion.tf primary
+  # partial-batch-failure. See lambda-file-ingestion.tf primary
   # ESM for rationale (ingestion writes are idempotent; failed items must
   # redeliver + DLQ instead of silent 200/delete).
   function_response_types = ["ReportBatchItemFailures"]
@@ -390,13 +390,13 @@ resource "aws_lambda_event_source_mapping" "delete_worker_secondary" {
   function_name    = module.delete_worker_lambda_secondary[0].lambda_function_name
 
   batch_size                         = 10
-  maximum_batching_window_in_seconds = 5 # chunk 10 (HA parity): mirror primary
+  maximum_batching_window_in_seconds = 5 # (HA parity): mirror primary
 
   # Per-record partial-batch failures so a failed delete retries / DLQs
   # instead of being silently dropped (delete-bug 4b).
   function_response_types = ["ReportBatchItemFailures"]
 
-  # chunk 10 (HA parity): mirror primary maximum_concurrency = 5.
+  # (HA parity): mirror primary maximum_concurrency = 5.
   scaling_config {
     maximum_concurrency = 5
   }
@@ -438,7 +438,7 @@ module "process_batch_summary_lambda_secondary" {
       ENV             = var.environment
       APP_NAME        = var.app_name
       GITHUB_BASE_URL = var.github_base_url
-      # chunk 09 (HA cleanup): EVENT_BUS_NAME removed (dead env). See
+      # (HA cleanup): EVENT_BUS_NAME removed (dead env). See
       # primary lambda-knowledge-base.tf.
       ENABLE_BEDROCK_COOLDOWN            = tostring(var.enable_bedrock_cooldown)
       AUDIT_TABLE                        = module.audit_logs_table_secondary[0].dynamodb_table_id
@@ -472,7 +472,7 @@ module "process_batch_summary_lambda_secondary" {
       BATCH_SUMMARY_MERGE_DELAY_SECONDS = tostring(var.batch_summary_merge_delay_s)
       CODE_MAP_TARGET_SHARD_TOKENS      = tostring(var.code_map_target_shard_tokens)
       CODE_MAP_MAX_PROMPT_TOKENS        = tostring(var.code_map_max_prompt_tokens)
-      # chunk 09 (HA parity, chunk-08a mirror): fetch_file_content(provider=
+      # (HA parity, mirror): fetch_file_content(provider=
       # azure_devops) reads from the S3 mirror at workspaces/{ws}/
       # azure_devops/{slug}/{path} that azure-devops-sync wrote in this
       # region. Without KB_BUCKET + s3_kb_read below, ADO content fetch
@@ -497,7 +497,7 @@ module "process_batch_summary_lambda_secondary" {
         actions   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"]
         resources = local.sha_truth_table_arns_secondary
       }
-      # chunk 09 (HA parity, chunk-08a mirror): read the ADO S3 mirror
+      # (HA parity, mirror): read the ADO S3 mirror
       # so fetch_file_content(provider=azure_devops) resolves without a
       # live ADO API call. Scoped to workspaces/* per primary.
       s3_kb_read = {
@@ -550,12 +550,12 @@ module "process_batch_summary_lambda_secondary" {
       }
       s3_vectors_write = {
         effect = "Allow"
-        # chunk 09 (HA parity): mirror primary. DeleteVectors was missing
+        # (HA parity): mirror primary. DeleteVectors was missing
         # -- orphan-vector cleanup broken post-failover. Also widened
         # resources to include both the bucket ARN and bucket/* per
         # primary, because bucket-level actions need the naked bucket ARN.
         # GetVectors is FUNCTIONAL parity: the merge fan-in fetches shard
-        # summaries by key before unifying them (chunk 05 splitter).
+        # summaries by key before unifying them.
         actions = ["s3vectors:PutVectors", "s3vectors:DeleteVectors", "s3vectors:GetVectors"]
         resources = [
           "arn:aws:s3vectors:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:bucket/${var.environment}-${var.app_name}-vectors",
@@ -612,7 +612,7 @@ resource "aws_lambda_event_source_mapping" "code_maps_queue_to_lambda_secondary"
   enabled                 = true
   function_response_types = ["ReportBatchItemFailures"]
 
-  # chunk 10 (HA parity): mirror primary maximum_concurrency = 20 so a
+  # (HA parity): mirror primary maximum_concurrency = 20 so a
   # post-failover backlog doesn't drown the region with unlimited fan-out
   # (Bedrock throttling + DDB write-capacity blowout).
   scaling_config {
@@ -681,7 +681,7 @@ module "process_repo_summary_lambda_secondary" {
       CODE_MAP_TARGET_SHARD_TOKENS = tostring(var.code_map_target_shard_tokens)
       CODE_MAP_MAX_PROMPT_TOKENS   = tostring(var.code_map_max_prompt_tokens)
       FAILED_FILES_TABLE           = module.code_map_failed_files_table_secondary[0].dynamodb_table_id
-      # chunk 09 (HA cleanup): CODE_MAPS_QUEUE_URL and KB_BUCKET removed.
+      # (HA cleanup): CODE_MAPS_QUEUE_URL and KB_BUCKET removed.
       # Handler discovers both via SSM (/env/app/sqs/code-maps-queue-url and
       # /env/app/s3/knowledge-base-bucket) -- these envs had no consumer
       # and existed only on the secondary. Primary side never had them.
@@ -743,7 +743,7 @@ module "process_repo_summary_lambda_secondary" {
       }
       s3_vectors_write = {
         effect = "Allow"
-        # chunk 09 (HA parity): mirror primary. DeleteVectors was missing
+        # (HA parity): mirror primary. DeleteVectors was missing
         # -- orphan-vector cleanup broken post-failover. Also widened
         # resources to include the naked bucket ARN.
         actions = ["s3vectors:PutVectors", "s3vectors:DeleteVectors"]
@@ -803,7 +803,7 @@ resource "aws_lambda_event_source_mapping" "repo_summaries_queue_to_lambda_secon
   enabled                 = true
   function_response_types = ["ReportBatchItemFailures"]
 
-  # chunk 10 (HA parity): mirror primary maximum_concurrency = 20.
+  # (HA parity): mirror primary maximum_concurrency = 20.
   scaling_config {
     maximum_concurrency = 20
   }

@@ -84,7 +84,7 @@ def fetch_repo_file(
 
     Caller responsibilities:
     - ``provider`` MUST be set (no implicit default; the SQS message
-      shape includes a ``provider`` field per the chunk-05a contract).
+      shape includes a ``provider`` field per the contract).
     - Per-provider kwargs MUST be populated:
       - github: ``repo_project`` (owner/repo) + ``default_branch`` +
         ``github_token``
@@ -213,7 +213,7 @@ def _fetch_from_raw_github(
     file_path: str,
     github_token: str,
 ) -> str:
-    # fable-scale chunk 06: route through the shared backoff so a rate-limit
+    # route through the shared backoff so a rate-limit
     # 403 or 429 sleeps + retries instead of failing the sync and shipping
     # the file to DLQ.
     from shared import github_backoff
@@ -367,7 +367,7 @@ def _fetch_from_raw_github_at_sha(
     binary files (LICENSE_COMPLIANCE walks .lock/.jar/.zip in some
     ecosystems) round-trip losslessly.
     """
-    # fable-scale chunk 06: rate-limit-aware backoff for the PR-check
+    # rate-limit-aware backoff for the PR-check
     # SHA-specific read path too.
     from shared import github_backoff
     request = _github_raw_request(
@@ -410,8 +410,8 @@ def _fetch_from_ado_at_sha(
     - ``Accept: */*`` overrides the default ``application/json`` so the
       blob bytes come through unchanged.
 
-    ``version_type`` is ``"commit"`` by default (chunk 01 behavior).
-    Chunk 04 added ``"branch"`` for reads at the branch tip.
+    ``version_type`` is ``"commit"`` by default.
+    added ``"branch"`` for reads at the branch tip.
     """
     query = urlencode({
         "path": "/" + file_path.lstrip("/"),

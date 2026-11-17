@@ -115,7 +115,7 @@ def generate_jwt() -> str:
 
 
 def _mint_installation_token_raw(installation_id: str) -> str:
-    """Uncached JWT mint. fable-scale chunk 06 split for cache wrapper."""
+    """Uncached JWT mint. split for cache wrapper."""
     jwt_token = generate_jwt()
 
     url = f"{GITHUB_API_BASE}/app/installations/{installation_id}/access_tokens"
@@ -146,7 +146,7 @@ def get_installation_token(installation_id: str) -> Tuple[str, str]:
 
     Returns: (access_token, expires_at)
 
-    fable-scale chunk 06: results are cached in SSM Parameter Store for
+    results are cached in SSM Parameter Store for
     ~55 minutes so this Lambda's ~8 callers (list installations, list
     repos, check_run helpers, etc.) share one mint per hour per
     installation instead of one per call.

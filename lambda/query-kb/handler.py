@@ -73,7 +73,7 @@ s3vectors_client = boto3.client("s3vectors")
 # ADR-035: bedrock_client is embeddings-only here (Titan via
 # invoke_model at line ~114). LLM-completion synthesis is delegated to
 # the ask-claude Lambda (which routes through shared.model_client per
-# chunk 08). bedrock_agent_runtime_client is for Bedrock Knowledge
+# ). bedrock_agent_runtime_client is for Bedrock Knowledge
 # Bases -- separate API, separate concern, also out-of-scope per ADR-035.
 bedrock_client = boto3.client("bedrock-runtime")
 bedrock_agent_runtime_client = boto3.client("bedrock-agent-runtime")
@@ -172,7 +172,7 @@ def format_source(
 
     Args:
         metadata: Vector metadata containing type, repo, file_path,
-            and (chunk 05 of the workspace-scope plan) ``workspace_id``.
+            and ``workspace_id``.
         workspace_names: Optional map from workspace_id -> human-readable
             name. When present and the metadata carries a workspace_id
             resolvable through the map, the returned source string gets
@@ -248,7 +248,7 @@ def query_s3_vectors(
         repo_filter: Optional repo name to filter
         doc_types: Optional list of document types to filter
         workspace_ids: Optional list of workspace_ids to scope retrieval
-            to. Powers the per-check PR scope (chunk 04 of the
+            to. Powers the per-check PR scope (of the
             workspace-scope plan): standards checks pass repo+globals,
             README passes just the repo's workspace, dup passes every
             workspace. Empty list == no filter (backwards compat).
@@ -315,7 +315,7 @@ def query_s3_vectors(
         logger.error(f"[query-kb] Failed to query S3 Vectors: {e}")
         raise
 
-    # Resolve workspace names for citation polish (chunk 05). Only
+    # Resolve workspace names for citation polish. Only
     # for workspaces that show up in the result set -- one batch DDB
     # lookup, no per-doc round trip. Fail-soft: on any error, sources
     # render without the workspace suffix (pre-fix format).

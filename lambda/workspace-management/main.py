@@ -79,7 +79,7 @@ def _parse_response(result: dict) -> JSONResponse:
 
 
 # ============================================================================
-# HA Region Role (chunk 9a)
+# HA Region Role
 # ============================================================================
 
 
@@ -243,7 +243,7 @@ async def remove_member(workspace_id: str, member_email: str, request: Request):
 
 
 # ============================================================================
-# Azure AD group->workspace bindings + on-login sync (chunk 11a)
+# Azure AD group->workspace bindings + on-login sync
 # ============================================================================
 
 
@@ -832,7 +832,7 @@ async def analytics_workspace_route(workspace_id: str, request: Request):
 
 
 # ============================================================================
-# Audit Routes (chunk 05)
+# Audit Routes
 # ============================================================================
 
 

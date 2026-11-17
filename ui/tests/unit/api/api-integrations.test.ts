@@ -370,7 +370,7 @@ describe('updateGitHubRepo', () => {
   })
 
   it('sends default_branch when passed', async () => {
-    // The edit-branch modal (chunk 07) will call this with just
+    // The edit-branch modal will call this with just
     // default_branch to retarget an existing repo. Verify the field
     // rides in the PUT body.
     const repo = createGitHubRepo()
@@ -452,7 +452,7 @@ describe('triggerGitHubSync', () => {
 })
 
 // ============================================================================
-// Azure DevOps (chunk 08)
+// Azure DevOps
 // ============================================================================
 
 describe('getAzureDevOpsAuthUrl', () => {

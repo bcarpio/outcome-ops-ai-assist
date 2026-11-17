@@ -31,7 +31,7 @@ from typing import List, Optional
 import boto3
 from botocore.exceptions import ClientError
 
-# fable-scale chunk 04 — GSI2 partition sharding to lift the ~1000 WCU
+# — GSI2 partition sharding to lift the ~1000 WCU
 # physical ceiling on the previously-single-partition CAT#bedrock key.
 # Absolute import (not `from . import`) because some test loaders load this
 # module by file path with no package parent.
@@ -112,7 +112,7 @@ RERANK_PRICING = {
     "per_call": _price("BEDROCK_RERANK_PRICE_PER_1K", 2.00) / 1000.0,
 }
 
-# Comprehend Detect-PII (chunk 02 of plan/) prices per character scanned
+# Comprehend Detect-PII prices per character scanned
 # rather than per token or per call. Public price ~$0.0001 per 100 chars
 # = $1.00 per 1M chars. Synthetic model_id ("comprehend.detect-pii-entities")
 # is what ingest Lambdas pass to log_audit_entry so cost rolls into the
@@ -338,7 +338,7 @@ def log_audit_entry(
             "SK": sort_key,
             "GSI1PK": user_key,
             "GSI1SK": sort_key,
-            # GSI2: category-partitioned index. fable-scale chunk 04 shards
+            # GSI2: category-partitioned index. shards
             # this key by a hash of request_id so Bedrock's high write rate
             # doesn't hammer a single DDB partition (~1000 WCU physical
             # ceiling on the unsharded shape). Legacy rows written before

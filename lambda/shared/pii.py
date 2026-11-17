@@ -126,14 +126,14 @@ def read_workspace_mode(table, workspace_id: str) -> str:
 
     Returns ``"STRICT"`` for any workspace whose row lacks the
     attribute (defensible default - workspaces created before
-    plan/ chunk 03 shipped do, and the safe default matches the
+    plan/ shipped do, and the safe default matches the
     new-create behavior).
 
     Lives here, alongside ``redact()``, so ingest Lambdas don't have
     to import the workspace-management package. Coupling pii.py to
     the workspace-table schema is acceptable for v1; if a second
     feature needs the same lookup we'll factor out to
-    ``shared/workspaces.py`` (plan/ chunk 05 spec).
+    ``shared/workspaces.py`` (plan/ spec).
     """
     try:
         resp = table.get_item(
@@ -259,7 +259,7 @@ def redact(
     so the ingest pipeline doesn't break on a transient AWS hiccup.
 
     The cost of the call is ``char_count * COMPREHEND_PRICE_PER_CHAR``
-    where COMPREHEND_PRICE_PER_CHAR comes from MODEL_PRICING (chunk 02).
+    where COMPREHEND_PRICE_PER_CHAR comes from MODEL_PRICING.
     The caller is responsible for emitting the audit row that records
     char_count + summary; this helper does not write to DynamoDB.
 

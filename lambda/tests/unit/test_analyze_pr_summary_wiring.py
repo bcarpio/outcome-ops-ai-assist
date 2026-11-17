@@ -9,7 +9,7 @@ Covers the logic-bearing helpers added for the PR summary feature:
   ``truncated_files`` (ADR-032) rather than dropping a file silently.
 
 The full per-provider call sites (metadata build + upsert with
-COMMENT_ROLE_SUMMARY) are exercised in the chunk-03 live parity step.
+COMMENT_ROLE_SUMMARY) are exercised in the live parity step.
 
 Mocking (ADR-005): patch at the module attribute the helper looks up
 (``shared.source_fetch.fetch_file_at_sha`` / ``shared.pr_diff.compute_file_diff``),

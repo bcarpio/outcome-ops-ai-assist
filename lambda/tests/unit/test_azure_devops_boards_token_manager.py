@@ -45,7 +45,7 @@ def _load_module(mod_name, filename, directory):
     return module
 
 
-# Chunk 16: consolidated to lambda/shared/oauth/azure_devops_boards.py.
+# consolidated to lambda/shared/oauth/azure_devops_boards.py.
 # Import via the ordinary package path so all consumers share the same
 # module object.
 _LAMBDA_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
@@ -67,7 +67,7 @@ _VENDORED_COPY_DIRS = [
     ids=[d.rsplit("/", 1)[-1] for d in _VENDORED_COPY_DIRS],
 )
 def _vendored_copy(request):
-    # Chunk 16: only one copy now (the shared module). No-op fixture.
+    # only one copy now (the shared module). No-op fixture.
     yield
 
 # Shared Entra ID OAuth helper. Tests assert wrapper delegations pass
@@ -107,7 +107,7 @@ class TestAzdoBoardsConstants:
         assert token_module.AZDO_RESOURCE_ID in token_module.AZDO_BOARDS_SCOPES
 
     def test_pk_prefix_matches_license_layer_registration(self):
-        # chunk 01 registered AZDO_BOARDS_PROJECT# in the license
+        # registered AZDO_BOARDS_PROJECT# in the license
         # layer for source counting; this is the OAuth-token-row
         # counterpart. Both must use the AZDO_BOARDS_ family
         # convention so operators can grep for a Boards row and

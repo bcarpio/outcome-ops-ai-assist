@@ -73,7 +73,7 @@ CODE_MAPS_TABLE = "test-impact-code-maps"
 WORKSPACE_ID = "ws-impact"
 
 # 9-caller fixture mirrors the real license-layer v2.0.0 migration —
-# the chunk-07 Definition of Done's named example.
+# the Definition of Done's named example.
 REPORT_REPOS_SYMBOL = (
     "python:lambda.shared.audit::log_audit_entry"
 )
@@ -265,7 +265,7 @@ def _put_fact(
     language: str,
     gsi2: bool = True,
 ) -> None:
-    """Write a Fact row matching the chunk-02 writer's key layout."""
+    """Write a Fact row matching the writer's key layout."""
     item = {
         "PK": f"{workspace_id}#{repo}#{commit_sha}",
         "SK": f"{kind}#{source_symbol_id}#{target_symbol_id}#{file_path}#{line}",
@@ -766,7 +766,7 @@ class TestRunImpactAnalysis:
     def test_log_audit_entry_signature_change_lists_all_9_callers(
         self, tables
     ):
-        """**Chunk-07 Definition of Done.**
+        """**Definition of Done.**
 
         A synthetic modify-task that changes the signature of
         ``log_audit_entry`` produces a plan that lists all 9
@@ -802,7 +802,7 @@ class TestRunImpactAnalysis:
         impact = result.impacts[0]
         assert impact.target.symbol_id == REPORT_REPOS_SYMBOL
         assert impact.target.signature_change is True
-        # The chunk-07 DoD: all 9 caller updates appear.
+        # The DoD: all 9 caller updates appear.
         assert len(impact.callers) == 9
 
         # And the prompt section is the artifact the model would receive.
@@ -816,7 +816,7 @@ class TestRunImpactAnalysis:
 
     def test_graph_unavailable_does_not_raise(self, tables):
         """The reader raising SymbolGraphUnavailable must NOT propagate —
-        impact analysis is best-effort per chunk-07's failure-modes table."""
+        impact analysis is best-effort per failure-modes table."""
         from impact_analysis import run_impact_analysis  # type: ignore
         import shared.symbol_graph_reader as reader  # type: ignore
 

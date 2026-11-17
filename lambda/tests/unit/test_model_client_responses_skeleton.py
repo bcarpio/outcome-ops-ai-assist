@@ -1,6 +1,6 @@
 # Copyright 2025-2026 OutcomeOps
 # SPDX-License-Identifier: Apache-2.0
-"""Unit tests for shared._responses_backend (chunk 03 skeleton).
+"""Unit tests for shared._responses_backend.
 
 Mock the openai SDK; no real network. Mock boto3.ssm for the API key load.
 """
@@ -425,8 +425,8 @@ def test_invoke_stream_failed_event_raises():
 
 
 def test_invoke_stream_function_call_emits_toolusestart_and_arg_events():
-    # Chunk 03 SHOULD emit the function-call events that the SDK provides
-    # natively. Full multi-turn tool-result handling is chunk 06; the
+    # SHOULD emit the function-call events that the SDK provides
+    # natively. Full multi-turn tool-result handling is ; the
     # streaming events themselves are basic and should work now.
     events = [
         SimpleNamespace(type="response.output_item.added", item=SimpleNamespace(

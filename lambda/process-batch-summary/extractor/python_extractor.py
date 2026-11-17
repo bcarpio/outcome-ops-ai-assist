@@ -7,7 +7,7 @@ Emits:
 
   * ``defines`` for every top-level function and class, plus methods
     defined inside a top-level class. Locals/closures are intentionally
-    skipped (low-signal, high-noise per the chunk-01 scope).
+    skipped (low-signal, high-noise per the scope).
   * ``imports`` for every ``import x`` / ``from x import y`` /
     ``from x import *``. ``from x import y, z`` emits one fact per name.
   * ``calls`` for every call expression at statement level. ``self.foo()``

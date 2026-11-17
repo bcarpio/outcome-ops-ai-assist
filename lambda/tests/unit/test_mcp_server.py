@@ -1088,7 +1088,7 @@ class TestGetUserWorkspaceIds:
 
     @patch.object(mcp_module, "_get_dynamodb")
     def test_regular_user_paginates_membership_query(self, mock_get_ddb):
-        """Chunk 05: the WS_MEMBER# partition query must paginate. If a
+        """the WS_MEMBER# partition query must paginate. If a
         heavy-membership user has any workspaces on page 2 of the query,
         a single-shot .query() would silently truncate them out of the
         MCP tools' workspace list."""

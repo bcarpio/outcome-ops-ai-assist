@@ -201,7 +201,7 @@ def _emit_threshold_audit(
 
 
 def handler(event, context):
-    # HA chunk 9j: only the active region sends daily cost-threshold
+    # only the active region sends daily cost-threshold
     # SNS alerts. Without this gate, customers would receive doubled
     # daily emails because both regions' EventBridge crons fire and
     # both regions' analytics tables hold replicated cost data.

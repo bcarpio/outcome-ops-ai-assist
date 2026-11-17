@@ -1790,7 +1790,7 @@ class TestHandleDeleteOrphanCodeMaps:
 
 
 # ---------------------------------------------------------------------------
-# delete_symbol_graph (delete-bug chunk 01)
+# delete_symbol_graph (delete-bug )
 # ---------------------------------------------------------------------------
 
 

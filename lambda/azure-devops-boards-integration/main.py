@@ -14,7 +14,7 @@ matching changes in:
 - ``ui/server/index.js`` (Express proxy)
 - ``ui/src/lib/api.ts`` (TypeScript client)
 
-Steps 3 + 4 land in chunk 07.
+Steps 3 + 4 land in .
 """
 
 import json

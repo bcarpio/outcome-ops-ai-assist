@@ -46,7 +46,7 @@ logger = logging.getLogger()
 
 PK_PREFIX = "GITLAB_TOKEN#"
 # ``api`` (read/write) rather than ``read_api read_repository``: MR-analysis
-# (ADR-050 chunk 05) posts and updates MR notes with this token, and GitLab
+# (ADR-050) posts and updates MR notes with this token, and GitLab
 # has no finer-grained note-write scope -- ``api`` is the narrowest scope
 # that can write a comment. Ingest-only deploys still work (api supersedes
 # both read scopes). The group-owned OAuth application's registration must

@@ -89,7 +89,7 @@ def sample_connection():
         "host_hash": "deadbeefcafebabe",
         "display_label": "Test DW",
         "scope_config": {
-            # Chunk 06: 2-segment "catalog.schema" keys, sampling.include
+            # 2-segment "catalog.schema" keys, sampling.include
             # replaces sampling.enabled bool.
             "introspection": {"include": ["analytics.public"], "exclude": []},
             "sampling":      {"include": [], "exclude": []},
@@ -348,14 +348,14 @@ class TestRunSchemaIntrospection:
         self, stub_introspect_result, sample_connection, mock_credential
     ):
         """Schemas-only scope: every table the upstream introspector
-        returns is emitted, no per-table filter (chunk 06)."""
+        returns is emitted, no per-table filter."""
         import yaml
 
         connection = {
             **sample_connection,
             "engine": "mssql",
             "scope_config": {
-                # Schema-level include (2 segments) — chunk 06 shape.
+                # Schema-level include (2 segments) — shape.
                 "introspection": {"include": [
                     "analytics.healthcare",
                     "analytics.billing",
@@ -396,7 +396,7 @@ class TestRunSchemaIntrospection:
         self, sample_connection, mock_credential
     ):
         """Legacy 'catalog.schema.table' shape is rejected. Connections
-        were disconnected pre-chunk-06 deploy; no legacy records survive."""
+        were disconnected pre-deploy; no legacy records survive."""
         connection = {
             **sample_connection,
             "engine": "mssql",
@@ -759,11 +759,11 @@ class TestProcessSyncRequest:
         assert details["tables_count"] == 2
         assert details["columns_count"] == 12
         assert details["top_values_stripped"] is True
-        # New (chunk 06): sampling_schemas replaces sampling_enabled.
+        # New: sampling_schemas replaces sampling_enabled.
         # The fixture has scope_config.sampling.include = [] so sampling
         # is off and the list is empty.
         assert details["sampling_schemas"] == []
-        # New (chunk 06): schema-drift delta. The sample_connection
+        # New: schema-drift delta. The sample_connection
         # fixture has known_table_ids=[] so every current table is
         # "added" on this sync.
         assert sorted(details["tables_added"]) == [
@@ -925,7 +925,7 @@ class TestQueueOrphanCleanup:
 
 
 class TestLambdaHandlerDispatch:
-    """Chunk 02: SQS partial-batch-failure contract."""
+    """SQS partial-batch-failure contract."""
 
     def test_no_records_returns_400(self):
         result = handler_module.lambda_handler({}, None)
@@ -959,7 +959,7 @@ class TestLambdaHandlerDispatch:
 
 
 # ============================================================================
-# Chunk 07: _list_visible_schemas - unrestricted enumeration
+# _list_visible_schemas - unrestricted enumeration
 # ============================================================================
 
 
@@ -1103,12 +1103,12 @@ class TestListVisibleSchemas:
 
 
 # ============================================================================
-# Chunk 07: schema-drift delta computation + audit-row + DDB persist
+# schema-drift delta computation + audit-row + DDB persist
 # ============================================================================
 
 
 class TestSchemaDriftDelta:
-    """Chunk 07: diff current available_schemas against the connection
+    """diff current available_schemas against the connection
     record's prior snapshot to produce schemas_added / schemas_removed
     on the DATABASE_SYNCED audit row's extra_details."""
 
@@ -1305,7 +1305,7 @@ class TestSchemaDriftDelta:
 
 
 # ============================================================================
-# Chunk 07: SNS drift-notification publish
+# SNS drift-notification publish
 # ============================================================================
 
 
@@ -1375,7 +1375,7 @@ class TestDriftNotificationPublish:
         mock_table, sample_connection, mock_credential, monkeypatch,
     ):
         """Table-level drift inside already-selected schemas is handled
-        automatically by chunk 06's auto-discover / orphan-cleanup
+        automatically by auto-discover / orphan-cleanup
         paths. Admin has nothing to act on, so we deliberately do NOT
         email about it. The DATABASE_SYNCED audit row still carries
         tables_added / tables_removed for downstream consumers."""

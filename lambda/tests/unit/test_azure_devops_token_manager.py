@@ -1,12 +1,12 @@
 # Copyright 2025-2026 OutcomeOps
 # SPDX-License-Identifier: Apache-2.0
-"""Unit tests for the Azure DevOps token_manager wrapper (chunk 02).
+"""Unit tests for the Azure DevOps token_manager wrapper.
 
 The wrapper itself owns very little -- ADO constants, per-customer
 tenant_id plumbing, and the vssps user-profile helper. The bulk of
 logic (HTTP, KMS encrypt/decrypt, DDB writes, refresh-token
 rotation) lives in ``shared.entra_id_oauth`` and is exercised by
-the consolidated test suites from chunk 01a.
+the consolidated test suites from .
 
 These tests therefore focus on:
 1. Each delegation passes the right AZDO_SCOPES + AZDO_TOKEN# prefix
@@ -43,7 +43,7 @@ def _load_module(mod_name, filename, directory):
     return module
 
 
-# Chunk 16: consolidated to lambda/shared/oauth/azure_devops.py. Import
+# consolidated to lambda/shared/oauth/azure_devops.py. Import
 # via the ordinary package path so all consumers share the same module
 # object (double-loading via _load_module creates distinct class identities
 # and breaks except-clauses across handlers).
@@ -66,11 +66,11 @@ _VENDORED_COPIES = [
     ids=[d.rsplit("/", 1)[-1] for d, _ in _VENDORED_COPIES],
 )
 def _vendored_copy(request):
-    # Chunk 16: only one copy now (the shared module). No-op fixture --
+    # only one copy now (the shared module). No-op fixture --
     # the module-level import above already points at the canonical module.
     yield
 
-# Shared Entra ID OAuth helper (ADR-035 chunk 01a):
+# Shared Entra ID OAuth helper (ADR-035):
 # token_manager.py is a thin wrapper. Tests assert that wrapper
 # delegations pass the right ADO-specific params (scopes, tenant_id,
 # pk_prefix) into the shared module.
@@ -105,7 +105,7 @@ class TestAzdoConstants:
         assert token_module.AZDO_RESOURCE_ID in token_module.AZDO_SCOPES
 
     def test_pk_prefix_matches_license_layer_registration(self):
-        # chunk 01 registered AZDO_REPO# in the license layer; this
+        # registered AZDO_REPO# in the license layer; this
         # is the token-row counterpart and must use the AZDO_ family
         # convention.
         assert token_module._PK_PREFIX == "AZDO_TOKEN#"

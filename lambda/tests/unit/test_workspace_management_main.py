@@ -102,12 +102,12 @@ class TestHealthCheck:
 
 
 # ============================================================================
-# Region Role (HA chunk 9a)
+# Region Role ()
 # ============================================================================
 
 
 class TestRegionRoleRoute:
-    """HA chunk 9a: /api/region/role FastAPI wiring."""
+    """/api/region/role FastAPI wiring."""
 
     def test_region_role_forwards_to_handler(self):
         mock_handler = _setup_mock_handler(
@@ -224,7 +224,7 @@ class TestBuildEvent:
         """Audit IP capture: x-real-source-ip wins over x-forwarded-for.
         The Express proxy sets x-real-source-ip = browser IP. Without this
         header surfacing into requestContext.http.sourceIp, admin audit
-        rows record source_ip="" (the original chunk-07 deploy bug)."""
+        rows record source_ip="" (the original deploy bug)."""
         mock_handler = _setup_mock_handler(
             _mock_lambda_response(200, {"workspaces": []})
         )

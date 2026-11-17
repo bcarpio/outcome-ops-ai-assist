@@ -1,6 +1,6 @@
 # Copyright 2025-2026 OutcomeOps
 # SPDX-License-Identifier: Apache-2.0
-"""Unit tests for shared/audit_shard (fable-scale chunk 04).
+"""Unit tests for shared/audit_shard ().
 
 Covers:
 - Shard suffix determinism (same row_id -> same shard).

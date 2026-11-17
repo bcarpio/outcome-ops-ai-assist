@@ -633,7 +633,7 @@ class TestCreateConnection:
         assert item["display_label"] == "Analytics DW"
         # host_hash populated and stable-length
         assert len(item["host_hash"]) == 16
-        # Default scope_config (chunk 06): empty schema-level include
+        # Default scope_config: empty schema-level include
         # for both introspection and sampling, profiling on.
         assert item["scope_config"]["introspection"]["include"] == []
         assert item["scope_config"]["sampling"]["include"] == []
@@ -770,7 +770,7 @@ class TestUpdateScope:
     def test_update_scope_admin_queues_sync_with_schema_keys(
         self, mock_db_fn, mock_get_conn, mock_queue,
     ):
-        """Chunk 06 happy path: 2-segment 'catalog.schema' keys accepted."""
+        """happy path: 2-segment 'catalog.schema' keys accepted."""
         self._admin_mocks(mock_db_fn, mock_get_conn)
         body = {
             "scope_config": {
@@ -789,7 +789,7 @@ class TestUpdateScope:
     def test_update_scope_rejects_legacy_three_segment_include(
         self, mock_db_fn, mock_get_conn, mock_queue,
     ):
-        """Chunk 06 strict-validation: 'catalog.schema.table' returns 400.
+        """strict-validation: 'catalog.schema.table' returns 400.
         Connections were disconnected pre-deploy so no legacy survives."""
         self._admin_mocks(mock_db_fn, mock_get_conn)
         body = {

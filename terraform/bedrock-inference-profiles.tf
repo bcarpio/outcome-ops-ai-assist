@@ -22,9 +22,9 @@
 # SSM:    `/{env}/{app}/bedrock/{workload}/{model-slug}-profile-arn`
 #         per ADR-016 v1.2 section 6.
 #
-# This chunk creates the profiles ONLY. IAM grants (chunk 02), handler
-# wiring (chunk 03), and env-var delivery (chunk 04) come next. Cost
-# allocation tag activation is chunk 05 (manual Billing-console step).
+# This chunk creates the profiles ONLY. IAM grants, handler
+# wiring, and env-var delivery come next. Cost
+# allocation tag activation is (manual Billing-console step).
 
 locals {
   # ADR-016 v1.2 -- fixed workload vocabulary. Treat as a contract:
@@ -137,7 +137,7 @@ resource "aws_ssm_parameter" "bedrock_profile_arn" {
 
 
 # ============================================================================
-# Chunk 04 -- per-workload env-var maps for Lambda merge blocks
+# -- per-workload env-var maps for Lambda merge blocks
 # ============================================================================
 #
 # shared/model_client.resolve_profile_arn(workload, tier) reads env vars

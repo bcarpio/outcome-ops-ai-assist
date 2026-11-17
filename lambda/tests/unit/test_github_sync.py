@@ -1092,7 +1092,7 @@ class TestProcessStandardsRepo:
         # All standards files get doc_type="adr"
         for c in mock_upload.call_args_list:
             assert c[1]["doc_type"] == "adr"
-        # plan-git-truth chunk 02 added diagnostic kwargs; assert by
+        # plan-git-truth added diagnostic kwargs; assert by
         # positional shape + the legacy commit_sha kwarg, allow the
         # extra diagnostic kwargs.
         mock_update_status.assert_called_once()
@@ -1263,7 +1263,7 @@ class TestProcessApplicationRepo:
         # All tree items are passed to queue_repo_for_code_maps
         assert result["files_queued"] == 3
         mock_queue_code_maps.assert_called_once()
-        # plan-git-truth chunk 02 added diagnostic kwargs.
+        # plan-git-truth added diagnostic kwargs.
         mock_update_status.assert_called_once()
         args, kwargs = mock_update_status.call_args
         assert args == ("ws_test", "acme/my-repo", "success")
@@ -1355,7 +1355,7 @@ class TestProcessApplicationRepo:
 
         assert result["status"] == "error"
         assert "Failed to queue" in result["error"]
-        # plan-git-truth chunk 02 added diagnostic kwargs
+        # plan-git-truth added diagnostic kwargs
         # (last_failed_sha + last_failure_reason).
         mock_update_status.assert_called_once()
         args, kwargs = mock_update_status.call_args
@@ -1414,9 +1414,9 @@ class TestProcessApplicationRepo:
 
 class TestResolveSyncBranch:
     """``resolve_sync_branch`` reads the customer's stored branch from
-    the GITHUB_REPO# row first (honors the chunk-03 override, avoids a
+    the GITHUB_REPO# row first (honors the override, avoids a
     live GitHub call), lazy-backfilling on rows added before
-    chunk 01 shipped."""
+    shipped."""
 
     @patch.object(handler_module, "get_default_branch")
     @patch.object(handler_module, "_backfill_default_branch")
@@ -1425,7 +1425,7 @@ class TestResolveSyncBranch:
     ):
         # Row has the field -> skip the API call, skip the backfill,
         # return the stored value. This is the happy-path for every
-        # repo added or synced since chunk 01.
+        # repo added or synced since .
         repo_row = {
             "repo_name": "acme/my-repo",
             "default_branch": "develop",  # customer picked non-default
@@ -1442,7 +1442,7 @@ class TestResolveSyncBranch:
     def test_backfills_when_row_lacks_the_field(
         self, mock_backfill, mock_live_call,
     ):
-        # Legacy row (added before chunk 01) has no default_branch.
+        # Legacy row (added before ) has no default_branch.
         # Resolve via live API + write back so the next sync skips
         # the live call.
         mock_live_call.return_value = "master"
@@ -1759,7 +1759,7 @@ class TestLambdaHandler:
 
         result = lambda_handler(event, None)
 
-        # Chunk 02: handler now returns SQS partial-batch-failure envelope.
+        # handler now returns SQS partial-batch-failure envelope.
         assert result == {"batchItemFailures": []}
 
     @patch.object(handler_module, "process_sync_request")
@@ -1881,7 +1881,7 @@ class TestLambdaHandler:
 
     @patch.object(handler_module, "process_sync_request")
     def test_mixed_success_and_failure(self, mock_process):
-        """Chunk 02: only failed records land in batchItemFailures; success
+        """only failed records land in batchItemFailures; success
         + no_changes are ack'd. Reference-implementation test for the
         partial-batch-failure contract."""
         mock_process.side_effect = [

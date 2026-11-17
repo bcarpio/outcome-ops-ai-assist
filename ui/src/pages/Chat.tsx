@@ -68,7 +68,7 @@ export default function Chat() {
 
   // State
   const [conversations, setConversations] = useState<Conversation[]>([])
-  // Chunk 15: error states so chat Lambda failures render visibly
+  // error states so chat Lambda failures render visibly
   // instead of silently returning empty data.
   const [conversationsError, setConversationsError] = useState<string | null>(null)
   const [loadConversationError, setLoadConversationError] = useState<string | null>(null)
@@ -265,7 +265,7 @@ export default function Chat() {
         .catch(err => {
           console.error('Failed to load conversation:', err)
           setMessages([])
-          // Chunk 15: chat Lambda failures used to render as an empty
+          // chat Lambda failures used to render as an empty
           // conversation with no error message. Surface a real error
           // now so the user knows to reload or contact support.
           setLoadConversationError(
@@ -287,7 +287,7 @@ export default function Chat() {
       setHasMoreConversations(result.has_more)
       setConversationsError(null)
     } catch (err) {
-      // Chunk 15: chat Lambda failures used to render as "you have no
+      // chat Lambda failures used to render as "you have no
       // conversations." Surface a real error instead so the user can
       // see something is wrong with the platform rather than assuming
       // their history was lost.

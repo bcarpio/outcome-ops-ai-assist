@@ -188,7 +188,7 @@ class TestLogAdminAction:
         # GSI2: category-partitioned index for org-wide audit-dashboard
         # queries. Without this, /audit/events would have to Scan + Filter
         # past every bedrock row to find admin matches.
-        # fable-scale chunk 04: sharded shape CAT#admin#NN (writer routes
+        # sharded shape CAT#admin#NN (writer routes
         # through audit_shard.gsi2pk_for_category).
         assert item["GSI2PK"].startswith("CAT#admin")
         assert item["GSI2SK"] == item["SK"]
@@ -280,7 +280,7 @@ class TestLogAdminAction:
         assert item["category"] == "auth"
         # GSI2 partition follows the category, so a future auth dashboard
         # can Query GSI2 with PK="CAT#auth" the same way the admin one does.
-        # fable-scale chunk 04: sharded shape CAT#auth#NN.
+        # sharded shape CAT#auth#NN.
         assert item["GSI2PK"].startswith("CAT#auth")
 
 
@@ -302,7 +302,7 @@ class TestActionConstants:
         # 1 from OneNote + 4 from database integration
         # (DATABASE_SYNCED, DB_CONNECTION_ESTABLISHED,
         # DB_CREDENTIAL_USED, DB_CONNECTION_DELETED) + 1 from
-        # CHAT_ROUTING_DECISION + 1 from HA chunk 9c
+        # CHAT_ROUTING_DECISION + 1 from 
         # (ADMIN_MUTATION_BLOCKED_PASSIVE) = 50.
         assert len(ADMIN_ACTIONS) == 50
 

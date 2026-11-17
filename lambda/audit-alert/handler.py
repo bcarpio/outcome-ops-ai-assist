@@ -27,7 +27,7 @@ def handler(event, context):
     The event source mapping filter ensures only INSERT events with
     status="refusal" reach this handler.
     """
-    # HA chunk 9j: only the active region sends SNS alerts. Both
+    # only the active region sends SNS alerts. Both
     # regions' DDB streams fire on replicated audit-log writes;
     # without this gate, customers would see DOUBLED refusal-alert
     # emails (one per region) per refusal.

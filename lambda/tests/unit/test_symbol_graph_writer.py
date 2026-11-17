@@ -556,7 +556,7 @@ def test_idempotent_rewrite_same_sha_no_duplicates(tables):
 
 
 def test_write_facts_dedupes_identical_facts_within_one_batch(tables):
-    """The chunk-01 extractor can emit two Facts with identical
+    """The extractor can emit two Facts with identical
     (kind, source, target, file_path, line) tuples for a single
     file (Tree-sitter walker visiting the same call twice under
     nested-scope traversal). Identical tuples produce identical SKs.
@@ -1141,7 +1141,7 @@ def test_first_write_no_previous_pointer(tables):
 
 
 # ---------------------------------------------------------------------------
-# Signature persistence (plan-signature-extraction chunk 01).
+# Signature persistence (plan-signature-extraction ).
 # ---------------------------------------------------------------------------
 
 

@@ -1872,7 +1872,7 @@ class TestLambdaHandlerConfluenceJiraRouting:
     def test_partial_batch_failure_only_failed_record_retried(
         self, mock_jira, mock_confluence
     ):
-        """Chunk 02 contract: mid-batch failure -> only that itemIdentifier
+        """contract: mid-batch failure -> only that itemIdentifier
         lands in batchItemFailures. Previously the whole batch returned
         200 and every message was silently deleted, causing permanent KB gaps."""
         mock_confluence.return_value = "workspaces/ws_test/confluence/page.html"

@@ -1,7 +1,7 @@
 # Copyright 2025-2026 OutcomeOps
 # SPDX-License-Identifier: Apache-2.0
 # ============================================================================
-# DynamoDB Table for Per-File Failure Log (plan-git-truth chunk 01)
+# DynamoDB Table for Per-File Failure Log (plan-git-truth )
 #
 # When a consumer hits a permanent per-unit failure (after exhausting
 # in-message retries), it writes a row here, increments failed_count on

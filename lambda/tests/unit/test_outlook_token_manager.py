@@ -47,7 +47,7 @@ def _load_token_module():
 
 token_module = _load_token_module()
 
-# Shared Entra ID OAuth helper (ADR-035 chunk 01a):
+# Shared Entra ID OAuth helper (ADR-035):
 import shared.entra_id_oauth as shared_oauth  # noqa: E402
 
 # Convenience aliases
@@ -359,7 +359,7 @@ class TestRefreshAccessToken:
 
         assert result == "new_access_token"
         mock_save.assert_called_once()
-        # After the chunk-01a refactor, save_tokens is invoked with kwargs
+        # After the refactor, save_tokens is invoked with kwargs
         # because the shared module uses keyword arguments to keep the
         # call-site self-documenting.
         call_kwargs = mock_save.call_args.kwargs

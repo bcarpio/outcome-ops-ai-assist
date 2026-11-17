@@ -115,7 +115,7 @@ class TestSplitterOutputFlowsIntoConsumer:
         message body must have the fields the consumer's
         process_batch_record reads: message_type, batch_type,
         group_name, file_paths, storage_key, parent_storage_key,
-        shard_index, shard_count. Consumer's chunk 02 defaults kick in
+        shard_index, shard_count. Consumer's defaults kick in
         for any absent field."""
         code_unit = self._oversized_code_unit()
         rsh.send_code_units_to_sqs(
@@ -209,7 +209,7 @@ class TestSplitterOutputFlowsIntoConsumer:
         self, mock_sqs,
     ):
         """count_expected_shard_messages must return the same number as
-        send_code_units_to_sqs actually emits. Chunk 03's follow-up
+        send_code_units_to_sqs actually emits. follow-up
         fixed a bug where these two diverged for sharded units, causing
         try_advance_sha to misfire."""
         code_units = [
@@ -232,6 +232,6 @@ class TestSplitterOutputFlowsIntoConsumer:
         actual = mock_sqs.send_message.call_count
         assert predicted == actual, (
             f"Ledger accounting drift: expected_count={predicted} but "
-            f"splitter emitted {actual} messages. Chunk 03's follow-up "
+            f"splitter emitted {actual} messages. follow-up "
             f"exists to keep these in sync."
         )

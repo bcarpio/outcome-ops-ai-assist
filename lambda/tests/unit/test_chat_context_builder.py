@@ -322,7 +322,7 @@ def test_grounding_instruction_includes_empty_set_clause():
 
 
 class TestAuditCoverageChecklist:
-    """Chunk 05 / ADR-026 — audit-shape detection + stable coverage table."""
+    """/ ADR-026 — audit-shape detection + stable coverage table."""
 
     @pytest.mark.parametrize(
         "question",

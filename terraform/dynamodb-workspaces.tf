@@ -35,7 +35,7 @@ module "workspaces_table" {
       name = "GSI1SK"
       type = "S"
     },
-    # fable-scale chunk 03: sparse GSI index attribute. Populated only on
+    # sparse GSI index attribute. Populated only on
     # METADATA rows where is_global=true (value "1"). METADATA rows without
     # this attribute don't appear in the GSI — that's the sparse-index
     # property. Enterprise-scale wins: reading "which workspaces are global"
@@ -56,7 +56,7 @@ module "workspaces_table" {
       range_key       = "GSI1SK"
       projection_type = "ALL"
     },
-    # fable-scale chunk 03: sparse index for is_global lookup.
+    # sparse index for is_global lookup.
     # Query with is_global_flag = "1" returns every global-workspace METADATA
     # row. Regular workspaces never write this attribute so they never appear
     # in the index — no hot-partition concern until we cross low-hundreds of
@@ -143,7 +143,7 @@ output "initial_org_admin_email" {
 # Secondary-region copy (HA mode only).
 # Identical schema, same name, secondary KMS, secondary AWS provider.
 # Initial-org-admin bootstrap item is NOT replicated here — the dual-write
-# helper (chunk 04) will copy the row over via EventBridge on first
+# helper will copy the row over via EventBridge on first
 # write, so we don't risk diverging the initial bootstrap state.
 # ============================================================================
 
@@ -180,7 +180,7 @@ module "workspaces_table_secondary" {
       name = "GSI1SK"
       type = "S"
     },
-    # fable-scale chunk 03 (HA parity): sparse is_global GSI attribute.
+    # (HA parity): sparse is_global GSI attribute.
     {
       name = "is_global_flag"
       type = "S"
@@ -194,7 +194,7 @@ module "workspaces_table_secondary" {
       range_key       = "GSI1SK"
       projection_type = "ALL"
     },
-    # fable-scale chunk 03 (HA parity).
+    # (HA parity).
     {
       name            = "GSI_is_global"
       hash_key        = "is_global_flag"

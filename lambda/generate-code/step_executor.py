@@ -1269,7 +1269,7 @@ def publish_code_generation_completed_event(
 
     # Emit ACTION_CODE_GENERATED audit row — the parent event for the
     # per-step Bedrock rows that bedrock_client wrote during the
-    # generation cycle. plan/audit-completeness chunk 07.
+    # generation cycle. plan/audit-completeness .
     _emit_code_generated_audit(
         plan=plan,
         step_message=step_message,

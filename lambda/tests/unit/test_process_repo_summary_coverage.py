@@ -227,7 +227,7 @@ class TestGenerateEmbedding:
 class TestStoreCodeMapEmbedding:
     """Test code map embedding storage.
 
-    fable-scale chunk 07: store_code_map_embedding now routes writes
+    store_code_map_embedding now routes writes
     through shared.dual_write.s3vectors_put_vectors for HA replication +
     500-vector chunking. Tests inject the mock client into dual_write via
     the same fixture pattern used by process_documents tests.
@@ -399,11 +399,11 @@ class TestSendCodeUnitsToSqs:
     @patch.object(rsh, 'sqs_client')
     @patch.object(rsh, 'CODE_MAPS_QUEUE_URL', 'https://sqs.example.com/queue')
     def test_chunk_03_shards_oversized_unit_and_sends_merge(self, mock_sqs):
-        """Chunk 03: a code unit whose file bytes exceed
+        """a code unit whose file bytes exceed
         TARGET_SHARD_TOKENS gets split. Each shard message uses a
         shard-suffixed storage_key + group_name so the per-shard
         summaries don't collide on the same vector key. One companion
-        merge message follows (chunk 02 stub drops it until chunk 05
+        merge message follows (stub drops it until 
         fills the fan-in body)."""
         # 15 files x 40k bytes ~= 200k tokens > TARGET_SHARD_TOKENS (120k)
         big_files = [(f"lambda/tests/unit/test_x{i}.py", 40_000) for i in range(15)]
@@ -439,7 +439,7 @@ class TestSendCodeUnitsToSqs:
         packed = [p for b in shard_bodies for p in b["file_paths"]]
         assert sorted(packed) == sorted(p for p, _ in big_files)
         # Merge message uses parent keys (that's where the merged
-        # summary will land in chunk 05)
+        # summary will land in )
         merge = merge_bodies[0]
         assert merge["storage_key"] == "summary#tests"
         assert merge["group_name"] == "tests"
@@ -503,9 +503,9 @@ class TestSendCodeUnitsToSqs:
     @patch.object(rsh, 'sqs_client')
     @patch.object(rsh, 'CODE_MAPS_QUEUE_URL', 'https://sqs.example.com/queue')
     def test_message_carries_chunk_02_shard_schema(self, mock_sqs):
-        """Chunk 02: every message carries message_type + shard_index +
+        """every message carries message_type + shard_index +
         shard_count + parent_storage_key. Today all messages are
-        single-shard (chunk 03 lands the actual splitter)."""
+        single-shard."""
         code_units = [
             {"batch_type": "handler", "group_name": "h1",
              "file_paths": ["h.py"], "storage_key": "the-key"}
@@ -521,13 +521,13 @@ class TestSendCodeUnitsToSqs:
     @patch.object(rsh, 'sqs_client')
     @patch.object(rsh, 'CODE_MAPS_QUEUE_URL', 'https://sqs.example.com/queue')
     def test_per_unit_client_error_does_not_abort_batch(self, mock_sqs):
-        """plan-git-truth chunk 02b: ClientError on a single code-unit
+        """plan-git-truth ClientError on a single code-unit
         dispatch no longer re-raises. The function returns the count
         of successful publishes; failed units are recorded out-of-band
         via mark_unit_failed when ledger context is available.
 
         Replaces the previous test_raises_on_client_error which
-        asserted the pre-chunk-02b behavior (re-raise → DLQ the
+        asserted the pre-behavior (re-raise → DLQ the
         whole record). The new contract is "record the failure, keep
         going" so the rest of the batch survives.
         """

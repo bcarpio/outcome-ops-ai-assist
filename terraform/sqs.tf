@@ -335,7 +335,7 @@ output "repo_summaries_dlq_arn" {
 # when var.secondary_region is set. Identical names so operator commands
 # `aws sqs get-queue-url --queue-name ${env}-${app}-code-maps-queue
 # --region us-east-1` work the same as primary. Empty queues cost
-# nothing; dual-write traffic begins in chunk 06.
+# nothing; dual-write traffic begins in .
 # ============================================================================
 
 # --- code-maps (standard) ---

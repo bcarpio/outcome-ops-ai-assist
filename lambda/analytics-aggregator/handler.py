@@ -227,7 +227,7 @@ def aggregate_item(
 # Action vocabulary lives in shared/audit_writer.py. Mirror it here as a
 # sentinel so the aggregator can warn on unknown values without taking a
 # hard dependency on the shared module from a streams consumer that may run
-# without sys.path configured for it. Keep in sync with chunk 02.
+# without sys.path configured for it. Keep in sync with .
 _KNOWN_ADMIN_ACTIONS = frozenset(
     {
         "WORKSPACE_CREATED",
@@ -454,7 +454,7 @@ def _process_record(record: Dict[str, Any]) -> None:
 def handler(event, context):
     """Process DynamoDB Stream records and update aggregate rollups.
 
-    Chunk 10: return batchItemFailures so a poison record is retried
+    return batchItemFailures so a poison record is retried
     (up to the ESM's maximum_retry_attempts) instead of silently
     dropped on 200. Analytics roll-ups are UpdateItem ADDs on
     idempotent-per-record keys so replay is safe.

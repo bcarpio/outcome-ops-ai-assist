@@ -74,7 +74,7 @@ def _iter_servicenow_connections() -> List[Dict[str, Any]]:
     Scan-then-Filter pattern is safe for this workload because the workspaces
     table has a bounded number of ServiceNow connections in practice --
     scale of tens-per-customer, not thousands. Pagination via
-    ``LastEvaluatedKey`` protects the 1MB page boundary (chunk 05 pattern).
+    ``LastEvaluatedKey`` protects the 1MB page boundary.
     """
     table = _get_dynamodb().Table(WORKSPACES_TABLE)
     connections: List[Dict[str, Any]] = []

@@ -17,7 +17,7 @@ SQS-triggered. For each message ``{workspace_id, connection_id, cursor}``:
    for any ``sys_id`` not seen in this walk.
 5. Advance ``config.cursor`` on the connection row.
 
-Failures land in ``batchItemFailures`` for redelivery (chunk 02 remediation
+Failures land in ``batchItemFailures`` for redelivery (remediation
 contract). Ingestion writes are idempotent (S3 puts on stable keys, DDB
 upserts).
 """
@@ -39,7 +39,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared.oauth import servicenow as servicenow_oauth  # noqa: E402
 from shared.region_guard import RegionPassiveError, guard_active  # noqa: E402
 
-# REST client lives under shared/ per chunk 16 pattern -- one canonical copy
+# REST client lives under shared/ per pattern -- one canonical copy
 # both the integration and sync Lambdas import.
 from shared.servicenow_api import (  # noqa: E402
     ARTICLE_LIST_LIMIT,
@@ -196,7 +196,7 @@ def _enqueue_ingestion(payload: Dict[str, Any], *, sync_id: str) -> None:
 def _list_existing_sys_ids(workspace_id: str, connection_id: str) -> Set[str]:
     """List sys_ids already in S3 under this connection's prefix.
 
-    Key shape (chunk 05):
+    Key shape:
       workspaces/{ws}/servicenow/{conn}/{sys_id}.html                    (article)
       workspaces/{ws}/servicenow/{conn}/{article_sys_id}/attachments/... (attachment)
     We only care about the top-level article sys_ids for orphan diff --
@@ -388,7 +388,7 @@ def process_sync_message(message: Dict[str, Any]) -> Dict[str, Any]:
                 break
             offset += ARTICLE_LIST_LIMIT
     except ServiceNowRateLimitedError as e:
-        # Chunk 08 alarm hook.
+        # alarm hook.
         logger.warning(f"ServiceNow rate limited during sync: {e}")
         failures.append(f"rate_limited:offset:{offset}")
         enumeration_complete = False
@@ -438,7 +438,7 @@ def process_sync_message(message: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
-    """SQS partial-batch-failure entry (chunk 02 remediation contract)."""
+    """SQS partial-batch-failure entry."""
     records = event.get("Records", []) or []
     logger.info(f"ServiceNow sync invoked with {len(records)} record(s)")
 

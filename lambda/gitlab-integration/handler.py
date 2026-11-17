@@ -92,7 +92,7 @@ OAUTH_KMS_KEY_ARN = os.environ.get("OAUTH_KMS_KEY_ARN", "")
 GITLAB_CLIENT_ID = os.environ.get("GITLAB_CLIENT_ID", "")
 GITLAB_REDIRECT_URI = os.environ.get("GITLAB_REDIRECT_URI", "")
 
-# Sync + delete queues (chunk-03). The sync queue receives the initial
+# Sync + delete queues. The sync queue receives the initial
 # sync job on add-repos; the shared delete queue receives S3-mirror
 # prefix cleanup on delete-repo / disconnect.
 GITLAB_SYNC_QUEUE = os.environ.get("GITLAB_SYNC_QUEUE")

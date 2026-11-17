@@ -212,7 +212,7 @@ def test_s3vectors_put_vectors_local_write_and_emit(_ha_module):
 
 
 def test_s3vectors_put_vectors_chunks_at_500_limit(_ha_module):
-    """fable-scale chunk 07: PutVectors has a hard 500-vector-per-call
+    """PutVectors has a hard 500-vector-per-call
     limit. s3vectors_put_vectors chunks internally so ingestion handlers
     don't need to know the limit."""
     s3v = MagicMock()
