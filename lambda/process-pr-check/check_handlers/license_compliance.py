@@ -235,7 +235,8 @@ def analyze_code_similarity_with_claude(
     code: str,
     file_path: str,
     pattern_match: Dict[str, Any],
-    usage_tracker: UsageTracker
+    usage_tracker: UsageTracker,
+    workspace_id: str = ""
 ) -> Dict[str, Any]:
     """
     Phase 2.2: Claude semantic analysis for code similarity.
@@ -302,7 +303,8 @@ IMPORTANT: Only flag GPL/AGPL/SSPL projects with HIGH or MEDIUM confidence."""
             prompt=prompt,
             model_id=SONNET_MODEL_ID,
             max_tokens=2000,
-            temperature=0.1
+            temperature=0.1,
+            workspace_id=workspace_id
         )
         usage_tracker.add(usage)
 
@@ -651,7 +653,8 @@ def analyze_with_claude(
     has_copyright: bool,
     is_new: bool,
     license_policy: str,
-    usage_tracker: UsageTracker
+    usage_tracker: UsageTracker,
+    workspace_id: str = ""
 ) -> Dict[str, Any]:
     """
     Use Claude to analyze license findings against policy.
@@ -711,7 +714,8 @@ Examples:
             prompt=prompt,
             model_id=SONNET_MODEL_ID,
             max_tokens=1000,
-            temperature=0.1
+            temperature=0.1,
+            workspace_id=workspace_id
         )
         usage_tracker.add(usage)
 
@@ -760,7 +764,8 @@ def analyze_file_comprehensive(
     file_diff: str,
     license_policy: str,
     is_ai_generated: bool,
-    usage_tracker: UsageTracker
+    usage_tracker: UsageTracker,
+    workspace_id: str = ""
 ) -> Dict[str, Any]:
     """
     Comprehensive file analysis: Phase 1 (license headers) + Phase 2 (code similarity).
@@ -778,7 +783,8 @@ def analyze_file_comprehensive(
         has_copyright,
         is_new,
         license_policy,
-        usage_tracker
+        usage_tracker,
+        workspace_id=workspace_id
     )
 
     # Phase 2: Code similarity detection (only for AI-generated code)
@@ -796,7 +802,7 @@ def analyze_file_comprehensive(
         if pattern_match:
             # Phase 2.2: Claude semantic analysis
             logger.info(f"Pattern match for {file_path}, running semantic analysis...")
-            similarity_analysis = analyze_code_similarity_with_claude(code, file_path, pattern_match, usage_tracker)
+            similarity_analysis = analyze_code_similarity_with_claude(code, file_path, pattern_match, usage_tracker, workspace_id=workspace_id)
 
             # Check for HIGH/MEDIUM confidence matches to GPL/AGPL/SSPL
             gpl_matches = [
@@ -916,6 +922,19 @@ def check_license_compliance(
             f"{scope_exc}. Falling back to workspace-blind retrieval."
         )
 
+    # Attribute PR-analyzer Bedrock spend to the PR repo's OWNING workspace
+    # (the first GITHUB_REPO owner), NOT the retrieval scope above (which for
+    # standards checks spans the repo's workspaces + all is_global). Fail-soft:
+    # "" -> WS#SYSTEM (unattributed) rather than breaking the check.
+    owning_ws = ""
+    try:
+        from shared.pr_check_scope import find_workspaces_for_repo
+        owning_ws = (sorted(find_workspaces_for_repo(repository)) or [""])[0]
+    except Exception as ws_exc:
+        logger.warning(
+            f"Could not resolve owning workspace for spend attribution: {ws_exc}"
+        )
+
     # Query knowledge base for license policy
     logger.info("Querying KB for license compliance policy (ADR-008)...")
     kb_response = query_knowledge_base(
@@ -989,7 +1008,8 @@ def check_license_compliance(
                 file_diff,
                 license_policy,
                 is_ai_generated,
-                usage_tracker
+                usage_tracker,
+                workspace_id=owning_ws
             )
 
             if analysis.get("phase2_triggered"):

@@ -3278,3 +3278,44 @@ def test_ado_upsert_summary_delete_failure_still_posts(monkeypatch):
 
     posted.assert_called_once()                        # fresh post regardless
     dw.ddb_put_item.assert_called_once()
+
+
+class TestPrCheckWorkspaceAttribution:
+    """PR-analyzer Bedrock spend must attribute to the PR repo's owning
+    workspace in the audit row, not WS#SYSTEM. call_bedrock is the shared
+    seam every check routes through, so the forwarding is verified there."""
+
+    def test_call_bedrock_forwards_workspace_id_to_audit(self):
+        from types import SimpleNamespace
+
+        resp = SimpleNamespace(
+            text="ok",
+            stop_reason=SimpleNamespace(value="end_turn"),
+            usage=SimpleNamespace(input_tokens=50, output_tokens=20),
+        )
+        with patch.object(
+            bedrock_module, "invoke_model", return_value=resp
+        ), patch.object(
+            bedrock_module, "log_audit_entry"
+        ) as mock_audit:
+            bedrock_module.call_bedrock("prompt", workspace_id="ws_eng")
+
+        mock_audit.assert_called_once()
+        assert mock_audit.call_args.kwargs["workspace_id"] == "ws_eng"
+
+    def test_call_bedrock_defaults_empty_workspace_id(self):
+        from types import SimpleNamespace
+
+        resp = SimpleNamespace(
+            text="ok",
+            stop_reason=SimpleNamespace(value="end_turn"),
+            usage=SimpleNamespace(input_tokens=5, output_tokens=2),
+        )
+        with patch.object(
+            bedrock_module, "invoke_model", return_value=resp
+        ), patch.object(
+            bedrock_module, "log_audit_entry"
+        ) as mock_audit:
+            bedrock_module.call_bedrock("prompt")
+
+        assert mock_audit.call_args.kwargs["workspace_id"] == ""

@@ -382,7 +382,8 @@ def analyze_code_with_claude(
     file_diff: str,
     standards: str,
     file_type: Literal["lambda", "terraform"],
-    usage_tracker: UsageTracker
+    usage_tracker: UsageTracker,
+    workspace_id: str = ""
 ) -> Dict[str, Any]:
     """
     Ask Claude to analyze code against ADR standards.
@@ -460,7 +461,8 @@ Examples:
             # MAX_TOKENS), which dropped real violations. Give ample headroom.
             model_id=SONNET_MODEL_ID,
             max_tokens=4000,
-            temperature=0.1
+            temperature=0.1,
+            workspace_id=workspace_id
         )
         usage_tracker.add(usage)
 
@@ -515,6 +517,7 @@ def analyze_lambda_handlers(
     usage_tracker: UsageTracker,
     *,
     workspace_ids: Optional[List[str]] = None,
+    workspace_id: str = "",
     provider: str = "github",
     ado_org: Optional[str] = None,
     ado_project: Optional[str] = None,
@@ -578,7 +581,8 @@ def analyze_lambda_handlers(
 
             # Analyze with Claude
             analysis = analyze_code_with_claude(
-                file, file_diff, kb_result["answer"], "lambda", usage_tracker
+                file, file_diff, kb_result["answer"], "lambda", usage_tracker,
+                workspace_id=workspace_id,
             )
 
             if not analysis["compliant"]:
@@ -624,6 +628,7 @@ def analyze_terraform_files(
     usage_tracker: UsageTracker,
     *,
     workspace_ids: Optional[List[str]] = None,
+    workspace_id: str = "",
     provider: str = "github",
     ado_org: Optional[str] = None,
     ado_project: Optional[str] = None,
@@ -682,7 +687,8 @@ def analyze_terraform_files(
 
             # Analyze with Claude
             analysis = analyze_code_with_claude(
-                file, file_diff, kb_result["answer"], "terraform", usage_tracker
+                file, file_diff, kb_result["answer"], "terraform", usage_tracker,
+                workspace_id=workspace_id,
             )
 
             if not analysis["compliant"]:
@@ -817,11 +823,26 @@ def check_adr_compliance(
                 f"{scope_exc}. Falling back to workspace-blind retrieval."
             )
 
+        # Attribute PR-analyzer Bedrock spend to the PR repo's OWNING workspace
+        # (the first GITHUB_REPO owner), NOT the retrieval scope above (which
+        # spans the repo's workspaces + all is_global). Fail-soft: "" ->
+        # WS#SYSTEM (unattributed) rather than breaking the check.
+        owning_ws = ""
+        try:
+            from shared.pr_check_scope import find_workspaces_for_repo
+            owning_ws = (sorted(find_workspaces_for_repo(repository)) or [""])[0]
+        except Exception as ws_exc:
+            logger.warning(
+                f"Could not resolve owning workspace for spend attribution: "
+                f"{ws_exc}"
+            )
+
         # Analyze Lambda handlers and Terraform files with Claude
         lambda_result = analyze_lambda_handlers(
             repository, pr_number, changed_files, query_kb_lambda_name,
             github_token, usage_tracker,
             workspace_ids=workspace_ids,
+            workspace_id=owning_ws,
             provider=provider,
             ado_org=ado_org, ado_project=ado_project, ado_repo=ado_repo,
             ado_access_token=ado_access_token,
@@ -834,6 +855,7 @@ def check_adr_compliance(
             repository, pr_number, changed_files, query_kb_lambda_name,
             github_token, usage_tracker,
             workspace_ids=workspace_ids,
+            workspace_id=owning_ws,
             provider=provider,
             ado_org=ado_org, ado_project=ado_project, ado_repo=ado_repo,
             ado_access_token=ado_access_token,

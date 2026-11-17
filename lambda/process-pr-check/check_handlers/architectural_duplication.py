@@ -250,7 +250,8 @@ def summarize_pr_with_claude(
     repository: str,
     handler_files: List[str],
     file_diffs: Dict[str, str],
-    usage_tracker: UsageTracker
+    usage_tracker: UsageTracker,
+    workspace_id: str = ""
 ) -> str:
     """
     Use Claude to summarize the PR changes at a high level.
@@ -307,7 +308,8 @@ Keep it to 1-2 sentences maximum. Your summary:"""
             prompt=prompt,
             model_id=SONNET_MODEL_ID,
             max_tokens=300,
-            temperature=0.2
+            temperature=0.2,
+            workspace_id=workspace_id
         )
         usage_tracker.add(usage)
 
@@ -323,7 +325,8 @@ Keep it to 1-2 sentences maximum. Your summary:"""
 def extract_functional_keywords(
     pr_summary: str,
     file_diffs: Dict[str, str],
-    usage_tracker: UsageTracker
+    usage_tracker: UsageTracker,
+    workspace_id: str = ""
 ) -> List[str]:
     """
     Extract functional keywords from PR for targeted KB searches.
@@ -386,7 +389,8 @@ Your search queries:"""
             prompt=prompt,
             model_id=SONNET_MODEL_ID,
             max_tokens=200,
-            temperature=0.3
+            temperature=0.3,
+            workspace_id=workspace_id
         )
         usage_tracker.add(usage)
 
@@ -421,7 +425,8 @@ def analyze_similarity_with_claude(
     pr_summary: str,
     kb_context: str,
     changed_files: List[str],
-    usage_tracker: UsageTracker
+    usage_tracker: UsageTracker,
+    workspace_id: str = ""
 ) -> Dict[str, Any]:
     """
     Use Claude to analyze KB results for similar functionality.
@@ -505,7 +510,8 @@ If no code performs the SAME BUSINESS FUNCTION, return:
             prompt=prompt,
             model_id=SONNET_MODEL_ID,
             max_tokens=4000,
-            temperature=0.1
+            temperature=0.1,
+            workspace_id=workspace_id
         )
         usage_tracker.add(usage)
 
@@ -678,11 +684,25 @@ def check_architectural_duplication(
                 logger.warning(f"Could not fetch diff for {file}: {e}")
                 file_diffs[file] = "(Diff unavailable)"
 
+        # Attribute PR-analyzer Bedrock spend to the PR repo's OWNING workspace
+        # (the first GITHUB_REPO owner), NOT the cross-portfolio retrieval scope
+        # (every workspace) resolved below -- that would massively over-count.
+        # Fail-soft: "" -> WS#SYSTEM (unattributed) rather than breaking the check.
+        owning_ws = ""
+        try:
+            from shared.pr_check_scope import find_workspaces_for_repo
+            owning_ws = (sorted(find_workspaces_for_repo(repository)) or [""])[0]
+        except Exception as ws_exc:
+            logger.warning(
+                f"Could not resolve owning workspace for spend attribution: "
+                f"{ws_exc}"
+            )
+
         # Step 1: Summarize what the PR does (business function, no tech details)
-        pr_summary = summarize_pr_with_claude(repository, handler_files, file_diffs, usage_tracker)
+        pr_summary = summarize_pr_with_claude(repository, handler_files, file_diffs, usage_tracker, workspace_id=owning_ws)
 
         # Step 2: Extract functional keywords for multi-angle KB search
-        search_queries = extract_functional_keywords(pr_summary, file_diffs, usage_tracker)
+        search_queries = extract_functional_keywords(pr_summary, file_diffs, usage_tracker, workspace_id=owning_ws)
         logger.info(f"Generated {len(search_queries)} search queries: {search_queries}")
 
         # Resolve per-check retrieval scope. ARCHITECTURAL_DUPLICATION
@@ -744,7 +764,7 @@ def check_architectural_duplication(
 
         # Step 4: Analyze KB results with Claude to determine if there are genuine similarities
         # Pass changed files so Claude can exclude them from results
-        analysis = analyze_similarity_with_claude(pr_summary, combined_context, handler_files, usage_tracker)
+        analysis = analyze_similarity_with_claude(pr_summary, combined_context, handler_files, usage_tracker, workspace_id=owning_ws)
 
         # Step 5: Return results
         details = []

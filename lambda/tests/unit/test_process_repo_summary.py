@@ -963,3 +963,51 @@ class TestConfigContractChangeForcesFullRegen:
             ["a.py", ".outcomeops.yaml"]
         ) is True
         assert repo_summary_handler._config_contract_changed(["a.py"]) is False
+
+
+class TestArchSummaryWorkspaceAttribution:
+    """Code-map arch-summary Bedrock spend must attribute to the owning
+    workspace in the audit row, not WS#SYSTEM (where the analytics
+    aggregator skips it). Regression for pipeline spend attribution."""
+
+    def test_generate_architectural_summary_threads_workspace_id(self):
+        from types import SimpleNamespace
+
+        resp = SimpleNamespace(
+            text="arch summary",
+            stop_reason="end_turn",
+            usage=SimpleNamespace(input_tokens=100, output_tokens=40),
+        )
+        with patch.object(
+            repo_summary_handler, "invoke_model", return_value=resp
+        ), patch.object(
+            repo_summary_handler, "log_audit_entry"
+        ) as mock_audit:
+            result = repo_summary_handler.generate_architectural_summary(
+                "my-repo", "application", ["a.py", "b.py"],
+                workspace_id="ws_eng",
+            )
+
+        assert result == "arch summary"
+        mock_audit.assert_called_once()
+        assert mock_audit.call_args.kwargs["workspace_id"] == "ws_eng"
+
+    def test_generate_architectural_summary_defaults_empty_workspace(self):
+        """Legacy global code-maps (no workspace) still log, with ''."""
+        from types import SimpleNamespace
+
+        resp = SimpleNamespace(
+            text="arch summary",
+            stop_reason="end_turn",
+            usage=SimpleNamespace(input_tokens=10, output_tokens=5),
+        )
+        with patch.object(
+            repo_summary_handler, "invoke_model", return_value=resp
+        ), patch.object(
+            repo_summary_handler, "log_audit_entry"
+        ) as mock_audit:
+            repo_summary_handler.generate_architectural_summary(
+                "legacy-repo", "application", ["a.py"],
+            )
+
+        assert mock_audit.call_args.kwargs["workspace_id"] == ""

@@ -874,8 +874,15 @@ For each test file:
     return f"{grounding_section}{base_prompt}\n\n{CODE_MAP_LITERAL_DISCIPLINE}"
 
 
-def _call_bedrock_and_audit(prompt: str, group_name: str) -> str:
+def _call_bedrock_and_audit(
+    prompt: str, group_name: str, workspace_id: str = ""
+) -> str:
     """Call the configured model and log audit entry. Returns summary text.
+
+    ``workspace_id`` is threaded into the Bedrock audit row so code-map batch
+    spend attributes to the owning workspace in Analytics instead of landing
+    under WS#SYSTEM (where the aggregator skips it). Empty for legacy global
+    code-maps with no workspace context.
 
     Routes via shared.model_client.invoke (ADR-035) -- Converse for
     anthropic/meta/nova/gpt-oss; Mantle Responses for openai.gpt-5*/codex.
@@ -914,6 +921,7 @@ def _call_bedrock_and_audit(prompt: str, group_name: str) -> str:
         input_tokens=usage.input_tokens,
         output_tokens=usage.output_tokens,
         duration_ms=bedrock_duration_ms,
+        workspace_id=workspace_id,
     )
 
     return summary
@@ -1019,7 +1027,9 @@ def generate_batch_summary(
     estimated_tokens = estimate_tokens(prompt)
 
     if estimated_tokens <= MAX_PROMPT_TOKENS:
-        return _call_bedrock_and_audit(prompt, group_name)
+        return _call_bedrock_and_audit(
+            prompt, group_name, workspace_id=batch.get("workspace_id", "")
+        )
 
     # Batch too large - split file_contents into sub-batches
     # Calculate token budget for file content by subtracting template overhead
@@ -1070,7 +1080,9 @@ def generate_batch_summary(
             batch_type, repo, group_name, sub_files_section, grounding
         )
         sub_summary = _call_bedrock_and_audit(
-            sub_prompt, f"{group_name} (sub-batch {i}/{len(sub_batches)})"
+            sub_prompt,
+            f"{group_name} (sub-batch {i}/{len(sub_batches)})",
+            workspace_id=batch.get("workspace_id", ""),
         )
         sub_summaries.append(sub_summary)
 
@@ -1087,7 +1099,11 @@ def generate_batch_summary(
         f"{numbered_summaries}"
     )
 
-    return _call_bedrock_and_audit(merge_prompt, f"{group_name} (merge)")
+    return _call_bedrock_and_audit(
+        merge_prompt,
+        f"{group_name} (merge)",
+        workspace_id=batch.get("workspace_id", ""),
+    )
 
 
 # Titan Embeddings v2 hard input cap. Bedrock rejects InvokeModel with
@@ -2463,7 +2479,9 @@ def handle_merge_message(batch: Dict[str, Any]) -> None:
     )
     try:
         merged_summary = _call_bedrock_and_audit(
-            prompt, f"{parent_group_name} (merge of {shard_count} shards)",
+            prompt,
+            f"{parent_group_name} (merge of {shard_count} shards)",
+            workspace_id=batch.get("workspace_id", ""),
         )
     except Exception as exc:
         logger.exception(

@@ -1444,3 +1444,54 @@ class TestResolutionPostPassGate:
     def test_not_fired_when_not_last_close(self, monkeypatch):
         calls = self._run(monkeypatch, full_regen=True, last_close=False)
         assert calls == []
+
+
+class TestBatchSummaryWorkspaceAttribution:
+    """Code-map batch Bedrock spend must carry the batch's workspace_id into
+    the audit row, so it aggregates per-workspace instead of WS#SYSTEM."""
+
+    @patch("process_batch_summary_handler.log_audit_entry")
+    @patch("process_batch_summary_handler.fetch_file_content")
+    @patch("process_batch_summary_handler.invoke_model")
+    def test_audit_row_carries_batch_workspace_id(
+        self, mock_invoke, mock_fetch, mock_audit
+    ):
+        batch = {
+            "repo": "outcome-ops-ai-assist",
+            "repo_project": "bcarpio/outcome-ops-ai-assist",
+            "batch_type": "infrastructure",
+            "group_name": "infrastructure",
+            "file_paths": ["terraform/main.tf"],
+            "workspace_id": "ws_engineering",
+        }
+        mock_fetch.return_value = "terraform content here"
+        mock_invoke.return_value = _LegacyDictResponse({
+            "output": {"message": {"content": [{"text": "summary"}]}}
+        })
+
+        generate_batch_summary(batch)
+
+        mock_audit.assert_called_once()
+        assert mock_audit.call_args.kwargs["workspace_id"] == "ws_engineering"
+
+    @patch("process_batch_summary_handler.log_audit_entry")
+    @patch("process_batch_summary_handler.fetch_file_content")
+    @patch("process_batch_summary_handler.invoke_model")
+    def test_audit_row_defaults_empty_when_batch_has_no_workspace(
+        self, mock_invoke, mock_fetch, mock_audit
+    ):
+        batch = {
+            "repo": "outcome-ops-ai-assist",
+            "repo_project": "bcarpio/outcome-ops-ai-assist",
+            "batch_type": "infrastructure",
+            "group_name": "infrastructure",
+            "file_paths": ["terraform/main.tf"],
+        }
+        mock_fetch.return_value = "terraform content here"
+        mock_invoke.return_value = _LegacyDictResponse({
+            "output": {"message": {"content": [{"text": "summary"}]}}
+        })
+
+        generate_batch_summary(batch)
+
+        assert mock_audit.call_args.kwargs["workspace_id"] == ""

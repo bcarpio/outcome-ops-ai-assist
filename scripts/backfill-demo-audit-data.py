@@ -9,12 +9,16 @@ in the table. Every row is tagged ``demo_seed=true`` so it can be cleanly
 removed for the next demo run.
 
 Targets (matches the InfoSec / FinOps demo narrative):
-  - Total cost:          ~$250-$300 over 30 days
-  - Bedrock queries:     ~4,000 (Sonnet 4.6 ~70%, Haiku 4.5 ~30%)
+  - Total cost:          ~$280-$340 over 30 days
+  - Bedrock queries:     ~4,000 (Haiku 5.5 ~65%, Sonnet 5.5 ~35%), spanning
+                         interactive (chat / ask-claude) AND async pipeline
+                         (code-maps / code-gen / PR-analyzer) workloads. The
+                         pipeline rows carry a real workspace_id so Analytics
+                         shows per-workspace pipeline spend, not just chat.
   - Comprehend docs:     ~1,500 ingest-time PII redactions (~$10-$20)
   - Refusals:            ~15 (rendered in red on the audit page)
   - Admin actions:       ~80 (workspace/member/budget/api-key/system-prompt)
-  - Daily pattern:       $12-$18/day weekday peaks, $2-$5/day weekends
+  - Daily pattern:       $14-$20/day weekday peaks, $2-$5/day weekends
   - Top user:            65% of spend (the operator's account)
   - 2 heavy users:       ~24% combined
   - rest:                long-tail across 17+ accounts
@@ -112,11 +116,11 @@ BROWSER_UA = (
 # Audit.py's authoritative pricing (per 1M tokens for token-based;
 # per-call for rerank).
 PRICING = {
-    "us.anthropic.claude-sonnet-4-6": (3.00, 15.00),
-    "us.anthropic.claude-haiku-4-5-20251001-v1:0": (0.80, 4.00),
+    "us.anthropic.claude-sonnet-5-5": (3.00, 15.00),
+    "us.anthropic.claude-haiku-5-5": (0.80, 4.00),
 }
-SONNET = "us.anthropic.claude-sonnet-4-6"
-HAIKU = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+SONNET = "us.anthropic.claude-sonnet-5-5"
+HAIKU = "us.anthropic.claude-haiku-5-5"
 RERANK_MODEL = "cohere.rerank-v3-5:0"
 RERANK_PRICE_PER_CALL = 0.002  # $2.00 / 1k search queries
 
@@ -140,7 +144,7 @@ TARGET_COMPREHEND_DOCS = 1500
 # Per-document character count distribution (mix of README / ADR / code
 # map chunks / Confluence pages / email threads). Tuned so the 30-day
 # Comprehend total lands in the $9-$25 range - a meaningful but minor
-# slice next to the $250-300 total demo spend.
+# slice next to the ~$280-340 total demo spend.
 COMPREHEND_CHAR_RANGES: List[Tuple[float, Tuple[int, int]]] = [
     (0.40, (500, 4000)),     # README, short ADR, code-map chunk
     (0.35, (4000, 12000)),   # mid-size doc / ADR / Confluence page
@@ -148,20 +152,36 @@ COMPREHEND_CHAR_RANGES: List[Tuple[float, Tuple[int, int]]] = [
     (0.05, (30000, 80000)),  # outlier large doc
 ]
 
-# Query profiles. The platform's RAG path defaults to Haiku, with Sonnet
-# reserved for explicit "deep analysis" escalations - so the realistic
-# split is ~80% Haiku, ~20% Sonnet. To still hit the $250-300/30d demo
-# target, Haiku queries carry meaningful RAG context (50K-180K tokens)
-# which is normal for codebase-scale retrieval. Token ranges tuned so
-# the weighted average lands around $0.067/query.
+# Query profiles. Two surface groups:
+#
+# 1. Interactive (chat / ask-claude): the RAG path defaults to Haiku, with
+#    Sonnet reserved for explicit "deep analysis" escalations. Haiku queries
+#    carry meaningful RAG context (50K-200K tokens), normal for codebase-scale
+#    retrieval.
+# 2. Async pipeline (code-maps / code-gen / PR-analyzer): the ADVANCED (Sonnet)
+#    workloads. These carry a real workspace_id so they aggregate per-workspace
+#    in Analytics -- exercising the pipeline-attribution fix (log_audit_entry
+#    keyed on workspace_id, not WS#SYSTEM). Without these rows the demo would
+#    reinforce the old chat-only picture the fix exists to correct.
+#
+# Weights sum to 1.0 across TARGET_BEDROCK_QUERIES rows. Pipeline workloads add
+# ~0.25 of the mix, led by PR-analyzer (the highest-demand surface) and the
+# expensive code-map batch summaries, which lifts the 30-day band to ~$280-340
+# (see module docstring). Token ranges mirror the real handlers' prompt shapes.
 # (model, weight, in_range, out_range, lambda_name)
 PROFILES: List[Tuple[str, float, Tuple[int, int], Tuple[int, int], str]] = [
-    (HAIKU,  0.20, (200, 1500),      (100, 500),     "ask-claude"),     # quick answers
-    (HAIKU,  0.25, (5000, 20000),    (1000, 2500),   "chat"),           # RAG-medium
-    (HAIKU,  0.35, (100000, 200000), (5000, 8000),   "chat"),           # RAG-large (codebase)
-    (SONNET, 0.12, (800, 3500),      (800, 2500),    "chat"),           # sonnet chat escalation
-    (SONNET, 0.06, (6000, 15000),    (2500, 5000),   "chat"),           # sonnet RAG escalation
-    (SONNET, 0.02, (20000, 30000),   (6000, 10000),  "generate-code"),  # sonnet deep / codegen
+    # Interactive surfaces
+    (HAIKU,  0.15, (200, 1500),      (100, 500),     "ask-claude"),            # quick answers
+    (HAIKU,  0.18, (5000, 20000),    (1000, 2500),   "chat"),                  # RAG-medium
+    (HAIKU,  0.25, (100000, 200000), (5000, 8000),   "chat"),                  # RAG-large (codebase)
+    (SONNET, 0.10, (800, 3500),      (800, 2500),    "chat"),                  # sonnet chat escalation
+    (SONNET, 0.05, (6000, 15000),    (2500, 5000),   "chat"),                  # sonnet RAG escalation
+    # Async pipeline surfaces (ADVANCED tier; real workspace_id -> per-workspace rollups)
+    (SONNET, 0.02, (20000, 30000),   (6000, 10000),  "generate-code"),         # code generation
+    (SONNET, 0.04, (3000, 12000),    (400, 1024),    "process-repo-summary"),  # code-map arch summary
+    (SONNET, 0.03, (40000, 150000),  (2000, 8000),   "process-batch-summary"), # code-map batch (expensive)
+    (SONNET, 0.10, (8000, 40000),    (800, 3000),    "process-pr-check"),      # PR analyzer (advanced checks)
+    (HAIKU,  0.08, (8000, 40000),    (500, 1500),    "process-pr-check"),      # PR analyzer (basic-tier checks)
 ]
 
 # Refusal patterns from shared/audit.py:detect_refusal — using realistic

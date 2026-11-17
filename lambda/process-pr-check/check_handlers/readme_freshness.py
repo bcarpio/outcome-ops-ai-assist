@@ -135,7 +135,8 @@ def analyze_readme_with_claude(
     readme_diff: str,
     handler_names: List[str],
     infra_names: List[str],
-    usage_tracker: UsageTracker
+    usage_tracker: UsageTracker,
+    workspace_id: str = ""
 ) -> Dict[str, Any]:
     """
     Ask Claude to analyze if README diff adequately documents the changes.
@@ -186,7 +187,8 @@ Examples:
             prompt=prompt,
             model_id=SONNET_MODEL_ID,
             max_tokens=500,
-            temperature=0.1
+            temperature=0.1,
+            workspace_id=workspace_id
         )
         usage_tracker.add(usage)
 
@@ -357,6 +359,18 @@ def check_readme_freshness(
     # Create usage tracker
     usage_tracker = UsageTracker()
 
+    # Attribute PR-analyzer Bedrock spend to the PR repo's OWNING workspace
+    # (the first GITHUB_REPO owner). Fail-soft: "" -> WS#SYSTEM (unattributed)
+    # rather than breaking the check.
+    owning_ws = ""
+    try:
+        from shared.pr_check_scope import find_workspaces_for_repo
+        owning_ws = (sorted(find_workspaces_for_repo(repository)) or [""])[0]
+    except Exception as ws_exc:
+        logger.warning(
+            f"Could not resolve owning workspace for spend attribution: {ws_exc}"
+        )
+
     terraform_files = [f for f in changed_files if f.startswith("terraform/") and f.endswith(".tf")]
     handler_files = [
         f for f in changed_files
@@ -428,7 +442,7 @@ def check_readme_freshness(
         infra_names = extract_infrastructure_names(changed_files)
 
         # Ask Claude to analyze
-        analysis = analyze_readme_with_claude(readme_diff, handler_names, infra_names, usage_tracker)
+        analysis = analyze_readme_with_claude(readme_diff, handler_names, infra_names, usage_tracker, workspace_id=owning_ws)
 
         if analysis["adequate"]:
             return {

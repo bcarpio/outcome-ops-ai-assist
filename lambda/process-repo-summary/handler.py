@@ -480,7 +480,9 @@ def retry_bedrock_call(func, max_retries: int = 5):
     raise last_error
 
 
-def generate_architectural_summary(repo: str, repo_type: str, all_files: List[str]) -> str:
+def generate_architectural_summary(
+    repo: str, repo_type: str, all_files: List[str], workspace_id: str = ""
+) -> str:
     """
     Generate architectural summary using Claude via Bedrock.
 
@@ -488,6 +490,10 @@ def generate_architectural_summary(repo: str, repo_type: str, all_files: List[st
         repo: Repository name
         repo_type: Type of repository (application, standards, etc.)
         all_files: List of all files in the repository
+        workspace_id: Owning workspace, threaded into the Bedrock audit row so
+            code-map spend attributes to the workspace in Analytics instead of
+            landing under WS#SYSTEM (where the aggregator skips it). Empty for
+            legacy global code-maps that have no workspace context.
 
     Returns:
         Generated architectural summary
@@ -558,6 +564,7 @@ Keep the summary concise but detailed enough for developers to understand the sy
             input_tokens=usage.input_tokens,
             output_tokens=usage.output_tokens,
             duration_ms=bedrock_duration_ms,
+            workspace_id=workspace_id,
         )
 
         return summary
@@ -1537,7 +1544,9 @@ def handler(event, context):
             logger.info(f"Processing {repo} ({len(all_files)} files, {len(code_units)} code units)")
 
             # Generate architectural summary
-            arch_summary = generate_architectural_summary(repo, repo_type, all_files)
+            arch_summary = generate_architectural_summary(
+                repo, repo_type, all_files, workspace_id=workspace_id or ""
+            )
 
             # PII redaction (plan/ chunk 05). Architectural summaries can
             # echo back inline comments / repo metadata that occasionally

@@ -153,7 +153,8 @@ def call_bedrock(
     prompt: str,
     model_id: str = SONNET_MODEL_ID,
     max_tokens: int = 1000,
-    temperature: float = 0.1
+    temperature: float = 0.1,
+    workspace_id: str = ""
 ) -> tuple[str, BedrockUsage]:
     """
     Call Bedrock with usage tracking.
@@ -163,6 +164,10 @@ def call_bedrock(
         model_id: The model to use (default: Sonnet)
         max_tokens: Maximum tokens in response
         temperature: Temperature for response generation
+        workspace_id: Owning workspace for spend attribution in the audit
+            row. Default "" keeps backward-compatible callers landing under
+            WS#SYSTEM (analytics-skipped); PR-check callers thread the PR
+            repo's owning workspace so spend attributes correctly.
 
     Returns:
         Tuple of (response_text, BedrockUsage)
@@ -214,6 +219,7 @@ def call_bedrock(
         output_tokens=usage.output_tokens,
         cost_usd=usage.cost,
         duration_ms=bedrock_duration_ms,
+        workspace_id=workspace_id,
     )
 
     return response_text, usage
